@@ -1,0 +1,16 @@
+[package]
+name = "datui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.37", features = ["derive"] }
+color-eyre = "0.6.3"
+crossterm = "0.29.0"
+polars = { version = "0.46.0", features = ["lazy", "parquet", "polars-io", "timezones"] }
+ratatui = { version = "0.29.0", features = ["all-widgets"] }
+
+# improve the performance of color-eyre for debug builds
+[profile.dev.package.backtrace]
+opt-level = 3
+

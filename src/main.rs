@@ -32,11 +32,19 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
         let tx_input = tx.clone();
         std::thread::spawn(move || {
             loop {
-                if let Ok(event) = crossterm::event::read() {
-                    if let crossterm::event::Event::Key(key) = event {
+                match crossterm::event::read() {
+                    Ok(crossterm::event::Event::Key(key)) => {
                         let key_event = AppEvent::Key(key);
                         tx_input.send(key_event).unwrap();
                     }
+                    Ok(crossterm::event::Event::Resize(_, _)) => {
+                        let resize_event = AppEvent::Updated;
+                        tx_input.send(resize_event).unwrap();
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                    _ => {}
                 }
             }
         });

@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style, Stylize},
     text::Span,
-    widgets::{Cell, Row, StatefulWidget, Table, TableState},
+    widgets::{Cell, Paragraph, Row, StatefulWidget, Table, TableState, Widget},
 };
 
 pub struct DataTableState {
@@ -16,7 +16,7 @@ impl DataTableState {
     pub fn new(lf: LazyFrame) -> Self {
         Self {
             lf,
-            table_state: TableState::default()
+            table_state: TableState::default(),
         }
     }
 }
@@ -26,16 +26,14 @@ impl DataTable {
     pub fn new() -> Self {
         Self {}
     }
-}
 
-impl StatefulWidget for DataTable {
-    type State = DataTableState;
-
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let df = state.lf.clone().slice(0, area.height as u32).collect().unwrap();
-        let (height, cols) = df.shape();
-
-        // Extract column headers
+    fn render_dataframe(
+        &self,
+        df: &DataFrame,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &mut TableState,
+    ) {
         let headers: Vec<Span> = df
             .get_column_names()
             .iter()
@@ -47,10 +45,7 @@ impl StatefulWidget for DataTable {
             })
             .collect();
 
-        // Iterate each column of the DataFrame and build a vector of rows
-        // for ratatui.  each ratatui row is a vector of cells.
-        // to do the iteration you have to iterate the columns in colum orer,
-        // but create the rows in row order.
+        let (height, cols) = df.shape();
         let rows: Vec<Row> = (0..height)
             .map(|row_index| {
                 let row = df.get(row_index).unwrap();
@@ -63,16 +58,28 @@ impl StatefulWidget for DataTable {
                 Row::new(cells)
             })
             .collect();
-        // calculate widths as fractions of total width, equal per column
+
         let widths = vec![area.width / headers.len() as u16; headers.len()];
-        // Create and render the table
+
         StatefulWidget::render(
             Table::new(rows, widths)
                 .header(Row::new(headers))
                 .row_highlight_style(Style::new().reversed()),
             area,
             buf,
-            &mut state.table_state,
-        )
+            state,
+        );
+    }
+}
+
+impl StatefulWidget for DataTable {
+    type State = DataTableState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let lf = state.lf.clone().slice(0, area.height as u32);
+        match lf.collect() {
+            Ok(df) => self.render_dataframe(&df, area, buf, &mut state.table_state),
+            Err(e) => Paragraph::new(e.to_string()).render(area, buf),
+        }
     }
 }

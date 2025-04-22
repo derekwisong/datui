@@ -15,15 +15,6 @@ struct Args {
   path: PathBuf,
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    color_eyre::install()?;
-    let terminal = ratatui::init();
-    let result = run(terminal, &args);
-    ratatui::restore();
-    result
-}
-
 fn input_loop(tx_input: Sender<AppEvent>) -> Result<()> {
     loop {
         match crossterm::event::read()? {
@@ -60,4 +51,13 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    color_eyre::install()?;
+    let terminal = ratatui::init();
+    let result = run(terminal, &args);
+    ratatui::restore();
+    result
 }

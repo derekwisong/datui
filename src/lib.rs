@@ -120,8 +120,5 @@ impl Widget for &mut App {
 
         Controls {}.render(block.inner(layout[1]), buf);
         block.render(layout[1], buf);
-
-        //let controls = Controls {};
-        //controls.render(layout[1], buf);
     }
 }

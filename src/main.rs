@@ -3,7 +3,7 @@ use crossterm::{self, event::KeyCode};
 use ratatui::DefaultTerminal;
 use std::path::PathBuf;
 
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, Sender};
 
 use datui::{App, AppEvent};
 
@@ -24,46 +24,39 @@ fn main() -> Result<()> {
     result
 }
 
+fn input_loop(tx_input: Sender<AppEvent>) -> Result<()> {
+    loop {
+        match crossterm::event::read()? {
+            crossterm::event::Event::Key(key) => {
+                let key_event = AppEvent::Key(key);
+                tx_input.send(key_event)?;
+            }
+            crossterm::event::Event::Resize(_, _) => {
+                let resize_event = AppEvent::Updated;
+                tx_input.send(resize_event)?;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
     let (tx, rx) = channel::<AppEvent>();
 
-    // input thread
-    {
-        let tx_input = tx.clone();
-        std::thread::spawn(move || {
-            loop {
-                match crossterm::event::read() {
-                    Ok(crossterm::event::Event::Key(key)) => {
-                        let key_event = AppEvent::Key(key);
-                        tx_input.send(key_event).unwrap();
-                    }
-                    Ok(crossterm::event::Event::Resize(_, _)) => {
-                        let resize_event = AppEvent::Updated;
-                        tx_input.send(resize_event).unwrap();
-                    }
-                    Err(_) => {
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        });
-    }
-
+    let tx_input = tx.clone();
+    std::thread::spawn(move || input_loop(tx_input));
 
     let mut app = App::new(tx.clone());
     tx.send(AppEvent::Open(args.path.clone()))?;
 
-    // dispatch event and draw the app
     while let Ok(event) = rx.recv() {
         match event {
             AppEvent::Key(event) if event.code == KeyCode::Esc => break,
             AppEvent::Exit => break,
             AppEvent::Updated => {},
-            // all other events to go the app.event
             _ => app.event(&event)?,
         }
-        terminal.draw(|frame| frame.render_widget(&app, frame.area()))?;
+        terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
     }
 
     Ok(())

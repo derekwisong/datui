@@ -1,6 +1,5 @@
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
-use polars::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -17,6 +16,7 @@ pub enum AppEvent {
     Open(PathBuf),
     Updated,
     Exit,
+    Crash(String),
 }
 
 pub struct App {
@@ -43,15 +43,10 @@ impl App {
         }
     }
 
-    fn load(&mut self, path: &Path) -> Option<AppEvent> {
-        match LazyFrame::scan_parquet(path, Default::default()) {
-            Ok(lf) => {
-                self.data_table_state = Some(DataTableState::new(lf));
-                self.path = Some(path.to_path_buf());
-                None
-            }
-            Err(_) => Some(AppEvent::Exit)
-        }
+    fn load(&mut self, path: &Path) -> Result<()> {
+        self.data_table_state = Some(DataTableState::from_parquet(path)?);
+        self.path = Some(path.to_path_buf());
+        Ok(())
     }
 
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
@@ -81,7 +76,14 @@ impl App {
         self.num_events += 1;
         match event {
             AppEvent::Key(key) => self.key(key),
-            AppEvent::Open(path) => self.load(path),
+            AppEvent::Open(path) => match self.load(path) {
+                Ok(_) => {
+                    Some(AppEvent::Updated)
+                }
+                Err(e) => {
+                    Some(AppEvent::Crash(e.to_string()))
+                }
+            },
             _ => None
         }
     }

@@ -1,3 +1,6 @@
+use std::path::Path;
+use color_eyre::Result;
+
 use polars::prelude::*;
 use ratatui::{
     buffer::Buffer,
@@ -13,11 +16,12 @@ pub struct DataTableState {
 }
 
 impl DataTableState {
-    pub fn new(lf: LazyFrame) -> Self {
-        Self {
+    pub fn from_parquet(path: &Path) -> Result<Self> {
+        let lf = LazyFrame::scan_parquet(path, Default::default())?;
+        Ok(Self {
             lf,
             table_state: TableState::default(),
-        }
+        })
     }
 }
 pub struct DataTable {}

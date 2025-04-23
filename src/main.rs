@@ -1,55 +1,54 @@
+use clap::Parser;
 use color_eyre::Result;
 use crossterm::{self, event::KeyCode};
+use datui::{App, AppEvent};
 use ratatui::DefaultTerminal;
 use std::path::PathBuf;
-
-use std::sync::mpsc::{channel, Sender};
-
-use datui::{App, AppEvent};
-
-use clap::Parser;
+use std::sync::mpsc::channel;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "datui")]
 struct Args {
-  path: PathBuf,
+    path: PathBuf,
 }
 
-fn input_loop(tx_input: Sender<AppEvent>) -> Result<()> {
-    loop {
-        match crossterm::event::read()? {
-            crossterm::event::Event::Key(key) => {
-                let key_event = AppEvent::Key(key);
-                tx_input.send(key_event)?;
-            }
-            crossterm::event::Event::Resize(_, _) => {
-                let resize_event = AppEvent::Updated;
-                tx_input.send(resize_event)?;
-            }
-            _ => {}
-        }
-    }
+fn render(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+    terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
+    Ok(())
 }
 
 fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
     let (tx, rx) = channel::<AppEvent>();
-
-    let tx_input = tx.clone();
-    std::thread::spawn(move || input_loop(tx_input));
-
     let mut app = App::new(tx.clone());
+    render(&mut terminal, &mut app)?;
     tx.send(AppEvent::Open(args.path.clone()))?;
 
-    while let Ok(event) = rx.recv() {
-        match event {
-            AppEvent::Key(event) if event.code == KeyCode::Esc => break,
-            AppEvent::Exit => break,
-            AppEvent::Updated => {},
-            _ => app.event(&event)?,
+    loop {
+        if crossterm::event::poll(std::time::Duration::from_millis(0))? {
+            match crossterm::event::read()? {
+                crossterm::event::Event::Key(key) => tx.send(AppEvent::Key(key))?,
+                crossterm::event::Event::Resize(_, _) => tx.send(AppEvent::Updated)?,
+                _ => {}
+            }
         }
-        terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
-    }
 
+        match rx.recv_timeout(std::time::Duration::from_millis(0)) {
+            Ok(event) => match event {
+                AppEvent::Key(event) if event.code == KeyCode::Esc => break,
+                AppEvent::Exit => break,
+                AppEvent::Updated => {}
+                event => {
+                    if let Some(event) = app.event(&event) {
+                        tx.send(event)?;
+                    }
+                }
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        render(&mut terminal, &mut app)?;
+    }
     Ok(())
 }
 

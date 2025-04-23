@@ -43,45 +43,47 @@ impl App {
         }
     }
 
-    fn load(&mut self, path: &Path) -> Result<()> {
-        let lf = LazyFrame::scan_parquet(path, Default::default())?;
-        self.data_table_state = Some(DataTableState::new(lf));
-        self.path = Some(path.to_path_buf());
-        Ok(())
+    fn load(&mut self, path: &Path) -> Option<AppEvent> {
+        match LazyFrame::scan_parquet(path, Default::default()) {
+            Ok(lf) => {
+                self.data_table_state = Some(DataTableState::new(lf));
+                self.path = Some(path.to_path_buf());
+                None
+            }
+            Err(_) => Some(AppEvent::Exit)
+        }
     }
 
-    fn key(&mut self, event: &KeyEvent) -> Result<()> {
+    fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match event.code {
-            KeyCode::Char('q') => {
-                self.send_event(AppEvent::Exit)?;
-            }
+            KeyCode::Char('q') => Some(AppEvent::Exit),
             KeyCode::Down => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.table_state.select_next();
                 }
+                None
             }
             KeyCode::Up => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.table_state.select_previous();
                 }
+                None
             }
             KeyCode::Tab => {
                 self.focus = (self.focus + 1) % 2;
+                None
             }
-            _ => {}
-        };
-        Ok(())
+            _ => None
+        }
     }
 
-    pub fn event(&mut self, event: &AppEvent) -> Result<()> {
-        match event {
-            AppEvent::Key(key) => self.key(key)?,
-            AppEvent::Open(path) => self.load(path)?,
-            _ => {}
-        }
-        self.send_event(AppEvent::Updated)?;
+    pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
         self.num_events += 1;
-        Ok(())
+        match event {
+            AppEvent::Key(key) => self.key(key),
+            AppEvent::Open(path) => self.load(path),
+            _ => None
+        }
     }
 }
 

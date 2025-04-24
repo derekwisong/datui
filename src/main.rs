@@ -27,7 +27,7 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
         if crossterm::event::poll(std::time::Duration::from_millis(0))? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => tx.send(AppEvent::Key(key))?,
-                crossterm::event::Event::Resize(_, _) => tx.send(AppEvent::Updated)?,
+                crossterm::event::Event::Resize(_, _) => tx.send(AppEvent::Collect)?,
                 _ => {}
             }
         }
@@ -36,7 +36,6 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
             Ok(event) => match event {
                 AppEvent::Key(event) if event.code == KeyCode::Esc => break,
                 AppEvent::Exit => break,
-                AppEvent::Updated => {}
                 event => {
                     if let Some(event) = app.event(&event) {
                         tx.send(event)?;

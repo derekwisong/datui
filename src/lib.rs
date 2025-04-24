@@ -14,9 +14,9 @@ mod widgets;
 pub enum AppEvent {
     Key(KeyEvent),
     Open(PathBuf),
-    Updated,
     Exit,
     Crash(String),
+    Collect,
 }
 
 pub struct App {
@@ -90,13 +90,15 @@ impl App {
         match event {
             AppEvent::Key(key) => self.key(key),
             AppEvent::Open(path) => match self.load(path) {
-                Ok(_) => {
-                    Some(AppEvent::Updated)
-                }
-                Err(e) => {
-                    Some(AppEvent::Crash(e.to_string()))
-                }
+                Ok(_) => Some(AppEvent::Collect),
+                Err(e) => Some(AppEvent::Crash(e.to_string()))
             },
+            AppEvent::Collect => {
+                if let Some(ref mut state) = self.data_table_state {
+                    state.collect();
+                }
+                None
+            }
             _ => None
         }
     }

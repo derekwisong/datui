@@ -1,5 +1,5 @@
-use std::path::Path;
 use color_eyre::Result;
+use std::path::Path;
 
 use polars::prelude::*;
 use ratatui::{
@@ -12,6 +12,7 @@ use ratatui::{
 
 pub struct DataTableState {
     lf: LazyFrame,
+    df: Option<DataFrame>,
     pub table_state: TableState,
     pub start_row: usize,
     pub visible_rows: usize,
@@ -22,6 +23,7 @@ impl DataTableState {
         let lf = LazyFrame::scan_parquet(path, Default::default())?;
         Ok(Self {
             lf,
+            df: None,
             table_state: TableState::default(),
             start_row: 0,
             visible_rows: 0,
@@ -34,6 +36,24 @@ impl DataTableState {
         } else {
             (self.start_row as i64 + rows) as usize
         };
+
+        self.collect();
+    }
+
+    pub fn collect(&mut self) {
+        match self
+            .lf
+            .clone()
+            .slice(self.start_row as i64, self.visible_rows as u32)
+            .collect()
+        {
+            Ok(df) => {
+                self.df = Some(df);
+            }
+            Err(_) => {
+                self.df = None;
+            }
+        }
     }
 
     pub fn select_next(&mut self) {
@@ -123,22 +143,22 @@ impl StatefulWidget for DataTable {
         // determine the viewport of the table. when the selected row is
         // scrolled out of view, the table will scroll to keep it in view
         // this is done by scrolling down one row.
-        state.visible_rows = area.height as usize - 1;  // minus header
-        // selected is relative to the viewport, not the start row which is
-        // the first row in the underlying data table
+        state.visible_rows = area.height as usize - 1; // minus header
+                                                       // selected is relative to the viewport, not the start row which is
+                                                       // the first row in the underlying data table
         if let Some(selected) = state.table_state.selected() {
             // if the the selected row is out of view, set it to the last row
-            if selected >= state.visible_rows as usize{
-                state.table_state.select(Some(state.visible_rows as usize - 1))
+            if selected >= state.visible_rows as usize {
+                state
+                    .table_state
+                    .select(Some(state.visible_rows as usize - 1))
             }
         }
 
-        let lf = state.lf.clone().slice(state.start_row as i64, area.height as u32);
-        
-        // get this out of the rendering loop
-        match lf.collect() {
-            Ok(df) => self.render_dataframe(&df, area, buf, &mut state.table_state),
-            Err(e) => Paragraph::new(e.to_string()).render(area, buf),
+        if let Some(df) = state.df.as_ref() {
+            self.render_dataframe(df, area, buf, &mut state.table_state);
+        } else {
+            Paragraph::new("No data").render(area, buf);
         }
     }
 }

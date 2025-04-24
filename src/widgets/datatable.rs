@@ -13,6 +13,8 @@ use ratatui::{
 pub struct DataTableState {
     lf: LazyFrame,
     pub table_state: TableState,
+    pub start_row: usize,
+    pub visible_rows: usize,
 }
 
 impl DataTableState {
@@ -21,7 +23,45 @@ impl DataTableState {
         Ok(Self {
             lf,
             table_state: TableState::default(),
+            start_row: 0,
+            visible_rows: 0,
         })
+    }
+
+    fn slide_table(&mut self, rows: i64) {
+        self.start_row = if self.start_row as i64 + rows < 0 {
+            0
+        } else {
+            (self.start_row as i64 + rows) as usize
+        };
+    }
+
+    pub fn select_next(&mut self) {
+        self.table_state.select_next();
+        if let Some(selected) = self.table_state.selected() {
+            if selected >= self.visible_rows && self.visible_rows > 0 {
+                self.slide_table(1);
+            }
+        }
+    }
+
+    pub fn page_down(&mut self) {
+        self.slide_table(self.visible_rows as i64);
+    }
+
+    pub fn select_previous(&mut self) {
+        if let Some(selected) = self.table_state.selected() {
+            self.table_state.select_previous();
+            if selected == 0 && self.start_row > 0 {
+                self.slide_table(-1);
+            }
+        } else {
+            self.table_state.select(Some(0));
+        }
+    }
+
+    pub fn page_up(&mut self) {
+        self.slide_table(-(self.visible_rows as i64));
     }
 }
 pub struct DataTable {}
@@ -80,7 +120,22 @@ impl StatefulWidget for DataTable {
     type State = DataTableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let lf = state.lf.clone().slice(0, area.height as u32);
+        // determine the viewport of the table. when the selected row is
+        // scrolled out of view, the table will scroll to keep it in view
+        // this is done by scrolling down one row.
+        state.visible_rows = area.height as usize - 1;  // minus header
+        // selected is relative to the viewport, not the start row which is
+        // the first row in the underlying data table
+        if let Some(selected) = state.table_state.selected() {
+            // if the the selected row is out of view, set it to the last row
+            if selected >= state.visible_rows as usize{
+                state.table_state.select(Some(state.visible_rows as usize - 1))
+            }
+        }
+
+        let lf = state.lf.clone().slice(state.start_row as i64, area.height as u32);
+        
+        // get this out of the rendering loop
         match lf.collect() {
             Ok(df) => self.render_dataframe(&df, area, buf, &mut state.table_state),
             Err(e) => Paragraph::new(e.to_string()).render(area, buf),

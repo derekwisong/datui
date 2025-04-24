@@ -49,18 +49,31 @@ impl App {
         Ok(())
     }
 
+
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match event.code {
             KeyCode::Char('q') => Some(AppEvent::Exit),
             KeyCode::Down => {
                 if let Some(ref mut state) = self.data_table_state {
-                    state.table_state.select_next();
+                    state.select_next();
+                }
+                None
+            }
+            KeyCode::PageDown => {
+                if let Some(ref mut state) = self.data_table_state {
+                    state.page_down();
                 }
                 None
             }
             KeyCode::Up => {
                 if let Some(ref mut state) = self.data_table_state {
-                    state.table_state.select_previous();
+                    state.select_previous();
+                }
+                None
+            }
+            KeyCode::PageUp => {
+                if let Some(ref mut state) = self.data_table_state {
+                    state.page_up();
                 }
                 None
             }

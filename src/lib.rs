@@ -11,9 +11,47 @@ use ratatui::widgets::{Block, Padding, Paragraph, StatefulWidget};
 use widgets::datatable::{DataTable, DataTableState};
 
 mod widgets;
+
+pub struct OpenOptions {
+    pub delimiter: Option<u8>,
+    pub has_header: Option<bool>,
+    pub skip_lines: Option<usize>,
+    pub skip_rows: Option<usize>,
+}
+
+impl OpenOptions {
+    pub fn new() -> Self {
+        Self {
+            delimiter: None,
+            has_header: None,
+            skip_lines: None,
+            skip_rows: None,
+        }
+    }
+
+    pub fn with_skip_lines(mut self, skip_lines: usize) -> Self {
+        self.skip_lines = Some(skip_lines);
+        self
+    }
+
+    pub fn with_skip_rows(mut self, skip_rows: usize) -> Self {
+        self.skip_rows = Some(skip_rows);
+        self
+    }
+
+    pub fn with_delimiter(mut self, delimiter: u8) -> Self {
+        self.delimiter = Some(delimiter);
+        self
+    }
+
+    pub fn with_has_header(mut self, has_header: bool) -> Self {
+        self.has_header = Some(has_header);
+        self
+    }
+}
 pub enum AppEvent {
     Key(KeyEvent),
-    Open(PathBuf),
+    Open(PathBuf, OpenOptions),
     Exit,
     Crash(String),
     Collect,
@@ -24,7 +62,6 @@ pub struct App {
     path: Option<PathBuf>,
     events: Sender<AppEvent>,
     focus: u32,
-    num_events: u64,
 }
 
 impl App {
@@ -39,16 +76,30 @@ impl App {
             data_table_state: None,
             events,
             focus: 0,
-            num_events: 0,
         }
     }
 
-    fn load(&mut self, path: &Path) -> Result<()> {
-        self.data_table_state = Some(DataTableState::from_parquet(path)?);
+    fn load(&mut self, path: &Path, options: &OpenOptions) -> Result<()> {
+        let lf = match path.extension() {
+            Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(path)?,
+            Some(ext) if ext.eq_ignore_ascii_case("csv") => DataTableState::from_csv(path, options)?,
+            Some(ext) if ext.eq_ignore_ascii_case("tsv") => {
+                DataTableState::from_delimited(path, b'\t')?
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("psv") => {
+                DataTableState::from_delimited(path, b'|')?
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json(path)?,
+            Some(ext) if ext.eq_ignore_ascii_case("jsonl") => {
+                DataTableState::from_json_lines(path)?
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(path)?,
+            _ => return Err(color_eyre::eyre::eyre!("Unsupported file type")),
+        };
+        self.data_table_state = Some(lf);
         self.path = Some(path.to_path_buf());
         Ok(())
     }
-
 
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match event.code {
@@ -81,17 +132,16 @@ impl App {
                 self.focus = (self.focus + 1) % 2;
                 None
             }
-            _ => None
+            _ => None,
         }
     }
 
     pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
-        self.num_events += 1;
         match event {
             AppEvent::Key(key) => self.key(key),
-            AppEvent::Open(path) => match self.load(path) {
+            AppEvent::Open(path, options) => match self.load(path, options) {
                 Ok(_) => Some(AppEvent::Collect),
-                Err(e) => Some(AppEvent::Crash(e.to_string()))
+                Err(e) => Some(AppEvent::Crash(e.to_string())),
             },
             AppEvent::Collect => {
                 if let Some(ref mut state) = self.data_table_state {
@@ -99,13 +149,12 @@ impl App {
                 }
                 None
             }
-            _ => None
+            _ => None,
         }
     }
 }
 
-struct Controls {
-}
+struct Controls {}
 
 impl Widget for &Controls {
     fn render(self, area: Rect, buf: &mut Buffer) {
@@ -129,12 +178,12 @@ impl Widget for &mut App {
         }
 
         let mut block = Block::default()
-            .title(format!("Number of events: {}", self.num_events))
+            .title("Controls")
             .padding(Padding::top(1))
             .borders(ratatui::widgets::Borders::ALL);
 
         if self.focus == 0 {
-            block = block.style(Style::default().fg(ratatui::style::Color::Yellow));
+            block = block.style(Style::default());
         }
 
         Controls {}.render(block.inner(layout[1]), buf);

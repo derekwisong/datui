@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use std::path::Path;
+use std::{fs::File, path::Path};
 
 use polars::prelude::*;
 use ratatui::{
@@ -7,8 +7,12 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style, Stylize},
     text::Span,
-    widgets::{Cell, Paragraph, Row, StatefulWidget, Table, TableState, Widget},
+    widgets::{
+        Block, Borders, Cell, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
+    },
 };
+
+use crate::OpenOptions;
 
 pub struct DataTableState {
     lf: LazyFrame,
@@ -16,18 +20,77 @@ pub struct DataTableState {
     pub table_state: TableState,
     pub start_row: usize,
     pub visible_rows: usize,
+    error: Option<PolarsError>,
 }
 
 impl DataTableState {
-    pub fn from_parquet(path: &Path) -> Result<Self> {
-        let lf = LazyFrame::scan_parquet(path, Default::default())?;
-        Ok(Self {
+    pub fn new(lf: LazyFrame) -> Self {
+        Self {
             lf,
             df: None,
             table_state: TableState::default(),
             start_row: 0,
             visible_rows: 0,
+            error: None,
+        }
+    }
+    pub fn from_parquet(path: &Path) -> Result<Self> {
+        let lf = LazyFrame::scan_parquet(path, Default::default())?;
+        Ok(Self::new(lf))
+    }
+
+    pub fn from_csv(path: &Path, options: &OpenOptions) -> Result<Self> {
+        Self::from_csv_customize(path, |mut reader| {
+            if let Some(skip_lines) = options.skip_lines {
+                reader = reader.with_skip_lines(skip_lines);
+            }
+            if let Some(skip_rows) = options.skip_rows {
+                reader = reader.with_skip_rows(skip_rows);
+            }
+            if let Some(has_header) = options.has_header {
+                reader = reader.with_has_header(has_header);
+            }
+            reader
         })
+    }
+
+    // takes a function that consumes a LazyCsvReader and returns a LazyCsvReader
+    // this allows for customization of the csv reader
+    pub fn from_csv_customize<F>(path: &Path, func: F) -> Result<Self>
+    where
+        F: FnOnce(LazyCsvReader) -> LazyCsvReader,
+    {
+        let reader = LazyCsvReader::new(path);
+        let lf = func(reader).finish()?;
+        Ok(Self::new(lf))
+    }
+
+    pub fn from_ndjson(path: &Path) -> Result<Self> {
+        let lf = LazyJsonLineReader::new(path).finish()?;
+        Ok(Self::new(lf))
+    }
+
+    pub fn from_json(path: &Path) -> Result<Self> {
+        Self::from_json_with_format(path, JsonFormat::Json)
+    }
+
+    pub fn from_json_lines(path: &Path) -> Result<Self> {
+        Self::from_json_with_format(path, JsonFormat::JsonLines)
+    }
+
+    fn from_json_with_format(path: &Path, format: JsonFormat) -> Result<Self> {
+        let file = File::open(path)?;
+        let lf = JsonReader::new(file)
+            .with_json_format(format)
+            .finish()?
+            .lazy();
+        Ok(Self::new(lf))
+    }
+
+    pub fn from_delimited(path: &Path, delimiter: u8) -> Result<Self> {
+        let reader = LazyCsvReader::new(path).with_separator(delimiter);
+        let lf = reader.finish()?;
+        Ok(Self::new(lf))
     }
 
     fn slide_table(&mut self, rows: i64) {
@@ -49,10 +112,9 @@ impl DataTableState {
         {
             Ok(df) => {
                 self.df = Some(df);
+                self.error = None;
             }
-            Err(_) => {
-                self.df = None;
-            }
+            Err(e) => self.error = Some(e),
         }
     }
 
@@ -140,14 +202,13 @@ impl StatefulWidget for DataTable {
     type State = DataTableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        // determine the viewport of the table. when the selected row is
-        // scrolled out of view, the table will scroll to keep it in view
-        // this is done by scrolling down one row.
-        state.visible_rows = area.height as usize - 1; // minus header
-                                                       // selected is relative to the viewport, not the start row which is
-                                                       // the first row in the underlying data table
+        state.visible_rows = if area.height > 0 {
+            (area.height - 1) as usize
+        } else {
+            0
+        };
+
         if let Some(selected) = state.table_state.selected() {
-            // if the the selected row is out of view, set it to the last row
             if selected >= state.visible_rows as usize {
                 state
                     .table_state
@@ -157,6 +218,16 @@ impl StatefulWidget for DataTable {
 
         if let Some(df) = state.df.as_ref() {
             self.render_dataframe(df, area, buf, &mut state.table_state);
+        } else if let Some(error) = state.error.as_ref() {
+            Paragraph::new(format!("Error: {}", error))
+                .centered()
+                .block(
+                    Block::default()
+                        .borders(Borders::NONE)
+                        .padding(Padding::top(area.height / 2)),
+                )
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .render(area, buf);
         } else {
             Paragraph::new("No data").render(area, buf);
         }

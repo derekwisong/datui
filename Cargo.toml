@@ -7,7 +7,7 @@ edition = "2021"
 clap = { version = "4.5.37", features = ["derive"] }
 color-eyre = "0.6.3"
 crossterm = "0.29.0"
-polars = { version = "0.46.0", features = ["lazy", "parquet", "polars-io", "timezones"] }
+polars = { version = "0.46.0", features = ["json", "lazy", "parquet", "polars-io", "timezones"] }
 ratatui = { version = "0.29.0", features = ["all-widgets"] }
 
 # improve the performance of color-eyre for debug builds

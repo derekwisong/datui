@@ -145,6 +145,12 @@ impl DataTableState {
     pub fn page_up(&mut self) {
         self.slide_table(-(self.visible_rows as i64));
     }
+
+    pub fn scroll_right(&mut self) {
+    }
+
+    pub fn scroll_left(&mut self) {
+    }
 }
 pub struct DataTable {}
 

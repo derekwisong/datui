@@ -10,21 +10,21 @@ use std::sync::mpsc::channel;
 #[command(version, about = "datui")]
 struct Args {
     path: PathBuf,
-    
+
     /// Skip this many lines when reading a file
-    #[arg(long="skip-lines")]
+    #[arg(long = "skip-lines")]
     skip_lines: Option<usize>,
 
     /// Skip this many rows when reading a file
-    #[arg(long="skip-rows")]
+    #[arg(long = "skip-rows")]
     skip_rows: Option<usize>,
 
     /// Specify that the file has no header
-    #[arg(long="no-header")]
+    #[arg(long = "no-header")]
     no_header: Option<bool>,
 
     /// Specify the delimiter to use when reading a file
-    #[arg(long="delimiter")]
+    #[arg(long = "delimiter")]
     delimiter: Option<u8>,
 }
 
@@ -43,7 +43,7 @@ impl From<&Args> for OpenOptions {
         if let Some(delimiter) = args.delimiter {
             opts = opts.with_delimiter(delimiter);
         }
-        
+
         opts
     }
 }
@@ -61,7 +61,9 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
     tx.send(AppEvent::Open(args.path.clone(), opts))?;
 
     loop {
+        let mut updated = false;
         if crossterm::event::poll(std::time::Duration::from_millis(0))? {
+            updated = true;
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => tx.send(AppEvent::Key(key))?,
                 crossterm::event::Event::Resize(_, _) => tx.send(AppEvent::Collect)?,
@@ -70,20 +72,25 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
         }
 
         match rx.recv_timeout(std::time::Duration::from_millis(0)) {
-            Ok(event) => match event {
-                AppEvent::Key(event) if event.code == KeyCode::Esc => break,
-                AppEvent::Exit => break,
-                event => {
-                    if let Some(event) = app.event(&event) {
-                        tx.send(event)?;
+            Ok(event) => {
+                updated = true;
+                match event {
+                    AppEvent::Key(event) if event.code == KeyCode::Esc => break,
+                    AppEvent::Exit => break,
+                    event => {
+                        if let Some(event) = app.event(&event) {
+                            tx.send(event)?;
+                        }
                     }
                 }
-            },
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
 
-        render(&mut terminal, &mut app)?;
+        if updated {
+            render(&mut terminal, &mut app)?;
+        }
     }
     Ok(())
 }

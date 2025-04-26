@@ -7,10 +7,13 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Padding, Paragraph, StatefulWidget};
-use widgets::datatable::{DataTable, DataTableState};
+use ratatui::widgets::{Block, Paragraph, StatefulWidget};
 
 mod widgets;
+
+use widgets::debug::DebugState;
+use widgets::controls::Controls;
+use widgets::datatable::{DataTable, DataTableState};
 
 pub struct OpenOptions {
     pub delimiter: Option<u8>,
@@ -49,6 +52,7 @@ impl OpenOptions {
         self
     }
 }
+
 pub enum AppEvent {
     Key(KeyEvent),
     Open(PathBuf, OpenOptions),
@@ -57,11 +61,13 @@ pub enum AppEvent {
     Collect,
 }
 
+
 pub struct App {
     data_table_state: Option<DataTableState>,
     path: Option<PathBuf>,
     events: Sender<AppEvent>,
     focus: u32,
+    debug: DebugState,
 }
 
 impl App {
@@ -76,13 +82,16 @@ impl App {
             data_table_state: None,
             events,
             focus: 0,
+            debug: DebugState::default(),
         }
     }
 
     fn load(&mut self, path: &Path, options: &OpenOptions) -> Result<()> {
         let lf = match path.extension() {
             Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(path)?,
-            Some(ext) if ext.eq_ignore_ascii_case("csv") => DataTableState::from_csv(path, options)?,
+            Some(ext) if ext.eq_ignore_ascii_case("csv") => {
+                DataTableState::from_csv(path, options)?
+            }
             Some(ext) if ext.eq_ignore_ascii_case("tsv") => {
                 DataTableState::from_delimited(path, b'\t')?
             }
@@ -102,33 +111,47 @@ impl App {
     }
 
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        self.debug.on_key(event);
+
         match event.code {
             KeyCode::Char('q') => Some(AppEvent::Exit),
-            KeyCode::Down => {
+            KeyCode::Right if event.is_press() => {
+                if let Some(ref mut state) = self.data_table_state {
+                    state.scroll_right();
+                }
+                None
+            }
+            KeyCode::Left if event.is_press() => {
+                if let Some(ref mut state) = self.data_table_state {
+                    state.scroll_left();
+                }
+                None
+            }
+            KeyCode::Down if event.is_press() => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.select_next();
                 }
                 None
             }
-            KeyCode::PageDown => {
+            KeyCode::PageDown if event.is_press() => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.page_down();
                 }
                 None
             }
-            KeyCode::Up => {
+            KeyCode::Up if event.is_press() => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.select_previous();
                 }
                 None
             }
-            KeyCode::PageUp => {
+            KeyCode::PageUp if event.is_press() => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.page_up();
                 }
                 None
             }
-            KeyCode::Tab => {
+            KeyCode::Tab if event.is_press() => {
                 self.focus = (self.focus + 1) % 2;
                 None
             }
@@ -137,6 +160,7 @@ impl App {
     }
 
     pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+        self.debug.num_events += 1;
         match event {
             AppEvent::Key(key) => self.key(key),
             AppEvent::Open(path, options) => match self.load(path, options) {
@@ -154,22 +178,12 @@ impl App {
     }
 }
 
-struct Controls {}
-
-impl Widget for &Controls {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new("Scroll up and down with arrow keys. Press 'q' or <Esc> to quit")
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .centered()
-            .render(area, buf);
-    }
-}
-
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.debug.num_frames += 1;
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Fill(1), Constraint::Max(5)])
+            .constraints(vec![Constraint::Fill(1), Constraint::Max(5), Constraint::Length(1)])
             .split(area);
 
         match &mut self.data_table_state {
@@ -179,14 +193,19 @@ impl Widget for &mut App {
 
         let mut block = Block::default()
             .title("Controls")
-            .padding(Padding::top(1))
             .borders(ratatui::widgets::Borders::ALL);
 
         if self.focus == 0 {
             block = block.style(Style::default());
         }
 
-        Controls {}.render(block.inner(layout[1]), buf);
+        Controls::new(
+            "Scroll up and down with arrow keys. Press 'q' or <Esc> to quit",
+
+        )
+        .render(block.inner(layout[1]), buf);
+
+        self.debug.render(layout[2], buf);
         block.render(layout[1], buf);
     }
 }

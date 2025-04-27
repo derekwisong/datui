@@ -6,8 +6,7 @@ use std::sync::mpsc::Sender;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Paragraph, StatefulWidget};
+use ratatui::widgets::{Paragraph, StatefulWidget};
 
 mod widgets;
 
@@ -183,7 +182,11 @@ impl Widget for &mut App {
         self.debug.num_frames += 1;
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Fill(1), Constraint::Max(5), Constraint::Length(1)])
+            .constraints(vec![
+                Constraint::Fill(1),
+                Constraint::Length(1),
+                Constraint::Length(1)
+            ])
             .split(area);
 
         match &mut self.data_table_state {
@@ -191,21 +194,7 @@ impl Widget for &mut App {
             None => Paragraph::new("No data loaded").render(layout[0], buf),
         }
 
-        let mut block = Block::default()
-            .title("Controls")
-            .borders(ratatui::widgets::Borders::ALL);
-
-        if self.focus == 0 {
-            block = block.style(Style::default());
-        }
-
-        Controls::new(
-            "Scroll up and down with arrow keys. Press 'q' or <Esc> to quit",
-
-        )
-        .render(block.inner(layout[1]), buf);
-
+        Controls::new().render(layout[1], buf);
         self.debug.render(layout[2], buf);
-        block.render(layout[1], buf);
     }
 }

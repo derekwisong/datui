@@ -20,6 +20,8 @@ pub struct DataTableState {
     pub table_state: TableState,
     pub start_row: usize,
     pub visible_rows: usize,
+    pub termcol_index: usize,
+    pub visible_termcols: usize,
     error: Option<PolarsError>,
 }
 
@@ -31,6 +33,8 @@ impl DataTableState {
             table_state: TableState::default(),
             start_row: 0,
             visible_rows: 0,
+            termcol_index: 0,
+            visible_termcols: 0,
             error: None,
         }
     }
@@ -94,20 +98,28 @@ impl DataTableState {
     }
 
     fn slide_table(&mut self, rows: i64) {
-        self.start_row = if self.start_row as i64 + rows < 0 {
+        
+        self.start_row = if self.start_row as i64 + rows <= 0 {
             0
         } else {
+            // if currently a df is showing and it doesnt fill the screen
+            // then we can't side down
+            if let Some(df) = self.df.as_ref() {
+                if rows > 0 && df.shape().0 <= self.visible_rows {
+                    return;
+                }
+            }
             (self.start_row as i64 + rows) as usize
         };
 
-        self.collect();
+        self.collect(); 
     }
 
     pub fn collect(&mut self) {
         match self
             .lf
             .clone()
-            .slice(self.start_row as i64, self.visible_rows as u32)
+            .slice(self.start_row as i64, self.visible_rows as u32 + 1)
             .collect()
         {
             Ok(df) => {
@@ -142,14 +154,23 @@ impl DataTableState {
         }
     }
 
+    pub fn scroll_to(&mut self, index: usize) {
+        self.start_row = index;
+        self.collect();
+    }
+
     pub fn page_up(&mut self) {
         self.slide_table(-(self.visible_rows as i64));
     }
 
     pub fn scroll_right(&mut self) {
+        self.termcol_index += 1;
     }
 
     pub fn scroll_left(&mut self) {
+        if self.termcol_index > 0 {
+            self.termcol_index -= 1;
+        }
     }
 }
 pub struct DataTable {}
@@ -177,24 +198,31 @@ impl DataTable {
             })
             .collect();
 
+        // make each column as wide as it needs to be to fit the content
         let (height, cols) = df.shape();
-        let rows: Vec<Row> = (0..height)
-            .map(|row_index| {
-                let row = df.get(row_index).unwrap();
-                let cells: Vec<Cell> = (0..cols)
-                    .map(|col_index| {
-                        let value = row.get(col_index).unwrap();
-                        Cell::from(Span::raw(value.to_string()))
-                    })
-                    .collect();
-                Row::new(cells)
-            })
-            .collect();
+        let mut widths: Vec<u16> = vec![0; cols];
+        let mut rows: Vec<Row> = vec![];
 
-        let widths = vec![area.width / headers.len() as u16; headers.len()];
+        for row_index in 0..height {
+            let mut row: Vec<Cell> = vec![];
+            row.reserve(cols);
+
+            let data = df.get(row_index).unwrap();
+
+            for col_index in 0..cols {
+                let value = data.get(col_index).unwrap();
+                let val_str = value.to_string();
+                let len = val_str.chars().count() as u16;
+                let cell = Cell::from(Span::raw(val_str));
+                widths[col_index] = widths[col_index].max(len);
+                row.push(cell);
+            }
+            rows.push(Row::new(row));
+        }
 
         StatefulWidget::render(
             Table::new(rows, widths)
+                .column_spacing(1)
                 .header(Row::new(headers).bold().fg(Color::LightBlue))
                 .row_highlight_style(Style::new().bg(Color::Blue)),
             area,
@@ -208,6 +236,7 @@ impl StatefulWidget for DataTable {
     type State = DataTableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        state.visible_termcols = area.width as usize;
         state.visible_rows = if area.height > 0 {
             (area.height - 1) as usize
         } else {

@@ -85,6 +85,10 @@ impl App {
         }
     }
 
+    pub fn enable_debug(&mut self) {
+        self.debug.enabled = true;
+    }
+
     fn load(&mut self, path: &Path, options: &OpenOptions) -> Result<()> {
         let lf = match path.extension() {
             Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(path)?,
@@ -144,6 +148,12 @@ impl App {
                 }
                 None
             }
+            KeyCode::Home if event.is_press() => {
+                if let Some(ref mut state) = self.data_table_state {
+                    state.scroll_to(0);
+                }
+                None
+            }
             KeyCode::PageUp if event.is_press() => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.page_up();
@@ -180,13 +190,17 @@ impl App {
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.debug.num_frames += 1;
+
+        let mut constraints = vec![
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            ];
+        if self.debug.enabled {
+            constraints.push(Constraint::Length(1));
+        }
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![
-                Constraint::Fill(1),
-                Constraint::Length(1),
-                Constraint::Length(1)
-            ])
+            .constraints(constraints)
             .split(area);
 
         match &mut self.data_table_state {
@@ -195,6 +209,8 @@ impl Widget for &mut App {
         }
 
         Controls::new().render(layout[1], buf);
-        self.debug.render(layout[2], buf);
+        if self.debug.enabled {
+            self.debug.render(layout[2], buf);
+        }
     }
 }

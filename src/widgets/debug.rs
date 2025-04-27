@@ -7,6 +7,7 @@ pub struct DebugState {
     pub num_key_events: usize,
     pub last_key_event_name: String,
     pub last_type_name: String,
+    pub enabled: bool,
 
 }
 
@@ -27,6 +28,7 @@ impl Default for DebugState {
             num_key_events: 0,
             last_key_event_name: String::new(),
             last_type_name: String::new(),
+            enabled: false,
          }
     }
 }

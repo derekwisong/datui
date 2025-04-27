@@ -26,6 +26,10 @@ struct Args {
     /// Specify the delimiter to use when reading a file
     #[arg(long = "delimiter")]
     delimiter: Option<u8>,
+
+    /// Enable debug mode to show operational information
+    #[arg(long = "debug", action)]
+    debug: bool,
 }
 
 impl From<&Args> for OpenOptions {
@@ -56,6 +60,9 @@ fn render(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
 fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
     let (tx, rx) = channel::<AppEvent>();
     let mut app = App::new(tx.clone());
+    if args.debug {
+        app.enable_debug();
+    }
     let opts: OpenOptions = args.into();
     render(&mut terminal, &mut app)?;
     tx.send(AppEvent::Open(args.path.clone(), opts))?;

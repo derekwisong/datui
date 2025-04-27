@@ -5,7 +5,7 @@ use polars::prelude::*;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::Span,
     widgets::{
         Block, Borders, Cell, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
@@ -195,8 +195,8 @@ impl DataTable {
 
         StatefulWidget::render(
             Table::new(rows, widths)
-                .header(Row::new(headers))
-                .row_highlight_style(Style::new().reversed()),
+                .header(Row::new(headers).bold().fg(Color::LightBlue))
+                .row_highlight_style(Style::new().bg(Color::Blue)),
             area,
             buf,
             state,

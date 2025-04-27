@@ -1,5 +1,5 @@
 use ratatui::{
-    buffer::Buffer, layout::{Constraint, Direction, Layout, Rect}, style::{Color, Style}, widgets::{Paragraph, Widget}
+    buffer::Buffer, layout::{Constraint, Direction, Layout, Rect}, style::{Color, Style, Stylize}, widgets::{Paragraph, Widget}
 };
 
 pub struct Controls {}
@@ -15,19 +15,22 @@ impl Widget for &Controls {
         const CONTROLS: [(&str, &str); 2] = [("↑↓←→", "Browse"), ("Q", "Quit")];
 
         let mut constraints = CONTROLS.iter().fold(vec![], |mut acc, (key, action)| {
-            acc.push(Constraint::Length(key.chars().count() as u16 + 1));
+            acc.push(Constraint::Length(key.chars().count() as u16 + 2));
             acc.push(Constraint::Length(action.chars().count() as u16 + 1));
             acc
         });
         constraints.push(Constraint::Fill(1)); // Fill the remaining space
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
-        let color = Color::Cyan;
+        let color = Color::DarkGray;
 
         // iterate over the controls and render them
         for (i, (key, action)) in CONTROLS.iter().enumerate() {
             let j = i * 2;
-            Paragraph::new(*key).render(layout[j], buf);
+            Paragraph::new(*key)
+                .style(Style::default().bold())
+                .centered()
+                .render(layout[j], buf);
             Paragraph::new(*action)
                 .style(Style::default().bg(color))
                 .render(layout[j + 1], buf);

@@ -1,5 +1,8 @@
 use ratatui::{
-    buffer::Buffer, layout::{Constraint, Direction, Layout, Rect}, style::{Color, Style, Stylize}, widgets::{Paragraph, Widget}
+    buffer::Buffer,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Style, Stylize},
+    widgets::{Paragraph, Widget},
 };
 
 pub struct Controls {}
@@ -35,8 +38,7 @@ impl Widget for &Controls {
                 .style(Style::default().bg(color))
                 .render(layout[j + 1], buf);
         }
-        
-        // render an empty widget in the last layout area
+
         Paragraph::new("")
             .style(Style::default().bg(color))
             .render(layout[layout.len() - 1], buf);

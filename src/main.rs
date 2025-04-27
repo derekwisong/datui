@@ -61,9 +61,7 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
     tx.send(AppEvent::Open(args.path.clone(), opts))?;
 
     loop {
-        let mut updated = false;
-        if crossterm::event::poll(std::time::Duration::from_millis(0))? {
-            updated = true;
+        if crossterm::event::poll(std::time::Duration::from_millis(25))? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => tx.send(AppEvent::Key(key))?,
                 crossterm::event::Event::Resize(_, _) => tx.send(AppEvent::Collect)?,
@@ -71,9 +69,8 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
             }
         }
 
-        match rx.recv_timeout(std::time::Duration::from_millis(0)) {
+        let updated = match rx.recv_timeout(std::time::Duration::from_millis(0)) {
             Ok(event) => {
-                updated = true;
                 match event {
                     AppEvent::Key(event) if event.code == KeyCode::Esc => break,
                     AppEvent::Exit => break,
@@ -83,10 +80,11 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
                         }
                     }
                 }
+                true
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        }
+        };
 
         if updated {
             render(&mut terminal, &mut app)?;

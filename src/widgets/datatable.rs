@@ -15,7 +15,7 @@ use ratatui::{
 use crate::OpenOptions;
 
 pub struct DataTableState {
-    lf: LazyFrame,
+    pub lf: LazyFrame,
     df: Option<DataFrame>,
     pub table_state: TableState,
     pub start_row: usize,
@@ -196,17 +196,6 @@ impl DataTable {
         buf: &mut Buffer,
         state: &mut TableState,
     ) {
-        let headers: Vec<Span> = df
-            .get_column_names()
-            .iter()
-            .map(|name| {
-                Span::styled(
-                    name.to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )
-            })
-            .collect();
-
         // make each column as wide as it needs to be to fit the content
         let (height, cols) = df.shape();
 
@@ -251,10 +240,23 @@ impl DataTable {
             .map(|mut row| {row.truncate(visible_columns); Row::new(row)})
             .collect::<Vec<Row>>();
 
+        // for visible columsn
+        let headers: Vec<Span> = df
+            .get_column_names()
+            .iter()
+            .take(visible_columns)
+            .map(|name| {
+                Span::styled(
+                    name.to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )
+            })
+            .collect();
+
         StatefulWidget::render(
             Table::new(rows, widths)
                 .column_spacing(1)
-                .header(Row::new(headers).bold().fg(Color::LightBlue))
+                .header(Row::new(headers).bold().underlined())
                 .row_highlight_style(Style::new().bg(Color::Blue)),
             area,
             buf,

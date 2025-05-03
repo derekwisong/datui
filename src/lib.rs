@@ -1,5 +1,6 @@
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
+use widgets::info::DataTableInfo;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -67,6 +68,7 @@ pub struct App {
     events: Sender<AppEvent>,
     focus: u32,
     debug: DebugState,
+    info_visible: bool,
 }
 
 impl App {
@@ -82,6 +84,7 @@ impl App {
             events,
             focus: 0,
             debug: DebugState::default(),
+            info_visible: false,
         }
     }
 
@@ -184,6 +187,10 @@ impl App {
                 self.focus = (self.focus + 1) % 2;
                 None
             }
+            KeyCode::Char('i') if event.is_press() => {
+                self.info_visible = !self.info_visible;
+                None
+            }
             _ => None,
         }
     }
@@ -224,7 +231,24 @@ impl Widget for &mut App {
             .split(area);
 
         match &mut self.data_table_state {
-            Some(state) => DataTable::new().render(layout[0], buf, state),
+            Some(state) => {
+                // display the data table, and also if enabled, the info
+                // if info_visible then create a horizontal layout
+                // with 2 columns, the info being on the right and
+                // using a max of 50 characters. Otherwise, just
+                // use the full width of the layout[0] space.
+                if self.info_visible {
+                    let info_layout = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Fill(1), Constraint::Max(50)])
+                        .split(layout[0]);
+                    DataTable::new().render(info_layout[0], buf, state);
+                    DataTableInfo::new(state).render(info_layout[1], buf);
+                } else {
+                    DataTable::new().render(layout[0], buf, state);
+                }
+
+            },
             None => Paragraph::new("No data loaded").render(layout[0], buf),
         }
 

@@ -15,11 +15,12 @@ impl Controls {
 
 impl Widget for &Controls {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        const CONTROLS: [(&str, &str); 4] = [
+        const CONTROLS: [(&str, &str); 5] = [
             ("Arrows", "Scroll"), 
             ("PgUp/PgDown", "Jump"),
             ("Home", "Top"),
-            ("Q", "Quit")
+            ("i", "Info"),
+            ("q", "Quit")
         ];
 
         let mut constraints = CONTROLS.iter().fold(vec![], |mut acc, (key, action)| {

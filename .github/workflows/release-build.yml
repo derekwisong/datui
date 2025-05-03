@@ -7,11 +7,18 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc]
+       platform:
+        - name: "Linux"
+          os: ubuntu-latest
+          bin: datui
+          target: x86_64-unknown-linux-gnu
+        - name: "Windows"
+          os: windows-latest
+          bin: datui.exe
+          target: x86_64-pc-windows-msvc
 
     steps:
       # Checkout the repository
@@ -23,18 +30,18 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: ${{ matrix.target }}
+          target: ${{ matrix.platform.target }}
 
       # Build the binary
       - name: Build binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.platform.target }}
 
       # Upload the binary as an artifact
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-binary
-          path: target/${{ matrix.target }}/release/datui
+          name: datui-${{ matrix.platform.target }}
+          path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
 
   release:
     needs: build

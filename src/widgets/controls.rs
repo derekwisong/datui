@@ -16,7 +16,7 @@ impl Controls {
 impl Widget for &Controls {
     fn render(self, area: Rect, buf: &mut Buffer) {
         const CONTROLS: [(&str, &str); 4] = [
-            ("↑↓←→", "Select"), 
+            ("Arrows", "Scroll"), 
             ("PgUp/PgDown", "Jump"),
             ("Home", "Top"),
             ("Q", "Quit")

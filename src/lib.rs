@@ -116,35 +116,55 @@ impl App {
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
+        const RIGHT_KEYS: [KeyCode; 2] = [
+            KeyCode::Right,
+            KeyCode::Char('l'),
+        ];
+
+        const LEFT_KEYS: [KeyCode; 2] = [
+            KeyCode::Left,
+            KeyCode::Char('h'),
+        ];
+
+        const DOWN_KEYS: [KeyCode; 2] = [
+            KeyCode::Down,
+            KeyCode::Char('j'),
+        ];
+
+        const UP_KEYS: [KeyCode; 2] = [
+            KeyCode::Up,
+            KeyCode::Char('k'),
+        ];
+
         match event.code {
             KeyCode::Char('q') => Some(AppEvent::Exit),
-            KeyCode::Right if event.is_press() => {
+            code if event.is_press() && RIGHT_KEYS.contains(&code) => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.scroll_right();
                 }
                 None
             }
-            KeyCode::Left if event.is_press() => {
+            code if event.is_press() && LEFT_KEYS.contains(&code) => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.scroll_left();
                 }
                 None
             }
-            KeyCode::Down if event.is_press() => {
+            code if event.is_press() && DOWN_KEYS.contains(&code) => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.select_next();
+                }
+                None
+            }
+            code if event.is_press() && UP_KEYS.contains(&code) => {
+                if let Some(ref mut state) = self.data_table_state {
+                    state.select_previous();
                 }
                 None
             }
             KeyCode::PageDown if event.is_press() => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.page_down();
-                }
-                None
-            }
-            KeyCode::Up if event.is_press() => {
-                if let Some(ref mut state) = self.data_table_state {
-                    state.select_previous();
                 }
                 None
             }

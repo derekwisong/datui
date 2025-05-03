@@ -23,11 +23,13 @@ pub struct DataTableState {
     pub termcol_index: usize,
     pub visible_termcols: usize,
     error: Option<PolarsError>,
+    pub schema: Arc<Schema>,
 }
 
 impl DataTableState {
-    pub fn new(lf: LazyFrame) -> Self {
-        Self {
+    pub fn new(lf: LazyFrame) -> Result<Self> {
+        let schema = lf.clone().collect_schema()?;
+        Ok(Self {
             lf,
             df: None,
             table_state: TableState::default(),
@@ -36,11 +38,13 @@ impl DataTableState {
             termcol_index: 0,
             visible_termcols: 0,
             error: None,
-        }
+            schema,
+        })
     }
+
     pub fn from_parquet(path: &Path) -> Result<Self> {
         let lf = LazyFrame::scan_parquet(path, Default::default())?;
-        Ok(Self::new(lf))
+        Self::new(lf)
     }
 
     pub fn from_csv(path: &Path, options: &OpenOptions) -> Result<Self> {
@@ -66,12 +70,12 @@ impl DataTableState {
     {
         let reader = LazyCsvReader::new(path);
         let lf = func(reader).finish()?;
-        Ok(Self::new(lf))
+        Self::new(lf)
     }
 
     pub fn from_ndjson(path: &Path) -> Result<Self> {
         let lf = LazyJsonLineReader::new(path).finish()?;
-        Ok(Self::new(lf))
+        Self::new(lf)
     }
 
     pub fn from_json(path: &Path) -> Result<Self> {
@@ -88,13 +92,13 @@ impl DataTableState {
             .with_json_format(format)
             .finish()?
             .lazy();
-        Ok(Self::new(lf))
+        Self::new(lf)
     }
 
     pub fn from_delimited(path: &Path, delimiter: u8) -> Result<Self> {
         let reader = LazyCsvReader::new(path).with_separator(delimiter);
         let lf = reader.finish()?;
-        Ok(Self::new(lf))
+        Self::new(lf)
     }
 
     fn slide_table(&mut self, rows: i64) {
@@ -119,6 +123,7 @@ impl DataTableState {
         match self
             .lf
             .clone()
+            .select(self.schema.iter_names().skip(self.termcol_index).map(|name| col(name.as_str())).collect::<Vec<_>>())
             .slice(self.start_row as i64, self.visible_rows as u32 + 1)
             .collect()
         {
@@ -164,12 +169,16 @@ impl DataTableState {
     }
 
     pub fn scroll_right(&mut self) {
-        self.termcol_index += 1;
+        if self.termcol_index < self.schema.len() - 1 {
+            self.termcol_index += 1;
+            self.collect();
+        }
     }
 
     pub fn scroll_left(&mut self) {
         if self.termcol_index > 0 {
             self.termcol_index -= 1;
+            self.collect();
         }
     }
 }
@@ -200,7 +209,14 @@ impl DataTable {
 
         // make each column as wide as it needs to be to fit the content
         let (height, cols) = df.shape();
-        let mut widths: Vec<u16> = vec![0; cols];
+
+        // widths starts at the length of each column naame
+        let mut widths: Vec<u16> = df
+            .get_column_names()
+            .iter()
+            .map(|name| name.chars().count() as u16)
+            .collect();
+
         let mut used_width = 0;
 
         // rows is a vector initialized to a vector of lenth "height" empty rows

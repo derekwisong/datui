@@ -1,0 +1,68 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on tags starting with 'v'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc]
+
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Install Rust
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      # Build the binary
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # Upload the binary as an artifact
+      - name: Upload binary
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.os }}-binary
+          path: target/${{ matrix.target }}/release/datui
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Download artifacts from the build job
+      - name: Download binaries
+        uses: actions/download-artifact@v3
+        with:
+          name: ubuntu-latest-binary
+          path: ./binaries/linux
+      - name: Download binaries (Windows)
+        uses: actions/download-artifact@v3
+        with:
+          name: windows-latest-binary
+          path: ./binaries/windows
+
+      # Create a release and upload binaries
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./binaries/linux/datui
+            ./binaries/windows/datui.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -201,24 +201,39 @@ impl DataTable {
         // make each column as wide as it needs to be to fit the content
         let (height, cols) = df.shape();
         let mut widths: Vec<u16> = vec![0; cols];
-        let mut rows: Vec<Row> = vec![];
+        let mut used_width = 0;
 
-        for row_index in 0..height {
-            let mut row: Vec<Cell> = vec![];
-            row.reserve(cols);
+        // rows is a vector initialized to a vector of lenth "height" empty rows
+        let mut rows: Vec<Vec<Cell>> = vec![vec![]; height as usize];
+        let mut visible_columns = 0;
+    
+        for col_index in 0..cols {
+            let mut max_len = 0;
+            let col_data = &df[col_index];
 
-            let data = df.get(row_index).unwrap();
-
-            for col_index in 0..cols {
-                let value = data.get(col_index).unwrap();
+            for row_index in 0..height {
+                let value = col_data.get(row_index).unwrap();
                 let val_str = value.to_string();
                 let len = val_str.chars().count() as u16;
-                let cell = Cell::from(Span::raw(val_str));
-                widths[col_index] = widths[col_index].max(len);
-                row.push(cell);
+                max_len = max_len.max(len);
+                rows[row_index as usize].push(Cell::from(Span::raw(val_str)));
             }
-            rows.push(Row::new(row));
+
+            if used_width + max_len <= area.width {
+                visible_columns += 1;
+                widths[col_index] = max_len;
+                used_width += max_len + 1;
+            }
+            else {
+                break;
+            }
         }
+
+        // convert rows to a vector of Row
+        let rows = rows
+            .into_iter()
+            .map(|mut row| {row.truncate(visible_columns); Row::new(row)})
+            .collect::<Vec<Row>>();
 
         StatefulWidget::render(
             Table::new(rows, widths)

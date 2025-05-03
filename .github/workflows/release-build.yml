@@ -1,5 +1,6 @@
 name: Build and Release
-
+permissions:
+  contents: write # for creating releases
 on:
   push:
     tags:

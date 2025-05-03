@@ -24,6 +24,7 @@ pub struct DataTableState {
     pub visible_termcols: usize,
     error: Option<PolarsError>,
     pub schema: Arc<Schema>,
+    pub num_rows: usize,
 }
 
 impl DataTableState {
@@ -39,6 +40,7 @@ impl DataTableState {
             visible_termcols: 0,
             error: None,
             schema,
+            num_rows: 0,
         })
     }
 
@@ -120,6 +122,22 @@ impl DataTableState {
     }
 
     pub fn collect(&mut self) {
+        self.num_rows = match self.lf.clone().select([len()]).collect() {
+            Ok(df) => {
+                if let Some(col) = df.get(0) {
+                    if let Some(AnyValue::UInt32(len)) = col.get(0) {
+                        *len as usize
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+            Err(_) => {
+                0
+            }
+        };
         match self
             .lf
             .clone()

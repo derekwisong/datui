@@ -11,11 +11,11 @@ jobs:
     strategy:
       matrix:
        platform:
-        - name: "Linux"
+        - name: linux
           os: ubuntu-latest
           bin: datui
           target: x86_64-unknown-linux-gnu
-        - name: "Windows"
+        - name: windows
           os: windows-latest
           bin: datui.exe
           target: x86_64-pc-windows-msvc
@@ -40,7 +40,7 @@ jobs:
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
-          name: datui-${{ matrix.platform.target }}
+          name: datui-${{ matrix.platform.name }}
           path: target/${{ matrix.platform.target }}/release/${{ matrix.platform.bin }}
 
   release:
@@ -56,12 +56,12 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          name: ubuntu-latest-binary
+          name: datui-linux
           path: ./binaries/linux
       - name: Download binaries (Windows)
         uses: actions/download-artifact@v4
         with:
-          name: windows-latest-binary
+          name: datui-windows
           path: ./binaries/windows
 
       # Create a release and upload binaries

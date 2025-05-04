@@ -5,7 +5,7 @@ A TUI for data tables.
 ## Usage
 
 - Download a pre-built binary from the repository's [releases](https://github.com/derekwisong/datui/releases) page.
-- Or, use `cargo build --release` to build from source. `targets/release/` will contains the application binary.
+- Or, use `cargo build --release` to build from source. `targets/release/` will contain the application binary.
 
 ## Example
 

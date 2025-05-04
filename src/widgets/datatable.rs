@@ -6,7 +6,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style, Stylize},
-    text::Span,
+    text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
     },
@@ -231,15 +231,15 @@ impl DataTable {
         let mut visible_columns = 0;
     
         for col_index in 0..cols {
-            let mut max_len = 0;
+            let mut max_len = widths[col_index];
             let col_data = &df[col_index];
 
             for row_index in 0..height {
                 let value = col_data.get(row_index).unwrap();
-                let val_str = value.to_string();
+                let val_str = value.str_value();
                 let len = val_str.chars().count() as u16;
                 max_len = max_len.max(len);
-                rows[row_index as usize].push(Cell::from(Span::raw(val_str)));
+                rows[row_index as usize].push(Cell::from(Line::from(val_str)));
             }
 
             if used_width + max_len <= area.width {
@@ -252,6 +252,7 @@ impl DataTable {
             }
         }
 
+        widths.truncate(visible_columns);
         // convert rows to a vector of Row
         let rows = rows
             .into_iter()

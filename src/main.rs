@@ -81,6 +81,9 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
                 match event {
                     AppEvent::Key(event) if event.code == KeyCode::Esc => break,
                     AppEvent::Exit => break,
+                    AppEvent::Crash(msg) => {
+                        return Err(color_eyre::eyre::eyre!(msg));
+                    }
                     event => {
                         if let Some(event) = app.event(&event) {
                             tx.send(event)?;
@@ -106,5 +109,9 @@ fn main() -> Result<()> {
     let terminal = ratatui::init();
     let result = run(terminal, &args);
     ratatui::restore();
-    result
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+    Ok(())
 }

@@ -71,7 +71,7 @@ fn run(mut terminal: DefaultTerminal, args: &Args) -> Result<()> {
         if crossterm::event::poll(std::time::Duration::from_millis(25))? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => tx.send(AppEvent::Key(key))?,
-                crossterm::event::Event::Resize(_, _) => tx.send(AppEvent::Collect)?,
+                crossterm::event::Event::Resize(cols, rows) => tx.send(AppEvent::Resize(cols, rows))?,
                 _ => {}
             }
         }

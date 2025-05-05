@@ -59,6 +59,8 @@ pub enum AppEvent {
     Exit,
     Crash(String),
     Collect,
+    Update,
+    Resize(u16, u16), // resized (width, height)
 }
 
 
@@ -203,6 +205,13 @@ impl App {
                 Ok(_) => Some(AppEvent::Collect),
                 Err(e) => Some(AppEvent::Crash(e.to_string())),
             },
+            AppEvent::Resize(_cols, rows) => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.visible_rows = *rows as usize;
+                    state.collect();
+                }
+                None
+            }
             AppEvent::Collect => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.collect();

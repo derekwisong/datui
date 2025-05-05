@@ -104,7 +104,6 @@ impl DataTableState {
     }
 
     fn slide_table(&mut self, rows: i64) {
-        
         self.start_row = if self.start_row as i64 + rows <= 0 {
             0
         } else {
@@ -118,7 +117,7 @@ impl DataTableState {
             (self.start_row as i64 + rows) as usize
         };
 
-        self.collect(); 
+        self.collect();
     }
 
     pub fn collect(&mut self) {
@@ -134,14 +133,18 @@ impl DataTableState {
                     0
                 }
             }
-            Err(_) => {
-                0
-            }
+            Err(_) => 0,
         };
         match self
             .lf
             .clone()
-            .select(self.schema.iter_names().skip(self.termcol_index).map(|name| col(name.as_str())).collect::<Vec<_>>())
+            .select(
+                self.schema
+                    .iter_names()
+                    .skip(self.termcol_index)
+                    .map(|name| col(name.as_str()))
+                    .collect::<Vec<_>>(),
+            )
             .slice(self.start_row as i64, self.visible_rows as u32 + 1)
             .collect()
         {
@@ -229,25 +232,35 @@ impl DataTable {
         // rows is a vector initialized to a vector of lenth "height" empty rows
         let mut rows: Vec<Vec<Cell>> = vec![vec![]; height as usize];
         let mut visible_columns = 0;
-    
+
         for col_index in 0..cols {
             let mut max_len = widths[col_index];
             let col_data = &df[col_index];
 
-            for row_index in 0..height {
-                let value = col_data.get(row_index).unwrap();
+            for row_index in 0..height.min(if area.height > 1 {
+                area.height as usize - 1
+            } else {
+                0
+            }) {
+                let value = col_data.get(row_index as usize).unwrap();
                 let val_str = value.str_value();
                 let len = val_str.chars().count() as u16;
                 max_len = max_len.max(len);
                 rows[row_index as usize].push(Cell::from(Line::from(val_str)));
             }
 
-            if used_width + max_len <= area.width {
+            let overflows = (used_width + max_len) >= area.width;
+
+            if overflows && col_data.dtype() == &DataType::String {
+                let visible_width = area.width - used_width;
+                visible_columns += 1;
+                widths[col_index] = visible_width;
+                break;
+            } else if !overflows {
                 visible_columns += 1;
                 widths[col_index] = max_len;
                 used_width += max_len + 1;
-            }
-            else {
+            } else {
                 break;
             }
         }
@@ -256,7 +269,10 @@ impl DataTable {
         // convert rows to a vector of Row
         let rows = rows
             .into_iter()
-            .map(|mut row| {row.truncate(visible_columns); Row::new(row)})
+            .map(|mut row| {
+                row.truncate(visible_columns);
+                Row::new(row)
+            })
             .collect::<Vec<Row>>();
 
         // for visible columsn

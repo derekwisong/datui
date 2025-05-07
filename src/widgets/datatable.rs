@@ -234,7 +234,7 @@ impl DataTable {
             let mut max_len = widths[col_index];
             let col_data = &df[col_index];
 
-            for row_index in 0..height {
+            for row_index in 0..area.height as usize - 1 {
                 let value = col_data.get(row_index).unwrap();
                 let val_str = value.str_value();
                 let len = val_str.chars().count() as u16;
@@ -242,12 +242,21 @@ impl DataTable {
                 rows[row_index as usize].push(Cell::from(Line::from(val_str)));
             }
 
-            if used_width + max_len <= area.width {
+            let width_exceeds_area = (used_width + max_len) > area.width;
+            
+            if width_exceeds_area && col_data.dtype() == &DataType::String {
+                let visible_column_width = ((area.width - used_width) as usize).min(max_len as usize);
+                visible_columns += 1;
+                widths[col_index] = visible_column_width as u16;
+                used_width += visible_column_width as u16;
+            }
+            else if !width_exceeds_area {
                 visible_columns += 1;
                 widths[col_index] = max_len;
                 used_width += max_len + 1;
             }
-            else {
+
+            if used_width >= area.width {
                 break;
             }
         }

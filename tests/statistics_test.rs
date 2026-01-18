@@ -1,5 +1,8 @@
 use color_eyre::Result;
-use datui::statistics::{compute_correlation_matrix, compute_correlation_pair, compute_statistics};
+use datui::statistics::{
+    compute_correlation_matrix, compute_correlation_pair, compute_statistics_with_options,
+    ComputeOptions,
+};
 use polars::prelude::*;
 
 #[test]
@@ -19,7 +22,13 @@ fn test_distribution_detection_normal() -> Result<()> {
     let df = DataFrame::new(vec![Series::new("value".into(), values).into()])?;
 
     let lf = df.lazy();
-    let results = compute_statistics(&lf, Some(1000), 42)?;
+    let options = ComputeOptions {
+        include_distribution_info: true,
+        include_distribution_analyses: true,
+        include_correlation_matrix: false,
+        include_skewness_kurtosis_outliers: true,
+    };
+    let results = compute_statistics_with_options(&lf, Some(1000), 42, options)?;
 
     // Check that we have distribution analysis
     assert!(!results.distribution_analyses.is_empty());
@@ -104,7 +113,13 @@ fn test_outlier_detection() -> Result<()> {
     let df = DataFrame::new(vec![Series::new("value".into(), values).into()])?;
 
     let lf = df.lazy();
-    let results = compute_statistics(&lf, Some(102), 42)?;
+    let options = ComputeOptions {
+        include_distribution_info: true,
+        include_distribution_analyses: true,
+        include_correlation_matrix: false,
+        include_skewness_kurtosis_outliers: true,
+    };
+    let results = compute_statistics_with_options(&lf, Some(102), 42, options)?;
 
     // Check that outliers are detected
     if let Some(dist_analysis) = results.distribution_analyses.first() {

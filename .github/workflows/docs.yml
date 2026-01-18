@@ -36,6 +36,18 @@ jobs:
         run: |
           ./scripts/build_versioned_docs.sh
 
+      - name: Build manpage
+        run: |
+          cargo build --release
+        continue-on-error: true
+
+      - name: Upload manpage artifact (for verification)
+        uses: actions/upload-artifact@v4
+        with:
+          name: manpage
+          path: target/release/datui.1
+          if-no-files-found: ignore
+
       - name: Setup Pages
         if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v4

@@ -639,7 +639,6 @@ pub fn parse_query(query: &str) -> ParseQueryResult {
 }
 
 #[cfg(test)]
-
 mod tests {
 
     use super::*;

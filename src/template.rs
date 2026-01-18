@@ -165,6 +165,12 @@ impl TemplateManager {
         let filename = format!("template_{}.json", template.id);
         let file_path = self.templates_dir.join(filename);
 
+        // Ensure the parent directory exists right before opening the file
+        // This handles edge cases where the directory might not exist despite checks above
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
         let json = serde_json::to_string_pretty(template)?;
 
         // Use file locking to prevent race conditions
@@ -177,6 +183,7 @@ impl TemplateManager {
 
         file.lock_exclusive()?;
         file.write_all(json.as_bytes())?;
+        file.flush()?;
         file.unlock()?;
 
         Ok(())

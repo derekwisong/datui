@@ -8,7 +8,10 @@ permissions:
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
 
 jobs:
   build-docs:
@@ -16,7 +19,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for multiversion
+          fetch-depth: 0  # Full history for tag access
+          fetch-tags: true  # Fetch all tags for versioned docs
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -25,19 +29,25 @@ jobs:
         run: |
           cargo install mdbook --version 0.4.36
 
-      - name: Build documentation
+      - name: Make build script executable
+        run: chmod +x scripts/build_versioned_docs.sh
+
+      - name: Build versioned documentation
         run: |
-          mdbook build
+          ./scripts/build_versioned_docs.sh
 
       - name: Setup Pages
+        if: github.event_name != 'pull_request'
         uses: actions/configure-pages@v4
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./book
 
   deploy:
+    if: github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

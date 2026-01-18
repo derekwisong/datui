@@ -3,7 +3,6 @@ title = "datui"
 authors = ["datui contributors"]
 description = "Terminal user interface for exploring and analyzing tabular data files"
 language = "en"
-multilingual = false
 src = "docs"
 
 [build]

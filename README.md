@@ -4,11 +4,11 @@ A terminal user interface (TUI) for exploring and analyzing data tables, built w
 
 ## Features
 
-- **Data Exploration**: Browse CSV, Parquet, and JSON files with a responsive TUI
+- **Exploration**: Browse CSV, Parquet, and JSON files with a responsive TUI
 - **Query Engine**: Custom query syntax for grouping, aggregation, and filtering
 - **Statistics**: Column-level and group-level statistics (mean, median, std dev, percentiles, etc.)
-- **Data Manipulation**: Sort, filter, reorder, freeze columns, pivot, and melt operations
-- **Memory Efficient**: Built on Polars Lazy API for handling large datasets
+- **Trasformations**: Sort, filter, reorder, freeze columns, pivot, and melt operations
+- **Efficient**: Built on Polars Lazy API for handling large datasets
 
 ## Installation
 

@@ -2,6 +2,10 @@
 
 A terminal user interface (TUI) for exploring and analyzing data tables, built with Rust and Polars.
 
+## Demo
+
+![Basic Navigation Demo](demos/01-basic-navigation.gif)
+
 ## Features
 
 - **Exploration**: Browse CSV, Parquet, and JSON files with a responsive TUI

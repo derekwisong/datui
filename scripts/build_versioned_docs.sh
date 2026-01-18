@@ -2,7 +2,8 @@
 # Build versioned documentation for all version tags and main branch
 # Generates an index page listing all versions
 
-set -e
+# Don't use set -e - we want to continue even if some builds fail
+set +e
 
 OUTPUT_DIR="book"
 SOURCE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -60,21 +61,28 @@ for tag in $VERSION_TAGS; do
     git checkout "$SOURCE_BRANCH" 2>/dev/null || git checkout "$CURRENT_COMMIT" 2>/dev/null || true
 done
 
-# Build latest/main docs
-echo "Building latest docs from ${SOURCE_BRANCH}..."
-if [ ! -d "docs/" ]; then
-    echo "  Error: docs/ directory not found!"
-    exit 1
-fi
-if [ ! -f "book.toml" ]; then
-    echo "  Error: book.toml not found!"
-    exit 1
-fi
+# Ensure we're back on the original commit before building current branch docs
+echo "Returning to original commit ${CURRENT_COMMIT}..."
+git checkout "$CURRENT_COMMIT" 2>/dev/null || git checkout "$SOURCE_BRANCH" 2>/dev/null || true
 
-OUTPUT_PATH="$(pwd)/${OUTPUT_DIR}/main"
-mkdir -p "${OUTPUT_PATH}"
-mdbook build --dest-dir "${OUTPUT_PATH}"
-echo "  ✓ Built docs for main"
+# Build latest/current branch docs
+echo "Building latest docs from current branch/commit..."
+if [ ! -d "docs/" ]; then
+    echo "  Warning: docs/ directory not found in current branch - skipping latest docs build"
+    echo "  This is normal if documentation hasn't been added to this branch yet"
+else
+    if [ ! -f "book.toml" ]; then
+        echo "  Warning: book.toml not found - skipping latest docs build"
+    else
+        OUTPUT_PATH="$(pwd)/${OUTPUT_DIR}/main"
+        mkdir -p "${OUTPUT_PATH}"
+        if mdbook build --dest-dir "${OUTPUT_PATH}" 2>/dev/null; then
+            echo "  ✓ Built docs for main"
+        else
+            echo "  Warning: mdbook build failed for current branch - skipping"
+        fi
+    fi
+fi
 
 # Generate index page
 echo "Generating index page..."

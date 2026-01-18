@@ -16,6 +16,7 @@ use ratatui::widgets::{
 
 pub mod analysis_modal;
 pub mod cache;
+pub mod cli;
 pub mod config;
 pub mod filter_modal;
 mod query;
@@ -25,6 +26,7 @@ pub mod template;
 pub mod widgets;
 
 pub use cache::CacheManager;
+pub use cli::Args;
 pub use config::ConfigManager;
 
 use analysis_modal::AnalysisModal;
@@ -75,6 +77,26 @@ impl OpenOptions {
     pub fn with_has_header(mut self, has_header: bool) -> Self {
         self.has_header = Some(has_header);
         self
+    }
+}
+
+impl From<&cli::Args> for OpenOptions {
+    fn from(args: &cli::Args) -> Self {
+        let mut opts = OpenOptions::new();
+        if let Some(skip_lines) = args.skip_lines {
+            opts = opts.with_skip_lines(skip_lines);
+        }
+        if let Some(skip_rows) = args.skip_rows {
+            opts = opts.with_skip_rows(skip_rows);
+        }
+        if let Some(no_header) = args.no_header {
+            opts = opts.with_has_header(!no_header);
+        }
+        if let Some(delimiter) = args.delimiter {
+            opts = opts.with_delimiter(delimiter);
+        }
+
+        opts
     }
 }
 

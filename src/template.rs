@@ -113,6 +113,8 @@ pub struct TemplateManager {
 
 impl TemplateManager {
     pub fn new(config: &ConfigManager) -> Result<Self> {
+        // Ensure config directory exists before creating subdirectories
+        config.ensure_config_dir()?;
         let templates_dir = config.ensure_subdir("templates")?;
 
         let mut manager = Self {

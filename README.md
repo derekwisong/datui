@@ -6,6 +6,8 @@
 
 A fast, memory-efficient terminal user interface (TUI) for exploring and analyzing tabular data files, built with Rust and Polars.
 
+> Datui is currently in rapid development—features and interfaces are evolving as we build. Expect some changes between releases as we work toward a stable foundation.
+
 📖 **Documentation**: For comprehensive documentation including user guides, reference, and examples, see the [full documentation][docs].
 
 ## Demo

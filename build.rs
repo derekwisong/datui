@@ -52,7 +52,7 @@ fn main() -> io::Result<()> {
     man.render(&mut buffer)?;
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    
+
     // Always write to OUT_DIR
     let dest_path = out_dir.join("datui.1");
     fs::write(&dest_path, &buffer)?;

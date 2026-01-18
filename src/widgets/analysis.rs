@@ -384,14 +384,9 @@ fn render_statistics_table(
     }
 
     // Statistics to display (in order)
-    // Distribution is the 3rd column, then outliers and skewness after it, then mean, etc.
     let stat_names = vec![
         "count",
         "null_count",
-        "distribution",
-        "outliers",
-        "skewness",
-        "kurtosis",
         "mean",
         "std",
         "min",
@@ -416,33 +411,6 @@ fn render_statistics_table(
             let value_str = match *stat_name {
                 "count" => col_stat.count.to_string(),
                 "null_count" => col_stat.null_count.to_string(),
-                "distribution" => {
-                    if let Some(ref dist_info) = col_stat.distribution_info {
-                        format!("{}", dist_info.distribution_type)
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                "outliers" => {
-                    if let Some(ref num_stats) = col_stat.numeric_stats {
-                        let outlier_count = num_stats.outliers_iqr.max(num_stats.outliers_zscore);
-                        let outlier_pct = if col_stat.count > 0 {
-                            (outlier_count as f64 / col_stat.count as f64) * 100.0
-                        } else {
-                            0.0
-                        };
-                        format!("{:.1}%", outlier_pct)
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                "skewness" => {
-                    if let Some(ref num_stats) = col_stat.numeric_stats {
-                        format_num(num_stats.skewness)
-                    } else {
-                        "-".to_string()
-                    }
-                }
                 "mean" => col_stat
                     .numeric_stats
                     .as_ref()
@@ -486,11 +454,6 @@ fn render_statistics_table(
                         "-".to_string()
                     }
                 }
-                "kurtosis" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.kurtosis))
-                    .unwrap_or_else(|| "-".to_string()),
                 _ => "-".to_string(),
             };
             let value_len = value_str.chars().count() as u16;
@@ -581,50 +544,12 @@ fn render_statistics_table(
     for col_stat in &results.column_statistics {
         let mut cells = vec![Cell::from(col_stat.name.as_str())];
 
-        // Calculate outlier percentage for this column
-        let outlier_percentage = if let Some(ref num_stats) = col_stat.numeric_stats {
-            let outlier_count = num_stats.outliers_iqr.max(num_stats.outliers_zscore);
-            if col_stat.count > 0 {
-                (outlier_count as f64 / col_stat.count as f64) * 100.0
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
-
-        // Get skewness value for styling
-        let skewness_value = col_stat
-            .numeric_stats
-            .as_ref()
-            .map(|n| n.skewness.abs())
-            .unwrap_or(0.0);
-
         // Add statistic values for visible statistics
         for &stat_idx in &visible_stats {
             let stat_name = stat_names[stat_idx];
             let value = match stat_name {
                 "count" => col_stat.count.to_string(),
                 "null_count" => col_stat.null_count.to_string(),
-                "distribution" => {
-                    if let Some(ref dist_info) = col_stat.distribution_info {
-                        format!("{}", dist_info.distribution_type)
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                "outliers" => {
-                    if col_stat.numeric_stats.is_some() {
-                        format!("{:.1}%", outlier_percentage)
-                    } else {
-                        "-".to_string()
-                    }
-                }
-                "skewness" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.skewness))
-                    .unwrap_or_else(|| "-".to_string()),
                 "mean" => col_stat
                     .numeric_stats
                     .as_ref()
@@ -668,57 +593,10 @@ fn render_statistics_table(
                         "-".to_string()
                     }
                 }
-                "kurtosis" => col_stat
-                    .numeric_stats
-                    .as_ref()
-                    .map(|n| format_num(n.kurtosis))
-                    .unwrap_or_else(|| "-".to_string()),
                 _ => "-".to_string(),
             };
 
-            // Apply color coding for specific columns (distribution, outliers, skewness)
-            let cell_style = if stat_name == "distribution" {
-                if let Some(ref dist_info) = col_stat.distribution_info {
-                    match dist_info.distribution_type {
-                        DistributionType::Normal | DistributionType::LogNormal => {
-                            Style::default().fg(Color::Green)
-                        }
-                        DistributionType::Uniform | DistributionType::PowerLaw => {
-                            Style::default().fg(Color::Cyan)
-                        }
-                        DistributionType::Exponential => Style::default().fg(Color::Yellow),
-                        DistributionType::Unknown => Style::default().fg(Color::Yellow),
-                    }
-                } else {
-                    Style::default()
-                }
-            } else if stat_name == "outliers" {
-                // Outlier color gradient: white (0-5%), yellow (5-20%), red (>20%)
-                if outlier_percentage > 20.0 {
-                    Style::default().fg(Color::Red)
-                } else if outlier_percentage > 5.0 {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default() // Default (white) for low percentages
-                }
-            } else if stat_name == "skewness" {
-                // Skewness color gradient based on absolute value
-                // |skew| < 1: default (near symmetric)
-                // 1 <= |skew| < 2: yellow (moderate skew)
-                // 2 <= |skew| < 3: yellow (high skew)
-                // |skew| >= 3: red (very high skew - might indicate data errors)
-                if skewness_value >= 3.0 {
-                    Style::default().fg(Color::Red)
-                } else if skewness_value >= 1.0 {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default() // Default (white) for low skewness
-                }
-            } else {
-                Style::default()
-            };
-
-            cells.push(Cell::from(value).style(cell_style));
+            cells.push(Cell::from(value));
         }
 
         // No row styling - colors are on individual cells only
@@ -772,6 +650,8 @@ fn render_distribution_table(
         "Confidence",
         "Score",
         "Outliers",
+        "Skewness",
+        "Kurtosis",
     ];
 
     // Calculate column widths based on header names and content (minimal spacing)
@@ -803,7 +683,9 @@ fn render_distribution_table(
             format!("{:.2}", dist_analysis.fit_quality),
             format!("{:.2}", dist_analysis.confidence),
             format!("{:.4}", combined_score),
-            outlier_text,
+            outlier_text.clone(),
+            format_num(dist_analysis.characteristics.skewness),
+            format_num(dist_analysis.characteristics.kurtosis),
         ];
 
         for (idx, value) in col_values.iter().enumerate() {
@@ -829,6 +711,8 @@ fn render_distribution_table(
         Cell::from("Confidence").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("Score").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("Outliers").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("Skewness").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("Kurtosis").style(Style::default().add_modifier(Modifier::BOLD)),
     ]);
 
     // Data rows
@@ -878,6 +762,28 @@ fn render_distribution_table(
             Style::default()
         };
 
+        // Get skewness and kurtosis values for styling
+        let skewness_value = dist_analysis.characteristics.skewness.abs();
+        let kurtosis_value = dist_analysis.characteristics.kurtosis;
+
+        // Skewness color coding: similar to describe table
+        let skewness_style = if skewness_value >= 3.0 {
+            Style::default().fg(Color::Red)
+        } else if skewness_value >= 1.0 {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+
+        // Kurtosis color coding: 3.0 is normal, high/low is notable
+        let kurtosis_style = if (kurtosis_value - 3.0).abs() >= 3.0 {
+            Style::default().fg(Color::Red)
+        } else if (kurtosis_value - 3.0).abs() >= 1.0 {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        };
+
         rows.push(Row::new(vec![
             Cell::from(dist_analysis.column_name.as_str()),
             Cell::from(format!("{}", dist_analysis.distribution_type))
@@ -886,6 +792,8 @@ fn render_distribution_table(
             Cell::from(format!("{:.2}", dist_analysis.confidence)),
             Cell::from(format!("{:.4}", combined_score)),
             Cell::from(outlier_text).style(outlier_style),
+            Cell::from(format_num(dist_analysis.characteristics.skewness)).style(skewness_style),
+            Cell::from(format_num(dist_analysis.characteristics.kurtosis)).style(kurtosis_style),
         ]));
     }
 

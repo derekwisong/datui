@@ -36,6 +36,8 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/datui
+          files: |
+            target/release/datui
+            target/release/datui.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

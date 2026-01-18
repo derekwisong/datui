@@ -1,67 +1,8 @@
 use clap::Parser;
 use color_eyre::Result;
-use datui::{App, AppEvent, OpenOptions};
+use datui::{App, AppEvent, Args, OpenOptions};
 use ratatui::DefaultTerminal;
-use std::path::PathBuf;
 use std::sync::mpsc::channel;
-
-#[derive(Parser, Debug)]
-#[command(version, about = "datui")]
-struct Args {
-    path: PathBuf,
-
-    /// Skip this many lines when reading a file
-    #[arg(long = "skip-lines")]
-    skip_lines: Option<usize>,
-
-    /// Skip this many rows when reading a file
-    #[arg(long = "skip-rows")]
-    skip_rows: Option<usize>,
-
-    /// Specify that the file has no header
-    #[arg(long = "no-header")]
-    no_header: Option<bool>,
-
-    /// Specify the delimiter to use when reading a file
-    #[arg(long = "delimiter")]
-    delimiter: Option<u8>,
-
-    /// Enable debug mode to show operational information
-    #[arg(long = "debug", action)]
-    debug: bool,
-
-    /// Clear all cache data and exit
-    #[arg(long = "clear-cache", action)]
-    clear_cache: bool,
-
-    /// Apply a template by name when starting the application
-    #[arg(long = "template")]
-    template: Option<String>,
-
-    /// Remove all templates and exit
-    #[arg(long = "remove-templates", action)]
-    remove_templates: bool,
-}
-
-impl From<&Args> for OpenOptions {
-    fn from(args: &Args) -> Self {
-        let mut opts = OpenOptions::new();
-        if let Some(skip_lines) = args.skip_lines {
-            opts = opts.with_skip_lines(skip_lines);
-        }
-        if let Some(skip_rows) = args.skip_rows {
-            opts = opts.with_skip_rows(skip_rows);
-        }
-        if let Some(no_header) = args.no_header {
-            opts = opts.with_has_header(!no_header);
-        }
-        if let Some(delimiter) = args.delimiter {
-            opts = opts.with_delimiter(delimiter);
-        }
-
-        opts
-    }
-}
 
 fn render(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
@@ -182,7 +123,7 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use datui::{Args, OpenOptions};
     use std::path::PathBuf;
 
     #[test]

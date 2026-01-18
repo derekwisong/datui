@@ -25,13 +25,9 @@ jobs:
         run: |
           cargo install mdbook --version 0.4.36
 
-      - name: Install mdbook-multiversion
-        run: |
-          cargo install mdbook-multiversion --version 1.0.0
-
       - name: Build documentation
         run: |
-          mdbook-multiversion build
+          mdbook build
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

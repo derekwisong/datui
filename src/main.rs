@@ -3,24 +3,6 @@ use color_eyre::Result;
 use datui::{App, AppEvent, Args, OpenOptions};
 use ratatui::DefaultTerminal;
 use std::sync::mpsc::channel;
-    fn from(args: &Args) -> Self {
-        let mut opts = OpenOptions::new();
-        if let Some(skip_lines) = args.skip_lines {
-            opts = opts.with_skip_lines(skip_lines);
-        }
-        if let Some(skip_rows) = args.skip_rows {
-            opts = opts.with_skip_rows(skip_rows);
-        }
-        if let Some(no_header) = args.no_header {
-            opts = opts.with_has_header(!no_header);
-        }
-        if let Some(delimiter) = args.delimiter {
-            opts = opts.with_delimiter(delimiter);
-        }
-
-        opts
-    }
-}
 
 fn render(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     terminal.draw(|frame| frame.render_widget(app, frame.area()))?;

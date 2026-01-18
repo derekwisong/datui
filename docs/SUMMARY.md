@@ -2,6 +2,8 @@
 
 [Introduction](introduction.md)
 
+- [Demos](demos.md)
+
 - [Getting Started](getting-started.md)
   - [Installation](getting-started/installation.md)
   - [Quick Start](getting-started/quick-start.md)

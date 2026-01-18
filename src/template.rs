@@ -158,17 +158,20 @@ impl TemplateManager {
     }
 
     pub fn save_template(&self, template: &Template) -> Result<()> {
+        // Ensure config directory exists first
         self.config.ensure_config_dir()?;
-        // Ensure templates directory exists before writing
-        if !self.templates_dir.exists() {
-            fs::create_dir_all(&self.templates_dir)?;
-        }
+
+        // Always ensure templates directory exists before writing
+        // Don't rely on existence checks - always create if needed
+        // This handles cases where the directory might have been deleted
+        // or where tests run in environments with different file system behavior
+        fs::create_dir_all(&self.templates_dir)?;
 
         let filename = format!("template_{}.json", template.id);
         let file_path = self.templates_dir.join(filename);
 
         // Ensure the parent directory exists right before opening the file
-        // This handles edge cases where the directory might not exist despite checks above
+        // Double-check for robustness, especially in CI/test environments
         if let Some(parent) = file_path.parent() {
             fs::create_dir_all(parent)?;
         }

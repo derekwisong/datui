@@ -157,6 +157,10 @@ impl TemplateManager {
 
     pub fn save_template(&self, template: &Template) -> Result<()> {
         self.config.ensure_config_dir()?;
+        // Ensure templates directory exists before writing
+        if !self.templates_dir.exists() {
+            fs::create_dir_all(&self.templates_dir)?;
+        }
 
         let filename = format!("template_{}.json", template.id);
         let file_path = self.templates_dir.join(filename);

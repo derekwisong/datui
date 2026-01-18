@@ -1,0 +1,26 @@
+# Pre-commit hooks for datui
+# Install with: pre-commit install
+# Run manually with: pre-commit run --all-files
+
+repos:
+  # Rust formatting with cargo fmt
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: bash -c 'if ! cargo fmt -- --check; then cargo fmt && echo "Code formatted - please stage changes and commit again" && exit 1; fi'
+        language: system
+        pass_filenames: false
+        always_run: true
+        description: Format Rust code with cargo fmt
+
+  # Rust linting with cargo clippy
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: bash -c 'cargo clippy --all-targets -- -D warnings'
+        language: system
+        pass_filenames: false
+        always_run: true
+        description: Run cargo clippy with all targets and deny warnings

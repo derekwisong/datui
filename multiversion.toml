@@ -1,0 +1,27 @@
+# Configuration for mdbook-multiversion
+# This file configures how multiple versions of the documentation are managed
+
+# The default version to show when accessing the docs root
+default-version = "main"
+
+# Versions to build documentation for
+# Each entry should have:
+# - name: The version name (e.g., "main", "v0.2.0")
+# - git-ref: The git reference (branch or tag) to build from
+# - label: Display label for the version selector
+
+[[versions]]
+name = "main"
+git-ref = "main"
+label = "main (latest)"
+
+# Add more versions as releases are tagged
+# [[versions]]
+# name = "v0.2.0"
+# git-ref = "v0.2.0"
+# label = "v0.2.0"
+
+# [[versions]]
+# name = "v0.1.0"
+# git-ref = "v0.1.0"
+# label = "v0.1.0"

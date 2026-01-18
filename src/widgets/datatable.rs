@@ -895,7 +895,7 @@ mod tests {
     fn test_from_parquet() {
         let path = Path::new("tests/sample-data/crypto_btcusd_bars_1m_2026-01-11.parquet");
         let state = DataTableState::from_parquet(path).unwrap();
-        assert!(state.schema.len() > 0);
+        assert!(!state.schema.is_empty());
     }
 
     #[test]

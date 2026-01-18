@@ -4484,10 +4484,18 @@ impl Widget for &mut App {
                 if needs_recompute {
                     // Use the LazyFrame directly from state (it already respects queries/filters)
                     let lf = state.lf.clone();
-                    match crate::statistics::compute_statistics(
+                    // Only compute basic statistics by default (no distribution analysis, no correlation matrix)
+                    let options = crate::statistics::ComputeOptions {
+                        include_distribution_info: false,
+                        include_distribution_analyses: false,
+                        include_correlation_matrix: false,
+                        include_skewness_kurtosis_outliers: false,
+                    };
+                    match crate::statistics::compute_statistics_with_options(
                         &lf,
                         None,
                         self.analysis_modal.random_seed,
+                        options,
                     ) {
                         Ok(results) => {
                             self.analysis_modal.analysis_results = Some(results);
@@ -4502,6 +4510,42 @@ impl Widget for &mut App {
                                 .style(Style::default().fg(Color::Red))
                                 .render(analysis_area, buf);
                             // Don't return - continue to render toolbar
+                        }
+                    }
+                }
+
+                // Lazy computation: compute additional stats if needed for the selected tool
+                {
+                    let lf = state.lf.clone();
+                    let selected_tool = self.analysis_modal.selected_tool;
+                    if let Some(ref mut results) = self.analysis_modal.analysis_results {
+                        match selected_tool {
+                            crate::analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                if results.distribution_analyses.is_empty() {
+                                    if let Err(e) =
+                                        crate::statistics::compute_distribution_statistics(
+                                            results,
+                                            &lf,
+                                            None,
+                                            self.analysis_modal.random_seed,
+                                        )
+                                    {
+                                        eprintln!("Error computing distribution statistics: {}", e);
+                                    }
+                                }
+                            }
+                            crate::analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                if results.correlation_matrix.is_none() {
+                                    if let Err(e) =
+                                        crate::statistics::compute_correlation_statistics(
+                                            results, &lf,
+                                        )
+                                    {
+                                        eprintln!("Error computing correlation statistics: {}", e);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }

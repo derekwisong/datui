@@ -191,10 +191,27 @@ pub struct AnalysisContext {
     pub group_columns: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ComputeOptions {
+    pub include_distribution_info: bool,
+    pub include_distribution_analyses: bool,
+    pub include_correlation_matrix: bool,
+    pub include_skewness_kurtosis_outliers: bool,
+}
+
 pub fn compute_statistics(
     lf: &LazyFrame,
     sample_size: Option<usize>,
     seed: u64,
+) -> Result<AnalysisResults> {
+    compute_statistics_with_options(lf, sample_size, seed, ComputeOptions::default())
+}
+
+pub fn compute_statistics_with_options(
+    lf: &LazyFrame,
+    sample_size: Option<usize>,
+    seed: u64,
+    options: ComputeOptions,
 ) -> Result<AnalysisResults> {
     // Collect schema first
     let schema = lf.clone().collect_schema()?;
@@ -237,7 +254,10 @@ pub fn compute_statistics(
         let null_count = series.null_count();
 
         let numeric_stats = if is_numeric_type(dtype) {
-            Some(compute_numeric_stats(series)?)
+            Some(compute_numeric_stats(
+                series,
+                options.include_skewness_kurtosis_outliers,
+            )?)
         } else {
             None
         };
@@ -248,17 +268,18 @@ pub fn compute_statistics(
             None
         };
 
-        let distribution_info = if is_numeric_type(dtype) && null_count < count {
-            // Get sample for distribution inference
-            Some(infer_distribution(
-                series,
-                series,
-                actual_sample_size.unwrap_or(count),
-                should_sample,
-            ))
-        } else {
-            None
-        };
+        let distribution_info =
+            if options.include_distribution_info && is_numeric_type(dtype) && null_count < count {
+                // Get sample for distribution inference
+                Some(infer_distribution(
+                    series,
+                    series,
+                    actual_sample_size.unwrap_or(count),
+                    should_sample,
+                ))
+            } else {
+                None
+            };
 
         column_statistics.push(ColumnStatistics {
             name: name.to_string(),
@@ -272,33 +293,41 @@ pub fn compute_statistics(
     }
 
     // Compute advanced distribution analyses for numeric columns
-    let distribution_analyses: Vec<DistributionAnalysis> = column_statistics
-        .iter()
-        .filter_map(|col_stat| {
-            if let (Some(numeric_stats), Some(dist_info)) =
-                (&col_stat.numeric_stats, &col_stat.distribution_info)
-            {
-                if let Ok(series_col) = df.column(&col_stat.name) {
-                    let series = series_col.as_materialized_series();
-                    Some(compute_advanced_distribution_analysis(
-                        &col_stat.name,
-                        series,
-                        numeric_stats,
-                        dist_info,
-                        actual_sample_size.unwrap_or(total_rows),
-                        should_sample,
-                    ))
+    let distribution_analyses = if options.include_distribution_analyses {
+        column_statistics
+            .iter()
+            .filter_map(|col_stat| {
+                if let (Some(numeric_stats), Some(dist_info)) =
+                    (&col_stat.numeric_stats, &col_stat.distribution_info)
+                {
+                    if let Ok(series_col) = df.column(&col_stat.name) {
+                        let series = series_col.as_materialized_series();
+                        Some(compute_advanced_distribution_analysis(
+                            &col_stat.name,
+                            series,
+                            numeric_stats,
+                            dist_info,
+                            actual_sample_size.unwrap_or(total_rows),
+                            should_sample,
+                        ))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            } else {
-                None
-            }
-        })
-        .collect();
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Compute correlation matrix for numeric columns
-    let correlation_matrix = compute_correlation_matrix(&df).ok();
+    let correlation_matrix = if options.include_correlation_matrix {
+        compute_correlation_matrix(&df).ok()
+    } else {
+        None
+    };
 
     Ok(AnalysisResults {
         column_statistics,
@@ -308,6 +337,115 @@ pub fn compute_statistics(
         correlation_matrix,
         distribution_analyses,
     })
+}
+
+/// Compute additional statistics needed for Distribution Analysis tool
+pub fn compute_distribution_statistics(
+    results: &mut AnalysisResults,
+    lf: &LazyFrame,
+    sample_size: Option<usize>,
+    seed: u64,
+) -> Result<()> {
+    // Determine if we need to sample
+    let sample_size = sample_size.unwrap_or(SAMPLING_THRESHOLD);
+    let should_sample = results.total_rows > sample_size;
+    let actual_sample_size = if should_sample {
+        Some(sample_size)
+    } else {
+        None
+    };
+
+    // Collect data (with sampling if needed)
+    let df = if should_sample {
+        sample_dataframe(lf, sample_size, seed)?
+    } else {
+        lf.clone().collect()?
+    };
+
+    // If distribution_info is missing, compute it now
+    for col_stat in &mut results.column_statistics {
+        if col_stat.distribution_info.is_none()
+            && is_numeric_type(&col_stat.dtype)
+            && col_stat.null_count < col_stat.count
+        {
+            let series = df.column(&col_stat.name)?.as_materialized_series();
+            col_stat.distribution_info = Some(infer_distribution(
+                series,
+                series,
+                actual_sample_size.unwrap_or(col_stat.count),
+                should_sample,
+            ));
+        }
+
+        // If skewness/kurtosis/outliers are missing and we need distribution_info, compute them now
+        // We compute these whenever distribution_info is computed, as they're needed for distribution analysis
+        if let Some(ref mut num_stats) = col_stat.numeric_stats {
+            // Check if advanced stats haven't been computed yet (default values when not computed)
+            // Note: This is a heuristic - if skewness=0.0, kurtosis=3.0, and both outlier counts are 0,
+            // it's likely they haven't been computed. However, this could also be real data.
+            // We'll compute them if distribution_info is being computed (which is the main use case)
+            let needs_advanced_stats = num_stats.skewness == 0.0
+                && num_stats.kurtosis == 3.0
+                && num_stats.outliers_iqr == 0
+                && num_stats.outliers_zscore == 0
+                && col_stat.count > 0;
+            if needs_advanced_stats {
+                let series = df.column(&col_stat.name)?.as_materialized_series();
+                num_stats.skewness = compute_skewness(series);
+                num_stats.kurtosis = compute_kurtosis(series);
+                let (out_iqr, out_zscore) = detect_outliers(
+                    series,
+                    num_stats.q25,
+                    num_stats.q75,
+                    num_stats.median,
+                    num_stats.mean,
+                    num_stats.std,
+                );
+                num_stats.outliers_iqr = out_iqr;
+                num_stats.outliers_zscore = out_zscore;
+            }
+        }
+    }
+
+    // If distribution_analyses is empty, compute it now
+    if results.distribution_analyses.is_empty() {
+        results.distribution_analyses = results
+            .column_statistics
+            .iter()
+            .filter_map(|col_stat| {
+                if let (Some(numeric_stats), Some(dist_info)) =
+                    (&col_stat.numeric_stats, &col_stat.distribution_info)
+                {
+                    if let Ok(series_col) = df.column(&col_stat.name) {
+                        let series = series_col.as_materialized_series();
+                        Some(compute_advanced_distribution_analysis(
+                            &col_stat.name,
+                            series,
+                            numeric_stats,
+                            dist_info,
+                            actual_sample_size.unwrap_or(results.total_rows),
+                            should_sample,
+                        ))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+    }
+
+    Ok(())
+}
+
+/// Compute correlation matrix if not already computed
+pub fn compute_correlation_statistics(results: &mut AnalysisResults, lf: &LazyFrame) -> Result<()> {
+    if results.correlation_matrix.is_none() {
+        let df = lf.clone().collect()?;
+        results.correlation_matrix = compute_correlation_matrix(&df).ok();
+    }
+    Ok(())
 }
 
 fn is_numeric_type(dtype: &DataType) -> bool {
@@ -402,7 +540,7 @@ fn get_numeric_values_as_f64(series: &Series) -> Vec<f64> {
     }
 }
 
-fn compute_numeric_stats(series: &Series) -> Result<NumericStatistics> {
+fn compute_numeric_stats(series: &Series, include_advanced: bool) -> Result<NumericStatistics> {
     let mean = series.mean().unwrap_or(f64::NAN);
     let std = series.std(1).unwrap_or(f64::NAN); // Sample std (ddof=1)
 
@@ -447,12 +585,18 @@ fn compute_numeric_stats(series: &Series) -> Result<NumericStatistics> {
     let q25 = percentiles.get(&25).copied().unwrap_or(f64::NAN);
     let q75 = percentiles.get(&75).copied().unwrap_or(f64::NAN);
 
-    // Compute skewness and kurtosis
-    let skewness = compute_skewness(series);
-    let kurtosis = compute_kurtosis(series);
-
-    // Detect outliers
-    let (outliers_iqr, outliers_zscore) = detect_outliers(series, q25, q75, median, mean, std);
+    // Compute skewness and kurtosis (only if needed)
+    let (skewness, kurtosis, outliers_iqr, outliers_zscore) = if include_advanced {
+        let (out_iqr, out_zscore) = detect_outliers(series, q25, q75, median, mean, std);
+        (
+            compute_skewness(series),
+            compute_kurtosis(series),
+            out_iqr,
+            out_zscore,
+        )
+    } else {
+        (0.0, 3.0, 0, 0) // Default values when not computed
+    };
 
     Ok(NumericStatistics {
         mean,

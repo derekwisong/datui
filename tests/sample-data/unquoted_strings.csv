@@ -1,0 +1,12 @@
+id,name,description,value
+1,Normal Name,Simple description,10
+2,"Name, with comma","Description, with comma, and more",20
+3,"Name
+with newline","Description
+with
+newlines",30
+4,"Name ""with quotes""","Description with ""quotes"" and, commas",40
+5,"Name, with
+multiple, issues","Complex: has, commas
+and newlines
+and ""quotes""",50

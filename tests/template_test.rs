@@ -5,16 +5,29 @@ use datui::template::{MatchCriteria, TemplateManager, TemplateSettings};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+/// Create a unique temporary directory for testing.
+fn create_test_temp_dir() -> Result<PathBuf> {
+    let thread_id = std::thread::current().id();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "datui_test_{}_{:?}_{}",
+        std::process::id(),
+        thread_id,
+        timestamp
+    ));
+    std::fs::create_dir_all(&temp_dir)?;
+    Ok(temp_dir)
+}
+
 #[test]
 fn test_template_creation() -> Result<()> {
-    // Create a temporary config manager for testing
-    let temp_dir = std::env::temp_dir().join(format!("datui_test_{}", std::process::id()));
-    std::fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
     let mut manager = TemplateManager::new(&config)?;
-
-    // Create a test template
     let match_criteria = MatchCriteria {
         exact_path: Some(PathBuf::from("/test/path.csv")),
         relative_path: None,
@@ -45,7 +58,6 @@ fn test_template_creation() -> Result<()> {
         settings,
     )?;
 
-    // Verify template was created
     assert_eq!(template.name, "test_template");
     assert_eq!(template.description, Some("Test description".to_string()));
     assert_eq!(template.usage_count, 0);
@@ -54,7 +66,6 @@ fn test_template_creation() -> Result<()> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .is_ok());
 
-    // Verify template can be loaded
     manager.load_templates()?;
     assert!(manager.template_exists("test_template"));
 
@@ -66,13 +77,11 @@ fn test_template_creation() -> Result<()> {
 
 #[test]
 fn test_template_serialization() -> Result<()> {
-    let temp_dir = std::env::temp_dir().join(format!("datui_test_{}", std::process::id()));
-    std::fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
     let mut manager = TemplateManager::new(&config)?;
 
-    // Create a template
     let match_criteria = MatchCriteria {
         exact_path: Some(PathBuf::from("/test/file.csv")),
         relative_path: None,
@@ -98,11 +107,9 @@ fn test_template_serialization() -> Result<()> {
         settings,
     )?;
 
-    // Save and reload
     manager.save_template(&template)?;
     manager.load_templates()?;
 
-    // Verify template was loaded
     let loaded = manager.get_template_by_name("serialization_test");
     assert!(loaded.is_some());
     let loaded = loaded.unwrap();
@@ -117,8 +124,7 @@ fn test_template_serialization() -> Result<()> {
 
 #[test]
 fn test_generate_next_template_name() -> Result<()> {
-    let temp_dir = std::env::temp_dir().join(format!("datui_test_{}", std::process::id()));
-    std::fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
     let manager = TemplateManager::new(&config)?;
@@ -137,13 +143,11 @@ fn test_generate_next_template_name() -> Result<()> {
 fn test_template_relevance_exact_path() -> Result<()> {
     use polars::prelude::Schema;
 
-    let temp_dir = std::env::temp_dir().join(format!("datui_test_{}", std::process::id()));
-    std::fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_test_temp_dir()?;
     let config = ConfigManager::with_dir(temp_dir.clone());
 
     let manager = TemplateManager::new(&config)?;
 
-    // Create a template with exact path
     let test_path = PathBuf::from("/test/exact.csv");
     let match_criteria = MatchCriteria {
         exact_path: Some(test_path.clone()),
@@ -171,15 +175,11 @@ fn test_template_relevance_exact_path() -> Result<()> {
         settings,
     )?;
 
-    // Create a test schema (empty schema)
     use polars::prelude::Field;
     let schema = Schema::from_iter([] as [Field; 0]);
 
-    // Find relevant templates
     let relevant = manager.find_relevant_templates(&test_path, &schema);
     assert!(!relevant.is_empty());
-
-    // Exact path match should have highest score (1000.0)
     assert!(relevant[0].1 >= 1000.0);
 
     // Cleanup

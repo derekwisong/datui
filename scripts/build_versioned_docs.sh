@@ -233,6 +233,15 @@ INDEX_FOOTER
 
 echo "  ✓ Generated index.html"
 
+# Copy demos directory to book output (so all versions can access GIFs)
+echo "Copying demos directory to book output..."
+if [ -d "demos" ]; then
+    cp -r demos "${OUTPUT_DIR}/demos"
+    echo "  ✓ Copied demos directory"
+else
+    echo "  Warning: demos directory not found - skipping"
+fi
+
 # Restore original state
 git checkout "$CURRENT_COMMIT" 2>/dev/null || true
 

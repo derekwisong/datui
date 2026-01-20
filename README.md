@@ -1,7 +1,7 @@
 # Datui
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.2.1-orange.svg)
+![Version](https://img.shields.io/badge/version-0.2.2-orange.svg)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
 
 A fast, memory-efficient terminal user interface (TUI) for exploring and analyzing tabular data files, built with Rust and Polars.

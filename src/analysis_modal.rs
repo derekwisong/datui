@@ -155,6 +155,15 @@ impl AnalysisModal {
                     DistributionType::Uniform => 2,
                     DistributionType::PowerLaw => 3,
                     DistributionType::Exponential => 4,
+                    DistributionType::Beta => 5,
+                    DistributionType::Gamma => 6,
+                    DistributionType::ChiSquared => 7,
+                    DistributionType::StudentsT => 8,
+                    DistributionType::Poisson => 9,
+                    DistributionType::Bernoulli => 10,
+                    DistributionType::Binomial => 11,
+                    DistributionType::Geometric => 12,
+                    DistributionType::Weibull => 13,
                     DistributionType::Unknown => 0, // Default to Normal if Unknown
                 };
                 // If it was Unknown, also update selected_theoretical_distribution to Normal
@@ -370,10 +379,14 @@ impl AnalysisModal {
     // Distribution selector navigation
     pub fn next_distribution(&mut self) {
         if let Some(current) = self.distribution_selector_state.selected() {
-            let next = (current + 1).min(4); // 5 distributions: Normal, LogNormal, Uniform, PowerLaw, Exponential
+            // 14 distributions: indices 0-13
+            let next = (current + 1).min(13);
             self.distribution_selector_state.select(Some(next));
+            // Update charts immediately as user scrolls (no Enter needed)
+            self.select_distribution();
         } else {
             self.distribution_selector_state.select(Some(0));
+            self.select_distribution();
         }
     }
 
@@ -381,9 +394,12 @@ impl AnalysisModal {
         if let Some(current) = self.distribution_selector_state.selected() {
             if current > 0 {
                 self.distribution_selector_state.select(Some(current - 1));
+                // Update charts immediately as user scrolls (no Enter needed)
+                self.select_distribution();
             }
         } else {
             self.distribution_selector_state.select(Some(0));
+            self.select_distribution();
         }
     }
 
@@ -395,6 +411,15 @@ impl AnalysisModal {
                 2 => DistributionType::Uniform,
                 3 => DistributionType::PowerLaw,
                 4 => DistributionType::Exponential,
+                5 => DistributionType::Beta,
+                6 => DistributionType::Gamma,
+                7 => DistributionType::ChiSquared,
+                8 => DistributionType::StudentsT,
+                9 => DistributionType::Poisson,
+                10 => DistributionType::Bernoulli,
+                11 => DistributionType::Binomial,
+                12 => DistributionType::Geometric,
+                13 => DistributionType::Weibull,
                 _ => DistributionType::Normal,
             };
         }

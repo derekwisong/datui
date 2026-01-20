@@ -367,7 +367,7 @@ impl App {
         // Handle error modal first - it has highest priority
         if self.error_modal.active {
             match event.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                KeyCode::Esc | KeyCode::Enter => {
                     self.error_modal.hide();
                 }
                 _ => {}
@@ -380,7 +380,7 @@ impl App {
             || (self.analysis_modal.active && self.analysis_modal.show_help)
         {
             match event.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
+                KeyCode::Esc => {
                     if self.analysis_modal.active && self.analysis_modal.show_help {
                         self.analysis_modal.show_help = false;
                     } else if self.template_modal.active && self.template_modal.show_help {
@@ -789,8 +789,8 @@ impl App {
                     } else if self.analysis_modal.view
                         == analysis_modal::AnalysisView::DistributionDetail
                     {
-                        // In distribution detail view, Tab switches between main area and distribution selector
-                        self.analysis_modal.switch_focus();
+                        // In distribution detail view, only the distribution selector is focusable
+                        // Tab does nothing - focus stays on the distribution selector
                     } else {
                         // In other detail views, Tab cycles through sections
                         self.analysis_modal.next_detail_section();
@@ -813,14 +813,8 @@ impl App {
                                 _ => {} // Describe tool doesn't have detail view
                             }
                         }
-                    } else if self.analysis_modal.view
-                        == analysis_modal::AnalysisView::DistributionDetail
-                        && self.analysis_modal.focus
-                            == analysis_modal::AnalysisFocus::DistributionSelector
-                    {
-                        // Select distribution from selector
-                        self.analysis_modal.select_distribution();
                     }
+                    // Enter key no longer needed for distribution selection - charts update on navigation
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     match self.analysis_modal.view {
@@ -1038,7 +1032,7 @@ impl App {
                             analysis_modal::AnalysisFocus::DistributionSelector => {
                                 self.analysis_modal
                                     .distribution_selector_state
-                                    .select(Some(4)); // Last distribution (Exponential)
+                                    .select(Some(13)); // Last distribution (Weibull, index 13 of 14 total)
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
@@ -2310,7 +2304,7 @@ impl App {
         const UP_KEYS: [KeyCode; 2] = [KeyCode::Up, KeyCode::Char('k')];
 
         match event.code {
-            KeyCode::Char('q') => Some(AppEvent::Exit),
+            KeyCode::Char('q') | KeyCode::Char('Q') => Some(AppEvent::Exit),
             KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(AppEvent::Exit)
             }
@@ -2841,7 +2835,7 @@ Help Navigation:
 
 Analysis View:
   a:                Open statistical analysis
-  r:                Recalculate with new random seed
+  r:                Resample data (if sampled)
   Arrow keys:       Scroll statistics table
   Esc:              Return to main view
 
@@ -4645,27 +4639,31 @@ impl Widget for &mut App {
                     analysis_modal::AnalysisView::DistributionDetail => (
                         "Distribution Detail Help".to_string(),
                         "\
-Distribution Detail View provides in-depth analysis of a selected column.
+SW: The W statistic of a Shapiro-Wilk test ranges from 0 to 1, where 1 indicates perfect normality. The p-value reflects the probability of observing such a W value under the hypothesis of normality.
+Skew: Measures asymmetry of the data distribution (positive = right-tailed, negative = left-tailed).
+Kurtosis: Tail heaviness compared to normal distribution (high = heavy tails, low = light tails).
+Median: Middle value when data is sorted.
+Mean: Average value of all data points.
+Std: Standard deviation (spread of data around the mean).
+CV: Coefficient of variation (std/mean, relative variability independent of scale).
 
-Sections (navigate with Tab):
-  1. Distribution Characteristics:
-     - Statistical test results (Shapiro-Wilk)
-     - Skewness and kurtosis with interpretation
-     - Central tendency (mean, median, mode)
-     - Dispersion measures (std dev, variance, CV)
+Q-Q Plot:
 
-  2. Outlier Analysis:
-     - Total outlier count and percentage
-     - Breakdown by detection method (IQR, Z-score)
-     - Scrollable table of outlier rows with context
+Compares your data against a theoretical distribution. Points following the diagonal reference line indicate a good match. Deviations show where your data differs from the theoretical model.
 
-  3. Percentile Breakdown:
-     - Key percentiles (1%, 5%, 25%, 50%, 75%, 95%, 99%)
+Histogram:
+
+Shows the frequency distribution of your data as bars, with a theoretical distribution overlaid as a gray line. The height of bars represents how many data points fall in each bin range. Compare bar heights to the theoretical line to see how well your data matches the expected distribution.
+
+
+Distributions:
+
+Select different theoretical distributions from the list to overlay them for comparison with your data. This helps identify which distribution type best fits your data.
 
 Navigation:
-  Tab:            Cycle through sections
-  ↑↓:            Scroll within current section
-  Esc:           Return to distribution table"
+
+↑↓ / j/k:    Scroll through distributions to compare different overlays
+Esc:         Return to distribution table"
                             .to_string(),
                     ),
                     analysis_modal::AnalysisView::CorrelationDetail => (
@@ -4694,28 +4692,43 @@ Navigation:
                             .to_string(),
                     ),
                     analysis_modal::AnalysisView::Main => match self.analysis_modal.selected_tool {
+                        analysis_modal::AnalysisTool::DistributionAnalysis => (
+                            "Distribution Analysis Help".to_string(),
+                            "\
+Distribution Analysis identifies the distribution type for each numeric column and provides key statistical measures.
+
+Columns:
+  Column:        Name of the numeric column
+  Distribution:  Inferred distribution type (Normal, LogNormal, Uniform, PowerLaw, Exponential)
+  Shapiro-Wilk:  W statistic from Shapiro-Wilk normality test (0-1, higher = more normal)
+  SW p-value:    P-value from Shapiro-Wilk test (probability of observing W under normality)
+  CV:            Coefficient of variation (std/mean, relative variability independent of scale)
+  Outliers:      Count and percentage of outliers (IQR method)
+  Skewness:      Asymmetry measure (positive = right-tailed, negative = left-tailed)
+  Kurtosis:      Tail heaviness compared to normal distribution (3.0 = normal)
+
+Color Coding:
+  Distribution types are color-coded:
+    - Green/Cyan: Good fit quality (>0.75)
+    - Yellow:     Moderate fit quality (≤0.75)
+    - Red:        Very high outlier percentage (>20%) or extreme skewness/kurtosis
+
+Navigation:
+  ↑↓ / j/k:      Navigate rows
+  ←→ / h/l:      Scroll columns horizontally
+  Tab:           Switch focus between main area and sidebar
+  Enter:         Open detail view for selected column (shows Q-Q plot and histogram)
+  Esc:           Close analysis view
+  r:             Resample data (only shown if data was sampled)
+
+Detail View:
+  Press Enter on a row to see detailed analysis with Q-Q plots and histograms comparing your data to theoretical distributions."
+                                .to_string(),
+                        ),
                         analysis_modal::AnalysisTool::Describe => (
                             "Describe Tool Help".to_string(),
                             "\
-Describe Tool provides comprehensive descriptive statistics for your data.
-
-Layout:
-  The analysis page has a sidebar on the right showing analysis tools.
-  The main area shows the currently selected tool (default: Describe).
-
-Describe Tool:
-  Displays one row per column showing:
-  - count:        Number of non-null values
-  - null_count:   Number of missing/null values
-  - distribution: Inferred distribution type for numeric columns
-  - mean, std, min, 25%, 50%, 75%, max, skewness, kurtosis
-
-Row Color Coding:
-  - Red:          Columns with outliers detected (but not highly skewed)
-  - Yellow:       Columns with high skewness (|skewness| > 2.0)
-  - White:        Normal columns (no outliers, not highly skewed)
-  
-  Color coding helps identify columns that may need further investigation.
+The Describe tool behaves like Polars' describe() function and displays similar descriptive statistics.
 
 Navigation:
   Tab:            Switch focus between main area and sidebar
@@ -4726,58 +4739,14 @@ Navigation:
   Enter:         Select tool from sidebar (when sidebar focused)
 
 Actions:
-  r:             Resample data with new random seed
-  Ctrl+h:        Show this help dialog
-  Esc:           Close analysis view or help dialog"
-                                .to_string(),
-                        ),
-                        analysis_modal::AnalysisTool::DistributionAnalysis => (
-                            "Distribution Analysis Help".to_string(),
-                            "\
-Distribution Analysis Tool shows distribution information for numeric columns.
-
-Shows one row per numeric column with:
-  - Column: Column name
-  - Type: Distribution type (Normal, LogNormal, Uniform, PowerLaw, Exponential, Unknown)
-  - Fit: Visual bar showing how well data fits the detected distribution
-  - Confidence: Statistical confidence score (0.0-1.0)
-  - Outliers: Count and percentage of outliers detected
-
-Color Coding:
-  - Normal/LogNormal with high confidence (>0.85): Green text
-  - Uniform/PowerLaw with good fit (>0.75): Cyan text
-  - Unknown or low confidence (<0.60): Yellow text
-  - High outlier percentage (>5%): Red highlights
-
-Navigation:
-  Tab:            Switch focus between main area and sidebar
-  ↑↓ / j/k:      Navigate rows (or sidebar tools if sidebar focused)
-  Home/End:      Jump to first/last row
-  PageUp/PageDown: Navigate by page
-  Enter:         Open detail view (on a distribution row) or select tool (sidebar)
-
-Actions:
-  r:             Resample data with new random seed
-  Ctrl+h:        Show this help dialog
+  r:             Resample data (only shown if data was sampled)
   Esc:           Close analysis view or help dialog"
                                 .to_string(),
                         ),
                         analysis_modal::AnalysisTool::CorrelationMatrix => (
                             "Correlation Matrix Help".to_string(),
                             "\
-Correlation Matrix Tool shows correlations between numeric columns.
-
-Color-coded matrix showing correlations:
-  - Green: Strong positive correlation (0.7-1.0)
-  - Light Green: Moderate positive (0.3-0.7)
-  - Red: Strong negative correlation (-1.0--0.7)
-  - Light Red: Moderate negative (-0.7--0.3)
-  - Gray: Near zero correlation
-
-Visual Bars:
-  - Full bar (████) for |correlation| > 0.7
-  - Half bar (██░░) for 0.3 < |correlation| < 0.7
-  - Quarter bar (█░) for |correlation| < 0.3
+The Correlation Matrix tool displays pairwise correlations between numeric columns.
 
 Navigation:
   Tab:            Switch focus between main area and sidebar
@@ -4788,8 +4757,7 @@ Navigation:
   Enter:         Open pair detail view (on a cell) or select tool (sidebar)
 
 Actions:
-  r:             Resample data with new random seed
-  Ctrl+h:        Show this help dialog
+  r:             Resample data (only shown if data was sampled)
   Esc:           Close analysis view or help dialog"
                                 .to_string(),
                         ),

@@ -1,5 +1,18 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
+
+/// Compression format for data files
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum CompressionFormat {
+    /// Gzip compression (.gz) - Most common, good balance of speed and compression
+    Gzip,
+    /// Zstandard compression (.zst) - Modern, fast compression with good ratios
+    Zstd,
+    /// Bzip2 compression (.bz2) - Good compression ratio, slower than gzip
+    Bzip2,
+    /// XZ compression (.xz) - Excellent compression ratio, slower than bzip2
+    Xz,
+}
 
 /// Command-line arguments for datui
 #[derive(Parser, Debug)]
@@ -22,6 +35,12 @@ pub struct Args {
     /// Specify the delimiter to use when reading a file
     #[arg(long = "delimiter")]
     pub delimiter: Option<u8>,
+
+    /// Specify the compression format explicitly (gzip, zstd, bzip2, xz)
+    /// If not specified, compression is auto-detected from file extension.
+    /// Supported formats: gzip (.gz), zstd (.zst), bzip2 (.bz2), xz (.xz)
+    #[arg(long = "compression", value_enum)]
+    pub compression: Option<CompressionFormat>,
 
     /// Enable debug mode to show operational information
     #[arg(long = "debug", action)]

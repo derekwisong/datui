@@ -364,6 +364,44 @@ impl<'a> AnalysisWidget<'a> {
                 .saturating_sub(top_padding_extra), // Account for extra top padding
         );
 
+        // Calculate maximum label width for both charts to ensure alignment
+        // This needs to account for both Q-Q plot labels (data values) and histogram labels (counts)
+        let sorted_data = &dist.sorted_sample_values;
+        let max_label_width = if sorted_data.is_empty() {
+            1
+        } else {
+            let data_min = sorted_data[0];
+            let data_max = sorted_data[sorted_data.len() - 1];
+
+            // Q-Q plot labels: data_min, (data_min+data_max)/2, data_max formatted as {:.1}
+            let qq_label_bottom = format!("{:.1}", data_min);
+            let qq_label_mid = format!("{:.1}", (data_min + data_max) / 2.0);
+            let qq_label_top = format!("{:.1}", data_max);
+            let qq_max_width = qq_label_bottom
+                .chars()
+                .count()
+                .max(qq_label_mid.chars().count())
+                .max(qq_label_top.chars().count());
+
+            // Histogram labels: 0, global_max/2, global_max (formatted as integers)
+            // We need to estimate global_max - it's roughly the max of data bin counts and theory bin counts
+            // For estimation, use the data size as a proxy for maximum counts
+            let estimated_global_max = sorted_data.len();
+            let hist_label_0 = format!("{}", 0);
+            let hist_label_mid = format!("{}", estimated_global_max / 2);
+            let hist_label_max = format!("{}", estimated_global_max);
+            let hist_max_width = hist_label_0
+                .chars()
+                .count()
+                .max(hist_label_mid.chars().count())
+                .max(hist_label_max.chars().count());
+
+            // Use the maximum of both, adding 1 for padding
+            qq_max_width.max(hist_max_width)
+        };
+
+        let shared_y_axis_label_width = (max_label_width as u16).max(1) + 1; // Max label width + 1 char padding
+
         // Q-Q plot approximation (larger, better aspect ratio)
         // Use selected theoretical distribution from selector
         render_qq_plot(
@@ -371,6 +409,7 @@ impl<'a> AnalysisWidget<'a> {
             self.selected_theoretical_distribution,
             qq_plot_area,
             buf,
+            shared_y_axis_label_width,
         );
 
         // Histogram comparison (vertical bars)
@@ -380,6 +419,7 @@ impl<'a> AnalysisWidget<'a> {
             self.selected_theoretical_distribution,
             histogram_area,
             buf,
+            shared_y_axis_label_width,
         );
 
         // Right side: Distribution selector
@@ -667,6 +707,15 @@ fn format_num(n: f64) -> String {
     }
 }
 
+// Phase 6: Format p-value with special handling for very small values
+fn format_pvalue(p: f64) -> String {
+    if p < 0.001 {
+        "<0.001".to_string()
+    } else {
+        format!("{:.3}", p)
+    }
+}
+
 fn render_distribution_table(
     results: &AnalysisResults,
     table_state: &mut TableState,
@@ -681,9 +730,11 @@ fn render_distribution_table(
     }
 
     // Column headers for width calculation
+    // Phase 6: Add P-value column after Distribution
     let column_names = [
         "Column",
         "Distribution",
+        "P-value", // NEW: Add p-value column
         "Shapiro-Wilk",
         "SW p-value",
         "CV",
@@ -723,10 +774,14 @@ fn render_distribution_table(
             .map(|p| format!("{:.3}", p))
             .unwrap_or_else(|| "N/A".to_string());
 
+        // Phase 6: Add p-value to column values
+        let pvalue_text = format_pvalue(dist_analysis.confidence);
+
         // Update minimum widths based on content
         let col_values = [
             dist_analysis.column_name.clone(),
             format!("{}", dist_analysis.distribution_type),
+            pvalue_text.clone(), // NEW: P-value column
             sw_stat_text.clone(),
             sw_pvalue_text.clone(),
             format!(
@@ -754,9 +809,11 @@ fn render_distribution_table(
     let mut rows = Vec::new();
 
     // Header row
+    // Phase 6: Add P-value column header
     let header_row = Row::new(vec![
         Cell::from("Column").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("Distribution").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("P-value").style(Style::default().add_modifier(Modifier::BOLD)), // NEW
         Cell::from("Shapiro-Wilk").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("SW p-value").style(Style::default().add_modifier(Modifier::BOLD)),
         Cell::from("CV").style(Style::default().add_modifier(Modifier::BOLD)),
@@ -767,40 +824,14 @@ fn render_distribution_table(
 
     // Data rows
     for dist_analysis in &results.distribution_analyses {
-        // Color coding for distribution type based on fit quality
-        let type_color = match dist_analysis.distribution_type {
-            DistributionType::Normal | DistributionType::LogNormal => {
-                if dist_analysis.fit_quality > 0.75 {
-                    Color::Green
-                } else {
-                    Color::Yellow
-                }
-            }
-            DistributionType::Uniform
-            | DistributionType::PowerLaw
-            | DistributionType::Exponential
-            | DistributionType::Beta
-            | DistributionType::Gamma
-            | DistributionType::ChiSquared
-            | DistributionType::StudentsT
-            | DistributionType::Weibull => {
-                if dist_analysis.fit_quality > 0.75 {
-                    Color::Cyan
-                } else {
-                    Color::Yellow
-                }
-            }
-            DistributionType::Poisson
-            | DistributionType::Bernoulli
-            | DistributionType::Binomial
-            | DistributionType::Geometric => {
-                if dist_analysis.fit_quality > 0.75 {
-                    Color::Cyan
-                } else {
-                    Color::Yellow
-                }
-            }
-            DistributionType::Unknown => Color::Yellow,
+        // Color coding for distribution type based on fit quality only
+        // Green = good fit (>0.75), Yellow = moderate (0.5-0.75), Red = poor (<0.5)
+        let type_color = if dist_analysis.fit_quality > 0.75 {
+            Color::Green
+        } else if dist_analysis.fit_quality > 0.5 {
+            Color::Yellow
+        } else {
+            Color::Red
         };
 
         // Outlier count with percentage
@@ -847,6 +878,17 @@ fn render_distribution_table(
             Style::default()
         };
 
+        // Format p-value with color coding
+        // Green = good (>0.05), Yellow = moderate (0.01-0.05), Red = poor (≤0.01)
+        let pvalue_text = format_pvalue(dist_analysis.confidence);
+        let pvalue_style = if dist_analysis.confidence > 0.05 {
+            Style::default().fg(Color::Green)
+        } else if dist_analysis.confidence > 0.01 {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Red)
+        };
+
         // Shapiro-Wilk statistic and p-value formatting
         let sw_stat_text = dist_analysis
             .characteristics
@@ -859,16 +901,40 @@ fn render_distribution_table(
             .map(|p| format!("{:.3}", p))
             .unwrap_or_else(|| "N/A".to_string());
 
+        // Color coding for SW p-value: same semantics as p-value column
+        // Green = normal (>0.05), Yellow = moderate (0.01-0.05), Red = non-normal (≤0.01)
+        let sw_pvalue_style = dist_analysis
+            .characteristics
+            .shapiro_wilk_pvalue
+            .map(|p| {
+                if p > 0.05 {
+                    Style::default().fg(Color::Green)
+                } else if p > 0.01 {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::Red)
+                }
+            })
+            .unwrap_or_default();
+
         rows.push(Row::new(vec![
             Cell::from(dist_analysis.column_name.as_str()),
             Cell::from(format!("{}", dist_analysis.distribution_type))
                 .style(Style::default().fg(type_color)),
+            Cell::from(pvalue_text.clone()).style(pvalue_style),
             Cell::from(sw_stat_text),
-            Cell::from(sw_pvalue_text),
+            Cell::from(sw_pvalue_text).style(sw_pvalue_style),
             Cell::from(format!(
                 "{:.4}",
                 dist_analysis.characteristics.coefficient_of_variation
-            )),
+            ))
+            .style(
+                if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
+                    Style::default().fg(Color::Yellow) // High variability
+                } else {
+                    Style::default()
+                },
+            ),
             Cell::from(outlier_text).style(outlier_style),
             Cell::from(format_num(dist_analysis.characteristics.skewness)).style(skewness_style),
             Cell::from(format_num(dist_analysis.characteristics.kurtosis)).style(kurtosis_style),
@@ -1020,72 +1086,94 @@ fn render_distribution_selector(
         ("Weibull", DistributionType::Weibull),
     ];
 
-    // Use selector_state.selected() if available, otherwise sync with selected_dist
-    let current_selection = selector_state
-        .selected()
-        .or_else(|| {
-            distributions
-                .iter()
-                .position(|(_, dt)| *dt == selected_dist)
-        })
-        .unwrap_or(0);
-
-    // Only sync state if it's not set (initial state)
-    if selector_state.selected().is_none() {
-        selector_state.select(Some(current_selection));
-    }
-
-    // Calculate fit quality for each distribution
-    let sorted_values = &dist.sorted_sample_values;
-    let chars = &dist.characteristics;
-
-    // Create table rows with Name, Fit
-    let rows: Vec<Row> = distributions
+    // Use stored p-values from initial analysis - no recalculation needed
+    // These were calculated during infer_distribution() with the same data and method
+    let mut distribution_scores: Vec<(usize, &str, DistributionType, f64)> = distributions
         .iter()
         .enumerate()
         .map(|(idx, (name, dist_type))| {
-            // Calculate fit quality for this distribution
-            let fit = if !sorted_values.is_empty() {
-                crate::statistics::calculate_fit_quality(
-                    sorted_values,
-                    *dist_type,
-                    chars.mean,
-                    chars.std_dev,
-                )
-            } else {
-                0.0
-            };
+            // Use stored p-values from initial analysis - no recalculation needed
+            let p_value = dist
+                .all_distribution_pvalues
+                .get(dist_type)
+                .copied()
+                .unwrap_or_else(|| {
+                    // Fallback: if not in stored values (e.g., Geometric skipped), use placeholder
+                    if *dist_type == DistributionType::Geometric {
+                        0.01 // Placeholder to prevent freezes
+                    } else {
+                        0.0 // Default for untested distributions
+                    }
+                });
+            (idx, *name, *dist_type, p_value)
+        })
+        .collect();
 
-            let is_selected = *dist_type == selected_dist;
+    // Sort by p-value (descending) - best fit on top
+    distribution_scores.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Find position of selected distribution in sorted list
+    let selected_pos = distribution_scores
+        .iter()
+        .position(|(_, _, dt, _)| *dt == selected_dist)
+        .unwrap_or(0);
+
+    // Only sync selector state when absolutely necessary to prevent jumping during navigation
+    // Trust the user's navigation state - only fix if selection is uninitialized or out of bounds
+    let current_selection = selector_state.selected();
+    if current_selection.is_none() {
+        // Initial state: set to selected distribution position
+        selector_state.select(Some(selected_pos));
+    } else if let Some(current_idx) = current_selection {
+        // Only fix if index is out of bounds - otherwise trust the current selection
+        // This prevents the sync logic from interfering with user navigation
+        if current_idx >= distribution_scores.len() {
+            selector_state.select(Some(selected_pos));
+        }
+        // Otherwise, keep current selection (user is navigating or selection is valid)
+    }
+
+    // Create table rows from sorted list
+    let rows: Vec<Row> = distribution_scores
+        .iter()
+        .enumerate()
+        .map(|(sorted_idx, (_, name, _dist_type, p_value))| {
             let is_focused = focus == AnalysisFocus::DistributionSelector
-                && selector_state.selected() == Some(idx);
+                && selector_state.selected() == Some(sorted_idx);
 
-            // Style cells based on selection/focus
+            // Style cells based on focus only - no separate "selected" indicator
+            // The focused row (cursor position) is highlighted with reversed style
             let name_style = if is_focused {
                 Style::default().add_modifier(Modifier::REVERSED)
-            } else if is_selected {
-                Style::default().fg(Color::Cyan)
             } else {
                 Style::default()
             };
 
+            // Style based on p-value
+            let pvalue_style = if *p_value > 0.05 {
+                Style::default().fg(Color::Green) // Good fit
+            } else if *p_value > 0.01 {
+                Style::default().fg(Color::Yellow) // Marginal fit
+            } else {
+                Style::default().fg(Color::Red) // Poor fit
+            };
+
             Row::new(vec![
                 Cell::from(name.to_string()).style(name_style),
-                Cell::from(format!("{:.3}", fit)), // 3 digits precision
+                Cell::from(format_pvalue(*p_value)).style(pvalue_style),
             ])
         })
         .collect();
 
-    // Create table with columns: Name, Fit
-    // Fit column should be minimal width (just enough for 3 digits + decimal point)
-    let header = Row::new(vec![Cell::from("Name"), Cell::from("Fit")])
+    // Create table with columns: Name, P-value
+    let header = Row::new(vec![Cell::from("Name"), Cell::from("P-value")]) // Changed from "Fit"
         .style(Style::default().add_modifier(Modifier::BOLD));
 
     let table = Table::new(
         rows,
         vec![
             Constraint::Fill(1),   // Name column takes remaining space
-            Constraint::Length(5), // Fit column: "0.000" = 5 chars
+            Constraint::Length(7), // P-value column: "<0.001" or "0.000" = 7 chars max
         ],
     )
     .header(header)
@@ -1147,6 +1235,7 @@ fn render_distribution_histogram(
     dist_type: DistributionType,
     area: Rect,
     buf: &mut Buffer,
+    shared_y_axis_label_width: u16,
 ) {
     // Use BarChart widget to show histogram comparing data vs theoretical distribution
     // Use fixed-width bins that span both data range and theoretical distribution range
@@ -1189,32 +1278,11 @@ fn render_distribution_histogram(
     let hist_max = data_max + extension;
     let hist_range = hist_max - hist_min;
 
-    // Calculate actual Y-axis label widths dynamically
-    // We need to check both histogram labels (counts) and Q-Q plot labels (data values)
-    // For histogram: labels are 0, global_max/2, global_max (will calculate after global_max)
-    // For Q-Q plot: labels are data_min, (data_min+data_max)/2, data_max formatted as {:.1}
-    // Calculate Q-Q plot label widths first (we have data_min and data_max here)
-    let qq_label_bottom = format!("{:.1}", data_min);
-    let qq_label_mid = format!("{:.1}", (data_min + data_max) / 2.0);
-    let qq_label_top = format!("{:.1}", data_max);
-    let qq_max_label_width = qq_label_bottom
-        .chars()
-        .count()
-        .max(qq_label_mid.chars().count())
-        .max(qq_label_top.chars().count());
-
     // Calculate dynamic number of bins based on available width
     // This ensures bars fill the horizontal space and look dense at all widths
 
-    // For initial calculation, estimate histogram label width (will refine after global_max)
-    // Estimate: histogram labels are counts, typically smaller than Q-Q plot labels
-    // Use Q-Q plot width as initial estimate, will refine after we calculate global_max
-    let initial_max_label_width = qq_max_label_width;
-
-    // Calculate initial Y-axis space (will refine after histogram labels calculated)
-    let initial_y_axis_label_width = (initial_max_label_width as u16).max(1) + 1;
     let y_axis_gap = 1u16; // Minimal gap between labels and plot area (needed to prevent bars from extending outside)
-    let total_y_axis_space = initial_y_axis_label_width + y_axis_gap;
+    let total_y_axis_space = shared_y_axis_label_width + y_axis_gap;
 
     // Calculate available width for bars - must match Chart widget's plot area exactly
     // Chart widget reserves space for Y-axis labels internally, using remaining width for plot
@@ -1270,24 +1338,12 @@ fn render_distribution_histogram(
     let max_theory = theory_bin_counts.iter().cloned().fold(0.0, f64::max);
     let global_max = max_data.max(max_theory as usize).max(1) as f64;
 
-    // Calculate actual Y-axis label widths for histogram
-    // Labels are: 0, global_max/2, global_max (formatted as integers)
-    let hist_label_0 = format!("{}", 0);
-    let hist_label_mid = format!("{}", (global_max / 2.0) as usize);
-    let hist_label_max = format!("{}", global_max as usize);
-    let hist_max_label_width = hist_label_0
-        .chars()
-        .count()
-        .max(hist_label_mid.chars().count())
-        .max(hist_label_max.chars().count());
+    // Use the shared label width calculated in the caller
+    // This ensures both histogram and Q-Q plot use the same padding for alignment
+    let y_axis_label_width = shared_y_axis_label_width;
 
-    // Refine Y-axis label width calculation using actual histogram labels
-    // Calculate maximum label width across both histogram and Q-Q plot
-    let max_label_width = hist_max_label_width.max(qq_max_label_width);
-
-    // Recalculate Y-axis label width with actual maximum (may update from initial estimate)
-    let y_axis_label_width = (max_label_width as u16).max(1) + 1; // Max label width + 1 char padding
-                                                                  // Note: total_y_axis_space is already calculated above, using this for alignment in labels
+    // Recalculate total_y_axis_space using the shared width
+    let total_y_axis_space = y_axis_label_width + y_axis_gap;
 
     // Bin centers for x-axis positioning (value at center of each bin)
     let bin_centers: Vec<f64> = (0..num_bins)
@@ -1362,20 +1418,22 @@ fn render_distribution_histogram(
         .saturating_sub(top_padding)
         .saturating_sub(x_axis_label_height); // Reserve space for title, padding, and x-axis labels
 
-    // Recalculate total_y_axis_space with refined y_axis_label_width if it changed
-    let refined_total_y_axis_space = y_axis_label_width + y_axis_gap;
-    // If width changed, adjust available_width and bar_plot_area
-    let adjusted_available_width = if refined_total_y_axis_space != total_y_axis_space {
-        area.width.saturating_sub(refined_total_y_axis_space)
-    } else {
-        available_width
-    };
+    // Shift bar plot area right by 1.5 bar widths so bars align to the right side of their bins
+    // This ensures proper alignment with the theoretical distribution overlay
+    // BarChart renders bars starting from the left edge, so shifting the area right will
+    // make the bars' right edges align with the right edges of their bins
+    let bar_width_offset = final_bar_width + (final_bar_width / 2); // 1.5 bar widths
+    let bar_plot_left = area
+        .left()
+        .saturating_add(total_y_axis_space)
+        .saturating_add(bar_width_offset); // Shift right by 1.5 bar widths for right alignment
+    let bar_plot_width = available_width + bar_width_offset; // Extend width to accommodate shift
 
     let bar_plot_area = Rect::new(
-        area.left() + refined_total_y_axis_space, // Start where Chart's plot area starts (use refined value)
-        chart_inner_top,                          // Start below title
-        adjusted_available_width,                 // Width matching Chart's plot area exactly
-        chart_inner_height,                       // Use calculated height that accounts for title
+        bar_plot_left,      // Shifted right for right-aligned bars
+        chart_inner_top,    // Start below title
+        bar_plot_width,     // Extended width to accommodate shift
+        chart_inner_height, // Use calculated height that accounts for title
     );
 
     let barchart = BarChart::default()
@@ -1386,89 +1444,131 @@ fn render_distribution_histogram(
         .group_gap(group_gap);
 
     // Render bar chart to sub-area matching Chart's plot area (excluding x-axis label space)
+    // Bars are now right-aligned within their bins
     barchart.render(bar_plot_area, buf);
 
     // No border - chart renders without surrounding box
 
     // Overlay theory distribution as dense scatter plot (dot plot) on top of bar chart
-    // Use the same bin-based calculations as the bars for consistency and correct scaling
-    // Interpolate from discrete bin values to create smooth overlay curve
-    let num_samples = 250; // Dense sampling for continuous curve appearance
-
-    // Pre-calculate normalized heights for all bins (same as bars use)
-    let theory_normalized_heights: Vec<f64> = theory_bin_counts
-        .iter()
-        .map(|&theory_count| {
-            if global_max > 0.0 {
-                (theory_count / global_max) * 100.0
-            } else {
-                0.0
-            }
-        })
-        .collect();
+    // Evaluate theoretical PDF directly at each x point for accurate smooth curve
+    // This ensures the theoretical distribution shows the correct shape (e.g., bell curve for normal)
+    // Use very dense sampling for smooth continuous appearance
+    // Braille markers create 2x4 dot patterns per character, need high density
+    let num_samples = (available_width as usize * 15).clamp(1500, 10000); // Very dense for smooth Braille lines
 
     let theory_points: Vec<(f64, f64)> = if num_bins > 0
         && !theory_bin_counts.is_empty()
-        && !bin_centers.is_empty()
-        && !theory_normalized_heights.is_empty()
         && num_samples > 1
         && hist_range > 0.0
+        && dist.characteristics.std_dev > 0.0
     {
-        // Interpolate from discrete bin centers and normalized heights to create smooth curve
+        // Evaluate theoretical PDF directly at each x point for accurate smooth curve
+        // Get distribution parameters
+        let mean = dist.characteristics.mean;
+        let std = dist.characteristics.std_dev;
+
+        // Evaluate theoretical PDF directly at each x point for accurate smooth curve
         (0..num_samples)
             .map(|i| {
-                // Sample x values across the histogram range
-                // For non-negative data, sampling starts from clamped hist_min (>= 0)
+                // Sample x values across the histogram range (in data space)
                 let x = hist_min + (i as f64 / (num_samples - 1) as f64) * hist_range;
 
-                // Find which bins this x value falls between for interpolation
-                let normalized_height = if x <= bin_centers[0] {
-                    // Before first bin center: use first bin's normalized height
-                    theory_normalized_heights[0]
-                } else if x >= bin_centers[bin_centers.len() - 1] {
-                    // After last bin center: use last bin's normalized height
-                    theory_normalized_heights[theory_normalized_heights.len() - 1]
-                } else {
-                    // Between bin centers: linear interpolation
-                    // Find the two bin centers that bracket this x value
-                    let mut lower_idx = 0;
-                    for (idx, &center) in bin_centers.iter().enumerate() {
-                        if center <= x {
-                            lower_idx = idx;
-                        } else {
-                            break;
-                        }
+                // Calculate theoretical PDF at x value, then convert to expected count
+                // PDF gives us density (probability per unit), convert to count: PDF(x) * bin_width * n
+                let theory_count = match dist_type {
+                    DistributionType::Normal => {
+                        // Normal PDF: (1 / (σ * sqrt(2π))) * exp(-0.5 * ((x - μ) / σ)²)
+                        let z = (x - mean) / std;
+                        let pdf = (1.0 / (std * (2.0 * std::f64::consts::PI).sqrt()))
+                            * (-0.5 * z * z).exp();
+                        pdf * bin_width * n as f64
                     }
-
-                    // Clamp to valid range
-                    let lower_idx = lower_idx.min(bin_centers.len() - 1);
-                    let upper_idx = (lower_idx + 1).min(bin_centers.len() - 1);
-
-                    if lower_idx == upper_idx {
-                        // At exact bin center or edge case
-                        theory_normalized_heights[lower_idx]
-                    } else {
-                        // Linear interpolation between two bins
-                        let x_lower = bin_centers[lower_idx];
-                        let x_upper = bin_centers[upper_idx];
-                        let y_lower = theory_normalized_heights[lower_idx];
-                        let y_upper = theory_normalized_heights[upper_idx];
-
-                        // Linear interpolation: y = y_lower + (y_upper - y_lower) * (x - x_lower) / (x_upper - x_lower)
-                        let t = if x_upper > x_lower {
-                            (x - x_lower) / (x_upper - x_lower)
+                    DistributionType::LogNormal => {
+                        if x > 0.0 && mean > 0.0 {
+                            let variance = std * std;
+                            let sigma_sq = (1.0 + variance / (mean * mean)).ln();
+                            let mu = mean.ln() - sigma_sq / 2.0;
+                            let sigma = sigma_sq.sqrt();
+                            let z = (x.ln() - mu) / sigma;
+                            let pdf = (1.0 / (x * sigma * (2.0 * std::f64::consts::PI).sqrt()))
+                                * (-0.5 * z * z).exp();
+                            pdf * bin_width * n as f64
                         } else {
                             0.0
-                        };
-                        y_lower + (y_upper - y_lower) * t
+                        }
+                    }
+                    DistributionType::Exponential => {
+                        if x >= 0.0 && mean > 0.0 {
+                            let lambda = 1.0 / mean;
+                            let pdf = lambda * (-lambda * x).exp();
+                            pdf * bin_width * n as f64
+                        } else {
+                            0.0
+                        }
+                    }
+                    DistributionType::Uniform => {
+                        if !sorted_data.is_empty() && x >= data_min && x <= data_max {
+                            let data_range = data_max - data_min;
+                            if data_range > 0.0 {
+                                let pdf = 1.0 / data_range;
+                                pdf * bin_width * n as f64
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            0.0
+                        }
+                    }
+                    DistributionType::Weibull
+                    | DistributionType::Beta
+                    | DistributionType::Gamma
+                    | DistributionType::ChiSquared
+                    | DistributionType::StudentsT
+                    | DistributionType::PowerLaw => {
+                        // For these distributions, use bin-based values from CDF calculations
+                        // Simple step function: use the bin value directly (consistent with bin boundaries)
+                        let bin_idx = ((x - hist_min) / bin_width).floor() as usize;
+                        if bin_idx < num_bins {
+                            theory_bin_counts[bin_idx]
+                        } else if bin_idx == num_bins {
+                            theory_bin_counts[num_bins - 1]
+                        } else {
+                            0.0
+                        }
+                    }
+                    // REMOVED: All individual PDF implementations below caused issues with plateaus
+                    // Keeping only the bin-based approach above which uses CDF-calculated values
+                    _ => {
+                        // Fallback: Use bin-based approach for distributions without PDF implementation
+                        let bin_idx = ((x - hist_min) / bin_width).floor() as usize;
+                        let bin_idx = bin_idx.min(num_bins - 1);
+                        if bin_idx < theory_bin_counts.len() {
+                            theory_bin_counts[bin_idx]
+                        } else {
+                            0.0
+                        }
                     }
                 };
-
+                let normalized_height = if global_max > 0.0 {
+                    (theory_count / global_max) * 100.0
+                } else {
+                    0.0
+                };
                 (x, normalized_height)
             })
             .collect()
     } else {
-        // Fallback: use bin centers directly if interpolation fails
+        // Fallback: use bin centers with theory_bin_counts if PDF evaluation fails
+        let theory_normalized_heights: Vec<f64> = theory_bin_counts
+            .iter()
+            .map(|&theory_count| {
+                if global_max > 0.0 {
+                    (theory_count / global_max) * 100.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
         bin_centers
             .iter()
             .zip(theory_normalized_heights.iter())
@@ -1477,8 +1577,8 @@ fn render_distribution_histogram(
     };
 
     // Create scatter plot dataset for theoretical distribution
-    // Use Braille marker for dense dot plot (like Q-Q plot)
-    let marker = symbols::Marker::Braille; // Dense, continuous appearance
+    // Use Braille marker for dense, continuous appearance
+    let marker = symbols::Marker::Braille;
 
     let theory_dataset = Dataset::default()
         .name("") // Empty name to prevent legend from appearing
@@ -1531,9 +1631,10 @@ fn render_distribution_histogram(
                 .style(Style::default().fg(Color::Gray))
                 .bounds([0.0, 100.0])
                 .labels({
-                    // Use dynamic label width calculated earlier (y_axis_label_width - 1 for padding)
+                    // Use dynamic label width calculated earlier
+                    // y_axis_label_width already includes +1 for padding, so use it directly for formatting
                     // This ensures alignment with Q-Q plot using actual label lengths
-                    let label_width = (y_axis_label_width - 1) as usize; // Remove padding char (used for alignment)
+                    let label_width = y_axis_label_width as usize;
                     vec![
                         // Bottom label: 0 counts (right-aligned to fixed width)
                         Span::styled(
@@ -1568,11 +1669,15 @@ fn render_distribution_histogram(
     theory_chart.render(area, buf);
 }
 
+// REMOVED ALL DUPLICATE PDF CODE - it was causing plateaus and jumps
+// The bin-based approach using CDF-calculated theory_bin_counts works better
+
 fn render_qq_plot(
     dist: &DistributionAnalysis,
     dist_type: DistributionType,
     area: Rect,
     buf: &mut Buffer,
+    shared_y_axis_label_width: u16,
 ) {
     // Use Chart widget for Q-Q plot: Data quantiles vs Theoretical quantiles
     // Use sorted_sample_values and position-based quantiles (not just 5 percentiles)
@@ -1673,22 +1778,9 @@ fn render_qq_plot(
         ),
     ];
 
-    // Create Y-axis labels with dynamic width for alignment with histogram
-    // Calculate actual label widths - will match histogram's calculation
-    // Q-Q plot labels: data_min, (data_min+data_max)/2, data_max formatted as {:.1}
-    let qq_label_bottom_len = format!("{:.1}", data_min).chars().count();
-    let qq_label_mid_len = format!("{:.1}", (data_min + data_max) / 2.0)
-        .chars()
-        .count();
-    let qq_label_top_len = format!("{:.1}", data_max).chars().count();
-    let qq_max_width = qq_label_bottom_len
-        .max(qq_label_mid_len)
-        .max(qq_label_top_len);
-
-    // Use dynamic width based on actual labels (histogram calculates same way and takes max)
-    // Both charts should align using the maximum width across all labels
-    // Histogram will calculate its own labels and use max(qq_max_width, hist_max_width)
-    let label_width = qq_max_width.max(1) + 1; // Max width + 1 padding (histogram may override if wider)
+    // Use the shared label width calculated in the caller
+    // This ensures both histogram and Q-Q plot use the same padding for alignment
+    let label_width = shared_y_axis_label_width as usize;
     let y_labels = vec![
         // Bottom label: data_min (right-aligned to fixed width)
         Span::styled(

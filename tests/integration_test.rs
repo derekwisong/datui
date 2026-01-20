@@ -21,7 +21,9 @@ fn test_full_workflow() {
     let path = common::create_large_test_csv();
     let event = AppEvent::Open(path.to_path_buf(), OpenOptions::default());
     if let Some(next_event) = app.event(&event) {
-        app.event(&next_event);
+        if let Some(collect_event) = app.event(&next_event) {
+            app.event(&collect_event);
+        }
     }
 
     assert!(app.data_table_state.is_some());

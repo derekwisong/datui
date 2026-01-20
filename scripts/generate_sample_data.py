@@ -22,6 +22,7 @@ import polars as pl
 import numpy as np
 from datetime import datetime, timedelta
 import random
+import gzip
 
 # Output directory
 OUTPUT_DIR = Path(__file__).parent.parent / "tests" / "sample-data"
@@ -198,17 +199,107 @@ def generate_single_row():
     return df
 
 def generate_large_dataset():
-    """Generate a large dataset for performance testing."""
+    """Generate a large dataset for performance testing with various distributions."""
     np.random.seed(45)
+    random.seed(45)
     
-    n = 100000
+    n = 1000000
+    
+    # Generate distributions with various characteristics
+    # Preserve distribution characteristics for proper detection testing
+    
+    # Normal distribution (can have negative values) - keep natural scale
+    normal_data = np.random.normal(loc=0.0, scale=1.0, size=n)
+    
+    # LogNormal distribution (positive values) - keep natural scale
+    lognormal_data = np.random.lognormal(mean=0.0, sigma=1.0, size=n)
+    
+    # Uniform distribution - keep in [0, 1] (natural for uniform)
+    uniform_data = np.random.uniform(0.0, 1.0, n)
+    
+    # Power Law distribution (positive values) - keep natural scale
+    # Generate using inverse transform: x = xmin * (1 - u)^(-1/(alpha-1))
+    # where u is uniform [0,1] and alpha > 1
+    alpha = 2.5
+    xmin = 1.0  # Start from 1.0 for better power-law characteristics
+    powerlaw_data = xmin * np.power(1.0 - np.random.uniform(0.0, 1.0, n), -1.0 / (alpha - 1.0))
+    
+    # Exponential distribution (positive values) - keep natural scale
+    lambda_param = 2.0
+    exponential_data = np.random.exponential(scale=1.0/lambda_param, size=n)
+    
+    # Beta distribution - naturally in [0, 1], keep as is
+    beta_data = np.random.beta(a=2.0, b=5.0, size=n)
+    
+    # Gamma distribution (positive values) - keep natural scale
+    shape = 2.0
+    scale = 0.5
+    gamma_data = np.random.gamma(shape=shape, scale=scale, size=n)
+    
+    # Chi-squared distribution (non-negative) - keep natural scale
+    df = 5.0
+    chisq_data = np.random.chisquare(df=df, size=n)
+    
+    # Student's t distribution (can have negative values) - keep natural scale
+    t_df = 5.0
+    t_data = np.random.standard_t(df=t_df, size=n)
+    
+    # Poisson distribution (non-negative integers) - KEEP AS INTEGERS
+    lambda_poisson = 5.0
+    poisson_data = np.random.poisson(lam=lambda_poisson, size=n).astype(int)
+    
+    # Bernoulli distribution - KEEP AS BINARY INTEGERS [0, 1]
+    p_bernoulli = 0.3
+    bernoulli_data = np.random.binomial(n=1, p=p_bernoulli, size=n).astype(int)
+    
+    # Binomial distribution (non-negative integers) - KEEP AS INTEGERS
+    n_binomial = 20
+    p_binomial = 0.4
+    binomial_data = np.random.binomial(n=n_binomial, p=p_binomial, size=n).astype(int)
+    
+    # Geometric distribution (non-negative integers) - KEEP AS INTEGERS
+    p_geometric = 0.3
+    geometric_data = np.random.geometric(p=p_geometric, size=n).astype(int)
+    
+    # Weibull distribution (positive values) - keep natural scale
+    weibull_shape = 2.0
+    weibull_scale = 1.0
+    weibull_data = weibull_scale * np.power(-np.log(np.random.uniform(0.001, 1.0, n)), 1.0 / weibull_shape)
+    
+    # Generate all 2-letter combinations (AA, AB, ..., ZZ) = 26*26 = 676 categories
+    categories = [f"{chr(65+i)}{chr(65+j)}" for i in range(26) for j in range(26)]
+    num_categories = len(categories)
+
+    # Generate power-law distributed categories
+    power_law_values = np.random.power(a=1.5, size=n)   # 1.5 alpha for power law
+    category_indices = (power_law_values * num_categories).astype(int)
+    category_indices = np.clip(category_indices, 0, num_categories - 1)
+    category_data = [categories[idx] for idx in category_indices]
+    
     data = {
         "id": list(range(1, n + 1)),
-        "category": np.random.choice(["A", "B", "C", "D", "E"], n).tolist(),
+        "category": category_data,
         "value1": np.random.randint(0, 1000, n).tolist(),
         "value2": [round(random.uniform(0.0, 100.0), 2) for _ in range(n)],
         "value3": np.random.choice([True, False], n).tolist(),
         "timestamp": [datetime(2024, 1, 1) + timedelta(seconds=i) for i in range(n)],
+        # Distribution columns
+        # Continuous distributions: round to 6 decimal places
+        "dist_normal": [round(float(x), 6) for x in normal_data],
+        "dist_lognormal": [round(float(x), 6) for x in lognormal_data],
+        "dist_uniform": [round(float(x), 6) for x in uniform_data],
+        "dist_powerlaw": [round(float(x), 6) for x in powerlaw_data],
+        "dist_exponential": [round(float(x), 6) for x in exponential_data],
+        "dist_beta": [round(float(x), 6) for x in beta_data],
+        "dist_gamma": [round(float(x), 6) for x in gamma_data],
+        "dist_chisquared": [round(float(x), 6) for x in chisq_data],
+        "dist_students_t": [round(float(x), 6) for x in t_data],
+        "dist_weibull": [round(float(x), 6) for x in weibull_data],
+        # Discrete distributions: keep as integers (no rounding needed, but convert to list)
+        "dist_poisson": poisson_data.tolist(),
+        "dist_bernoulli": bernoulli_data.tolist(),
+        "dist_binomial": binomial_data.tolist(),
+        "dist_geometric": geometric_data.tolist(),
     }
     
     df = pl.DataFrame(data)
@@ -240,9 +331,23 @@ def generate_error_cases():
     return error_cases
 
 def save_csv(df, filename, **kwargs):
-    """Save DataFrame as CSV."""
-    filepath = OUTPUT_DIR / filename
-    df.write_csv(filepath, **kwargs)
+    """Save DataFrame as CSV, compressed with gzip."""
+    # Remove .csv extension if present, we'll add .csv.gz
+    base_name = filename.replace('.csv', '')
+    filepath = OUTPUT_DIR / f"{base_name}.csv.gz"
+    
+    # Write to temporary file first, then compress
+    temp_path = OUTPUT_DIR / f"{base_name}.csv.tmp"
+    df.write_csv(temp_path, **kwargs)
+    
+    # Compress the CSV file
+    with open(temp_path, 'rb') as f_in:
+        with gzip.open(filepath, 'wb', compresslevel=6) as f_out:
+            f_out.writelines(f_in)
+    
+    # Remove temporary file
+    temp_path.unlink()
+    
     print(f"Generated: {filepath}")
 
 def save_parquet(df, filename):
@@ -272,6 +377,14 @@ def main():
     mixed_df = generate_mixed_types()
     save_csv(mixed_df, "mixed_types.csv")
     save_parquet(mixed_df, "mixed_types.parquet")
+    
+    # Generate a small uncompressed CSV for testing (3 columns, good coverage)
+    print("\n3a. Generating small test CSV (uncompressed)...")
+    test_df = generate_mixed_types()  # Reuse mixed_types as it has good coverage
+    # Save uncompressed version
+    test_filepath = OUTPUT_DIR / "3-sfd-header.csv"
+    test_df.write_csv(test_filepath)
+    print(f"Generated: {test_filepath}")
     
     # Quoted strings
     print("\n4. Generating quoted strings data...")

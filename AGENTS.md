@@ -22,6 +22,8 @@ Datui is a terminal user interface (TUI) for exploring and analyzing tabular dat
   - Widget-based rendering system
 - **Crossterm**: Terminal event handling and input
 
+**NOTE: Agents are not permitted to downgrade package versions without express permission**
+
 ### Supporting Tools
 
 - **Clap**: Command-line argument parsing
@@ -288,6 +290,13 @@ Each modal:
 
 ## Development Workflow
 
+### Python Utilities
+
+- Make a local virtual env `python -m venv .venv` in the repo directory
+- Use it to install the `requirements.txt` in the `scripts/` directory
+- Use it to run the python scripts in the `scripts/` directory
+- Use it to install the `pre-commit` hooks
+
 ### Building
 
 ```bash
@@ -305,6 +314,13 @@ cargo test --test integration_test  # Integration tests
 
 ### Code Quality Checks
 
+**Pre-commit Hooks**:
+- Using the [pre-commit](https://pre-commit.com/) framework
+- For details see config file `.pre-commit-config.yaml`
+- Runs checks for formatting (`cargo fmt`) and linter (`cargo clippy`) warnings before commit
+  - Prevents the need for spurious format commits since all code is formatted before commit
+  - CI builds run these checks, using the pre-commit hooks will prevent their failure
+
 ```bash
 cargo fmt --check       # Check formatting (without modifying files)
 cargo fmt               # Format code
@@ -317,6 +333,7 @@ cargo clippy --fix      # Auto-fix clippy suggestions where possible
 - `tests/statistics_test.rs`: Statistics computation tests
 - `tests/template_test.rs`: Template system tests
 - `tests/common/mod.rs`: Shared test utilities
+- Unit tests are throught the codebase
 
 ### Debug Mode
 
@@ -359,7 +376,7 @@ datui --clear-cache     # Clear all cache data
 - **Lazy Collection**: Only collect visible data
 - **Slicing**: Use `LazyFrame::slice()` for pagination
 - **Caching**: Materialized dataframes cached until transformation
-- **Sampling**: 10,000 row threshold for statistics
+- **Sampling**: 10,000 row default threshold for statistics
 
 ## Current Features
 

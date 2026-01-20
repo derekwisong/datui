@@ -15,7 +15,8 @@ use ratatui::{
 
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::query::parse_query;
-use crate::OpenOptions;
+use crate::{CompressionFormat, OpenOptions};
+use std::io::{BufReader, Read};
 
 pub struct DataTableState {
     pub lf: LazyFrame,
@@ -113,18 +114,100 @@ impl DataTableState {
     }
 
     pub fn from_csv(path: &Path, options: &OpenOptions) -> Result<Self> {
-        Self::from_csv_customize(path, |mut reader| {
-            if let Some(skip_lines) = options.skip_lines {
-                reader = reader.with_skip_lines(skip_lines);
+        // Determine compression format: explicit option, or auto-detect from extension
+        let compression = options
+            .compression
+            .or_else(|| CompressionFormat::from_extension(path));
+
+        if let Some(compression) = compression {
+            // For compressed files, we need to use eager reading
+            // Polars natively supports gzip and zstd via the decompress feature
+            // For bzip2 and xz, we need to decompress manually
+            match compression {
+                CompressionFormat::Gzip | CompressionFormat::Zstd => {
+                    // Polars natively handles gzip and zstd
+                    let mut read_options = CsvReadOptions::default();
+
+                    if let Some(skip_lines) = options.skip_lines {
+                        read_options.skip_lines = skip_lines;
+                    }
+                    if let Some(skip_rows) = options.skip_rows {
+                        read_options.skip_rows = skip_rows;
+                    }
+                    if let Some(has_header) = options.has_header {
+                        read_options.has_header = has_header;
+                    }
+
+                    let df = read_options
+                        .try_into_reader_with_file_path(Some(path.into()))?
+                        .finish()?;
+                    let lf = df.lazy();
+                    Self::new(lf)
+                }
+                CompressionFormat::Bzip2 => {
+                    // Decompress bzip2 manually, then read CSV
+                    let file = File::open(path)?;
+                    let mut decoder = bzip2::read::BzDecoder::new(BufReader::new(file));
+                    let mut decompressed = Vec::new();
+                    decoder.read_to_end(&mut decompressed)?;
+
+                    let mut read_options = CsvReadOptions::default();
+                    if let Some(skip_lines) = options.skip_lines {
+                        read_options.skip_lines = skip_lines;
+                    }
+                    if let Some(skip_rows) = options.skip_rows {
+                        read_options.skip_rows = skip_rows;
+                    }
+                    if let Some(has_header) = options.has_header {
+                        read_options.has_header = has_header;
+                    }
+
+                    let df = CsvReader::new(std::io::Cursor::new(decompressed))
+                        .with_options(read_options)
+                        .finish()?;
+                    let lf = df.lazy();
+                    Self::new(lf)
+                }
+                CompressionFormat::Xz => {
+                    // Decompress xz manually, then read CSV
+                    let file = File::open(path)?;
+                    let mut decoder = xz2::read::XzDecoder::new(BufReader::new(file));
+                    let mut decompressed = Vec::new();
+                    decoder.read_to_end(&mut decompressed)?;
+
+                    let mut read_options = CsvReadOptions::default();
+                    if let Some(skip_lines) = options.skip_lines {
+                        read_options.skip_lines = skip_lines;
+                    }
+                    if let Some(skip_rows) = options.skip_rows {
+                        read_options.skip_rows = skip_rows;
+                    }
+                    if let Some(has_header) = options.has_header {
+                        read_options.has_header = has_header;
+                    }
+
+                    let df = CsvReader::new(std::io::Cursor::new(decompressed))
+                        .with_options(read_options)
+                        .finish()?;
+                    let lf = df.lazy();
+                    Self::new(lf)
+                }
             }
-            if let Some(skip_rows) = options.skip_rows {
-                reader = reader.with_skip_rows(skip_rows);
-            }
-            if let Some(has_header) = options.has_header {
-                reader = reader.with_has_header(has_header);
-            }
-            reader
-        })
+        } else {
+            // For uncompressed files, use lazy scanning (more efficient)
+            Self::from_csv_customize(path, |mut reader| {
+                if let Some(skip_lines) = options.skip_lines {
+                    reader = reader.with_skip_lines(skip_lines);
+                }
+                if let Some(skip_rows) = options.skip_rows {
+                    reader = reader.with_skip_rows(skip_rows);
+                }
+                if let Some(has_header) = options.has_header {
+                    reader = reader.with_has_header(has_header);
+                }
+                reader
+            })
+        }
     }
 
     pub fn from_csv_customize<F>(path: &Path, func: F) -> Result<Self>
@@ -885,10 +968,18 @@ mod tests {
 
     #[test]
     fn test_from_csv() {
-        // This test remains to ensure file-based loading works
+        // Test uncompressed CSV loading
         let path = Path::new("tests/sample-data/3-sfd-header.csv");
         let state = DataTableState::from_csv(path, &Default::default()).unwrap();
-        assert_eq!(state.schema.len(), 3);
+        assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
+    }
+
+    #[test]
+    fn test_from_csv_gzipped() {
+        // Test gzipped CSV loading
+        let path = Path::new("tests/sample-data/mixed_types.csv.gz");
+        let state = DataTableState::from_csv(path, &Default::default()).unwrap();
+        assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
     }
 
     #[test]

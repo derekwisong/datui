@@ -147,30 +147,13 @@ impl AnalysisModal {
                 self.view = AnalysisView::DistributionDetail;
                 self.detail_section = 0;
                 self.focus = AnalysisFocus::DistributionSelector; // Start with distribution selector focused
-                                                                  // Set selector state to match selected distribution
-                                                                  // If detected type is Unknown, default to Normal (index 0) since Unknown is not in selector
-                let dist_idx = match self.selected_theoretical_distribution {
-                    DistributionType::Normal => 0,
-                    DistributionType::LogNormal => 1,
-                    DistributionType::Uniform => 2,
-                    DistributionType::PowerLaw => 3,
-                    DistributionType::Exponential => 4,
-                    DistributionType::Beta => 5,
-                    DistributionType::Gamma => 6,
-                    DistributionType::ChiSquared => 7,
-                    DistributionType::StudentsT => 8,
-                    DistributionType::Poisson => 9,
-                    DistributionType::Bernoulli => 10,
-                    DistributionType::Binomial => 11,
-                    DistributionType::Geometric => 12,
-                    DistributionType::Weibull => 13,
-                    DistributionType::Unknown => 0, // Default to Normal if Unknown
-                };
-                // If it was Unknown, also update selected_theoretical_distribution to Normal
+                                                                  // If detected type is Unknown, default to Normal since Unknown is not in selector
                 if self.selected_theoretical_distribution == DistributionType::Unknown {
                     self.selected_theoretical_distribution = DistributionType::Normal;
                 }
-                self.distribution_selector_state.select(Some(dist_idx));
+                // Clear selector state - render_distribution_selector will set it to the correct
+                // sorted position based on selected_theoretical_distribution (the detected type)
+                self.distribution_selector_state.select(None);
             }
         }
     }
@@ -378,9 +361,12 @@ impl AnalysisModal {
 
     // Distribution selector navigation
     pub fn next_distribution(&mut self) {
+        // Calculate max index from sorted distribution list (always 13 for 14 distributions)
+        // The actual sorted list will have 14 items, so max valid index is 13
+        let max_idx = 13; // 14 distributions (0-13)
+
         if let Some(current) = self.distribution_selector_state.selected() {
-            // 14 distributions: indices 0-13
-            let next = (current + 1).min(13);
+            let next = (current + 1).min(max_idx);
             self.distribution_selector_state.select(Some(next));
             // Update charts immediately as user scrolls (no Enter needed)
             self.select_distribution();
@@ -404,24 +390,70 @@ impl AnalysisModal {
     }
 
     pub fn select_distribution(&mut self) {
+        // The distribution list is sorted by p-value in the widget
+        // We need to get the distribution type from the sorted list
+        // Use the same stored p-values and sorting logic as the widget to ensure consistency
         if let Some(idx) = self.distribution_selector_state.selected() {
-            self.selected_theoretical_distribution = match idx {
-                0 => DistributionType::Normal,
-                1 => DistributionType::LogNormal,
-                2 => DistributionType::Uniform,
-                3 => DistributionType::PowerLaw,
-                4 => DistributionType::Exponential,
-                5 => DistributionType::Beta,
-                6 => DistributionType::Gamma,
-                7 => DistributionType::ChiSquared,
-                8 => DistributionType::StudentsT,
-                9 => DistributionType::Poisson,
-                10 => DistributionType::Bernoulli,
-                11 => DistributionType::Binomial,
-                12 => DistributionType::Geometric,
-                13 => DistributionType::Weibull,
-                _ => DistributionType::Normal,
-            };
+            if let Some(results) = &self.analysis_results {
+                // Use the same distribution analysis that's currently being viewed in detail
+                // This ensures we're using the correct column's p-values, not always the first column
+                let dist_analysis_idx = self.distribution_table_state.selected().unwrap_or(0);
+                if let Some(dist_analysis) = results.distribution_analyses.get(dist_analysis_idx) {
+                    // Use the same distribution list and p-value lookup as the widget
+                    let distributions = [
+                        ("Normal", DistributionType::Normal),
+                        ("LogNormal", DistributionType::LogNormal),
+                        ("Uniform", DistributionType::Uniform),
+                        ("PowerLaw", DistributionType::PowerLaw),
+                        ("Exponential", DistributionType::Exponential),
+                        ("Beta", DistributionType::Beta),
+                        ("Gamma", DistributionType::Gamma),
+                        ("Chi-Squared", DistributionType::ChiSquared),
+                        ("Student's t", DistributionType::StudentsT),
+                        ("Poisson", DistributionType::Poisson),
+                        ("Bernoulli", DistributionType::Bernoulli),
+                        ("Binomial", DistributionType::Binomial),
+                        ("Geometric", DistributionType::Geometric),
+                        ("Weibull", DistributionType::Weibull),
+                    ];
+
+                    // Use stored p-values from initial analysis (same as widget) - no recalculation needed
+                    let mut distribution_scores: Vec<(DistributionType, f64)> = distributions
+                        .iter()
+                        .map(|(_, dist_type)| {
+                            // Use stored p-values from initial analysis - matches widget logic
+                            let p_value = dist_analysis
+                                .all_distribution_pvalues
+                                .get(dist_type)
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    // Fallback: if not in stored values (e.g., Geometric skipped), use placeholder
+                                    if *dist_type == DistributionType::Geometric {
+                                        0.01 // Placeholder to prevent freezes
+                                    } else {
+                                        0.0 // Default for untested distributions
+                                    }
+                                });
+                            (*dist_type, p_value)
+                        })
+                        .collect();
+
+                    // Sort by p-value (descending) - same logic as widget
+                    distribution_scores
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                    // Get distribution type at sorted index - ensure index is within bounds
+                    // If index is out of bounds, clamp it to the valid range to prevent rendering issues
+                    let valid_idx = idx.min(distribution_scores.len().saturating_sub(1));
+                    if let Some((dist_type, _)) = distribution_scores.get(valid_idx) {
+                        self.selected_theoretical_distribution = *dist_type;
+                        // If index was out of bounds, update selector state to the clamped index
+                        if idx != valid_idx {
+                            self.distribution_selector_state.select(Some(valid_idx));
+                        }
+                    }
+                }
+            }
         }
     }
 }

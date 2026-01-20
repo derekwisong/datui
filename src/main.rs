@@ -134,6 +134,7 @@ mod tests {
             skip_rows: Some(2),
             no_header: Some(true),
             delimiter: Some(b','),
+            compression: None,
             debug: false,
             clear_cache: false,
             template: None,

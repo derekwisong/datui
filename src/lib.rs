@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, StatefulWidget, Table,
+    Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, StatefulWidget, Table,
 };
 
 pub mod analysis_modal;
@@ -41,12 +41,83 @@ use widgets::template_modal::{CreateFocus, TemplateFocus, TemplateModal, Templat
 /// Application name used for cache directory and other app-specific paths
 pub const APP_NAME: &str = "datui";
 
+/// Re-export compression format from CLI module
+pub use cli::CompressionFormat;
+
+impl CompressionFormat {
+    /// Detect compression format from file extension
+    pub fn from_extension(path: &std::path::Path) -> Option<Self> {
+        // Check final extension (e.g., .csv.gz -> gz)
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            match ext.to_lowercase().as_str() {
+                "gz" => Some(Self::Gzip),
+                "zst" | "zstd" => Some(Self::Zstd),
+                "bz2" | "bz" => Some(Self::Bzip2),
+                "xz" => Some(Self::Xz),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Get file extension for this compression format
+    pub fn extension(&self) -> &'static str {
+        match self {
+            Self::Gzip => "gz",
+            Self::Zstd => "zst",
+            Self::Bzip2 => "bz2",
+            Self::Xz => "xz",
+        }
+    }
+}
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_compression_detection() {
+        assert_eq!(
+            CompressionFormat::from_extension(Path::new("file.csv.gz")),
+            Some(CompressionFormat::Gzip)
+        );
+        assert_eq!(
+            CompressionFormat::from_extension(Path::new("file.csv.zst")),
+            Some(CompressionFormat::Zstd)
+        );
+        assert_eq!(
+            CompressionFormat::from_extension(Path::new("file.csv.bz2")),
+            Some(CompressionFormat::Bzip2)
+        );
+        assert_eq!(
+            CompressionFormat::from_extension(Path::new("file.csv.xz")),
+            Some(CompressionFormat::Xz)
+        );
+        assert_eq!(
+            CompressionFormat::from_extension(Path::new("file.csv")),
+            None
+        );
+        assert_eq!(CompressionFormat::from_extension(Path::new("file")), None);
+    }
+
+    #[test]
+    fn test_compression_extension() {
+        assert_eq!(CompressionFormat::Gzip.extension(), "gz");
+        assert_eq!(CompressionFormat::Zstd.extension(), "zst");
+        assert_eq!(CompressionFormat::Bzip2.extension(), "bz2");
+        assert_eq!(CompressionFormat::Xz.extension(), "xz");
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct OpenOptions {
     pub delimiter: Option<u8>,
     pub has_header: Option<bool>,
     pub skip_lines: Option<usize>,
     pub skip_rows: Option<usize>,
+    pub compression: Option<CompressionFormat>,
 }
 
 impl OpenOptions {
@@ -56,6 +127,7 @@ impl OpenOptions {
             has_header: None,
             skip_lines: None,
             skip_rows: None,
+            compression: None,
         }
     }
 
@@ -78,6 +150,11 @@ impl OpenOptions {
         self.has_header = Some(has_header);
         self
     }
+
+    pub fn with_compression(mut self, compression: CompressionFormat) -> Self {
+        self.compression = Some(compression);
+        self
+    }
 }
 
 impl From<&cli::Args> for OpenOptions {
@@ -95,6 +172,9 @@ impl From<&cli::Args> for OpenOptions {
         if let Some(delimiter) = args.delimiter {
             opts = opts.with_delimiter(delimiter);
         }
+        if let Some(compression) = args.compression {
+            opts = opts.with_compression(compression);
+        }
 
         opts
     }
@@ -103,6 +183,8 @@ impl From<&cli::Args> for OpenOptions {
 pub enum AppEvent {
     Key(KeyEvent),
     Open(PathBuf, OpenOptions),
+    DoLoad(PathBuf, OpenOptions), // Internal event to actually perform loading after UI update
+    DoDecompress(PathBuf, OpenOptions), // Internal event to perform decompression after UI shows "Decompressing"
     Exit,
     Crash(String),
     Search(String),
@@ -152,6 +234,24 @@ impl ErrorModal {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub enum LoadingState {
+    #[default]
+    Idle,
+    Loading {
+        file_path: PathBuf,
+        file_size: u64,        // Size of compressed file in bytes
+        current_phase: String, // e.g., "Opening file", "Decompressing", "Building lazyframe", "Rendering data"
+        progress_percent: u16, // 0-100
+    },
+}
+
+impl LoadingState {
+    pub fn is_loading(&self) -> bool {
+        matches!(self, LoadingState::Loading { .. })
+    }
+}
+
 // Helper struct to save state before template application
 struct TemplateApplicationState {
     lf: LazyFrame,
@@ -188,12 +288,54 @@ pub struct App {
     query_history: Vec<String>,         // History of successful queries
     query_history_index: Option<usize>, // Current position in history (None = editing new query)
     query_history_temp: Option<String>, // Temporary storage for current input when navigating history
+    loading_state: LoadingState,        // Current loading state for progress indication
 }
 
 impl App {
     pub fn send_event(&mut self, event: AppEvent) -> Result<()> {
         self.events.send(event)?;
         Ok(())
+    }
+
+    fn render_loading_gauge(loading_state: &LoadingState, area: Rect, buf: &mut Buffer) {
+        if let LoadingState::Loading {
+            current_phase,
+            progress_percent,
+            ..
+        } = loading_state
+        {
+            // Center the gauge in the area
+            let gauge_width = (area.width as f64 * 0.33) as u16; // 1/3 of available width
+            let gauge_height = 5u16; // Height for title, subtitle, and gauge
+
+            let center_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(gauge_height),
+                    Constraint::Fill(1),
+                ])
+                .split(area);
+
+            let gauge_area_layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(gauge_width),
+                    Constraint::Fill(1),
+                ])
+                .split(center_layout[1]);
+
+            let gauge_area = gauge_area_layout[1];
+
+            // Create gauge with progress percentage
+            let gauge = Gauge::default()
+                .block(Block::default().borders(Borders::ALL).title("Loading"))
+                .percent(*progress_percent)
+                .label(current_phase.clone());
+
+            gauge.render(gauge_area, buf);
+        }
     }
 
     pub fn new(events: Sender<AppEvent>) -> App {
@@ -248,6 +390,7 @@ impl App {
             query_history: Vec::new(),
             query_history_index: None,
             query_history_temp: None,
+            loading_state: LoadingState::Idle,
         };
 
         app.load_query_history();
@@ -336,6 +479,84 @@ impl App {
     }
 
     fn load(&mut self, path: &Path, options: &OpenOptions) -> Result<()> {
+        // Check for compressed CSV files (e.g., file.csv.gz, file.csv.zst, etc.)
+        let compression = options
+            .compression
+            .or_else(|| CompressionFormat::from_extension(path));
+        let is_csv = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|stem| {
+                stem.ends_with(".csv")
+                    || path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.eq_ignore_ascii_case("csv"))
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        let is_compressed_csv = compression.is_some() && is_csv;
+
+        // For compressed files, decompression phase is already set in DoLoad handler
+        // Now actually perform decompression and CSV reading (this is the slow part)
+        if is_compressed_csv {
+            let lf = DataTableState::from_csv(path, options)?;
+
+            // Phase 2: Building lazyframe (after decompression, before rendering)
+            if let LoadingState::Loading {
+                file_path,
+                file_size,
+                ..
+            } = &self.loading_state
+            {
+                self.loading_state = LoadingState::Loading {
+                    file_path: file_path.clone(),
+                    file_size: *file_size,
+                    current_phase: "Building lazyframe".to_string(),
+                    progress_percent: 60,
+                };
+            }
+
+            // Phase 3: Rendering data
+            if let LoadingState::Loading {
+                file_path,
+                file_size,
+                ..
+            } = &self.loading_state
+            {
+                self.loading_state = LoadingState::Loading {
+                    file_path: file_path.clone(),
+                    file_size: *file_size,
+                    current_phase: "Rendering data".to_string(),
+                    progress_percent: 90,
+                };
+            }
+
+            // Clear loading state after successful load
+            self.loading_state = LoadingState::Idle;
+            self.data_table_state = Some(lf);
+            self.path = Some(path.to_path_buf());
+            self.sort_modal = SortModal::new();
+            self.filter_modal = FilterModal::new();
+            return Ok(());
+        }
+
+        // For non-gzipped files, proceed with normal loading
+        // Phase 2: Building lazyframe
+        if let LoadingState::Loading {
+            file_path,
+            file_size,
+            ..
+        } = &self.loading_state
+        {
+            self.loading_state = LoadingState::Loading {
+                file_path: file_path.clone(),
+                file_size: *file_size,
+                current_phase: "Building lazyframe".to_string(),
+                progress_percent: 60,
+            };
+        }
+
         let lf = match path.extension() {
             Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(path)?,
             Some(ext) if ext.eq_ignore_ascii_case("csv") => {
@@ -352,8 +573,29 @@ impl App {
                 DataTableState::from_json_lines(path)?
             }
             Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(path)?,
-            _ => return Err(color_eyre::eyre::eyre!("Unsupported file type")),
+            _ => {
+                self.loading_state = LoadingState::Idle;
+                return Err(color_eyre::eyre::eyre!("Unsupported file type"));
+            }
         };
+
+        // Phase 3: Rendering data
+        if let LoadingState::Loading {
+            file_path,
+            file_size,
+            ..
+        } = &self.loading_state
+        {
+            self.loading_state = LoadingState::Loading {
+                file_path: file_path.clone(),
+                file_size: *file_size,
+                current_phase: "Rendering data".to_string(),
+                progress_percent: 90,
+            };
+        }
+
+        // Clear loading state after successful load
+        self.loading_state = LoadingState::Idle;
         self.data_table_state = Some(lf);
         self.path = Some(path.to_path_buf());
         self.sort_modal = SortModal::new();
@@ -2544,10 +2786,79 @@ impl App {
         self.debug.num_events += 1;
         match event {
             AppEvent::Key(key) => self.key(key),
-            AppEvent::Open(path, options) => match self.load(path, options) {
-                Ok(_) => Some(AppEvent::Collect),
-                Err(e) => Some(AppEvent::Crash(e.to_string())),
-            },
+            AppEvent::Open(path, options) => {
+                // Set loading state first, then trigger a render before actually loading
+                let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+                self.loading_state = LoadingState::Loading {
+                    file_path: path.clone(),
+                    file_size,
+                    current_phase: "Opening file".to_string(),
+                    progress_percent: 10,
+                };
+
+                // Return DoLoad event to perform actual loading after UI renders
+                Some(AppEvent::DoLoad(path.clone(), options.clone()))
+            }
+            AppEvent::DoLoad(path, options) => {
+                // Check if file is compressed
+                let compression = options
+                    .compression
+                    .or_else(|| CompressionFormat::from_extension(path));
+                let is_csv = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(|stem| {
+                        stem.ends_with(".csv")
+                            || path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|e| e.eq_ignore_ascii_case("csv"))
+                                .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                let is_compressed_csv = compression.is_some() && is_csv;
+
+                if is_compressed_csv {
+                    // Set "Decompressing" phase and return event to trigger render
+                    if let LoadingState::Loading {
+                        file_path,
+                        file_size,
+                        ..
+                    } = &self.loading_state
+                    {
+                        self.loading_state = LoadingState::Loading {
+                            file_path: file_path.clone(),
+                            file_size: *file_size,
+                            current_phase: "Decompressing".to_string(),
+                            progress_percent: 30,
+                        };
+                    }
+                    // Return DoDecompress to allow UI to render "Decompressing" before blocking
+                    Some(AppEvent::DoDecompress(path.clone(), options.clone()))
+                } else {
+                    // For non-compressed files, proceed with normal loading
+                    match self.load(path, options) {
+                        Ok(_) => Some(AppEvent::Collect),
+                        Err(e) => {
+                            // Clear loading state on error
+                            self.loading_state = LoadingState::Idle;
+                            Some(AppEvent::Crash(e.to_string()))
+                        }
+                    }
+                }
+            }
+            AppEvent::DoDecompress(path, options) => {
+                // Actually perform decompression now (after UI has rendered "Decompressing")
+                match self.load(path, options) {
+                    Ok(_) => Some(AppEvent::Collect),
+                    Err(e) => {
+                        // Clear loading state on error
+                        self.loading_state = LoadingState::Idle;
+                        Some(AppEvent::Crash(e.to_string()))
+                    }
+                }
+            }
             AppEvent::Resize(_cols, rows) => {
                 if let Some(state) = &mut self.data_table_state {
                     state.visible_rows = *rows as usize;
@@ -3102,7 +3413,14 @@ impl Widget for &mut App {
                     DataTable::new().render(table_area, buf, state);
                 }
             }
-            None => Paragraph::new("No data loaded").render(layout[0], buf),
+            None => {
+                // Show loading indicator if loading, otherwise show "No data loaded"
+                if self.loading_state.is_loading() {
+                    App::render_loading_gauge(&self.loading_state, layout[0], buf);
+                } else {
+                    Paragraph::new("No data loaded").render(layout[0], buf);
+                }
+            }
         }
 
         let mut controls_area = layout[1];

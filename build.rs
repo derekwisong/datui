@@ -1,9 +1,22 @@
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, Parser, ValueEnum};
 use clap_mangen::Man;
 use std::env;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+
+/// Compression format for data files
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum CompressionFormat {
+    /// Gzip compression (.gz) - Most common, good balance of speed and compression
+    Gzip,
+    /// Zstandard compression (.zst) - Modern, fast compression with good ratios
+    Zstd,
+    /// Bzip2 compression (.bz2) - Good compression ratio, slower than gzip
+    Bzip2,
+    /// XZ compression (.xz) - Excellent compression ratio, slower than bzip2
+    Xz,
+}
 
 // Duplicate Args struct for build.rs since it can't access the library crate
 #[derive(Parser, Debug)]
@@ -26,6 +39,12 @@ struct Args {
     /// Specify the delimiter to use when reading a file
     #[arg(long = "delimiter")]
     delimiter: Option<u8>,
+
+    /// Specify the compression format explicitly (gzip, zstd, bzip2, xz)
+    /// If not specified, compression is auto-detected from file extension.
+    /// Supported formats: gzip (.gz), zstd (.zst), bzip2 (.bz2), xz (.xz)
+    #[arg(long = "compression", value_enum)]
+    compression: Option<CompressionFormat>,
 
     /// Enable debug mode to show operational information
     #[arg(long = "debug", action)]

@@ -70,3 +70,69 @@ jobs:
 
       - name: Build
         run: cargo build --release
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binary
+          path: |
+            target/release/datui
+            target/release/datui.1
+          retention-days: 1
+
+  docs:
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    needs: [test, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install mdbook
+        run: |
+          cargo install mdbook --version 0.4.36
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-binary
+          path: target/release/
+
+      - name: Make build script executable
+        run: chmod +x scripts/build_versioned_docs.sh
+
+      - name: Build versioned documentation
+        run: |
+          ./scripts/build_versioned_docs.sh
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./book
+
+  deploy-docs:
+    permissions:
+      pages: write
+      id-token: write
+    needs: docs
+    if: github.event_name != 'pull_request'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -33,6 +33,15 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binary
+          path: |
+            target/release/datui
+            target/release/datui.1
+          retention-days: 1
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:

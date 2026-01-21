@@ -7,11 +7,17 @@ set -e
 # Ensure we're in repo root
 cd "$(git rev-parse --show-toplevel)"
 
-# Check if mdbook is installed
+# mdbook might be installed in the ~/.cargo/bin which may not be on the path.
+# if mdbook is not found, try there
 if ! command -v mdbook &> /dev/null; then
-    echo "Error: mdbook is not installed"
-    echo "Install it with: cargo install mdbook --version 0.4.36"
-    exit 1
+    echo "mdbook not found, trying ${HOME}/.cargo/bin"
+    if [ -f "${HOME}/.cargo/bin/mdbook" ]; then
+        export PATH="${HOME}/.cargo/bin:$PATH"
+        echo "mdbook found in ${HOME}/.cargo/bin"
+    else
+        echo "mdbook not found in ${HOME}/.cargo/bin"
+        exit 1
+    fi
 fi
 
 echo "Building all documentation locally..."

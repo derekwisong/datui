@@ -121,10 +121,10 @@ INDEX_HEADER
 
 # Add main/latest version first if it exists
 if [ -d "${OUTPUT_DIR}/main" ]; then
-    # Get the commit date for the main branch
+    # Get the commit date and time in UTC for the main branch
     MAIN_DATE=""
     if git rev-parse main >/dev/null 2>&1; then
-        MAIN_DATE=$(git log -1 --format=%ai main 2>/dev/null | cut -d' ' -f1 || echo "")
+        MAIN_DATE=$(TZ=UTC git log -1 --date=format:'%Y-%m-%d %H:%M UTC' --format=%ad main 2>/dev/null || echo "")
     fi
     
     if [ -n "$MAIN_DATE" ]; then
@@ -151,10 +151,10 @@ if [ -d "${OUTPUT_DIR}" ]; then
         if [ -d "$version_dir" ]; then
             VERSION_NAME=$(basename "$version_dir")
             
-            # Try to get tag date if available (requires git access)
+            # Try to get tag date and time in UTC if available (requires git access)
             TAG_DATE=""
             if git rev-parse "$VERSION_NAME" >/dev/null 2>&1; then
-                TAG_DATE=$(git log -1 --format=%ai "$VERSION_NAME" 2>/dev/null | cut -d' ' -f1 || echo "")
+                TAG_DATE=$(TZ=UTC git log -1 --date=format:'%Y-%m-%d %H:%M UTC' --format=%ad "$VERSION_NAME" 2>/dev/null || echo "")
             fi
             
             if [ -n "$TAG_DATE" ]; then

@@ -121,13 +121,25 @@ INDEX_HEADER
 
 # Add main/latest version first if it exists
 if [ -d "${OUTPUT_DIR}/main" ]; then
-    cat >> "${OUTPUT_DIR}/index.html" << 'INDEX_MAIN'
+    # Get the commit date for the main branch
+    MAIN_DATE=""
+    if git rev-parse main >/dev/null 2>&1; then
+        MAIN_DATE=$(git log -1 --format=%ai main 2>/dev/null | cut -d' ' -f1 || echo "")
+    fi
+    
+    if [ -n "$MAIN_DATE" ]; then
+        DATE_STR="Last updated: ${MAIN_DATE}"
+    else
+        DATE_STR="Development version - most current features"
+    fi
+    
+    cat >> "${OUTPUT_DIR}/index.html" << INDEX_MAIN
         <a href="main/index.html" class="version-card latest">
             <h2>
                 main
                 <span class="badge">latest</span>
             </h2>
-            <p>Development version - most current features</p>
+            <p>${DATE_STR}</p>
         </a>
 INDEX_MAIN
 fi

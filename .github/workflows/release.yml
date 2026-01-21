@@ -71,28 +71,34 @@ jobs:
           TAG_NAME=${GITHUB_REF#refs/tags/}
           echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
 
-      - name: Download existing docs artifact
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: documentation
-          path: book/
 
-      - name: Build documentation for this tag
+      - name: Build all historical tag documentation
         run: |
+          ORIGINAL_COMMIT=$(git rev-parse HEAD)
+          ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           [ -f scripts/build_single_version_docs.sh ] || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
           [ -f scripts/rebuild_index.sh ] || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
           chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
-          ./scripts/build_single_version_docs.sh "${{ steps.tag.outputs.tag }}"
+          
+          SCRIPT_DIR="/tmp/datui-build-scripts-$$"
+          mkdir -p "$SCRIPT_DIR"
+          cp scripts/build_single_version_docs.sh "$SCRIPT_DIR/"
+          cp scripts/rebuild_index.sh "$SCRIPT_DIR/"
+          chmod +x "$SCRIPT_DIR"/*.sh
+          
+          mkdir -p book
+          VERSION_TAGS=$(git tag -l "v*" | sort -V)
+          
+          for tag in $VERSION_TAGS; do
+            "$SCRIPT_DIR/build_single_version_docs.sh" "$tag" || true
+            git checkout "$ORIGINAL_COMMIT" 2>/dev/null || git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout main 2>/dev/null
+          done
+          
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
+          rm -rf "$SCRIPT_DIR"
+          
           ./scripts/rebuild_index.sh
-
-      - name: Upload updated docs artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: documentation
-          path: book/
-          retention-days: 90
-          if-no-files-found: ignore
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

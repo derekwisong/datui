@@ -96,36 +96,50 @@ jobs:
       - name: Download existing docs artifact
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: documentation
           path: book/
-          if-no-files-found: ignore
 
       - name: Build missing historical tag documentation
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           chmod +x scripts/build_single_version_docs.sh
           
+          # Ensure book directory exists
+          mkdir -p book
+          
           # Get all version tags
           VERSION_TAGS=$(git tag -l "v*" | sort -V)
           
-          # Check which tags already have docs built
-          MISSING_TAGS=""
-          for tag in $VERSION_TAGS; do
-            if [ ! -d "book/${tag}" ]; then
-              MISSING_TAGS="${MISSING_TAGS} ${tag}"
-            fi
-          done
-          
-          if [ -n "$MISSING_TAGS" ]; then
-            echo "Found missing tag documentation, building:${MISSING_TAGS}"
-            for tag in $MISSING_TAGS; do
-              echo "Building docs for missing tag: $tag"
+          # Check if artifact was downloaded (book directory has content)
+          # If book is empty or doesn't have any tag directories, build all tags
+          if [ ! -d "book" ] || [ -z "$(ls -A book 2>/dev/null)" ] || [ -z "$(find book -maxdepth 1 -type d -name 'v*' 2>/dev/null)" ]; then
+            echo "No existing documentation found, building all historical tags..."
+            for tag in $VERSION_TAGS; do
+              echo "Building docs for tag: $tag"
               ./scripts/build_single_version_docs.sh "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
             done
-            echo "✓ Built missing historical tag documentation"
+            echo "✓ Built all historical tag documentation"
           else
-            echo "✓ All historical tags already have documentation"
+            # Check which tags already have docs built
+            MISSING_TAGS=""
+            for tag in $VERSION_TAGS; do
+              if [ ! -d "book/${tag}" ]; then
+                MISSING_TAGS="${MISSING_TAGS} ${tag}"
+              fi
+            done
+            
+            if [ -n "$MISSING_TAGS" ]; then
+              echo "Found missing tag documentation, building:${MISSING_TAGS}"
+              for tag in $MISSING_TAGS; do
+                echo "Building docs for missing tag: $tag"
+                ./scripts/build_single_version_docs.sh "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
+              done
+              echo "✓ Built missing historical tag documentation"
+            else
+              echo "✓ All historical tags already have documentation"
+            fi
           fi
 
       - name: Build documentation for main branch

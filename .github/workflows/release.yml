@@ -83,8 +83,10 @@ jobs:
 
       - name: Build documentation for this tag
         run: |
-          chmod +x scripts/build_single_version_docs.sh
-          chmod +x scripts/rebuild_index.sh
+          # Ensure scripts are executable and exist
+          [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
+          [ -f scripts/rebuild_index.sh ] && chmod +x scripts/rebuild_index.sh || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
+          
           # Build only this tag's docs
           ./scripts/build_single_version_docs.sh "${{ steps.tag.outputs.tag }}"
           # Rebuild index to include all versions

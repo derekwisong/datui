@@ -86,8 +86,10 @@ jobs:
       - name: Build documentation for PR verification
         if: github.event_name == 'pull_request'
         run: |
-          chmod +x scripts/build_single_version_docs.sh
-          chmod +x scripts/rebuild_index.sh
+          # Ensure scripts are executable and exist
+          [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
+          [ -f scripts/rebuild_index.sh ] && chmod +x scripts/rebuild_index.sh || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
+          
           # Build docs for current branch to verify they work
           # Use a temporary name since we won't deploy PR docs
           ./scripts/build_single_version_docs.sh "main"
@@ -101,10 +103,19 @@ jobs:
           name: documentation
           path: book/
 
+      - name: Verify scripts exist
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          echo "Checking for required scripts..."
+          ls -la scripts/ || echo "scripts/ directory not found"
+          [ -f scripts/build_single_version_docs.sh ] && echo "✓ build_single_version_docs.sh exists" || echo "✗ build_single_version_docs.sh NOT FOUND"
+          [ -f scripts/rebuild_index.sh ] && echo "✓ rebuild_index.sh exists" || echo "✗ rebuild_index.sh NOT FOUND"
+
       - name: Build missing historical tag documentation
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          chmod +x scripts/build_single_version_docs.sh
+          # Ensure scripts are executable
+          [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
           
           # Ensure book directory exists
           mkdir -p book
@@ -145,8 +156,10 @@ jobs:
       - name: Build documentation for main branch
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          chmod +x scripts/build_single_version_docs.sh
-          chmod +x scripts/rebuild_index.sh
+          # Ensure scripts are executable and exist
+          [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
+          [ -f scripts/rebuild_index.sh ] && chmod +x scripts/rebuild_index.sh || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
+          
           # Build the main branch docs
           ./scripts/build_single_version_docs.sh "main"
           # Rebuild index to include all versions

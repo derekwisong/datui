@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,52 +28,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Check formatting
-        run: cargo fmt --check
-
-      - name: Build everything (including tests)
-        run: cargo build --tests --locked
-
-      - name: Run clippy (reuses build artifacts)
-        run: cargo clippy --all-targets --locked -- -D warnings
-
-      - name: Run tests (reuses build artifacts)
-        run: cargo test --all --locked
-
-      - name: Verify binary exists
-        run: test -f target/debug/datui || (echo "Binary not found after tests" && exit 1)
-
-  docs:
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-    needs: test
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry and binaries
+      - name: Cache cargo dependencies and build artifacts
         uses: actions/cache@v4
         with:
           path: |
@@ -99,25 +54,25 @@ jobs:
         if: steps.cache-mdbook.outputs.cache-hit != 'true'
         run: |
           cargo install mdbook --version 0.4.36 --locked
-        continue-on-error: false
 
-      - name: Verify mdbook is available
-        run: |
-          if command -v mdbook >/dev/null 2>&1; then
-            mdbook --version
-            echo "✓ mdbook is available"
-          else
-            echo "✗ mdbook not found in PATH"
-            exit 1
-          fi
+      - name: Check formatting
+        run: cargo fmt --check
 
-      - name: Build binary and generate manpage (debug mode)
-        run: cargo build --locked
+      - name: Build everything (including tests)
+        run: cargo build --tests --locked
+
+      - name: Run clippy (reuses build artifacts)
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run tests (reuses build artifacts)
+        run: cargo test --all --locked
+
+      - name: Verify binary exists
+        run: test -f target/debug/datui || (echo "Binary not found after tests" && exit 1)
 
       - name: Verify manpage was generated
         run: |
           # The manpage is generated in OUT_DIR during build.rs execution
-          # Verify it exists by finding it in the target directory
           if find target/debug/build -name "datui.1" -type f | head -1; then
             echo "✓ Manpage generated successfully"
           else
@@ -125,17 +80,18 @@ jobs:
             exit 1
           fi
 
-      - name: Make build script executable
-        run: chmod +x scripts/build_versioned_docs.sh
-
-      - name: Build versioned documentation
+      - name: Build documentation (main branch only)
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
+          chmod +x scripts/build_versioned_docs.sh
           ./scripts/build_versioned_docs.sh
 
       - name: Setup Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v4
 
-      - name: Upload artifact
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./book
@@ -144,8 +100,8 @@ jobs:
     permissions:
       pages: write
       id-token: write
-    needs: docs
-    if: github.event_name != 'pull_request'
+    needs: build-and-test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

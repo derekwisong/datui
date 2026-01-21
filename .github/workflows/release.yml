@@ -2,6 +2,8 @@ name: Release
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 on:
   push:
@@ -9,15 +11,18 @@ on:
       - 'v*'
 
 jobs:
-  build:
+  build-release-and-docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
+      - name: Cache cargo dependencies and build artifacts
         uses: actions/cache@v4
         with:
           path: |
@@ -30,19 +35,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Cache mdbook binary
+        id: cache-mdbook
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: ${{ runner.os }}-mdbook-0.4.36
+          restore-keys: |
+            ${{ runner.os }}-mdbook-
+
+      - name: Install mdbook (if not cached)
+        if: steps.cache-mdbook.outputs.cache-hit != 'true'
+        run: |
+          cargo install mdbook --version 0.4.36 --locked
+
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-binary
-          path: |
-            target/release/datui
-            target/release/datui.1
-          retention-days: 1
+      - name: Verify release binary and manpage
+        run: |
+          test -f target/release/datui || (echo "Release binary not found" && exit 1)
+          test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
+          echo "✓ Release artifacts verified"
 
-      - name: Create release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -50,3 +66,27 @@ jobs:
             target/release/datui.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build versioned documentation
+        run: |
+          chmod +x scripts/build_versioned_docs.sh
+          ./scripts/build_versioned_docs.sh
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./book
+
+  deploy-docs:
+    needs: build-release-and-docs
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

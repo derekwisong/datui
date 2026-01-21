@@ -44,10 +44,13 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Run clippy
+      - name: Build everything (including tests)
+        run: cargo build --tests --locked
+
+      - name: Run clippy (reuses build artifacts)
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: Run tests
+      - name: Run tests (reuses build artifacts)
         run: cargo test --all --locked
 
       - name: Verify binary exists

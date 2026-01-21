@@ -11,6 +11,10 @@ IS_TAG=false
 # Ensure we're in repo root
 cd "$(git rev-parse --show-toplevel)"
 
+# Save the original commit/branch we started from
+ORIGINAL_COMMIT=$(git rev-parse HEAD)
+ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
+
 # Create output directory
 mkdir -p "${OUTPUT_DIR}"
 
@@ -18,6 +22,8 @@ mkdir -p "${OUTPUT_DIR}"
 if [[ "$VERSION_NAME" =~ ^v[0-9] ]]; then
     IS_TAG=true
     echo "Building docs for tag: $VERSION_NAME"
+    echo "Original commit: $ORIGINAL_COMMIT"
+    echo "Original branch: $ORIGINAL_BRANCH"
     
     # Checkout the tag
     if ! git checkout "$VERSION_NAME" 2>/dev/null; then
@@ -65,10 +71,22 @@ else
     echo "  Warning: demos directory not found - skipping"
 fi
 
-# If we checked out a tag, return to original branch
+# If we checked out a tag, return to original commit/branch
 if [ "$IS_TAG" = true ]; then
-    # Try to return to main or the original commit
-    git checkout main 2>/dev/null || git checkout "$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null || true
+    echo "Returning to original commit: $ORIGINAL_COMMIT"
+    # Always return to the exact commit we started from
+    git checkout "$ORIGINAL_COMMIT" 2>/dev/null || \
+    git checkout "$ORIGINAL_BRANCH" 2>/dev/null || \
+    git checkout main 2>/dev/null || \
+    (echo "Warning: Could not return to original commit, continuing..." && true)
+    
+    # Verify we're back and scripts exist
+    if [ ! -f "scripts/build_single_version_docs.sh" ]; then
+        echo "Error: Scripts missing after returning from tag checkout"
+        echo "Current commit: $(git rev-parse HEAD)"
+        echo "Current branch: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'detached HEAD')"
+        exit 1
+    fi
 fi
 
 echo "✓ Single version build complete: $VERSION_NAME"

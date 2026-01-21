@@ -112,9 +112,18 @@ jobs:
           [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
           [ -f scripts/rebuild_index.sh ] && chmod +x scripts/rebuild_index.sh || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
           
-          # Build docs for current branch to verify they work
-          # Use a temporary name since we won't deploy PR docs
-          ./scripts/build_single_version_docs.sh "main"
+          # Get the actual branch name for this PR
+          # For PRs, use the head ref (the branch being merged)
+          PR_BRANCH_NAME="${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD)}"
+          # Sanitize branch name for use as directory name (replace / with -)
+          SANITIZED_BRANCH_NAME=$(echo "$PR_BRANCH_NAME" | sed 's/\//-/g')
+          
+          echo "Building docs for PR branch: $PR_BRANCH_NAME (sanitized: $SANITIZED_BRANCH_NAME)"
+          echo "Commit: $(git rev-parse HEAD)"
+          
+          # Build docs for current branch/PR to verify they work
+          # Use sanitized branch name as the version name
+          ./scripts/build_single_version_docs.sh "$SANITIZED_BRANCH_NAME"
           echo "✓ PR documentation build verified (not deployed)"
 
       - name: Download existing docs artifact
@@ -130,8 +139,22 @@ jobs:
       - name: Build missing historical tag documentation
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
+          # Save the original commit to always return to it
+          ORIGINAL_COMMIT=$(git rev-parse HEAD)
+          ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Starting from commit: $ORIGINAL_COMMIT on branch: $ORIGINAL_BRANCH"
+          
           # Ensure scripts are executable
           [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
+          
+          # Copy scripts to a safe location outside git working directory
+          # Old tags won't have these scripts, so we need to use the current version
+          SCRIPT_DIR="/tmp/datui-build-scripts-$$"
+          mkdir -p "$SCRIPT_DIR"
+          cp scripts/build_single_version_docs.sh "$SCRIPT_DIR/"
+          cp scripts/rebuild_index.sh "$SCRIPT_DIR/" 2>/dev/null || true
+          chmod +x "$SCRIPT_DIR"/*.sh
+          echo "✓ Copied build scripts to $SCRIPT_DIR (will persist across git checkouts)"
           
           # Ensure book directory exists
           mkdir -p book
@@ -145,7 +168,12 @@ jobs:
             echo "No existing documentation found, building all historical tags..."
             for tag in $VERSION_TAGS; do
               echo "Building docs for tag: $tag"
-              ./scripts/build_single_version_docs.sh "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
+              # Use the script from the safe location (current branch version)
+              "$SCRIPT_DIR/build_single_version_docs.sh" "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
+              
+              # Always return to original commit after each tag build
+              echo "Verifying return to original commit..."
+              git checkout "$ORIGINAL_COMMIT" 2>/dev/null || git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout main 2>/dev/null
             done
             echo "✓ Built all historical tag documentation"
           else
@@ -161,40 +189,53 @@ jobs:
               echo "Found missing tag documentation, building:${MISSING_TAGS}"
               for tag in $MISSING_TAGS; do
                 echo "Building docs for missing tag: $tag"
-                ./scripts/build_single_version_docs.sh "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
+                # Use the script from the safe location (current branch version)
+                "$SCRIPT_DIR/build_single_version_docs.sh" "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
+                
+                # Always return to original commit after each tag build
+                git checkout "$ORIGINAL_COMMIT" 2>/dev/null || git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout main 2>/dev/null
               done
               echo "✓ Built missing historical tag documentation"
             else
               echo "✓ All historical tags already have documentation"
             fi
           fi
+          
+          # Final verification we're back on the right commit
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          if [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ]; then
+            echo "Warning: Not on original commit. Restoring..."
+            git checkout "$ORIGINAL_COMMIT"
+          fi
+          
+          # Clean up temporary script directory
+          rm -rf "$SCRIPT_DIR"
+          echo "✓ Verified back on original commit"
 
       - name: Build documentation for main branch
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          # Debug: Show what's in the scripts directory
-          echo "Current directory: $(pwd)"
-          echo "Contents of scripts/:"
-          ls -la scripts/ || echo "scripts/ directory does not exist"
-          echo ""
-          echo "Git status:"
-          git status --short || true
-          echo ""
-          echo "Checking for script files:"
-          [ -f scripts/build_single_version_docs.sh ] && echo "✓ build_single_version_docs.sh exists" || echo "✗ build_single_version_docs.sh NOT FOUND"
-          [ -f scripts/rebuild_index.sh ] && echo "✓ rebuild_index.sh exists" || echo "✗ rebuild_index.sh NOT FOUND"
-          echo ""
+          # Ensure we're on the right commit and scripts exist
+          ORIGINAL_COMMIT=$(git rev-parse HEAD)
+          echo "Current commit: $ORIGINAL_COMMIT"
+          echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
           
-          # Ensure scripts are executable and exist
+          # If scripts are missing, restore from current commit
           if [ ! -f scripts/build_single_version_docs.sh ]; then
-            echo "ERROR: scripts/build_single_version_docs.sh not found in repository"
-            echo "Available files in scripts/:"
+            echo "Scripts missing, checking out current commit to restore..."
+            git checkout "$ORIGINAL_COMMIT"
+          fi
+          
+          # Verify scripts exist
+          if [ ! -f scripts/build_single_version_docs.sh ]; then
+            echo "ERROR: scripts/build_single_version_docs.sh not found"
+            echo "Contents of scripts/:"
             ls -la scripts/ || echo "scripts/ directory does not exist"
             exit 1
           fi
           
           if [ ! -f scripts/rebuild_index.sh ]; then
-            echo "ERROR: scripts/rebuild_index.sh not found in repository"
+            echo "ERROR: scripts/rebuild_index.sh not found"
             exit 1
           fi
           

@@ -24,11 +24,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install mdbook
-        run: |
-          cargo install mdbook --version 0.4.36
-
-      - name: Cache cargo registry
+      - name: Cache cargo registry and binaries
         uses: actions/cache@v4
         with:
           path: |
@@ -40,6 +36,31 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Cache mdbook binary
+        id: cache-mdbook
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: ${{ runner.os }}-mdbook-0.4.36
+          restore-keys: |
+            ${{ runner.os }}-mdbook-
+
+      - name: Install mdbook (if not cached)
+        if: steps.cache-mdbook.outputs.cache-hit != 'true'
+        run: |
+          cargo install mdbook --version 0.4.36 --locked
+        continue-on-error: false
+
+      - name: Verify mdbook is available
+        run: |
+          if command -v mdbook >/dev/null 2>&1; then
+            mdbook --version
+            echo "✓ mdbook is available"
+          else
+            echo "✗ mdbook not found in PATH"
+            exit 1
+          fi
 
       - name: Build release binary (for manpage)
         run: cargo build --release --locked

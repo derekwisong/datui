@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -42,50 +45,20 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test --all
+        run: cargo test --all --locked
 
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-binary
-          path: |
-            target/release/datui
-            target/release/datui.1
-          retention-days: 1
+      - name: Verify binary exists
+        run: test -f target/debug/datui || (echo "Binary not found after tests" && exit 1)
 
   docs:
     permissions:
       contents: write
       pages: write
       id-token: write
-    needs: [test, build]
+    needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -101,11 +74,21 @@ jobs:
         run: |
           cargo install mdbook --version 0.4.36
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - name: Cache cargo registry
+        uses: actions/cache@v4
         with:
-          name: release-binary
-          path: target/release/
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binary (for manpage)
+        run: cargo build --release --locked
 
       - name: Make build script executable
         run: chmod +x scripts/build_versioned_docs.sh

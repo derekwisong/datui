@@ -22,7 +22,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo dependencies and build artifacts
+      - name: Cache cargo dependencies
         uses: actions/cache@v4
         with:
           path: |
@@ -35,7 +35,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Cache mdbook binary
+      - name: Cache mdbook
         id: cache-mdbook
         uses: actions/cache@v4
         with:
@@ -44,19 +44,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mdbook-
 
-      - name: Install mdbook (if not cached)
+      - name: Install mdbook
         if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: |
-          cargo install mdbook --version 0.4.36 --locked
+        run: cargo install mdbook --version 0.4.36 --locked
 
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Verify release binary and manpage
+      - name: Verify release artifacts
         run: |
           test -f target/release/datui || (echo "Release binary not found" && exit 1)
           test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
-          echo "✓ Release artifacts verified"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -72,7 +70,6 @@ jobs:
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
-          echo "Building docs for tag: ${TAG_NAME}"
 
       - name: Download existing docs artifact
         uses: actions/download-artifact@v4
@@ -83,15 +80,11 @@ jobs:
 
       - name: Build documentation for this tag
         run: |
-          # Ensure scripts are executable and exist
-          [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
-          [ -f scripts/rebuild_index.sh ] && chmod +x scripts/rebuild_index.sh || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
-          
-          # Build only this tag's docs
+          [ -f scripts/build_single_version_docs.sh ] || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
+          [ -f scripts/rebuild_index.sh ] || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
+          chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
           ./scripts/build_single_version_docs.sh "${{ steps.tag.outputs.tag }}"
-          # Rebuild index to include all versions
           ./scripts/rebuild_index.sh
-          echo "✓ Tag documentation updated"
 
       - name: Upload updated docs artifact
         uses: actions/upload-artifact@v4

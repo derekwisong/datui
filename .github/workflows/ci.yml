@@ -18,28 +18,6 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Verify checkout and scripts
-        run: |
-          echo "Current commit: $(git rev-parse HEAD)"
-          echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
-          echo ""
-          echo "Verifying required scripts exist:"
-          if [ -f scripts/build_single_version_docs.sh ]; then
-            echo "✓ scripts/build_single_version_docs.sh exists"
-            ls -lh scripts/build_single_version_docs.sh
-          else
-            echo "✗ scripts/build_single_version_docs.sh NOT FOUND"
-            echo "Contents of scripts/ directory:"
-            ls -la scripts/ || echo "scripts/ directory does not exist!"
-            exit 1
-          fi
-          if [ -f scripts/rebuild_index.sh ]; then
-            echo "✓ scripts/rebuild_index.sh exists"
-          else
-            echo "✗ scripts/rebuild_index.sh NOT FOUND"
-            exit 1
-          fi
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -53,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      - name: Cache cargo dependencies and build artifacts
+      - name: Cache cargo dependencies
         uses: actions/cache@v4
         with:
           path: |
@@ -66,7 +44,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Cache mdbook binary
+      - name: Cache mdbook
         id: cache-mdbook
         uses: actions/cache@v4
         with:
@@ -75,56 +53,38 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mdbook-
 
-      - name: Install mdbook (if not cached)
+      - name: Install mdbook
         if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: |
-          cargo install mdbook --version 0.4.36 --locked
+        run: cargo install mdbook --version 0.4.36 --locked
 
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Build everything (including tests)
+      - name: Build
         run: cargo build --tests --locked
 
-      - name: Run clippy (reuses build artifacts)
+      - name: Run clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: Run tests (reuses build artifacts)
+      - name: Run tests
         run: cargo test --all --locked
 
       - name: Verify binary exists
-        run: test -f target/debug/datui || (echo "Binary not found after tests" && exit 1)
+        run: test -f target/debug/datui || (echo "Binary not found" && exit 1)
 
       - name: Verify manpage was generated
         run: |
-          # The manpage is generated in OUT_DIR during build.rs execution
-          if find target/debug/build -name "datui.1" -type f | head -1; then
-            echo "✓ Manpage generated successfully"
-          else
-            echo "✗ Manpage not found - build.rs may have failed"
-            exit 1
+          if ! find target/debug/build -name "datui.1" -type f | head -1 >/dev/null; then
+            echo "Manpage not found" && exit 1
           fi
 
       - name: Build documentation for PR verification
         if: github.event_name == 'pull_request'
         run: |
-          # Ensure scripts are executable and exist
-          [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
-          [ -f scripts/rebuild_index.sh ] && chmod +x scripts/rebuild_index.sh || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
-          
-          # Get the actual branch name for this PR
-          # For PRs, use the head ref (the branch being merged)
+          chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
           PR_BRANCH_NAME="${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD)}"
-          # Sanitize branch name for use as directory name (replace / with -)
           SANITIZED_BRANCH_NAME=$(echo "$PR_BRANCH_NAME" | sed 's/\//-/g')
-          
-          echo "Building docs for PR branch: $PR_BRANCH_NAME (sanitized: $SANITIZED_BRANCH_NAME)"
-          echo "Commit: $(git rev-parse HEAD)"
-          
-          # Build docs for current branch/PR to verify they work
-          # Use sanitized branch name as the version name
           ./scripts/build_single_version_docs.sh "$SANITIZED_BRANCH_NAME"
-          echo "✓ PR documentation build verified (not deployed)"
 
       - name: Download existing docs artifact
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -133,120 +93,55 @@ jobs:
         with:
           name: documentation
           path: book/
-        
-        # Note: Artifact download only affects book/ directory, not scripts/
 
       - name: Build missing historical tag documentation
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          # Save the original commit to always return to it
           ORIGINAL_COMMIT=$(git rev-parse HEAD)
           ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          echo "Starting from commit: $ORIGINAL_COMMIT on branch: $ORIGINAL_BRANCH"
+          chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
           
-          # Ensure scripts are executable
-          [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
-          
-          # Copy scripts to a safe location outside git working directory
-          # Old tags won't have these scripts, so we need to use the current version
           SCRIPT_DIR="/tmp/datui-build-scripts-$$"
           mkdir -p "$SCRIPT_DIR"
           cp scripts/build_single_version_docs.sh "$SCRIPT_DIR/"
           cp scripts/rebuild_index.sh "$SCRIPT_DIR/" 2>/dev/null || true
           chmod +x "$SCRIPT_DIR"/*.sh
-          echo "✓ Copied build scripts to $SCRIPT_DIR (will persist across git checkouts)"
           
-          # Ensure book directory exists
           mkdir -p book
-          
-          # Get all version tags
           VERSION_TAGS=$(git tag -l "v*" | sort -V)
           
-          # Check if artifact was downloaded (book directory has content)
-          # If book is empty or doesn't have any tag directories, build all tags
           if [ ! -d "book" ] || [ -z "$(ls -A book 2>/dev/null)" ] || [ -z "$(find book -maxdepth 1 -type d -name 'v*' 2>/dev/null)" ]; then
-            echo "No existing documentation found, building all historical tags..."
             for tag in $VERSION_TAGS; do
-              echo "Building docs for tag: $tag"
-              # Use the script from the safe location (current branch version)
-              "$SCRIPT_DIR/build_single_version_docs.sh" "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
-              
-              # Always return to original commit after each tag build
-              echo "Verifying return to original commit..."
+              "$SCRIPT_DIR/build_single_version_docs.sh" "$tag" || true
               git checkout "$ORIGINAL_COMMIT" 2>/dev/null || git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout main 2>/dev/null
             done
-            echo "✓ Built all historical tag documentation"
           else
-            # Check which tags already have docs built
             MISSING_TAGS=""
             for tag in $VERSION_TAGS; do
-              if [ ! -d "book/${tag}" ]; then
-                MISSING_TAGS="${MISSING_TAGS} ${tag}"
-              fi
+              [ ! -d "book/${tag}" ] && MISSING_TAGS="${MISSING_TAGS} ${tag}"
             done
             
             if [ -n "$MISSING_TAGS" ]; then
-              echo "Found missing tag documentation, building:${MISSING_TAGS}"
               for tag in $MISSING_TAGS; do
-                echo "Building docs for missing tag: $tag"
-                # Use the script from the safe location (current branch version)
-                "$SCRIPT_DIR/build_single_version_docs.sh" "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
-                
-                # Always return to original commit after each tag build
+                "$SCRIPT_DIR/build_single_version_docs.sh" "$tag" || true
                 git checkout "$ORIGINAL_COMMIT" 2>/dev/null || git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout main 2>/dev/null
               done
-              echo "✓ Built missing historical tag documentation"
-            else
-              echo "✓ All historical tags already have documentation"
             fi
           fi
           
-          # Final verification we're back on the right commit
           CURRENT_COMMIT=$(git rev-parse HEAD)
-          if [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ]; then
-            echo "Warning: Not on original commit. Restoring..."
-            git checkout "$ORIGINAL_COMMIT"
-          fi
-          
-          # Clean up temporary script directory
+          [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
           rm -rf "$SCRIPT_DIR"
-          echo "✓ Verified back on original commit"
 
       - name: Build documentation for main branch
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          # Ensure we're on the right commit and scripts exist
-          ORIGINAL_COMMIT=$(git rev-parse HEAD)
-          echo "Current commit: $ORIGINAL_COMMIT"
-          echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
-          
-          # If scripts are missing, restore from current commit
-          if [ ! -f scripts/build_single_version_docs.sh ]; then
-            echo "Scripts missing, checking out current commit to restore..."
-            git checkout "$ORIGINAL_COMMIT"
-          fi
-          
-          # Verify scripts exist
-          if [ ! -f scripts/build_single_version_docs.sh ]; then
-            echo "ERROR: scripts/build_single_version_docs.sh not found"
-            echo "Contents of scripts/:"
-            ls -la scripts/ || echo "scripts/ directory does not exist"
-            exit 1
-          fi
-          
-          if [ ! -f scripts/rebuild_index.sh ]; then
-            echo "ERROR: scripts/rebuild_index.sh not found"
-            exit 1
-          fi
-          
-          chmod +x scripts/build_single_version_docs.sh
-          chmod +x scripts/rebuild_index.sh
-          
-          # Build the main branch docs
+          [ ! -f scripts/build_single_version_docs.sh ] && git checkout "$(git rev-parse HEAD)"
+          [ -f scripts/build_single_version_docs.sh ] || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
+          [ -f scripts/rebuild_index.sh ] || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
+          chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
           ./scripts/build_single_version_docs.sh "main"
-          # Rebuild index to include all versions
           ./scripts/rebuild_index.sh
-          echo "✓ Main branch documentation updated"
 
       - name: Upload updated docs artifact
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

@@ -67,10 +67,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build versioned documentation
+      - name: Get tag name
+        id: tag
         run: |
-          chmod +x scripts/build_versioned_docs.sh
-          ./scripts/build_versioned_docs.sh
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "Building docs for tag: ${TAG_NAME}"
+
+      - name: Download existing docs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: book/
+          if-no-files-found: ignore
+
+      - name: Build documentation for this tag
+        run: |
+          chmod +x scripts/build_single_version_docs.sh
+          chmod +x scripts/rebuild_index.sh
+          # Build only this tag's docs
+          ./scripts/build_single_version_docs.sh "${{ steps.tag.outputs.tag }}"
+          # Rebuild index to include all versions
+          ./scripts/rebuild_index.sh
+          echo "✓ Tag documentation updated"
+
+      - name: Upload updated docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: book/
+          retention-days: 90
+          if-no-files-found: ignore
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

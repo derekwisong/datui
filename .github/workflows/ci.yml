@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,11 +83,70 @@ jobs:
             exit 1
           fi
 
-      - name: Build documentation (main branch only)
+      - name: Build documentation for PR verification
+        if: github.event_name == 'pull_request'
+        run: |
+          chmod +x scripts/build_single_version_docs.sh
+          chmod +x scripts/rebuild_index.sh
+          # Build docs for current branch to verify they work
+          # Use a temporary name since we won't deploy PR docs
+          ./scripts/build_single_version_docs.sh "main"
+          echo "✓ PR documentation build verified (not deployed)"
+
+      - name: Download existing docs artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: book/
+          if-no-files-found: ignore
+
+      - name: Build missing historical tag documentation
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          chmod +x scripts/build_versioned_docs.sh
-          ./scripts/build_versioned_docs.sh
+          chmod +x scripts/build_single_version_docs.sh
+          
+          # Get all version tags
+          VERSION_TAGS=$(git tag -l "v*" | sort -V)
+          
+          # Check which tags already have docs built
+          MISSING_TAGS=""
+          for tag in $VERSION_TAGS; do
+            if [ ! -d "book/${tag}" ]; then
+              MISSING_TAGS="${MISSING_TAGS} ${tag}"
+            fi
+          done
+          
+          if [ -n "$MISSING_TAGS" ]; then
+            echo "Found missing tag documentation, building:${MISSING_TAGS}"
+            for tag in $MISSING_TAGS; do
+              echo "Building docs for missing tag: $tag"
+              ./scripts/build_single_version_docs.sh "$tag" || echo "Warning: Failed to build docs for $tag, continuing..."
+            done
+            echo "✓ Built missing historical tag documentation"
+          else
+            echo "✓ All historical tags already have documentation"
+          fi
+
+      - name: Build documentation for main branch
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          chmod +x scripts/build_single_version_docs.sh
+          chmod +x scripts/rebuild_index.sh
+          # Build the main branch docs
+          ./scripts/build_single_version_docs.sh "main"
+          # Rebuild index to include all versions
+          ./scripts/rebuild_index.sh
+          echo "✓ Main branch documentation updated"
+
+      - name: Upload updated docs artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: book/
+          retention-days: 90
+          if-no-files-found: ignore
 
       - name: Setup Pages
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

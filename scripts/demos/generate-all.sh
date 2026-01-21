@@ -10,9 +10,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TAPES_DIR="${SCRIPT_DIR}"
 DEMOS_DIR="${REPO_ROOT}/demos"
 
-# ensure the "target/release/datui" binary is built, and is on the PATH
+# ensure the "target/release/datui" binary is up to date, and is on the PATH
 # dont build it here, just check if it exists if so, make sure it is
 # on the PATH so that vhs can find datui easily.
+cargo build --release
 
 if [ ! -f "${REPO_ROOT}/target/release/datui" ]; then
     echo "Error: datui binary not found. Please build it first."

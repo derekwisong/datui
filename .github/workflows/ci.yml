@@ -90,8 +90,19 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build release binary (for manpage)
-        run: cargo build --release --locked
+      - name: Build binary and generate manpage (debug mode)
+        run: cargo build --locked
+
+      - name: Verify manpage was generated
+        run: |
+          # The manpage is generated in OUT_DIR during build.rs execution
+          # Verify it exists by finding it in the target directory
+          if find target/debug/build -name "datui.1" -type f | head -1; then
+            echo "✓ Manpage generated successfully"
+          else
+            echo "✗ Manpage not found - build.rs may have failed"
+            exit 1
+          fi
 
       - name: Make build script executable
         run: chmod +x scripts/build_versioned_docs.sh

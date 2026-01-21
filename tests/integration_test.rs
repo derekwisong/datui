@@ -1,6 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::{App, AppEvent, InputMode, OpenOptions};
 use polars::prelude::*;
+use std::fs::File;
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 mod common;
@@ -17,9 +19,23 @@ fn test_full_workflow() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx);
 
-    // 1. Open a file
-    let path = common::create_large_test_csv();
-    let event = AppEvent::Open(path.to_path_buf(), OpenOptions::default());
+    // 1. Create test CSV file inline
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join("large_test.csv");
+
+    let mut df = df!(
+        "a" => (0..100).collect::<Vec<i32>>(),
+        "b" => (0..100).map(|i| format!("text_{}", i)).collect::<Vec<String>>(),
+        "c" => (0..100).map(|i| i % 3).collect::<Vec<i32>>(),
+        "d" => (0..100).map(|i| i % 5).collect::<Vec<i32>>()
+    )
+    .unwrap();
+    let mut file = File::create(&csv_path).unwrap();
+    CsvWriter::new(&mut file).finish(&mut df).unwrap();
+
+    // 2. Open the file
+    let event = AppEvent::Open(csv_path.clone(), OpenOptions::default());
     if let Some(next_event) = app.event(&event) {
         if let Some(collect_event) = app.event(&next_event) {
             app.event(&collect_event);

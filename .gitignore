@@ -6,3 +6,7 @@
 
 *.pyc
 __pycache__/
+
+# Generated test data (keep README.md)
+/tests/sample-data/*
+!/tests/sample-data/README.md

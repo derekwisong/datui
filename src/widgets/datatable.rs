@@ -1200,6 +1200,8 @@ mod tests {
 
     #[test]
     fn test_from_csv() {
+        // Ensure sample data is generated before running test
+        crate::tests::ensure_sample_data();
         // Test uncompressed CSV loading
         let path = Path::new("tests/sample-data/3-sfd-header.csv");
         let state = DataTableState::from_csv(path, &Default::default()).unwrap(); // Uses default buffer params from options
@@ -1208,6 +1210,8 @@ mod tests {
 
     #[test]
     fn test_from_csv_gzipped() {
+        // Ensure sample data is generated before running test
+        crate::tests::ensure_sample_data();
         // Test gzipped CSV loading
         let path = Path::new("tests/sample-data/mixed_types.csv.gz");
         let state = DataTableState::from_csv(path, &Default::default()).unwrap(); // Uses default buffer params from options
@@ -1216,7 +1220,9 @@ mod tests {
 
     #[test]
     fn test_from_parquet() {
-        let path = Path::new("tests/sample-data/crypto_prices.parquet");
+        // Ensure sample data is generated before running test
+        crate::tests::ensure_sample_data();
+        let path = Path::new("tests/sample-data/people.parquet");
         let state = DataTableState::from_parquet(path, None, None, false, 1).unwrap();
         assert!(!state.schema.is_empty());
     }

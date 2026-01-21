@@ -18,6 +18,28 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Verify checkout and scripts
+        run: |
+          echo "Current commit: $(git rev-parse HEAD)"
+          echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
+          echo ""
+          echo "Verifying required scripts exist:"
+          if [ -f scripts/build_single_version_docs.sh ]; then
+            echo "✓ scripts/build_single_version_docs.sh exists"
+            ls -lh scripts/build_single_version_docs.sh
+          else
+            echo "✗ scripts/build_single_version_docs.sh NOT FOUND"
+            echo "Contents of scripts/ directory:"
+            ls -la scripts/ || echo "scripts/ directory does not exist!"
+            exit 1
+          fi
+          if [ -f scripts/rebuild_index.sh ]; then
+            echo "✓ scripts/rebuild_index.sh exists"
+          else
+            echo "✗ scripts/rebuild_index.sh NOT FOUND"
+            exit 1
+          fi
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -102,14 +124,8 @@ jobs:
         with:
           name: documentation
           path: book/
-
-      - name: Verify scripts exist
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        run: |
-          echo "Checking for required scripts..."
-          ls -la scripts/ || echo "scripts/ directory not found"
-          [ -f scripts/build_single_version_docs.sh ] && echo "✓ build_single_version_docs.sh exists" || echo "✗ build_single_version_docs.sh NOT FOUND"
-          [ -f scripts/rebuild_index.sh ] && echo "✓ rebuild_index.sh exists" || echo "✗ rebuild_index.sh NOT FOUND"
+        
+        # Note: Artifact download only affects book/ directory, not scripts/
 
       - name: Build missing historical tag documentation
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
@@ -156,9 +172,34 @@ jobs:
       - name: Build documentation for main branch
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
+          # Debug: Show what's in the scripts directory
+          echo "Current directory: $(pwd)"
+          echo "Contents of scripts/:"
+          ls -la scripts/ || echo "scripts/ directory does not exist"
+          echo ""
+          echo "Git status:"
+          git status --short || true
+          echo ""
+          echo "Checking for script files:"
+          [ -f scripts/build_single_version_docs.sh ] && echo "✓ build_single_version_docs.sh exists" || echo "✗ build_single_version_docs.sh NOT FOUND"
+          [ -f scripts/rebuild_index.sh ] && echo "✓ rebuild_index.sh exists" || echo "✗ rebuild_index.sh NOT FOUND"
+          echo ""
+          
           # Ensure scripts are executable and exist
-          [ -f scripts/build_single_version_docs.sh ] && chmod +x scripts/build_single_version_docs.sh || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
-          [ -f scripts/rebuild_index.sh ] && chmod +x scripts/rebuild_index.sh || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
+          if [ ! -f scripts/build_single_version_docs.sh ]; then
+            echo "ERROR: scripts/build_single_version_docs.sh not found in repository"
+            echo "Available files in scripts/:"
+            ls -la scripts/ || echo "scripts/ directory does not exist"
+            exit 1
+          fi
+          
+          if [ ! -f scripts/rebuild_index.sh ]; then
+            echo "ERROR: scripts/rebuild_index.sh not found in repository"
+            exit 1
+          fi
+          
+          chmod +x scripts/build_single_version_docs.sh
+          chmod +x scripts/rebuild_index.sh
           
           # Build the main branch docs
           ./scripts/build_single_version_docs.sh "main"

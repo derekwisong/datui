@@ -87,6 +87,7 @@ jobs:
           chmod +x "$SCRIPT_DIR"/*.sh
           
           mkdir -p book
+          rm -rf book/demos
           VERSION_TAGS=$(git tag -l "v*" | sort -V)
           
           for tag in $VERSION_TAGS; do
@@ -97,7 +98,7 @@ jobs:
           CURRENT_COMMIT=$(git rev-parse HEAD)
           [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
           rm -rf "$SCRIPT_DIR"
-          
+          rm -rf book/demos
           ./scripts/rebuild_index.sh
 
       - name: Setup Pages

@@ -51,6 +51,9 @@ fi
 OUTPUT_PATH="$(pwd)/${OUTPUT_DIR}/${VERSION_NAME}"
 mkdir -p "${OUTPUT_PATH}"
 
+# Clean up any existing demos in the global output directory to avoid conflicts
+rm -rf "${OUTPUT_DIR}/demos"
+
 if mdbook build --dest-dir "${OUTPUT_PATH}"; then
     echo "✓ Built docs for $VERSION_NAME"
 else
@@ -58,18 +61,23 @@ else
     exit 1
 fi
 
-# Copy demos directory to book output (shared across all versions)
-# Always copy from current checkout if demos exist
-# For main: updates to latest demos
-# For tags: preserves demos from that tag (if they exist) or keeps existing from artifact
+# Copy demos directory into this version's output directory
+# Each version gets its own demos (they may differ between versions)
+# Markdown references ../demos/ which mdbook should resolve and copy automatically
+# But we explicitly copy to ensure demos are in the version's directory
+# and to handle cases where mdbook doesn't copy them automatically
 if [ -d "demos" ]; then
-    cp -r demos "${OUTPUT_DIR}/demos"
-    echo "✓ Copied demos directory"
-elif [ -d "${OUTPUT_DIR}/demos" ]; then
-    echo "✓ Demos already exist in artifact, preserving"
+    # Remove any demos that mdbook might have copied (to avoid duplicates)
+    rm -rf "${OUTPUT_PATH}/demos"
+    # Copy demos to the version's output directory
+    cp -r demos "${OUTPUT_PATH}/demos"
+    echo "✓ Copied demos directory to ${VERSION_NAME}/demos"
 else
-    echo "  Warning: demos directory not found - skipping"
+    echo "  Warning: demos directory not found for ${VERSION_NAME} - skipping"
 fi
+
+# Clean up any demos that mdbook might have copied to the global output directory
+rm -rf "${OUTPUT_DIR}/demos"
 
 # If we checked out a tag, return to original commit/branch
 if [ "$IS_TAG" = true ]; then

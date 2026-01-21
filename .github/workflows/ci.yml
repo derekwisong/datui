@@ -100,6 +100,7 @@ jobs:
           chmod +x "$SCRIPT_DIR"/*.sh
           
           mkdir -p book
+          rm -rf book/demos
           VERSION_TAGS=$(git tag -l "v*" | sort -V)
           
           for tag in $VERSION_TAGS; do
@@ -118,7 +119,9 @@ jobs:
           [ -f scripts/build_single_version_docs.sh ] || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
           [ -f scripts/rebuild_index.sh ] || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
           chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
+          rm -rf book/demos
           ./scripts/build_single_version_docs.sh "main"
+          rm -rf book/demos
           ./scripts/rebuild_index.sh
 
 

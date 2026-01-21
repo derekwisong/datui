@@ -24,6 +24,7 @@ pub enum SortFocus {
 pub struct SortModal {
     pub active: bool,
     pub filter: String,
+    pub filter_cursor: usize, // Cursor position in filter string
     pub columns: Vec<SortColumn>,
     pub table_state: TableState,
     pub ascending: bool,
@@ -36,6 +37,7 @@ impl Default for SortModal {
         Self {
             active: false,
             filter: String::new(),
+            filter_cursor: 0,
             columns: Vec::new(),
             table_state: TableState::default(),
             ascending: true,

@@ -57,4 +57,22 @@ pub struct Args {
     /// Remove all templates and exit
     #[arg(long = "remove-templates", action)]
     pub remove_templates: bool,
+
+    /// Number of pages to buffer ahead of the visible area (default: 3)
+    /// Larger values provide smoother scrolling but use more memory
+    #[arg(long = "pages-lookahead")]
+    pub pages_lookahead: Option<usize>,
+
+    /// Number of pages to buffer behind the visible area (default: 3)
+    /// Larger values provide smoother scrolling but use more memory
+    #[arg(long = "pages-lookback")]
+    pub pages_lookback: Option<usize>,
+
+    /// Display row numbers on the left side of the table
+    #[arg(long = "row-numbers", action)]
+    pub row_numbers: bool,
+
+    /// Starting index for row numbers (default: 1)
+    #[arg(long = "row-start-index")]
+    pub row_start_index: Option<usize>,
 }

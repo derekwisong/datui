@@ -6,7 +6,7 @@ use polars::prelude::*;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
@@ -42,10 +42,22 @@ pub struct DataTableState {
     drilled_down_group_index: Option<usize>, // Index of the group we're viewing
     pub drilled_down_group_key: Option<Vec<String>>, // Key values of the drilled down group
     pub drilled_down_group_key_columns: Option<Vec<String>>, // Key column names of the drilled down group
+    // Buffer tracking for proximity-based loading
+    pages_lookahead: usize,     // Maximum pages to buffer ahead
+    pages_lookback: usize,      // Maximum pages to buffer behind
+    buffered_start_row: usize,  // Start row of currently buffered data
+    buffered_end_row: usize,    // End row (exclusive) of currently buffered data
+    proximity_threshold: usize, // Rows from buffer edge before triggering expansion
+    row_numbers: bool,          // Whether to display row numbers
+    row_start_index: usize,     // Starting index for row numbers (0 or 1)
 }
 
 impl DataTableState {
-    pub fn new(lf: LazyFrame) -> Result<Self> {
+    pub fn new(
+        lf: LazyFrame,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+    ) -> Result<Self> {
         let schema = lf.clone().collect_schema()?;
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
         Ok(Self {
@@ -72,6 +84,13 @@ impl DataTableState {
             drilled_down_group_index: None,
             drilled_down_group_key: None,
             drilled_down_group_key_columns: None,
+            pages_lookahead: pages_lookahead.unwrap_or(3),
+            pages_lookback: pages_lookback.unwrap_or(3),
+            buffered_start_row: 0,
+            buffered_end_row: 0,
+            proximity_threshold: 0, // Will be set when visible_rows is known
+            row_numbers: false,     // Will be set from options
+            row_start_index: 1,     // Will be set from options
         })
     }
 
@@ -99,6 +118,10 @@ impl DataTableState {
         self.drilled_down_group_key_columns = None;
         self.grouped_lf = None;
 
+        // Invalidate buffer on reset
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
+
         self.table_state.select(Some(0));
 
         self.collect();
@@ -107,10 +130,27 @@ impl DataTableState {
         }
     }
 
-    pub fn from_parquet(path: &Path) -> Result<Self> {
+    pub fn from_parquet(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
         let pl_path = PlPath::Local(Arc::from(path));
         let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
-        Self::new(lf)
+        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    pub fn set_row_numbers(&mut self, enabled: bool) {
+        self.row_numbers = enabled;
+    }
+
+    pub fn toggle_row_numbers(&mut self) {
+        self.row_numbers = !self.row_numbers;
     }
 
     pub fn from_csv(path: &Path, options: &OpenOptions) -> Result<Self> {
@@ -142,7 +182,10 @@ impl DataTableState {
                         .try_into_reader_with_file_path(Some(path.into()))?
                         .finish()?;
                     let lf = df.lazy();
-                    Self::new(lf)
+                    let mut state = Self::new(lf, options.pages_lookahead, options.pages_lookback)?;
+                    state.row_numbers = options.row_numbers;
+                    state.row_start_index = options.row_start_index;
+                    Ok(state)
                 }
                 CompressionFormat::Bzip2 => {
                     // Decompress bzip2 manually, then read CSV
@@ -166,7 +209,10 @@ impl DataTableState {
                         .with_options(read_options)
                         .finish()?;
                     let lf = df.lazy();
-                    Self::new(lf)
+                    let mut state = Self::new(lf, options.pages_lookahead, options.pages_lookback)?;
+                    state.row_numbers = options.row_numbers;
+                    state.row_start_index = options.row_start_index;
+                    Ok(state)
                 }
                 CompressionFormat::Xz => {
                     // Decompress xz manually, then read CSV
@@ -190,64 +236,131 @@ impl DataTableState {
                         .with_options(read_options)
                         .finish()?;
                     let lf = df.lazy();
-                    Self::new(lf)
+                    Self::new(lf, options.pages_lookahead, options.pages_lookback)
                 }
             }
         } else {
             // For uncompressed files, use lazy scanning (more efficient)
-            Self::from_csv_customize(path, |mut reader| {
-                if let Some(skip_lines) = options.skip_lines {
-                    reader = reader.with_skip_lines(skip_lines);
-                }
-                if let Some(skip_rows) = options.skip_rows {
-                    reader = reader.with_skip_rows(skip_rows);
-                }
-                if let Some(has_header) = options.has_header {
-                    reader = reader.with_has_header(has_header);
-                }
-                reader
-            })
+            let mut state = Self::from_csv_customize(
+                path,
+                options.pages_lookahead,
+                options.pages_lookback,
+                |mut reader| {
+                    if let Some(skip_lines) = options.skip_lines {
+                        reader = reader.with_skip_lines(skip_lines);
+                    }
+                    if let Some(skip_rows) = options.skip_rows {
+                        reader = reader.with_skip_rows(skip_rows);
+                    }
+                    if let Some(has_header) = options.has_header {
+                        reader = reader.with_has_header(has_header);
+                    }
+                    reader
+                },
+            )?;
+            state.row_numbers = options.row_numbers;
+            Ok(state)
         }
     }
 
-    pub fn from_csv_customize<F>(path: &Path, func: F) -> Result<Self>
+    pub fn from_csv_customize<F>(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        func: F,
+    ) -> Result<Self>
     where
         F: FnOnce(LazyCsvReader) -> LazyCsvReader,
     {
         let pl_path = PlPath::Local(Arc::from(path));
         let reader = LazyCsvReader::new(pl_path);
         let lf = func(reader).finish()?;
-        Self::new(lf)
+        Self::new(lf, pages_lookahead, pages_lookback)
     }
 
-    pub fn from_ndjson(path: &Path) -> Result<Self> {
+    pub fn from_ndjson(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
         let pl_path = PlPath::Local(Arc::from(path));
         let lf = LazyJsonLineReader::new(pl_path).finish()?;
-        Self::new(lf)
+        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
     }
 
-    pub fn from_json(path: &Path) -> Result<Self> {
-        Self::from_json_with_format(path, JsonFormat::Json)
+    pub fn from_json(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        Self::from_json_with_format(
+            path,
+            pages_lookahead,
+            pages_lookback,
+            row_numbers,
+            row_start_index,
+            JsonFormat::Json,
+        )
     }
 
-    pub fn from_json_lines(path: &Path) -> Result<Self> {
-        Self::from_json_with_format(path, JsonFormat::JsonLines)
+    pub fn from_json_lines(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        Self::from_json_with_format(
+            path,
+            pages_lookahead,
+            pages_lookback,
+            row_numbers,
+            row_start_index,
+            JsonFormat::JsonLines,
+        )
     }
 
-    fn from_json_with_format(path: &Path, format: JsonFormat) -> Result<Self> {
+    fn from_json_with_format(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+        format: JsonFormat,
+    ) -> Result<Self> {
         let file = File::open(path)?;
         let lf = JsonReader::new(file)
             .with_json_format(format)
             .finish()?
             .lazy();
-        Self::new(lf)
+        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
     }
 
-    pub fn from_delimited(path: &Path, delimiter: u8) -> Result<Self> {
+    pub fn from_delimited(
+        path: &Path,
+        delimiter: u8,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
         let pl_path = PlPath::Local(Arc::from(path));
         let reader = LazyCsvReader::new(pl_path).with_separator(delimiter);
         let lf = reader.finish()?;
-        Self::new(lf)
+        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
     }
 
     fn slide_table(&mut self, rows: i64) {
@@ -255,7 +368,7 @@ impl DataTableState {
             return;
         }
 
-        self.start_row = if self.start_row as i64 + rows <= 0 {
+        let new_start_row = if self.start_row as i64 + rows <= 0 {
             0
         } else {
             if let Some(df) = self.df.as_ref() {
@@ -266,6 +379,30 @@ impl DataTableState {
             (self.start_row as i64 + rows) as usize
         };
 
+        // Check if new position is within buffer and not approaching edges
+        let view_end = new_start_row
+            + self
+                .visible_rows
+                .min(self.num_rows.saturating_sub(new_start_row));
+        let within_buffer = new_start_row >= self.buffered_start_row
+            && view_end <= self.buffered_end_row
+            && self.buffered_end_row > 0;
+
+        if within_buffer {
+            // Check proximity to buffer edges
+            let dist_to_start = new_start_row.saturating_sub(self.buffered_start_row);
+            let dist_to_end = self.buffered_end_row.saturating_sub(view_end);
+
+            // Only skip collect if well within buffer (not approaching edges)
+            if dist_to_start > self.proximity_threshold && dist_to_end > self.proximity_threshold {
+                // Fast path: just update start_row, no collect needed
+                self.start_row = new_start_row;
+                return;
+            }
+        }
+
+        // Need to collect (either outside buffer or approaching edge)
+        self.start_row = new_start_row;
         self.collect();
 
         if self.num_rows > 0 {
@@ -280,6 +417,11 @@ impl DataTableState {
     }
 
     pub fn collect(&mut self) {
+        // Update proximity threshold based on visible rows
+        if self.visible_rows > 0 {
+            self.proximity_threshold = self.visible_rows;
+        }
+
         self.num_rows = match self.lf.clone().select([len()]).collect() {
             Ok(df) => {
                 if let Some(col) = df.get(0) {
@@ -302,8 +444,75 @@ impl DataTableState {
             }
         } else {
             self.start_row = 0;
+            self.buffered_start_row = 0;
+            self.buffered_end_row = 0;
+            return;
         }
 
+        // Proximity-based buffer logic
+        let view_start = self.start_row;
+        let view_end = self.start_row + self.visible_rows.min(self.num_rows - self.start_row);
+
+        // Check if current view is within buffered range
+        let within_buffer = view_start >= self.buffered_start_row
+            && view_end <= self.buffered_end_row
+            && self.buffered_end_row > 0;
+
+        if within_buffer {
+            // Check proximity to buffer edges
+            let dist_to_start = view_start.saturating_sub(self.buffered_start_row);
+            let dist_to_end = self.buffered_end_row.saturating_sub(view_end);
+
+            let needs_expansion_back =
+                dist_to_start <= self.proximity_threshold && self.buffered_start_row > 0;
+            let needs_expansion_forward =
+                dist_to_end <= self.proximity_threshold && self.buffered_end_row < self.num_rows;
+
+            // If not approaching edges, use existing buffer (fast path)
+            if !needs_expansion_back && !needs_expansion_forward {
+                // Fast path: just slice from existing buffer
+                self.slice_from_buffer();
+                return;
+            }
+
+            // Need to expand buffer
+            let new_buffer_start = if needs_expansion_back {
+                view_start.saturating_sub(self.pages_lookback * self.visible_rows.max(1))
+            } else {
+                self.buffered_start_row
+            };
+
+            let new_buffer_end = if needs_expansion_forward {
+                (view_end + self.pages_lookahead * self.visible_rows.max(1)).min(self.num_rows)
+            } else {
+                self.buffered_end_row
+            };
+
+            self.load_buffer(new_buffer_start, new_buffer_end);
+        } else {
+            // View is outside buffer or buffer doesn't exist - calculate new buffer
+            let new_buffer_start =
+                view_start.saturating_sub(self.pages_lookback * self.visible_rows.max(1));
+            let new_buffer_end =
+                (view_end + self.pages_lookahead * self.visible_rows.max(1)).min(self.num_rows);
+
+            self.load_buffer(new_buffer_start, new_buffer_end);
+        }
+
+        // Slice displayed portion from buffered DataFrame
+        self.slice_from_buffer();
+    }
+
+    fn load_buffer(&mut self, buffer_start: usize, buffer_end: usize) {
+        let buffer_size = buffer_end.saturating_sub(buffer_start);
+        if buffer_size == 0 {
+            return;
+        }
+
+        self.buffered_start_row = buffer_start;
+        self.buffered_end_row = buffer_end;
+
+        // Load locked columns buffer
         if self.locked_columns_count > 0 {
             let locked_columns: Vec<_> = self
                 .column_order
@@ -316,7 +525,7 @@ impl DataTableState {
                 .lf
                 .clone()
                 .select(locked_columns)
-                .slice(self.start_row as i64, self.visible_rows as u32 + 1)
+                .slice(buffer_start as i64, buffer_size as u32)
                 .collect()
             {
                 Ok(df) => {
@@ -343,6 +552,7 @@ impl DataTableState {
             self.locked_df = None;
         }
 
+        // Load scrollable columns buffer
         let columns_to_select: Vec<_> = self
             .column_order
             .iter()
@@ -354,7 +564,7 @@ impl DataTableState {
             .lf
             .clone()
             .select(columns_to_select)
-            .slice(self.start_row as i64, self.visible_rows as u32 + 1)
+            .slice(buffer_start as i64, buffer_size as u32)
             .collect()
         {
             Ok(df) => {
@@ -381,6 +591,13 @@ impl DataTableState {
                 self.error = Some(e);
             }
         }
+    }
+
+    fn slice_from_buffer(&mut self) {
+        // Buffer contains the full range [buffered_start_row, buffered_end_row)
+        // The displayed portion [start_row, start_row + visible_rows) is a subset
+        // We'll slice the displayed portion when rendering based on offset
+        // No action needed here - the buffer is stored, slicing happens at render time
     }
 
     fn format_grouped_dataframe(&self, df: DataFrame) -> Result<DataFrame> {
@@ -487,11 +704,15 @@ impl DataTableState {
 
     pub fn set_column_order(&mut self, order: Vec<String>) {
         self.column_order = order;
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
         self.collect();
     }
 
     pub fn set_locked_columns(&mut self, count: usize) {
         self.locked_columns_count = count.min(self.column_order.len());
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
         self.collect();
     }
 
@@ -779,11 +1000,16 @@ impl DataTableState {
     pub fn sort(&mut self, columns: Vec<String>, ascending: bool) {
         self.sort_columns = columns;
         self.sort_ascending = ascending;
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
         self.apply_transformations();
     }
 
     pub fn reverse(&mut self) {
         self.sort_ascending = !self.sort_ascending;
+
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
 
         if !self.sort_columns.is_empty() {
             let options = SortMultipleOptions {
@@ -807,6 +1033,8 @@ impl DataTableState {
 
     pub fn filter(&mut self, filters: Vec<FilterStatement>) {
         self.filters = filters;
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
         self.apply_transformations();
     }
 
@@ -833,6 +1061,8 @@ impl DataTableState {
             self.drilled_down_group_key = None;
             self.drilled_down_group_key_columns = None;
             self.grouped_lf = None;
+            self.buffered_start_row = 0;
+            self.buffered_end_row = 0;
             self.table_state.select(Some(0));
             self.collect();
             return;
@@ -917,6 +1147,8 @@ impl DataTableState {
                 self.start_row = 0;
                 self.termcol_index = 0;
                 self.active_query = query;
+                self.buffered_start_row = 0;
+                self.buffered_end_row = 0;
                 // Reset drill-down state when applying new query
                 self.drilled_down_group_index = None;
                 self.drilled_down_group_key = None;
@@ -970,7 +1202,7 @@ mod tests {
     fn test_from_csv() {
         // Test uncompressed CSV loading
         let path = Path::new("tests/sample-data/3-sfd-header.csv");
-        let state = DataTableState::from_csv(path, &Default::default()).unwrap();
+        let state = DataTableState::from_csv(path, &Default::default()).unwrap(); // Uses default buffer params from options
         assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
     }
 
@@ -978,21 +1210,21 @@ mod tests {
     fn test_from_csv_gzipped() {
         // Test gzipped CSV loading
         let path = Path::new("tests/sample-data/mixed_types.csv.gz");
-        let state = DataTableState::from_csv(path, &Default::default()).unwrap();
+        let state = DataTableState::from_csv(path, &Default::default()).unwrap(); // Uses default buffer params from options
         assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
     }
 
     #[test]
     fn test_from_parquet() {
         let path = Path::new("tests/sample-data/crypto_prices.parquet");
-        let state = DataTableState::from_parquet(path).unwrap();
+        let state = DataTableState::from_parquet(path, None, None, false, 1).unwrap();
         assert!(!state.schema.is_empty());
     }
 
     #[test]
     fn test_filter() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         let filters = vec![FilterStatement {
             column: "a".to_string(),
             operator: FilterOperator::Gt,
@@ -1008,7 +1240,7 @@ mod tests {
     #[test]
     fn test_sort() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         state.sort(vec!["a".to_string()], false);
         let df = state.lf.clone().collect().unwrap();
         assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(3));
@@ -1017,7 +1249,7 @@ mod tests {
     #[test]
     fn test_query() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         state.query("select b where a = 2".to_string());
         let df = state.lf.clone().collect().unwrap();
         assert_eq!(df.shape(), (1, 1));
@@ -1030,7 +1262,7 @@ mod tests {
     #[test]
     fn test_select_next_previous() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         state.visible_rows = 10;
         state.table_state.select(Some(5));
 
@@ -1044,7 +1276,7 @@ mod tests {
     #[test]
     fn test_page_up_down() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         state.visible_rows = 20;
         state.collect();
 
@@ -1062,7 +1294,7 @@ mod tests {
     #[test]
     fn test_scroll_left_right() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         assert_eq!(state.termcol_index, 0);
         state.scroll_right();
         assert_eq!(state.termcol_index, 1);
@@ -1077,7 +1309,7 @@ mod tests {
     #[test]
     fn test_reverse() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         state.sort(vec!["a".to_string()], true);
         assert_eq!(
             state
@@ -1109,7 +1341,7 @@ mod tests {
     #[test]
     fn test_filter_multiple() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         let filters = vec![
             FilterStatement {
                 column: "c".to_string(),
@@ -1132,7 +1364,7 @@ mod tests {
     #[test]
     fn test_filter_and_sort() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf).unwrap();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
         let filters = vec![FilterStatement {
             column: "c".to_string(),
             operator: FilterOperator::Eq,
@@ -1160,6 +1392,8 @@ impl DataTable {
         area: Rect,
         buf: &mut Buffer,
         state: &mut TableState,
+        _row_numbers: bool,
+        _start_row_offset: usize,
     ) {
         // make each column as wide as it needs to be to fit the content
         let (height, cols) = df.shape();
@@ -1223,7 +1457,7 @@ impl DataTable {
             })
             .collect::<Vec<Row>>();
 
-        // for visible columsn
+        let header_row_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
         let headers: Vec<Span> = df
             .get_column_names()
             .iter()
@@ -1239,12 +1473,58 @@ impl DataTable {
         StatefulWidget::render(
             Table::new(rows, widths)
                 .column_spacing(1)
-                .header(Row::new(headers).bold().underlined())
-                .row_highlight_style(Style::new().bg(Color::Blue)),
+                .header(Row::new(headers).style(header_row_style))
+                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
             area,
             buf,
             state,
         );
+    }
+
+    fn render_row_numbers(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        start_row: usize,
+        visible_rows: usize,
+        num_rows: usize,
+        row_start_index: usize,
+    ) {
+        // Only render up to the actual number of rows in the data
+        let rows_to_render = visible_rows.min(num_rows.saturating_sub(start_row));
+
+        if rows_to_render == 0 {
+            return;
+        }
+
+        // Calculate width needed for largest row number
+        let max_row_num = start_row + rows_to_render.saturating_sub(1) + row_start_index;
+        let max_width = max_row_num.to_string().len();
+
+        // Render row numbers
+        for row_idx in 0..rows_to_render.min(area.height.saturating_sub(1) as usize) {
+            let row_num = start_row + row_idx + row_start_index;
+            let row_num_text = row_num.to_string();
+
+            // Right-align row numbers within the available width
+            let padding = max_width.saturating_sub(row_num_text.len());
+            let padded_text = format!("{}{}", " ".repeat(padding), row_num_text);
+
+            let y = area.y + row_idx as u16 + 1; // +1 for header row
+            if y < area.y + area.height {
+                Paragraph::new(padded_text)
+                    .style(Style::default().fg(Color::DarkGray))
+                    .render(
+                        Rect {
+                            x: area.x,
+                            y,
+                            width: area.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
+            }
+        }
     }
 }
 
@@ -1289,8 +1569,16 @@ impl StatefulWidget for DataTable {
             // If suppress_error_display is true, continue rendering the table normally
         }
 
+        // Calculate row number column width if enabled
+        let row_num_width = if state.row_numbers {
+            let max_row_num = state.start_row + state.visible_rows.saturating_sub(1) + 1; // +1 for 1-based, +1 for potential
+            max_row_num.to_string().len().max(1) as u16 + 1 // +1 for spacing
+        } else {
+            0
+        };
+
         // Calculate locked columns width if any
-        let mut locked_width = 0;
+        let mut locked_width = row_num_width;
         if let Some(locked_df) = state.locked_df.as_ref() {
             let (_, cols) = locked_df.shape();
             for col_index in 0..cols {
@@ -1308,7 +1596,7 @@ impl StatefulWidget for DataTable {
         }
 
         // Split area into locked and scrollable parts
-        if locked_width > 0 && locked_width < area.width {
+        if locked_width > row_num_width && locked_width < area.width {
             let locked_area = Rect {
                 x: area.x,
                 y: area.y,
@@ -1316,6 +1604,24 @@ impl StatefulWidget for DataTable {
                 height: area.height,
             };
             let separator_x = locked_area.x + locked_area.width;
+
+            // If row numbers are enabled, render them first in a separate area
+            if state.row_numbers {
+                let row_num_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: row_num_width,
+                    height: area.height,
+                };
+                self.render_row_numbers(
+                    row_num_area,
+                    buf,
+                    state.start_row,
+                    state.visible_rows,
+                    state.num_rows,
+                    state.row_start_index,
+                );
+            }
             let scrollable_area = Rect {
                 x: separator_x + 1,
                 y: area.y,
@@ -1325,23 +1631,134 @@ impl StatefulWidget for DataTable {
 
             // Render locked columns (no background shading, just the vertical separator)
             if let Some(locked_df) = state.locked_df.as_ref() {
-                self.render_dataframe(locked_df, locked_area, buf, &mut state.table_state);
+                // Adjust locked_area to account for row numbers if present
+                let adjusted_locked_area = if state.row_numbers {
+                    Rect {
+                        x: area.x + row_num_width,
+                        y: area.y,
+                        width: locked_width - row_num_width,
+                        height: area.height,
+                    }
+                } else {
+                    locked_area
+                };
+
+                // Slice buffer to visible portion
+                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let slice_len = state
+                    .visible_rows
+                    .min(locked_df.height().saturating_sub(offset));
+                if offset < locked_df.height() && slice_len > 0 {
+                    let sliced_df = locked_df.slice(offset as i64, slice_len);
+                    self.render_dataframe(
+                        &sliced_df,
+                        adjusted_locked_area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        state.start_row,
+                    );
+                }
             }
 
             // Draw vertical separator line
+            let separator_x_adjusted = if state.row_numbers {
+                area.x + row_num_width + (locked_width - row_num_width)
+            } else {
+                separator_x
+            };
             for y in area.y..area.y + area.height {
-                let cell = &mut buf[(separator_x, y)];
+                let cell = &mut buf[(separator_x_adjusted, y)];
                 cell.set_char('│');
                 cell.set_style(Style::default().fg(Color::White));
             }
 
+            // Adjust scrollable area to account for row numbers
+            let adjusted_scrollable_area = if state.row_numbers {
+                Rect {
+                    x: separator_x_adjusted + 1,
+                    y: area.y,
+                    width: area.width.saturating_sub(locked_width + 1),
+                    height: area.height,
+                }
+            } else {
+                scrollable_area
+            };
+
             // Render scrollable columns
             if let Some(df) = state.df.as_ref() {
-                self.render_dataframe(df, scrollable_area, buf, &mut state.table_state);
+                // Slice buffer to visible portion
+                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
+                if offset < df.height() && slice_len > 0 {
+                    let sliced_df = df.slice(offset as i64, slice_len);
+                    self.render_dataframe(
+                        &sliced_df,
+                        adjusted_scrollable_area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        state.start_row,
+                    );
+                }
             }
         } else if let Some(df) = state.df.as_ref() {
             // No locked columns, render normally
-            self.render_dataframe(df, area, buf, &mut state.table_state);
+            // If row numbers are enabled, render them first
+            if state.row_numbers {
+                let row_num_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: row_num_width,
+                    height: area.height,
+                };
+                self.render_row_numbers(
+                    row_num_area,
+                    buf,
+                    state.start_row,
+                    state.visible_rows,
+                    state.num_rows,
+                    state.row_start_index,
+                );
+
+                // Adjust data area to exclude row number column
+                let data_area = Rect {
+                    x: area.x + row_num_width,
+                    y: area.y,
+                    width: area.width.saturating_sub(row_num_width),
+                    height: area.height,
+                };
+
+                // Slice buffer to visible portion
+                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
+                if offset < df.height() && slice_len > 0 {
+                    let sliced_df = df.slice(offset as i64, slice_len);
+                    self.render_dataframe(
+                        &sliced_df,
+                        data_area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        state.start_row,
+                    );
+                }
+            } else {
+                // Slice buffer to visible portion
+                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
+                if offset < df.height() && slice_len > 0 {
+                    let sliced_df = df.slice(offset as i64, slice_len);
+                    self.render_dataframe(
+                        &sliced_df,
+                        area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        state.start_row,
+                    );
+                }
+            }
         } else {
             Paragraph::new("No data").render(area, buf);
         }

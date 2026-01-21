@@ -118,6 +118,10 @@ pub struct OpenOptions {
     pub skip_lines: Option<usize>,
     pub skip_rows: Option<usize>,
     pub compression: Option<CompressionFormat>,
+    pub pages_lookahead: Option<usize>,
+    pub pages_lookback: Option<usize>,
+    pub row_numbers: bool,
+    pub row_start_index: usize,
 }
 
 impl OpenOptions {
@@ -128,6 +132,10 @@ impl OpenOptions {
             skip_lines: None,
             skip_rows: None,
             compression: None,
+            pages_lookahead: None,
+            pages_lookback: None,
+            row_numbers: false,
+            row_start_index: 1,
         }
     }
 
@@ -175,6 +183,10 @@ impl From<&cli::Args> for OpenOptions {
         if let Some(compression) = args.compression {
             opts = opts.with_compression(compression);
         }
+        opts.pages_lookahead = args.pages_lookahead;
+        opts.pages_lookback = args.pages_lookback;
+        opts.row_numbers = args.row_numbers;
+        opts.row_start_index = args.row_start_index.unwrap_or(1);
 
         opts
     }
@@ -500,7 +512,7 @@ impl App {
         // For compressed files, decompression phase is already set in DoLoad handler
         // Now actually perform decompression and CSV reading (this is the slow part)
         if is_compressed_csv {
-            let lf = DataTableState::from_csv(path, options)?;
+            let lf = DataTableState::from_csv(path, options)?; // Already passes pages_lookahead/lookback via options
 
             // Phase 2: Building lazyframe (after decompression, before rendering)
             if let LoadingState::Loading {
@@ -558,21 +570,53 @@ impl App {
         }
 
         let lf = match path.extension() {
-            Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(path)?,
+            Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(
+                path,
+                options.pages_lookahead,
+                options.pages_lookback,
+                options.row_numbers,
+                options.row_start_index,
+            )?,
             Some(ext) if ext.eq_ignore_ascii_case("csv") => {
-                DataTableState::from_csv(path, options)?
+                DataTableState::from_csv(path, options)? // Already passes row_numbers via options
             }
-            Some(ext) if ext.eq_ignore_ascii_case("tsv") => {
-                DataTableState::from_delimited(path, b'\t')?
-            }
-            Some(ext) if ext.eq_ignore_ascii_case("psv") => {
-                DataTableState::from_delimited(path, b'|')?
-            }
-            Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json(path)?,
-            Some(ext) if ext.eq_ignore_ascii_case("jsonl") => {
-                DataTableState::from_json_lines(path)?
-            }
-            Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(path)?,
+            Some(ext) if ext.eq_ignore_ascii_case("tsv") => DataTableState::from_delimited(
+                path,
+                b'\t',
+                options.pages_lookahead,
+                options.pages_lookback,
+                options.row_numbers,
+                options.row_start_index,
+            )?,
+            Some(ext) if ext.eq_ignore_ascii_case("psv") => DataTableState::from_delimited(
+                path,
+                b'|',
+                options.pages_lookahead,
+                options.pages_lookback,
+                options.row_numbers,
+                options.row_start_index,
+            )?,
+            Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json(
+                path,
+                options.pages_lookahead,
+                options.pages_lookback,
+                options.row_numbers,
+                options.row_start_index,
+            )?,
+            Some(ext) if ext.eq_ignore_ascii_case("jsonl") => DataTableState::from_json_lines(
+                path,
+                options.pages_lookahead,
+                options.pages_lookback,
+                options.row_numbers,
+                options.row_start_index,
+            )?,
+            Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(
+                path,
+                options.pages_lookahead,
+                options.pages_lookback,
+                options.row_numbers,
+                options.row_start_index,
+            )?,
             _ => {
                 self.loading_state = LoadingState::Idle;
                 return Err(color_eyre::eyre::eyre!("Unsupported file type"));
@@ -970,7 +1014,13 @@ impl App {
                 }
                 KeyCode::Char(' ') => {
                     match self.sort_modal.focus {
-                        SortFocus::ColumnList => self.sort_modal.toggle_selection(),
+                        SortFocus::ColumnList => {
+                            self.sort_modal.toggle_selection();
+                        }
+                        SortFocus::Order => {
+                            self.sort_modal.ascending = !self.sort_modal.ascending;
+                            self.sort_modal.has_unapplied_changes = true;
+                        }
                         SortFocus::Apply => {
                             let columns = self.sort_modal.get_sorted_columns();
                             let column_order = self.sort_modal.get_column_order();
@@ -991,13 +1041,75 @@ impl App {
                         self.sort_modal.jump_selection_to_order(digit as usize);
                     }
                 }
+                KeyCode::Left if self.sort_modal.focus == SortFocus::Filter => {
+                    if self.sort_modal.filter_cursor > 0 {
+                        self.sort_modal.filter_cursor -= 1;
+                    }
+                }
+                KeyCode::Right if self.sort_modal.focus == SortFocus::Filter => {
+                    let char_count = self.sort_modal.filter.chars().count();
+                    if self.sort_modal.filter_cursor < char_count {
+                        self.sort_modal.filter_cursor += 1;
+                    }
+                }
+                KeyCode::Home if self.sort_modal.focus == SortFocus::Filter => {
+                    self.sort_modal.filter_cursor = 0;
+                }
+                KeyCode::End if self.sort_modal.focus == SortFocus::Filter => {
+                    self.sort_modal.filter_cursor = self.sort_modal.filter.chars().count();
+                }
                 KeyCode::Char(c) if self.sort_modal.focus == SortFocus::Filter => {
-                    self.sort_modal.filter.push(c);
+                    // Convert character position to byte position
+                    let byte_pos = self
+                        .sort_modal
+                        .filter
+                        .chars()
+                        .take(self.sort_modal.filter_cursor)
+                        .map(|c| c.len_utf8())
+                        .sum();
+                    self.sort_modal.filter.insert(byte_pos, c);
+                    self.sort_modal.filter_cursor += 1;
                     self.sort_modal.table_state.select(None); // Reset selection on filter change
                 }
                 KeyCode::Backspace if self.sort_modal.focus == SortFocus::Filter => {
-                    self.sort_modal.filter.pop();
-                    self.sort_modal.table_state.select(None);
+                    if self.sort_modal.filter_cursor > 0 {
+                        // Convert character position to byte position for the character before cursor
+                        let prev_byte_pos: usize = self
+                            .sort_modal
+                            .filter
+                            .chars()
+                            .take(self.sort_modal.filter_cursor - 1)
+                            .map(|c| c.len_utf8())
+                            .sum();
+                        let char_to_delete = self.sort_modal.filter[prev_byte_pos..]
+                            .chars()
+                            .next()
+                            .unwrap();
+                        let char_len = char_to_delete.len_utf8();
+                        self.sort_modal
+                            .filter
+                            .drain(prev_byte_pos..prev_byte_pos + char_len);
+                        self.sort_modal.filter_cursor -= 1;
+                        self.sort_modal.table_state.select(None);
+                    }
+                }
+                KeyCode::Delete if self.sort_modal.focus == SortFocus::Filter => {
+                    let char_count = self.sort_modal.filter.chars().count();
+                    if self.sort_modal.filter_cursor < char_count {
+                        // Convert character position to byte position
+                        let byte_pos: usize = self
+                            .sort_modal
+                            .filter
+                            .chars()
+                            .take(self.sort_modal.filter_cursor)
+                            .map(|c| c.len_utf8())
+                            .sum();
+                        let char_to_delete =
+                            self.sort_modal.filter[byte_pos..].chars().next().unwrap();
+                        let char_len = char_to_delete.len_utf8();
+                        self.sort_modal.filter.drain(byte_pos..byte_pos + char_len);
+                        self.sort_modal.table_state.select(None);
+                    }
                 }
                 _ => {}
             }
@@ -1089,10 +1201,38 @@ impl App {
                                             {
                                                 if let Some(corr) = &results.correlation_matrix {
                                                     let max_rows = corr.columns.len();
+                                                    // Calculate visible columns (same logic as horizontal moves)
+                                                    let row_header_width = 20u16;
+                                                    let cell_width = 12u16;
+                                                    let column_spacing = 1u16;
+                                                    let estimated_width = 80u16;
+                                                    let available_width = estimated_width
+                                                        .saturating_sub(row_header_width);
+                                                    let mut calculated_visible = 0usize;
+                                                    let mut used = 0u16;
+                                                    let max_cols = corr.columns.len();
+                                                    loop {
+                                                        let needed = if calculated_visible == 0 {
+                                                            cell_width
+                                                        } else {
+                                                            column_spacing + cell_width
+                                                        };
+                                                        if used + needed <= available_width
+                                                            && calculated_visible < max_cols
+                                                        {
+                                                            used += needed;
+                                                            calculated_visible += 1;
+                                                        } else {
+                                                            break;
+                                                        }
+                                                    }
+                                                    let visible_cols =
+                                                        calculated_visible.max(1).min(max_cols);
                                                     self.analysis_modal.move_correlation_cell(
                                                         (1, 0),
                                                         max_rows,
                                                         max_rows,
+                                                        visible_cols,
                                                     );
                                                 }
                                             }
@@ -1139,20 +1279,54 @@ impl App {
                                     analysis_modal::AnalysisTool::Describe => {
                                         self.analysis_modal.scroll_left();
                                     }
+                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                        self.analysis_modal.scroll_left();
+                                    }
                                     analysis_modal::AnalysisTool::CorrelationMatrix => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
                                                 let max_cols = corr.columns.len();
+                                                // Calculate visible columns using same logic as render function
+                                                // This matches the render_correlation_matrix calculation
+                                                let row_header_width = 20u16;
+                                                let cell_width = 12u16;
+                                                let column_spacing = 1u16;
+                                                // Use a conservative estimate for available width
+                                                // In practice, main_area.width would be available, but we don't have access here
+                                                // Using a reasonable default that works for most terminals
+                                                let estimated_width = 80u16; // Conservative estimate (most terminals are 80+ wide)
+                                                let available_width = estimated_width
+                                                    .saturating_sub(row_header_width);
+                                                // Match render logic: first column has no spacing, subsequent ones do
+                                                let mut calculated_visible = 0usize;
+                                                let mut used = 0u16;
+                                                loop {
+                                                    let needed = if calculated_visible == 0 {
+                                                        cell_width
+                                                    } else {
+                                                        column_spacing + cell_width
+                                                    };
+                                                    if used + needed <= available_width
+                                                        && calculated_visible < max_cols
+                                                    {
+                                                        used += needed;
+                                                        calculated_visible += 1;
+                                                    } else {
+                                                        break;
+                                                    }
+                                                }
+                                                let visible_cols =
+                                                    calculated_visible.max(1).min(max_cols);
                                                 self.analysis_modal.move_correlation_cell(
                                                     (0, -1),
                                                     max_cols,
                                                     max_cols,
+                                                    visible_cols,
                                                 );
                                             }
                                         }
                                     }
-                                    _ => {}
                                 }
                             }
                         }
@@ -1176,20 +1350,53 @@ impl App {
                                         let visible_stats = 8; // Will be calculated more accurately in widget
                                         self.analysis_modal.scroll_right(max_stats, visible_stats);
                                     }
+                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                        // Number of statistics: Distribution, P-value, Shapiro-Wilk, SW p-value, CV, Outliers, Skewness, Kurtosis
+                                        let max_stats = 8;
+                                        // Estimate visible stats based on terminal width (rough estimate)
+                                        let visible_stats = 6; // Will be calculated more accurately in widget
+                                        self.analysis_modal.scroll_right(max_stats, visible_stats);
+                                    }
                                     analysis_modal::AnalysisTool::CorrelationMatrix => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
                                                 let max_cols = corr.columns.len();
+                                                // Calculate visible columns using same logic as render function
+                                                let row_header_width = 20u16;
+                                                let cell_width = 12u16;
+                                                let column_spacing = 1u16;
+                                                let estimated_width = 80u16; // Conservative estimate
+                                                let available_width = estimated_width
+                                                    .saturating_sub(row_header_width);
+                                                let mut calculated_visible = 0usize;
+                                                let mut used = 0u16;
+                                                loop {
+                                                    let needed = if calculated_visible == 0 {
+                                                        cell_width
+                                                    } else {
+                                                        column_spacing + cell_width
+                                                    };
+                                                    if used + needed <= available_width
+                                                        && calculated_visible < max_cols
+                                                    {
+                                                        used += needed;
+                                                        calculated_visible += 1;
+                                                    } else {
+                                                        break;
+                                                    }
+                                                }
+                                                let visible_cols =
+                                                    calculated_visible.max(1).min(max_cols);
                                                 self.analysis_modal.move_correlation_cell(
                                                     (0, 1),
                                                     max_cols,
                                                     max_cols,
+                                                    visible_cols,
                                                 );
                                             }
                                         }
                                     }
-                                    _ => {}
                                 }
                             }
                         }
@@ -2551,6 +2758,12 @@ impl App {
                 Some(AppEvent::Exit)
             }
             KeyCode::Char('R') => Some(AppEvent::Reset),
+            KeyCode::Char('N') => {
+                if let Some(ref mut state) = self.data_table_state {
+                    state.toggle_row_numbers();
+                }
+                None
+            }
             KeyCode::Esc => {
                 // First check if we're in drill-down mode
                 if let Some(ref mut state) = self.data_table_state {
@@ -3137,6 +3350,7 @@ Data Operations:
 
 Display:
   i:                Toggle Info view
+  N:                Toggle row numbers
   Ctrl+h:           Toggle this help
 
 Help Navigation:
@@ -3484,9 +3698,7 @@ impl Widget for &mut App {
                     line.spans.push(Span::raw(after_cursor));
                 }
 
-                Paragraph::new(line)
-                    .block(Block::default().style(Style::default().bg(Color::DarkGray)))
-                    .render(chunks[0], buf);
+                Paragraph::new(line).render(chunks[0], buf);
                 Paragraph::new(err_msg)
                     .style(Style::default().fg(Color::Red))
                     .wrap(ratatui::widgets::Wrap { trim: true })
@@ -3514,9 +3726,7 @@ impl Widget for &mut App {
                     line.spans.push(Span::raw(after_cursor));
                 }
 
-                Paragraph::new(line)
-                    .block(Block::default().style(Style::default().bg(Color::DarkGray)))
-                    .render(inner_area, buf);
+                Paragraph::new(line).render(inner_area, buf);
             }
         }
 
@@ -3735,10 +3945,31 @@ impl Widget for &mut App {
             let filter_inner_area = filter_block.inner(chunks[0]);
             filter_block.render(chunks[0], buf);
 
-            // Text input within the block
-            Paragraph::new(self.sort_modal.filter.as_str())
-                .style(Style::default().bg(Color::DarkGray))
-                .render(filter_inner_area, buf);
+            // Text input with cursor (like query input)
+            let filter_text = self.sort_modal.filter.as_str();
+            let cursor_pos = self
+                .sort_modal
+                .filter_cursor
+                .min(filter_text.chars().count());
+            let mut chars = filter_text.chars();
+            let before_cursor: String = chars.by_ref().take(cursor_pos).collect();
+            let at_cursor = chars
+                .next()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| " ".to_string());
+            let after_cursor: String = chars.collect();
+
+            let mut line = ratatui::text::Line::default();
+            line.spans.push(ratatui::text::Span::raw(before_cursor));
+            line.spans.push(ratatui::text::Span::styled(
+                at_cursor,
+                Style::default().bg(Color::White).fg(Color::Black),
+            ));
+            if !after_cursor.is_empty() {
+                line.spans.push(ratatui::text::Span::raw(after_cursor));
+            }
+
+            Paragraph::new(line).render(filter_inner_area, buf);
 
             // Column Table
             let filtered = self.sort_modal.filtered_columns();
@@ -3865,25 +4096,58 @@ impl Widget for &mut App {
 
             Paragraph::new(vec![hint_line1, hint_line2]).render(chunks[2], buf);
 
-            // Order Toggle
-            let order_text = if self.sort_modal.ascending {
-                "Ascending"
-            } else {
-                "Descending"
-            };
+            // Order Toggle - Radio Button Style with single border
             let order_border_style = if self.sort_modal.focus == SortFocus::Order {
                 Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
             };
-            Paragraph::new(order_text)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Order")
-                        .border_style(order_border_style),
-                )
-                .render(chunks[3], buf);
+
+            let order_block = Block::default()
+                .borders(Borders::ALL)
+                .title("Order")
+                .border_style(order_border_style);
+            let order_inner = order_block.inner(chunks[3]);
+            order_block.render(chunks[3], buf);
+
+            let order_layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(order_inner);
+
+            // Ascending option
+            let ascending_indicator = if self.sort_modal.ascending {
+                "●"
+            } else {
+                "○"
+            };
+            let ascending_text = format!("{} Ascending", ascending_indicator);
+            let ascending_style = if self.sort_modal.ascending {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Paragraph::new(ascending_text)
+                .style(ascending_style)
+                .centered()
+                .render(order_layout[0], buf);
+
+            // Descending option
+            let descending_indicator = if !self.sort_modal.ascending {
+                "●"
+            } else {
+                "○"
+            };
+            let descending_text = format!("{} Descending", descending_indicator);
+            let descending_style = if !self.sort_modal.ascending {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Paragraph::new(descending_text)
+                .style(descending_style)
+                .centered()
+                .render(order_layout[1], buf);
 
             // Buttons
             let btn_layout = Layout::default()
@@ -3903,12 +4167,12 @@ impl Widget for &mut App {
                 apply_border_style = apply_border_style.fg(Color::Yellow);
             }
 
-            if self.sort_modal.has_unapplied_changes && self.sort_modal.focus != SortFocus::Apply {
-                apply_text_style = apply_text_style.bg(Color::DarkGray);
+            if self.sort_modal.has_unapplied_changes {
+                apply_text_style = apply_text_style.add_modifier(Modifier::BOLD);
             }
 
             Paragraph::new("Apply")
-                .style(apply_text_style) // Apply background/foreground to the paragraph text
+                .style(apply_text_style) // Apply bold text when there are unapplied changes
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -4865,13 +5129,26 @@ impl Widget for &mut App {
                 if let Some(ref results) = self.analysis_modal.analysis_results {
                     let context = state.get_analysis_context();
                     Clear.render(analysis_area, buf);
+                    // Use tool-specific column_offset
+                    let column_offset = match self.analysis_modal.selected_tool {
+                        analysis_modal::AnalysisTool::Describe => {
+                            self.analysis_modal.describe_column_offset
+                        }
+                        analysis_modal::AnalysisTool::DistributionAnalysis => {
+                            self.analysis_modal.distribution_column_offset
+                        }
+                        analysis_modal::AnalysisTool::CorrelationMatrix => {
+                            self.analysis_modal.correlation_column_offset
+                        }
+                    };
+
                     let config = widgets::analysis::AnalysisWidgetConfig {
                         state,
                         results: Some(results),
                         context: &context,
                         view: self.analysis_modal.view,
                         selected_tool: self.analysis_modal.selected_tool,
-                        column_offset: self.analysis_modal.column_offset,
+                        column_offset,
                         selected_correlation: self.analysis_modal.selected_correlation,
                         focus: self.analysis_modal.focus,
                         selected_theoretical_distribution: self
@@ -5242,18 +5519,41 @@ Delete Confirmation:
             .as_ref()
             .map(|s| !s.active_query.trim().is_empty())
             .unwrap_or(false);
-        // Dim controls when any modal is active
+        // Dim controls when any modal is active (except analysis modal uses its own controls)
         let is_modal_active = self.show_help
             || self.input_mode == InputMode::Editing
             || self.input_mode == InputMode::Filtering
             || self.sort_modal.active
-            || self.filter_modal.active
-            || self.analysis_modal.active;
+            || self.filter_modal.active;
 
-        Controls::with_row_count(row_count.unwrap_or(0))
-            .with_dimmed(is_modal_active)
-            .with_query_active(query_active)
-            .render(controls_area, buf);
+        // Build controls - use analysis-specific controls if analysis modal is active
+        let mut controls = Controls::with_row_count(row_count.unwrap_or(0));
+
+        if self.analysis_modal.active {
+            // Build analysis-specific controls based on view
+            let mut analysis_controls = vec![
+                ("Esc", "Back"),
+                ("↑↓", "Navigate"),
+                ("←→", "Scroll Columns"),
+                ("Tab", "Sidebar"),
+                ("Enter", "Select"),
+            ];
+
+            // Add r Resample if data is sampled
+            if let Some(results) = &self.analysis_modal.analysis_results {
+                if results.sample_size.is_some() {
+                    analysis_controls.push(("r", "Resample"));
+                }
+            }
+
+            controls = controls.with_custom_controls(analysis_controls);
+        } else {
+            controls = controls
+                .with_dimmed(is_modal_active)
+                .with_query_active(query_active);
+        }
+
+        controls.render(controls_area, buf);
         if self.debug.enabled && layout.len() > debug_area_index {
             self.debug.render(layout[debug_area_index], buf);
         }

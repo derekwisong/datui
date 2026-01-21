@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Paragraph, Widget},
 };
 
@@ -10,6 +10,7 @@ pub struct Controls {
     pub row_count: Option<usize>,
     pub dimmed: bool,
     pub query_active: bool,
+    pub custom_controls: Option<Vec<(&'static str, &'static str)>>,
 }
 
 impl Controls {
@@ -22,6 +23,7 @@ impl Controls {
             row_count: Some(row_count),
             dimmed: false,
             query_active: false,
+            custom_controls: None,
         }
     }
 
@@ -34,11 +36,16 @@ impl Controls {
         self.query_active = query_active;
         self
     }
+
+    pub fn with_custom_controls(mut self, controls: Vec<(&'static str, &'static str)>) -> Self {
+        self.custom_controls = Some(controls);
+        self
+    }
 }
 
 impl Widget for &Controls {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        const CONTROLS: [(&str, &str); 8] = [
+        const DEFAULT_CONTROLS: [(&str, &str); 8] = [
             ("/", "Query"),
             ("f", "Filter"),
             ("s", "Sort"),
@@ -49,63 +56,63 @@ impl Widget for &Controls {
             ("q", "Quit"),
         ];
 
-        let mut constraints = CONTROLS.iter().fold(vec![], |mut acc, (key, action)| {
+        let controls: Vec<(&str, &str)> = if let Some(ref custom) = self.custom_controls {
+            custom.to_vec()
+        } else {
+            DEFAULT_CONTROLS.to_vec()
+        };
+
+        let mut constraints = controls.iter().fold(vec![], |mut acc, (key, action)| {
             acc.push(Constraint::Length(key.chars().count() as u16 + 2));
             acc.push(Constraint::Length(action.chars().count() as u16 + 1));
             acc
         });
 
-        // Add space for row count if available
+        constraints.push(Constraint::Fill(1));
         if self.row_count.is_some() {
-            constraints.push(Constraint::Length(15)); // Space for "Rows: 12345"
+            constraints.push(Constraint::Length(20));
         }
-        constraints.push(Constraint::Fill(1)); // Fill the remaining space
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
-        let color = Color::DarkGray;
 
-        // Use dimmed style if dimmed is true
-        let base_style = if self.dimmed {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default()
-        };
-
-        // iterate over the controls and render them
-        for (i, (key, action)) in CONTROLS.iter().enumerate() {
+        let base_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
+        for (i, (key, action)) in controls.iter().enumerate() {
             let j = i * 2;
             Paragraph::new(*key)
-                .style(base_style.bold())
+                .style(base_style.add_modifier(Modifier::BOLD))
                 .centered()
                 .render(layout[j], buf);
-            // Make "Query" label cyan when query is active
-            let action_style = if *action == "Query" && self.query_active {
-                base_style.bg(color).fg(Color::Cyan)
-            } else {
-                base_style.bg(color)
-            };
             Paragraph::new(*action)
-                .style(action_style)
+                .style(base_style)
                 .render(layout[j + 1], buf);
         }
 
-        // Render row count if available
-        let mut fill_start_idx = CONTROLS.len() * 2;
+        let fill_idx = controls.len() * 2;
         if let Some(count) = self.row_count {
-            let row_count_text = format!("Rows: {}", count);
+            let row_count_text = format!("Rows: {}", format_number_with_commas(count));
             Paragraph::new(row_count_text)
-                .style(base_style.bg(color).fg(if self.dimmed {
-                    Color::DarkGray
-                } else {
-                    Color::White
-                }))
+                .style(base_style)
                 .right_aligned()
-                .render(layout[fill_start_idx], buf);
-            fill_start_idx += 1;
+                .render(layout[fill_idx + 1], buf);
         }
 
         Paragraph::new("")
-            .style(base_style.bg(color))
-            .render(layout[fill_start_idx], buf);
+            .style(base_style)
+            .render(layout[fill_idx], buf);
     }
+}
+
+fn format_number_with_commas(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().rev().collect();
+
+    for (i, ch) in chars.iter().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(*ch);
+    }
+
+    result.chars().rev().collect()
 }

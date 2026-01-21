@@ -1,4 +1,8 @@
 /plans
 /target
 /.vscode
+/.venv
 /book
+
+*.pyc
+__pycache__/

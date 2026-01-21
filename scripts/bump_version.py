@@ -3,15 +3,22 @@
 Bump version number in Cargo.toml and README.md
 
 Usage:
-    python scripts/bump_version.py [major|minor|patch]
+    python scripts/bump_version.py [major|minor|patch] [--commit] [--tag]
+
+Options:
+    --commit    Commit the version changes with message "Version bumped to <version> with <script_name>"
+    --tag       Create a git tag for the version bump commit with message "Release <version>"
+                (implies --commit)
 
 Examples:
-    python scripts/bump_version.py patch   # 0.2.1 -> 0.2.2
-    python scripts/bump_version.py minor   # 0.2.1 -> 0.3.0
-    python scripts/bump_version.py major   # 0.2.1 -> 1.0.0
+    python scripts/bump_version.py patch           # 0.2.1 -> 0.2.2
+    python scripts/bump_version.py patch --commit  # Bump and commit
+    python scripts/bump_version.py minor --tag     # Bump, commit, and tag
 """
 
+import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -82,23 +89,91 @@ def get_current_version(cargo_toml_path: Path) -> str:
     return match.group(1)
 
 
-def main():
-    if len(sys.argv) != 2:
-        print(__doc__, file=sys.stderr)
-        sys.exit(1)
+def commit_version_changes(project_root: Path, version: str, script_name: str) -> None:
+    """Commit version changes to git."""
+    try:
+        # Stage the files (Cargo.lock may not exist for library crates)
+        files_to_add = ["Cargo.toml", "README.md"]
+        cargo_lock_path = project_root / "Cargo.lock"
+        if cargo_lock_path.exists():
+            files_to_add.append("Cargo.lock")
+        
+        subprocess.run(
+            ["git", "add"] + files_to_add,
+            cwd=project_root,
+            check=True,
+        )
+        
+        # Commit with message
+        commit_message = f"Version bumped to {version} with {script_name}"
+        subprocess.run(
+            ["git", "commit", "-m", commit_message],
+            cwd=project_root,
+            check=True,
+        )
+        print(f"✓ Committed changes: {commit_message}")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Git commit failed: {e}")
 
-    bump_type = sys.argv[1].lower()
-    if bump_type not in ("major", "minor", "patch"):
-        print(f"Error: Invalid bump type '{bump_type}'. Must be major, minor, or patch.", file=sys.stderr)
-        print(__doc__, file=sys.stderr)
-        sys.exit(1)
+
+def create_version_tag(project_root: Path, version: str) -> None:
+    """Create a git tag for the version."""
+    try:
+        tag_name = f"v{version}"
+        tag_message = f"Release {version}"
+        subprocess.run(
+            ["git", "tag", "-a", tag_name, "-m", tag_message],
+            cwd=project_root,
+            check=True,
+        )
+        print(f"✓ Created tag: {tag_name} - {tag_message}")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Git tag creation failed: {e}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Bump version number in Cargo.toml and README.md",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/bump_version.py patch           # 0.2.1 -> 0.2.2
+  python scripts/bump_version.py patch --commit  # Bump and commit
+  python scripts/bump_version.py minor --tag     # Bump, commit, and tag
+        """,
+    )
+    parser.add_argument(
+        "bump_type",
+        choices=["major", "minor", "patch"],
+        help="Type of version bump (major, minor, or patch)",
+    )
+    parser.add_argument(
+        "--commit",
+        action="store_true",
+        help='Commit the version changes with message "Version bumped to <version> with <script_name>"',
+    )
+    parser.add_argument(
+        "--tag",
+        action="store_true",
+        help='Create a git tag for the version bump commit with message "Release <version>" (implies --commit)',
+    )
+    
+    args = parser.parse_args()
+    
+    # --tag implies --commit
+    if args.tag:
+        args.commit = True
+    
+    bump_type = args.bump_type.lower()
 
     # Get project root (parent of scripts/)
     script_dir = Path(__file__).parent
     project_root = script_dir.parent
+    script_name = Path(__file__).name
 
     cargo_toml_path = project_root / "Cargo.toml"
     readme_path = project_root / "README.md"
+    cargo_lock_path = project_root / "Cargo.lock"
 
     if not cargo_toml_path.exists():
         print(f"Error: Could not find {cargo_toml_path}", file=sys.stderr)
@@ -122,6 +197,33 @@ def main():
         update_readme(readme_path, current_version, new_version)
         print()
         print(f"✓ Version bumped successfully: {current_version} -> {new_version}")
+        
+        # Update Cargo.lock by running cargo build/check
+        print()
+        print("Updating Cargo.lock...")
+        try:
+            subprocess.run(
+                ["cargo", "check", "--quiet"],
+                cwd=project_root,
+                check=True,
+                capture_output=True,
+            )
+            print("✓ Cargo.lock updated")
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Failed to update Cargo.lock: {e}", file=sys.stderr)
+            # Continue anyway - Cargo.lock might not exist or might be in .gitignore
+        
+        # Handle git operations if requested
+        if args.commit:
+            commit_version_changes(project_root, new_version, script_name)
+            
+            if args.tag:
+                create_version_tag(project_root, new_version)
+                print()
+                print(f"✓ Version bump complete: {current_version} -> {new_version} (committed and tagged)")
+            else:
+                print()
+                print(f"✓ Version bump complete: {current_version} -> {new_version} (committed)")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

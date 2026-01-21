@@ -86,17 +86,16 @@ impl<'a> AnalysisWidget<'a> {
         // Sidebar width (~30 characters)
         let sidebar_width = 32u16;
 
-        // Full-screen layout: breadcrumb, main area, keybind hints
+        // Full-screen layout: breadcrumb, main area (no separate keybind hints line)
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // Breadcrumb
                 Constraint::Fill(1),   // Main area + sidebar
-                Constraint::Length(1), // Keybind hints
             ])
             .split(area);
 
-        // Breadcrumb with style matching distribution detail page
+        // Breadcrumb with style matching main window column headers
         // Show tool name for all analysis tools, with "(sampled)" if data is sampled
         let tool_name = match self.selected_tool {
             AnalysisTool::Describe => "Describe",
@@ -114,16 +113,14 @@ impl<'a> AnalysisWidget<'a> {
             tool_name.to_string()
         };
 
-        // Style matching distribution detail page: black background (default), bold cyan text
-        use ratatui::text::{Line, Span};
-        let mut breadcrumb_line = Line::default();
-        breadcrumb_line.spans.push(Span::styled(
-            breadcrumb_text,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        Paragraph::new(breadcrumb_line).render(layout[0], buf);
+        // Style matching main window column headers: dark gray background with bold white text
+        let header_row_style = Style::default()
+            .bg(Color::Indexed(236))
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        Paragraph::new(breadcrumb_text)
+            .style(header_row_style)
+            .render(layout[0], buf);
 
         // Split main area into content area and sidebar
         let main_layout = Layout::default()
@@ -150,6 +147,7 @@ impl<'a> AnalysisWidget<'a> {
                     render_distribution_table(
                         results,
                         self.distribution_table_state,
+                        self.column_offset,
                         main_layout[0],
                         buf,
                     );
@@ -159,6 +157,7 @@ impl<'a> AnalysisWidget<'a> {
                         results,
                         self.correlation_table_state,
                         &self.selected_correlation,
+                        self.column_offset,
                         main_layout[0],
                         buf,
                     );
@@ -179,61 +178,7 @@ impl<'a> AnalysisWidget<'a> {
             self.focus,
         );
 
-        // Keybind hints (cyan labels, white descriptions)
-        // For DistributionAnalysis, omit Ctrl+H help tip and only show r Resample if sampled
-        let mut hint_line = Line::default();
-        hint_line.spans.push(Span::styled(
-            "Esc",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        hint_line.spans.push(Span::raw(" Back "));
-        hint_line.spans.push(Span::styled(
-            "↑↓",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        hint_line.spans.push(Span::raw(" Navigate "));
-        hint_line.spans.push(Span::styled(
-            "←→",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        hint_line.spans.push(Span::raw(" Scroll Columns "));
-        hint_line.spans.push(Span::styled(
-            "Tab",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        hint_line.spans.push(Span::raw(" Sidebar "));
-        hint_line.spans.push(Span::styled(
-            "Enter",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        hint_line.spans.push(Span::raw(" Select "));
-
-        // Ctrl+H help tip removed from analysis pages
-
-        // Only show r Resample if data is sampled (for all analysis tools)
-        if let Some(results) = self.results {
-            if results.sample_size.is_some() {
-                hint_line.spans.push(Span::styled(
-                    "r",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                hint_line.spans.push(Span::raw(" Resample"));
-            }
-        }
-
-        Paragraph::new(vec![hint_line]).render(layout[2], buf);
+        // Keybind hints are now shown on the main bottom bar (see lib.rs)
     }
 
     fn render_distribution_detail(self, area: Rect, buf: &mut Buffer) {
@@ -271,31 +216,21 @@ impl<'a> AnalysisWidget<'a> {
             ])
             .split(layout[0]);
 
-        // Title: "Distribution Analysis: [column]" - cyan bold label, bold column name
-        use ratatui::text::{Line, Span};
-        let mut title_line = Line::default();
-        title_line.spans.push(Span::styled(
-            "Distribution Analysis: ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        title_line.spans.push(Span::styled(
-            &dist.column_name,
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
-        Paragraph::new(title_line).render(breadcrumb_layout[0], buf);
+        // Title: "Distribution Analysis: [column]" - dark gray background with bold white text
+        let title_text = format!("Distribution Analysis: {}", dist.column_name);
+        let header_row_style = Style::default()
+            .bg(Color::Indexed(236))
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        Paragraph::new(title_text)
+            .style(header_row_style)
+            .render(breadcrumb_layout[0], buf);
 
-        // Escape hint on right
-        let mut escape_hint = Line::default();
-        escape_hint.spans.push(Span::styled(
-            "Esc",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        escape_hint.spans.push(Span::raw(" Back"));
-        Paragraph::new(escape_hint).render(breadcrumb_layout[1], buf);
+        // Escape hint on right - also styled with dark gray background
+        Paragraph::new("Esc Back")
+            .style(header_row_style)
+            .right_aligned()
+            .render(breadcrumb_layout[1], buf);
 
         // Main content area - optimized layout
         // Split into: condensed stats header, charts and selector area
@@ -564,20 +499,43 @@ fn render_statistics_table(
         .saturating_sub(locked_col_width)
         .saturating_sub(column_spacing); // Space between locked column and first stat column
 
-    // Determine which statistics to show (column_offset now refers to statistics, not data columns)
-    let start_stat = column_offset.min(num_stats.saturating_sub(1));
+    let mut used_width_from_zero = 0u16;
+    let mut max_visible_from_zero = 0;
 
-    // Calculate how many stat columns can fit starting from start_stat
+    for width in min_col_widths.iter() {
+        let spacing_needed = if max_visible_from_zero > 0 {
+            column_spacing
+        } else {
+            0
+        };
+        let total_needed = spacing_needed + width;
+
+        if used_width_from_zero + total_needed <= available_width {
+            used_width_from_zero += total_needed;
+            max_visible_from_zero += 1;
+        } else {
+            break;
+        }
+    }
+
+    max_visible_from_zero = max_visible_from_zero.max(1);
+
+    let effective_offset = if max_visible_from_zero >= num_stats {
+        0
+    } else {
+        column_offset.min(num_stats.saturating_sub(1))
+    };
+
+    let start_stat = effective_offset;
+
     let mut used_width = 0u16;
     let mut max_visible_stats = 0;
 
-    // Calculate max visible stats starting from start_stat
     for width in min_col_widths
         .iter()
         .skip(start_stat)
         .take(num_stats - start_stat)
     {
-        // Add spacing before this column (except the first one after start_stat)
         let spacing_needed = if max_visible_stats > 0 {
             column_spacing
         } else {
@@ -604,7 +562,6 @@ fn render_statistics_table(
 
     let mut rows = Vec::new();
 
-    // Build header row: "Column" (locked) + visible statistic names in Title case
     let mut header_cells =
         vec![Cell::from("Column").style(Style::default().add_modifier(Modifier::BOLD))];
     for &stat_idx in &visible_stats {
@@ -613,16 +570,16 @@ fn render_statistics_table(
                 .style(Style::default().add_modifier(Modifier::BOLD)),
         );
     }
-    let header_row =
-        Row::new(header_cells.clone()).style(Style::default().add_modifier(Modifier::BOLD));
-    // Don't add header to rows - it will be set via .header() method only
+    let header_row_style = Style::default()
+        .bg(Color::Indexed(236))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header_row = Row::new(header_cells.clone()).style(header_row_style);
 
-    // Build data rows: one row per data column
-    // Note: rows vector does NOT include the header - header is set separately via .header()
     for col_stat in &results.column_statistics {
-        let mut cells = vec![Cell::from(col_stat.name.as_str())];
-
-        // Add statistic values for visible statistics
+        let mut cells =
+            vec![Cell::from(col_stat.name.as_str())
+                .style(Style::default().add_modifier(Modifier::BOLD))];
         for &stat_idx in &visible_stats {
             let stat_name = stat_names[stat_idx];
             let value = match stat_name {
@@ -677,12 +634,9 @@ fn render_statistics_table(
             cells.push(Cell::from(value));
         }
 
-        // No row styling - colors are on individual cells only
         rows.push(Row::new(cells));
     }
 
-    // Build constraints: locked column name + visible statistics with minimal spacing
-    // Ratatui Table handles spacing between columns, so we just use the minimum width needed
     let mut constraints = vec![Constraint::Length(locked_col_width)];
     for &stat_idx in &visible_stats {
         // Use minimum width needed (ratatui will add spacing between columns)
@@ -719,6 +673,7 @@ fn format_pvalue(p: f64) -> String {
 fn render_distribution_table(
     results: &AnalysisResults,
     table_state: &mut TableState,
+    column_offset: usize,
     area: Rect,
     buf: &mut Buffer,
 ) {
@@ -729,12 +684,11 @@ fn render_distribution_table(
         return;
     }
 
-    // Column headers for width calculation
+    // Column headers for width calculation (excluding "Column" which will be locked)
     // Phase 6: Add P-value column after Distribution
     let column_names = [
-        "Column",
         "Distribution",
-        "P-value", // NEW: Add p-value column
+        "P-value",
         "Shapiro-Wilk",
         "SW p-value",
         "CV",
@@ -742,6 +696,7 @@ fn render_distribution_table(
         "Skewness",
         "Kurtosis",
     ];
+    let num_stats = column_names.len();
 
     // Calculate column widths based on header names and content (minimal spacing)
     // Note: ratatui Table adds 1 space between columns by default, so we don't add extra padding
@@ -750,7 +705,18 @@ fn render_distribution_table(
         .map(|name| name.chars().count() as u16) // header length (no extra padding - table handles spacing)
         .collect();
 
-    // Scan all data to find maximum width needed for each column
+    // Calculate column name width (for locked column)
+    let header_text = "Column";
+    let header_len = header_text.chars().count() as u16;
+    let max_col_name_len = results
+        .distribution_analyses
+        .iter()
+        .map(|da| da.column_name.chars().count() as u16)
+        .max()
+        .unwrap_or(header_len);
+    let locked_col_width = max_col_name_len.max(header_len).max(10);
+
+    // Scan all data to find maximum width needed for each column (excluding Column)
     for dist_analysis in &results.distribution_analyses {
         // Outlier count with percentage
         let outlier_text = if dist_analysis.outliers.total_count > 0 {
@@ -777,11 +743,10 @@ fn render_distribution_table(
         // Phase 6: Add p-value to column values
         let pvalue_text = format_pvalue(dist_analysis.confidence);
 
-        // Update minimum widths based on content
+        // Update minimum widths based on content (skip column name)
         let col_values = [
-            dist_analysis.column_name.clone(),
             format!("{}", dist_analysis.distribution_type),
-            pvalue_text.clone(), // NEW: P-value column
+            pvalue_text.clone(),
             sw_stat_text.clone(),
             sw_pvalue_text.clone(),
             format!(
@@ -795,34 +760,67 @@ fn render_distribution_table(
 
         for (idx, value) in col_values.iter().enumerate() {
             let value_len = value.chars().count() as u16;
-            min_col_widths[idx] = min_col_widths[idx].max(value_len); // content width (no padding - table handles spacing)
+            let header_len = column_names[idx].chars().count() as u16;
+            min_col_widths[idx] = min_col_widths[idx].max(value_len).max(header_len);
         }
     }
 
-    // Build constraints from calculated widths
-    // Ratatui Table handles spacing between columns automatically (1 space by default)
-    let constraints: Vec<Constraint> = min_col_widths
+    // Calculate which columns can fit (similar to describe table)
+    let column_spacing = 1u16;
+    let available_width = area
+        .width
+        .saturating_sub(locked_col_width)
+        .saturating_sub(column_spacing); // Space between locked column and first stat column
+
+    // Determine which statistics to show (column_offset refers to stat columns, not column name)
+    let start_stat = column_offset.min(num_stats.saturating_sub(1));
+
+    // Calculate how many stat columns can fit starting from start_stat
+    let mut used_width = 0u16;
+    let mut max_visible_stats = 0;
+
+    for width in min_col_widths
         .iter()
-        .map(|&width| Constraint::Length(width))
-        .collect();
+        .skip(start_stat)
+        .take(num_stats - start_stat)
+    {
+        let spacing_needed = if max_visible_stats > 0 {
+            column_spacing
+        } else {
+            0
+        };
+        let total_needed = spacing_needed + width;
+
+        if used_width + total_needed <= available_width {
+            used_width += total_needed;
+            max_visible_stats += 1;
+        } else {
+            break;
+        }
+    }
+
+    max_visible_stats = max_visible_stats.max(1); // At least show 1 column
+    let end_stat = (start_stat + max_visible_stats).min(num_stats);
+    let visible_stats: Vec<usize> = (start_stat..end_stat).collect();
+
+    if visible_stats.is_empty() {
+        return;
+    }
 
     let mut rows = Vec::new();
 
-    // Header row
-    // Phase 6: Add P-value column header
-    let header_row = Row::new(vec![
-        Cell::from("Column").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Distribution").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("P-value").style(Style::default().add_modifier(Modifier::BOLD)), // NEW
-        Cell::from("Shapiro-Wilk").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("SW p-value").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("CV").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Outliers").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Skewness").style(Style::default().add_modifier(Modifier::BOLD)),
-        Cell::from("Kurtosis").style(Style::default().add_modifier(Modifier::BOLD)),
-    ]);
-
-    // Data rows
+    let mut header_cells =
+        vec![Cell::from("Column").style(Style::default().add_modifier(Modifier::BOLD))];
+    for &stat_idx in &visible_stats {
+        header_cells.push(
+            Cell::from(column_names[stat_idx]).style(Style::default().add_modifier(Modifier::BOLD)),
+        );
+    }
+    let header_row_style = Style::default()
+        .bg(Color::Indexed(236))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header_row = Row::new(header_cells).style(header_row_style);
     for dist_analysis in &results.distribution_analyses {
         // Color coding for distribution type based on fit quality only
         // Green = good fit (>0.75), Yellow = moderate (0.5-0.75), Red = poor (<0.5)
@@ -917,28 +915,50 @@ fn render_distribution_table(
             })
             .unwrap_or_default();
 
-        rows.push(Row::new(vec![
-            Cell::from(dist_analysis.column_name.as_str()),
-            Cell::from(format!("{}", dist_analysis.distribution_type))
-                .style(Style::default().fg(type_color)),
-            Cell::from(pvalue_text.clone()).style(pvalue_style),
-            Cell::from(sw_stat_text),
-            Cell::from(sw_pvalue_text).style(sw_pvalue_style),
-            Cell::from(format!(
-                "{:.4}",
-                dist_analysis.characteristics.coefficient_of_variation
-            ))
-            .style(
-                if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
-                    Style::default().fg(Color::Yellow) // High variability
-                } else {
-                    Style::default()
-                },
-            ),
-            Cell::from(outlier_text).style(outlier_style),
-            Cell::from(format_num(dist_analysis.characteristics.skewness)).style(skewness_style),
-            Cell::from(format_num(dist_analysis.characteristics.kurtosis)).style(kurtosis_style),
-        ]));
+        // Build row with locked column name (bold) + visible stat values
+        let mut cells = vec![Cell::from(dist_analysis.column_name.as_str())
+            .style(Style::default().add_modifier(Modifier::BOLD))];
+
+        // Add visible statistic values
+        for &stat_idx in &visible_stats {
+            let cell = match stat_idx {
+                0 => Cell::from(format!("{}", dist_analysis.distribution_type))
+                    .style(Style::default().fg(type_color)),
+                1 => Cell::from(pvalue_text.clone()).style(pvalue_style),
+                2 => Cell::from(sw_stat_text.clone()),
+                3 => Cell::from(sw_pvalue_text.clone()).style(sw_pvalue_style),
+                4 => Cell::from(format!(
+                    "{:.4}",
+                    dist_analysis.characteristics.coefficient_of_variation
+                ))
+                .style(
+                    if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
+                        Style::default().fg(Color::Yellow) // High variability
+                    } else {
+                        Style::default()
+                    },
+                ),
+                5 => Cell::from(outlier_text.clone()).style(outlier_style),
+                6 => Cell::from(format_num(dist_analysis.characteristics.skewness))
+                    .style(skewness_style),
+                7 => Cell::from(format_num(dist_analysis.characteristics.kurtosis))
+                    .style(kurtosis_style),
+                _ => Cell::from(""),
+            };
+            cells.push(cell);
+        }
+
+        rows.push(Row::new(cells));
+    }
+
+    let mut constraints = vec![Constraint::Length(locked_col_width)];
+    for &stat_idx in &visible_stats {
+        constraints.push(Constraint::Length(min_col_widths[stat_idx]));
+    }
+
+    if visible_stats.len() == num_stats && constraints.len() > 1 {
+        let last_idx = constraints.len() - 1;
+        constraints[last_idx] = Constraint::Fill(1);
     }
 
     let table = Table::new(rows, constraints)
@@ -951,7 +971,8 @@ fn render_distribution_table(
 fn render_correlation_matrix(
     results: &AnalysisResults,
     table_state: &mut TableState,
-    _selected_cell: &Option<(usize, usize)>,
+    selected_cell: &Option<(usize, usize)>,
+    column_offset: usize,
     area: Rect,
     buf: &mut Buffer,
 ) {
@@ -973,91 +994,152 @@ fn render_correlation_matrix(
     }
 
     let n = correlation_matrix.columns.len();
-    let mut rows = Vec::new();
 
-    // Header row
-    let mut header_cells =
-        vec![Cell::from("").style(Style::default().add_modifier(Modifier::BOLD))];
-    for col_name in &correlation_matrix.columns {
-        header_cells.push(
-            Cell::from(col_name.as_str()).style(Style::default().add_modifier(Modifier::BOLD)),
-        );
+    // Calculate column widths - ensure they're wide enough for content
+    let row_header_width = 20u16;
+    let cell_width = 12u16; // Wide enough for "-1.00" format
+    let column_spacing = 1u16; // Table widget adds 1 space between columns
+
+    // Calculate how many columns can fit
+    let available_width = area.width.saturating_sub(row_header_width);
+    let mut used_width = 0u16;
+    let mut visible_cols = 0usize;
+
+    // Start from column_offset
+    let start_col = column_offset.min(n.saturating_sub(1));
+
+    for _col_idx in start_col..n {
+        let needed = if visible_cols > 0 {
+            column_spacing + cell_width
+        } else {
+            cell_width
+        };
+
+        if used_width + needed <= available_width {
+            used_width += needed;
+            visible_cols += 1;
+        } else {
+            break;
+        }
     }
-    let header_row = Row::new(header_cells);
 
-    // Data rows
+    visible_cols = visible_cols.max(1);
+    let end_col = (start_col + visible_cols).min(n);
+
+    let (selected_row, selected_col) = selected_cell.unwrap_or((n, n));
+
+    let header_row_style = Style::default()
+        .bg(Color::Indexed(236))
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let dim_header_style = Style::default()
+        .bg(Color::Indexed(239)) // Slightly lighter gray for dim highlight
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+
+    let mut header_cells = vec![Cell::from("")];
+    for j in start_col..end_col {
+        let col_name = &correlation_matrix.columns[j];
+        let is_selected_col = selected_cell.is_some() && j == selected_col;
+        let cell_style = if is_selected_col {
+            dim_header_style
+        } else {
+            header_row_style
+        };
+        header_cells.push(Cell::from(col_name.as_str()).style(cell_style));
+    }
+
+    let header_row = Row::new(header_cells).style(header_row_style);
+
+    // Data rows - only render visible rows (handled by TableState's visible_rows)
+    // But we render all rows and let Table widget handle vertical scrolling
+    let mut rows = Vec::new();
     for (i, col_name) in correlation_matrix.columns.iter().enumerate() {
-        let mut cells = vec![
-            Cell::from(col_name.as_str()).style(Style::default().add_modifier(Modifier::BOLD))
-        ];
+        // Determine if this is the selected row
+        let is_selected_row = selected_cell.is_some() && i == selected_row;
 
-        for j in 0..n {
-            let correlation = correlation_matrix.correlations[i][j];
-            let (bg_color, text_color) = get_correlation_color(correlation);
-            let bar = get_correlation_bar(correlation);
+        // Row header cell - dim highlight if selected row
+        let row_header_style = if is_selected_row {
+            Style::default()
+                .bg(Color::Indexed(239))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        };
+        let mut cells = vec![Cell::from(col_name.as_str()).style(row_header_style)];
 
-            let cell_text = if i == j {
+        for col_idx in start_col..end_col {
+            let correlation = correlation_matrix.correlations[i][col_idx];
+            let text_color = get_correlation_color(correlation);
+
+            let cell_text = if i == col_idx {
                 "1.00".to_string()
             } else {
                 format!("{:.2}", correlation)
             };
 
-            cells.push(
-                Cell::from(format!("{}\n{}", cell_text, bar))
-                    .style(Style::default().fg(text_color).bg(bg_color)),
-            );
+            let is_selected_cell =
+                selected_cell.is_some() && i == selected_row && col_idx == selected_col;
+            let is_in_selected_col = selected_cell.is_some() && col_idx == selected_col;
+
+            let cell_style = if is_selected_cell {
+                // Selected cell: inverted/reversed
+                Style::default()
+                    .fg(text_color)
+                    .add_modifier(Modifier::REVERSED)
+            } else if is_selected_row || is_in_selected_col {
+                // Selected row or column: dim background
+                Style::default().fg(text_color).bg(Color::Indexed(239))
+            } else {
+                // Normal cell: just text color
+                Style::default().fg(text_color)
+            };
+
+            cells.push(Cell::from(cell_text).style(cell_style));
         }
 
-        rows.push(Row::new(cells));
+        let row_style = if is_selected_row {
+            Style::default().bg(Color::Indexed(239))
+        } else {
+            Style::default()
+        };
+
+        rows.push(Row::new(cells).style(row_style));
     }
 
-    let col_width = 12u16;
-    let mut constraints = vec![Constraint::Length(20)]; // Row header
-    for _ in 0..n {
-        constraints.push(Constraint::Length(col_width));
+    // Build constraints - fixed widths to prevent clipping
+    let mut constraints = vec![Constraint::Length(row_header_width)];
+    for _ in 0..visible_cols {
+        constraints.push(Constraint::Length(cell_width));
+    }
+
+    let last_idx = constraints.len().saturating_sub(1);
+    if visible_cols == n && constraints.len() > 1 {
+        constraints[last_idx] = Constraint::Fill(1);
     }
 
     let table = Table::new(rows, constraints)
         .header(header_row)
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .column_spacing(1);
 
     StatefulWidget::render(table, area, buf, table_state);
 }
 
-fn get_correlation_color(correlation: f64) -> (Color, Color) {
+fn get_correlation_color(correlation: f64) -> Color {
     let abs_corr = correlation.abs();
 
-    if abs_corr < 0.1 {
-        (Color::DarkGray, Color::White)
+    if abs_corr < 0.05 {
+        // No correlation (close to 0) - dark gray
+        Color::DarkGray
+    } else if abs_corr < 0.3 {
+        // Low correlation - white
+        Color::White
     } else if correlation > 0.0 {
-        if abs_corr >= 0.7 {
-            (Color::Green, Color::White)
-        } else if abs_corr >= 0.3 {
-            (Color::LightGreen, Color::Black)
-        } else {
-            (Color::Rgb(200, 255, 200), Color::Black)
-        }
-    } else if abs_corr >= 0.7 {
-        (Color::Red, Color::White)
-    } else if abs_corr >= 0.3 {
-        (Color::Rgb(255, 200, 200), Color::Black)
+        // Positive correlation - blue (highest correlations)
+        Color::Blue
     } else {
-        (Color::Rgb(255, 230, 230), Color::Black)
-    }
-}
-
-fn get_correlation_bar(correlation: f64) -> String {
-    let abs_corr = correlation.abs();
-    let _bar_length = 8;
-
-    if abs_corr < 0.1 {
-        "░░░░░░░░".to_string()
-    } else if abs_corr >= 0.7 {
-        "████████".to_string()
-    } else if abs_corr >= 0.3 {
-        "████░░░░".to_string()
-    } else {
-        "██░░░░░░".to_string()
+        // Negative correlation - red
+        Color::Red
     }
 }
 
@@ -1212,7 +1294,7 @@ fn render_sidebar(
             let style = if is_focused {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else if is_selected {
-                Style::default().fg(Color::Cyan)
+                Style::default().add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -1838,40 +1920,61 @@ fn render_condensed_statistics(
 
     let mut line_parts = Vec::new();
 
-    // Shapiro-Wilk score
+    // Shapiro-Wilk score - use bold labels, no cyan
     if let (Some(sw_stat), Some(sw_p)) = (chars.shapiro_wilk_stat, chars.shapiro_wilk_pvalue) {
-        line_parts.push(Span::styled("SW: ", Style::default().fg(Color::Cyan)));
+        line_parts.push(Span::styled(
+            "SW: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
         line_parts.push(Span::raw(format!("{:.3} (p={:.3})", sw_stat, sw_p)));
         line_parts.push(Span::raw(" ")); // Space separator
     }
 
-    // Skew
-    line_parts.push(Span::styled("Skew: ", Style::default().fg(Color::Cyan)));
+    // Skew - use bold labels, no cyan
+    line_parts.push(Span::styled(
+        "Skew: ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     line_parts.push(Span::raw(format!("{:.2}", chars.skewness)));
     line_parts.push(Span::raw(" ")); // Space separator
 
-    // Kurtosis
-    line_parts.push(Span::styled("Kurt: ", Style::default().fg(Color::Cyan)));
+    // Kurtosis - use bold labels, no cyan
+    line_parts.push(Span::styled(
+        "Kurt: ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     line_parts.push(Span::raw(format!("{:.2}", chars.kurtosis)));
     line_parts.push(Span::raw(" ")); // Space separator
 
-    // Median
-    line_parts.push(Span::styled("Median: ", Style::default().fg(Color::Cyan)));
+    // Median - use bold labels, no cyan
+    line_parts.push(Span::styled(
+        "Median: ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     line_parts.push(Span::raw(format!("{:.2}", dist.percentiles.p50)));
     line_parts.push(Span::raw(" ")); // Space separator
 
-    // Mean
-    line_parts.push(Span::styled("Mean: ", Style::default().fg(Color::Cyan)));
+    // Mean - use bold labels, no cyan
+    line_parts.push(Span::styled(
+        "Mean: ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     line_parts.push(Span::raw(format!("{:.2}", chars.mean)));
     line_parts.push(Span::raw(" ")); // Space separator
 
-    // Std
-    line_parts.push(Span::styled("Std: ", Style::default().fg(Color::Cyan)));
+    // Std - use bold labels, no cyan
+    line_parts.push(Span::styled(
+        "Std: ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     line_parts.push(Span::raw(format!("{:.2}", chars.std_dev)));
     line_parts.push(Span::raw(" ")); // Space separator
 
-    // CV
-    line_parts.push(Span::styled("CV: ", Style::default().fg(Color::Cyan)));
+    // CV - use bold labels, no cyan
+    line_parts.push(Span::styled(
+        "CV: ",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
     line_parts.push(Span::raw(format!("{:.3}", chars.coefficient_of_variation)));
 
     let line = Line::from(line_parts);

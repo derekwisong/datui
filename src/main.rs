@@ -139,6 +139,10 @@ mod tests {
             clear_cache: false,
             template: None,
             remove_templates: false,
+            pages_lookahead: None,
+            pages_lookback: None,
+            row_numbers: false,
+            row_start_index: None,
         };
         let opts: OpenOptions = (&args).into();
         assert_eq!(opts.skip_lines, Some(1));

@@ -64,7 +64,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contributing
 
-Contributions are welcome! Please see the [full documentation][docs] for development guidelines and architecture information.
+Contributions are welcome! Please see the [full documentation][docs] for more information.
 
 ---
 

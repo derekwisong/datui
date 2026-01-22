@@ -1,7 +1,9 @@
 [book]
-title = "datui"
-authors = ["datui contributors"]
-description = "Terminal user interface for exploring and analyzing tabular data files"
+title = "Datui"
+authors = [
+    "Derek Wisong"
+]
+description = "Terminal user interface for exploring and analyzing data files"
 language = "en"
 src = "docs"
 
@@ -11,8 +13,8 @@ build-dir = "book"
 [output.html]
 default-theme = "navy"
 preferred-dark-theme = "navy"
-git-repository-url = "https://github.com/yourusername/datui"
-edit-url-template = "https://github.com/yourusername/datui/edit/{branch}/docs/{path}"
+git-repository-url = "https://github.com/derekwisong/datui"
+edit-url-template = "https://github.com/derekwisong/datui/edit/{branch}/docs/{path}"
 
 [output.html.search]
 enable = true

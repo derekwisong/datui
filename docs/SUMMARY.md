@@ -25,5 +25,5 @@
   - [Configuration](advanced/configuration.md)
 
 - [For Developers](for-developers.md)
-  - [Architecture](for-developers/architecture.md)
   - [Contributing](for-developers/contributing.md)
+  - [Tests](for-developers/tests.md)

@@ -1,25 +1,14 @@
 # Introduction
 
-Welcome to datui documentation!
+Datui is an interactive terminal user interface (TUI) for exploring and analyzing data files.
 
-datui is a terminal user interface (TUI) for exploring and analyzing tabular data files. Built with Rust, Polars, and Ratatui, it provides an interactive environment for data exploration, querying, statistical analysis, and visualization within the terminal.
-
-> Datui is currently in rapid development—features and interfaces are evolving as we build. Expect some changes between releases as we work toward a stable foundation.
+> Datui is in rapid development—features and interfaces are evolving as built. Expect some changes between releases en route to a stable foundation.
 
 ## See It In Action
 
-![Basic Navigation Demo](./demos/01-basic-navigation.gif)
+Use arrow keys or vim-style bindings (`j`/`k` for up/down, `h`/`l` for left/right) to explore interactively.
 
-Watch as datui loads and displays tabular data with smooth navigation. Use vim-style keys (`j`/`k` for up/down, `h`/`l` for left/right) to explore your data interactively.
+![Basic Navigation Demo](demos/01-basic-navigation.gif)
 
-For more demonstrations of datui's features, see the [Demos](demos.md) page.
 
-## Key Features
-
-- **Efficient**: Uses lazy evaluation with Polars
-- **Interactive**: Full-featured TUI with keyboard navigation
-- **Powerful**: Query, filter, sort, and analyze data
-
-## Philosophy
-
-Datui follows a philosophy of easy data exploration, providing quick insights without requiring heavy infrastructure.
+For more demonstrations of Datui's features, see the [Demos](demos.md) page.

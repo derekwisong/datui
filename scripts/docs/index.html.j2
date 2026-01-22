@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Datui Documentation</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/terminal.css@0.7.5/dist/terminal.min.css">
+    <script>
+        // Set theme immediately to prevent flash
+        (function() {
+            const html = document.documentElement;
+            const stored = localStorage.getItem('datui-theme');
+            if (stored === 'dark' || stored === 'light') {
+                html.setAttribute('data-theme', stored);
+            } else {
+                // Use system preference
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                html.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+            }
+        })();
+    </script>
+    <style>
+        :root {
+            --terminal-font-family: 'Courier New', 'Consolas', 'Monaco', 'Menlo', monospace;
+            color-scheme: light dark;
+        }
+
+        /* Default light theme */
+        :root {
+            --bg-color: #ffffff;
+            --text-color: #151515;
+            --border-color: #e0e0e0;
+            --selection-bg: #f0f0f0;
+        }
+
+        /* Dark theme via data-theme attribute */
+        :root[data-theme="dark"] {
+            --bg-color: #151515;
+            --text-color: #e0e0e0;
+            --border-color: #404040;
+            --selection-bg: #2a2a2a;
+        }
+
+        /* System preference fallback */
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme]) {
+                --bg-color: #151515;
+                --text-color: #e0e0e0;
+                --border-color: #404040;
+                --selection-bg: #2a2a2a;
+            }
+        }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 0;
+            margin: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+
+        .container {
+            flex: 1;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+            width: 100%;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+        }
+
+        .header {
+            margin-bottom: 2rem;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 1rem;
+            position: relative;
+        }
+
+        .header-content {
+            padding-right: 140px; /* Make room for GitHub link */
+        }
+
+        .github-link {
+            position: absolute;
+            top: 0;
+            right: 0;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            text-decoration: none;
+            color: var(--text-color);
+            opacity: 0.7;
+            transition: opacity 0.2s;
+            font-family: var(--terminal-font-family);
+            font-size: 0.875rem;
+            border: 1px solid var(--border-color);
+            background: var(--bg-color);
+            cursor: pointer;
+            pointer-events: auto;
+        }
+
+        .github-link:hover,
+        .github-link:focus {
+            opacity: 1;
+            background: var(--selection-bg);
+            outline: none;
+        }
+
+        .github-link svg {
+            width: 18px;
+            height: 18px;
+            fill: currentColor;
+        }
+
+        @media (max-width: 768px) {
+            .header-content {
+                padding-right: 0;
+            }
+            
+            .github-link {
+                position: static;
+                margin-top: 1rem;
+                display: inline-flex;
+            }
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin: 0 0 0.5rem 0;
+            padding: 0;
+            font-family: var(--terminal-font-family);
+            letter-spacing: 0.05em;
+            line-height: 1.2;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8rem;
+            }
+        }
+
+        .subtitle {
+            color: var(--text-color);
+            opacity: 0.8;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 1rem;
+            margin-bottom: 0;
+        }
+
+        .theme-toggle {
+            cursor: pointer;
+            padding: 0.5rem 1rem;
+            border: 1px solid var(--border-color);
+            background: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--terminal-font-family);
+            font-size: 0.875rem;
+            transition: all 0.2s;
+        }
+
+        .theme-toggle:hover {
+            background: var(--selection-bg);
+        }
+
+        .keyboard-hint {
+            font-size: 0.75rem;
+            opacity: 0.6;
+            font-family: var(--terminal-font-family);
+        }
+
+        .versions-heading {
+            font-size: 1.25rem;
+            font-family: var(--terminal-font-family);
+            margin: 0 0 1rem 0;
+            color: var(--text-color);
+            font-weight: bold;
+        }
+
+        .version-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            margin-top: 0;
+            font-family: var(--terminal-font-family);
+        }
+
+        .version-card {
+            border: none;
+            border-left: 3px solid transparent;
+            padding: 0.75rem 1rem;
+            text-decoration: none;
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 1rem;
+            align-items: center;
+            color: inherit;
+            background: var(--bg-color);
+            transition: all 0.15s;
+            position: relative;
+            font-family: var(--terminal-font-family);
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        @media (max-width: 768px) {
+            .version-card {
+                grid-template-columns: 1fr;
+                gap: 0.25rem;
+            }
+        }
+
+        .version-card:hover,
+        .version-card:focus {
+            background: var(--selection-bg);
+            border-left-color: var(--text-color);
+            outline: none;
+        }
+
+        .version-card.focused {
+            background: var(--selection-bg);
+            border-left-color: var(--text-color);
+        }
+
+        .version-card .version-name {
+            font-weight: bold;
+            font-family: var(--terminal-font-family);
+            color: var(--text-color);
+            min-width: 120px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .version-card .version-date {
+            opacity: 0.7;
+            font-size: 0.95rem;
+            font-family: var(--terminal-font-family);
+            color: var(--text-color);
+            text-align: right;
+        }
+
+        @media (max-width: 768px) {
+            .version-card .version-date {
+                text-align: left;
+            }
+        }
+
+        .version-card .version-badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.75rem;
+            font-weight: bold;
+            font-family: var(--terminal-font-family);
+            text-transform: uppercase;
+            border: 1px solid var(--border-color);
+            background: var(--bg-color);
+        }
+
+        .version-card .version-badge.development {
+            color: var(--text-color);
+            opacity: 0.8;
+        }
+
+        .version-card .version-badge.stable {
+            color: var(--text-color);
+            opacity: 0.8;
+        }
+
+        /* Better alignment for terminal-style layout */
+        .version-card {
+            text-align: left;
+        }
+
+
+        /* Smooth transitions for theme switching */
+        * {
+            transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+        }
+
+        /* Focus visible for keyboard navigation */
+        .version-card:focus-visible {
+            outline: 2px solid var(--text-color);
+            outline-offset: 2px;
+        }
+
+        /* Skip link for accessibility */
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: var(--bg-color);
+            color: var(--text-color);
+            padding: 8px;
+            text-decoration: none;
+            z-index: 100;
+        }
+
+        .skip-link:focus {
+            top: 0;
+        }
+    </style>
+</head>
+<body class="terminal">
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+    
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1>Datui</h1>
+                <p class="subtitle">Terminal User Interface for Data Exploration</p>
+            </div>
+            <a href="https://github.com/derekwisong/datui" 
+               class="github-link" 
+               target="_blank" 
+               rel="noopener noreferrer"
+               aria-label="View on GitHub">
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                </svg>
+                <span>GitHub</span>
+            </a>
+            <div class="controls">
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+                    <span id="theme-icon">☀️</span> <span id="theme-text">Light</span>
+                </button>
+                <span class="keyboard-hint">
+                    Navigate: <kbd>j</kbd>/<kbd>k</kbd> | Select: <kbd>Enter</kbd> | Theme: <kbd>t</kbd>
+                </span>
+            </div>
+        </header>
+
+        <main id="main-content">
+            <h2 class="versions-heading">Documentation Versions:</h2>
+            <div class="version-list" role="list">
+                {% for version in versions %}
+                <a href="{{ version.path }}/index.html" 
+                   class="version-card" 
+                   role="listitem"
+                   data-version="{{ version.name }}"
+                   tabindex="0">
+                    <span class="version-name">
+                        {{ version.name }}
+                        {% if version.is_development %}
+                        <span class="version-badge development">Development</span>
+                        {% elif version.is_latest_stable %}
+                        <span class="version-badge stable">Latest Stable</span>
+                        {% endif %}
+                    </span>
+                    <span class="version-date">{{ version.date_str }}</span>
+                </a>
+                {% endfor %}
+            </div>
+        </main>
+
+    </div>
+
+    <script>
+        (function() {
+            // Theme management
+            const themeToggle = document.getElementById('theme-toggle');
+            const themeIcon = document.getElementById('theme-icon');
+            const themeText = document.getElementById('theme-text');
+            const html = document.documentElement;
+
+            // Get current theme (already set by inline script in head)
+            const currentTheme = html.getAttribute('data-theme') || 
+                (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            updateThemeUI(currentTheme);
+
+            function updateThemeUI(theme) {
+                // Update icon and text to show what clicking will switch TO
+                if (theme === 'dark') {
+                    themeIcon.textContent = '☀️';
+                    themeText.textContent = 'Light';
+                } else {
+                    themeIcon.textContent = '🌙';
+                    themeText.textContent = 'Dark';
+                }
+            }
+
+            function toggleTheme() {
+                const currentTheme = html.getAttribute('data-theme');
+                const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+                html.setAttribute('data-theme', newTheme);
+                localStorage.setItem('datui-theme', newTheme);
+                updateThemeUI(newTheme);
+            }
+
+            themeToggle.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleTheme();
+            });
+
+            // Keyboard navigation with vim keybinds
+            const versionCards = Array.from(document.querySelectorAll('.version-card'));
+            let focusedIndex = -1;
+
+            function focusCard(index) {
+                // Remove focus from all cards
+                versionCards.forEach(card => {
+                    card.classList.remove('focused');
+                    card.blur();
+                });
+                
+                if (index >= 0 && index < versionCards.length) {
+                    versionCards[index].classList.add('focused');
+                    versionCards[index].focus();
+                    // Scroll into view if needed
+                    versionCards[index].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }
+
+            function handleKeydown(e) {
+                // Don't interfere with typing in inputs or textareas
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'BUTTON') {
+                    return;
+                }
+
+                switch(e.key) {
+                    case 'j':
+                    case 'ArrowDown':
+                        e.preventDefault();
+                        if (focusedIndex < 0) {
+                            // Start from first card
+                            focusedIndex = 0;
+                        } else if (focusedIndex < versionCards.length - 1) {
+                            focusedIndex++;
+                        }
+                        focusCard(focusedIndex);
+                        break;
+                    
+                    case 'k':
+                    case 'ArrowUp':
+                        e.preventDefault();
+                        if (focusedIndex < 0) {
+                            // Start from last card
+                            focusedIndex = versionCards.length - 1;
+                        } else if (focusedIndex > 0) {
+                            focusedIndex--;
+                        }
+                        focusCard(focusedIndex);
+                        break;
+                    
+                    case 'Enter':
+                    case ' ':
+                        if (focusedIndex >= 0 && focusedIndex < versionCards.length) {
+                            e.preventDefault();
+                            versionCards[focusedIndex].click();
+                        }
+                        break;
+                    
+                    case 't':
+                        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleTheme();
+                        }
+                        break;
+                    
+                    case 'Home':
+                        e.preventDefault();
+                        focusedIndex = 0;
+                        focusCard(focusedIndex);
+                        break;
+                    
+                    case 'End':
+                        e.preventDefault();
+                        focusedIndex = versionCards.length - 1;
+                        focusCard(focusedIndex);
+                        break;
+                }
+            }
+
+            // Handle card focus events (for mouse/touch interaction)
+            versionCards.forEach((card, index) => {
+                card.addEventListener('mouseenter', () => {
+                    focusedIndex = index;
+                    focusCard(index);
+                });
+
+                card.addEventListener('click', (e) => {
+                    // Ensure focus is set
+                    focusedIndex = index;
+                });
+            });
+
+            // Global keyboard listener
+            document.addEventListener('keydown', handleKeydown);
+        })();
+    </script>
+</body>
+</html>

@@ -72,19 +72,31 @@ jobs:
           echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
 
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
       - name: Build all historical tag documentation
         run: |
           ORIGINAL_COMMIT=$(git rev-parse HEAD)
           ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          [ -f scripts/build_single_version_docs.sh ] || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
-          [ -f scripts/rebuild_index.sh ] || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
-          chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
+          [ -f scripts/docs/build_single_version_docs.sh ] || (echo "Error: scripts/docs/build_single_version_docs.sh not found" && exit 1)
+          [ -f scripts/docs/rebuild_index.py ] || (echo "Error: scripts/docs/rebuild_index.py not found" && exit 1)
+          [ -f scripts/docs/index.html.j2 ] || (echo "Error: scripts/docs/index.html.j2 not found" && exit 1)
+          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py
           
           SCRIPT_DIR="/tmp/datui-build-scripts-$$"
           mkdir -p "$SCRIPT_DIR"
-          cp scripts/build_single_version_docs.sh "$SCRIPT_DIR/"
-          cp scripts/rebuild_index.sh "$SCRIPT_DIR/"
-          chmod +x "$SCRIPT_DIR"/*.sh
+          cp scripts/docs/build_single_version_docs.sh "$SCRIPT_DIR/"
+          cp scripts/docs/rebuild_index.py "$SCRIPT_DIR/"
+          cp scripts/docs/index.html.j2 "$SCRIPT_DIR/"
+          chmod +x "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/*.py 2>/dev/null || true
           
           mkdir -p book
           rm -rf book/demos
@@ -99,7 +111,7 @@ jobs:
           [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
           rm -rf "$SCRIPT_DIR"
           rm -rf book/demos
-          ./scripts/rebuild_index.sh
+          python3 scripts/docs/rebuild_index.py
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

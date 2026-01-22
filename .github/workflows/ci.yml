@@ -81,23 +81,24 @@ jobs:
       - name: Build documentation for PR verification
         if: github.event_name == 'pull_request'
         run: |
-          chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
+          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py
           PR_BRANCH_NAME="${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD)}"
           SANITIZED_BRANCH_NAME=$(echo "$PR_BRANCH_NAME" | sed 's/\//-/g')
-          ./scripts/build_single_version_docs.sh "$SANITIZED_BRANCH_NAME"
+          ./scripts/docs/build_single_version_docs.sh "$SANITIZED_BRANCH_NAME"
 
       - name: Build all historical tag documentation
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           ORIGINAL_COMMIT=$(git rev-parse HEAD)
           ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
+          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py
           
           SCRIPT_DIR="/tmp/datui-build-scripts-$$"
           mkdir -p "$SCRIPT_DIR"
-          cp scripts/build_single_version_docs.sh "$SCRIPT_DIR/"
-          cp scripts/rebuild_index.sh "$SCRIPT_DIR/" 2>/dev/null || true
-          chmod +x "$SCRIPT_DIR"/*.sh
+          cp scripts/docs/build_single_version_docs.sh "$SCRIPT_DIR/"
+          cp scripts/docs/rebuild_index.py "$SCRIPT_DIR/" 2>/dev/null || true
+          cp scripts/docs/index.html.j2 "$SCRIPT_DIR/" 2>/dev/null || true
+          chmod +x "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/*.py 2>/dev/null || true
           
           mkdir -p book
           rm -rf book/demos
@@ -115,14 +116,15 @@ jobs:
       - name: Build documentation for main branch
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          [ ! -f scripts/build_single_version_docs.sh ] && git checkout "$(git rev-parse HEAD)"
-          [ -f scripts/build_single_version_docs.sh ] || (echo "Error: scripts/build_single_version_docs.sh not found" && exit 1)
-          [ -f scripts/rebuild_index.sh ] || (echo "Error: scripts/rebuild_index.sh not found" && exit 1)
-          chmod +x scripts/build_single_version_docs.sh scripts/rebuild_index.sh
+          [ ! -f scripts/docs/build_single_version_docs.sh ] && git checkout "$(git rev-parse HEAD)"
+          [ -f scripts/docs/build_single_version_docs.sh ] || (echo "Error: scripts/docs/build_single_version_docs.sh not found" && exit 1)
+          [ -f scripts/docs/rebuild_index.py ] || (echo "Error: scripts/docs/rebuild_index.py not found" && exit 1)
+          [ -f scripts/docs/index.html.j2 ] || (echo "Error: scripts/docs/index.html.j2 not found" && exit 1)
+          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py
           rm -rf book/demos
-          ./scripts/build_single_version_docs.sh "main"
+          ./scripts/docs/build_single_version_docs.sh "main"
           rm -rf book/demos
-          ./scripts/rebuild_index.sh
+          python3 scripts/docs/rebuild_index.py
 
 
       - name: Setup Pages

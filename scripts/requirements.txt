@@ -1,3 +1,4 @@
 polars>=0.20.0
 numpy>=1.24.0
 pre-commit
+jinja2>=3.0.0

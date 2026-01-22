@@ -4509,8 +4509,8 @@ impl Widget for &mut App {
                     } else {
                         Style::default()
                     };
-                    let name_title = if self.template_modal.name_error.is_some() {
-                        format!("Name {}", self.template_modal.name_error.as_ref().unwrap())
+                    let name_title = if let Some(error) = &self.template_modal.name_error {
+                        format!("Name {}", error)
                     } else {
                         "Name".to_string()
                     };

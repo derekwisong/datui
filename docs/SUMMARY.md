@@ -27,3 +27,5 @@
 - [For Developers](for-developers.md)
   - [Contributing](for-developers/contributing.md)
   - [Tests](for-developers/tests.md)
+  - [Documentation](for-developers/documentation.md)
+  - [Demos](for-developers/demos.md)

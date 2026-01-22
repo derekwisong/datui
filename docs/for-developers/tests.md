@@ -12,6 +12,9 @@ the data must be generated before the tests can be run.
 
 ## Generating Sample Data
 
+> If you used the [Setup Script](contributing.md#setup-script), the sample data has already
+> been generated. To regenerate the data, see the [instructions](#re-generating-or-updating-the-sample-data)
+
 The tests will automatically run a Python script to generate the sample files if
 they do not already exist. However, that script has some dependencies.
 
@@ -36,7 +39,9 @@ automatic generation goes smoothly.
 
 After the files are built you don't need to have that environment activated anymore to run tests.
 
-You can also run the data generation script yourself if you prefer:
+## Regenerating or Updating the Sample Data
+
+You can run the data generation script yourself:
 ```bash
 python scripts/generate_sample_data.py
 ```

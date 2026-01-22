@@ -1,6 +1,6 @@
 # Documentation
 
-Datui uses [mdBook](mdbook) to build static documentation web pages from markdown files.
+Datui uses [mdBook][mdbook] to build static documentation web pages from markdown files.
 
 > The documentation markdown files can be found in the
 > [docs](https://github.com/derekwisong/datui/tree/main/docs) subdirectory.
@@ -8,6 +8,8 @@ Datui uses [mdBook](mdbook) to build static documentation web pages from markdow
 ## Build Documentation
 
 ### Install mdBook
+
+> If you used the [Setup Script](contributing.md#setup-script), mdBook is already installed.
 
 Building the documentation requires `mdbook` to be available in your terminal.
 

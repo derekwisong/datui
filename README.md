@@ -62,7 +62,20 @@ Press `q` to exit.
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Contributing
+
+## For Developers
+
+### Environment Setup
+
+The following script can be used to set up your local repo for development:
+```bash
+python scripts setup-dev.py
+```
+
+See the [Setup Script Guide](https://derekwisong.github.io/datui/main/for-developers/contributing.html#setup-script)
+for more information about what it does.
+
+### Contributing
 
 Contributions are welcome! Please see the [full documentation][docs] for more information.
 

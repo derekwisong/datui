@@ -7,6 +7,8 @@ for the first time, follow the [Setup](#setup) instructions below to get started
 
 ## Setup
 
+### Setup Script
+
 **TLDR:** The entire setup process can be automated by running
 ```
 python scripts/setup-dev.py
@@ -16,8 +18,9 @@ The script will:
 
 - Set up the [Python Virtual Enviroment](#python-virtual-environment)
   - Updates it if it already exists
+- Install/update [pre-commit hooks](#pre-commit-hooks)
 - Generates sample data needed to run the tests
-- Set up the pre-requisites for and build the [documentation](documentation.md)
+- Configure and build the [documentation](documentation.md)
 
 ### Python Virtual Environment
 
@@ -60,6 +63,9 @@ which automatically run the same code quality checks in your repository before c
 are made.
 
 #### Installing Pre-commit and Hooks
+
+> If you used the [Setup Script](#setup-script), the pre-commit hooks are already
+> installed.
 
 1. **Install pre-commit**:
 

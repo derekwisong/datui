@@ -1,6 +1,6 @@
 # Demos
 
-The Datui demo animations are created using [vhs](vhs), which lets you script and
+The Datui demo animations are created using [vhs][vhs], which lets you script and
 record keystrokes to a terminal app.
 
 ## Install `vhs`
@@ -9,11 +9,11 @@ See [vhs install instructions](https://github.com/charmbracelet/vhs?tab=readme-o
 
 ## Define Tapes
 
-The `vhs` application uses `.tape` files to script keystrokes. See Datui's [here](demo-tapes).
+The `vhs` application uses `.tape` files to script keystrokes. See Datui's [here][demo-tapes].
 
 ## Generating the Animations
 
-Run [generate-all](generate-all) to use `vhs` to generate an animated gif file for each tape.
+Run [generate-all][generate-all] to use `vhs` to generate an animated gif file for each tape.
 
 > The generate-all script will first run a release build, and then use that version of the
 > application when creating the demos.
@@ -22,7 +22,7 @@ Run [generate-all](generate-all) to use `vhs` to generate an animated gif file f
 scripts/demos/generate-all.sh
 ```
 
-The animations will be placed in the [demos](demos) directory.
+The animations will be placed in the [demos][demos] directory.
 
 > During the creation of the [documentation](documentation.md), these animations are
 > copied into a `demos/` subdirectory of the generated site. From there, the files may be

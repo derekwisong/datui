@@ -118,8 +118,9 @@ echo "     python3 -m http.server 8000 --directory book"
 echo "     Then visit: http://localhost:8000"
 echo ""
 
-# Optionally serve with Python if available
-if command -v python3 &> /dev/null; then
+# Optionally serve with Python if available (only if running interactively)
+# Skip server prompt if stdin is not a TTY (non-interactive mode)
+if command -v python3 &> /dev/null && [ -t 0 ]; then
     read -p "Start a local HTTP server to view the docs? (y/n) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then

@@ -10,6 +10,9 @@ on:
     tags:
       - 'v*'
 
+env:
+  MDBOOK_VERSION: "0.5.2"
+
 jobs:
   build-release-and-docs:
     runs-on: ubuntu-latest
@@ -40,13 +43,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/mdbook
-          key: ${{ runner.os }}-mdbook-0.4.36
+          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
           restore-keys: |
             ${{ runner.os }}-mdbook-
 
       - name: Install mdbook
         if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: cargo install mdbook --version 0.4.36 --locked
+        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked
 
       - name: Build release binary
         run: cargo build --release --locked

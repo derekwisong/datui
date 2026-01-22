@@ -7,6 +7,18 @@ for the first time, follow the [Setup](#setup) instructions below to get started
 
 ## Setup
 
+**TLDR:** The entire setup process can be automated by running
+```
+python scripts/setup-dev.py
+```
+
+The script will:
+
+- Set up the [Python Virtual Enviroment](#python-virtual-environment)
+  - Updates it if it already exists
+- Generates sample data needed to run the tests
+- Set up the pre-requisites for and build the [documentation](documentation.md)
+
 ### Python Virtual Environment
 
 There are Python scripts in the `/scripts` directory that are

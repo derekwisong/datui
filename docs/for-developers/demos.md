@@ -5,7 +5,7 @@ record keystrokes to a terminal app.
 
 ## Install `vhs`
 
-Install 
+See [vhs install instructions](https://github.com/charmbracelet/vhs?tab=readme-ov-file#installation).
 
 ## Define Tapes
 

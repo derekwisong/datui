@@ -57,14 +57,17 @@ jobs:
         if: steps.cache-mdbook.outputs.cache-hit != 'true'
         run: cargo install mdbook --version 0.4.36 --locked
 
+      - name: Make scripts executable
+        run: chmod +x scripts/check_format.sh scripts/check_clippy.sh
+
       - name: Check formatting
-        run: cargo fmt --check
+        run: ./scripts/check_format.sh
 
       - name: Build
         run: cargo build --tests --locked
 
       - name: Run clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: ./scripts/check_clippy.sh
 
       - name: Run tests
         run: cargo test --all --locked

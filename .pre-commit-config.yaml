@@ -8,7 +8,7 @@ repos:
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: bash -c 'if ! cargo fmt -- --check; then cargo fmt && echo "Code formatted - please stage changes and commit again" && exit 1; fi'
+        entry: bash -c 'if ! ./scripts/check_format.sh; then ./scripts/format.sh && echo "Code formatted - please stage changes and commit again" && exit 1; fi'
         language: system
         pass_filenames: false
         always_run: true
@@ -19,7 +19,7 @@ repos:
     hooks:
       - id: cargo-clippy
         name: cargo clippy
-        entry: bash -c 'cargo clippy --all-targets -- -D warnings'
+        entry: ./scripts/check_clippy.sh
         language: system
         pass_filenames: false
         always_run: true

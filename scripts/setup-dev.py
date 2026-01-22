@@ -5,6 +5,7 @@ Development environment setup script for datui.
 This script:
 - Creates and manages a Python virtual environment (.venv)
 - Installs Python dependencies from scripts/requirements.txt
+- Installs/updates pre-commit hooks
 - Ensures mdbook is installed at the correct version (matching CI)
 - Regenerates test data
 - Builds local documentation
@@ -108,6 +109,52 @@ def install_requirements():
     venv_pip = get_venv_pip()
     run_command([str(venv_pip), "install", "-r", str(REQUIREMENTS_FILE)])
     print("✓ Requirements installed")
+
+
+def get_venv_pre_commit():
+    """Get the path to the venv's pre-commit executable."""
+    if sys.platform == "win32":
+        return VENV_DIR / "Scripts" / "pre-commit.exe"
+    else:
+        return VENV_DIR / "bin" / "pre-commit"
+
+
+def install_pre_commit_hooks():
+    """Install or update pre-commit hooks."""
+    print("Installing/updating pre-commit hooks...")
+    
+    # Check if pre-commit config exists
+    pre_commit_config = REPO_ROOT / ".pre-commit-config.yaml"
+    if not pre_commit_config.exists():
+        print(f"Warning: {pre_commit_config} not found. Skipping pre-commit hook installation.")
+        return
+    
+    # Try to find pre-commit executable
+    venv_pre_commit = get_venv_pre_commit()
+    
+    # Check if pre-commit is installed in venv
+    if not venv_pre_commit.exists():
+        # Try to find it in PATH (might be installed globally)
+        pre_commit_path = shutil.which("pre-commit")
+        if not pre_commit_path:
+            print("Warning: pre-commit not found. It should be in requirements.txt.")
+            print("  Skipping pre-commit hook installation.")
+            return
+        pre_commit_cmd = [pre_commit_path]
+    else:
+        pre_commit_cmd = [str(venv_pre_commit)]
+    
+    # Run pre-commit install
+    result = run_command(
+        pre_commit_cmd + ["install"],
+        check=False
+    )
+    
+    if result.returncode == 0:
+        print("✓ Pre-commit hooks installed/updated")
+    else:
+        print("Warning: Failed to install pre-commit hooks.")
+        print("  You can manually run: pre-commit install")
 
 
 def find_mdbook():
@@ -288,6 +335,9 @@ def main():
     
     # Install/update requirements
     install_requirements()
+    
+    # Install/update pre-commit hooks
+    install_pre_commit_hooks()
     
     # Install mdbook
     install_mdbook()

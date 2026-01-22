@@ -49,7 +49,7 @@ jobs:
 
       - name: Install mdbook
         if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked
+        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
 
       - name: Build release binary
         run: cargo build --release --locked

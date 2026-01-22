@@ -58,7 +58,7 @@ jobs:
 
       - name: Install mdbook
         if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked
+        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
 
       - name: Make scripts executable
         run: chmod +x scripts/check_format.sh scripts/check_clippy.sh

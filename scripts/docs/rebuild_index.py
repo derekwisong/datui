@@ -34,12 +34,14 @@ def get_repo_root() -> Path:
 
 
 def get_git_date(ref: str, timezone: str = "UTC") -> Optional[str]:
-    """Get the commit date for a git reference."""
+    """Get the commit date for a git reference in UTC."""
     try:
         env = os.environ.copy()
         env["TZ"] = timezone
+        # Use format-local: to respect TZ environment variable
+        # This ensures we get actual UTC time, not local time labeled as UTC
         result = subprocess.run(
-            ["git", "log", "-1", "--date=format:%Y-%m-%d %H:%M UTC", "--format=%ad", ref],
+            ["git", "log", "-1", "--date=format-local:%Y-%m-%d %H:%M UTC", "--format=%ad", ref],
             capture_output=True,
             text=True,
             env=env,

@@ -22,6 +22,14 @@ from the [Contributing](contributing.md) section.
 Once you have a Python virtual environment set up with the `requirements.txt` from
 the `scripts/` directory, and activated it, you're ready to run the tests for the first time.
 
+```bash
+# activate the virtual environment if sample data is not already generated
+source .venv/bin/activte
+
+# run the tests
+cargo test
+```
+
 The tests will look for the files and run the generation script if they don't already exist.
 Having the virtual environment activated before running tests for the first time ensures the
 automatic generation goes smoothly.
@@ -33,5 +41,5 @@ You can also run the data generation script yourself if you prefer:
 python scripts/generate_sample_data.py
 ```
 
-> The data will not be automatically regenerated in the future. Use
-> the script to regenerate the data when necessary.
+> The data will not be automatically regenerated in the future. Use the script to regenerate
+> the data when necessary.

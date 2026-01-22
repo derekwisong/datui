@@ -52,7 +52,7 @@ are made.
 1. **Install pre-commit**:
 
    If you set up a Python virtual environment using the instructions above then you
-   already have everything you need. *Activate it and skip this step.*
+   already have everything you need. **Activate it and skip this step.**
 
    Otherwise, install `pre-commit` using your desired method.
 
@@ -74,6 +74,10 @@ are made.
 
    This installs the hooks into `.git/hooks/` so they run automatically on commit.
 
+   **Note:** You only need the `pre-commit` command accessible when you need
+   to use it to manually run or update the hooks. Once installed into your repo, 
+   the hooks themselves do not require `pre-commit`.
+
    See the `pre-commit` documentation for more information about its features.
 
 The following hooks are configured:
@@ -84,7 +88,7 @@ The following hooks are configured:
 
 - **cargo-clippy**: Runs `cargo clippy --all-targets -- -D warnings`
   - Fails if clippy finds any warnings
-  - Fix any clippy warnings before committing
+  - Fix them and commit again
 
 Hooks run automatically when you `git commit`. If any hook fails, the commit is aborted.
 
@@ -124,7 +128,3 @@ pre-commit autoupdate
 **Hooks too slow?**
 - Only changed files are checked by default
 - Use `SKIP=hook-name git commit` to skip specific hooks
-
-**Need to run hooks on CI?**
-- Pre-commit hooks run automatically in CI if configured
-- Or add `pre-commit run --all-files` to your CI workflow

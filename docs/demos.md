@@ -1,6 +1,6 @@
 # Demo Gallery
 
-This page showcases interactive demonstrations of Datui's key features.
+This page showcases interactive demonstrations of Datui's features.
 
 ## Navigation
 
@@ -8,8 +8,7 @@ This page showcases interactive demonstrations of Datui's key features.
 
 **What it shows:**
 - Loading a Parquet file (`people.parquet`)
-- Initial data display with headers
-- Vertical navigation using `j`/`k` keys (scroll down/up)
+- Scrolling through data using `↑`/ `↓` (or `j`/`k`) keys
 
 See [Loading Data](user-guide/loading-data.md) for more information about file formats and options.
 
@@ -21,6 +20,5 @@ See [Loading Data](user-guide/loading-data.md) for more information about file f
 - Opening the query input with `/`
 - Typing a query: `select first_name, last_name, city, salary where salary > 80000`
 - Executing the query and seeing filtered results
-- Clearing the query
 
 See [Querying Data](user-guide/querying-data.md) for detailed query syntax and examples.

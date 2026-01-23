@@ -2,8 +2,7 @@
 
 Thank you for your interest in contributing to Datui!
 
-Once you've gotten [the repo](https://www.github.com/derekwisong/datui) cloned
-for the first time, follow the [Setup](#setup) instructions below to get started.
+After cloning [the repo](https://www.github.com/derekwisong/datui), follow the [Setup](#setup) instructions below to get started.
 
 ## Setup
 
@@ -31,7 +30,7 @@ Setting up a virtual environment with dependencies for these scripts will
 ensure you can run them all.
 
 A common convention is to create a virtual environment in the `.venv/` directory
-of the repository. In fact, the `.gitignore` is already set up to ignore this location
+of the repository. The `.gitignore` is set up to ignore this location
 so that files there aren't added by mistake.
 
 ```bash
@@ -146,3 +145,19 @@ pre-commit autoupdate
 **Hooks too slow?**
 - Only changed files are checked by default
 - Use `SKIP=hook-name git commit` to skip specific hooks
+
+
+## Adding Configuration Options
+
+For detailed instructions on adding new configuration options to datui, see the dedicated [Guide to Adding Configuration Options](adding-configuration-options.md).
+
+**Quick summary:**
+1. Add field to appropriate config struct (`src/config.rs`)
+2. Update `Default` implementation
+3. Add merge logic in `merge()` method
+4. Add comments to comment constant (next to struct)
+5. Use the value in application code
+6. Add tests
+7. Update user documentation
+
+The guide includes step-by-step instructions, code examples, merge rules, best practices, and special instructions for adding theme colors.

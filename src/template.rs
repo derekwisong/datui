@@ -113,9 +113,9 @@ pub struct TemplateManager {
 
 impl TemplateManager {
     pub fn new(config: &ConfigManager) -> Result<Self> {
-        // Ensure config directory exists before creating subdirectories
-        config.ensure_config_dir()?;
-        let templates_dir = config.ensure_subdir("templates")?;
+        // Don't create directories on startup - be sensitive to constrained environments
+        // Directories will be created lazily when actually needed (e.g., saving templates)
+        let templates_dir = config.config_dir().join("templates");
 
         let mut manager = Self {
             config: config.clone(),
@@ -123,6 +123,8 @@ impl TemplateManager {
             templates_dir,
         };
 
+        // Only try to load templates if the directory exists
+        // Don't create it if it doesn't exist
         manager.load_templates()?;
         Ok(manager)
     }

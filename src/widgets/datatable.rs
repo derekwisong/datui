@@ -14,9 +14,26 @@ use ratatui::{
 };
 
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 use crate::query::parse_query;
 use crate::{CompressionFormat, OpenOptions};
+use polars::lazy::frame::pivot::{pivot, pivot_stable};
 use std::io::{BufReader, Read};
+
+fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
+    let e = col(PlSmallStr::from_static(""));
+    let expr = match agg {
+        PivotAggregation::Last => e.last(),
+        PivotAggregation::First => e.first(),
+        PivotAggregation::Min => e.min(),
+        PivotAggregation::Max => e.max(),
+        PivotAggregation::Avg => e.mean(),
+        PivotAggregation::Med => e.median(),
+        PivotAggregation::Std => e.std(1),
+        PivotAggregation::Count => e.len(),
+    };
+    Ok(expr)
+}
 
 pub struct DataTableState {
     pub lf: LazyFrame,
@@ -905,6 +922,84 @@ impl DataTableState {
         }
     }
 
+    /// Pivot the current `LazyFrame` (long → wide). Never uses `original_lf`.
+    /// Collects current `lf`, runs `pivot_stable`, then replaces `lf` with result.
+    pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
+        let df = self.lf.clone().collect()?;
+        let agg_expr = pivot_agg_expr(spec.aggregation)?;
+        let index_str: Vec<&str> = spec.index.iter().map(|s| s.as_str()).collect();
+        let index_opt = if index_str.is_empty() {
+            None
+        } else {
+            Some(index_str)
+        };
+        let pivoted = if matches!(
+            spec.aggregation,
+            PivotAggregation::First | PivotAggregation::Last
+        ) {
+            pivot_stable(
+                &df,
+                [spec.pivot_column.as_str()],
+                index_opt,
+                Some([spec.value_column.as_str()]),
+                spec.sort_columns,
+                Some(agg_expr),
+                None,
+            )?
+        } else {
+            pivot(
+                &df,
+                [spec.pivot_column.as_str()],
+                index_opt,
+                Some([spec.value_column.as_str()]),
+                spec.sort_columns,
+                Some(agg_expr),
+                None,
+            )?
+        };
+        self.replace_lf_after_reshape(pivoted.lazy())?;
+        Ok(())
+    }
+
+    /// Melt the current `LazyFrame` (wide → long). Never uses `original_lf`.
+    pub fn melt(&mut self, spec: &MeltSpec) -> Result<()> {
+        let on = cols(spec.value_columns.iter().map(|s| s.as_str()));
+        let index = cols(spec.index.iter().map(|s| s.as_str()));
+        let args = UnpivotArgsDSL {
+            on,
+            index,
+            variable_name: Some(PlSmallStr::from(spec.variable_name.as_str())),
+            value_name: Some(PlSmallStr::from(spec.value_name.as_str())),
+        };
+        let lf = self.lf.clone().unpivot(args);
+        self.replace_lf_after_reshape(lf)?;
+        Ok(())
+    }
+
+    fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
+        self.lf = lf;
+        self.schema = self.lf.clone().collect_schema()?;
+        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+        self.filters.clear();
+        self.sort_columns.clear();
+        self.active_query.clear();
+        self.error = None;
+        self.df = None;
+        self.locked_df = None;
+        self.grouped_lf = None;
+        self.drilled_down_group_index = None;
+        self.drilled_down_group_key = None;
+        self.drilled_down_group_key_columns = None;
+        self.start_row = 0;
+        self.termcol_index = 0;
+        self.locked_columns_count = 0;
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
+        self.table_state.select(Some(0));
+        self.collect();
+        Ok(())
+    }
+
     pub fn is_drilled_down(&self) -> bool {
         self.drilled_down_group_index.is_some()
     }
@@ -1607,6 +1702,7 @@ impl StatefulWidget for DataTable {
 mod tests {
     use super::*;
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 
     fn create_test_lf() -> LazyFrame {
         df! (
@@ -1811,5 +1907,252 @@ mod tests {
         state.sort(vec!["a".to_string()], false);
         let df = state.lf.clone().collect().unwrap();
         assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(97));
+    }
+
+    /// Minimal long-format data for pivot tests: id, date, key, value.
+    /// Includes duplicates for aggregation (e.g. (1,d1,A) appears twice).
+    fn create_pivot_long_lf() -> LazyFrame {
+        let df = df!(
+            "id" => &[1_i32, 1, 1, 2, 2, 2, 1, 2],
+            "date" => &["d1", "d1", "d1", "d1", "d1", "d1", "d1", "d1"],
+            "key" => &["A", "B", "C", "A", "B", "C", "A", "B"],
+            "value" => &[10.0_f64, 20.0, 30.0, 40.0, 50.0, 60.0, 11.0, 51.0],
+        )
+        .unwrap();
+        df.lazy()
+    }
+
+    /// Wide-format data for melt tests: id, date, c1, c2, c3.
+    fn create_melt_wide_lf() -> LazyFrame {
+        let df = df!(
+            "id" => &[1_i32, 2, 3],
+            "date" => &["d1", "d2", "d3"],
+            "c1" => &[10.0_f64, 20.0, 30.0],
+            "c2" => &[11.0, 21.0, 31.0],
+            "c3" => &[12.0, 22.0, 32.0],
+        )
+        .unwrap();
+        df.lazy()
+    }
+
+    #[test]
+    fn test_pivot_basic() {
+        let lf = create_pivot_long_lf();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let spec = PivotSpec {
+            index: vec!["id".to_string(), "date".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "value".to_string(),
+            aggregation: PivotAggregation::Last,
+            sort_columns: false,
+        };
+        state.pivot(&spec).unwrap();
+        let df = state.lf.clone().collect().unwrap();
+        let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
+        assert!(names.contains(&"id"));
+        assert!(names.contains(&"date"));
+        assert!(names.contains(&"A"));
+        assert!(names.contains(&"B"));
+        assert!(names.contains(&"C"));
+        assert_eq!(df.height(), 2);
+    }
+
+    #[test]
+    fn test_pivot_aggregation_last() {
+        let lf = create_pivot_long_lf();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let spec = PivotSpec {
+            index: vec!["id".to_string(), "date".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "value".to_string(),
+            aggregation: PivotAggregation::Last,
+            sort_columns: false,
+        };
+        state.pivot(&spec).unwrap();
+        let df = state.lf.clone().collect().unwrap();
+        let a_col = df.column("A").unwrap();
+        let row0 = a_col.get(0).unwrap();
+        let row1 = a_col.get(1).unwrap();
+        assert_eq!(row0, AnyValue::Float64(11.0));
+        assert_eq!(row1, AnyValue::Float64(40.0));
+    }
+
+    #[test]
+    fn test_pivot_aggregation_first() {
+        let lf = create_pivot_long_lf();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let spec = PivotSpec {
+            index: vec!["id".to_string(), "date".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "value".to_string(),
+            aggregation: PivotAggregation::First,
+            sort_columns: false,
+        };
+        state.pivot(&spec).unwrap();
+        let df = state.lf.clone().collect().unwrap();
+        let a_col = df.column("A").unwrap();
+        assert_eq!(a_col.get(0).unwrap(), AnyValue::Float64(10.0));
+        assert_eq!(a_col.get(1).unwrap(), AnyValue::Float64(40.0));
+    }
+
+    #[test]
+    fn test_pivot_aggregation_min_max() {
+        let lf = create_pivot_long_lf();
+        let mut state_min = DataTableState::new(lf.clone(), None, None).unwrap();
+        state_min
+            .pivot(&PivotSpec {
+                index: vec!["id".to_string(), "date".to_string()],
+                pivot_column: "key".to_string(),
+                value_column: "value".to_string(),
+                aggregation: PivotAggregation::Min,
+                sort_columns: false,
+            })
+            .unwrap();
+        let df_min = state_min.lf.clone().collect().unwrap();
+        assert_eq!(
+            df_min.column("A").unwrap().get(0).unwrap(),
+            AnyValue::Float64(10.0)
+        );
+
+        let mut state_max = DataTableState::new(lf, None, None).unwrap();
+        state_max
+            .pivot(&PivotSpec {
+                index: vec!["id".to_string(), "date".to_string()],
+                pivot_column: "key".to_string(),
+                value_column: "value".to_string(),
+                aggregation: PivotAggregation::Max,
+                sort_columns: false,
+            })
+            .unwrap();
+        let df_max = state_max.lf.clone().collect().unwrap();
+        assert_eq!(
+            df_max.column("A").unwrap().get(0).unwrap(),
+            AnyValue::Float64(11.0)
+        );
+    }
+
+    #[test]
+    fn test_pivot_aggregation_avg_count() {
+        let lf = create_pivot_long_lf();
+        let mut state_avg = DataTableState::new(lf.clone(), None, None).unwrap();
+        state_avg
+            .pivot(&PivotSpec {
+                index: vec!["id".to_string(), "date".to_string()],
+                pivot_column: "key".to_string(),
+                value_column: "value".to_string(),
+                aggregation: PivotAggregation::Avg,
+                sort_columns: false,
+            })
+            .unwrap();
+        let df_avg = state_avg.lf.clone().collect().unwrap();
+        let a = df_avg.column("A").unwrap().get(0).unwrap();
+        if let AnyValue::Float64(x) = a {
+            assert!((x - 10.5).abs() < 1e-6);
+        } else {
+            panic!("expected float");
+        }
+
+        let mut state_count = DataTableState::new(lf, None, None).unwrap();
+        state_count
+            .pivot(&PivotSpec {
+                index: vec!["id".to_string(), "date".to_string()],
+                pivot_column: "key".to_string(),
+                value_column: "value".to_string(),
+                aggregation: PivotAggregation::Count,
+                sort_columns: false,
+            })
+            .unwrap();
+        let df_count = state_count.lf.clone().collect().unwrap();
+        let a = df_count.column("A").unwrap().get(0).unwrap();
+        assert_eq!(a, AnyValue::UInt32(2));
+    }
+
+    #[test]
+    fn test_pivot_string_first_last() {
+        let df = df!(
+            "id" => &[1_i32, 1, 2, 2],
+            "key" => &["X", "Y", "X", "Y"],
+            "value" => &["low", "mid", "high", "mid"],
+        )
+        .unwrap();
+        let lf = df.lazy();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let spec = PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "value".to_string(),
+            aggregation: PivotAggregation::Last,
+            sort_columns: false,
+        };
+        state.pivot(&spec).unwrap();
+        let out = state.lf.clone().collect().unwrap();
+        assert_eq!(
+            out.column("X").unwrap().get(0).unwrap(),
+            AnyValue::String("low")
+        );
+        assert_eq!(
+            out.column("Y").unwrap().get(0).unwrap(),
+            AnyValue::String("mid")
+        );
+    }
+
+    #[test]
+    fn test_melt_basic() {
+        let lf = create_melt_wide_lf();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let spec = MeltSpec {
+            index: vec!["id".to_string(), "date".to_string()],
+            value_columns: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
+            variable_name: "variable".to_string(),
+            value_name: "value".to_string(),
+        };
+        state.melt(&spec).unwrap();
+        let df = state.lf.clone().collect().unwrap();
+        assert_eq!(df.height(), 9);
+        let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
+        assert!(names.contains(&"variable"));
+        assert!(names.contains(&"value"));
+        assert!(names.contains(&"id"));
+        assert!(names.contains(&"date"));
+    }
+
+    #[test]
+    fn test_melt_all_except_index() {
+        let lf = create_melt_wide_lf();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let spec = MeltSpec {
+            index: vec!["id".to_string(), "date".to_string()],
+            value_columns: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
+            variable_name: "var".to_string(),
+            value_name: "val".to_string(),
+        };
+        state.melt(&spec).unwrap();
+        let df = state.lf.clone().collect().unwrap();
+        assert!(df.column("var").is_ok());
+        assert!(df.column("val").is_ok());
+    }
+
+    #[test]
+    fn test_pivot_on_current_view_after_filter() {
+        let lf = create_pivot_long_lf();
+        let mut state = DataTableState::new(lf, None, None).unwrap();
+        state.filter(vec![FilterStatement {
+            column: "id".to_string(),
+            operator: FilterOperator::Eq,
+            value: "1".to_string(),
+            logical_op: LogicalOperator::And,
+        }]);
+        let spec = PivotSpec {
+            index: vec!["id".to_string(), "date".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "value".to_string(),
+            aggregation: PivotAggregation::Last,
+            sort_columns: false,
+        };
+        state.pivot(&spec).unwrap();
+        let df = state.lf.clone().collect().unwrap();
+        assert_eq!(df.height(), 1);
+        let id_col = df.column("id").unwrap();
+        assert_eq!(id_col.get(0).unwrap(), AnyValue::Int32(1));
     }
 }

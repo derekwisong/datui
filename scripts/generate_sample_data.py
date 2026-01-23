@@ -11,6 +11,7 @@ This script generates various CSV and Parquet files with different characteristi
 - Files for aggregate calculations
 - Large and small datasets
 - Error case testing
+- Pivot/Melt reshape testing (long-format for pivot, wide-format for melt)
 
 Uses Polars instead of Pandas.
 """
@@ -330,6 +331,124 @@ def generate_error_cases():
     
     return error_cases
 
+
+# -----------------------------------------------------------------------------
+# Pivot / Melt testing (see plans/pivot-melt-plan.md)
+# -----------------------------------------------------------------------------
+
+
+def generate_pivot_long():
+    """
+    Long-format data for Pivot tab testing.
+
+    Schema: id, date, key, value (float).
+    - Multiple rows per (id, date) with distinct keys "A", "B", "C".
+    - Some (id, date, key) duplicates to exercise aggregation (last, first, min, max, etc.).
+    - Deterministic (seed 50) for reproducible tests.
+    """
+    np.random.seed(50)
+    random.seed(50)
+
+    keys = ["A", "B", "C"]
+    n_groups = 40
+    base_date = datetime(2024, 1, 1).date()
+
+    rows = []
+    for g in range(n_groups):
+        uid = (g % 20) + 1
+        d = base_date + timedelta(days=g % 31)
+        for k in keys:
+            rows.append({"id": uid, "date": d, "key": k, "value": round(random.uniform(10.0, 100.0), 2)})
+
+    # Add duplicates for aggregation tests: same (id, date, key), different value
+    n_dup = 24
+    for _ in range(n_dup):
+        r = random.choice(rows)
+        rows.append({
+            "id": r["id"],
+            "date": r["date"],
+            "key": r["key"],
+            "value": round(random.uniform(10.0, 100.0), 2),
+        })
+
+    return pl.DataFrame(rows)
+
+
+def generate_pivot_long_string():
+    """
+    Long-format data with string value column for Pivot + first/last aggregation.
+
+    Schema: id, date, key, value (str). Same structure as pivot_long; value is
+    "low", "mid", or "high" so only first/last aggregation is meaningful.
+    """
+    np.random.seed(51)
+    random.seed(51)
+
+    keys = ["X", "Y", "Z"]
+    labels = ["low", "mid", "high"]
+    n_groups = 30
+    base_date = datetime(2024, 1, 1).date()
+
+    rows = []
+    for g in range(n_groups):
+        uid = (g % 15) + 1
+        d = base_date + timedelta(days=g % 28)
+        for k in keys:
+            rows.append({"id": uid, "date": d, "key": k, "value": random.choice(labels)})
+
+    return pl.DataFrame(rows)
+
+
+def generate_melt_wide():
+    """
+    Wide-format data for Melt tab testing.
+
+    Schema: id, date, Q1_2024..Q4_2024, metric_foo, metric_bar, label.
+    - Pattern-friendly names for regex tests (Q[1-4]_2024, metric_*).
+    - Mix of numeric and string (label) for "by type" tests.
+    """
+    np.random.seed(52)
+    random.seed(52)
+
+    n = 80
+    base_date = datetime(2024, 1, 1).date()
+    data = {
+        "id": list(range(1, n + 1)),
+        "date": [base_date + timedelta(days=random.randint(0, 365)) for _ in range(n)],
+        "Q1_2024": [round(random.uniform(0, 100), 2) for _ in range(n)],
+        "Q2_2024": [round(random.uniform(0, 100), 2) for _ in range(n)],
+        "Q3_2024": [round(random.uniform(0, 100), 2) for _ in range(n)],
+        "Q4_2024": [round(random.uniform(0, 100), 2) for _ in range(n)],
+        "metric_foo": [round(random.uniform(0, 50), 2) for _ in range(n)],
+        "metric_bar": [round(random.uniform(0, 50), 2) for _ in range(n)],
+        "label": random.choices(["alpha", "beta", "gamma"], k=n),
+    }
+    return pl.DataFrame(data)
+
+
+def generate_melt_wide_many():
+    """
+    Wide-format data with many value columns for Melt "all except index" / pattern stress.
+
+    Schema: id, date, col_1, col_2, ..., col_50. All numeric except id/date.
+    """
+    np.random.seed(53)
+    random.seed(53)
+
+    n = 60
+    n_cols = 50
+    base_date = datetime(2024, 1, 1).date()
+
+    data = {
+        "id": list(range(1, n + 1)),
+        "date": [base_date + timedelta(days=random.randint(0, 200)) for _ in range(n)],
+    }
+    for i in range(1, n_cols + 1):
+        data[f"col_{i}"] = [round(random.uniform(0, 100), 2) for _ in range(n)]
+
+    return pl.DataFrame(data)
+
+
 def save_csv(df, filename, **kwargs):
     """Save DataFrame as CSV, compressed with gzip."""
     # Remove .csv extension if present, we'll add .csv.gz
@@ -419,7 +538,22 @@ def main():
         # Skip parquet for inconsistent_types as it can't handle mixed types
         if name != "inconsistent_types":
             save_parquet(df, f"error_{name}.parquet")
-    
+
+    # Pivot/Melt testing (see plans/pivot-melt-plan.md)
+    print("\n9. Generating pivot/melt testing data...")
+    pivot_long_df = generate_pivot_long()
+    save_csv(pivot_long_df, "pivot_long.csv")
+    save_parquet(pivot_long_df, "pivot_long.parquet")
+    pivot_long_string_df = generate_pivot_long_string()
+    save_csv(pivot_long_string_df, "pivot_long_string.csv")
+    save_parquet(pivot_long_string_df, "pivot_long_string.parquet")
+    melt_wide_df = generate_melt_wide()
+    save_csv(melt_wide_df, "melt_wide.csv")
+    save_parquet(melt_wide_df, "melt_wide.parquet")
+    melt_wide_many_df = generate_melt_wide_many()
+    save_csv(melt_wide_many_df, "melt_wide_many.csv")
+    save_parquet(melt_wide_many_df, "melt_wide_many.parquet")
+
     print("\n✅ Sample data generation complete!")
 
 if __name__ == "__main__":

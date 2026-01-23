@@ -14,6 +14,7 @@
   - [Querying Data](user-guide/querying-data.md)
   - [Filtering and Sorting](user-guide/filtering-sorting.md)
   - [Analysis Features](user-guide/analysis-features.md)
+  - [Reshaping: Pivot and Melt](user-guide/reshaping.md)
   - [Templates](user-guide/templates.md)
 
 - [Reference](reference.md)

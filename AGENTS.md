@@ -55,8 +55,10 @@ src/
 │   ├── schema.rs       # Schema display widget
 │   ├── debug.rs        # Debug overlay widget
 │   ├── analysis.rs     # Analysis modal rendering
+│   ├── pivot_melt.rs   # Pivot/Melt modal rendering
 │   └── template_modal.rs # Template management UI
 ├── query.rs            # Query parser and executor
+├── pivot_melt_modal.rs # Pivot/Melt modal state and specs
 ├── statistics.rs       # Statistical computation module
 ├── analysis_modal.rs   # Analysis modal state management
 ├── sort_modal.rs       # Sort/column order modal
@@ -82,6 +84,8 @@ src/
 - `Filter(Vec<FilterStatement>)`: Filter application
 - `Sort(Vec<String>, bool)`: Sort application
 - `ColumnOrder(Vec<String>, usize)`: Column reordering/locking
+- `Pivot(PivotSpec)`: Pivot (long → wide) reshape
+- `Melt(MeltSpec)`: Melt (wide → long) reshape
 - `Collect`, `Update`, `Reset`: State management events
 - `Exit`, `Crash(String)`: Lifecycle events
 
@@ -435,6 +439,8 @@ datui --clear-cache     # Clear all cache data
 - **Filtering**: Column-based filtering with logical operators
 - **Sorting**: Multi-column sorting with ascending/descending
 - **Column Management**: Reorder, lock (freeze), hide/show columns
+- **Pivot** (long → wide): Index, pivot column, value column, aggregation (last/first/min/max/avg/med/std/count). Uses `DataTableState::pivot`, `pivot_stable` for first/last.
+- **Melt** (wide → long): Index, value-column strategy (all except index, by pattern, by type, explicit), variable/value names. Uses `LazyFrame::unpivot`.
 
 ### Analysis Features
 
@@ -451,7 +457,7 @@ datui --clear-cache     # Clear all cache data
 
 - **Responsive Layout**: Adapts to terminal size
 - **Scrollable Tables**: Horizontal and vertical scrolling
-- **Modal Dialogs**: Sort, filter, template, analysis modals
+- **Modal Dialogs**: Sort, filter, template, analysis, **Pivot/Melt** modals
 - **Help System**: Context-sensitive help (`?` key)
 - **Query History**: Navigate past queries with Up/Down arrows
 

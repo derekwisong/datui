@@ -20,6 +20,8 @@ pub fn ensure_sample_data() {
             "sales.parquet",
             "large_dataset.parquet",
             "empty.parquet",
+            "pivot_long.parquet",
+            "melt_wide.parquet",
         ];
 
         let needs_generation = !sample_data_dir.exists()

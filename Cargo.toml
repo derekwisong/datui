@@ -1,5 +1,7 @@
 [package]
 name = "datui"
+description = "A terminal user interface for data analysis"
+repository = "https://github.com/derekwisong/datui"
 version = "0.2.5"
 edition = "2021"
 license = "MIT"
@@ -10,7 +12,6 @@ color-eyre = "0.6.5"
 crossterm = "0.29.0"
 dirs = "5.0"
 fs2 = "0.4"
-polars = { version = "0.52.0", features = ["json", "lazy", "parquet", "polars-io", "timezones", "strings", "pivot", "decompress"] }
 ratatui = { version = "0.30.0", features = ["all-widgets"] }
 regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
@@ -19,6 +20,23 @@ supports-color = "3.0"
 toml = "0.8"
 bzip2 = "0.4"
 xz2 = "0.1"
+
+[dependencies.polars]
+version = "0.52.0"
+default-features = false
+features = [
+    "csv",
+    "dtype-datetime",
+    "json",
+    "lazy",
+    "parquet",
+    "polars-io",
+    "temporal",
+    "timezones",
+    "strings",
+    "pivot",
+    "decompress"
+]
 
 [dev-dependencies]
 tempfile = "3.8"
@@ -30,3 +48,9 @@ clap_mangen = "0.2"
 # improve the performance of color-eyre for debug builds
 [profile.dev.package.backtrace]
 opt-level = 3
+
+[profile.release]
+strip = true      # Automatically strip symbols from the binary (reduces size)
+lto = "thin"      # "Thin" LTO is much faster to compile than "fat" LTO
+codegen-units = 1 # slightly slower compile, but faster runtime code. Set to 16 for faster compile.
+opt-level = 3     # Optimize for speed

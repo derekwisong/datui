@@ -113,8 +113,21 @@ jobs:
           CURRENT_COMMIT=$(git rev-parse HEAD)
           [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
           rm -rf "$SCRIPT_DIR"
+
+      - name: Build documentation for main branch
+        run: |
+          ORIGINAL_COMMIT=$(git rev-parse HEAD)
+          git checkout main || (echo "Warning: Could not checkout main branch, using current HEAD" && true)
+          [ -f scripts/docs/build_single_version_docs.sh ] || (echo "Error: scripts/docs/build_single_version_docs.sh not found" && exit 1)
+          [ -f scripts/docs/rebuild_index.py ] || (echo "Error: scripts/docs/rebuild_index.py not found" && exit 1)
+          [ -f scripts/docs/index.html.j2 ] || (echo "Error: scripts/docs/index.html.j2 not found" && exit 1)
+          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py
+          rm -rf book/demos
+          ./scripts/docs/build_single_version_docs.sh "main"
           rm -rf book/demos
           python3 scripts/docs/rebuild_index.py
+          # Return to original tag commit (not necessary for deployment, but clean)
+          git checkout "$ORIGINAL_COMMIT" 2>/dev/null || true
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

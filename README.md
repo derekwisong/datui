@@ -1,7 +1,7 @@
 # Datui
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.2.4-orange.svg)
+![Version](https://img.shields.io/badge/version-0.2.5-orange.svg)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
 
 Datui is an interactive terminal user interface (TUI) for exploring and analyzing data files.

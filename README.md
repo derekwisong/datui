@@ -58,6 +58,37 @@ Use keyboard shortcuts to navigate:
 
 Press `q` to exit.
 
+## Configuration
+
+Datui supports extensive customization through a configuration file. Generate a default config:
+
+```bash
+datui --generate-config
+```
+
+This creates `~/.config/datui/config.toml` where you can customize:
+
+- **Colors**: Complete theme customization with hex, named, or indexed colors
+- **Display**: Row numbers, page buffering, starting index
+- **Performance**: Sampling thresholds, event polling
+- **File Loading**: Default delimiters, headers, compression
+- **Query History**: History limits and caching
+- **Templates**: Auto-apply behavior
+
+**Example config:**
+```toml
+[display]
+row_numbers = true
+row_start_index = 0
+
+[theme.colors]
+primary = "#00bfff"        # Bright blue keybinds
+error = "bright_red"       # Red errors
+controls_bg = "indexed(236)" # Dark gray bar
+```
+
+See the [Configuration Guide][config-guide] for complete documentation.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -84,3 +115,4 @@ Contributions are welcome! Please see the [full documentation][docs] for more in
 **Note**: If you encounter any issues or have feature requests, please [open an issue on GitHub](https://github.com/derekwisong/datui/issues).
 
 [docs]: https://derekwisong.github.io/datui/
+[config-guide]: https://derekwisong.github.io/datui/main/user-guide/configuration.html

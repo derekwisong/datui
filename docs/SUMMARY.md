@@ -9,6 +9,7 @@
   - [Quick Start](getting-started/quick-start.md)
 
 - [User Guide](user-guide.md)
+  - [Configuration](user-guide/configuration.md)
   - [Loading Data](user-guide/loading-data.md)
   - [Querying Data](user-guide/querying-data.md)
   - [Filtering and Sorting](user-guide/filtering-sorting.md)

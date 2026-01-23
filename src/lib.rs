@@ -27,7 +27,9 @@ pub mod widgets;
 
 pub use cache::CacheManager;
 pub use cli::Args;
-pub use config::ConfigManager;
+pub use config::{
+    rgb_to_256_color, rgb_to_basic_ansi, AppConfig, ColorParser, ConfigManager, Theme,
+};
 
 use analysis_modal::AnalysisModal;
 use filter_modal::{FilterFocus, FilterModal, FilterOperator, FilterStatement, LogicalOperator};
@@ -251,30 +253,61 @@ impl OpenOptions {
     }
 }
 
-impl From<&cli::Args> for OpenOptions {
-    fn from(args: &cli::Args) -> Self {
+impl OpenOptions {
+    /// Create OpenOptions from CLI args and config, with CLI args taking precedence
+    pub fn from_args_and_config(args: &cli::Args, config: &AppConfig) -> Self {
         let mut opts = OpenOptions::new();
-        if let Some(skip_lines) = args.skip_lines {
-            opts = opts.with_skip_lines(skip_lines);
-        }
-        if let Some(skip_rows) = args.skip_rows {
-            opts = opts.with_skip_rows(skip_rows);
-        }
-        if let Some(no_header) = args.no_header {
-            opts = opts.with_has_header(!no_header);
-        }
-        if let Some(delimiter) = args.delimiter {
-            opts = opts.with_delimiter(delimiter);
-        }
-        if let Some(compression) = args.compression {
-            opts = opts.with_compression(compression);
-        }
-        opts.pages_lookahead = args.pages_lookahead;
-        opts.pages_lookback = args.pages_lookback;
-        opts.row_numbers = args.row_numbers;
-        opts.row_start_index = args.row_start_index.unwrap_or(1);
+
+        // File loading options: CLI args override config
+        opts.delimiter = args.delimiter.or(config.file_loading.delimiter);
+        opts.skip_lines = args.skip_lines.or(config.file_loading.skip_lines);
+        opts.skip_rows = args.skip_rows.or(config.file_loading.skip_rows);
+
+        // Handle has_header: CLI no_header flag overrides config
+        opts.has_header = if let Some(no_header) = args.no_header {
+            Some(!no_header)
+        } else {
+            config.file_loading.has_header
+        };
+
+        // Handle compression: CLI arg overrides config
+        opts.compression = args.compression.or_else(|| {
+            config
+                .file_loading
+                .compression
+                .as_ref()
+                .and_then(|s| match s.as_str() {
+                    "gzip" => Some(CompressionFormat::Gzip),
+                    "zstd" => Some(CompressionFormat::Zstd),
+                    "bzip2" => Some(CompressionFormat::Bzip2),
+                    "xz" => Some(CompressionFormat::Xz),
+                    _ => None,
+                })
+        });
+
+        // Display options: CLI args override config
+        opts.pages_lookahead = args
+            .pages_lookahead
+            .or(Some(config.display.pages_lookahead));
+        opts.pages_lookback = args.pages_lookback.or(Some(config.display.pages_lookback));
+
+        // Row numbers: CLI flag overrides config
+        opts.row_numbers = args.row_numbers || config.display.row_numbers;
+
+        // Row start index: CLI arg overrides config
+        opts.row_start_index = args
+            .row_start_index
+            .unwrap_or(config.display.row_start_index);
 
         opts
+    }
+}
+
+impl From<&cli::Args> for OpenOptions {
+    fn from(args: &cli::Args) -> Self {
+        // Use default config if creating from args alone
+        let config = AppConfig::default();
+        Self::from_args_and_config(args, &config)
     }
 }
 
@@ -387,6 +420,8 @@ pub struct App {
     query_history_index: Option<usize>, // Current position in history (None = editing new query)
     query_history_temp: Option<String>, // Temporary storage for current input when navigating history
     loading_state: LoadingState,        // Current loading state for progress indication
+    theme: Theme,                       // Color theme for UI rendering
+    sampling_threshold: usize,          // Threshold for sampling large datasets
 }
 
 impl App {
@@ -437,6 +472,26 @@ impl App {
     }
 
     pub fn new(events: Sender<AppEvent>) -> App {
+        // Create default theme for backward compatibility
+        let theme = Theme::from_config(&AppConfig::default().theme).unwrap_or_else(|e| {
+            eprintln!(
+                "Warning: Failed to create default theme: {}. Using fallback.",
+                e
+            );
+            // Create a minimal fallback theme
+            Theme {
+                colors: std::collections::HashMap::new(),
+            }
+        });
+
+        Self::new_with_config(events, theme, AppConfig::default())
+    }
+
+    pub fn new_with_theme(events: Sender<AppEvent>, theme: Theme) -> App {
+        Self::new_with_config(events, theme, AppConfig::default())
+    }
+
+    pub fn new_with_config(events: Sender<AppEvent>, theme: Theme, app_config: AppConfig) -> App {
         let cache = CacheManager::new(APP_NAME).unwrap_or_else(|e| {
             eprintln!("Warning: Could not initialize cache manager: {}", e);
             CacheManager {
@@ -444,14 +499,14 @@ impl App {
             }
         });
 
-        let config = ConfigManager::new(APP_NAME).unwrap_or_else(|e| {
+        let config_manager = ConfigManager::new(APP_NAME).unwrap_or_else(|e| {
             eprintln!("Warning: Could not initialize config manager: {}", e);
             ConfigManager {
                 config_dir: std::env::temp_dir().join(APP_NAME).join("config"),
             }
         });
 
-        let template_manager = TemplateManager::new(&config).unwrap_or_else(|e| {
+        let template_manager = TemplateManager::new(&config_manager).unwrap_or_else(|e| {
             eprintln!("Warning: Could not initialize template manager: {}", e);
             let temp_config = ConfigManager::new("datui").unwrap_or_else(|_| ConfigManager {
                 config_dir: std::env::temp_dir().join("datui").join("config"),
@@ -489,6 +544,8 @@ impl App {
             query_history_index: None,
             query_history_temp: None,
             loading_state: LoadingState::Idle,
+            theme,
+            sampling_threshold: app_config.performance.sampling_threshold,
         };
 
         app.load_query_history();
@@ -497,6 +554,11 @@ impl App {
 
     pub fn enable_debug(&mut self) {
         self.debug.enabled = true;
+    }
+
+    /// Get a color from the theme by name
+    fn color(&self, name: &str) -> Color {
+        self.theme.get(name)
     }
 
     fn load_query_history(&mut self) {
@@ -3655,6 +3717,14 @@ impl Widget for &mut App {
             sort_area = chunks[1]; // Reuse sort_area for template modal
         }
 
+        // Extract colors before mutable borrow to avoid borrow checker issues
+        let primary_color = self.color("primary");
+        let controls_bg_color = self.color("controls_bg");
+        let table_header_color = self.color("table_header");
+        let dimmed_color = self.color("dimmed");
+        let table_border_color = self.color("table_border");
+        let modal_border_color = self.color("modal_border");
+
         match &mut self.data_table_state {
             Some(state) => {
                 // Render breadcrumb if drilled down
@@ -3684,7 +3754,7 @@ impl Widget for &mut App {
 
                         Block::default()
                             .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Cyan))
+                            .border_style(Style::default().fg(primary_color))
                             .title("Breadcrumb")
                             .render(breadcrumb_layout[0], buf);
 
@@ -3692,7 +3762,7 @@ impl Widget for &mut App {
                         Paragraph::new(breadcrumb_text)
                             .style(
                                 Style::default()
-                                    .fg(Color::Cyan)
+                                    .fg(primary_color)
                                     .add_modifier(Modifier::BOLD),
                             )
                             .wrap(ratatui::widgets::Wrap { trim: true })
@@ -3707,10 +3777,26 @@ impl Widget for &mut App {
                         .direction(Direction::Horizontal)
                         .constraints([Constraint::Fill(1), Constraint::Max(50)])
                         .split(table_area);
-                    DataTable::new().render(info_layout[0], buf, state);
-                    DataTableInfo::new(state).render(info_layout[1], buf);
+                    DataTable::new()
+                        .with_colors(
+                            controls_bg_color,
+                            table_header_color,
+                            dimmed_color,
+                            table_border_color,
+                        )
+                        .render(info_layout[0], buf, state);
+                    DataTableInfo::new(state)
+                        .with_border_color(modal_border_color)
+                        .render(info_layout[1], buf);
                 } else {
-                    DataTable::new().render(table_area, buf, state);
+                    DataTable::new()
+                        .with_colors(
+                            controls_bg_color,
+                            table_header_color,
+                            dimmed_color,
+                            table_border_color,
+                        )
+                        .render(table_area, buf, state);
                 }
             }
             None => {
@@ -3738,7 +3824,7 @@ impl Widget for &mut App {
 
             let mut border_style = Style::default();
             if has_error {
-                border_style = Style::default().fg(Color::Red);
+                border_style = Style::default().fg(self.color("error"));
             }
 
             if self.debug.enabled {
@@ -3778,7 +3864,9 @@ impl Widget for &mut App {
                 line.spans.push(Span::raw(before_cursor));
                 line.spans.push(Span::styled(
                     at_cursor,
-                    Style::default().bg(Color::White).fg(Color::Black),
+                    Style::default()
+                        .bg(self.color("text_primary"))
+                        .fg(self.color("text_inverse")),
                 ));
                 if !after_cursor.is_empty() {
                     line.spans.push(Span::raw(after_cursor));
@@ -3786,7 +3874,7 @@ impl Widget for &mut App {
 
                 Paragraph::new(line).render(chunks[0], buf);
                 Paragraph::new(err_msg)
-                    .style(Style::default().fg(Color::Red))
+                    .style(Style::default().fg(self.color("error")))
                     .wrap(ratatui::widgets::Wrap { trim: true })
                     .render(chunks[2], buf);
             } else {
@@ -3806,7 +3894,9 @@ impl Widget for &mut App {
                 line.spans.push(Span::raw(before_cursor));
                 line.spans.push(Span::styled(
                     at_cursor,
-                    Style::default().bg(Color::White).fg(Color::Black),
+                    Style::default()
+                        .bg(self.color("text_primary"))
+                        .fg(self.color("text_inverse")),
                 ));
                 if !after_cursor.is_empty() {
                     line.spans.push(Span::raw(after_cursor));
@@ -3851,7 +3941,7 @@ impl Widget for &mut App {
                 &self.filter_modal.available_columns[self.filter_modal.new_column_idx]
             };
             let col_style = if self.filter_modal.focus == FilterFocus::Column {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -3869,7 +3959,7 @@ impl Widget for &mut App {
                 .unwrap()
                 .as_str();
             let op_style = if self.filter_modal.focus == FilterFocus::Operator {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -3883,7 +3973,7 @@ impl Widget for &mut App {
                 .render(row_layout[1], buf);
 
             let val_style = if self.filter_modal.focus == FilterFocus::Value {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -3901,7 +3991,7 @@ impl Widget for &mut App {
                 .unwrap()
                 .as_str();
             let log_style = if self.filter_modal.focus == FilterFocus::Logical {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -3916,7 +4006,7 @@ impl Widget for &mut App {
 
             // Add Button
             let add_style = if self.filter_modal.focus == FilterFocus::Add {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -3951,7 +4041,7 @@ impl Widget for &mut App {
                 })
                 .collect();
             let list_style = if self.filter_modal.focus == FilterFocus::Statements {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -3972,7 +4062,7 @@ impl Widget for &mut App {
                 .split(chunks[3]);
 
             let confirm_style = if self.filter_modal.focus == FilterFocus::Confirm {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -3986,7 +4076,7 @@ impl Widget for &mut App {
                 .render(btn_layout[0], buf);
 
             let clear_style = if self.filter_modal.focus == FilterFocus::Clear {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -4022,7 +4112,8 @@ impl Widget for &mut App {
             let filter_block_title = "Filter Columns";
             let mut filter_block_border_style = Style::default();
             if self.sort_modal.focus == SortFocus::Filter {
-                filter_block_border_style = filter_block_border_style.fg(Color::Yellow);
+                filter_block_border_style =
+                    filter_block_border_style.fg(self.color("modal_border_active"));
             }
             let filter_block = Block::default()
                 .borders(Borders::ALL)
@@ -4049,7 +4140,9 @@ impl Widget for &mut App {
             line.spans.push(ratatui::text::Span::raw(before_cursor));
             line.spans.push(ratatui::text::Span::styled(
                 at_cursor,
-                Style::default().bg(Color::White).fg(Color::Black),
+                Style::default()
+                    .bg(self.color("text_primary"))
+                    .fg(self.color("text_inverse")),
             ));
             if !after_cursor.is_empty() {
                 line.spans.push(ratatui::text::Span::raw(after_cursor));
@@ -4072,7 +4165,7 @@ impl Widget for &mut App {
                     let lock_style = if col.is_locked {
                         Style::default()
                     } else if col.is_to_be_locked {
-                        Style::default().fg(Color::DarkGray) // Dimmed style for pending lock
+                        Style::default().fg(self.color("dimmed")) // Dimmed style for pending lock
                     } else {
                         Style::default()
                     };
@@ -4092,7 +4185,7 @@ impl Widget for &mut App {
                     let row_style = if col.is_visible {
                         Style::default()
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(self.color("dimmed"))
                     };
 
                     Row::new(vec![
@@ -4113,7 +4206,7 @@ impl Widget for &mut App {
             .style(Style::default().add_modifier(Modifier::UNDERLINED));
 
             let table_border_style = if self.sort_modal.focus == SortFocus::ColumnList {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -4144,21 +4237,21 @@ impl Widget for &mut App {
             hint_line1.spans.push(Span::styled(
                 "Space",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(self.color("primary"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line1.spans.push(Span::raw(" Toggle "));
             hint_line1.spans.push(Span::styled(
                 "[]",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(self.color("primary"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line1.spans.push(Span::raw(" Reorder "));
             hint_line1.spans.push(Span::styled(
                 "1-9",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(self.color("primary"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line1.spans.push(Span::raw(" Jump"));
@@ -4168,14 +4261,14 @@ impl Widget for &mut App {
             hint_line2.spans.push(Span::styled(
                 "L",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(self.color("primary"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line2.spans.push(Span::raw(" Lock "));
             hint_line2.spans.push(Span::styled(
                 "+-",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(self.color("primary"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line2.spans.push(Span::raw(" Reorder"));
@@ -4184,7 +4277,7 @@ impl Widget for &mut App {
 
             // Order Toggle - Radio Button Style with single border
             let order_border_style = if self.sort_modal.focus == SortFocus::Order {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -4249,8 +4342,8 @@ impl Widget for &mut App {
             let mut apply_border_style = Style::default();
 
             if self.sort_modal.focus == SortFocus::Apply {
-                apply_text_style = apply_text_style.fg(Color::Yellow);
-                apply_border_style = apply_border_style.fg(Color::Yellow);
+                apply_text_style = apply_text_style.fg(self.color("modal_border_active"));
+                apply_border_style = apply_border_style.fg(self.color("modal_border_active"));
             }
 
             if self.sort_modal.has_unapplied_changes {
@@ -4268,7 +4361,7 @@ impl Widget for &mut App {
                 .render(btn_layout[0], buf);
 
             let cancel_style = if self.sort_modal.focus == SortFocus::Cancel {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -4282,7 +4375,7 @@ impl Widget for &mut App {
                 .render(btn_layout[1], buf);
 
             let clear_style = if self.sort_modal.focus == SortFocus::Clear {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(self.color("modal_border_active"))
             } else {
                 Style::default()
             };
@@ -4354,27 +4447,27 @@ impl Widget for &mut App {
                             let (circle_char, circle_color) = if score_ratio >= 0.8 {
                                 // High scores: green, filled circles
                                 if score_ratio >= 0.95 {
-                                    ('●', Color::Green)
+                                    ('●', self.color("success"))
                                 } else if score_ratio >= 0.9 {
-                                    ('◉', Color::Green)
+                                    ('◉', self.color("success"))
                                 } else {
-                                    ('◐', Color::Green)
+                                    ('◐', self.color("success"))
                                 }
                             } else if score_ratio >= 0.4 {
                                 // Medium scores: yellow
                                 if score_ratio >= 0.7 {
-                                    ('◐', Color::Yellow)
+                                    ('◐', self.color("warning"))
                                 } else if score_ratio >= 0.55 {
-                                    ('◑', Color::Yellow)
+                                    ('◑', self.color("warning"))
                                 } else {
-                                    ('○', Color::Yellow)
+                                    ('○', self.color("warning"))
                                 }
                             } else {
                                 // Low scores: uncolored
                                 if score_ratio >= 0.2 {
-                                    ('○', Color::White)
+                                    ('○', self.color("text_primary"))
                                 } else {
-                                    ('○', Color::DarkGray)
+                                    ('○', self.color("dimmed"))
                                 }
                             };
 
@@ -4416,7 +4509,7 @@ impl Widget for &mut App {
 
                     let table_border_style =
                         if self.template_modal.focus == TemplateFocus::TemplateList {
-                            Style::default().fg(Color::Yellow)
+                            Style::default().fg(self.color("modal_border_active"))
                         } else {
                             Style::default()
                         };
@@ -4452,35 +4545,35 @@ impl Widget for &mut App {
                     hint_line.spans.push(Span::styled(
                         "Enter",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(self.color("primary"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Apply "));
                     hint_line.spans.push(Span::styled(
                         "s",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(self.color("primary"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Create "));
                     hint_line.spans.push(Span::styled(
                         "e",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(self.color("primary"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Edit "));
                     hint_line.spans.push(Span::styled(
                         "d",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(self.color("primary"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Delete "));
                     hint_line.spans.push(Span::styled(
                         "Esc",
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(self.color("primary"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Close"));
@@ -4505,7 +4598,7 @@ impl Widget for &mut App {
 
                     // Name input
                     let name_style = if self.template_modal.create_focus == CreateFocus::Name {
-                        Style::default().fg(Color::Yellow)
+                        Style::default().fg(self.color("modal_border_active"))
                     } else {
                         Style::default()
                     };
@@ -4518,7 +4611,7 @@ impl Widget for &mut App {
                         .borders(Borders::ALL)
                         .title(name_title)
                         .title_style(if self.template_modal.name_error.is_some() {
-                            Style::default().fg(Color::Red)
+                            Style::default().fg(self.color("error"))
                         } else {
                             Style::default().add_modifier(Modifier::BOLD)
                         })
@@ -4540,7 +4633,7 @@ impl Widget for &mut App {
                     );
                     let name_input_style = if self.template_modal.create_focus == CreateFocus::Name
                     {
-                        Style::default().bg(Color::DarkGray)
+                        Style::default().bg(self.color("surface"))
                     } else {
                         Style::default()
                     };
@@ -4570,7 +4663,7 @@ impl Widget for &mut App {
                     // Description input (scrollable, multi-line)
                     let desc_style = if self.template_modal.create_focus == CreateFocus::Description
                     {
-                        Style::default().fg(Color::Yellow)
+                        Style::default().fg(self.color("modal_border_active"))
                     } else {
                         Style::default()
                     };
@@ -4582,7 +4675,7 @@ impl Widget for &mut App {
                     desc_block.render(chunks[1], buf);
                     let desc_input_style =
                         if self.template_modal.create_focus == CreateFocus::Description {
-                            Style::default().bg(Color::DarkGray)
+                            Style::default().bg(self.color("surface"))
                         } else {
                             Style::default()
                         };
@@ -4636,7 +4729,9 @@ impl Widget for &mut App {
                         // Empty description - show cursor on first line
                         vec![Line::from(vec![Span::styled(
                             " ",
-                            Style::default().bg(Color::White).fg(Color::Black),
+                            Style::default()
+                                .bg(self.color("text_primary"))
+                                .fg(self.color("text_inverse")),
                         )])]
                     } else {
                         lines
@@ -4663,7 +4758,9 @@ impl Widget for &mut App {
                                     line_spans.spans.push(Span::raw(before_cursor));
                                     line_spans.spans.push(Span::styled(
                                         at_cursor,
-                                        Style::default().bg(Color::White).fg(Color::Black),
+                                        Style::default()
+                                            .bg(self.color("text_primary"))
+                                            .fg(self.color("text_inverse")),
                                     ));
                                     if !after_cursor.is_empty() {
                                         line_spans.spans.push(Span::raw(after_cursor));
@@ -4685,7 +4782,7 @@ impl Widget for &mut App {
                     // Exact Path
                     let exact_path_style =
                         if self.template_modal.create_focus == CreateFocus::ExactPath {
-                            Style::default().fg(Color::Yellow)
+                            Style::default().fg(self.color("modal_border_active"))
                         } else {
                             Style::default()
                         };
@@ -4697,7 +4794,7 @@ impl Widget for &mut App {
                     exact_path_block.render(chunks[2], buf);
                     let exact_path_input_style =
                         if self.template_modal.create_focus == CreateFocus::ExactPath {
-                            Style::default().bg(Color::DarkGray)
+                            Style::default().bg(self.color("surface"))
                         } else {
                             Style::default()
                         };
@@ -4726,7 +4823,7 @@ impl Widget for &mut App {
                     // Relative Path
                     let relative_path_style =
                         if self.template_modal.create_focus == CreateFocus::RelativePath {
-                            Style::default().fg(Color::Yellow)
+                            Style::default().fg(self.color("modal_border_active"))
                         } else {
                             Style::default()
                         };
@@ -4738,7 +4835,7 @@ impl Widget for &mut App {
                     relative_path_block.render(chunks[3], buf);
                     let relative_path_input_style =
                         if self.template_modal.create_focus == CreateFocus::RelativePath {
-                            Style::default().bg(Color::DarkGray)
+                            Style::default().bg(self.color("surface"))
                         } else {
                             Style::default()
                         };
@@ -4767,7 +4864,7 @@ impl Widget for &mut App {
                     // Path Pattern
                     let path_pattern_style =
                         if self.template_modal.create_focus == CreateFocus::PathPattern {
-                            Style::default().fg(Color::Yellow)
+                            Style::default().fg(self.color("modal_border_active"))
                         } else {
                             Style::default()
                         };
@@ -4779,7 +4876,7 @@ impl Widget for &mut App {
                     path_pattern_block.render(chunks[4], buf);
                     let path_pattern_input_style =
                         if self.template_modal.create_focus == CreateFocus::PathPattern {
-                            Style::default().bg(Color::DarkGray)
+                            Style::default().bg(self.color("surface"))
                         } else {
                             Style::default()
                         };
@@ -4808,7 +4905,7 @@ impl Widget for &mut App {
                     // Filename Pattern
                     let filename_pattern_style =
                         if self.template_modal.create_focus == CreateFocus::FilenamePattern {
-                            Style::default().fg(Color::Yellow)
+                            Style::default().fg(self.color("modal_border_active"))
                         } else {
                             Style::default()
                         };
@@ -4820,7 +4917,7 @@ impl Widget for &mut App {
                     filename_pattern_block.render(chunks[5], buf);
                     let filename_pattern_input_style =
                         if self.template_modal.create_focus == CreateFocus::FilenamePattern {
-                            Style::default().bg(Color::DarkGray)
+                            Style::default().bg(self.color("surface"))
                         } else {
                             Style::default()
                         };
@@ -4849,7 +4946,7 @@ impl Widget for &mut App {
                     // Schema Match
                     let schema_style =
                         if self.template_modal.create_focus == CreateFocus::SchemaMatch {
-                            Style::default().fg(Color::Yellow)
+                            Style::default().fg(self.color("modal_border_active"))
                         } else {
                             Style::default()
                         };
@@ -4875,7 +4972,7 @@ impl Widget for &mut App {
 
                     let save_style = if self.template_modal.create_focus == CreateFocus::SaveButton
                     {
-                        Style::default().fg(Color::Yellow)
+                        Style::default().fg(self.color("modal_border_active"))
                     } else {
                         Style::default()
                     };
@@ -4890,7 +4987,7 @@ impl Widget for &mut App {
 
                     let cancel_create_style =
                         if self.template_modal.create_focus == CreateFocus::CancelButton {
-                            Style::default().fg(Color::Yellow)
+                            Style::default().fg(self.color("modal_border_active"))
                         } else {
                             Style::default()
                         };
@@ -4943,13 +5040,13 @@ impl Widget for &mut App {
                     delete_line.spans.push(Span::styled(
                         "D",
                         Style::default()
-                            .fg(Color::Blue)
+                            .fg(self.color("primary"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     delete_line.spans.push(Span::raw("elete"));
 
                     let delete_style = if self.template_modal.delete_confirm_focus {
-                        Style::default().fg(Color::Yellow)
+                        Style::default().fg(self.color("modal_border_active"))
                     } else {
                         Style::default()
                     };
@@ -4964,7 +5061,7 @@ impl Widget for &mut App {
 
                     // Cancel button (default selected)
                     let cancel_style = if !self.template_modal.delete_confirm_focus {
-                        Style::default().fg(Color::Yellow)
+                        Style::default().fg(self.color("modal_border_active"))
                     } else {
                         Style::default()
                     };
@@ -5155,7 +5252,7 @@ impl Widget for &mut App {
                     };
                     match crate::statistics::compute_statistics_with_options(
                         &lf,
-                        None,
+                        Some(self.sampling_threshold),
                         self.analysis_modal.random_seed,
                         options,
                     ) {
@@ -5169,7 +5266,7 @@ impl Widget for &mut App {
                             let error_msg = format!("Error computing statistics: {}", e);
                             Paragraph::new(error_msg)
                                 .centered()
-                                .style(Style::default().fg(Color::Red))
+                                .style(Style::default().fg(self.color("error")))
                                 .render(analysis_area, buf);
                             // Don't return - continue to render toolbar
                         }
@@ -5240,6 +5337,7 @@ impl Widget for &mut App {
                         selected_theoretical_distribution: self
                             .analysis_modal
                             .selected_theoretical_distribution,
+                        theme: &self.theme,
                     };
                     let widget = widgets::analysis::AnalysisWidget::new(
                         config,
@@ -5262,7 +5360,7 @@ impl Widget for &mut App {
                 Clear.render(analysis_area, buf);
                 Paragraph::new("No data available for analysis")
                     .centered()
-                    .style(Style::default().fg(Color::Yellow))
+                    .style(Style::default().fg(self.color("warning")))
                     .render(analysis_area, buf);
             }
             // Don't return - continue to render toolbar and other UI elements
@@ -5275,7 +5373,7 @@ impl Widget for &mut App {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .title("Error")
-                .border_style(Style::default().fg(Color::Red));
+                .border_style(Style::default().fg(self.color("modal_border_error")));
             let inner_area = block.inner(popup_area);
             block.render(popup_area, buf);
 
@@ -5290,12 +5388,12 @@ impl Widget for &mut App {
 
             // Render error message (wrapped)
             Paragraph::new(self.error_modal.message.as_str())
-                .style(Style::default().fg(Color::Red))
+                .style(Style::default().fg(self.color("error")))
                 .wrap(ratatui::widgets::Wrap { trim: true })
                 .render(chunks[0], buf);
 
             // Render OK button
-            let ok_style = Style::default().fg(Color::Yellow);
+            let ok_style = Style::default().fg(self.color("modal_border_active"));
             Paragraph::new("[ OK ]")
                 .centered()
                 .block(
@@ -5588,9 +5686,9 @@ Delete Confirmation:
                 for y in 0..scrollbar_height {
                     let is_thumb = y >= scrollbar_pos && y < scrollbar_pos + thumb_size;
                     let style = if is_thumb {
-                        Style::default().bg(Color::White)
+                        Style::default().bg(self.color("text_primary"))
                     } else {
-                        Style::default().bg(Color::DarkGray)
+                        Style::default().bg(self.color("surface"))
                     };
                     buf.set_string(scrollbar_area.x, scrollbar_area.y + y, "█", style);
                 }
@@ -5613,7 +5711,11 @@ Delete Confirmation:
             || self.filter_modal.active;
 
         // Build controls - use analysis-specific controls if analysis modal is active
-        let mut controls = Controls::with_row_count(row_count.unwrap_or(0));
+        let mut controls = Controls::with_row_count(row_count.unwrap_or(0)).with_colors(
+            self.color("controls_bg"),
+            self.color("primary"),   // Keys in cyan (bold)
+            self.color("secondary"), // Labels in yellow
+        );
 
         if self.analysis_modal.active {
             // Build analysis-specific controls based on view

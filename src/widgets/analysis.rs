@@ -11,6 +11,7 @@ use ratatui::{
 };
 
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool, AnalysisView};
+use crate::config::Theme;
 use crate::statistics::{AnalysisContext, AnalysisResults, DistributionAnalysis, DistributionType};
 use crate::widgets::datatable::DataTableState;
 
@@ -24,6 +25,7 @@ pub struct AnalysisWidgetConfig<'a> {
     pub selected_correlation: Option<(usize, usize)>,
     pub focus: AnalysisFocus,
     pub selected_theoretical_distribution: DistributionType,
+    pub theme: &'a Theme,
 }
 
 pub struct AnalysisWidget<'a> {
@@ -41,6 +43,7 @@ pub struct AnalysisWidget<'a> {
     focus: AnalysisFocus,
     selected_theoretical_distribution: DistributionType,
     distribution_selector_state: &'a mut TableState,
+    theme: &'a Theme,
 }
 
 impl<'a> AnalysisWidget<'a> {
@@ -67,7 +70,13 @@ impl<'a> AnalysisWidget<'a> {
             focus: config.focus,
             selected_theoretical_distribution: config.selected_theoretical_distribution,
             distribution_selector_state,
+            theme: config.theme,
         }
+    }
+
+    /// Get a color from the theme by name
+    fn color(&self, name: &str) -> Color {
+        self.theme.get(name)
     }
 }
 
@@ -115,8 +124,8 @@ impl<'a> AnalysisWidget<'a> {
 
         // Style matching main window column headers: dark gray background with bold white text
         let header_row_style = Style::default()
-            .bg(Color::Indexed(236))
-            .fg(Color::White)
+            .bg(self.color("controls_bg"))
+            .fg(self.color("table_header"))
             .add_modifier(Modifier::BOLD);
         Paragraph::new(breadcrumb_text)
             .style(header_row_style)
@@ -141,6 +150,7 @@ impl<'a> AnalysisWidget<'a> {
                         self.column_offset,
                         main_layout[0],
                         buf,
+                        self.theme,
                     );
                 }
                 AnalysisTool::DistributionAnalysis => {
@@ -150,6 +160,7 @@ impl<'a> AnalysisWidget<'a> {
                         self.column_offset,
                         main_layout[0],
                         buf,
+                        self.theme,
                     );
                 }
                 AnalysisTool::CorrelationMatrix => {
@@ -160,6 +171,7 @@ impl<'a> AnalysisWidget<'a> {
                         self.column_offset,
                         main_layout[0],
                         buf,
+                        self.theme,
                     );
                 }
             }
@@ -176,6 +188,7 @@ impl<'a> AnalysisWidget<'a> {
             self.sidebar_state,
             self.selected_tool,
             self.focus,
+            self.theme,
         );
 
         // Keybind hints are now shown on the main bottom bar (see lib.rs)
@@ -219,8 +232,8 @@ impl<'a> AnalysisWidget<'a> {
         // Title: "Distribution Analysis: [column]" - dark gray background with bold white text
         let title_text = format!("Distribution Analysis: {}", dist.column_name);
         let header_row_style = Style::default()
-            .bg(Color::Indexed(236))
-            .fg(Color::White)
+            .bg(self.color("controls_bg"))
+            .fg(self.color("table_header"))
             .add_modifier(Modifier::BOLD);
         Paragraph::new(title_text)
             .style(header_row_style)
@@ -345,6 +358,7 @@ impl<'a> AnalysisWidget<'a> {
             qq_plot_area,
             buf,
             shared_y_axis_label_width,
+            self.theme,
         );
 
         // Histogram comparison (vertical bars)
@@ -355,6 +369,7 @@ impl<'a> AnalysisWidget<'a> {
             histogram_area,
             buf,
             shared_y_axis_label_width,
+            self.theme,
         );
 
         // Right side: Distribution selector
@@ -365,6 +380,7 @@ impl<'a> AnalysisWidget<'a> {
             self.focus,
             content_layout[1],
             buf,
+            self.theme,
         );
 
         // No keybind hints line - removed
@@ -382,6 +398,7 @@ fn render_statistics_table(
     column_offset: usize,
     area: Rect,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
     let num_columns = results.column_statistics.len();
     if num_columns == 0 {
@@ -571,8 +588,8 @@ fn render_statistics_table(
         );
     }
     let header_row_style = Style::default()
-        .bg(Color::Indexed(236))
-        .fg(Color::White)
+        .bg(theme.get("controls_bg"))
+        .fg(theme.get("table_header"))
         .add_modifier(Modifier::BOLD);
     let header_row = Row::new(header_cells.clone()).style(header_row_style);
 
@@ -676,6 +693,7 @@ fn render_distribution_table(
     column_offset: usize,
     area: Rect,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
     if results.distribution_analyses.is_empty() {
         Paragraph::new("No numeric columns for distribution analysis")
@@ -817,19 +835,19 @@ fn render_distribution_table(
         );
     }
     let header_row_style = Style::default()
-        .bg(Color::Indexed(236))
-        .fg(Color::White)
+        .bg(theme.get("controls_bg"))
+        .fg(theme.get("table_header"))
         .add_modifier(Modifier::BOLD);
     let header_row = Row::new(header_cells).style(header_row_style);
     for dist_analysis in &results.distribution_analyses {
         // Color coding for distribution type based on fit quality only
         // Green = good fit (>0.75), Yellow = moderate (0.5-0.75), Red = poor (<0.5)
         let type_color = if dist_analysis.fit_quality > 0.75 {
-            Color::Green
+            theme.get("distribution_normal")
         } else if dist_analysis.fit_quality > 0.5 {
-            Color::Yellow
+            theme.get("distribution_skewed")
         } else {
-            Color::Red
+            theme.get("outlier_marker")
         };
 
         // Outlier count with percentage
@@ -845,10 +863,10 @@ fn render_distribution_table(
         // Relaxed outlier color thresholds - red only for very high percentages that might indicate data errors
         let outlier_style = if dist_analysis.outliers.percentage > 20.0 {
             // Red: very high outlier percentage (>20%) - might indicate data errors
-            Style::default().fg(Color::Red)
+            Style::default().fg(theme.get("outlier_marker"))
         } else if dist_analysis.outliers.percentage > 5.0 {
             // Yellow for moderate outliers (5-20%)
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme.get("distribution_skewed"))
         } else {
             // Default (white) for low outlier percentages (0-5%)
             Style::default()
@@ -860,18 +878,18 @@ fn render_distribution_table(
 
         // Skewness color coding: similar to describe table
         let skewness_style = if skewness_value >= 3.0 {
-            Style::default().fg(Color::Red)
+            Style::default().fg(theme.get("outlier_marker"))
         } else if skewness_value >= 1.0 {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme.get("distribution_skewed"))
         } else {
             Style::default()
         };
 
         // Kurtosis color coding: 3.0 is normal, high/low is notable
         let kurtosis_style = if (kurtosis_value - 3.0).abs() >= 3.0 {
-            Style::default().fg(Color::Red)
+            Style::default().fg(theme.get("outlier_marker"))
         } else if (kurtosis_value - 3.0).abs() >= 1.0 {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme.get("distribution_skewed"))
         } else {
             Style::default()
         };
@@ -880,11 +898,11 @@ fn render_distribution_table(
         // Green = good (>0.05), Yellow = moderate (0.01-0.05), Red = poor (≤0.01)
         let pvalue_text = format_pvalue(dist_analysis.confidence);
         let pvalue_style = if dist_analysis.confidence > 0.05 {
-            Style::default().fg(Color::Green)
+            Style::default().fg(theme.get("distribution_normal"))
         } else if dist_analysis.confidence > 0.01 {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(theme.get("distribution_skewed"))
         } else {
-            Style::default().fg(Color::Red)
+            Style::default().fg(theme.get("outlier_marker"))
         };
 
         // Shapiro-Wilk statistic and p-value formatting
@@ -906,11 +924,11 @@ fn render_distribution_table(
             .shapiro_wilk_pvalue
             .map(|p| {
                 if p > 0.05 {
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(theme.get("distribution_normal"))
                 } else if p > 0.01 {
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(theme.get("distribution_skewed"))
                 } else {
-                    Style::default().fg(Color::Red)
+                    Style::default().fg(theme.get("outlier_marker"))
                 }
             })
             .unwrap_or_default();
@@ -933,7 +951,7 @@ fn render_distribution_table(
                 ))
                 .style(
                     if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
-                        Style::default().fg(Color::Yellow) // High variability
+                        Style::default().fg(theme.get("distribution_skewed")) // High variability
                     } else {
                         Style::default()
                     },
@@ -975,6 +993,7 @@ fn render_correlation_matrix(
     column_offset: usize,
     area: Rect,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
     let correlation_matrix = match &results.correlation_matrix {
         Some(cm) => cm,
@@ -1029,12 +1048,12 @@ fn render_correlation_matrix(
     let (selected_row, selected_col) = selected_cell.unwrap_or((n, n));
 
     let header_row_style = Style::default()
-        .bg(Color::Indexed(236))
-        .fg(Color::White)
+        .bg(theme.get("controls_bg"))
+        .fg(theme.get("table_header"))
         .add_modifier(Modifier::BOLD);
     let dim_header_style = Style::default()
-        .bg(Color::Indexed(239)) // Slightly lighter gray for dim highlight
-        .fg(Color::White)
+        .bg(theme.get("surface")) // Slightly lighter gray for dim highlight
+        .fg(theme.get("table_header"))
         .add_modifier(Modifier::BOLD);
 
     let mut header_cells = vec![Cell::from("")];
@@ -1061,7 +1080,7 @@ fn render_correlation_matrix(
         // Row header cell - dim highlight if selected row
         let row_header_style = if is_selected_row {
             Style::default()
-                .bg(Color::Indexed(239))
+                .bg(theme.get("surface"))
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().add_modifier(Modifier::BOLD)
@@ -1070,7 +1089,7 @@ fn render_correlation_matrix(
 
         for col_idx in start_col..end_col {
             let correlation = correlation_matrix.correlations[i][col_idx];
-            let text_color = get_correlation_color(correlation);
+            let text_color = get_correlation_color(correlation, theme);
 
             let cell_text = if i == col_idx {
                 "1.00".to_string()
@@ -1083,13 +1102,15 @@ fn render_correlation_matrix(
             let is_in_selected_col = selected_cell.is_some() && col_idx == selected_col;
 
             let cell_style = if is_selected_cell {
-                // Selected cell: inverted/reversed
+                // Selected cell: use bright background with inverted text for visibility
+                // Use text_inverse (black) for text to ensure it's always readable
                 Style::default()
-                    .fg(text_color)
-                    .add_modifier(Modifier::REVERSED)
+                    .fg(theme.get("text_inverse"))
+                    .bg(theme.get("modal_border_active"))
+                    .add_modifier(Modifier::BOLD)
             } else if is_selected_row || is_in_selected_col {
-                // Selected row or column: dim background
-                Style::default().fg(text_color).bg(Color::Indexed(239))
+                // Selected row or column: dim background with colored text
+                Style::default().fg(text_color).bg(theme.get("surface"))
             } else {
                 // Normal cell: just text color
                 Style::default().fg(text_color)
@@ -1099,7 +1120,7 @@ fn render_correlation_matrix(
         }
 
         let row_style = if is_selected_row {
-            Style::default().bg(Color::Indexed(239))
+            Style::default().bg(theme.get("surface"))
         } else {
             Style::default()
         };
@@ -1125,21 +1146,21 @@ fn render_correlation_matrix(
     StatefulWidget::render(table, area, buf, table_state);
 }
 
-fn get_correlation_color(correlation: f64) -> Color {
+fn get_correlation_color(correlation: f64, theme: &Theme) -> Color {
     let abs_corr = correlation.abs();
 
     if abs_corr < 0.05 {
-        // No correlation (close to 0) - dark gray
-        Color::DarkGray
+        // No correlation (close to 0) - dimmed
+        theme.get("dimmed")
     } else if abs_corr < 0.3 {
-        // Low correlation - white
-        Color::White
+        // Low correlation - normal text
+        theme.get("text_primary")
     } else if correlation > 0.0 {
-        // Positive correlation - blue (highest correlations)
-        Color::Blue
+        // Positive correlation - primary color
+        theme.get("primary")
     } else {
-        // Negative correlation - red
-        Color::Red
+        // Negative correlation - error/warning color
+        theme.get("outlier_marker")
     }
 }
 
@@ -1150,6 +1171,7 @@ fn render_distribution_selector(
     focus: AnalysisFocus,
     area: Rect,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
     let distributions = [
         ("Normal", DistributionType::Normal),
@@ -1233,11 +1255,11 @@ fn render_distribution_selector(
 
             // Style based on p-value
             let pvalue_style = if *p_value > 0.05 {
-                Style::default().fg(Color::Green) // Good fit
+                Style::default().fg(theme.get("distribution_normal")) // Good fit
             } else if *p_value > 0.01 {
-                Style::default().fg(Color::Yellow) // Marginal fit
+                Style::default().fg(theme.get("distribution_skewed")) // Marginal fit
             } else {
-                Style::default().fg(Color::Red) // Poor fit
+                Style::default().fg(theme.get("outlier_marker")) // Poor fit
             };
 
             Row::new(vec![
@@ -1263,7 +1285,7 @@ fn render_distribution_selector(
         Block::default()
             .title("Distribution")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::White)),
+            .border_style(Style::default().fg(theme.get("modal_border"))),
     )
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
@@ -1276,6 +1298,7 @@ fn render_sidebar(
     sidebar_state: &mut TableState,
     selected_tool: AnalysisTool,
     focus: AnalysisFocus,
+    theme: &Theme,
 ) {
     let tools = [
         ("Describe", AnalysisTool::Describe),
@@ -1305,7 +1328,7 @@ fn render_sidebar(
     let block = Block::default()
         .title("Analysis Tools")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White));
+        .border_style(Style::default().fg(theme.get("modal_border")));
 
     let list = List::new(items).block(block);
 
@@ -1318,6 +1341,7 @@ fn render_distribution_histogram(
     area: Rect,
     buf: &mut Buffer,
     shared_y_axis_label_width: u16,
+    theme: &Theme,
 ) {
     // Use BarChart widget to show histogram comparing data vs theoretical distribution
     // Use fixed-width bins that span both data range and theoretical distribution range
@@ -1449,7 +1473,7 @@ fn render_distribution_histogram(
             .value(data_height)
             // Remove text_value to prevent cyan count labels from appearing on bars
             // Remove .label() to prevent bar labels from overlapping Chart's x-axis labels
-            .style(Style::default().fg(Color::Cyan));
+            .style(Style::default().fg(theme.get("primary")));
 
         data_bars.push(data_bar);
     }
@@ -1666,7 +1690,7 @@ fn render_distribution_histogram(
         .name("") // Empty name to prevent legend from appearing
         .marker(marker)
         .graph_type(GraphType::Scatter)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().fg(theme.get("dimmed")))
         .data(&theory_points);
 
     // Create Chart widget with scatter plot overlay
@@ -1682,14 +1706,14 @@ fn render_distribution_histogram(
         Span::styled(
             format!("{:.1}", hist_min),
             Style::default()
-                .fg(Color::Gray)
+                .fg(theme.get("text_secondary"))
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!("{:.1}", (hist_min + hist_max) / 2.0)),
         Span::styled(
             format!("{:.1}", hist_max),
             Style::default()
-                .fg(Color::Gray)
+                .fg(theme.get("text_secondary"))
                 .add_modifier(Modifier::BOLD),
         ),
     ];
@@ -1704,13 +1728,13 @@ fn render_distribution_histogram(
         .x_axis(
             Axis::default()
                 .bounds([hist_min, hist_max]) // Use histogram range to align with bars (hist_min already clamped for non-negative data)
-                .style(Style::default().fg(Color::Gray))
+                .style(Style::default().fg(theme.get("text_secondary")))
                 .labels(x_labels), // Show x-axis labels with histogram range
         )
         .y_axis(
             Axis::default()
                 .title("Counts")
-                .style(Style::default().fg(Color::Gray))
+                .style(Style::default().fg(theme.get("text_secondary")))
                 .bounds([0.0, 100.0])
                 .labels({
                     // Use dynamic label width calculated earlier
@@ -1722,7 +1746,7 @@ fn render_distribution_histogram(
                         Span::styled(
                             format!("{:>width$}", 0, width = label_width),
                             Style::default()
-                                .fg(Color::Gray)
+                                .fg(theme.get("text_secondary"))
                                 .add_modifier(Modifier::BOLD),
                         ),
                         // Middle label: half of max counts (right-aligned)
@@ -1732,13 +1756,13 @@ fn render_distribution_histogram(
                                 (global_max / 2.0) as usize,
                                 width = label_width
                             ),
-                            Style::default().fg(Color::Gray),
+                            Style::default().fg(theme.get("text_secondary")),
                         ),
                         // Top label: max counts (right-aligned)
                         Span::styled(
                             format!("{:>width$}", global_max as usize, width = label_width),
                             Style::default()
-                                .fg(Color::Gray)
+                                .fg(theme.get("text_secondary"))
                                 .add_modifier(Modifier::BOLD),
                         ),
                     ]
@@ -1760,6 +1784,7 @@ fn render_qq_plot(
     area: Rect,
     buf: &mut Buffer,
     shared_y_axis_label_width: u16,
+    theme: &Theme,
 ) {
     // Use Chart widget for Q-Q plot: Data quantiles vs Theoretical quantiles
     // Use sorted_sample_values and position-based quantiles (not just 5 percentiles)
@@ -1835,14 +1860,14 @@ fn render_qq_plot(
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().fg(theme.get("dimmed")))
             .graph_type(GraphType::Line)
             .data(&reference_line),
         // Q-Q plot data points
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(Color::Cyan))
+            .style(Style::default().fg(theme.get("primary")))
             .graph_type(GraphType::Scatter)
             .data(&qq_data),
     ];
@@ -1892,14 +1917,14 @@ fn render_qq_plot(
         .x_axis(
             Axis::default()
                 .title("Theoretical Values")
-                .style(Style::default().fg(Color::Gray))
+                .style(Style::default().fg(theme.get("text_secondary")))
                 .bounds([theory_min, theory_max])
                 .labels(x_labels),
         )
         .y_axis(
             Axis::default()
                 .title("Data Values")
-                .style(Style::default().fg(Color::Gray)) // Axis line should be gray
+                .style(Style::default().fg(theme.get("text_secondary"))) // Axis line should be gray
                 .bounds([data_min, data_max])
                 .labels(y_labels), // Labels styled cyan explicitly above
         )

@@ -89,6 +89,54 @@ src/
 - Main thread: Polls terminal events, sends to channel
 - App thread: Receives events, processes, may emit new events
 
+### Configuration System
+
+**Architecture**: 3-layer configuration with TOML format
+
+**Layers** (priority order):
+1. **Default Values**: Hardcoded in `Default` trait implementations
+2. **User Config**: `~/.config/datui/config.toml` (XDG compliant)
+3. **CLI Arguments**: Command-line flags (highest priority)
+
+**Key Components**:
+- `AppConfig`: Main configuration struct with all settings
+- `ConfigManager`: Manages config directory and file operations
+- `ColorParser`: Parses color strings with terminal capability detection
+- `Theme`: Pre-parsed colors ready for rendering
+
+**Color Formats**:
+- Named: `"cyan"`, `"bright_red"`, `"dark_gray"`
+- Hex: `"#ff0000"`, `"#00bfff"`
+- Indexed: `"indexed(236)"` for xterm 256-color palette
+
+**Configuration Flow**:
+```
+main.rs: AppConfig::load(APP_NAME)
+  ↓
+Merge: Default → User Config
+  ↓
+Validate: Version, ranges, colors
+  ↓
+Theme::from_config() → Parse all colors
+  ↓
+App::new_with_config(theme, config)
+  ↓
+OpenOptions::from_args_and_config() → Merge CLI args
+  ↓
+Settings applied throughout app
+```
+
+**Configurable Settings**:
+- File loading: Delimiter, headers, skip lines/rows, compression
+- Display: Row numbers, page buffers, row start index
+- Performance: Sampling threshold, event poll interval
+- Theme: 22 customizable colors
+- Query: History limits, caching
+- Templates: Auto-apply behavior
+- Debug: Overlay settings
+
+**Important**: The hardcoded `SAMPLING_THRESHOLD` constant in `statistics.rs` is now a fallback. The app uses `app.sampling_threshold` from config.
+
 ## Key Design Patterns
 
 ### 1. Lazy Evaluation

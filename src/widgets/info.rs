@@ -10,11 +10,20 @@ use super::datatable::DataTableState;
 /// A widget that displays information about the currently loaded data frame
 pub(crate) struct DataTableInfo<'a> {
     state: &'a DataTableState,
+    border_color: Color,
 }
 
 impl<'a> DataTableInfo<'a> {
     pub fn new(state: &'a DataTableState) -> Self {
-        Self { state }
+        Self {
+            state,
+            border_color: Color::White, // Default
+        }
+    }
+
+    pub fn with_border_color(mut self, color: Color) -> Self {
+        self.border_color = color;
+        self
     }
 }
 
@@ -24,7 +33,7 @@ impl<'a> Widget for &'a DataTableInfo<'a> {
             .title(Line::from("Info").bold())
             .title_alignment(Alignment::Center)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::White))
+            .border_style(Style::default().fg(self.border_color))
             .padding(Padding::new(1, 1, 0, 0));
 
         let layout = Layout::default()

@@ -146,3 +146,143 @@ pre-commit autoupdate
 **Hooks too slow?**
 - Only changed files are checked by default
 - Use `SKIP=hook-name git commit` to skip specific hooks
+
+## Adding Configuration Options
+
+When adding new configuration options to datui, follow this process:
+
+### 1. Add Field to Config Struct
+
+Add the new field to the appropriate config struct in `src/config.rs`:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplayConfig {
+    pub pages_lookahead: usize,
+    pub pages_lookback: usize,
+    pub row_numbers: bool,
+    pub row_start_index: usize,
+    pub font_size: Option<u8>,  // NEW FIELD
+}
+```
+
+### 2. Update Default Implementation
+
+Add the default value in the `Default` trait:
+
+```rust
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            pages_lookahead: 3,
+            pages_lookback: 3,
+            row_numbers: false,
+            row_start_index: 1,
+            font_size: None,  // NEW: None = use terminal default
+        }
+    }
+}
+```
+
+### 3. Update Merge Logic
+
+Add merge handling in the section's `merge()` method:
+
+```rust
+impl DisplayConfig {
+    pub fn merge(&mut self, other: Self) {
+        let default = DisplayConfig::default();
+        // ... existing merge logic ...
+        
+        // NEW: Merge font_size (Option fields)
+        if other.font_size.is_some() {
+            self.font_size = other.font_size;
+        }
+    }
+}
+```
+
+**Merge rules:**
+- **Option fields**: If `other.field.is_some()`, take the value
+- **Non-Option fields**: If `other.field != default.field`, take the value
+
+### 4. Update Config Template
+
+Add to `config/default.toml` with helpful comments:
+
+```toml
+[display]
+# ... existing fields ...
+
+# Font size for terminal display (optional)
+# Set to null to use terminal default, or 8-16 for explicit size
+# font_size = null
+```
+
+### 5. Use in Application Code
+
+Access the config value where needed:
+
+```rust
+let font_size = config.display.font_size.unwrap_or(terminal_default);
+```
+
+Or pass through App if needed globally:
+```rust
+app.font_size = config.display.font_size;
+```
+
+### 6. Add Tests
+
+Add tests in `tests/config_test.rs` or `tests/config_integration_test.rs`:
+
+```rust
+#[test]
+fn test_font_size_config() {
+    let mut config = AppConfig::default();
+    config.display.font_size = Some(12);
+    
+    assert_eq!(config.display.font_size, Some(12));
+    assert!(config.validate().is_ok());
+}
+```
+
+### 7. Update Documentation
+
+Update documentation:
+- Add to the [Configuration](../user-guide/configuration.md) page
+- Add to embedded template comments in `config/default.toml`
+
+### Checklist
+
+- [ ] Field added to config struct
+- [ ] Default implementation updated
+- [ ] Merge logic implemented
+- [ ] Template file updated with comments
+- [ ] Used in application code
+- [ ] Tests added
+- [ ] Documentation updated
+- [ ] All tests passing (`cargo test`)
+- [ ] No clippy warnings (`cargo clippy`)
+- [ ] Code formatted (`cargo fmt`)
+
+### Tips
+
+- **Keep It Simple**: Use `Option<T>` for optional settings, plain types for required
+- **Sensible Defaults**: Ensure defaults match current behavior (backward compatible)
+- **Clear Comments**: Template comments should explain the option and show examples
+- **Validate**: Add validation in `AppConfig::validate()` if there are constraints
+- **Test Edge Cases**: Test with missing values, invalid ranges, boundary conditions
+
+### Color Configuration
+
+When adding new colors to the theme:
+
+1. Add field to `ColorConfig` struct
+2. Add to `ColorConfig::default()` with current hardcoded color
+3. Add to `ColorConfig::validate()` macro
+4. Add to `ColorConfig::merge()` with default comparison
+5. Add to `Theme::from_config()` to parse the color
+6. Update template with example
+7. Replace hardcoded `Color::` usage with `self.color("name")` or `theme.get("name")`

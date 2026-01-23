@@ -18,7 +18,9 @@ pub enum CompressionFormat {
 #[derive(Parser, Debug)]
 #[command(version, about = "datui")]
 pub struct Args {
-    pub path: PathBuf,
+    /// Path to the data file to open (not required with --generate-config, --clear-cache, or --remove-templates)
+    #[arg(required_unless_present_any = ["generate_config", "clear_cache", "remove_templates"])]
+    pub path: Option<PathBuf>,
 
     /// Skip this many lines when reading a file
     #[arg(long = "skip-lines")]
@@ -75,4 +77,12 @@ pub struct Args {
     /// Starting index for row numbers (default: 1)
     #[arg(long = "row-start-index")]
     pub row_start_index: Option<usize>,
+
+    /// Generate default configuration file at ~/.config/datui/config.toml
+    #[arg(long = "generate-config", action)]
+    pub generate_config: bool,
+
+    /// Force overwrite existing config file when using --generate-config
+    #[arg(long = "force", requires = "generate_config", action)]
+    pub force: bool,
 }

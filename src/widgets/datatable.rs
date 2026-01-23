@@ -1173,6 +1173,422 @@ impl DataTableState {
     }
 }
 
+pub struct DataTable {
+    pub header_bg: Color,
+    pub header_fg: Color,
+    pub row_numbers_fg: Color,
+    pub separator_fg: Color,
+}
+
+impl Default for DataTable {
+    fn default() -> Self {
+        Self {
+            header_bg: Color::Indexed(236),
+            header_fg: Color::White,
+            row_numbers_fg: Color::DarkGray,
+            separator_fg: Color::White,
+        }
+    }
+}
+
+impl DataTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_colors(
+        mut self,
+        header_bg: Color,
+        header_fg: Color,
+        row_numbers_fg: Color,
+        separator_fg: Color,
+    ) -> Self {
+        self.header_bg = header_bg;
+        self.header_fg = header_fg;
+        self.row_numbers_fg = row_numbers_fg;
+        self.separator_fg = separator_fg;
+        self
+    }
+
+    fn render_dataframe(
+        &self,
+        df: &DataFrame,
+        area: Rect,
+        buf: &mut Buffer,
+        state: &mut TableState,
+        _row_numbers: bool,
+        _start_row_offset: usize,
+    ) {
+        // make each column as wide as it needs to be to fit the content
+        let (height, cols) = df.shape();
+
+        // widths starts at the length of each column naame
+        let mut widths: Vec<u16> = df
+            .get_column_names()
+            .iter()
+            .map(|name| name.chars().count() as u16)
+            .collect();
+
+        let mut used_width = 0;
+
+        // rows is a vector initialized to a vector of lenth "height" empty rows
+        let mut rows: Vec<Vec<Cell>> = vec![vec![]; height];
+        let mut visible_columns = 0;
+
+        for col_index in 0..cols {
+            let mut max_len = widths[col_index];
+            let col_data = &df[col_index];
+
+            for (row_index, row) in rows
+                .iter_mut()
+                .take(height.min(if area.height > 1 {
+                    area.height as usize - 1
+                } else {
+                    0
+                }))
+                .enumerate()
+            {
+                let value = col_data.get(row_index).unwrap();
+                let val_str = value.str_value();
+                let len = val_str.chars().count() as u16;
+                max_len = max_len.max(len);
+                row.push(Cell::from(Line::from(val_str)));
+            }
+
+            let overflows = (used_width + max_len) >= area.width;
+
+            if overflows && col_data.dtype() == &DataType::String {
+                let visible_width = area.width - used_width;
+                visible_columns += 1;
+                widths[col_index] = visible_width;
+                break;
+            } else if !overflows {
+                visible_columns += 1;
+                widths[col_index] = max_len;
+                used_width += max_len + 1;
+            } else {
+                break;
+            }
+        }
+
+        widths.truncate(visible_columns);
+        // convert rows to a vector of Row
+        let rows = rows
+            .into_iter()
+            .map(|mut row| {
+                row.truncate(visible_columns);
+                Row::new(row)
+            })
+            .collect::<Vec<Row>>();
+
+        let header_row_style = Style::default().bg(self.header_bg).fg(self.header_fg);
+        let headers: Vec<Span> = df
+            .get_column_names()
+            .iter()
+            .take(visible_columns)
+            .map(|name| {
+                Span::styled(
+                    name.to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )
+            })
+            .collect();
+
+        StatefulWidget::render(
+            Table::new(rows, widths)
+                .column_spacing(1)
+                .header(Row::new(headers).style(header_row_style))
+                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+            area,
+            buf,
+            state,
+        );
+    }
+
+    fn render_row_numbers(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        start_row: usize,
+        visible_rows: usize,
+        num_rows: usize,
+        row_start_index: usize,
+    ) {
+        // Only render up to the actual number of rows in the data
+        let rows_to_render = visible_rows.min(num_rows.saturating_sub(start_row));
+
+        if rows_to_render == 0 {
+            return;
+        }
+
+        // Calculate width needed for largest row number
+        let max_row_num = start_row + rows_to_render.saturating_sub(1) + row_start_index;
+        let max_width = max_row_num.to_string().len();
+
+        // Render row numbers
+        for row_idx in 0..rows_to_render.min(area.height.saturating_sub(1) as usize) {
+            let row_num = start_row + row_idx + row_start_index;
+            let row_num_text = row_num.to_string();
+
+            // Right-align row numbers within the available width
+            let padding = max_width.saturating_sub(row_num_text.len());
+            let padded_text = format!("{}{}", " ".repeat(padding), row_num_text);
+
+            let y = area.y + row_idx as u16 + 1; // +1 for header row
+            if y < area.y + area.height {
+                Paragraph::new(padded_text)
+                    .style(Style::default().fg(self.row_numbers_fg))
+                    .render(
+                        Rect {
+                            x: area.x,
+                            y,
+                            width: area.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
+            }
+        }
+    }
+}
+
+impl StatefulWidget for DataTable {
+    type State = DataTableState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        state.visible_termcols = area.width as usize;
+        let new_visible_rows = if area.height > 0 {
+            (area.height - 1) as usize
+        } else {
+            0
+        };
+        let needs_collect = new_visible_rows != state.visible_rows;
+        state.visible_rows = new_visible_rows;
+
+        if let Some(selected) = state.table_state.selected() {
+            if selected >= state.visible_rows {
+                state.table_state.select(Some(state.visible_rows - 1))
+            }
+        }
+
+        if needs_collect {
+            state.collect();
+        }
+
+        // Only show errors in main view if not suppressed (e.g., when query input is active)
+        // Query errors should only be shown in the query input frame
+        if let Some(error) = state.error.as_ref() {
+            if !state.suppress_error_display {
+                Paragraph::new(format!("Error: {}", error))
+                    .centered()
+                    .block(
+                        Block::default()
+                            .borders(Borders::NONE)
+                            .padding(Padding::top(area.height / 2)),
+                    )
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .render(area, buf);
+                return;
+            }
+            // If suppress_error_display is true, continue rendering the table normally
+        }
+
+        // Calculate row number column width if enabled
+        let row_num_width = if state.row_numbers {
+            let max_row_num = state.start_row + state.visible_rows.saturating_sub(1) + 1; // +1 for 1-based, +1 for potential
+            max_row_num.to_string().len().max(1) as u16 + 1 // +1 for spacing
+        } else {
+            0
+        };
+
+        // Calculate locked columns width if any
+        let mut locked_width = row_num_width;
+        if let Some(locked_df) = state.locked_df.as_ref() {
+            let (_, cols) = locked_df.shape();
+            for col_index in 0..cols {
+                let col_name = locked_df.get_column_names()[col_index];
+                let mut max_len = col_name.chars().count() as u16;
+                let col_data = &locked_df[col_index];
+                for row_index in 0..locked_df.height().min(state.visible_rows) {
+                    let value = col_data.get(row_index).unwrap();
+                    let val_str = value.str_value();
+                    let len = val_str.chars().count() as u16;
+                    max_len = max_len.max(len);
+                }
+                locked_width += max_len + 1;
+            }
+        }
+
+        // Split area into locked and scrollable parts
+        if locked_width > row_num_width && locked_width < area.width {
+            let locked_area = Rect {
+                x: area.x,
+                y: area.y,
+                width: locked_width,
+                height: area.height,
+            };
+            let separator_x = locked_area.x + locked_area.width;
+
+            // If row numbers are enabled, render them first in a separate area
+            if state.row_numbers {
+                let row_num_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: row_num_width,
+                    height: area.height,
+                };
+                self.render_row_numbers(
+                    row_num_area,
+                    buf,
+                    state.start_row,
+                    state.visible_rows,
+                    state.num_rows,
+                    state.row_start_index,
+                );
+            }
+            let scrollable_area = Rect {
+                x: separator_x + 1,
+                y: area.y,
+                width: area.width.saturating_sub(locked_width + 1),
+                height: area.height,
+            };
+
+            // Render locked columns (no background shading, just the vertical separator)
+            if let Some(locked_df) = state.locked_df.as_ref() {
+                // Adjust locked_area to account for row numbers if present
+                let adjusted_locked_area = if state.row_numbers {
+                    Rect {
+                        x: area.x + row_num_width,
+                        y: area.y,
+                        width: locked_width - row_num_width,
+                        height: area.height,
+                    }
+                } else {
+                    locked_area
+                };
+
+                // Slice buffer to visible portion
+                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let slice_len = state
+                    .visible_rows
+                    .min(locked_df.height().saturating_sub(offset));
+                if offset < locked_df.height() && slice_len > 0 {
+                    let sliced_df = locked_df.slice(offset as i64, slice_len);
+                    self.render_dataframe(
+                        &sliced_df,
+                        adjusted_locked_area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        state.start_row,
+                    );
+                }
+            }
+
+            // Draw vertical separator line
+            let separator_x_adjusted = if state.row_numbers {
+                area.x + row_num_width + (locked_width - row_num_width)
+            } else {
+                separator_x
+            };
+            for y in area.y..area.y + area.height {
+                let cell = &mut buf[(separator_x_adjusted, y)];
+                cell.set_char('│');
+                cell.set_style(Style::default().fg(self.separator_fg));
+            }
+
+            // Adjust scrollable area to account for row numbers
+            let adjusted_scrollable_area = if state.row_numbers {
+                Rect {
+                    x: separator_x_adjusted + 1,
+                    y: area.y,
+                    width: area.width.saturating_sub(locked_width + 1),
+                    height: area.height,
+                }
+            } else {
+                scrollable_area
+            };
+
+            // Render scrollable columns
+            if let Some(df) = state.df.as_ref() {
+                // Slice buffer to visible portion
+                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
+                if offset < df.height() && slice_len > 0 {
+                    let sliced_df = df.slice(offset as i64, slice_len);
+                    self.render_dataframe(
+                        &sliced_df,
+                        adjusted_scrollable_area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        state.start_row,
+                    );
+                }
+            }
+        } else if let Some(df) = state.df.as_ref() {
+            // No locked columns, render normally
+            // If row numbers are enabled, render them first
+            if state.row_numbers {
+                let row_num_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: row_num_width,
+                    height: area.height,
+                };
+                self.render_row_numbers(
+                    row_num_area,
+                    buf,
+                    state.start_row,
+                    state.visible_rows,
+                    state.num_rows,
+                    state.row_start_index,
+                );
+
+                // Adjust data area to exclude row number column
+                let data_area = Rect {
+                    x: area.x + row_num_width,
+                    y: area.y,
+                    width: area.width.saturating_sub(row_num_width),
+                    height: area.height,
+                };
+
+                // Slice buffer to visible portion
+                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
+                if offset < df.height() && slice_len > 0 {
+                    let sliced_df = df.slice(offset as i64, slice_len);
+                    self.render_dataframe(
+                        &sliced_df,
+                        data_area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        state.start_row,
+                    );
+                }
+            } else {
+                // Slice buffer to visible portion
+                let offset = state.start_row.saturating_sub(state.buffered_start_row);
+                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
+                if offset < df.height() && slice_len > 0 {
+                    let sliced_df = df.slice(offset as i64, slice_len);
+                    self.render_dataframe(
+                        &sliced_df,
+                        area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        state.start_row,
+                    );
+                }
+            }
+        } else {
+            Paragraph::new("No data").render(area, buf);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1381,392 +1797,5 @@ mod tests {
         state.sort(vec!["a".to_string()], false);
         let df = state.lf.clone().collect().unwrap();
         assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(97));
-    }
-}
-
-#[derive(Default)]
-pub struct DataTable {}
-
-impl DataTable {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn render_dataframe(
-        &self,
-        df: &DataFrame,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut TableState,
-        _row_numbers: bool,
-        _start_row_offset: usize,
-    ) {
-        // make each column as wide as it needs to be to fit the content
-        let (height, cols) = df.shape();
-
-        // widths starts at the length of each column naame
-        let mut widths: Vec<u16> = df
-            .get_column_names()
-            .iter()
-            .map(|name| name.chars().count() as u16)
-            .collect();
-
-        let mut used_width = 0;
-
-        // rows is a vector initialized to a vector of lenth "height" empty rows
-        let mut rows: Vec<Vec<Cell>> = vec![vec![]; height];
-        let mut visible_columns = 0;
-
-        for col_index in 0..cols {
-            let mut max_len = widths[col_index];
-            let col_data = &df[col_index];
-
-            for (row_index, row) in rows
-                .iter_mut()
-                .take(height.min(if area.height > 1 {
-                    area.height as usize - 1
-                } else {
-                    0
-                }))
-                .enumerate()
-            {
-                let value = col_data.get(row_index).unwrap();
-                let val_str = value.str_value();
-                let len = val_str.chars().count() as u16;
-                max_len = max_len.max(len);
-                row.push(Cell::from(Line::from(val_str)));
-            }
-
-            let overflows = (used_width + max_len) >= area.width;
-
-            if overflows && col_data.dtype() == &DataType::String {
-                let visible_width = area.width - used_width;
-                visible_columns += 1;
-                widths[col_index] = visible_width;
-                break;
-            } else if !overflows {
-                visible_columns += 1;
-                widths[col_index] = max_len;
-                used_width += max_len + 1;
-            } else {
-                break;
-            }
-        }
-
-        widths.truncate(visible_columns);
-        // convert rows to a vector of Row
-        let rows = rows
-            .into_iter()
-            .map(|mut row| {
-                row.truncate(visible_columns);
-                Row::new(row)
-            })
-            .collect::<Vec<Row>>();
-
-        let header_row_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
-        let headers: Vec<Span> = df
-            .get_column_names()
-            .iter()
-            .take(visible_columns)
-            .map(|name| {
-                Span::styled(
-                    name.to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )
-            })
-            .collect();
-
-        StatefulWidget::render(
-            Table::new(rows, widths)
-                .column_spacing(1)
-                .header(Row::new(headers).style(header_row_style))
-                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
-            area,
-            buf,
-            state,
-        );
-    }
-
-    fn render_row_numbers(
-        &self,
-        area: Rect,
-        buf: &mut Buffer,
-        start_row: usize,
-        visible_rows: usize,
-        num_rows: usize,
-        row_start_index: usize,
-    ) {
-        // Only render up to the actual number of rows in the data
-        let rows_to_render = visible_rows.min(num_rows.saturating_sub(start_row));
-
-        if rows_to_render == 0 {
-            return;
-        }
-
-        // Calculate width needed for largest row number
-        let max_row_num = start_row + rows_to_render.saturating_sub(1) + row_start_index;
-        let max_width = max_row_num.to_string().len();
-
-        // Render row numbers
-        for row_idx in 0..rows_to_render.min(area.height.saturating_sub(1) as usize) {
-            let row_num = start_row + row_idx + row_start_index;
-            let row_num_text = row_num.to_string();
-
-            // Right-align row numbers within the available width
-            let padding = max_width.saturating_sub(row_num_text.len());
-            let padded_text = format!("{}{}", " ".repeat(padding), row_num_text);
-
-            let y = area.y + row_idx as u16 + 1; // +1 for header row
-            if y < area.y + area.height {
-                Paragraph::new(padded_text)
-                    .style(Style::default().fg(Color::DarkGray))
-                    .render(
-                        Rect {
-                            x: area.x,
-                            y,
-                            width: area.width,
-                            height: 1,
-                        },
-                        buf,
-                    );
-            }
-        }
-    }
-}
-
-impl StatefulWidget for DataTable {
-    type State = DataTableState;
-
-    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        state.visible_termcols = area.width as usize;
-        let new_visible_rows = if area.height > 0 {
-            (area.height - 1) as usize
-        } else {
-            0
-        };
-        let needs_collect = new_visible_rows != state.visible_rows;
-        state.visible_rows = new_visible_rows;
-
-        if let Some(selected) = state.table_state.selected() {
-            if selected >= state.visible_rows {
-                state.table_state.select(Some(state.visible_rows - 1))
-            }
-        }
-
-        if needs_collect {
-            state.collect();
-        }
-
-        // Only show errors in main view if not suppressed (e.g., when query input is active)
-        // Query errors should only be shown in the query input frame
-        if let Some(error) = state.error.as_ref() {
-            if !state.suppress_error_display {
-                Paragraph::new(format!("Error: {}", error))
-                    .centered()
-                    .block(
-                        Block::default()
-                            .borders(Borders::NONE)
-                            .padding(Padding::top(area.height / 2)),
-                    )
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .render(area, buf);
-                return;
-            }
-            // If suppress_error_display is true, continue rendering the table normally
-        }
-
-        // Calculate row number column width if enabled
-        let row_num_width = if state.row_numbers {
-            let max_row_num = state.start_row + state.visible_rows.saturating_sub(1) + 1; // +1 for 1-based, +1 for potential
-            max_row_num.to_string().len().max(1) as u16 + 1 // +1 for spacing
-        } else {
-            0
-        };
-
-        // Calculate locked columns width if any
-        let mut locked_width = row_num_width;
-        if let Some(locked_df) = state.locked_df.as_ref() {
-            let (_, cols) = locked_df.shape();
-            for col_index in 0..cols {
-                let col_name = locked_df.get_column_names()[col_index];
-                let mut max_len = col_name.chars().count() as u16;
-                let col_data = &locked_df[col_index];
-                for row_index in 0..locked_df.height().min(state.visible_rows) {
-                    let value = col_data.get(row_index).unwrap();
-                    let val_str = value.str_value();
-                    let len = val_str.chars().count() as u16;
-                    max_len = max_len.max(len);
-                }
-                locked_width += max_len + 1;
-            }
-        }
-
-        // Split area into locked and scrollable parts
-        if locked_width > row_num_width && locked_width < area.width {
-            let locked_area = Rect {
-                x: area.x,
-                y: area.y,
-                width: locked_width,
-                height: area.height,
-            };
-            let separator_x = locked_area.x + locked_area.width;
-
-            // If row numbers are enabled, render them first in a separate area
-            if state.row_numbers {
-                let row_num_area = Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: row_num_width,
-                    height: area.height,
-                };
-                self.render_row_numbers(
-                    row_num_area,
-                    buf,
-                    state.start_row,
-                    state.visible_rows,
-                    state.num_rows,
-                    state.row_start_index,
-                );
-            }
-            let scrollable_area = Rect {
-                x: separator_x + 1,
-                y: area.y,
-                width: area.width.saturating_sub(locked_width + 1),
-                height: area.height,
-            };
-
-            // Render locked columns (no background shading, just the vertical separator)
-            if let Some(locked_df) = state.locked_df.as_ref() {
-                // Adjust locked_area to account for row numbers if present
-                let adjusted_locked_area = if state.row_numbers {
-                    Rect {
-                        x: area.x + row_num_width,
-                        y: area.y,
-                        width: locked_width - row_num_width,
-                        height: area.height,
-                    }
-                } else {
-                    locked_area
-                };
-
-                // Slice buffer to visible portion
-                let offset = state.start_row.saturating_sub(state.buffered_start_row);
-                let slice_len = state
-                    .visible_rows
-                    .min(locked_df.height().saturating_sub(offset));
-                if offset < locked_df.height() && slice_len > 0 {
-                    let sliced_df = locked_df.slice(offset as i64, slice_len);
-                    self.render_dataframe(
-                        &sliced_df,
-                        adjusted_locked_area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        state.start_row,
-                    );
-                }
-            }
-
-            // Draw vertical separator line
-            let separator_x_adjusted = if state.row_numbers {
-                area.x + row_num_width + (locked_width - row_num_width)
-            } else {
-                separator_x
-            };
-            for y in area.y..area.y + area.height {
-                let cell = &mut buf[(separator_x_adjusted, y)];
-                cell.set_char('│');
-                cell.set_style(Style::default().fg(Color::White));
-            }
-
-            // Adjust scrollable area to account for row numbers
-            let adjusted_scrollable_area = if state.row_numbers {
-                Rect {
-                    x: separator_x_adjusted + 1,
-                    y: area.y,
-                    width: area.width.saturating_sub(locked_width + 1),
-                    height: area.height,
-                }
-            } else {
-                scrollable_area
-            };
-
-            // Render scrollable columns
-            if let Some(df) = state.df.as_ref() {
-                // Slice buffer to visible portion
-                let offset = state.start_row.saturating_sub(state.buffered_start_row);
-                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
-                if offset < df.height() && slice_len > 0 {
-                    let sliced_df = df.slice(offset as i64, slice_len);
-                    self.render_dataframe(
-                        &sliced_df,
-                        adjusted_scrollable_area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        state.start_row,
-                    );
-                }
-            }
-        } else if let Some(df) = state.df.as_ref() {
-            // No locked columns, render normally
-            // If row numbers are enabled, render them first
-            if state.row_numbers {
-                let row_num_area = Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: row_num_width,
-                    height: area.height,
-                };
-                self.render_row_numbers(
-                    row_num_area,
-                    buf,
-                    state.start_row,
-                    state.visible_rows,
-                    state.num_rows,
-                    state.row_start_index,
-                );
-
-                // Adjust data area to exclude row number column
-                let data_area = Rect {
-                    x: area.x + row_num_width,
-                    y: area.y,
-                    width: area.width.saturating_sub(row_num_width),
-                    height: area.height,
-                };
-
-                // Slice buffer to visible portion
-                let offset = state.start_row.saturating_sub(state.buffered_start_row);
-                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
-                if offset < df.height() && slice_len > 0 {
-                    let sliced_df = df.slice(offset as i64, slice_len);
-                    self.render_dataframe(
-                        &sliced_df,
-                        data_area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        state.start_row,
-                    );
-                }
-            } else {
-                // Slice buffer to visible portion
-                let offset = state.start_row.saturating_sub(state.buffered_start_row);
-                let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
-                if offset < df.height() && slice_len > 0 {
-                    let sliced_df = df.slice(offset as i64, slice_len);
-                    self.render_dataframe(
-                        &sliced_df,
-                        area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        state.start_row,
-                    );
-                }
-            }
-        } else {
-            Paragraph::new("No data").render(area, buf);
-        }
     }
 }

@@ -28,7 +28,6 @@ fn test_default_config() {
     assert_eq!(config.performance.event_poll_interval_ms, 25);
 
     // Check theme defaults
-    assert_eq!(config.theme.color_mode, "auto");
     assert_eq!(config.theme.colors.keybind_hints, "cyan");
 
     // Check query defaults
@@ -53,7 +52,6 @@ fn test_generate_default_config() {
     assert!(template.contains("[file_loading]"));
     assert!(template.contains("[display]"));
     assert!(template.contains("[performance]"));
-    assert!(template.contains("[theme]"));
     assert!(template.contains("[theme.colors]"));
     assert!(template.contains("[query]"));
     assert!(template.contains("[templates]"));
@@ -171,7 +169,6 @@ fn test_merge_configs() {
     override_config.display.row_numbers = true;
     override_config.display.pages_lookahead = 5;
     override_config.performance.sampling_threshold = 50000;
-    override_config.theme.color_mode = "dark".to_string();
     override_config.theme.colors.keybind_hints = "blue".to_string();
 
     // Merge
@@ -181,7 +178,6 @@ fn test_merge_configs() {
     assert!(base.display.row_numbers);
     assert_eq!(base.display.pages_lookahead, 5);
     assert_eq!(base.performance.sampling_threshold, 50000);
-    assert_eq!(base.theme.color_mode, "dark");
     assert_eq!(base.theme.colors.keybind_hints, "blue");
 
     // Check that unmodified values remain default
@@ -237,19 +233,6 @@ fn test_validate_config_zero_event_poll_interval() {
 }
 
 #[test]
-fn test_validate_config_invalid_color_mode() {
-    let mut config = AppConfig::default();
-    config.theme.color_mode = "invalid".to_string();
-
-    let result = config.validate();
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Invalid color_mode"));
-}
-
-#[test]
 fn test_parse_full_config() {
     // Clear NO_COLOR for color validation
     std::env::remove_var("NO_COLOR");
@@ -274,9 +257,6 @@ row_start_index = 0
 sampling_threshold = 50000
 event_poll_interval_ms = 50
 
-[theme]
-color_mode = "dark"
-
 [theme.colors]
 keybind_hints = "blue"
 keybind_labels = "magenta"
@@ -291,7 +271,7 @@ text_primary = "white"
 text_secondary = "gray"
 text_inverse = "black"
 table_header = "white"
-table_header_bg = "indexed(236)"
+table_header_bg = "dark_gray"
 column_separator = "blue"
 table_selected = "reversed"
 sidebar_border = "blue"
@@ -328,7 +308,6 @@ show_transformations = true
     assert_eq!(config.display.pages_lookahead, 5);
     assert!(config.display.row_numbers);
     assert_eq!(config.performance.sampling_threshold, 50000);
-    assert_eq!(config.theme.color_mode, "dark");
     assert_eq!(config.theme.colors.keybind_hints, "blue");
     assert_eq!(config.ui.controls.row_count_width, 25);
     assert_eq!(config.query.history_limit, 500);
@@ -396,7 +375,7 @@ fn test_color_config_merge() {
     assert_eq!(base.keybind_hints, "blue");
     assert_eq!(base.error, "bright_red");
     // Other colors should remain default
-    assert_eq!(base.keybind_labels, "yellow");
+    assert_eq!(base.keybind_labels, "light_gray");
     assert_eq!(base.success, "green");
 }
 
@@ -415,7 +394,7 @@ fn test_new_color_fields() {
         config.theme.colors.secondary_chart_series_color,
         "dark_gray"
     );
-    assert_eq!(config.theme.colors.table_header_bg, "indexed(236)");
+    assert_eq!(config.theme.colors.table_header_bg, "dark_gray");
     assert_eq!(config.theme.colors.column_separator, "cyan");
     assert_eq!(config.theme.colors.sidebar_border, "dark_gray");
 

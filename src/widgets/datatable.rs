@@ -1191,6 +1191,15 @@ impl Default for DataTable {
     }
 }
 
+/// Parameters for rendering the row numbers column.
+struct RowNumbersParams {
+    start_row: usize,
+    visible_rows: usize,
+    num_rows: usize,
+    row_start_index: usize,
+    selected_row: Option<usize>,
+}
+
 impl DataTable {
     pub fn new() -> Self {
         Self::default()
@@ -1286,12 +1295,7 @@ impl DataTable {
             .get_column_names()
             .iter()
             .take(visible_columns)
-            .map(|name| {
-                Span::styled(
-                    name.to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )
-            })
+            .map(|name| Span::styled(name.to_string(), Style::default()))
             .collect();
 
         StatefulWidget::render(
@@ -1305,48 +1309,52 @@ impl DataTable {
         );
     }
 
-    fn render_row_numbers(
-        &self,
-        area: Rect,
-        buf: &mut Buffer,
-        start_row: usize,
-        visible_rows: usize,
-        num_rows: usize,
-        row_start_index: usize,
-    ) {
+    fn render_row_numbers(&self, area: Rect, buf: &mut Buffer, params: RowNumbersParams) {
         // Only render up to the actual number of rows in the data
-        let rows_to_render = visible_rows.min(num_rows.saturating_sub(start_row));
+        let rows_to_render = params
+            .visible_rows
+            .min(params.num_rows.saturating_sub(params.start_row));
 
         if rows_to_render == 0 {
             return;
         }
 
         // Calculate width needed for largest row number
-        let max_row_num = start_row + rows_to_render.saturating_sub(1) + row_start_index;
+        let max_row_num =
+            params.start_row + rows_to_render.saturating_sub(1) + params.row_start_index;
         let max_width = max_row_num.to_string().len();
 
         // Render row numbers
         for row_idx in 0..rows_to_render.min(area.height.saturating_sub(1) as usize) {
-            let row_num = start_row + row_idx + row_start_index;
+            let row_num = params.start_row + row_idx + params.row_start_index;
             let row_num_text = row_num.to_string();
 
             // Right-align row numbers within the available width
             let padding = max_width.saturating_sub(row_num_text.len());
             let padded_text = format!("{}{}", " ".repeat(padding), row_num_text);
 
+            // Highlight row number if this row is selected
+            let is_selected = params.selected_row == Some(row_idx);
+            let row_num_style = if is_selected {
+                // Use reversed style to match the selected row highlight
+                Style::default()
+                    .fg(self.row_numbers_fg)
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(self.row_numbers_fg)
+            };
+
             let y = area.y + row_idx as u16 + 1; // +1 for header row
             if y < area.y + area.height {
-                Paragraph::new(padded_text)
-                    .style(Style::default().fg(self.row_numbers_fg))
-                    .render(
-                        Rect {
-                            x: area.x,
-                            y,
-                            width: area.width,
-                            height: 1,
-                        },
-                        buf,
-                    );
+                Paragraph::new(padded_text).style(row_num_style).render(
+                    Rect {
+                        x: area.x,
+                        y,
+                        width: area.width,
+                        height: 1,
+                    },
+                    buf,
+                );
             }
         }
     }
@@ -1440,10 +1448,13 @@ impl StatefulWidget for DataTable {
                 self.render_row_numbers(
                     row_num_area,
                     buf,
-                    state.start_row,
-                    state.visible_rows,
-                    state.num_rows,
-                    state.row_start_index,
+                    RowNumbersParams {
+                        start_row: state.start_row,
+                        visible_rows: state.visible_rows,
+                        num_rows: state.num_rows,
+                        row_start_index: state.row_start_index,
+                        selected_row: state.table_state.selected(),
+                    },
                 );
             }
             let scrollable_area = Rect {
@@ -1539,10 +1550,13 @@ impl StatefulWidget for DataTable {
                 self.render_row_numbers(
                     row_num_area,
                     buf,
-                    state.start_row,
-                    state.visible_rows,
-                    state.num_rows,
-                    state.row_start_index,
+                    RowNumbersParams {
+                        start_row: state.start_row,
+                        visible_rows: state.visible_rows,
+                        num_rows: state.num_rows,
+                        row_start_index: state.row_start_index,
+                        selected_row: state.table_state.selected(),
+                    },
                 );
 
                 // Adjust data area to exclude row number column

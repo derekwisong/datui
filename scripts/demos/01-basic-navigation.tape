@@ -1,8 +1,7 @@
 Output demos/01-basic-navigation.gif
-Set FontSize 14
-Set Width 1000
-Set Height 600
-#Set Theme "catppuccin-frappe"
+Set FontSize 18
+Set Width 1200
+Set Height 800
 Set TypingSpeed 25ms
 
 Type "datui tests/sample-data/people.parquet"

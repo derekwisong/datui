@@ -247,9 +247,8 @@ pub fn compute_statistics_with_options(
     options: ComputeOptions,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
-    let total_rows = if let Some(sample_size_val) = sample_size {
-        sample_size_val + 1
-    } else {
+    // Always count actual rows, regardless of sample_size parameter
+    let total_rows = {
         let count_df = lf.clone().select([len()]).collect()?;
         if let Some(col) = count_df.get(0) {
             if let Some(AnyValue::UInt32(n)) = col.first() {
@@ -262,16 +261,17 @@ pub fn compute_statistics_with_options(
         }
     };
 
-    let sample_size = sample_size.unwrap_or(SAMPLING_THRESHOLD);
-    let should_sample = total_rows > sample_size;
+    // sample_size parameter is the threshold, not the actual row count
+    let sampling_threshold = sample_size.unwrap_or(SAMPLING_THRESHOLD);
+    let should_sample = total_rows >= sampling_threshold;
     let actual_sample_size = if should_sample {
-        Some(sample_size)
+        Some(sampling_threshold)
     } else {
         None
     };
 
     let df = if should_sample {
-        sample_dataframe(lf, sample_size, seed)?
+        sample_dataframe(lf, sampling_threshold, seed)?
     } else {
         lf.clone().collect()?
     };
@@ -379,16 +379,16 @@ pub fn compute_distribution_statistics(
     sample_size: Option<usize>,
     seed: u64,
 ) -> Result<()> {
-    let sample_size = sample_size.unwrap_or(SAMPLING_THRESHOLD);
-    let should_sample = results.total_rows > sample_size;
+    let sampling_threshold = sample_size.unwrap_or(SAMPLING_THRESHOLD);
+    let should_sample = results.total_rows >= sampling_threshold;
     let actual_sample_size = if should_sample {
-        Some(sample_size)
+        Some(sampling_threshold)
     } else {
         None
     };
 
     let df = if should_sample {
-        sample_dataframe(lf, sample_size, seed)?
+        sample_dataframe(lf, sampling_threshold, seed)?
     } else {
         lf.clone().collect()?
     };

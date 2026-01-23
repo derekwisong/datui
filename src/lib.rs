@@ -3663,6 +3663,12 @@ impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.debug.num_frames += 1;
 
+        // Set background color for the entire application area
+        let background_color = self.color("background");
+        Block::default()
+            .style(Style::default().bg(background_color))
+            .render(area, buf);
+
         let mut constraints = vec![Constraint::Fill(1)];
 
         // Adjust layout if sorting to show panel on the right

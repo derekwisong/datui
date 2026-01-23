@@ -449,18 +449,14 @@ const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
     ),
 ];
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ThemeConfig {
-    pub color_mode: String,
     pub colors: ColorConfig,
 }
 
 // Field comments for ThemeConfig
-const THEME_COMMENTS: &[(&str, &str)] = &[(
-    "color_mode",
-    "Color mode: \"light\", \"dark\", or \"auto\" (follows terminal)",
-)];
+const THEME_COMMENTS: &[(&str, &str)] = &[];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -686,34 +682,25 @@ impl Default for PerformanceConfig {
     }
 }
 
-impl Default for ThemeConfig {
-    fn default() -> Self {
-        Self {
-            color_mode: "auto".to_string(),
-            colors: ColorConfig::default(),
-        }
-    }
-}
-
 impl Default for ColorConfig {
     fn default() -> Self {
         Self {
             keybind_hints: "cyan".to_string(),
-            keybind_labels: "yellow".to_string(),
+            keybind_labels: "light_gray".to_string(),
             primary_chart_series_color: "cyan".to_string(),
             secondary_chart_series_color: "dark_gray".to_string(),
             success: "green".to_string(),
             error: "red".to_string(),
             warning: "yellow".to_string(),
             dimmed: "dark_gray".to_string(),
-            background: "black".to_string(),
-            surface: "black".to_string(),
-            controls_bg: "indexed(236)".to_string(),
-            text_primary: "white".to_string(),
+            background: "default".to_string(),
+            surface: "default".to_string(),
+            controls_bg: "dark_gray".to_string(),
+            text_primary: "default".to_string(),
             text_secondary: "dark_gray".to_string(),
             text_inverse: "black".to_string(),
             table_header: "white".to_string(),
-            table_header_bg: "indexed(236)".to_string(),
+            table_header_bg: "dark_gray".to_string(),
             column_separator: "cyan".to_string(),
             table_selected: "reversed".to_string(),
             sidebar_border: "dark_gray".to_string(),
@@ -836,17 +823,6 @@ impl AppConfig {
             return Err(eyre!("event_poll_interval_ms must be greater than 0"));
         }
 
-        // Validate color mode
-        match self.theme.color_mode.as_str() {
-            "light" | "dark" | "auto" => {}
-            _ => {
-                return Err(eyre!(
-                    "Invalid color_mode: {}. Must be 'light', 'dark', or 'auto'",
-                    self.theme.color_mode
-                ))
-            }
-        }
-
         // Validate all colors can be parsed
         let parser = ColorParser::new();
         self.theme.colors.validate(&parser)?;
@@ -908,10 +884,6 @@ impl PerformanceConfig {
 
 impl ThemeConfig {
     pub fn merge(&mut self, other: Self) {
-        let default = ThemeConfig::default();
-        if other.color_mode != default.color_mode {
-            self.color_mode = other.color_mode;
-        }
         self.colors.merge(other.colors);
     }
 }
@@ -1177,7 +1149,7 @@ impl ColorParser {
             "light_gray" | "light gray" | "light_grey" | "light grey" => Ok(Color::Indexed(7)),
 
             // Special modifiers (pass through as Reset - handled specially in rendering)
-            "reset" | "reversed" => Ok(Color::Reset),
+            "reset" | "default" | "reversed" => Ok(Color::Reset),
 
             _ => Err(eyre!(
                 "Unknown color name: '{}'. Supported: basic ANSI colors (red, blue, etc.), \

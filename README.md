@@ -84,7 +84,7 @@ row_start_index = 0
 [theme.colors]
 primary = "#00bfff"        # Bright blue keybinds
 error = "bright_red"       # Red errors
-controls_bg = "indexed(236)" # Dark gray bar
+controls_bg = "dark_gray" # Dark gray bar
 ```
 
 See the [Configuration Guide][config-guide] for complete documentation.

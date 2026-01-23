@@ -79,9 +79,6 @@ event_poll_interval_ms = 25  # UI polling interval (lower = more responsive)
 Customize the entire UI appearance:
 
 ```toml
-[theme]
-color_mode = "auto"  # "light", "dark", or "auto"
-
 [theme.colors]
 keybind_hints = "cyan"              # Keybind hints
 keybind_labels = "yellow"           # Action labels
@@ -102,12 +99,15 @@ Three color formats are supported:
 keybind_hints = "cyan"
 error = "bright_red"
 dimmed = "dark_gray"
+background = "default"  # Use terminal default background
+text_primary = "default"  # Use terminal default text color
 ```
 
 Available names:
 - Basic: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`
 - Bright: `bright_red`, `bright_green`, `bright_blue`, etc.
 - Grays: `gray`, `dark_gray`, `light_gray`
+- Special: `reset` or `default` (uses terminal default colors - works in both light and dark themes)
 
 **2. Hex Colors**
 ```toml
@@ -122,7 +122,7 @@ controls_bg = "#2d2d2d"
 
 **3. Indexed Colors**
 ```toml
-controls_bg = "indexed(236)"
+controls_bg = "indexed(236)"  # Example: specific palette entry
 surface = "indexed(239)"
 ```
 
@@ -139,6 +139,8 @@ Colors automatically adapt to your terminal:
 - **Basic terminals** (8/16 colors): Colors map to nearest ANSI color
 - **Monochrome**: Set `NO_COLOR=1` to disable colors
 
+**Light Theme Support**: The default `background` and `text_primary` use `"default"` to inherit your terminal's default colors. This ensures the app works correctly in both light and dark terminal themes. If you set explicit colors like `"black"` or `"white"`, they may not work well in light themes.
+
 ### Available Colors
 
 All UI colors can be customized:
@@ -153,14 +155,14 @@ All UI colors can be customized:
 | `error` | Error messages, outliers | red |
 | `warning` | Warnings, skewed distributions | yellow |
 | `dimmed` | Dimmed elements, axis lines | dark_gray |
-| `background` | Main background | black |
-| `surface` | Modal/surface backgrounds | black |
-| `controls_bg` | Controls bar and table header backgrounds | indexed(236) |
-| `text_primary` | Primary text | white |
+| `background` | Main background | default (uses terminal default) |
+| `surface` | Modal/surface backgrounds | default (uses terminal default) |
+| `controls_bg` | Controls bar and table header backgrounds | dark_gray |
+| `text_primary` | Primary text | default (uses terminal default) |
 | `text_secondary` | Secondary text | dark_gray |
 | `text_inverse` | Text on light backgrounds | black |
 | `table_header` | Table column header text | white |
-| `table_header_bg` | Table column header background | indexed(236) |
+| `table_header_bg` | Table column header background | dark_gray |
 | `column_separator` | Vertical line between table columns | cyan |
 | `table_selected` | Selected row style | reversed |
 | `sidebar_border` | Sidebar borders | dark_gray |
@@ -226,9 +228,6 @@ Complete Dracula color scheme using hex colors:
 ```toml
 version = "0.2"
 
-[theme]
-color_mode = "dark"
-
 [theme.colors]
 keybind_hints = "#bd93f9"              # Purple
 keybind_labels = "#ff79c6"             # Pink
@@ -239,7 +238,7 @@ error = "#ff5555"                      # Red
 warning = "#ffb86c"                    # Orange
 dimmed = "#6272a4"                     # Comment gray
 
-background = "#282a36"                 # Background
+background = "#282a36"                 # Background (Dracula dark)
 surface = "#44475a"                    # Current line
 controls_bg = "#44475a"                # Controls bar
 
@@ -285,9 +284,6 @@ Using named colors for maximum compatibility:
 ```toml
 version = "0.2"
 
-[theme]
-color_mode = "dark"
-
 [theme.colors]
 keybind_hints = "bright_cyan"
 keybind_labels = "bright_yellow"
@@ -299,7 +295,7 @@ warning = "bright_yellow"
 dimmed = "dark_gray"
 
 background = "black"
-controls_bg = "indexed(236)"
+controls_bg = "dark_gray"
 text_primary = "bright_white"
 ```
 

@@ -164,7 +164,7 @@ Update documentation:
 
 - **Strings**: Use `String` for text values
   ```rust
-  pub color_mode: String,  // "light", "dark", "auto"
+  pub delimiter: String,  // CSV delimiter character
   ```
 
 ### Sensible Defaults

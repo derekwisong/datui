@@ -63,8 +63,9 @@ fn test_indexed_colors_in_default_config() {
     let config = AppConfig::default();
     let theme = Theme::from_config(&config.theme).expect("Failed to create theme");
 
-    // Default config uses indexed(236) for controls_bg
-    assert_eq!(theme.get("controls_bg"), Color::Indexed(236));
+    // Default config uses dark_gray for controls_bg (which maps to Indexed(8))
+    // dark_gray is Indexed(8) in the color parser
+    assert_eq!(theme.get("controls_bg"), Color::Indexed(8));
 }
 
 #[test]

@@ -2,7 +2,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Paragraph, Widget},
+    widgets::{Block, Paragraph, Widget},
 };
 
 pub struct Controls {
@@ -88,6 +88,11 @@ impl Controls {
 
 impl Widget for &Controls {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // Fill the entire area with the background color first
+        Block::default()
+            .style(Style::default().bg(self.bg_color))
+            .render(area, buf);
+
         const DEFAULT_CONTROLS: [(&str, &str); 8] = [
             ("/", "Query"),
             ("f", "Filter"),

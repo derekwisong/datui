@@ -2,9 +2,8 @@ use color_eyre::Result;
 use polars::prelude::*;
 use std::collections::HashMap;
 
-// Default sampling threshold: datasets >= this size will be sampled
-// This is used as a fallback when no sample_size is provided.
-// The application typically uses the config value instead.
+/// Default sampling threshold: datasets >= this size are sampled.
+/// Used as fallback when sample_size is None. App uses config value.
 pub const SAMPLING_THRESHOLD: usize = 10_000;
 
 pub struct ColumnStatistics {

@@ -23,10 +23,10 @@
 
 - [Advanced Topics](advanced.md)
   - [Performance Tips](advanced/performance-tips.md)
-  - [Configuration](advanced/configuration.md)
 
 - [For Developers](for-developers.md)
   - [Contributing](for-developers/contributing.md)
   - [Tests](for-developers/tests.md)
   - [Documentation](for-developers/documentation.md)
+  - [Adding Configuration Options](for-developers/adding-configuration-options.md)
   - [Demos](for-developers/demos.md)

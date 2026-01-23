@@ -3718,12 +3718,13 @@ impl Widget for &mut App {
         }
 
         // Extract colors before mutable borrow to avoid borrow checker issues
-        let primary_color = self.color("primary");
-        let controls_bg_color = self.color("controls_bg");
+        let primary_color = self.color("keybind_hints");
+        let _controls_bg_color = self.color("controls_bg");
         let table_header_color = self.color("table_header");
         let dimmed_color = self.color("dimmed");
-        let table_border_color = self.color("table_border");
-        let modal_border_color = self.color("modal_border");
+        let column_separator_color = self.color("column_separator");
+        let sidebar_border_color = self.color("sidebar_border");
+        let table_header_bg_color = self.color("table_header_bg");
 
         match &mut self.data_table_state {
             Some(state) => {
@@ -3779,22 +3780,22 @@ impl Widget for &mut App {
                         .split(table_area);
                     DataTable::new()
                         .with_colors(
-                            controls_bg_color,
+                            table_header_bg_color,
                             table_header_color,
                             dimmed_color,
-                            table_border_color,
+                            column_separator_color,
                         )
                         .render(info_layout[0], buf, state);
                     DataTableInfo::new(state)
-                        .with_border_color(modal_border_color)
+                        .with_border_color(sidebar_border_color)
                         .render(info_layout[1], buf);
                 } else {
                     DataTable::new()
                         .with_colors(
-                            controls_bg_color,
+                            table_header_bg_color,
                             table_header_color,
                             dimmed_color,
-                            table_border_color,
+                            column_separator_color,
                         )
                         .render(table_area, buf, state);
                 }
@@ -4237,21 +4238,21 @@ impl Widget for &mut App {
             hint_line1.spans.push(Span::styled(
                 "Space",
                 Style::default()
-                    .fg(self.color("primary"))
+                    .fg(self.color("keybind_hints"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line1.spans.push(Span::raw(" Toggle "));
             hint_line1.spans.push(Span::styled(
                 "[]",
                 Style::default()
-                    .fg(self.color("primary"))
+                    .fg(self.color("keybind_hints"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line1.spans.push(Span::raw(" Reorder "));
             hint_line1.spans.push(Span::styled(
                 "1-9",
                 Style::default()
-                    .fg(self.color("primary"))
+                    .fg(self.color("keybind_hints"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line1.spans.push(Span::raw(" Jump"));
@@ -4261,14 +4262,14 @@ impl Widget for &mut App {
             hint_line2.spans.push(Span::styled(
                 "L",
                 Style::default()
-                    .fg(self.color("primary"))
+                    .fg(self.color("keybind_hints"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line2.spans.push(Span::raw(" Lock "));
             hint_line2.spans.push(Span::styled(
                 "+-",
                 Style::default()
-                    .fg(self.color("primary"))
+                    .fg(self.color("keybind_hints"))
                     .add_modifier(Modifier::BOLD),
             ));
             hint_line2.spans.push(Span::raw(" Reorder"));
@@ -4545,35 +4546,35 @@ impl Widget for &mut App {
                     hint_line.spans.push(Span::styled(
                         "Enter",
                         Style::default()
-                            .fg(self.color("primary"))
+                            .fg(self.color("keybind_hints"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Apply "));
                     hint_line.spans.push(Span::styled(
                         "s",
                         Style::default()
-                            .fg(self.color("primary"))
+                            .fg(self.color("keybind_hints"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Create "));
                     hint_line.spans.push(Span::styled(
                         "e",
                         Style::default()
-                            .fg(self.color("primary"))
+                            .fg(self.color("keybind_hints"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Edit "));
                     hint_line.spans.push(Span::styled(
                         "d",
                         Style::default()
-                            .fg(self.color("primary"))
+                            .fg(self.color("keybind_hints"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Delete "));
                     hint_line.spans.push(Span::styled(
                         "Esc",
                         Style::default()
-                            .fg(self.color("primary"))
+                            .fg(self.color("keybind_hints"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     hint_line.spans.push(Span::raw(" Close"));
@@ -5040,7 +5041,7 @@ impl Widget for &mut App {
                     delete_line.spans.push(Span::styled(
                         "D",
                         Style::default()
-                            .fg(self.color("primary"))
+                            .fg(self.color("keybind_hints"))
                             .add_modifier(Modifier::BOLD),
                     ));
                     delete_line.spans.push(Span::raw("elete"));
@@ -5713,8 +5714,8 @@ Delete Confirmation:
         // Build controls - use analysis-specific controls if analysis modal is active
         let mut controls = Controls::with_row_count(row_count.unwrap_or(0)).with_colors(
             self.color("controls_bg"),
-            self.color("primary"),   // Keys in cyan (bold)
-            self.color("secondary"), // Labels in yellow
+            self.color("keybind_hints"),  // Keys in cyan (bold)
+            self.color("keybind_labels"), // Labels in yellow
         );
 
         if self.analysis_modal.active {

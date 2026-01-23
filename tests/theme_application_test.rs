@@ -18,7 +18,7 @@ fn test_app_accepts_theme() {
 #[test]
 fn test_theme_with_custom_colors() {
     let mut config = AppConfig::default();
-    config.theme.colors.primary = "#ff0000".to_string();
+    config.theme.colors.keybind_hints = "#ff0000".to_string();
     config.theme.colors.error = "bright_red".to_string();
     config.theme.colors.success = "bright_green".to_string();
 
@@ -46,7 +46,7 @@ fn test_theme_color_retrieval() {
     let theme = Theme::from_config(&config.theme).unwrap();
 
     // Test that we can retrieve colors
-    let primary = theme.get("primary");
+    let primary = theme.get("keybind_hints");
     let error = theme.get("error");
     let success = theme.get("success");
 

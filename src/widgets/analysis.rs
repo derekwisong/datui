@@ -1156,8 +1156,8 @@ fn get_correlation_color(correlation: f64, theme: &Theme) -> Color {
         // Low correlation - normal text
         theme.get("text_primary")
     } else if correlation > 0.0 {
-        // Positive correlation - primary color
-        theme.get("primary")
+        // Positive correlation - keybind hints color (UI element, not chart)
+        theme.get("keybind_hints")
     } else {
         // Negative correlation - error/warning color
         theme.get("outlier_marker")
@@ -1285,7 +1285,7 @@ fn render_distribution_selector(
         Block::default()
             .title("Distribution")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.get("modal_border"))),
+            .border_style(Style::default().fg(theme.get("sidebar_border"))),
     )
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
@@ -1328,7 +1328,7 @@ fn render_sidebar(
     let block = Block::default()
         .title("Analysis Tools")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.get("modal_border")));
+        .border_style(Style::default().fg(theme.get("sidebar_border")));
 
     let list = List::new(items).block(block);
 
@@ -1473,7 +1473,7 @@ fn render_distribution_histogram(
             .value(data_height)
             // Remove text_value to prevent cyan count labels from appearing on bars
             // Remove .label() to prevent bar labels from overlapping Chart's x-axis labels
-            .style(Style::default().fg(theme.get("primary")));
+            .style(Style::default().fg(theme.get("primary_chart_series_color")));
 
         data_bars.push(data_bar);
     }
@@ -1690,7 +1690,7 @@ fn render_distribution_histogram(
         .name("") // Empty name to prevent legend from appearing
         .marker(marker)
         .graph_type(GraphType::Scatter)
-        .style(Style::default().fg(theme.get("dimmed")))
+        .style(Style::default().fg(theme.get("secondary_chart_series_color")))
         .data(&theory_points);
 
     // Create Chart widget with scatter plot overlay
@@ -1860,14 +1860,14 @@ fn render_qq_plot(
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(theme.get("dimmed")))
+            .style(Style::default().fg(theme.get("secondary_chart_series_color")))
             .graph_type(GraphType::Line)
             .data(&reference_line),
         // Q-Q plot data points
         Dataset::default()
             .name("") // Empty name to hide from legend
             .marker(marker)
-            .style(Style::default().fg(theme.get("primary")))
+            .style(Style::default().fg(theme.get("primary_chart_series_color")))
             .graph_type(GraphType::Scatter)
             .data(&qq_data),
     ];

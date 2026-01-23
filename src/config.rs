@@ -1,3 +1,4 @@
+use crate::statistics::SAMPLING_THRESHOLD;
 use color_eyre::eyre::eyre;
 use color_eyre::Result;
 use ratatui::style::Color;
@@ -54,9 +55,242 @@ impl ConfigManager {
         Ok(subdir_path)
     }
 
-    /// Generate default configuration template as a string
+    /// Generate default configuration template as a string with comments
+    /// All fields are commented out so defaults are used, but users can uncomment to override
     pub fn generate_default_config(&self) -> String {
-        DEFAULT_CONFIG_TEMPLATE.to_string()
+        // Serialize default config to TOML
+        let config = AppConfig::default();
+        let toml_str = toml::to_string_pretty(&config).expect("Failed to serialize default config");
+
+        // Build comment map from all struct comment constants
+        let comments = Self::collect_all_comments();
+
+        // Comment out all fields and add comments
+        Self::comment_all_fields(toml_str, comments)
+    }
+
+    /// Collect all field comments from struct constants into a map
+    fn collect_all_comments() -> std::collections::HashMap<String, String> {
+        let mut comments = std::collections::HashMap::new();
+
+        // Top-level fields
+        for (field, comment) in APP_COMMENTS {
+            comments.insert(field.to_string(), comment.to_string());
+        }
+
+        // File loading fields
+        for (field, comment) in FILE_LOADING_COMMENTS {
+            comments.insert(format!("file_loading.{}", field), comment.to_string());
+        }
+
+        // Display fields
+        for (field, comment) in DISPLAY_COMMENTS {
+            comments.insert(format!("display.{}", field), comment.to_string());
+        }
+
+        // Performance fields
+        for (field, comment) in PERFORMANCE_COMMENTS {
+            comments.insert(format!("performance.{}", field), comment.to_string());
+        }
+
+        // Theme fields
+        for (field, comment) in THEME_COMMENTS {
+            comments.insert(format!("theme.{}", field), comment.to_string());
+        }
+
+        // Color fields
+        for (field, comment) in COLOR_COMMENTS {
+            comments.insert(format!("theme.colors.{}", field), comment.to_string());
+        }
+
+        // Controls fields
+        for (field, comment) in CONTROLS_COMMENTS {
+            comments.insert(format!("ui.controls.{}", field), comment.to_string());
+        }
+
+        // Query fields
+        for (field, comment) in QUERY_COMMENTS {
+            comments.insert(format!("query.{}", field), comment.to_string());
+        }
+
+        // Template fields
+        for (field, comment) in TEMPLATE_COMMENTS {
+            comments.insert(format!("templates.{}", field), comment.to_string());
+        }
+
+        // Debug fields
+        for (field, comment) in DEBUG_COMMENTS {
+            comments.insert(format!("debug.{}", field), comment.to_string());
+        }
+
+        comments
+    }
+
+    /// Comment out all fields in TOML and add comments
+    /// Also adds missing Option fields as commented-out `# field = null`
+    fn comment_all_fields(
+        toml: String,
+        comments: std::collections::HashMap<String, String>,
+    ) -> String {
+        let mut result = String::new();
+        result.push_str("# datui configuration file\n");
+        result
+            .push_str("# This file uses TOML format. See https://toml.io/ for syntax reference.\n");
+        result.push('\n');
+
+        let lines: Vec<&str> = toml.lines().collect();
+        let mut i = 0;
+        let mut current_section = String::new();
+        let mut seen_fields: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // First pass: process existing fields and track what we've seen
+        while i < lines.len() {
+            let line = lines[i];
+
+            // Check if this is a section header
+            if let Some(section) = Self::extract_section_name(line) {
+                current_section = section.clone();
+
+                // Add section header comment if we have one
+                if let Some(header) = SECTION_HEADERS.iter().find(|(s, _)| s == &section) {
+                    result.push_str(header.1);
+                    result.push('\n');
+                }
+
+                // Comment out the section header
+                result.push_str("# ");
+                result.push_str(line);
+                result.push('\n');
+                i += 1;
+                continue;
+            }
+
+            // Check if this is a field assignment
+            if let Some(field_path) = Self::extract_field_path_simple(line, &current_section) {
+                seen_fields.insert(field_path.clone());
+
+                // Add comment if we have one
+                if let Some(comment) = comments.get(&field_path) {
+                    for comment_line in comment.lines() {
+                        result.push_str("# ");
+                        result.push_str(comment_line);
+                        result.push('\n');
+                    }
+                }
+
+                // Comment out the field line
+                result.push_str("# ");
+                result.push_str(line);
+                result.push('\n');
+            } else {
+                // Empty line or other content - preserve as-is
+                result.push_str(line);
+                result.push('\n');
+            }
+
+            i += 1;
+        }
+
+        // Second pass: add missing Option fields (those with comments but not in TOML)
+        result = Self::add_missing_option_fields(result, &comments, &seen_fields);
+
+        result
+    }
+
+    /// Add missing Option fields that weren't serialized (because they're None)
+    fn add_missing_option_fields(
+        mut result: String,
+        comments: &std::collections::HashMap<String, String>,
+        seen_fields: &std::collections::HashSet<String>,
+    ) -> String {
+        // Option fields that should appear even when None
+        let option_fields = [
+            "file_loading.delimiter",
+            "file_loading.has_header",
+            "file_loading.skip_lines",
+            "file_loading.skip_rows",
+            "file_loading.compression",
+            "ui.controls.custom_controls",
+        ];
+
+        // Group missing fields by section
+        let mut missing_by_section: std::collections::HashMap<String, Vec<&str>> =
+            std::collections::HashMap::new();
+
+        for field_path in &option_fields {
+            if !seen_fields.contains(*field_path) && comments.contains_key(*field_path) {
+                if let Some(dot_pos) = field_path.find('.') {
+                    let section = &field_path[..dot_pos];
+                    missing_by_section
+                        .entry(section.to_string())
+                        .or_default()
+                        .push(field_path);
+                }
+            }
+        }
+
+        // Insert missing fields into appropriate sections
+        for (section, fields) in &missing_by_section {
+            let section_header = format!("[{}]", section);
+            if let Some(section_pos) = result.find(&section_header) {
+                // Find the newline after the section header
+                let after_header_start = section_pos + section_header.len();
+                let after_header = &result[after_header_start..];
+
+                // Find the first newline after the section header
+                let newline_pos = after_header.find('\n').unwrap_or(0);
+                let insert_pos = after_header_start + newline_pos + 1;
+
+                // Build content to insert
+                let mut new_content = String::new();
+                for field_path in fields {
+                    if let Some(comment) = comments.get(*field_path) {
+                        for comment_line in comment.lines() {
+                            new_content.push_str("# ");
+                            new_content.push_str(comment_line);
+                            new_content.push('\n');
+                        }
+                    }
+                    let field_name = field_path.rsplit('.').next().unwrap_or(field_path);
+                    new_content.push_str(&format!("# {} = null\n", field_name));
+                    new_content.push('\n');
+                }
+
+                result.insert_str(insert_pos, &new_content);
+            }
+        }
+
+        result
+    }
+
+    /// Extract section name from TOML line like "[performance]" or "[theme.colors]"
+    fn extract_section_name(line: &str) -> Option<String> {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            Some(trimmed[1..trimmed.len() - 1].to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Extract field path from a line (simpler version)
+    fn extract_field_path_simple(line: &str, current_section: &str) -> Option<String> {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
+            return None;
+        }
+
+        // Extract field name from line (e.g., "sampling_threshold = 10000")
+        if let Some(eq_pos) = trimmed.find('=') {
+            let field_name = trimmed[..eq_pos].trim();
+            if current_section.is_empty() {
+                Some(field_name.to_string())
+            } else {
+                Some(format!("{}.{}", current_section, field_name))
+            }
+        } else {
+            None
+        }
     }
 
     /// Write default configuration to config file
@@ -73,8 +307,9 @@ impl ConfigManager {
         // Ensure config directory exists
         self.ensure_config_dir()?;
 
-        // Write default template
-        std::fs::write(&config_path, DEFAULT_CONFIG_TEMPLATE)?;
+        // Generate and write default template
+        let template = self.generate_default_config();
+        std::fs::write(&config_path, template)?;
 
         Ok(config_path)
     }
@@ -96,6 +331,53 @@ pub struct AppConfig {
     pub debug: DebugConfig,
 }
 
+// Field comments for AppConfig (top-level fields)
+const APP_COMMENTS: &[(&str, &str)] = &[(
+    "version",
+    "Configuration format version (for future compatibility)",
+)];
+
+// Section header comments
+const SECTION_HEADERS: &[(&str, &str)] = &[
+    (
+        "file_loading",
+        "# ============================================================================\n# File Loading Defaults\n# ============================================================================",
+    ),
+    (
+        "display",
+        "# ============================================================================\n# Display Settings\n# ============================================================================",
+    ),
+    (
+        "performance",
+        "# ============================================================================\n# Performance Settings\n# ============================================================================",
+    ),
+    (
+        "theme",
+        "# ============================================================================\n# Color Theme\n# ============================================================================",
+    ),
+    (
+        "theme.colors",
+        "# Color definitions\n# Supported formats:\n#   - Named colors: \"red\", \"blue\", \"bright_red\", \"dark_gray\", etc. (case-insensitive)\n#   - Hex colors: \"#ff0000\" or \"#FF0000\" (case-insensitive)\n#   - Indexed colors: \"indexed(0-255)\" for specific xterm 256-color palette entries\n# Colors automatically adapt to your terminal's capabilities",
+    ),
+    (
+        "ui",
+        "# ============================================================================\n# UI Layout\n# ============================================================================",
+    ),
+    ("ui.controls", "# Control bar settings"),
+    (
+        "query",
+        "# ============================================================================\n# Query System\n# ============================================================================",
+    ),
+    (
+        "templates",
+        "# ============================================================================\n# Template Settings\n# ============================================================================",
+    ),
+    (
+        "debug",
+        "# ============================================================================\n# Debug Settings\n# ============================================================================",
+    ),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct FileLoadingConfig {
@@ -106,6 +388,25 @@ pub struct FileLoadingConfig {
     pub compression: Option<String>,
 }
 
+// Field comments for FileLoadingConfig
+// Format: (field_name, comment_text)
+const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
+    (
+        "delimiter",
+        "Default delimiter for CSV files (as ASCII value, e.g., 44 for comma)\nIf not specified, auto-detection is used",
+    ),
+    (
+        "has_header",
+        "Whether files have headers by default\nnull = auto-detect, true = has header, false = no header",
+    ),
+    ("skip_lines", "Number of lines to skip at the start of files"),
+    ("skip_rows", "Number of rows to skip when reading files"),
+    (
+        "compression",
+        "Default compression format (auto-detected from extension if not specified)\nOptions: \"gzip\", \"zstd\", \"bzip2\", \"xz\"",
+    ),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
@@ -115,12 +416,38 @@ pub struct DisplayConfig {
     pub row_start_index: usize,
 }
 
+// Field comments for DisplayConfig
+const DISPLAY_COMMENTS: &[(&str, &str)] = &[
+    (
+        "pages_lookahead",
+        "Number of pages to buffer ahead of visible area\nLarger values = smoother scrolling but more memory",
+    ),
+    (
+        "pages_lookback",
+        "Number of pages to buffer behind visible area\nLarger values = smoother scrolling but more memory",
+    ),
+    ("row_numbers", "Display row numbers on the left side of the table"),
+    ("row_start_index", "Starting index for row numbers (0 or 1)"),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerformanceConfig {
     pub sampling_threshold: usize,
     pub event_poll_interval_ms: u64,
 }
+
+// Field comments for PerformanceConfig
+const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
+    (
+        "sampling_threshold",
+        "Sampling threshold: datasets >= this size will be sampled for statistics\nSet to higher value to avoid sampling, or lower to sample more aggressively",
+    ),
+    (
+        "event_poll_interval_ms",
+        "Event polling interval in milliseconds\nLower values = more responsive but higher CPU usage",
+    ),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -129,11 +456,65 @@ pub struct ThemeConfig {
     pub colors: ColorConfig,
 }
 
+// Field comments for ThemeConfig
+const THEME_COMMENTS: &[(&str, &str)] = &[(
+    "color_mode",
+    "Color mode: \"light\", \"dark\", or \"auto\" (follows terminal)",
+)];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+/// Color configuration for the application theme.
+///
+/// This struct defines all color settings used throughout the UI. Colors can be specified as:
+/// - Named colors: "cyan", "red", "yellow", etc.
+/// - Hex colors: "#ff0000"
+/// - Indexed colors: "indexed(236)" for 256-color palette
+/// - Special modifiers: "reversed" for selected rows
+///
+/// ## Color Usage:
+///
+/// **UI Element Colors:**
+/// - `keybind_hints`: Keybind hints (modals, breadcrumb, correlation matrix)
+/// - `keybind_labels`: Action labels in controls bar
+/// - `table_header`: Table column header text
+/// - `table_header_bg`: Table column header background
+/// - `column_separator`: Vertical line between columns
+/// - `sidebar_border`: Sidebar borders
+/// - `modal_border_active`: Active modal elements
+/// - `modal_border_error`: Error modal borders
+///
+/// **Chart Colors:**
+/// - `primary_chart_series_color`: Chart data (histogram bars, Q-Q plot data points)
+/// - `secondary_chart_series_color`: Chart theory (histogram overlays, Q-Q plot reference line)
+///
+/// **Status Colors:**
+/// - `success`: Success indicators, normal distributions
+/// - `error`: Error messages, outliers
+/// - `warning`: Warnings, skewed distributions
+/// - `distribution_normal`: Normal distribution indicator
+/// - `distribution_skewed`: Skewed distribution indicator
+/// - `distribution_other`: Other distribution types
+/// - `outlier_marker`: Outlier indicators
+///
+/// **Text Colors:**
+/// - `text_primary`: Primary text
+/// - `text_secondary`: Secondary text
+/// - `text_inverse`: Text on light backgrounds
+///
+/// **Background Colors:**
+/// - `background`: Main background
+/// - `surface`: Modal/surface backgrounds
+/// - `controls_bg`: Controls bar and table header backgrounds
+///
+/// **Other:**
+/// - `dimmed`: Dimmed elements, axis lines
+/// - `table_selected`: Selected row style (special modifier)
 pub struct ColorConfig {
-    pub primary: String,
-    pub secondary: String,
+    pub keybind_hints: String,
+    pub keybind_labels: String,
+    pub primary_chart_series_color: String,
+    pub secondary_chart_series_color: String,
     pub success: String,
     pub error: String,
     pub warning: String,
@@ -145,9 +526,10 @@ pub struct ColorConfig {
     pub text_secondary: String,
     pub text_inverse: String,
     pub table_header: String,
-    pub table_border: String,
+    pub table_header_bg: String,
+    pub column_separator: String,
     pub table_selected: String,
-    pub modal_border: String,
+    pub sidebar_border: String,
     pub modal_border_active: String,
     pub modal_border_error: String,
     pub distribution_normal: String,
@@ -155,6 +537,44 @@ pub struct ColorConfig {
     pub distribution_other: String,
     pub outlier_marker: String,
 }
+
+// Field comments for ColorConfig
+const COLOR_COMMENTS: &[(&str, &str)] = &[
+    (
+        "keybind_hints",
+        "Keybind hints (modals, breadcrumb, correlation matrix)",
+    ),
+    ("keybind_labels", "Action labels in controls bar"),
+    (
+        "primary_chart_series_color",
+        "Chart data (histogram bars, Q-Q plot data points)",
+    ),
+    (
+        "secondary_chart_series_color",
+        "Chart theory (histogram overlays, Q-Q plot reference line)",
+    ),
+    ("success", "Success indicators, normal distributions"),
+    ("error", "Error messages, outliers"),
+    ("warning", "Warnings, skewed distributions"),
+    ("dimmed", "Dimmed elements, axis lines"),
+    ("background", "Main background"),
+    ("surface", "Modal/surface backgrounds"),
+    ("controls_bg", "Controls bar and table header backgrounds"),
+    ("text_primary", "Primary text"),
+    ("text_secondary", "Secondary text"),
+    ("text_inverse", "Text on light backgrounds"),
+    ("table_header", "Table column header text"),
+    ("table_header_bg", "Table column header background"),
+    ("column_separator", "Vertical line between columns"),
+    ("table_selected", "Selected row style"),
+    ("sidebar_border", "Sidebar borders"),
+    ("modal_border_active", "Active modal elements"),
+    ("modal_border_error", "Error modal borders"),
+    ("distribution_normal", "Normal distribution indicator"),
+    ("distribution_skewed", "Skewed distribution indicator"),
+    ("distribution_other", "Other distribution types"),
+    ("outlier_marker", "Outlier indicators"),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -169,6 +589,15 @@ pub struct ControlsConfig {
     pub row_count_width: usize,
 }
 
+// Field comments for ControlsConfig
+const CONTROLS_COMMENTS: &[(&str, &str)] = &[
+    (
+        "custom_controls",
+        "Custom control keybindings (optional)\nFormat: [[\"key\", \"label\"], [\"key\", \"label\"], ...]\nIf not specified, uses default controls",
+    ),
+    ("row_count_width", "Row count display width in characters"),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueryConfig {
@@ -176,11 +605,26 @@ pub struct QueryConfig {
     pub enable_history: bool,
 }
 
+// Field comments for QueryConfig
+const QUERY_COMMENTS: &[(&str, &str)] = &[
+    (
+        "history_limit",
+        "Maximum number of queries to keep in history",
+    ),
+    ("enable_history", "Enable query history caching"),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TemplateConfig {
     pub auto_apply: bool,
 }
+
+// Field comments for TemplateConfig
+const TEMPLATE_COMMENTS: &[(&str, &str)] = &[(
+    "auto_apply",
+    "Auto-apply most relevant template on file open",
+)];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -190,6 +634,20 @@ pub struct DebugConfig {
     pub show_query: bool,
     pub show_transformations: bool,
 }
+
+// Field comments for DebugConfig
+const DEBUG_COMMENTS: &[(&str, &str)] = &[
+    ("enabled", "Enable debug overlay by default"),
+    (
+        "show_performance",
+        "Show performance metrics in debug overlay",
+    ),
+    ("show_query", "Show LazyFrame query in debug overlay"),
+    (
+        "show_transformations",
+        "Show transformation state in debug overlay",
+    ),
+];
 
 // Default implementations
 impl Default for AppConfig {
@@ -222,7 +680,7 @@ impl Default for DisplayConfig {
 impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
-            sampling_threshold: 10000,
+            sampling_threshold: SAMPLING_THRESHOLD,
             event_poll_interval_ms: 25,
         }
     }
@@ -240,8 +698,10 @@ impl Default for ThemeConfig {
 impl Default for ColorConfig {
     fn default() -> Self {
         Self {
-            primary: "cyan".to_string(),
-            secondary: "yellow".to_string(),
+            keybind_hints: "cyan".to_string(),
+            keybind_labels: "yellow".to_string(),
+            primary_chart_series_color: "cyan".to_string(),
+            secondary_chart_series_color: "dark_gray".to_string(),
             success: "green".to_string(),
             error: "red".to_string(),
             warning: "yellow".to_string(),
@@ -253,9 +713,10 @@ impl Default for ColorConfig {
             text_secondary: "dark_gray".to_string(),
             text_inverse: "black".to_string(),
             table_header: "white".to_string(),
-            table_border: "cyan".to_string(),
+            table_header_bg: "indexed(236)".to_string(),
+            column_separator: "cyan".to_string(),
             table_selected: "reversed".to_string(),
-            modal_border: "cyan".to_string(),
+            sidebar_border: "dark_gray".to_string(),
             modal_border_active: "yellow".to_string(),
             modal_border_error: "red".to_string(),
             distribution_normal: "green".to_string(),
@@ -467,8 +928,16 @@ impl ColorConfig {
             };
         }
 
-        validate_color!(&self.primary, "primary");
-        validate_color!(&self.secondary, "secondary");
+        validate_color!(&self.keybind_hints, "keybind_hints");
+        validate_color!(&self.keybind_labels, "keybind_labels");
+        validate_color!(
+            &self.primary_chart_series_color,
+            "primary_chart_series_color"
+        );
+        validate_color!(
+            &self.secondary_chart_series_color,
+            "secondary_chart_series_color"
+        );
         validate_color!(&self.success, "success");
         validate_color!(&self.error, "error");
         validate_color!(&self.warning, "warning");
@@ -480,9 +949,10 @@ impl ColorConfig {
         validate_color!(&self.text_secondary, "text_secondary");
         validate_color!(&self.text_inverse, "text_inverse");
         validate_color!(&self.table_header, "table_header");
-        validate_color!(&self.table_border, "table_border");
+        validate_color!(&self.table_header_bg, "table_header_bg");
+        validate_color!(&self.column_separator, "column_separator");
         validate_color!(&self.table_selected, "table_selected");
-        validate_color!(&self.modal_border, "modal_border");
+        validate_color!(&self.sidebar_border, "sidebar_border");
         validate_color!(&self.modal_border_active, "modal_border_active");
         validate_color!(&self.modal_border_error, "modal_border_error");
         validate_color!(&self.distribution_normal, "distribution_normal");
@@ -497,11 +967,17 @@ impl ColorConfig {
         let default = ColorConfig::default();
 
         // Macro would be nice here, but keeping it explicit for clarity
-        if other.primary != default.primary {
-            self.primary = other.primary;
+        if other.keybind_hints != default.keybind_hints {
+            self.keybind_hints = other.keybind_hints;
         }
-        if other.secondary != default.secondary {
-            self.secondary = other.secondary;
+        if other.keybind_labels != default.keybind_labels {
+            self.keybind_labels = other.keybind_labels;
+        }
+        if other.primary_chart_series_color != default.primary_chart_series_color {
+            self.primary_chart_series_color = other.primary_chart_series_color;
+        }
+        if other.secondary_chart_series_color != default.secondary_chart_series_color {
+            self.secondary_chart_series_color = other.secondary_chart_series_color;
         }
         if other.success != default.success {
             self.success = other.success;
@@ -536,14 +1012,17 @@ impl ColorConfig {
         if other.table_header != default.table_header {
             self.table_header = other.table_header;
         }
-        if other.table_border != default.table_border {
-            self.table_border = other.table_border;
+        if other.table_header_bg != default.table_header_bg {
+            self.table_header_bg = other.table_header_bg;
+        }
+        if other.column_separator != default.column_separator {
+            self.column_separator = other.column_separator;
         }
         if other.table_selected != default.table_selected {
             self.table_selected = other.table_selected;
         }
-        if other.modal_border != default.modal_border {
-            self.modal_border = other.modal_border;
+        if other.sidebar_border != default.sidebar_border {
+            self.sidebar_border = other.sidebar_border;
         }
         if other.modal_border_active != default.modal_border_active {
             self.modal_border_active = other.modal_border_active;
@@ -810,10 +1289,21 @@ impl Theme {
         let mut colors = HashMap::new();
 
         // Parse all colors from config
-        colors.insert("primary".to_string(), parser.parse(&config.colors.primary)?);
         colors.insert(
-            "secondary".to_string(),
-            parser.parse(&config.colors.secondary)?,
+            "keybind_hints".to_string(),
+            parser.parse(&config.colors.keybind_hints)?,
+        );
+        colors.insert(
+            "keybind_labels".to_string(),
+            parser.parse(&config.colors.keybind_labels)?,
+        );
+        colors.insert(
+            "primary_chart_series_color".to_string(),
+            parser.parse(&config.colors.primary_chart_series_color)?,
+        );
+        colors.insert(
+            "secondary_chart_series_color".to_string(),
+            parser.parse(&config.colors.secondary_chart_series_color)?,
         );
         colors.insert("success".to_string(), parser.parse(&config.colors.success)?);
         colors.insert("error".to_string(), parser.parse(&config.colors.error)?);
@@ -845,16 +1335,20 @@ impl Theme {
             parser.parse(&config.colors.table_header)?,
         );
         colors.insert(
-            "table_border".to_string(),
-            parser.parse(&config.colors.table_border)?,
+            "table_header_bg".to_string(),
+            parser.parse(&config.colors.table_header_bg)?,
+        );
+        colors.insert(
+            "column_separator".to_string(),
+            parser.parse(&config.colors.column_separator)?,
         );
         colors.insert(
             "table_selected".to_string(),
             parser.parse(&config.colors.table_selected)?,
         );
         colors.insert(
-            "modal_border".to_string(),
-            parser.parse(&config.colors.modal_border)?,
+            "sidebar_border".to_string(),
+            parser.parse(&config.colors.sidebar_border)?,
         );
         colors.insert(
             "modal_border_active".to_string(),
@@ -894,6 +1388,3 @@ impl Theme {
         self.colors.get(name).copied()
     }
 }
-
-// Default configuration template
-const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("../config/default.toml");

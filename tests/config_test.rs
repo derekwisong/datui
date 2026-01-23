@@ -1,4 +1,5 @@
 use datui::config::{AppConfig, ConfigManager};
+use datui::statistics::SAMPLING_THRESHOLD;
 use std::fs;
 use tempfile::TempDir;
 
@@ -28,7 +29,7 @@ fn test_default_config() {
 
     // Check theme defaults
     assert_eq!(config.theme.color_mode, "auto");
-    assert_eq!(config.theme.colors.primary, "cyan");
+    assert_eq!(config.theme.colors.keybind_hints, "cyan");
 
     // Check query defaults
     assert_eq!(config.query.history_limit, 1000);
@@ -171,7 +172,7 @@ fn test_merge_configs() {
     override_config.display.pages_lookahead = 5;
     override_config.performance.sampling_threshold = 50000;
     override_config.theme.color_mode = "dark".to_string();
-    override_config.theme.colors.primary = "blue".to_string();
+    override_config.theme.colors.keybind_hints = "blue".to_string();
 
     // Merge
     base.merge(override_config);
@@ -181,7 +182,7 @@ fn test_merge_configs() {
     assert_eq!(base.display.pages_lookahead, 5);
     assert_eq!(base.performance.sampling_threshold, 50000);
     assert_eq!(base.theme.color_mode, "dark");
-    assert_eq!(base.theme.colors.primary, "blue");
+    assert_eq!(base.theme.colors.keybind_hints, "blue");
 
     // Check that unmodified values remain default
     assert_eq!(base.display.pages_lookback, 3); // Still default
@@ -277,8 +278,8 @@ event_poll_interval_ms = 50
 color_mode = "dark"
 
 [theme.colors]
-primary = "blue"
-secondary = "magenta"
+keybind_hints = "blue"
+keybind_labels = "magenta"
 success = "bright_green"
 error = "bright_red"
 warning = "yellow"
@@ -290,9 +291,10 @@ text_primary = "white"
 text_secondary = "gray"
 text_inverse = "black"
 table_header = "white"
-table_border = "blue"
+table_header_bg = "indexed(236)"
+column_separator = "blue"
 table_selected = "reversed"
-modal_border = "blue"
+sidebar_border = "blue"
 modal_border_active = "yellow"
 modal_border_error = "red"
 distribution_normal = "green"
@@ -327,7 +329,7 @@ show_transformations = true
     assert!(config.display.row_numbers);
     assert_eq!(config.performance.sampling_threshold, 50000);
     assert_eq!(config.theme.color_mode, "dark");
-    assert_eq!(config.theme.colors.primary, "blue");
+    assert_eq!(config.theme.colors.keybind_hints, "blue");
     assert_eq!(config.ui.controls.row_count_width, 25);
     assert_eq!(config.query.history_limit, 500);
     assert!(config.templates.auto_apply);
@@ -384,18 +386,65 @@ fn test_color_config_merge() {
 
     let mut base = ColorConfig::default();
     let override_config = ColorConfig {
-        primary: "blue".to_string(),
+        keybind_hints: "blue".to_string(),
         error: "bright_red".to_string(),
         ..Default::default()
     };
 
     base.merge(override_config);
 
-    assert_eq!(base.primary, "blue");
+    assert_eq!(base.keybind_hints, "blue");
     assert_eq!(base.error, "bright_red");
     // Other colors should remain default
-    assert_eq!(base.secondary, "yellow");
+    assert_eq!(base.keybind_labels, "yellow");
     assert_eq!(base.success, "green");
+}
+
+#[test]
+fn test_new_color_fields() {
+    // Clear NO_COLOR for this test
+    std::env::remove_var("NO_COLOR");
+
+    use datui::config::{AppConfig, Theme};
+    use ratatui::style::Color;
+
+    // Test that new color fields have correct defaults
+    let config = AppConfig::default();
+    assert_eq!(config.theme.colors.primary_chart_series_color, "cyan");
+    assert_eq!(
+        config.theme.colors.secondary_chart_series_color,
+        "dark_gray"
+    );
+    assert_eq!(config.theme.colors.table_header_bg, "indexed(236)");
+    assert_eq!(config.theme.colors.column_separator, "cyan");
+    assert_eq!(config.theme.colors.sidebar_border, "dark_gray");
+
+    // Test that new colors can be parsed and retrieved from theme
+    let theme = Theme::from_config(&config.theme).unwrap();
+    // Colors should not be Reset (unless NO_COLOR is set)
+    if std::env::var("NO_COLOR").is_err() {
+        assert_ne!(theme.get("primary_chart_series_color"), Color::Reset);
+        assert_ne!(theme.get("secondary_chart_series_color"), Color::Reset);
+        assert_ne!(theme.get("table_header_bg"), Color::Reset);
+        assert_ne!(theme.get("column_separator"), Color::Reset);
+        assert_ne!(theme.get("sidebar_border"), Color::Reset);
+    }
+}
+
+#[test]
+fn test_new_color_fields_custom_values() {
+    use datui::config::AppConfig;
+
+    let mut config = AppConfig::default();
+    config.theme.colors.primary_chart_series_color = "#00ff00".to_string();
+    config.theme.colors.secondary_chart_series_color = "#ff00ff".to_string();
+    config.theme.colors.table_header_bg = "indexed(240)".to_string();
+    config.theme.colors.column_separator = "bright_blue".to_string();
+    config.theme.colors.sidebar_border = "bright_red".to_string();
+
+    // Should validate successfully
+    let result = config.validate();
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -404,7 +453,7 @@ fn test_validate_config_with_invalid_color() {
     std::env::remove_var("NO_COLOR");
 
     let mut config = AppConfig::default();
-    config.theme.colors.primary = "not_a_valid_color".to_string();
+    config.theme.colors.keybind_hints = "not_a_valid_color".to_string();
 
     let result = config.validate();
     assert!(result.is_err());
@@ -420,8 +469,8 @@ fn test_validate_config_with_valid_hex_color() {
     std::env::remove_var("NO_COLOR");
 
     let mut config = AppConfig::default();
-    config.theme.colors.primary = "#ff0000".to_string();
-    config.theme.colors.secondary = "#00ff00".to_string();
+    config.theme.colors.keybind_hints = "#ff0000".to_string();
+    config.theme.colors.keybind_labels = "#00ff00".to_string();
 
     let result = config.validate();
     assert!(result.is_ok());
@@ -433,10 +482,36 @@ fn test_validate_config_with_mixed_colors() {
     std::env::remove_var("NO_COLOR");
 
     let mut config = AppConfig::default();
-    config.theme.colors.primary = "cyan".to_string();
+    config.theme.colors.keybind_hints = "cyan".to_string();
     config.theme.colors.error = "#ff0000".to_string();
     config.theme.colors.success = "bright_green".to_string();
 
     let result = config.validate();
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_template_sampling_threshold_matches_constant() {
+    // Verify that the generated config's sampling_threshold matches the Rust constant
+    // This test ensures generated config always matches code defaults
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template_str = config_manager.generate_default_config();
+
+    // Parse the template to extract the sampling_threshold value
+    let template_config: AppConfig =
+        toml::from_str(&template_str).expect("Template should be valid TOML");
+
+    // The template value should match the constant (Rust code is authoritative)
+    assert_eq!(
+        template_config.performance.sampling_threshold, SAMPLING_THRESHOLD,
+        "Template sampling_threshold ({}) should match SAMPLING_THRESHOLD constant ({})",
+        template_config.performance.sampling_threshold, SAMPLING_THRESHOLD
+    );
+
+    // Also verify the Rust default matches the constant
+    let rust_default = AppConfig::default();
+    assert_eq!(
+        rust_default.performance.sampling_threshold, SAMPLING_THRESHOLD,
+        "Rust default sampling_threshold should match SAMPLING_THRESHOLD constant"
+    );
 }

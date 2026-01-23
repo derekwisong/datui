@@ -254,7 +254,7 @@ fn test_theme_from_config() {
     let theme = result.unwrap();
 
     // Check that colors are accessible
-    assert_ne!(theme.get("primary"), Color::Reset);
+    assert_ne!(theme.get("keybind_hints"), Color::Reset);
     assert_ne!(theme.get("error"), Color::Reset);
     assert_ne!(theme.get("success"), Color::Reset);
 }
@@ -278,7 +278,7 @@ fn test_theme_get_optional() {
     let theme = Theme::from_config(&config.theme).unwrap();
 
     // Known color should return Some
-    assert!(theme.get_optional("primary").is_some());
+    assert!(theme.get_optional("keybind_hints").is_some());
 
     // Unknown color should return None
     assert!(theme.get_optional("unknown_color").is_none());
@@ -290,8 +290,10 @@ fn test_theme_with_custom_colors() {
 
     let mut config = AppConfig::default();
     config.theme.colors = ColorConfig {
-        primary: "#ff0000".to_string(),
-        secondary: "blue".to_string(),
+        keybind_hints: "#ff0000".to_string(),
+        keybind_labels: "blue".to_string(),
+        primary_chart_series_color: "cyan".to_string(),
+        secondary_chart_series_color: "dark_gray".to_string(),
         success: "bright_green".to_string(),
         error: "red".to_string(),
         warning: "yellow".to_string(),
@@ -303,9 +305,10 @@ fn test_theme_with_custom_colors() {
         text_secondary: "gray".to_string(),
         text_inverse: "black".to_string(),
         table_header: "white".to_string(),
-        table_border: "cyan".to_string(),
+        table_header_bg: "indexed(236)".to_string(),
+        column_separator: "cyan".to_string(),
         table_selected: "reversed".to_string(),
-        modal_border: "cyan".to_string(),
+        sidebar_border: "cyan".to_string(),
         modal_border_active: "yellow".to_string(),
         modal_border_error: "red".to_string(),
         distribution_normal: "green".to_string(),
@@ -324,7 +327,7 @@ fn test_theme_with_invalid_color() {
     use datui::config::AppConfig;
 
     let mut config = AppConfig::default();
-    config.theme.colors.primary = "invalid_color_name".to_string();
+    config.theme.colors.keybind_hints = "invalid_color_name".to_string();
 
     let result = Theme::from_config(&config.theme);
     assert!(result.is_err());

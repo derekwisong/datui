@@ -83,12 +83,14 @@ Customize the entire UI appearance:
 color_mode = "auto"  # "light", "dark", or "auto"
 
 [theme.colors]
-primary = "cyan"              # Keybind hints
-secondary = "yellow"          # Action labels
-error = "red"                 # Error messages
-success = "green"             # Success indicators
-warning = "yellow"            # Warnings
-dimmed = "dark_gray"          # Dimmed elements
+keybind_hints = "cyan"              # Keybind hints
+keybind_labels = "yellow"           # Action labels
+primary_chart_series_color = "cyan" # Chart data
+secondary_chart_series_color = "dark_gray" # Chart theory
+error = "red"                       # Error messages
+success = "green"                   # Success indicators
+warning = "yellow"                  # Warnings
+dimmed = "dark_gray"                # Dimmed elements
 ```
 
 #### Color Formats
@@ -97,7 +99,7 @@ Three color formats are supported:
 
 **1. Named Colors**
 ```toml
-primary = "cyan"
+keybind_hints = "cyan"
 error = "bright_red"
 dimmed = "dark_gray"
 ```
@@ -110,7 +112,7 @@ Available names:
 **2. Hex Colors**
 ```toml
 background = "#1e1e1e"
-modal_border = "#007acc"
+sidebar_border = "#007acc"
 controls_bg = "#2d2d2d"
 ```
 
@@ -143,27 +145,30 @@ All UI colors can be customized:
 
 | Color | Purpose | Default |
 |-------|---------|---------|
-| `primary` | Keybind hints (bold) | cyan |
-| `secondary` | Action labels | yellow |
-| `success` | Success indicators | green |
-| `error` | Error messages | red |
-| `warning` | Warnings | yellow |
-| `dimmed` | Dimmed/inactive elements | dark_gray |
+| `keybind_hints` | Keybind hints (modals, breadcrumb, correlation matrix) | cyan |
+| `keybind_labels` | Action labels in controls bar | yellow |
+| `primary_chart_series_color` | Chart data (histogram bars, Q-Q plot data points) | cyan |
+| `secondary_chart_series_color` | Chart theory (histogram overlays, Q-Q plot reference line) | dark_gray |
+| `success` | Success indicators, normal distributions | green |
+| `error` | Error messages, outliers | red |
+| `warning` | Warnings, skewed distributions | yellow |
+| `dimmed` | Dimmed elements, axis lines | dark_gray |
 | `background` | Main background | black |
-| `surface` | Modal backgrounds | black |
-| `controls_bg` | Controls bar background | indexed(236) |
+| `surface` | Modal/surface backgrounds | black |
+| `controls_bg` | Controls bar and table header backgrounds | indexed(236) |
 | `text_primary` | Primary text | white |
 | `text_secondary` | Secondary text | dark_gray |
 | `text_inverse` | Text on light backgrounds | black |
-| `table_header` | Table header text | white |
-| `table_border` | Table borders | cyan |
-| `table_selected` | Selected row | reversed |
-| `modal_border` | Modal borders | cyan |
+| `table_header` | Table column header text | white |
+| `table_header_bg` | Table column header background | indexed(236) |
+| `column_separator` | Vertical line between table columns | cyan |
+| `table_selected` | Selected row style | reversed |
+| `sidebar_border` | Sidebar borders | dark_gray |
 | `modal_border_active` | Active modal elements | yellow |
-| `modal_border_error` | Error modal border | red |
-| `distribution_normal` | Normal distribution | green |
-| `distribution_skewed` | Skewed distribution | yellow |
-| `distribution_other` | Other distributions | white |
+| `modal_border_error` | Error modal borders | red |
+| `distribution_normal` | Normal distribution indicator | green |
+| `distribution_skewed` | Skewed distribution indicator | yellow |
+| `distribution_other` | Other distribution types | white |
 | `outlier_marker` | Outlier indicators | red |
 
 ### Query System
@@ -211,7 +216,7 @@ row_numbers = true
 row_start_index = 0
 
 [theme.colors]
-primary = "blue"
+keybind_hints = "blue"
 ```
 
 ### Dracula Theme
@@ -225,33 +230,36 @@ version = "0.2"
 color_mode = "dark"
 
 [theme.colors]
-primary = "#bd93f9"         # Purple
-secondary = "#ff79c6"       # Pink
-success = "#50fa7b"         # Green
-error = "#ff5555"           # Red
-warning = "#ffb86c"         # Orange
-dimmed = "#6272a4"          # Comment gray
+keybind_hints = "#bd93f9"              # Purple
+keybind_labels = "#ff79c6"             # Pink
+primary_chart_series_color = "#bd93f9" # Purple
+secondary_chart_series_color = "#6272a4" # Comment gray
+success = "#50fa7b"                    # Green
+error = "#ff5555"                      # Red
+warning = "#ffb86c"                    # Orange
+dimmed = "#6272a4"                     # Comment gray
 
-background = "#282a36"      # Background
-surface = "#44475a"         # Current line
-controls_bg = "#44475a"     # Controls bar
+background = "#282a36"                 # Background
+surface = "#44475a"                    # Current line
+controls_bg = "#44475a"                # Controls bar
 
-text_primary = "#f8f8f2"    # Foreground
-text_secondary = "#6272a4"  # Comment
-text_inverse = "#282a36"    # Background (for inverse)
+text_primary = "#f8f8f2"               # Foreground
+text_secondary = "#6272a4"             # Comment
+text_inverse = "#282a36"               # Background (for inverse)
 
-table_header = "#f8f8f2"    # Foreground
-table_border = "#bd93f9"    # Purple
+table_header = "#f8f8f2"               # Foreground
+table_header_bg = "#44475a"            # Current line
+column_separator = "#bd93f9"            # Purple
 table_selected = "reversed"
 
-modal_border = "#bd93f9"           # Purple
-modal_border_active = "#ff79c6"    # Pink
-modal_border_error = "#ff5555"     # Red
+sidebar_border = "#6272a4"             # Comment gray
+modal_border_active = "#ff79c6"        # Pink
+modal_border_error = "#ff5555"         # Red
 
-distribution_normal = "#50fa7b"    # Green
-distribution_skewed = "#ffb86c"    # Orange
-distribution_other = "#f8f8f2"     # Foreground
-outlier_marker = "#ff5555"         # Red
+distribution_normal = "#50fa7b"         # Green
+distribution_skewed = "#ffb86c"         # Orange
+distribution_other = "#f8f8f2"          # Foreground
+outlier_marker = "#ff5555"              # Red
 ```
 
 ### Performance Tuned
@@ -281,8 +289,10 @@ version = "0.2"
 color_mode = "dark"
 
 [theme.colors]
-primary = "bright_cyan"
-secondary = "bright_yellow"
+keybind_hints = "bright_cyan"
+keybind_labels = "bright_yellow"
+primary_chart_series_color = "bright_cyan"
+secondary_chart_series_color = "dark_gray"
 error = "bright_red"
 success = "bright_green"
 warning = "bright_yellow"
@@ -364,7 +374,7 @@ If your config isn't being used:
 If you see an error about invalid colors:
 
 ```
-Error: Invalid color value for 'primary': Unknown color name: 'notacolor'
+Error: Invalid color value for 'keybind_hints': Unknown color name: 'notacolor'
 ```
 
 **Solutions:**

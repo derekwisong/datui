@@ -13,7 +13,7 @@ See the
 
 ## Loading Data
 
-To learn about the supported formats and features concerning loading
+To learn about the supported formats and features when loading
 a dataset with Datui, see the [Loading Data Guide](user-guide/loading-data.md).
 
 ## Querying, Filtering, and Sorting

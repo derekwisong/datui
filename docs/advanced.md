@@ -1,3 +1,3 @@
 # Advanced Topics
 
-> **Note**: This is a stub. Please add advanced topics content here.
+For help keeping things fast, see [Performance Tips](advanced/performance-tips.md).

@@ -42,3 +42,7 @@ Both operations run on the **current** table—i.e. the result of any filters, s
 - **Enter**: Activate focused control (Apply, Cancel, Clear).
 - **Esc**: Close dialog without applying.
 - **Ctrl+h**: Show help.
+
+## Templates
+
+Pivot and melt settings can be saved in **templates**. When you save a template from the current view (e.g. after applying a pivot or melt), the reshape spec is stored. Applying that template (e.g. with **`T`** for the most relevant template, or from the template manager) will run query → filters → sort → pivot or melt → column order in that order, so the same reshape is applied appropriately in the lazyframe processing flow.

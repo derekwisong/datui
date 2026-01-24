@@ -1,0 +1,8 @@
+[package]
+name = "datui-cli"
+version = "0.2.6"
+edition = "2021"
+description = "Shared CLI definitions for datui (Args, CompressionFormat)"
+
+[dependencies]
+clap = { version = "4.5.54", features = ["derive"] }

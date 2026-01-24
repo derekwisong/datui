@@ -4,6 +4,7 @@
 
 use polars::datatypes::DataType;
 use ratatui::widgets::TableState;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +84,8 @@ impl MeltTypeFilter {
 }
 
 /// Aggregation for pivot value column.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PivotAggregation {
     #[default]
     Last,
@@ -125,7 +127,7 @@ impl PivotAggregation {
 }
 
 /// Spec for pivot operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PivotSpec {
     pub index: Vec<String>,
     pub pivot_column: String,
@@ -135,7 +137,7 @@ pub struct PivotSpec {
 }
 
 /// Spec for melt operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeltSpec {
     pub index: Vec<String>,
     pub value_columns: Vec<String>,

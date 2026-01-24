@@ -41,7 +41,7 @@ fi
 mkdir -p book
 
 # Make scripts executable
-chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py
+chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py scripts/docs/generate_command_line_options.py scripts/docs/check_doc_links.sh
 
 # Set up temporary worktree directory
 WORKTREE_DIR="${REPO_ROOT}/.docs-build-worktree"

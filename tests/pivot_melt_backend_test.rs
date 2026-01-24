@@ -5,6 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotMeltFocus, PivotSpec};
+use datui::template::MatchCriteria;
 use datui::{App, AppEvent, InputMode, OpenOptions};
 use polars::prelude::AnyValue;
 use std::path::PathBuf;
@@ -354,4 +355,69 @@ fn test_melt_via_modal_apply() {
     assert!(names.contains(&"id"));
     assert!(names.contains(&"date"));
     assert!(df.height() > 0);
+}
+
+/// Save a template after pivot, reload file, apply via T, and verify pivoted result.
+#[test]
+fn test_template_save_and_apply_pivot() {
+    ensure_sample_data();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx);
+    let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
+    load_file(&mut app, path.clone());
+
+    let spec = PivotSpec {
+        index: vec!["id".to_string(), "date".to_string()],
+        pivot_column: "key".to_string(),
+        value_column: "value".to_string(),
+        aggregation: PivotAggregation::Last,
+        sort_columns: false,
+    };
+    let mut next = app.event(&AppEvent::Pivot(spec));
+    while let Some(ev) = next.take() {
+        next = app.event(&ev);
+    }
+
+    let match_criteria = MatchCriteria {
+        exact_path: Some(path.clone()),
+        relative_path: None,
+        path_pattern: None,
+        filename_pattern: None,
+        schema_columns: None,
+        schema_types: None,
+    };
+    let template = app
+        .create_template_from_current_state(
+            "pivot_melt_test_pivot_template".to_string(),
+            None,
+            match_criteria,
+        )
+        .expect("create template");
+
+    load_file(&mut app, path.clone());
+    let raw_names: Vec<String> = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .schema
+        .iter_names()
+        .map(|s| s.to_string())
+        .collect();
+    assert!(
+        raw_names.contains(&"key".to_string()),
+        "raw data must have key column before apply"
+    );
+
+    send_key(&mut app, KeyCode::Char('T'));
+    let state = app.data_table_state.as_ref().unwrap();
+    let df = state.lf.clone().collect().unwrap();
+    let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
+    assert!(names.contains(&"id"));
+    assert!(names.contains(&"date"));
+    assert!(names.contains(&"A"));
+    assert!(names.contains(&"B"));
+    assert!(names.contains(&"C"));
+    assert!(df.height() > 0);
+
+    assert!(template.settings.pivot.is_some());
 }

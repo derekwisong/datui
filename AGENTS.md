@@ -44,6 +44,9 @@ Datui is a terminal user interface (TUI) for exploring and analyzing tabular dat
 
 ### Application Structure
 
+- **crates/datui-cli**: Shared CLI definitions (`Args`, `CompressionFormat`). Used by the main app, `build.rs` (manpage), and `gen_docs` binary (command-line-options markdown for mdbook).
+- **src/bin/gen_docs.rs**: Emits `docs/reference/command-line-options.md` from Clap; run via `scripts/docs/generate_command_line_options.py` before mdbook.
+
 ```
 src/
 ├── main.rs              # Entry point, CLI parsing, event loop

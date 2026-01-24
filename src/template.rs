@@ -12,6 +12,7 @@ use polars::prelude::Schema;
 
 use crate::config::ConfigManager;
 use crate::filter_modal::FilterStatement;
+use crate::pivot_melt_modal::{MeltSpec, PivotSpec};
 
 // Custom serialization for SystemTime (convert to/from seconds since epoch)
 mod time_serde {
@@ -103,6 +104,12 @@ pub struct TemplateSettings {
     pub sort_ascending: bool,
     pub column_order: Vec<String>,
     pub locked_columns_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub pivot: Option<PivotSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub melt: Option<MeltSpec>,
 }
 
 pub struct TemplateManager {

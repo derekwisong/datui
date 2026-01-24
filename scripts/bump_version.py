@@ -50,19 +50,23 @@ def bump_version(current: str, bump_type: str) -> str:
         raise ValueError(f"Invalid bump type: {bump_type}. Must be major, minor, or patch.")
 
 
-def update_cargo_toml(file_path: Path, old_version: str, new_version: str) -> None:
-    """Update version in Cargo.toml."""
+def update_cargo_toml(
+    file_path: Path, old_version: str, new_version: str, project_root: Path
+) -> None:
+    """Update version in a Cargo.toml file."""
     content = file_path.read_text()
-    # Match: version = "0.2.1"
     pattern = rf'version\s*=\s*"{re.escape(old_version)}"'
     replacement = f'version = "{new_version}"'
     new_content = re.sub(pattern, replacement, content)
 
     if new_content == content:
-        raise ValueError(f"Could not find version {old_version} in Cargo.toml")
-    
+        raise ValueError(f"Could not find version {old_version} in {file_path}")
     file_path.write_text(new_content)
-    print(f"✓ Updated Cargo.toml: {old_version} -> {new_version}")
+    try:
+        rel = file_path.relative_to(project_root)
+    except ValueError:
+        rel = file_path
+    print(f"✓ Updated {rel}: {old_version} -> {new_version}")
 
 
 def update_readme(file_path: Path, old_version: str, new_version: str) -> None:
@@ -94,6 +98,8 @@ def commit_version_changes(project_root: Path, version: str, script_name: str) -
     try:
         # Stage the files (Cargo.lock may not exist for library crates)
         files_to_add = ["Cargo.toml", "README.md"]
+        if (project_root / "crates" / "datui-cli" / "Cargo.toml").exists():
+            files_to_add.append("crates/datui-cli/Cargo.toml")
         cargo_lock_path = project_root / "Cargo.lock"
         if cargo_lock_path.exists():
             files_to_add.append("Cargo.lock")
@@ -191,9 +197,13 @@ Examples:
     print(f"New version: {new_version}")
     print()
 
+    datui_cli_cargo = project_root / "crates" / "datui-cli" / "Cargo.toml"
+
     # Update files
     try:
-        update_cargo_toml(cargo_toml_path, current_version, new_version)
+        update_cargo_toml(cargo_toml_path, current_version, new_version, project_root)
+        if datui_cli_cargo.exists():
+            update_cargo_toml(datui_cli_cargo, current_version, new_version, project_root)
         update_readme(readme_path, current_version, new_version)
         print()
         print(f"✓ Version bumped successfully: {current_version} -> {new_version}")

@@ -138,8 +138,11 @@ Colors automatically adapt to your terminal:
 - **256-color terminals** (xterm-256color): Hex converted to nearest palette match
 - **Basic terminals** (8/16 colors): Colors map to nearest ANSI color
 - **Monochrome**: Set `NO_COLOR=1` to disable colors
-
-**Light Theme Support**: The default `background` and `text_primary` use `"default"` to inherit your terminal's default colors. This ensures the app works correctly in both light and dark terminal themes. If you set explicit colors like `"black"` or `"white"`, they may not work well in light themes.
+- **Light Theme Support:**
+  - The default values for `background` and `text_primary` are set to `"default"`
+  - Datui will inherit your terminal's default colors
+  - The application renders correctly in both light and dark terminal themes
+  - Be aware that setting explicit colors like `"black"` or `"white"` may result in poor visibility in certain terminal themes
 
 ### Available Colors
 

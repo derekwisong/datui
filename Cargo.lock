@@ -768,6 +768,7 @@ dependencies = [
  "clap_mangen",
  "color-eyre",
  "crossterm",
+ "datui-cli",
  "dirs",
  "fs2",
  "polars",
@@ -779,6 +780,13 @@ dependencies = [
  "tempfile",
  "toml",
  "xz2",
+]
+
+[[package]]
+name = "datui-cli"
+version = "0.2.6"
+dependencies = [
+ "clap",
 ]
 
 [[package]]

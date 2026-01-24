@@ -10,5 +10,8 @@ Use arrow keys or vim-style bindings (`j`/`k` for up/down, `h`/`l` for left/righ
 
 ![Basic Navigation Demo](demos/01-basic-navigation.gif)
 
-
 For more demonstrations of Datui's features, see the [Demos](demos.md) page.
+
+## Getting Started
+
+To get started with Datui, see the [Getting Started](getting-started.md) guide.

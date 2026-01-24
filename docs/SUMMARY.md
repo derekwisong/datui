@@ -13,7 +13,7 @@
   - [Loading Data](user-guide/loading-data.md)
   - [Querying Data](user-guide/querying-data.md)
   - [Filtering and Sorting](user-guide/filtering-sorting.md)
-  - [Analysis Features](user-guide/analysis-features.md)
+  - [Analysis Mode](user-guide/analysis-features.md)
   - [Reshaping: Pivot and Melt](user-guide/reshaping.md)
   - [Templates](user-guide/templates.md)
 
@@ -26,8 +26,8 @@
   - [Performance Tips](advanced/performance-tips.md)
 
 - [For Developers](for-developers.md)
-  - [Contributing](for-developers/contributing.md)
   - [Tests](for-developers/tests.md)
-  - [Documentation](for-developers/documentation.md)
   - [Adding Configuration Options](for-developers/adding-configuration-options.md)
-  - [Demos](for-developers/demos.md)
+  - [Documentation](for-developers/documentation.md)
+  - [Generating the Demos](for-developers/demos.md)
+  - [Contributing](for-developers/contributing.md)

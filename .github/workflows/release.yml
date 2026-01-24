@@ -87,12 +87,13 @@ jobs:
 
       - name: Build all historical tag documentation
         run: |
+          # build_single_version_docs uses temp docs tree; repo docs/ (incl. command-line-options.md) are never modified
           ORIGINAL_COMMIT=$(git rev-parse HEAD)
           ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           [ -f scripts/docs/build_single_version_docs.sh ] || (echo "Error: scripts/docs/build_single_version_docs.sh not found" && exit 1)
           [ -f scripts/docs/rebuild_index.py ] || (echo "Error: scripts/docs/rebuild_index.py not found" && exit 1)
           [ -f scripts/docs/index.html.j2 ] || (echo "Error: scripts/docs/index.html.j2 not found" && exit 1)
-          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py
+          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py scripts/docs/generate_command_line_options.py scripts/docs/check_doc_links.sh
           
           SCRIPT_DIR="/tmp/datui-build-scripts-$$"
           mkdir -p "$SCRIPT_DIR"
@@ -116,12 +117,13 @@ jobs:
 
       - name: Build documentation for main branch
         run: |
+          # build_single_version_docs uses temp docs tree; repo docs/ (incl. command-line-options.md) are never modified
           ORIGINAL_COMMIT=$(git rev-parse HEAD)
           git checkout main || (echo "Warning: Could not checkout main branch, using current HEAD" && true)
           [ -f scripts/docs/build_single_version_docs.sh ] || (echo "Error: scripts/docs/build_single_version_docs.sh not found" && exit 1)
           [ -f scripts/docs/rebuild_index.py ] || (echo "Error: scripts/docs/rebuild_index.py not found" && exit 1)
           [ -f scripts/docs/index.html.j2 ] || (echo "Error: scripts/docs/index.html.j2 not found" && exit 1)
-          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py
+          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py scripts/docs/generate_command_line_options.py scripts/docs/check_doc_links.sh
           rm -rf book/demos
           ./scripts/docs/build_single_version_docs.sh "main"
           rm -rf book/demos

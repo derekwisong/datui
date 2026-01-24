@@ -49,6 +49,8 @@ fn test_template_creation() -> Result<()> {
         sort_ascending: false,
         column_order: vec!["col1".to_string(), "col2".to_string(), "col3".to_string()],
         locked_columns_count: 1,
+        pivot: None,
+        melt: None,
     };
 
     let template = manager.create_template(
@@ -98,6 +100,8 @@ fn test_template_serialization() -> Result<()> {
         sort_ascending: true,
         column_order: vec!["a".to_string(), "b".to_string()],
         locked_columns_count: 0,
+        pivot: None,
+        melt: None,
     };
 
     let template = manager.create_template(
@@ -165,6 +169,8 @@ fn test_template_relevance_exact_path() -> Result<()> {
         sort_ascending: true,
         column_order: Vec::new(),
         locked_columns_count: 0,
+        pivot: None,
+        melt: None,
     };
 
     let mut manager = manager;

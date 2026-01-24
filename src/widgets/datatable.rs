@@ -67,6 +67,10 @@ pub struct DataTableState {
     proximity_threshold: usize, // Rows from buffer edge before triggering expansion
     row_numbers: bool,          // Whether to display row numbers
     row_start_index: usize,     // Starting index for row numbers (0 or 1)
+    /// Last applied pivot spec, if current lf is result of a pivot. Used for templates.
+    last_pivot_spec: Option<PivotSpec>,
+    /// Last applied melt spec, if current lf is result of a melt. Used for templates.
+    last_melt_spec: Option<MeltSpec>,
 }
 
 impl DataTableState {
@@ -108,6 +112,8 @@ impl DataTableState {
             proximity_threshold: 0, // Will be set when visible_rows is known
             row_numbers: false,     // Will be set from options
             row_start_index: 1,     // Will be set from options
+            last_pivot_spec: None,
+            last_melt_spec: None,
         })
     }
 
@@ -134,6 +140,8 @@ impl DataTableState {
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
         self.grouped_lf = None;
+        self.last_pivot_spec = None;
+        self.last_melt_spec = None;
 
         // Invalidate buffer on reset
         self.buffered_start_row = 0;
@@ -758,6 +766,14 @@ impl DataTableState {
         &self.active_query
     }
 
+    pub fn last_pivot_spec(&self) -> Option<&PivotSpec> {
+        self.last_pivot_spec.as_ref()
+    }
+
+    pub fn last_melt_spec(&self) -> Option<&MeltSpec> {
+        self.last_melt_spec.as_ref()
+    }
+
     pub fn is_grouped(&self) -> bool {
         self.schema
             .iter()
@@ -957,6 +973,8 @@ impl DataTableState {
                 None,
             )?
         };
+        self.last_pivot_spec = Some(spec.clone());
+        self.last_melt_spec = None;
         self.replace_lf_after_reshape(pivoted.lazy())?;
         Ok(())
     }
@@ -972,6 +990,8 @@ impl DataTableState {
             value_name: Some(PlSmallStr::from(spec.value_name.as_str())),
         };
         let lf = self.lf.clone().unpivot(args);
+        self.last_melt_spec = Some(spec.clone());
+        self.last_pivot_spec = None;
         self.replace_lf_after_reshape(lf)?;
         Ok(())
     }

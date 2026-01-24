@@ -51,73 +51,6 @@ pub const APP_NAME: &str = "datui";
 /// Re-export compression format from CLI module
 pub use cli::CompressionFormat;
 
-impl CompressionFormat {
-    /// Detect compression format from file extension
-    pub fn from_extension(path: &std::path::Path) -> Option<Self> {
-        // Check final extension (e.g., .csv.gz -> gz)
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            match ext.to_lowercase().as_str() {
-                "gz" => Some(Self::Gzip),
-                "zst" | "zstd" => Some(Self::Zstd),
-                "bz2" | "bz" => Some(Self::Bzip2),
-                "xz" => Some(Self::Xz),
-                _ => None,
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Get file extension for this compression format
-    pub fn extension(&self) -> &'static str {
-        match self {
-            Self::Gzip => "gz",
-            Self::Zstd => "zst",
-            Self::Bzip2 => "bz2",
-            Self::Xz => "xz",
-        }
-    }
-}
-
-#[cfg(test)]
-mod compression_tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn test_compression_detection() {
-        assert_eq!(
-            CompressionFormat::from_extension(Path::new("file.csv.gz")),
-            Some(CompressionFormat::Gzip)
-        );
-        assert_eq!(
-            CompressionFormat::from_extension(Path::new("file.csv.zst")),
-            Some(CompressionFormat::Zstd)
-        );
-        assert_eq!(
-            CompressionFormat::from_extension(Path::new("file.csv.bz2")),
-            Some(CompressionFormat::Bzip2)
-        );
-        assert_eq!(
-            CompressionFormat::from_extension(Path::new("file.csv.xz")),
-            Some(CompressionFormat::Xz)
-        );
-        assert_eq!(
-            CompressionFormat::from_extension(Path::new("file.csv")),
-            None
-        );
-        assert_eq!(CompressionFormat::from_extension(Path::new("file")), None);
-    }
-
-    #[test]
-    fn test_compression_extension() {
-        assert_eq!(CompressionFormat::Gzip.extension(), "gz");
-        assert_eq!(CompressionFormat::Zstd.extension(), "zst");
-        assert_eq!(CompressionFormat::Bzip2.extension(), "bz2");
-        assert_eq!(CompressionFormat::Xz.extension(), "xz");
-    }
-}
-
 #[cfg(test)]
 pub mod tests {
     use std::path::Path;
@@ -2604,6 +2537,8 @@ impl App {
                                                     column_order: state.get_column_order().to_vec(),
                                                     locked_columns_count: state
                                                         .locked_columns_count(),
+                                                    pivot: state.last_pivot_spec().cloned(),
+                                                    melt: state.last_melt_spec().cloned(),
                                                 };
                                             }
 
@@ -3909,6 +3844,25 @@ impl App {
                 }
             }
 
+            // Apply pivot or melt (reshape) if present. Order: query → filters → sort → reshape → column_order.
+            if let Some(ref spec) = template.settings.pivot {
+                if let Err(e) = state.pivot(spec) {
+                    if let Some(saved) = saved_state {
+                        self.restore_state(saved);
+                    }
+                    self.active_template_id = saved_active_template_id;
+                    return Err(color_eyre::eyre::eyre!("{}", e));
+                }
+            } else if let Some(ref spec) = template.settings.melt {
+                if let Err(e) = state.melt(spec) {
+                    if let Some(saved) = saved_state {
+                        self.restore_state(saved);
+                    }
+                    self.active_template_id = saved_active_template_id;
+                    return Err(color_eyre::eyre::eyre!("{}", e));
+                }
+            }
+
             // Apply column order and locks
             if !template.settings.column_order.is_empty() {
                 state.set_column_order(template.settings.column_order.clone());
@@ -4009,6 +3963,8 @@ impl App {
                 sort_ascending: state.get_sort_ascending(),
                 column_order: state.get_column_order().to_vec(),
                 locked_columns_count: state.locked_columns_count(),
+                pivot: state.last_pivot_spec().cloned(),
+                melt: state.last_melt_spec().cloned(),
             }
         } else {
             template::TemplateSettings {
@@ -4018,6 +3974,8 @@ impl App {
                 sort_ascending: true,
                 column_order: Vec::new(),
                 locked_columns_count: 0,
+                pivot: None,
+                melt: None,
             }
         };
 
@@ -4115,7 +4073,7 @@ Functions (square brackets optional):
 
 Grouping:
   - Group by columns: select a, b by category, region
-  - Group with aliases: by region_name:region, year:date.year
+  - Group with aliases: by region_name:region, total:sales+tax
   - Empty select with grouping: select by city, state
   - All non-group columns collected as lists
 

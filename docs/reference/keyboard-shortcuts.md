@@ -1,6 +1,6 @@
 # Keyboard Shortcuts
 
-## Main view (Normal mode)
+In the main view, the following keyboard shortcuts are available:
 
 | Key | Action |
 |-----|--------|
@@ -13,4 +13,3 @@
 | `r` | Reset (clear query, filters, sort) |
 | `q` | Quit |
 | `Ctrl-h` | Help |
-

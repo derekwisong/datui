@@ -13,7 +13,7 @@ the data must be generated before the tests can be run.
 ## Generating Sample Data
 
 > If you used the [Setup Script](contributing.md#setup-script), the sample data has already
-> been generated. To regenerate the data, see the [instructions](#re-generating-or-updating-the-sample-data)
+> been generated. To regenerate the data, see the [instructions](tests.md#regenerating-or-updating-the-sample-data)
 
 The tests will automatically run a Python script to generate the sample files if
 they do not already exist. However, that script has some dependencies.
@@ -27,7 +27,7 @@ the `scripts/` directory, and activated it, you're ready to run the tests for th
 
 ```bash
 # activate the virtual environment if sample data is not already generated
-source .venv/bin/activte
+source .venv/bin/activate
 
 # run the tests
 cargo test

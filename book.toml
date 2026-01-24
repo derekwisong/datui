@@ -14,7 +14,7 @@ build-dir = "book"
 default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/derekwisong/datui"
-edit-url-template = "https://github.com/derekwisong/datui/edit/{branch}/docs/{path}"
+edit-url-template = "https://github.com/derekwisong/datui/edit/main/{path}"
 
 [output.html.search]
 enable = true

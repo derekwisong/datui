@@ -5,6 +5,7 @@ repository = "https://github.com/derekwisong/datui"
 version = "0.2.6"
 edition = "2021"
 license = "MIT"
+default-run = "datui"
 
 [dependencies]
 datui-cli = { path = "crates/datui-cli" }

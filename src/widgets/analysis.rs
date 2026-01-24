@@ -262,6 +262,7 @@ impl<'a> AnalysisWidget<'a> {
             self.selected_theoretical_distribution,
             main_layout[0],
             buf,
+            self.theme,
         );
 
         // Split charts and selector horizontally
@@ -594,9 +595,11 @@ fn render_statistics_table(
     let header_row = Row::new(header_cells.clone()).style(header_row_style);
 
     for col_stat in &results.column_statistics {
-        let mut cells =
-            vec![Cell::from(col_stat.name.as_str())
-                .style(Style::default().add_modifier(Modifier::BOLD))];
+        let mut cells = vec![Cell::from(col_stat.name.as_str()).style(
+            Style::default()
+                .fg(theme.get("text_primary"))
+                .add_modifier(Modifier::BOLD),
+        )];
         for &stat_idx in &visible_stats {
             let stat_name = stat_names[stat_idx];
             let value = match stat_name {
@@ -934,8 +937,12 @@ fn render_distribution_table(
             .unwrap_or_default();
 
         // Build row with locked column name (bold) + visible stat values
-        let mut cells = vec![Cell::from(dist_analysis.column_name.as_str())
-            .style(Style::default().add_modifier(Modifier::BOLD))];
+        // Use explicit text_primary so column names stay visible (avoids black-on-black)
+        let mut cells = vec![Cell::from(dist_analysis.column_name.as_str()).style(
+            Style::default()
+                .fg(theme.get("text_primary"))
+                .add_modifier(Modifier::BOLD),
+        )];
 
         // Add visible statistic values
         for &stat_idx in &visible_stats {
@@ -1246,11 +1253,13 @@ fn render_distribution_selector(
                 && selector_state.selected() == Some(sorted_idx);
 
             // Style cells based on focus only - no separate "selected" indicator
-            // The focused row (cursor position) is highlighted with reversed style
+            // Use explicit theme colors so unfocused names stay visible (avoids black-on-black)
             let name_style = if is_focused {
-                Style::default().add_modifier(Modifier::REVERSED)
-            } else {
                 Style::default()
+                    .fg(theme.get("table_header"))
+                    .bg(theme.get("controls_bg"))
+            } else {
+                Style::default().fg(theme.get("text_primary"))
             };
 
             // Style based on p-value
@@ -1270,8 +1279,20 @@ fn render_distribution_selector(
         .collect();
 
     // Create table with columns: Name, P-value
-    let header = Row::new(vec![Cell::from("Name"), Cell::from("P-value")]) // Changed from "Fit"
-        .style(Style::default().add_modifier(Modifier::BOLD));
+    let header = Row::new(vec![
+        Cell::from("Name").style(
+            Style::default()
+                .fg(theme.get("table_header"))
+                .bg(theme.get("controls_bg"))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("P-value").style(
+            Style::default()
+                .fg(theme.get("table_header"))
+                .bg(theme.get("controls_bg"))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
 
     let table = Table::new(
         rows,
@@ -1306,6 +1327,10 @@ fn render_sidebar(
         ("Correlation Matrix", AnalysisTool::CorrelationMatrix),
     ];
 
+    let text_primary = theme.get("text_primary");
+    let table_header = theme.get("table_header");
+    let controls_bg = theme.get("controls_bg");
+
     let items: Vec<ListItem> = tools
         .iter()
         .enumerate()
@@ -1315,11 +1340,14 @@ fn render_sidebar(
                 focus == AnalysisFocus::Sidebar && sidebar_state.selected() == Some(idx);
             let prefix = if is_selected { "> " } else { "  " };
             let style = if is_focused {
-                Style::default().add_modifier(Modifier::REVERSED)
+                // Explicit fg+bg so focused item is always visible (avoids black-on-black)
+                Style::default().fg(table_header).bg(controls_bg)
             } else if is_selected {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
                 Style::default()
+                    .fg(text_primary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(text_primary)
             };
             ListItem::new(format!("{}{}", prefix, name)).style(style)
         })
@@ -1938,69 +1966,55 @@ fn render_condensed_statistics(
     _selected_dist_type: DistributionType,
     area: Rect,
     buf: &mut Buffer,
+    theme: &Theme,
 ) {
     // Display statistics in single line: SW score, skew, kurtosis, median, mean, std, CV
-    // Cyan labels, plain values, no background
+    // Use explicit theme colors so text is always visible (avoids black-on-black for some themes)
     let chars = &dist.characteristics;
+    let label_style = Style::default()
+        .fg(theme.get("text_primary"))
+        .add_modifier(Modifier::BOLD);
+    let value_style = Style::default().fg(theme.get("text_primary"));
 
     let mut line_parts = Vec::new();
 
-    // Shapiro-Wilk score - use bold labels, no cyan
     if let (Some(sw_stat), Some(sw_p)) = (chars.shapiro_wilk_stat, chars.shapiro_wilk_pvalue) {
+        line_parts.push(Span::styled("SW: ", label_style));
         line_parts.push(Span::styled(
-            "SW: ",
-            Style::default().add_modifier(Modifier::BOLD),
+            format!("{:.3} (p={:.3})", sw_stat, sw_p),
+            value_style,
         ));
-        line_parts.push(Span::raw(format!("{:.3} (p={:.3})", sw_stat, sw_p)));
-        line_parts.push(Span::raw(" ")); // Space separator
+        line_parts.push(Span::styled(" ", value_style));
     }
 
-    // Skew - use bold labels, no cyan
-    line_parts.push(Span::styled(
-        "Skew: ",
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
-    line_parts.push(Span::raw(format!("{:.2}", chars.skewness)));
-    line_parts.push(Span::raw(" ")); // Space separator
+    line_parts.push(Span::styled("Skew: ", label_style));
+    line_parts.push(Span::styled(format!("{:.2}", chars.skewness), value_style));
+    line_parts.push(Span::styled(" ", value_style));
 
-    // Kurtosis - use bold labels, no cyan
-    line_parts.push(Span::styled(
-        "Kurt: ",
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
-    line_parts.push(Span::raw(format!("{:.2}", chars.kurtosis)));
-    line_parts.push(Span::raw(" ")); // Space separator
+    line_parts.push(Span::styled("Kurt: ", label_style));
+    line_parts.push(Span::styled(format!("{:.2}", chars.kurtosis), value_style));
+    line_parts.push(Span::styled(" ", value_style));
 
-    // Median - use bold labels, no cyan
+    line_parts.push(Span::styled("Median: ", label_style));
     line_parts.push(Span::styled(
-        "Median: ",
-        Style::default().add_modifier(Modifier::BOLD),
+        format!("{:.2}", dist.percentiles.p50),
+        value_style,
     ));
-    line_parts.push(Span::raw(format!("{:.2}", dist.percentiles.p50)));
-    line_parts.push(Span::raw(" ")); // Space separator
+    line_parts.push(Span::styled(" ", value_style));
 
-    // Mean - use bold labels, no cyan
-    line_parts.push(Span::styled(
-        "Mean: ",
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
-    line_parts.push(Span::raw(format!("{:.2}", chars.mean)));
-    line_parts.push(Span::raw(" ")); // Space separator
+    line_parts.push(Span::styled("Mean: ", label_style));
+    line_parts.push(Span::styled(format!("{:.2}", chars.mean), value_style));
+    line_parts.push(Span::styled(" ", value_style));
 
-    // Std - use bold labels, no cyan
-    line_parts.push(Span::styled(
-        "Std: ",
-        Style::default().add_modifier(Modifier::BOLD),
-    ));
-    line_parts.push(Span::raw(format!("{:.2}", chars.std_dev)));
-    line_parts.push(Span::raw(" ")); // Space separator
+    line_parts.push(Span::styled("Std: ", label_style));
+    line_parts.push(Span::styled(format!("{:.2}", chars.std_dev), value_style));
+    line_parts.push(Span::styled(" ", value_style));
 
-    // CV - use bold labels, no cyan
+    line_parts.push(Span::styled("CV: ", label_style));
     line_parts.push(Span::styled(
-        "CV: ",
-        Style::default().add_modifier(Modifier::BOLD),
+        format!("{:.3}", chars.coefficient_of_variation),
+        value_style,
     ));
-    line_parts.push(Span::raw(format!("{:.3}", chars.coefficient_of_variation)));
 
     let line = Line::from(line_parts);
     let lines = vec![line];

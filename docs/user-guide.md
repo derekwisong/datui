@@ -5,7 +5,10 @@
 
 ## Configuring Datui
 
-Datui can be configured to your preferences and needs. See the
+Datui can be configured to your preferences and needs.
+Set up a configuration file to make it just
+right for your preferences.
+See the
 [Configuration Guide](user-guide/configuration.md) for details.
 
 ## Loading Data

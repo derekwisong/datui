@@ -50,8 +50,7 @@ datui path/to/data.csv
 Use keyboard shortcuts to navigate:
 - Arrow keys (`↑`/`↓`/`←`/`→`) or `h`/`j`/`k`/`l` - Navigate the table
 - `/` - Open query input
-- `f` - Open filter menu
-- `s` - Open sort & column order menu
+- `s` - Open Sort & Filter modal (tabs: Sort, Filter)
 - `a` - Open analysis tools
 - `Esc` - Go back a screen
 - `Ctrl+h` - Show help

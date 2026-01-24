@@ -93,15 +93,14 @@ impl Widget for &Controls {
             .style(Style::default().bg(self.bg_color))
             .render(area, buf);
 
-        const DEFAULT_CONTROLS: [(&str, &str); 9] = [
+        const DEFAULT_CONTROLS: [(&str, &str); 8] = [
             ("/", "Query"),
-            ("f", "Filter"),
-            ("s", "Sort"),
+            ("i", "Info"),
             ("a", "Analysis"),
-            ("p", "Pivot/Melt"),
+            ("s", "Sort & Filter"),
+            ("p", "Pivot & Melt"),
             ("r", "Reverse"),
             ("R", "Reset"),
-            ("i", "Info"),
             ("q", "Quit"),
         ];
 

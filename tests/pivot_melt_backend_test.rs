@@ -1,4 +1,4 @@
-//! Phase 3: Backend and infrastructure tests for Pivot/Melt.
+//! Phase 3: Backend and infrastructure tests for Pivot and Melt.
 //! No modal UI; uses AppEvent::Pivot / AppEvent::Melt with hardcoded specs.
 //! Phase 6: UI-level tests (open modal, Apply, Esc cancel).
 

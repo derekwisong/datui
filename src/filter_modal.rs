@@ -124,6 +124,35 @@ impl FilterModal {
         self.new_value.clear();
         self.focus = FilterFocus::Column;
     }
+
+    /// Advance focus within body only (Column → ... → Statements). Returns true if we were on
+    /// Statements and caller should move to footer (Apply).
+    pub fn next_body_focus(&mut self) -> bool {
+        match self.focus {
+            FilterFocus::Statements => return true,
+            FilterFocus::Column => self.focus = FilterFocus::Operator,
+            FilterFocus::Operator => self.focus = FilterFocus::Value,
+            FilterFocus::Value => self.focus = FilterFocus::Logical,
+            FilterFocus::Logical => self.focus = FilterFocus::Add,
+            FilterFocus::Add => self.focus = FilterFocus::Statements,
+            FilterFocus::Confirm | FilterFocus::Clear => {}
+        }
+        false
+    }
+
+    /// Retreat focus within body only. Returns true if we were on Column and caller should move to TabBar.
+    pub fn prev_body_focus(&mut self) -> bool {
+        match self.focus {
+            FilterFocus::Column => return true,
+            FilterFocus::Operator => self.focus = FilterFocus::Column,
+            FilterFocus::Value => self.focus = FilterFocus::Operator,
+            FilterFocus::Logical => self.focus = FilterFocus::Value,
+            FilterFocus::Add => self.focus = FilterFocus::Logical,
+            FilterFocus::Statements => self.focus = FilterFocus::Add,
+            FilterFocus::Confirm | FilterFocus::Clear => {}
+        }
+        false
+    }
 }
 
 #[cfg(test)]

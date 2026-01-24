@@ -11,7 +11,7 @@ This script generates various CSV and Parquet files with different characteristi
 - Files for aggregate calculations
 - Large and small datasets
 - Error case testing
-- Pivot/Melt reshape testing (long-format for pivot, wide-format for melt)
+- Pivot and Melt reshape testing (long-format for pivot, wide-format for melt)
 
 Uses Polars instead of Pandas.
 """
@@ -539,8 +539,8 @@ def main():
         if name != "inconsistent_types":
             save_parquet(df, f"error_{name}.parquet")
 
-    # Pivot/Melt testing (see plans/pivot-melt-plan.md)
-    print("\n9. Generating pivot/melt testing data...")
+    # Pivot and Melt testing
+    print("\n9. Generating pivot and melt testing data...")
     pivot_long_df = generate_pivot_long()
     save_csv(pivot_long_df, "pivot_long.csv")
     save_parquet(pivot_long_df, "pivot_long.parquet")

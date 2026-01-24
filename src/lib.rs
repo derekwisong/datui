@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, StatefulWidget, Table,
+    Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, StatefulWidget, Table, Tabs,
 };
 
 pub mod analysis_modal;
@@ -21,6 +21,7 @@ pub mod config;
 pub mod filter_modal;
 pub mod pivot_melt_modal;
 mod query;
+pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod statistics;
 pub mod template;
@@ -33,9 +34,10 @@ pub use config::{
 };
 
 use analysis_modal::AnalysisModal;
-use filter_modal::{FilterFocus, FilterModal, FilterOperator, FilterStatement, LogicalOperator};
+use filter_modal::{FilterFocus, FilterOperator, FilterStatement, LogicalOperator};
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
-use sort_modal::{SortColumn, SortFocus, SortModal};
+use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
+use sort_modal::{SortColumn, SortFocus};
 pub use template::{Template, TemplateManager};
 use widgets::controls::Controls;
 use widgets::datatable::{DataTable, DataTableState};
@@ -339,8 +341,7 @@ pub enum AppEvent {
 pub enum InputMode {
     #[default]
     Normal,
-    Filtering,
-    Sorting,
+    SortFilter,
     PivotMelt,
     Editing,
 }
@@ -414,8 +415,7 @@ pub struct App {
     input_cursor: usize, // Cursor position in input string
     pub input_mode: InputMode,
     input_type: Option<InputType>,
-    pub sort_modal: SortModal,
-    pub filter_modal: FilterModal,
+    pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
     pub analysis_modal: AnalysisModal,
@@ -539,8 +539,7 @@ impl App {
             input_cursor: 0,
             input_mode: InputMode::Normal,
             input_type: None,
-            sort_modal: SortModal::new(),
-            filter_modal: FilterModal::new(),
+            sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
             analysis_modal: AnalysisModal::new(),
@@ -706,8 +705,7 @@ impl App {
             self.loading_state = LoadingState::Idle;
             self.data_table_state = Some(lf);
             self.path = Some(path.to_path_buf());
-            self.sort_modal = SortModal::new();
-            self.filter_modal = FilterModal::new();
+            self.sort_filter_modal = SortFilterModal::new();
             self.pivot_melt_modal = PivotMeltModal::new();
             return Ok(());
         }
@@ -801,8 +799,7 @@ impl App {
         self.loading_state = LoadingState::Idle;
         self.data_table_state = Some(lf);
         self.path = Some(path.to_path_buf());
-        self.sort_modal = SortModal::new();
-        self.filter_modal = FilterModal::new();
+        self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
         Ok(())
     }
@@ -881,102 +878,117 @@ impl App {
             return None;
         }
 
-        if self.input_mode == InputMode::Filtering {
+        if self.input_mode == InputMode::SortFilter {
+            let on_tab_bar = self.sort_filter_modal.focus == SortFilterFocus::TabBar;
+            let on_body = self.sort_filter_modal.focus == SortFilterFocus::Body;
+            let on_apply = self.sort_filter_modal.focus == SortFilterFocus::Apply;
+            let on_cancel = self.sort_filter_modal.focus == SortFilterFocus::Cancel;
+            let on_clear = self.sort_filter_modal.focus == SortFilterFocus::Clear;
+            let sort_tab = self.sort_filter_modal.active_tab == SortFilterTab::Sort;
+            let filter_tab = self.sort_filter_modal.active_tab == SortFilterTab::Filter;
+
             match event.code {
                 KeyCode::Esc => {
+                    for col in &mut self.sort_filter_modal.sort.columns {
+                        col.is_to_be_locked = false;
+                    }
+                    self.sort_filter_modal.sort.has_unapplied_changes = false;
+                    self.sort_filter_modal.close();
                     self.input_mode = InputMode::Normal;
-                    self.filter_modal.active = false;
                 }
-                KeyCode::Tab => {
-                    self.filter_modal.focus = match self.filter_modal.focus {
-                        FilterFocus::Column => FilterFocus::Operator,
-                        FilterFocus::Operator => FilterFocus::Value,
-                        FilterFocus::Value => FilterFocus::Logical,
-                        FilterFocus::Logical => FilterFocus::Add,
+                KeyCode::Tab => self.sort_filter_modal.next_focus(),
+                KeyCode::BackTab => self.sort_filter_modal.prev_focus(),
+                KeyCode::Left | KeyCode::Char('h') if on_tab_bar => {
+                    self.sort_filter_modal.switch_tab();
+                }
+                KeyCode::Right | KeyCode::Char('l') if on_tab_bar => {
+                    self.sort_filter_modal.switch_tab();
+                }
+                KeyCode::Enter if event.modifiers.contains(KeyModifiers::CONTROL) && sort_tab => {
+                    let columns = self.sort_filter_modal.sort.get_sorted_columns();
+                    let column_order = self.sort_filter_modal.sort.get_column_order();
+                    let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
+                    let ascending = self.sort_filter_modal.sort.ascending;
+                    self.sort_filter_modal.sort.has_unapplied_changes = false;
+                    self.sort_filter_modal.close();
+                    self.input_mode = InputMode::Normal;
+                    let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
+                    return Some(AppEvent::Sort(columns, ascending));
+                }
+                KeyCode::Enter if on_apply => {
+                    if sort_tab {
+                        let columns = self.sort_filter_modal.sort.get_sorted_columns();
+                        let column_order = self.sort_filter_modal.sort.get_column_order();
+                        let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
+                        let ascending = self.sort_filter_modal.sort.ascending;
+                        self.sort_filter_modal.sort.has_unapplied_changes = false;
+                        self.sort_filter_modal.close();
+                        self.input_mode = InputMode::Normal;
+                        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
+                        return Some(AppEvent::Sort(columns, ascending));
+                    } else {
+                        let statements = self.sort_filter_modal.filter.statements.clone();
+                        self.sort_filter_modal.close();
+                        self.input_mode = InputMode::Normal;
+                        return Some(AppEvent::Filter(statements));
+                    }
+                }
+                KeyCode::Enter if on_cancel => {
+                    for col in &mut self.sort_filter_modal.sort.columns {
+                        col.is_to_be_locked = false;
+                    }
+                    self.sort_filter_modal.sort.has_unapplied_changes = false;
+                    self.sort_filter_modal.close();
+                    self.input_mode = InputMode::Normal;
+                }
+                KeyCode::Enter if on_clear => {
+                    if sort_tab {
+                        self.sort_filter_modal.sort.clear_selection();
+                    } else {
+                        self.sort_filter_modal.filter.statements.clear();
+                        self.sort_filter_modal.filter.list_state.select(None);
+                    }
+                }
+                KeyCode::Char(' ')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
+                {
+                    self.sort_filter_modal.sort.toggle_selection();
+                }
+                KeyCode::Char(' ')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Order =>
+                {
+                    self.sort_filter_modal.sort.ascending = !self.sort_filter_modal.sort.ascending;
+                    self.sort_filter_modal.sort.has_unapplied_changes = true;
+                }
+                KeyCode::Char(' ') if on_apply && sort_tab => {
+                    let columns = self.sort_filter_modal.sort.get_sorted_columns();
+                    let column_order = self.sort_filter_modal.sort.get_column_order();
+                    let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
+                    let ascending = self.sort_filter_modal.sort.ascending;
+                    self.sort_filter_modal.sort.has_unapplied_changes = false;
+                    let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
+                    return Some(AppEvent::Sort(columns, ascending));
+                }
+                KeyCode::Enter if on_body && filter_tab => {
+                    match self.sort_filter_modal.filter.focus {
                         FilterFocus::Add => {
-                            if !self.filter_modal.statements.is_empty() {
-                                FilterFocus::Statements
-                            } else {
-                                FilterFocus::Confirm
-                            }
-                        }
-                        FilterFocus::Statements => FilterFocus::Confirm,
-                        FilterFocus::Confirm => FilterFocus::Clear,
-                        FilterFocus::Clear => FilterFocus::Column,
-                    };
-                }
-                KeyCode::BackTab => {
-                    self.filter_modal.focus = match self.filter_modal.focus {
-                        FilterFocus::Column => FilterFocus::Clear,
-                        FilterFocus::Operator => FilterFocus::Column,
-                        FilterFocus::Value => FilterFocus::Operator,
-                        FilterFocus::Logical => FilterFocus::Value,
-                        FilterFocus::Add => FilterFocus::Logical,
-                        FilterFocus::Statements => FilterFocus::Add,
-                        FilterFocus::Confirm => {
-                            if !self.filter_modal.statements.is_empty() {
-                                FilterFocus::Statements
-                            } else {
-                                FilterFocus::Add
-                            }
-                        }
-                        FilterFocus::Clear => FilterFocus::Confirm,
-                    };
-                }
-                KeyCode::Down | KeyCode::Char('j')
-                    if self.filter_modal.focus == FilterFocus::Statements =>
-                {
-                    let i = match self.filter_modal.list_state.selected() {
-                        Some(i) => {
-                            if i >= self.filter_modal.statements.len().saturating_sub(1) {
-                                0
-                            } else {
-                                i + 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    self.filter_modal.list_state.select(Some(i));
-                }
-                KeyCode::Up | KeyCode::Char('k')
-                    if self.filter_modal.focus == FilterFocus::Statements =>
-                {
-                    let i = match self.filter_modal.list_state.selected() {
-                        Some(i) => {
-                            if i == 0 {
-                                self.filter_modal.statements.len().saturating_sub(1)
-                            } else {
-                                i - 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    self.filter_modal.list_state.select(Some(i));
-                }
-                KeyCode::Enter => {
-                    match self.filter_modal.focus {
-                        FilterFocus::Add => self.filter_modal.add_statement(),
-                        FilterFocus::Confirm => {
-                            self.input_mode = InputMode::Normal;
-                            self.filter_modal.active = false;
-                            return Some(AppEvent::Filter(self.filter_modal.statements.clone()));
-                        }
-                        FilterFocus::Clear => {
-                            self.filter_modal.statements.clear();
-                            self.filter_modal.list_state.select(None);
+                            self.sort_filter_modal.filter.add_statement();
                         }
                         FilterFocus::Statements => {
-                            // Remove selected
-                            if let Some(idx) = self.filter_modal.list_state.selected() {
-                                if idx < self.filter_modal.statements.len() {
-                                    self.filter_modal.statements.remove(idx);
-                                    if self.filter_modal.statements.is_empty() {
-                                        self.filter_modal.list_state.select(None);
-                                        self.filter_modal.focus = FilterFocus::Column;
-                                    } else if idx >= self.filter_modal.statements.len() {
-                                        self.filter_modal
-                                            .list_state
-                                            .select(Some(self.filter_modal.statements.len() - 1));
+                            let m = &mut self.sort_filter_modal.filter;
+                            if let Some(idx) = m.list_state.selected() {
+                                if idx < m.statements.len() {
+                                    m.statements.remove(idx);
+                                    if m.statements.is_empty() {
+                                        m.list_state.select(None);
+                                        m.focus = FilterFocus::Column;
+                                    } else {
+                                        m.list_state
+                                            .select(Some(m.statements.len().saturating_sub(1)));
                                     }
                                 }
                             }
@@ -984,116 +996,69 @@ impl App {
                         _ => {}
                     }
                 }
-                KeyCode::Char(c) if self.filter_modal.focus == FilterFocus::Value => {
-                    self.filter_modal.new_value.push(c);
-                }
-                KeyCode::Backspace if self.filter_modal.focus == FilterFocus::Value => {
-                    self.filter_modal.new_value.pop();
-                }
-                KeyCode::Right | KeyCode::Char('l') => match self.filter_modal.focus {
-                    FilterFocus::Column => {
-                        self.filter_modal.new_column_idx = (self.filter_modal.new_column_idx + 1)
-                            % self.filter_modal.available_columns.len().max(1);
+                KeyCode::Enter if on_body && sort_tab => match self.sort_filter_modal.sort.focus {
+                    SortFocus::Filter => {
+                        self.sort_filter_modal.sort.focus = SortFocus::ColumnList;
                     }
-                    FilterFocus::Operator => {
-                        self.filter_modal.new_operator_idx = (self.filter_modal.new_operator_idx
-                            + 1)
-                            % FilterOperator::iterator().count();
+                    SortFocus::ColumnList => {
+                        self.sort_filter_modal.sort.toggle_selection();
+                        let columns = self.sort_filter_modal.sort.get_sorted_columns();
+                        let column_order = self.sort_filter_modal.sort.get_column_order();
+                        let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
+                        let ascending = self.sort_filter_modal.sort.ascending;
+                        self.sort_filter_modal.sort.has_unapplied_changes = false;
+                        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
+                        return Some(AppEvent::Sort(columns, ascending));
                     }
-                    FilterFocus::Logical => {
-                        self.filter_modal.new_logical_idx = (self.filter_modal.new_logical_idx + 1)
-                            % LogicalOperator::iterator().count();
-                    }
-                    _ => {}
-                },
-                KeyCode::Left | KeyCode::Char('h') => match self.filter_modal.focus {
-                    FilterFocus::Column => {
-                        self.filter_modal.new_column_idx = if self.filter_modal.new_column_idx == 0
-                        {
-                            self.filter_modal.available_columns.len().saturating_sub(1)
-                        } else {
-                            self.filter_modal.new_column_idx - 1
-                        };
-                    }
-                    FilterFocus::Operator => {
-                        self.filter_modal.new_operator_idx =
-                            if self.filter_modal.new_operator_idx == 0 {
-                                FilterOperator::iterator().count() - 1
-                            } else {
-                                self.filter_modal.new_operator_idx - 1
-                            };
-                    }
-                    FilterFocus::Logical => {
-                        self.filter_modal.new_logical_idx =
-                            if self.filter_modal.new_logical_idx == 0 {
-                                LogicalOperator::iterator().count() - 1
-                            } else {
-                                self.filter_modal.new_logical_idx - 1
-                            };
+                    SortFocus::Order => {
+                        self.sort_filter_modal.sort.ascending =
+                            !self.sort_filter_modal.sort.ascending;
+                        self.sort_filter_modal.sort.has_unapplied_changes = true;
                     }
                     _ => {}
                 },
-                _ => {}
-            }
-            return None;
-        }
-
-        if self.input_mode == InputMode::Sorting {
-            match event.code {
-                KeyCode::Esc => {
-                    // Clear all unapplied changes including to-be-locked state
-                    for col in &mut self.sort_modal.columns {
-                        col.is_to_be_locked = false;
-                    }
-                    self.sort_modal.has_unapplied_changes = false;
-                    self.input_mode = InputMode::Normal;
-                    self.sort_modal.active = false;
+                KeyCode::Down
+                    if on_body
+                        && filter_tab
+                        && self.sort_filter_modal.filter.focus == FilterFocus::Statements =>
+                {
+                    let m = &mut self.sort_filter_modal.filter;
+                    let i = match m.list_state.selected() {
+                        Some(i) => {
+                            if i >= m.statements.len().saturating_sub(1) {
+                                0
+                            } else {
+                                i + 1
+                            }
+                        }
+                        None => 0,
+                    };
+                    m.list_state.select(Some(i));
                 }
-                KeyCode::Tab => {
-                    self.sort_modal.next_focus();
+                KeyCode::Up
+                    if on_body
+                        && filter_tab
+                        && self.sort_filter_modal.filter.focus == FilterFocus::Statements =>
+                {
+                    let m = &mut self.sort_filter_modal.filter;
+                    let i = match m.list_state.selected() {
+                        Some(i) => {
+                            if i == 0 {
+                                m.statements.len().saturating_sub(1)
+                            } else {
+                                i - 1
+                            }
+                        }
+                        None => 0,
+                    };
+                    m.list_state.select(Some(i));
                 }
-                KeyCode::BackTab => {
-                    self.sort_modal.prev_focus();
-                }
-                KeyCode::Char(']') => {
-                    if self.sort_modal.focus == SortFocus::ColumnList {
-                        self.sort_modal.move_selection_down();
-                    }
-                }
-                KeyCode::Char('[') => {
-                    if self.sort_modal.focus == SortFocus::ColumnList {
-                        self.sort_modal.move_selection_up();
-                    }
-                }
-                KeyCode::Char('+') | KeyCode::Char('=') => {
-                    if self.sort_modal.focus == SortFocus::ColumnList {
-                        self.sort_modal.move_column_display_up();
-                        self.sort_modal.has_unapplied_changes = true;
-                    }
-                }
-                KeyCode::Char('-') | KeyCode::Char('_') => {
-                    if self.sort_modal.focus == SortFocus::ColumnList {
-                        self.sort_modal.move_column_display_down();
-                        self.sort_modal.has_unapplied_changes = true;
-                    }
-                }
-                KeyCode::Char('L') => {
-                    if self.sort_modal.focus == SortFocus::ColumnList {
-                        self.sort_modal.toggle_lock_at_column();
-                        self.sort_modal.has_unapplied_changes = true;
-                    }
-                }
-                KeyCode::Char('v') => {
-                    if self.sort_modal.focus == SortFocus::ColumnList {
-                        self.sort_modal.toggle_visibility();
-                        self.sort_modal.has_unapplied_changes = true;
-                    }
-                }
-                KeyCode::Down => {
-                    if self.sort_modal.focus == SortFocus::ColumnList {
-                        let i = match self.sort_modal.table_state.selected() {
+                KeyCode::Down if on_body && sort_tab => {
+                    let s = &mut self.sort_filter_modal.sort;
+                    if s.focus == SortFocus::ColumnList {
+                        let i = match s.table_state.selected() {
                             Some(i) => {
-                                if i >= self.sort_modal.filtered_columns().len().saturating_sub(1) {
+                                if i >= s.filtered_columns().len().saturating_sub(1) {
                                     0
                                 } else {
                                     i + 1
@@ -1101,174 +1066,232 @@ impl App {
                             }
                             None => 0,
                         };
-                        self.sort_modal.table_state.select(Some(i));
+                        s.table_state.select(Some(i));
                     } else {
-                        self.sort_modal.next_focus();
+                        let _ = s.next_body_focus();
                     }
                 }
-                KeyCode::Up => {
-                    if self.sort_modal.focus == SortFocus::ColumnList {
-                        let i = match self.sort_modal.table_state.selected() {
+                KeyCode::Up if on_body && sort_tab => {
+                    let s = &mut self.sort_filter_modal.sort;
+                    if s.focus == SortFocus::ColumnList {
+                        let i = match s.table_state.selected() {
                             Some(i) => {
                                 if i == 0 {
-                                    self.sort_modal.filtered_columns().len().saturating_sub(1)
+                                    s.filtered_columns().len().saturating_sub(1)
                                 } else {
                                     i - 1
                                 }
                             }
                             None => 0,
                         };
-                        self.sort_modal.table_state.select(Some(i));
+                        s.table_state.select(Some(i));
                     } else {
-                        self.sort_modal.prev_focus();
+                        let _ = s.prev_body_focus();
                     }
                 }
-                KeyCode::Enter if event.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let columns = self.sort_modal.get_sorted_columns();
-                    self.input_mode = InputMode::Normal;
-                    self.sort_modal.active = false;
-                    return Some(AppEvent::Sort(columns, self.sort_modal.ascending));
+                KeyCode::Char(']')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
+                {
+                    self.sort_filter_modal.sort.move_selection_down();
                 }
-                KeyCode::Enter => {
-                    match self.sort_modal.focus {
-                        SortFocus::Filter => self.sort_modal.focus = SortFocus::ColumnList,
-                        SortFocus::ColumnList => {
-                            self.sort_modal.toggle_selection();
-                            // Apply sort without closing if Enter is pressed in ColumnList
-                            let columns = self.sort_modal.get_sorted_columns();
-                            let column_order = self.sort_modal.get_column_order();
-                            let locked_count = self.sort_modal.get_locked_columns_count();
-                            self.sort_modal.has_unapplied_changes = false;
-                            // Apply both sort and column order
-                            let _ =
-                                self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-                            return Some(AppEvent::Sort(columns, self.sort_modal.ascending));
-                        }
-                        SortFocus::Order => {
-                            self.sort_modal.ascending = !self.sort_modal.ascending;
-                            self.sort_modal.has_unapplied_changes = true;
-                        }
-                        SortFocus::Apply => {
-                            let columns = self.sort_modal.get_sorted_columns();
-                            let column_order = self.sort_modal.get_column_order();
-                            let locked_count = self.sort_modal.get_locked_columns_count();
-                            self.input_mode = InputMode::Normal;
-                            self.sort_modal.active = false;
-                            self.sort_modal.has_unapplied_changes = false;
-                            // Apply both sort and column order
-                            let _ =
-                                self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-                            return Some(AppEvent::Sort(columns, self.sort_modal.ascending));
-                        }
-                        SortFocus::Cancel => {
-                            // Clear all unapplied changes including to-be-locked state
-                            for col in &mut self.sort_modal.columns {
-                                col.is_to_be_locked = false;
-                            }
-                            self.sort_modal.has_unapplied_changes = false;
-                            self.input_mode = InputMode::Normal;
-                            self.sort_modal.active = false;
-                        }
-                        SortFocus::Clear => self.sort_modal.clear_selection(),
+                KeyCode::Char('[')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
+                {
+                    self.sort_filter_modal.sort.move_selection_up();
+                }
+                KeyCode::Char('+') | KeyCode::Char('=')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
+                {
+                    self.sort_filter_modal.sort.move_column_display_up();
+                    self.sort_filter_modal.sort.has_unapplied_changes = true;
+                }
+                KeyCode::Char('-') | KeyCode::Char('_')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
+                {
+                    self.sort_filter_modal.sort.move_column_display_down();
+                    self.sort_filter_modal.sort.has_unapplied_changes = true;
+                }
+                KeyCode::Char('L')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
+                {
+                    self.sort_filter_modal.sort.toggle_lock_at_column();
+                    self.sort_filter_modal.sort.has_unapplied_changes = true;
+                }
+                KeyCode::Char('v')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList =>
+                {
+                    self.sort_filter_modal.sort.toggle_visibility();
+                    self.sort_filter_modal.sort.has_unapplied_changes = true;
+                }
+                KeyCode::Char(c)
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::ColumnList
+                        && c.is_ascii_digit() =>
+                {
+                    if let Some(digit) = c.to_digit(10) {
+                        self.sort_filter_modal
+                            .sort
+                            .jump_selection_to_order(digit as usize);
                     }
                 }
-                KeyCode::Char(' ') => {
-                    match self.sort_modal.focus {
-                        SortFocus::ColumnList => {
-                            self.sort_modal.toggle_selection();
+                KeyCode::Left
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
+                {
+                    if self.sort_filter_modal.sort.filter_cursor > 0 {
+                        self.sort_filter_modal.sort.filter_cursor -= 1;
+                    }
+                }
+                KeyCode::Right
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
+                {
+                    let n = self.sort_filter_modal.sort.filter.chars().count();
+                    if self.sort_filter_modal.sort.filter_cursor < n {
+                        self.sort_filter_modal.sort.filter_cursor += 1;
+                    }
+                }
+                KeyCode::Home
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
+                {
+                    self.sort_filter_modal.sort.filter_cursor = 0;
+                }
+                KeyCode::End
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
+                {
+                    self.sort_filter_modal.sort.filter_cursor =
+                        self.sort_filter_modal.sort.filter.chars().count();
+                }
+                KeyCode::Char(c)
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
+                {
+                    let s = &mut self.sort_filter_modal.sort;
+                    let byte_pos: usize = s
+                        .filter
+                        .chars()
+                        .take(s.filter_cursor)
+                        .map(|ch| ch.len_utf8())
+                        .sum();
+                    s.filter.insert(byte_pos, c);
+                    s.filter_cursor += 1;
+                    s.table_state.select(None);
+                }
+                KeyCode::Backspace
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
+                {
+                    let s = &mut self.sort_filter_modal.sort;
+                    if s.filter_cursor > 0 {
+                        let prev: usize = s
+                            .filter
+                            .chars()
+                            .take(s.filter_cursor - 1)
+                            .map(|ch| ch.len_utf8())
+                            .sum();
+                        let ch = s.filter[prev..].chars().next().unwrap();
+                        s.filter.drain(prev..prev + ch.len_utf8());
+                        s.filter_cursor -= 1;
+                        s.table_state.select(None);
+                    }
+                }
+                KeyCode::Delete
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
+                {
+                    let s = &mut self.sort_filter_modal.sort;
+                    let n = s.filter.chars().count();
+                    if s.filter_cursor < n {
+                        let byte_pos: usize = s
+                            .filter
+                            .chars()
+                            .take(s.filter_cursor)
+                            .map(|ch| ch.len_utf8())
+                            .sum();
+                        let ch = s.filter[byte_pos..].chars().next().unwrap();
+                        s.filter.drain(byte_pos..byte_pos + ch.len_utf8());
+                        s.table_state.select(None);
+                    }
+                }
+                KeyCode::Char(c)
+                    if on_body
+                        && filter_tab
+                        && self.sort_filter_modal.filter.focus == FilterFocus::Value =>
+                {
+                    self.sort_filter_modal.filter.new_value.push(c);
+                }
+                KeyCode::Backspace
+                    if on_body
+                        && filter_tab
+                        && self.sort_filter_modal.filter.focus == FilterFocus::Value =>
+                {
+                    self.sort_filter_modal.filter.new_value.pop();
+                }
+                KeyCode::Right | KeyCode::Char('l') if on_body && filter_tab => {
+                    let m = &mut self.sort_filter_modal.filter;
+                    match m.focus {
+                        FilterFocus::Column => {
+                            m.new_column_idx =
+                                (m.new_column_idx + 1) % m.available_columns.len().max(1);
                         }
-                        SortFocus::Order => {
-                            self.sort_modal.ascending = !self.sort_modal.ascending;
-                            self.sort_modal.has_unapplied_changes = true;
+                        FilterFocus::Operator => {
+                            m.new_operator_idx =
+                                (m.new_operator_idx + 1) % FilterOperator::iterator().count();
                         }
-                        SortFocus::Apply => {
-                            let columns = self.sort_modal.get_sorted_columns();
-                            let column_order = self.sort_modal.get_column_order();
-                            let locked_count = self.sort_modal.get_locked_columns_count();
-                            self.sort_modal.has_unapplied_changes = false;
-                            // Apply both sort and column order
-                            let _ =
-                                self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-                            return Some(AppEvent::Sort(columns, self.sort_modal.ascending));
+                        FilterFocus::Logical => {
+                            m.new_logical_idx =
+                                (m.new_logical_idx + 1) % LogicalOperator::iterator().count();
                         }
                         _ => {}
                     }
                 }
-                KeyCode::Char(c)
-                    if self.sort_modal.focus == SortFocus::ColumnList && c.is_ascii_digit() =>
-                {
-                    if let Some(digit) = c.to_digit(10) {
-                        self.sort_modal.jump_selection_to_order(digit as usize);
-                    }
-                }
-                KeyCode::Left if self.sort_modal.focus == SortFocus::Filter => {
-                    if self.sort_modal.filter_cursor > 0 {
-                        self.sort_modal.filter_cursor -= 1;
-                    }
-                }
-                KeyCode::Right if self.sort_modal.focus == SortFocus::Filter => {
-                    let char_count = self.sort_modal.filter.chars().count();
-                    if self.sort_modal.filter_cursor < char_count {
-                        self.sort_modal.filter_cursor += 1;
-                    }
-                }
-                KeyCode::Home if self.sort_modal.focus == SortFocus::Filter => {
-                    self.sort_modal.filter_cursor = 0;
-                }
-                KeyCode::End if self.sort_modal.focus == SortFocus::Filter => {
-                    self.sort_modal.filter_cursor = self.sort_modal.filter.chars().count();
-                }
-                KeyCode::Char(c) if self.sort_modal.focus == SortFocus::Filter => {
-                    // Convert character position to byte position
-                    let byte_pos = self
-                        .sort_modal
-                        .filter
-                        .chars()
-                        .take(self.sort_modal.filter_cursor)
-                        .map(|c| c.len_utf8())
-                        .sum();
-                    self.sort_modal.filter.insert(byte_pos, c);
-                    self.sort_modal.filter_cursor += 1;
-                    self.sort_modal.table_state.select(None); // Reset selection on filter change
-                }
-                KeyCode::Backspace if self.sort_modal.focus == SortFocus::Filter => {
-                    if self.sort_modal.filter_cursor > 0 {
-                        // Convert character position to byte position for the character before cursor
-                        let prev_byte_pos: usize = self
-                            .sort_modal
-                            .filter
-                            .chars()
-                            .take(self.sort_modal.filter_cursor - 1)
-                            .map(|c| c.len_utf8())
-                            .sum();
-                        let char_to_delete = self.sort_modal.filter[prev_byte_pos..]
-                            .chars()
-                            .next()
-                            .unwrap();
-                        let char_len = char_to_delete.len_utf8();
-                        self.sort_modal
-                            .filter
-                            .drain(prev_byte_pos..prev_byte_pos + char_len);
-                        self.sort_modal.filter_cursor -= 1;
-                        self.sort_modal.table_state.select(None);
-                    }
-                }
-                KeyCode::Delete if self.sort_modal.focus == SortFocus::Filter => {
-                    let char_count = self.sort_modal.filter.chars().count();
-                    if self.sort_modal.filter_cursor < char_count {
-                        // Convert character position to byte position
-                        let byte_pos: usize = self
-                            .sort_modal
-                            .filter
-                            .chars()
-                            .take(self.sort_modal.filter_cursor)
-                            .map(|c| c.len_utf8())
-                            .sum();
-                        let char_to_delete =
-                            self.sort_modal.filter[byte_pos..].chars().next().unwrap();
-                        let char_len = char_to_delete.len_utf8();
-                        self.sort_modal.filter.drain(byte_pos..byte_pos + char_len);
-                        self.sort_modal.table_state.select(None);
+                KeyCode::Left | KeyCode::Char('h') if on_body && filter_tab => {
+                    let m = &mut self.sort_filter_modal.filter;
+                    match m.focus {
+                        FilterFocus::Column => {
+                            m.new_column_idx = if m.new_column_idx == 0 {
+                                m.available_columns.len().saturating_sub(1)
+                            } else {
+                                m.new_column_idx - 1
+                            };
+                        }
+                        FilterFocus::Operator => {
+                            m.new_operator_idx = if m.new_operator_idx == 0 {
+                                FilterOperator::iterator().count() - 1
+                            } else {
+                                m.new_operator_idx - 1
+                            };
+                        }
+                        FilterFocus::Logical => {
+                            m.new_logical_idx = if m.new_logical_idx == 0 {
+                                LogicalOperator::iterator().count() - 1
+                            } else {
+                                m.new_logical_idx - 1
+                            };
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -3502,25 +3525,6 @@ impl App {
                 }
                 None
             }
-            KeyCode::Char('f') => {
-                if let Some(state) = &self.data_table_state {
-                    // Always update available_columns from current schema (reflects query state if query exists)
-                    // This ensures the filter modal shows only columns available after any queries
-                    self.filter_modal.available_columns = state.headers();
-                    // Reset column index if it's out of bounds
-                    if !self.filter_modal.available_columns.is_empty() {
-                        self.filter_modal.new_column_idx = self
-                            .filter_modal
-                            .new_column_idx
-                            .min(self.filter_modal.available_columns.len().saturating_sub(1));
-                    } else {
-                        self.filter_modal.new_column_idx = 0;
-                    }
-                    self.filter_modal.active = true;
-                    self.input_mode = InputMode::Filtering;
-                }
-                None
-            }
             KeyCode::Char('T') => {
                 // Apply most relevant template immediately (no modal)
                 if let Some(ref state) = self.data_table_state {
@@ -3563,30 +3567,26 @@ impl App {
             }
             KeyCode::Char('s') => {
                 if let Some(state) = &self.data_table_state {
-                    // Populate columns from schema (all columns, including hidden ones)
-                    // Use schema to get all columns, not headers() which only returns visible columns
                     let headers: Vec<String> =
                         state.schema.iter_names().map(|s| s.to_string()).collect();
                     let locked_count = state.locked_columns_count();
 
-                    // Sync columns: update existing or create new ones
+                    // Populate sort tab
                     let mut existing_columns: std::collections::HashMap<String, SortColumn> = self
-                        .sort_modal
+                        .sort_filter_modal
+                        .sort
                         .columns
                         .iter()
                         .map(|c| (c.name.clone(), c.clone()))
                         .collect();
-
-                    self.sort_modal.columns = headers
+                    self.sort_filter_modal.sort.columns = headers
                         .iter()
                         .enumerate()
                         .map(|(i, h)| {
                             if let Some(mut col) = existing_columns.remove(h) {
-                                // Update display order and locked status, preserve visibility but clear to-be-locked
                                 col.display_order = i;
                                 col.is_locked = i < locked_count;
-                                col.is_to_be_locked = false; // Clear to-be-locked when syncing (only applied locks persist)
-                                                             // Visibility is preserved from existing column
+                                col.is_to_be_locked = false;
                                 col
                             } else {
                                 SortColumn {
@@ -3600,15 +3600,26 @@ impl App {
                             }
                         })
                         .collect();
+                    self.sort_filter_modal.sort.filter.clear();
+                    self.sort_filter_modal.sort.focus = SortFocus::ColumnList;
 
-                    // Don't keep columns that were removed from the schema (e.g., by a query)
-                    // The sort modal should only show columns that exist in the current schema
-                    // This ensures it reflects the post-query state if a query was applied
+                    // Populate filter tab
+                    self.sort_filter_modal.filter.available_columns = state.headers();
+                    if !self.sort_filter_modal.filter.available_columns.is_empty() {
+                        self.sort_filter_modal.filter.new_column_idx =
+                            self.sort_filter_modal.filter.new_column_idx.min(
+                                self.sort_filter_modal
+                                    .filter
+                                    .available_columns
+                                    .len()
+                                    .saturating_sub(1),
+                            );
+                    } else {
+                        self.sort_filter_modal.filter.new_column_idx = 0;
+                    }
 
-                    self.sort_modal.active = true;
-                    self.sort_modal.filter.clear();
-                    self.sort_modal.focus = SortFocus::ColumnList; // Default focus to ColumnList
-                    self.input_mode = InputMode::Sorting;
+                    self.sort_filter_modal.open();
+                    self.input_mode = InputMode::SortFilter;
                 }
                 None
             }
@@ -4016,7 +4027,9 @@ impl App {
 
     fn get_help_info(&self) -> (String, String) {
         let (title, content) = match self.input_mode {
-            InputMode::Normal => ("Main View Help", "\
+            InputMode::Normal => (
+                "Main View Help",
+                "\
 Navigation:
   Arrows (h/j/k/l): Scroll table
   PgUp/PgDown:     Scroll pages
@@ -4024,8 +4037,7 @@ Navigation:
 
 Data Operations:
   /:                Open Query input
-  f:                Open Filter menu
-  s:                Open Sort & Column Order menu
+  s:                Open Sort & Filter modal (tabs: Sort, Filter)
   a:                Open Statistical Analysis
   r:                Reverse sort order
   R:                Reset table (clear queries, filters, sorts, locks)
@@ -4049,9 +4061,12 @@ Analysis View:
   Esc:              Return to main view
 
 Exit:
-  q / Esc:          Quit"),
+  q / Esc:          Quit",
+            ),
             InputMode::Editing => match self.input_type {
-                Some(InputType::Search) => ("Query Help", "\
+                Some(InputType::Search) => (
+                    "Query Help",
+                    "\
 Query Syntax:
   select [columns] [by group_cols] [where conditions]
 
@@ -4132,76 +4147,43 @@ Function Syntax:
   - Use parentheses for grouping: (a+b)*2
   - Example: b:avg[(1%c)+a] or b:avg (1%c)+a
 
-Press Enter to apply query."),
+Press Enter to apply query.",
+                ),
                 _ => ("Editing Help", "Editing..."),
             },
-            InputMode::Filtering => ("Filter Help", "\
-Create filters to narrow down data.
+            InputMode::SortFilter => (
+                "Sort & Filter Help",
+                "\
+Tabbed modal: Sort (column order, sorting) and Filter (row filters).
 
-Steps:
-  1. Select a Column
-  2. Choose an Operator (=, !=, >, <, >=, <=, contains, not contains)
-  3. Enter a Value
-  4. Choose Logical operator (AND/OR) for next filter
-
-Navigation:
-  Tab/BackTab:      Move between fields
-  Arrow keys:       Navigate column/operator/value lists
-  Enter:            Add filter / Apply filters
-  Esc:              Cancel and close modal"),
-            InputMode::Sorting => ("Sort & Column Order Help", "\
-Manage column sorting and display order.
-
-Column List:
-  Filter:           Type to filter columns (contrasted background when focused)
-  Arrow keys:       Navigate column list
-  Space:            Toggle column for sorting
-  Enter:            Toggle selection and apply sort (does not close modal)
-
-Sort Order:
-  [:                Move selected column UP in sort order
-  ]:                Move selected column DOWN in sort order
-  1-9:              Jump selected item to that sort order (e.g., 1 for first)
-
-Display Order:
-  +:                Move selected column LEFT in display order
-  -:                Move selected column RIGHT in display order
-  L:                Lock/unlock columns up to selected column
-  v:                Toggle column visibility (hidden columns can still be sorted)
-
-Navigation:
-  Tab/BackTab:      Move focus (Filter → Columns → Order → Apply → Cancel → Clear)
-  Space (on Apply): Apply changes (does not close modal)
-  Enter (on Apply): Apply changes and close modal
+  Tab / BackTab:    Move focus (tab bar → form → Apply → Cancel → Clear → tab bar)
+  Left / Right:     On tab bar: switch Sort/Filter. In form: move cursor or change selection.
   Esc:              Cancel and close modal
 
-Visual Indicators:
-  [n]:              Sort order number
-  ●:                Locked column indicator
-  ◐:                To-be-locked column indicator (pending)
-  #:                Display order number
-  Shaded Apply:     Unapplied changes exist
+Sort tab:
+  Filter, column list, order (asc/desc). Space: toggle sort. Enter (on Apply): apply and close.
+  [: ]: 1-9: sort order. + -: display order. L: lock. v: visibility.
 
-Table Columns:
-  Locked:           Shows ● if column is locked, ◐ if to-be-locked
-  Order:            Display order number (blank for hidden columns)
-  Sort:             Sort order number (blank if not sorted)
-  Name:             Column name
-
-Locked columns stay visible when scrolling horizontally.
-Hidden columns (toggled with 'v') can still be used for sorting but won't appear in the main table."),
-            InputMode::PivotMelt => ("Pivot / Melt Help", "\
+Filter tab:
+  Column, Operator, Value, Logic. Enter: add filter or Apply. Clear: remove all filters.",
+            ),
+            InputMode::PivotMelt => (
+                "Pivot / Melt Help",
+                "\
 Reshape data between long and wide formats.
 
-  Tab / Shift+Tab:  Move focus (tab bar → form → Apply → Cancel → Clear → tab bar)
-  Left / Right:     Tab bar: switch Pivot/Melt. In text fields: move cursor
+  Tab / Shift+Tab:  Move focus
+  Left / Right:     In tab bar:     Switch Pivot and Melt.
+                    In text fields: Move cursor
   ↑ / ↓:            Change selection (index, pivot, value, aggregation, strategy, etc.)
   Space:            Toggle index/explicit list; toggle Sort new columns (Pivot)
   Enter:            Apply, or Cancel/Clear when focused
   Esc:              Close without applying
   Ctrl+h:           Show this help
 
-Pivot: long → wide (index, pivot col, value col, aggregation). Melt: wide → long (index, strategy, variable/value names)."),
+Pivot: long → wide (index, pivot col, value col, aggregation).
+Melt:  wide → long (index, strategy, variable/value names).",
+            ),
         };
         (title.to_string(), content.to_string())
     }
@@ -4246,15 +4228,7 @@ impl Widget for &mut App {
         let mut data_area = main_area;
         let mut sort_area = Rect::default();
 
-        if self.filter_modal.active {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(0), Constraint::Length(50)])
-                .split(main_area);
-            data_area = chunks[0];
-            sort_area = chunks[1]; // Reuse sort_area variable for filter panel
-        }
-        if self.sort_modal.active {
+        if self.sort_filter_modal.active {
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Min(0), Constraint::Length(50)])
@@ -4469,464 +4443,471 @@ impl Widget for &mut App {
             }
         }
 
-        if self.filter_modal.active {
+        if self.sort_filter_modal.active {
             Clear.render(sort_area, buf);
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title("Filter (Enter to Add/Apply)");
+                .title("Sort & Filter");
             let inner_area = block.inner(sort_area);
             block.render(sort_area, buf);
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3), // New Filter Row
-                    Constraint::Length(3), // Add Button
-                    Constraint::Min(0),    // List of filters
-                    Constraint::Length(3), // Apply/Clear
+                    Constraint::Length(2), // Tab bar + line
+                    Constraint::Min(0),    // Body
+                    Constraint::Length(3), // Footer
                 ])
                 .split(inner_area);
 
-            // New Filter Row
-            let row_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(30), // Column
-                    Constraint::Percentage(20), // Op
-                    Constraint::Percentage(30), // Value
-                    Constraint::Percentage(20), // Logic
-                ])
+            // Tab bar + line
+            let tab_line_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Length(1)])
                 .split(chunks[0]);
-
-            let col_name = if self.filter_modal.available_columns.is_empty() {
-                ""
-            } else {
-                &self.filter_modal.available_columns[self.filter_modal.new_column_idx]
+            let tab_selected = match self.sort_filter_modal.active_tab {
+                SortFilterTab::Sort => 0,
+                SortFilterTab::Filter => 1,
             };
-            let col_style = if self.filter_modal.focus == FilterFocus::Column {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-            Paragraph::new(col_name)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Col")
-                        .border_style(col_style),
+            let border_c = self.color("modal_border");
+            let active_c = self.color("modal_border_active");
+            let tabs = Tabs::new(vec!["Sort", "Filter"])
+                .style(Style::default().fg(border_c))
+                .highlight_style(
+                    Style::default()
+                        .fg(active_c)
+                        .add_modifier(Modifier::REVERSED),
                 )
-                .render(row_layout[0], buf);
-
-            let op_name = FilterOperator::iterator()
-                .nth(self.filter_modal.new_operator_idx)
-                .unwrap()
-                .as_str();
-            let op_style = if self.filter_modal.focus == FilterFocus::Operator {
-                Style::default().fg(self.color("modal_border_active"))
+                .select(tab_selected);
+            tabs.render(tab_line_chunks[0], buf);
+            let line_style = if self.sort_filter_modal.focus == SortFilterFocus::TabBar {
+                Style::default().fg(active_c)
             } else {
-                Style::default()
+                Style::default().fg(border_c)
             };
-            Paragraph::new(op_name)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Op")
-                        .border_style(op_style),
-                )
-                .render(row_layout[1], buf);
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(line_style)
+                .render(tab_line_chunks[1], buf);
 
-            let val_style = if self.filter_modal.focus == FilterFocus::Value {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-            Paragraph::new(self.filter_modal.new_value.as_str())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Val")
-                        .border_style(val_style),
-                )
-                .render(row_layout[2], buf);
-
-            let log_name = LogicalOperator::iterator()
-                .nth(self.filter_modal.new_logical_idx)
-                .unwrap()
-                .as_str();
-            let log_style = if self.filter_modal.focus == FilterFocus::Logical {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-            Paragraph::new(log_name)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Logic")
-                        .border_style(log_style),
-                )
-                .render(row_layout[3], buf);
-
-            // Add Button
-            let add_style = if self.filter_modal.focus == FilterFocus::Add {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-            Paragraph::new("Add Filter")
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(add_style),
-                )
-                .centered()
-                .render(chunks[1], buf);
-
-            // List
-            let items: Vec<ListItem> = self
-                .filter_modal
-                .statements
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    let prefix = if i > 0 {
-                        format!("{} ", s.logical_op.as_str())
-                    } else {
-                        "".to_string()
-                    };
-                    ListItem::new(format!(
-                        "{}{}{}{}",
-                        prefix,
-                        s.column,
-                        s.operator.as_str(),
-                        s.value
-                    ))
-                })
-                .collect();
-            let list_style = if self.filter_modal.focus == FilterFocus::Statements {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Current Filters")
-                        .border_style(list_style),
-                )
-                .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-            StatefulWidget::render(list, chunks[2], buf, &mut self.filter_modal.list_state);
-
-            // Apply/Clear
-            let btn_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[3]);
-
-            let confirm_style = if self.filter_modal.focus == FilterFocus::Confirm {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-            Paragraph::new("Apply")
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(confirm_style),
-                )
-                .centered()
-                .render(btn_layout[0], buf);
-
-            let clear_style = if self.filter_modal.focus == FilterFocus::Clear {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-            Paragraph::new("Clear")
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(clear_style),
-                )
-                .centered()
-                .render(btn_layout[1], buf);
-        }
-
-        if self.sort_modal.active {
-            Clear.render(sort_area, buf);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title("Sort & Column Order");
-            let inner_area = block.inner(sort_area);
-            block.render(sort_area, buf);
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3), // Filter
-                    Constraint::Min(0),    // Table
-                    Constraint::Length(2), // Keybind Hints
-                    Constraint::Length(3), // Order
-                    Constraint::Length(3), // Buttons
-                ])
-                .split(inner_area);
-
-            // Filter Input
-            let filter_block_title = "Filter Columns";
-            let mut filter_block_border_style = Style::default();
-            if self.sort_modal.focus == SortFocus::Filter {
-                filter_block_border_style =
-                    filter_block_border_style.fg(self.color("modal_border_active"));
-            }
-            let filter_block = Block::default()
-                .borders(Borders::ALL)
-                .title(filter_block_title)
-                .border_style(filter_block_border_style);
-            let filter_inner_area = filter_block.inner(chunks[0]);
-            filter_block.render(chunks[0], buf);
-
-            // Text input with cursor (like query input)
-            let filter_text = self.sort_modal.filter.as_str();
-            let cursor_pos = self
-                .sort_modal
-                .filter_cursor
-                .min(filter_text.chars().count());
-            let mut chars = filter_text.chars();
-            let before_cursor: String = chars.by_ref().take(cursor_pos).collect();
-            let at_cursor = chars
-                .next()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".to_string());
-            let after_cursor: String = chars.collect();
-
-            let mut line = ratatui::text::Line::default();
-            line.spans.push(ratatui::text::Span::raw(before_cursor));
-            line.spans.push(ratatui::text::Span::styled(
-                at_cursor,
-                Style::default()
-                    .bg(self.color("text_primary"))
-                    .fg(self.color("text_inverse")),
-            ));
-            if !after_cursor.is_empty() {
-                line.spans.push(ratatui::text::Span::raw(after_cursor));
-            }
-
-            Paragraph::new(line).render(filter_inner_area, buf);
-
-            // Column Table
-            let filtered = self.sort_modal.filtered_columns();
-            let rows: Vec<Row> = filtered
-                .iter()
-                .map(|(_, col)| {
-                    let lock_cell = if col.is_locked {
-                        "●" // Full circle for locked
-                    } else if col.is_to_be_locked {
-                        "◐" // Half circle to indicate pending lock
-                    } else {
-                        " "
-                    };
-                    let lock_style = if col.is_locked {
-                        Style::default()
-                    } else if col.is_to_be_locked {
-                        Style::default().fg(self.color("dimmed")) // Dimmed style for pending lock
-                    } else {
-                        Style::default()
-                    };
-                    let order_cell = if col.is_visible && col.display_order < 9999 {
-                        format!("{:2}", col.display_order + 1)
-                    } else {
-                        "  ".to_string()
-                    };
-                    let sort_cell = if let Some(order) = col.sort_order {
-                        format!("{:2}", order)
-                    } else {
-                        "  ".to_string()
-                    };
-                    let name_cell = Cell::from(col.name.clone());
-
-                    // Apply dimmed style to hidden columns
-                    let row_style = if col.is_visible {
-                        Style::default()
-                    } else {
-                        Style::default().fg(self.color("dimmed"))
-                    };
-
-                    Row::new(vec![
-                        Cell::from(lock_cell).style(lock_style),
-                        Cell::from(order_cell).style(row_style),
-                        Cell::from(sort_cell).style(row_style),
-                        name_cell.style(row_style),
+            if self.sort_filter_modal.active_tab == SortFilterTab::Filter {
+                let fchunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Length(3),
+                        Constraint::Min(0),
                     ])
-                })
-                .collect();
+                    .split(chunks[1]);
 
-            let header = Row::new(vec![
-                Cell::from("🔒").style(Style::default().add_modifier(Modifier::BOLD)),
-                Cell::from("Order").style(Style::default().add_modifier(Modifier::BOLD)),
-                Cell::from("Sort").style(Style::default().add_modifier(Modifier::BOLD)),
-                Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
-            ])
-            .style(Style::default().add_modifier(Modifier::UNDERLINED));
+                let row_layout = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(30),
+                        Constraint::Percentage(20),
+                        Constraint::Percentage(30),
+                        Constraint::Percentage(20),
+                    ])
+                    .split(fchunks[0]);
 
-            let table_border_style = if self.sort_modal.focus == SortFocus::ColumnList {
-                Style::default().fg(self.color("modal_border_active"))
+                let col_name = if self.sort_filter_modal.filter.available_columns.is_empty() {
+                    ""
+                } else {
+                    &self.sort_filter_modal.filter.available_columns
+                        [self.sort_filter_modal.filter.new_column_idx]
+                };
+                let col_style = if self.sort_filter_modal.filter.focus == FilterFocus::Column {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+                Paragraph::new(col_name)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Col")
+                            .border_style(col_style),
+                    )
+                    .render(row_layout[0], buf);
+
+                let op_name = FilterOperator::iterator()
+                    .nth(self.sort_filter_modal.filter.new_operator_idx)
+                    .unwrap()
+                    .as_str();
+                let op_style = if self.sort_filter_modal.filter.focus == FilterFocus::Operator {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+                Paragraph::new(op_name)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Op")
+                            .border_style(op_style),
+                    )
+                    .render(row_layout[1], buf);
+
+                let val_style = if self.sort_filter_modal.filter.focus == FilterFocus::Value {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+                Paragraph::new(self.sort_filter_modal.filter.new_value.as_str())
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Val")
+                            .border_style(val_style),
+                    )
+                    .render(row_layout[2], buf);
+
+                let log_name = LogicalOperator::iterator()
+                    .nth(self.sort_filter_modal.filter.new_logical_idx)
+                    .unwrap()
+                    .as_str();
+                let log_style = if self.sort_filter_modal.filter.focus == FilterFocus::Logical {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+                Paragraph::new(log_name)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Logic")
+                            .border_style(log_style),
+                    )
+                    .render(row_layout[3], buf);
+
+                let add_style = if self.sort_filter_modal.filter.focus == FilterFocus::Add {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+                Paragraph::new("Add Filter")
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(add_style),
+                    )
+                    .centered()
+                    .render(fchunks[1], buf);
+
+                let items: Vec<ListItem> = self
+                    .sort_filter_modal
+                    .filter
+                    .statements
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        let prefix = if i > 0 {
+                            format!("{} ", s.logical_op.as_str())
+                        } else {
+                            "".to_string()
+                        };
+                        ListItem::new(format!(
+                            "{}{}{}{}",
+                            prefix,
+                            s.column,
+                            s.operator.as_str(),
+                            s.value
+                        ))
+                    })
+                    .collect();
+                let list_style = if self.sort_filter_modal.filter.focus == FilterFocus::Statements {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+                let list = List::new(items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Current Filters")
+                            .border_style(list_style),
+                    )
+                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+                StatefulWidget::render(
+                    list,
+                    fchunks[2],
+                    buf,
+                    &mut self.sort_filter_modal.filter.list_state,
+                );
             } else {
-                Style::default()
-            };
-            let table = Table::new(
-                rows,
-                [
-                    Constraint::Length(2),
-                    Constraint::Length(6),
-                    Constraint::Length(6),
-                    Constraint::Min(0),
-                ],
-            )
-            .header(header)
-            .block(
-                Block::default()
+                // Sort tab body
+                let schunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(3),
+                        Constraint::Min(0),
+                        Constraint::Length(2),
+                        Constraint::Length(3),
+                    ])
+                    .split(chunks[1]);
+
+                let filter_block_title = "Filter Columns";
+                let mut filter_block_border_style = Style::default().fg(border_c);
+                if self.sort_filter_modal.sort.focus == SortFocus::Filter {
+                    filter_block_border_style = filter_block_border_style.fg(active_c);
+                }
+                let filter_block = Block::default()
                     .borders(Borders::ALL)
-                    .title("Columns")
-                    .border_style(table_border_style),
-            )
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+                    .title(filter_block_title)
+                    .border_style(filter_block_border_style);
+                let filter_inner_area = filter_block.inner(schunks[0]);
+                filter_block.render(schunks[0], buf);
 
-            StatefulWidget::render(table, chunks[1], buf, &mut self.sort_modal.table_state);
+                let filter_text = self.sort_filter_modal.sort.filter.as_str();
+                let cursor_pos = self
+                    .sort_filter_modal
+                    .sort
+                    .filter_cursor
+                    .min(filter_text.chars().count());
+                let mut chars = filter_text.chars();
+                let before_cursor: String = chars.by_ref().take(cursor_pos).collect();
+                let at_cursor = chars
+                    .next()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| " ".to_string());
+                let after_cursor: String = chars.collect();
 
-            // Keybind Hints
-            use ratatui::text::{Line, Span};
-            let mut hint_line1 = Line::default();
-            hint_line1.spans.push(Span::raw("Sort:    "));
-            hint_line1.spans.push(Span::styled(
-                "Space",
-                Style::default()
-                    .fg(self.color("keybind_hints"))
-                    .add_modifier(Modifier::BOLD),
-            ));
-            hint_line1.spans.push(Span::raw(" Toggle "));
-            hint_line1.spans.push(Span::styled(
-                "[]",
-                Style::default()
-                    .fg(self.color("keybind_hints"))
-                    .add_modifier(Modifier::BOLD),
-            ));
-            hint_line1.spans.push(Span::raw(" Reorder "));
-            hint_line1.spans.push(Span::styled(
-                "1-9",
-                Style::default()
-                    .fg(self.color("keybind_hints"))
-                    .add_modifier(Modifier::BOLD),
-            ));
-            hint_line1.spans.push(Span::raw(" Jump"));
+                let mut line = ratatui::text::Line::default();
+                line.spans.push(ratatui::text::Span::raw(before_cursor));
+                line.spans.push(ratatui::text::Span::styled(
+                    at_cursor,
+                    Style::default()
+                        .bg(self.color("text_primary"))
+                        .fg(self.color("text_inverse")),
+                ));
+                if !after_cursor.is_empty() {
+                    line.spans.push(ratatui::text::Span::raw(after_cursor));
+                }
 
-            let mut hint_line2 = Line::default();
-            hint_line2.spans.push(Span::raw("Display: "));
-            hint_line2.spans.push(Span::styled(
-                "L",
-                Style::default()
-                    .fg(self.color("keybind_hints"))
-                    .add_modifier(Modifier::BOLD),
-            ));
-            hint_line2.spans.push(Span::raw(" Lock "));
-            hint_line2.spans.push(Span::styled(
-                "+-",
-                Style::default()
-                    .fg(self.color("keybind_hints"))
-                    .add_modifier(Modifier::BOLD),
-            ));
-            hint_line2.spans.push(Span::raw(" Reorder"));
+                Paragraph::new(line).render(filter_inner_area, buf);
 
-            Paragraph::new(vec![hint_line1, hint_line2]).render(chunks[2], buf);
+                let filtered = self.sort_filter_modal.sort.filtered_columns();
+                let rows: Vec<Row> = filtered
+                    .iter()
+                    .map(|(_, col)| {
+                        let lock_cell = if col.is_locked {
+                            "●" // Full circle for locked
+                        } else if col.is_to_be_locked {
+                            "◐" // Half circle to indicate pending lock
+                        } else {
+                            " "
+                        };
+                        let lock_style = if col.is_locked {
+                            Style::default()
+                        } else if col.is_to_be_locked {
+                            Style::default().fg(self.color("dimmed")) // Dimmed style for pending lock
+                        } else {
+                            Style::default()
+                        };
+                        let order_cell = if col.is_visible && col.display_order < 9999 {
+                            format!("{:2}", col.display_order + 1)
+                        } else {
+                            "  ".to_string()
+                        };
+                        let sort_cell = if let Some(order) = col.sort_order {
+                            format!("{:2}", order)
+                        } else {
+                            "  ".to_string()
+                        };
+                        let name_cell = Cell::from(col.name.clone());
 
-            // Order Toggle - Radio Button Style with single border
-            let order_border_style = if self.sort_modal.focus == SortFocus::Order {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
+                        // Apply dimmed style to hidden columns
+                        let row_style = if col.is_visible {
+                            Style::default()
+                        } else {
+                            Style::default().fg(self.color("dimmed"))
+                        };
 
-            let order_block = Block::default()
-                .borders(Borders::ALL)
-                .title("Order")
-                .border_style(order_border_style);
-            let order_inner = order_block.inner(chunks[3]);
-            order_block.render(chunks[3], buf);
+                        Row::new(vec![
+                            Cell::from(lock_cell).style(lock_style),
+                            Cell::from(order_cell).style(row_style),
+                            Cell::from(sort_cell).style(row_style),
+                            name_cell.style(row_style),
+                        ])
+                    })
+                    .collect();
 
-            let order_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(order_inner);
+                let header = Row::new(vec![
+                    Cell::from("🔒").style(Style::default().add_modifier(Modifier::BOLD)),
+                    Cell::from("Order").style(Style::default().add_modifier(Modifier::BOLD)),
+                    Cell::from("Sort").style(Style::default().add_modifier(Modifier::BOLD)),
+                    Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
+                ])
+                .style(Style::default().add_modifier(Modifier::UNDERLINED));
 
-            // Ascending option
-            let ascending_indicator = if self.sort_modal.ascending {
-                "●"
-            } else {
-                "○"
-            };
-            let ascending_text = format!("{} Ascending", ascending_indicator);
-            let ascending_style = if self.sort_modal.ascending {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            Paragraph::new(ascending_text)
-                .style(ascending_style)
-                .centered()
-                .render(order_layout[0], buf);
+                let table_border_style =
+                    if self.sort_filter_modal.sort.focus == SortFocus::ColumnList {
+                        Style::default().fg(active_c)
+                    } else {
+                        Style::default().fg(border_c)
+                    };
+                let table = Table::new(
+                    rows,
+                    [
+                        Constraint::Length(2),
+                        Constraint::Length(6),
+                        Constraint::Length(6),
+                        Constraint::Min(0),
+                    ],
+                )
+                .header(header)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Columns")
+                        .border_style(table_border_style),
+                )
+                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-            // Descending option
-            let descending_indicator = if !self.sort_modal.ascending {
-                "●"
-            } else {
-                "○"
-            };
-            let descending_text = format!("{} Descending", descending_indicator);
-            let descending_style = if !self.sort_modal.ascending {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            Paragraph::new(descending_text)
-                .style(descending_style)
-                .centered()
-                .render(order_layout[1], buf);
+                StatefulWidget::render(
+                    table,
+                    schunks[1],
+                    buf,
+                    &mut self.sort_filter_modal.sort.table_state,
+                );
 
-            // Buttons
-            let btn_layout = Layout::default()
+                // Keybind Hints
+                use ratatui::text::{Line, Span};
+                let mut hint_line1 = Line::default();
+                hint_line1.spans.push(Span::raw("Sort:    "));
+                hint_line1.spans.push(Span::styled(
+                    "Space",
+                    Style::default()
+                        .fg(self.color("keybind_hints"))
+                        .add_modifier(Modifier::BOLD),
+                ));
+                hint_line1.spans.push(Span::raw(" Toggle "));
+                hint_line1.spans.push(Span::styled(
+                    "[]",
+                    Style::default()
+                        .fg(self.color("keybind_hints"))
+                        .add_modifier(Modifier::BOLD),
+                ));
+                hint_line1.spans.push(Span::raw(" Reorder "));
+                hint_line1.spans.push(Span::styled(
+                    "1-9",
+                    Style::default()
+                        .fg(self.color("keybind_hints"))
+                        .add_modifier(Modifier::BOLD),
+                ));
+                hint_line1.spans.push(Span::raw(" Jump"));
+
+                let mut hint_line2 = Line::default();
+                hint_line2.spans.push(Span::raw("Display: "));
+                hint_line2.spans.push(Span::styled(
+                    "L",
+                    Style::default()
+                        .fg(self.color("keybind_hints"))
+                        .add_modifier(Modifier::BOLD),
+                ));
+                hint_line2.spans.push(Span::raw(" Lock "));
+                hint_line2.spans.push(Span::styled(
+                    "+-",
+                    Style::default()
+                        .fg(self.color("keybind_hints"))
+                        .add_modifier(Modifier::BOLD),
+                ));
+                hint_line2.spans.push(Span::raw(" Reorder"));
+
+                Paragraph::new(vec![hint_line1, hint_line2]).render(schunks[2], buf);
+
+                let order_border_style = if self.sort_filter_modal.sort.focus == SortFocus::Order {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+
+                let order_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title("Order")
+                    .border_style(order_border_style);
+                let order_inner = order_block.inner(schunks[3]);
+                order_block.render(schunks[3], buf);
+
+                let order_layout = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(order_inner);
+
+                // Ascending option
+                let ascending_indicator = if self.sort_filter_modal.sort.ascending {
+                    "●"
+                } else {
+                    "○"
+                };
+                let ascending_text = format!("{} Ascending", ascending_indicator);
+                let ascending_style = if self.sort_filter_modal.sort.ascending {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                Paragraph::new(ascending_text)
+                    .style(ascending_style)
+                    .centered()
+                    .render(order_layout[0], buf);
+
+                // Descending option
+                let descending_indicator = if !self.sort_filter_modal.sort.ascending {
+                    "●"
+                } else {
+                    "○"
+                };
+                let descending_text = format!("{} Descending", descending_indicator);
+                let descending_style = if !self.sort_filter_modal.sort.ascending {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                Paragraph::new(descending_text)
+                    .style(descending_style)
+                    .centered()
+                    .render(order_layout[1], buf);
+            }
+
+            // Shared footer
+            let footer_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
                     Constraint::Percentage(33),
                     Constraint::Percentage(33),
                     Constraint::Percentage(34),
                 ])
-                .split(chunks[4]);
+                .split(chunks[2]);
 
             let mut apply_text_style = Style::default();
             let mut apply_border_style = Style::default();
-
-            if self.sort_modal.focus == SortFocus::Apply {
-                apply_text_style = apply_text_style.fg(self.color("modal_border_active"));
-                apply_border_style = apply_border_style.fg(self.color("modal_border_active"));
+            if self.sort_filter_modal.focus == SortFilterFocus::Apply {
+                apply_text_style = apply_text_style.fg(active_c);
+                apply_border_style = apply_border_style.fg(active_c);
+            } else {
+                apply_text_style = apply_text_style.fg(border_c);
+                apply_border_style = apply_border_style.fg(border_c);
             }
-
-            if self.sort_modal.has_unapplied_changes {
+            if self.sort_filter_modal.active_tab == SortFilterTab::Sort
+                && self.sort_filter_modal.sort.has_unapplied_changes
+            {
                 apply_text_style = apply_text_style.add_modifier(Modifier::BOLD);
             }
 
             Paragraph::new("Apply")
-                .style(apply_text_style) // Apply bold text when there are unapplied changes
+                .style(apply_text_style)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(apply_border_style),
-                ) // Border style for the block
+                )
                 .centered()
-                .render(btn_layout[0], buf);
+                .render(footer_chunks[0], buf);
 
-            let cancel_style = if self.sort_modal.focus == SortFocus::Cancel {
-                Style::default().fg(self.color("modal_border_active"))
+            let cancel_style = if self.sort_filter_modal.focus == SortFilterFocus::Cancel {
+                Style::default().fg(active_c)
             } else {
-                Style::default()
+                Style::default().fg(border_c)
             };
             Paragraph::new("Cancel")
                 .block(
@@ -4935,12 +4916,12 @@ impl Widget for &mut App {
                         .border_style(cancel_style),
                 )
                 .centered()
-                .render(btn_layout[1], buf);
+                .render(footer_chunks[1], buf);
 
-            let clear_style = if self.sort_modal.focus == SortFocus::Clear {
-                Style::default().fg(self.color("modal_border_active"))
+            let clear_style = if self.sort_filter_modal.focus == SortFilterFocus::Clear {
+                Style::default().fg(active_c)
             } else {
-                Style::default()
+                Style::default().fg(border_c)
             };
             Paragraph::new("Clear")
                 .block(
@@ -4949,7 +4930,7 @@ impl Widget for &mut App {
                         .border_style(clear_style),
                 )
                 .centered()
-                .render(btn_layout[2], buf);
+                .render(footer_chunks[2], buf);
         }
 
         if self.template_modal.active {
@@ -6285,10 +6266,9 @@ Delete Confirmation:
         // Dim controls when any modal is active (except analysis modal uses its own controls)
         let is_modal_active = self.show_help
             || self.input_mode == InputMode::Editing
-            || self.input_mode == InputMode::Filtering
+            || self.input_mode == InputMode::SortFilter
             || self.input_mode == InputMode::PivotMelt
-            || self.sort_modal.active
-            || self.filter_modal.active;
+            || self.sort_filter_modal.active;
 
         // Build controls - use analysis-specific controls if analysis modal is active
         let mut controls = Controls::with_row_count(row_count.unwrap_or(0)).with_colors(

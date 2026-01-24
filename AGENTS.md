@@ -55,14 +55,15 @@ src/
 │   ├── schema.rs       # Schema display widget
 │   ├── debug.rs        # Debug overlay widget
 │   ├── analysis.rs     # Analysis modal rendering
-│   ├── pivot_melt.rs   # Pivot/Melt modal rendering
+│   ├── pivot_melt.rs   # Pivot & Melt modal rendering
 │   └── template_modal.rs # Template management UI
 ├── query.rs            # Query parser and executor
-├── pivot_melt_modal.rs # Pivot/Melt modal state and specs
+├── pivot_melt_modal.rs # Pivot & Melt modal state and specs
 ├── statistics.rs       # Statistical computation module
 ├── analysis_modal.rs   # Analysis modal state management
-├── sort_modal.rs       # Sort/column order modal
-├── filter_modal.rs     # Filter modal state management
+├── sort_filter_modal.rs # Sort & Filter tabbed modal state
+├── sort_modal.rs       # Sort/column order (used by sort_filter)
+├── filter_modal.rs     # Filter state (used by sort_filter)
 ├── template.rs         # Template storage and management
 ├── cache.rs            # Cache manager (query history, etc.)
 └── config.rs           # Configuration manager (templates, etc.)
@@ -171,17 +172,17 @@ let df: DataFrame = lf.collect()?; // Only now is data materialized
 - Transformation state: `filters`, `sort_columns`, `active_query`, `column_order`
 
 **App State**: UI and modal state
-- `input_mode`: `Normal`, `Editing`, `Filtering`, `Sorting`
-- Modal states: `sort_modal`, `filter_modal`, `template_modal`, `analysis_modal`
+- `input_mode`: `Normal`, `Editing`, `SortFilter`, `PivotMelt`
+- Modal states: `sort_filter_modal` (Sort + Filter tabs), `template_modal`, `analysis_modal`, `pivot_melt_modal`
 - Focus management: Each modal tracks its own focus state
 
 ### 3. Modal Pattern
 
 All major UI operations use modal dialogs:
-- **Sort Modal**: Column ordering, sorting, locking, visibility (`InputMode::Sorting`)
-- **Filter Modal**: Filter creation and management (`InputMode::Filtering`)
+- **Sort & Filter** (`s`): Tabbed modal; Sort tab (column order, sort, lock, visibility) and Filter tab (filter creation). `InputMode::SortFilter`
 - **Template Modal**: Template listing and creation
 - **Analysis Modal**: Statistical analysis with drill-down views
+- **Pivot & Melt** (`p`): Reshape long↔wide
 
 Each modal:
 - Has its own state struct with `active: bool`
@@ -315,8 +316,7 @@ Each modal:
 **Mode-based Input**:
 - `InputMode::Normal`: Main view, modal shortcuts
 - `InputMode::Editing`: Query input (with history navigation)
-- `InputMode::Filtering`: Filter modal active
-- `InputMode::Sorting`: Sort modal active
+- `InputMode::SortFilter`: Sort & Filter modal active (tabs: Sort, Filter)
 
 ### Color Scheme
 
@@ -457,7 +457,7 @@ datui --clear-cache     # Clear all cache data
 
 - **Responsive Layout**: Adapts to terminal size
 - **Scrollable Tables**: Horizontal and vertical scrolling
-- **Modal Dialogs**: Sort, filter, template, analysis, **Pivot/Melt** modals
+- **Modal Dialogs**: Sort, filter, template, analysis, **Pivot & Melt** modals
 - **Help System**: Context-sensitive help (`?` key)
 - **Query History**: Navigate past queries with Up/Down arrows
 

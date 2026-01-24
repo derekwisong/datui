@@ -10,7 +10,7 @@ use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
 };
 
-/// Render the Pivot/Melt modal: tab bar, tab-specific body, footer.
+/// Render the Pivot and Melt modal: tab bar, tab-specific body, footer.
 /// Uses `border_color` for default borders and `active_color` for focused elements.
 /// `text_primary` and `text_inverse` are used for text-input cursor (same as query prompt).
 pub fn render_shell(

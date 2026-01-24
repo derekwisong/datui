@@ -380,6 +380,29 @@ impl SortModal {
         };
     }
 
+    /// Advance focus within body only (Filter → ColumnList → Order). Returns true if we were on
+    /// Order and caller should move to footer (Apply).
+    pub fn next_body_focus(&mut self) -> bool {
+        match self.focus {
+            SortFocus::Order => return true,
+            SortFocus::Filter => self.focus = SortFocus::ColumnList,
+            SortFocus::ColumnList => self.focus = SortFocus::Order,
+            SortFocus::Apply | SortFocus::Cancel | SortFocus::Clear => {}
+        }
+        false
+    }
+
+    /// Retreat focus within body only. Returns true if we were on Filter and caller should move to TabBar.
+    pub fn prev_body_focus(&mut self) -> bool {
+        match self.focus {
+            SortFocus::Filter => return true,
+            SortFocus::ColumnList => self.focus = SortFocus::Filter,
+            SortFocus::Order => self.focus = SortFocus::ColumnList,
+            SortFocus::Apply | SortFocus::Cancel | SortFocus::Clear => {}
+        }
+        false
+    }
+
     pub fn clear_selection(&mut self) {
         // Reset all column state: clear sorting, unlock all, reset display order
         for (idx, col) in self.columns.iter_mut().enumerate() {

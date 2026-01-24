@@ -2,7 +2,7 @@
 name = "datui"
 description = "A terminal user interface for data analysis"
 repository = "https://github.com/derekwisong/datui"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 license = "MIT"
 

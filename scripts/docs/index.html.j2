@@ -4,7 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Datui Documentation</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/terminal.css@0.7.5/dist/terminal.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
     <script>
         // Set theme immediately to prevent flash
         (function() {
@@ -21,7 +23,7 @@
     </script>
     <style>
         :root {
-            --terminal-font-family: 'Courier New', 'Consolas', 'Monaco', 'Menlo', monospace;
+            --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
             color-scheme: light dark;
         }
 
@@ -57,6 +59,9 @@
             flex-direction: column;
             padding: 0;
             margin: 0;
+            font-family: var(--font-mono);
+            font-size: 1rem;
+            line-height: 1.5;
             background-color: var(--bg-color);
             color: var(--text-color);
         }
@@ -83,13 +88,19 @@
         }
 
         .header-content {
-            padding-right: 140px; /* Make room for GitHub link */
+            padding-right: 260px; /* Make room for theme toggle + GitHub link */
         }
 
-        .github-link {
+        .header-actions {
             position: absolute;
             top: 0;
             right: 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .github-link {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
@@ -98,7 +109,7 @@
             color: var(--text-color);
             opacity: 0.7;
             transition: opacity 0.2s;
-            font-family: var(--terminal-font-family);
+            font-family: var(--font-mono);
             font-size: 0.875rem;
             border: 1px solid var(--border-color);
             background: var(--bg-color);
@@ -123,20 +134,20 @@
             .header-content {
                 padding-right: 0;
             }
-            
-            .github-link {
+
+            .header-actions {
                 position: static;
                 margin-top: 1rem;
-                display: inline-flex;
             }
         }
 
         .header h1 {
             font-size: 2.5rem;
+            font-weight: 700;
             margin: 0 0 0.5rem 0;
             padding: 0;
-            font-family: var(--terminal-font-family);
-            letter-spacing: 0.05em;
+            font-family: var(--font-mono);
+            letter-spacing: 0;
             line-height: 1.2;
         }
 
@@ -168,7 +179,7 @@
             border: 1px solid var(--border-color);
             background: var(--bg-color);
             color: var(--text-color);
-            font-family: var(--terminal-font-family);
+            font-family: var(--font-mono);
             font-size: 0.875rem;
             transition: all 0.2s;
         }
@@ -180,15 +191,34 @@
         .keyboard-hint {
             font-size: 0.75rem;
             opacity: 0.6;
-            font-family: var(--terminal-font-family);
+            font-family: var(--font-mono);
+        }
+
+        .keyboard-hint kbd {
+            display: inline-block;
+            padding: 0.15em 0.4em;
+            font-family: var(--font-mono);
+            font-size: 0.9em;
+            line-height: 1;
+            color: var(--text-color);
+            background: var(--selection-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            box-shadow: 0 1px 0 var(--border-color);
+        }
+
+        @media (max-width: 768px) {
+            .controls {
+                display: none;
+            }
         }
 
         .versions-heading {
             font-size: 1.25rem;
-            font-family: var(--terminal-font-family);
+            font-weight: 600;
+            font-family: var(--font-mono);
             margin: 0 0 1rem 0;
             color: var(--text-color);
-            font-weight: bold;
         }
 
         .version-list {
@@ -196,7 +226,7 @@
             flex-direction: column;
             gap: 0.25rem;
             margin-top: 0;
-            font-family: var(--terminal-font-family);
+            font-family: var(--font-mono);
         }
 
         .version-card {
@@ -212,7 +242,7 @@
             background: var(--bg-color);
             transition: all 0.15s;
             position: relative;
-            font-family: var(--terminal-font-family);
+            font-family: var(--font-mono);
             cursor: pointer;
             font-size: 1rem;
         }
@@ -238,7 +268,7 @@
 
         .version-card .version-name {
             font-weight: bold;
-            font-family: var(--terminal-font-family);
+            font-family: var(--font-mono);
             color: var(--text-color);
             min-width: 120px;
             display: flex;
@@ -249,7 +279,7 @@
         .version-card .version-date {
             opacity: 0.7;
             font-size: 0.95rem;
-            font-family: var(--terminal-font-family);
+            font-family: var(--font-mono);
             color: var(--text-color);
             text-align: right;
         }
@@ -265,7 +295,7 @@
             padding: 0.2rem 0.5rem;
             font-size: 0.75rem;
             font-weight: bold;
-            font-family: var(--terminal-font-family);
+            font-family: var(--font-mono);
             text-transform: uppercase;
             border: 1px solid var(--border-color);
             background: var(--bg-color);
@@ -281,7 +311,6 @@
             opacity: 0.8;
         }
 
-        /* Better alignment for terminal-style layout */
         .version-card {
             text-align: left;
         }
@@ -315,7 +344,7 @@
         }
     </style>
 </head>
-<body class="terminal">
+<body>
     <a href="#main-content" class="skip-link">Skip to main content</a>
     
     <div class="container">
@@ -324,20 +353,22 @@
                 <h1>Datui</h1>
                 <p class="subtitle">Terminal User Interface for Data Exploration</p>
             </div>
-            <a href="https://github.com/derekwisong/datui" 
-               class="github-link" 
-               target="_blank" 
-               rel="noopener noreferrer"
-               aria-label="View on GitHub">
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
-                </svg>
-                <span>GitHub</span>
-            </a>
-            <div class="controls">
+            <div class="header-actions">
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
                     <span id="theme-icon">☀️</span> <span id="theme-text">Light</span>
                 </button>
+                <a href="https://github.com/derekwisong/datui" 
+                   class="github-link" 
+                   target="_blank" 
+                   rel="noopener noreferrer"
+                   aria-label="View on GitHub">
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                        <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path>
+                    </svg>
+                    <span>GitHub</span>
+                </a>
+            </div>
+            <div class="controls">
                 <span class="keyboard-hint">
                     Navigate: <kbd>j</kbd>/<kbd>k</kbd> | Select: <kbd>Enter</kbd> | Theme: <kbd>t</kbd>
                 </span>

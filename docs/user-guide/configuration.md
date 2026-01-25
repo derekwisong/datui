@@ -160,12 +160,12 @@ All UI colors can be customized:
 | `dimmed` | Dimmed elements, axis lines | dark_gray |
 | `background` | Main background | default (uses terminal default) |
 | `surface` | Modal/surface backgrounds | default (uses terminal default) |
-| `controls_bg` | Controls bar and table header backgrounds | dark_gray |
+| `controls_bg` | Controls bar and table header backgrounds | indexed(235) |
 | `text_primary` | Primary text | default (uses terminal default) |
 | `text_secondary` | Secondary text | dark_gray |
 | `text_inverse` | Text on light backgrounds | black |
 | `table_header` | Table column header text | white |
-| `table_header_bg` | Table column header background | dark_gray |
+| `table_header_bg` | Table column header background | indexed(235) |
 | `column_separator` | Vertical line between table columns | cyan |
 | `table_selected` | Selected row style | reversed |
 | `sidebar_border` | Sidebar borders | dark_gray |
@@ -407,14 +407,14 @@ If colors don't look right:
 
 ### Table Headers or Toolbar Text Cut Off or Deformed (VS Code, xterm-256)
 
-On some terminals (e.g. VS Code integrated terminal, xterm-256color), **custom background colors** on headers/toolbar can cause text to render cut off or deformed. By default, `controls_bg` and `table_header_bg` are set to **`"default"`** (or **`"none"`**), which means no custom background — only the foreground color is applied.
+On some terminals (e.g. VS Code integrated terminal, xterm-256color), **custom background colors** on headers/toolbar can cause text to render cut off or deformed. By default, `controls_bg` and `table_header_bg` use **`indexed(235)`**, which works well on most setups.
 
-To add a colored bar for the toolbar or table headers, set them explicitly in your config, e.g.:
+If you see deformed text, set them to **`"default"`** or **`"none"`** for no custom background:
 
 ```toml
 [theme.colors]
-controls_bg = "dark_gray"
-table_header_bg = "dark_gray"
+controls_bg = "default"
+table_header_bg = "default"
 ```
 
 

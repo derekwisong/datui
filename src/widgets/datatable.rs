@@ -1455,10 +1455,11 @@ impl DataTable {
             // Highlight row number if this row is selected
             let is_selected = params.selected_row == Some(row_idx);
             let row_num_style = if is_selected {
-                // Use reversed style to match the selected row highlight
-                Style::default()
-                    .fg(self.row_numbers_fg)
-                    .add_modifier(Modifier::REVERSED)
+                // Must match the table's row_highlight_style exactly. Using a different
+                // style (e.g. fg + REVERSED) creates a style boundary at the row-number
+                // | first-data-column edge; some terminals (VS Code, xterm-256) then
+                // render that boundary with artifacts (bleeding, cut-off glyphs).
+                Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default().fg(self.row_numbers_fg)
             };

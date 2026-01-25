@@ -394,8 +394,8 @@ fn test_new_color_fields() {
         config.theme.colors.secondary_chart_series_color,
         "dark_gray"
     );
-    assert_eq!(config.theme.colors.controls_bg, "default");
-    assert_eq!(config.theme.colors.table_header_bg, "default");
+    assert_eq!(config.theme.colors.controls_bg, "indexed(235)");
+    assert_eq!(config.theme.colors.table_header_bg, "indexed(235)");
     assert_eq!(config.theme.colors.column_separator, "cyan");
     assert_eq!(config.theme.colors.sidebar_border, "dark_gray");
 
@@ -404,9 +404,9 @@ fn test_new_color_fields() {
     if std::env::var("NO_COLOR").is_err() {
         assert_ne!(theme.get("primary_chart_series_color"), Color::Reset);
         assert_ne!(theme.get("secondary_chart_series_color"), Color::Reset);
-        // controls_bg and table_header_bg default to "default" -> Reset (no custom background)
-        assert_eq!(theme.get("controls_bg"), Color::Reset);
-        assert_eq!(theme.get("table_header_bg"), Color::Reset);
+        // controls_bg and table_header_bg default to indexed(235)
+        assert_eq!(theme.get("controls_bg"), Color::Indexed(235));
+        assert_eq!(theme.get("table_header_bg"), Color::Indexed(235));
         assert_ne!(theme.get("column_separator"), Color::Reset);
         assert_ne!(theme.get("sidebar_border"), Color::Reset);
     }

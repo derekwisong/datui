@@ -63,9 +63,9 @@ fn test_indexed_colors_in_default_config() {
     let config = AppConfig::default();
     let theme = Theme::from_config(&config.theme).expect("Failed to create theme");
 
-    // Default config uses "default" for controls_bg and table_header_bg (no custom background)
-    assert_eq!(theme.get("controls_bg"), Color::Reset);
-    assert_eq!(theme.get("table_header_bg"), Color::Reset);
+    // Default config uses indexed(235) for controls_bg and table_header_bg
+    assert_eq!(theme.get("controls_bg"), Color::Indexed(235));
+    assert_eq!(theme.get("table_header_bg"), Color::Indexed(235));
 }
 
 #[test]

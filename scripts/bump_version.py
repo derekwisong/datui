@@ -69,6 +69,50 @@ def update_cargo_toml(
     print(f"✓ Updated {rel}: {old_version} -> {new_version}")
 
 
+def update_cargo_toml_to_version(
+    file_path: Path, target_version: str, project_root: Path
+) -> None:
+    """Update version in a Cargo.toml file to a specific version, regardless of current version.
+    
+    This is used for ensuring datui-cli matches the main Cargo.toml version.
+    """
+    content = file_path.read_text()
+    
+    # First, check what the current version is
+    old_match = re.search(r'version\s*=\s*"([^"]+)"', content)
+    if not old_match:
+        raise ValueError(f"Could not find version field in {file_path}")
+    
+    old_version = old_match.group(1)
+    
+    # If already at target version, no change needed
+    if old_version == target_version:
+        try:
+            rel = file_path.relative_to(project_root)
+        except ValueError:
+            rel = file_path
+        print(f"✓ {rel} already at version {target_version} (no change needed)")
+        return
+    
+    # Match any version string and replace it with target_version
+    pattern = r'version\s*=\s*"([^"]+)"'
+    
+    def replace_version(match):
+        return f'version = "{target_version}"'
+    
+    new_content = re.sub(pattern, replace_version, content)
+    
+    if new_content == content:
+        raise ValueError(f"Could not update version in {file_path}")
+    
+    file_path.write_text(new_content)
+    try:
+        rel = file_path.relative_to(project_root)
+    except ValueError:
+        rel = file_path
+    print(f"✓ Updated {rel}: {old_version} -> {target_version}")
+
+
 def update_readme(file_path: Path, old_version: str, new_version: str) -> None:
     """Update version badge in README.md."""
     content = file_path.read_text()
@@ -188,11 +232,11 @@ Examples:
         print(f"Error: Could not find {readme_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Get current version
+    # Get current version from main Cargo.toml (source of truth)
     current_version = get_current_version(cargo_toml_path)
-    print(f"Current version: {current_version}")
+    print(f"Current version (from main Cargo.toml): {current_version}")
 
-    # Calculate new version
+    # Calculate new version based on main Cargo.toml
     new_version = bump_version(current_version, bump_type)
     print(f"New version: {new_version}")
     print()
@@ -201,9 +245,13 @@ Examples:
 
     # Update files
     try:
+        # Update main Cargo.toml (source of truth)
         update_cargo_toml(cargo_toml_path, current_version, new_version, project_root)
+        
+        # Update datui-cli Cargo.toml to match the new version (regardless of its current version)
         if datui_cli_cargo.exists():
-            update_cargo_toml(datui_cli_cargo, current_version, new_version, project_root)
+            update_cargo_toml_to_version(datui_cli_cargo, new_version, project_root)
+        
         update_readme(readme_path, current_version, new_version)
         print()
         print(f"✓ Version bumped successfully: {current_version} -> {new_version}")

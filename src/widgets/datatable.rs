@@ -1405,7 +1405,11 @@ impl DataTable {
             })
             .collect::<Vec<Row>>();
 
-        let header_row_style = Style::default().bg(self.header_bg).fg(self.header_fg);
+        let header_row_style = if self.header_bg == Color::Reset {
+            Style::default().fg(self.header_fg)
+        } else {
+            Style::default().bg(self.header_bg).fg(self.header_fg)
+        };
         let headers: Vec<Span> = df
             .get_column_names()
             .iter()

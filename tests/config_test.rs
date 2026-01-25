@@ -394,17 +394,19 @@ fn test_new_color_fields() {
         config.theme.colors.secondary_chart_series_color,
         "dark_gray"
     );
-    assert_eq!(config.theme.colors.table_header_bg, "dark_gray");
+    assert_eq!(config.theme.colors.controls_bg, "default");
+    assert_eq!(config.theme.colors.table_header_bg, "default");
     assert_eq!(config.theme.colors.column_separator, "cyan");
     assert_eq!(config.theme.colors.sidebar_border, "dark_gray");
 
     // Test that new colors can be parsed and retrieved from theme
     let theme = Theme::from_config(&config.theme).unwrap();
-    // Colors should not be Reset (unless NO_COLOR is set)
     if std::env::var("NO_COLOR").is_err() {
         assert_ne!(theme.get("primary_chart_series_color"), Color::Reset);
         assert_ne!(theme.get("secondary_chart_series_color"), Color::Reset);
-        assert_ne!(theme.get("table_header_bg"), Color::Reset);
+        // controls_bg and table_header_bg default to "default" -> Reset (no custom background)
+        assert_eq!(theme.get("controls_bg"), Color::Reset);
+        assert_eq!(theme.get("table_header_bg"), Color::Reset);
         assert_ne!(theme.get("column_separator"), Color::Reset);
         assert_ne!(theme.get("sidebar_border"), Color::Reset);
     }

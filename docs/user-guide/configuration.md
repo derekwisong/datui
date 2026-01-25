@@ -405,6 +405,19 @@ If colors don't look right:
 3. **Try indexed colors**: Match your terminal's palette exactly
 4. **Check NO_COLOR**: Unset with `unset NO_COLOR` if colors are disabled
 
+### Table Headers or Toolbar Text Cut Off or Deformed (VS Code, xterm-256)
+
+On some terminals (e.g. VS Code integrated terminal, xterm-256color), **custom background colors** on headers/toolbar can cause text to render cut off or deformed. By default, `controls_bg` and `table_header_bg` are set to **`"default"`** (or **`"none"`**), which means no custom background — only the foreground color is applied.
+
+To add a colored bar for the toolbar or table headers, set them explicitly in your config, e.g.:
+
+```toml
+[theme.colors]
+controls_bg = "dark_gray"
+table_header_bg = "dark_gray"
+```
+
+
 ## See Also
 
 - [Command-Line Options](../reference/command-line-options.md) - CLI flags that override config

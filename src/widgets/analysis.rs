@@ -73,11 +73,6 @@ impl<'a> AnalysisWidget<'a> {
             theme: config.theme,
         }
     }
-
-    /// Get a color from the theme by name
-    fn color(&self, name: &str) -> Color {
-        self.theme.get(name)
-    }
 }
 
 impl<'a> Widget for AnalysisWidget<'a> {
@@ -122,11 +117,7 @@ impl<'a> AnalysisWidget<'a> {
             tool_name.to_string()
         };
 
-        // Style matching main window column headers: dark gray background with bold white text
-        let header_row_style = Style::default()
-            .bg(self.color("controls_bg"))
-            .fg(self.color("table_header"))
-            .add_modifier(Modifier::BOLD);
+        let header_row_style = header_style(self.theme, "controls_bg", "table_header");
         Paragraph::new(breadcrumb_text)
             .style(header_row_style)
             .render(layout[0], buf);
@@ -229,17 +220,12 @@ impl<'a> AnalysisWidget<'a> {
             ])
             .split(layout[0]);
 
-        // Title: "Distribution Analysis: [column]" - dark gray background with bold white text
         let title_text = format!("Distribution Analysis: {}", dist.column_name);
-        let header_row_style = Style::default()
-            .bg(self.color("controls_bg"))
-            .fg(self.color("table_header"))
-            .add_modifier(Modifier::BOLD);
+        let header_row_style = header_style(self.theme, "controls_bg", "table_header");
         Paragraph::new(title_text)
             .style(header_row_style)
             .render(breadcrumb_layout[0], buf);
 
-        // Escape hint on right - also styled with dark gray background
         Paragraph::new("Esc Back")
             .style(header_row_style)
             .right_aligned()
@@ -580,26 +566,16 @@ fn render_statistics_table(
 
     let mut rows = Vec::new();
 
-    let mut header_cells =
-        vec![Cell::from("Column").style(Style::default().add_modifier(Modifier::BOLD))];
+    let mut header_cells = vec![Cell::from("Column").style(Style::default())];
     for &stat_idx in &visible_stats {
-        header_cells.push(
-            Cell::from(stat_display_names[stat_idx])
-                .style(Style::default().add_modifier(Modifier::BOLD)),
-        );
+        header_cells.push(Cell::from(stat_display_names[stat_idx]).style(Style::default()));
     }
-    let header_row_style = Style::default()
-        .bg(theme.get("controls_bg"))
-        .fg(theme.get("table_header"))
-        .add_modifier(Modifier::BOLD);
+    let header_row_style = header_style(theme, "controls_bg", "table_header");
     let header_row = Row::new(header_cells.clone()).style(header_row_style);
 
     for col_stat in &results.column_statistics {
-        let mut cells = vec![Cell::from(col_stat.name.as_str()).style(
-            Style::default()
-                .fg(theme.get("text_primary"))
-                .add_modifier(Modifier::BOLD),
-        )];
+        let mut cells = vec![Cell::from(col_stat.name.as_str())
+            .style(Style::default().fg(theme.get("text_primary")))];
         for &stat_idx in &visible_stats {
             let stat_name = stat_names[stat_idx];
             let value = match stat_name {
@@ -687,6 +663,17 @@ fn format_pvalue(p: f64) -> String {
         "<0.001".to_string()
     } else {
         format!("{:.3}", p)
+    }
+}
+
+/// Build header-style: bg+fg when bg_key is not Reset, else fg-only.
+fn header_style(theme: &Theme, bg_key: &str, fg_key: &str) -> Style {
+    let bg = theme.get(bg_key);
+    let fg = theme.get(fg_key);
+    if bg == Color::Reset {
+        Style::default().fg(fg)
+    } else {
+        Style::default().bg(bg).fg(fg)
     }
 }
 
@@ -830,17 +817,11 @@ fn render_distribution_table(
 
     let mut rows = Vec::new();
 
-    let mut header_cells =
-        vec![Cell::from("Column").style(Style::default().add_modifier(Modifier::BOLD))];
+    let mut header_cells = vec![Cell::from("Column").style(Style::default())];
     for &stat_idx in &visible_stats {
-        header_cells.push(
-            Cell::from(column_names[stat_idx]).style(Style::default().add_modifier(Modifier::BOLD)),
-        );
+        header_cells.push(Cell::from(column_names[stat_idx]).style(Style::default()));
     }
-    let header_row_style = Style::default()
-        .bg(theme.get("controls_bg"))
-        .fg(theme.get("table_header"))
-        .add_modifier(Modifier::BOLD);
+    let header_row_style = header_style(theme, "controls_bg", "table_header");
     let header_row = Row::new(header_cells).style(header_row_style);
     for dist_analysis in &results.distribution_analyses {
         // Color coding for distribution type based on fit quality only
@@ -936,13 +917,10 @@ fn render_distribution_table(
             })
             .unwrap_or_default();
 
-        // Build row with locked column name (bold) + visible stat values
+        // Build row with locked column name + visible stat values
         // Use explicit text_primary so column names stay visible (avoids black-on-black)
-        let mut cells = vec![Cell::from(dist_analysis.column_name.as_str()).style(
-            Style::default()
-                .fg(theme.get("text_primary"))
-                .add_modifier(Modifier::BOLD),
-        )];
+        let mut cells = vec![Cell::from(dist_analysis.column_name.as_str())
+            .style(Style::default().fg(theme.get("text_primary")))];
 
         // Add visible statistic values
         for &stat_idx in &visible_stats {
@@ -1054,14 +1032,8 @@ fn render_correlation_matrix(
 
     let (selected_row, selected_col) = selected_cell.unwrap_or((n, n));
 
-    let header_row_style = Style::default()
-        .bg(theme.get("controls_bg"))
-        .fg(theme.get("table_header"))
-        .add_modifier(Modifier::BOLD);
-    let dim_header_style = Style::default()
-        .bg(theme.get("surface")) // Slightly lighter gray for dim highlight
-        .fg(theme.get("table_header"))
-        .add_modifier(Modifier::BOLD);
+    let header_row_style = header_style(theme, "controls_bg", "table_header");
+    let dim_header_style = header_style(theme, "controls_bg", "table_header");
 
     let mut header_cells = vec![Cell::from("")];
     for j in start_col..end_col {
@@ -1086,11 +1058,9 @@ fn render_correlation_matrix(
 
         // Row header cell - dim highlight if selected row
         let row_header_style = if is_selected_row {
-            Style::default()
-                .bg(theme.get("surface"))
-                .add_modifier(Modifier::BOLD)
+            Style::default().bg(theme.get("surface"))
         } else {
-            Style::default().add_modifier(Modifier::BOLD)
+            Style::default()
         };
         let mut cells = vec![Cell::from(col_name.as_str()).style(row_header_style)];
 
@@ -1110,11 +1080,9 @@ fn render_correlation_matrix(
 
             let cell_style = if is_selected_cell {
                 // Selected cell: use bright background with inverted text for visibility
-                // Use text_inverse (black) for text to ensure it's always readable
                 Style::default()
                     .fg(theme.get("text_inverse"))
                     .bg(theme.get("modal_border_active"))
-                    .add_modifier(Modifier::BOLD)
             } else if is_selected_row || is_in_selected_col {
                 // Selected row or column: dim background with colored text
                 Style::default().fg(text_color).bg(theme.get("surface"))
@@ -1252,12 +1220,8 @@ fn render_distribution_selector(
             let is_focused = focus == AnalysisFocus::DistributionSelector
                 && selector_state.selected() == Some(sorted_idx);
 
-            // Style cells based on focus only - no separate "selected" indicator
-            // Use explicit theme colors so unfocused names stay visible (avoids black-on-black)
             let name_style = if is_focused {
-                Style::default()
-                    .fg(theme.get("table_header"))
-                    .bg(theme.get("controls_bg"))
+                header_style(theme, "controls_bg", "table_header")
             } else {
                 Style::default().fg(theme.get("text_primary"))
             };
@@ -1278,20 +1242,10 @@ fn render_distribution_selector(
         })
         .collect();
 
-    // Create table with columns: Name, P-value
+    let h = header_style(theme, "controls_bg", "table_header");
     let header = Row::new(vec![
-        Cell::from("Name").style(
-            Style::default()
-                .fg(theme.get("table_header"))
-                .bg(theme.get("controls_bg"))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("P-value").style(
-            Style::default()
-                .fg(theme.get("table_header"))
-                .bg(theme.get("controls_bg"))
-                .add_modifier(Modifier::BOLD),
-        ),
+        Cell::from("Name").style(h),
+        Cell::from("P-value").style(h),
     ]);
 
     let table = Table::new(
@@ -1328,8 +1282,9 @@ fn render_sidebar(
     ];
 
     let text_primary = theme.get("text_primary");
-    let table_header = theme.get("table_header");
-    let controls_bg = theme.get("controls_bg");
+    // Use REVERSED for focused row (like main table) so selection is always visible,
+    // even when controls_bg is "default"/none.
+    let focused_style = Style::default().add_modifier(Modifier::REVERSED);
 
     let items: Vec<ListItem> = tools
         .iter()
@@ -1340,12 +1295,7 @@ fn render_sidebar(
                 focus == AnalysisFocus::Sidebar && sidebar_state.selected() == Some(idx);
             let prefix = if is_selected { "> " } else { "  " };
             let style = if is_focused {
-                // Explicit fg+bg so focused item is always visible (avoids black-on-black)
-                Style::default().fg(table_header).bg(controls_bg)
-            } else if is_selected {
-                Style::default()
-                    .fg(text_primary)
-                    .add_modifier(Modifier::BOLD)
+                focused_style
             } else {
                 Style::default().fg(text_primary)
             };
@@ -1971,9 +1921,7 @@ fn render_condensed_statistics(
     // Display statistics in single line: SW score, skew, kurtosis, median, mean, std, CV
     // Use explicit theme colors so text is always visible (avoids black-on-black for some themes)
     let chars = &dist.characteristics;
-    let label_style = Style::default()
-        .fg(theme.get("text_primary"))
-        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(theme.get("text_primary"));
     let value_style = Style::default().fg(theme.get("text_primary"));
 
     let mut line_parts = Vec::new();

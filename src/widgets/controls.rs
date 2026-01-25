@@ -1,7 +1,7 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     widgets::{Block, Paragraph, Widget},
 };
 
@@ -11,7 +11,7 @@ pub struct Controls {
     pub query_active: bool,
     pub custom_controls: Option<Vec<(&'static str, &'static str)>>,
     pub bg_color: Color,
-    pub key_color: Color,   // Color for keybind hints (bold)
+    pub key_color: Color,   // Color for keybind hints (keys in toolbar)
     pub label_color: Color, // Color for action labels
 }
 
@@ -88,10 +88,12 @@ impl Controls {
 
 impl Widget for &Controls {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Fill the entire area with the background color first
-        Block::default()
-            .style(Style::default().bg(self.bg_color))
-            .render(area, buf);
+        let no_bg = self.bg_color == Color::Reset;
+        if !no_bg {
+            Block::default()
+                .style(Style::default().bg(self.bg_color))
+                .render(area, buf);
+        }
 
         const DEFAULT_CONTROLS: [(&str, &str); 8] = [
             ("/", "Query"),
@@ -110,8 +112,10 @@ impl Widget for &Controls {
             DEFAULT_CONTROLS.to_vec()
         };
 
+        // Key width: +3 padding (was +2). Extra space avoids cut-off/deformed text when
+        // terminals render bold or colored text slightly wider (e.g. VS Code xterm-256).
         let mut constraints = controls.iter().fold(vec![], |mut acc, (key, action)| {
-            acc.push(Constraint::Length(key.chars().count() as u16 + 2));
+            acc.push(Constraint::Length(key.chars().count() as u16 + 3));
             acc.push(Constraint::Length(action.chars().count() as u16 + 1));
             acc
         });
@@ -123,9 +127,16 @@ impl Widget for &Controls {
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
 
-        let base_bg = Style::default().bg(self.bg_color);
-        let key_style = base_bg.fg(self.key_color).add_modifier(Modifier::BOLD);
-        let label_style = base_bg.fg(self.label_color);
+        let (key_style, label_style, fill_style) = if no_bg {
+            (
+                Style::default().fg(self.key_color),
+                Style::default().fg(self.label_color),
+                Style::default(),
+            )
+        } else {
+            let base = Style::default().bg(self.bg_color);
+            (base.fg(self.key_color), base.fg(self.label_color), base)
+        };
 
         for (i, (key, action)) in controls.iter().enumerate() {
             let j = i * 2;
@@ -148,7 +159,7 @@ impl Widget for &Controls {
         }
 
         Paragraph::new("")
-            .style(base_bg)
+            .style(fill_style)
             .render(layout[fill_idx], buf);
     }
 }

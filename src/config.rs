@@ -555,12 +555,18 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("dimmed", "Dimmed elements, axis lines"),
     ("background", "Main background"),
     ("surface", "Modal/surface backgrounds"),
-    ("controls_bg", "Controls bar and table header backgrounds"),
+    (
+        "controls_bg",
+        "Controls bar background. Use \"default\" or \"none\" for no custom background (avoids deformed text on some terminals)",
+    ),
     ("text_primary", "Primary text"),
     ("text_secondary", "Secondary text"),
     ("text_inverse", "Text on light backgrounds"),
     ("table_header", "Table column header text"),
-    ("table_header_bg", "Table column header background"),
+    (
+        "table_header_bg",
+        "Table column header background. Use \"default\" or \"none\" for no custom background (avoids deformed text on some terminals)",
+    ),
     ("column_separator", "Vertical line between columns"),
     ("table_selected", "Selected row style"),
     ("sidebar_border", "Sidebar borders"),
@@ -695,12 +701,12 @@ impl Default for ColorConfig {
             dimmed: "dark_gray".to_string(),
             background: "default".to_string(),
             surface: "default".to_string(),
-            controls_bg: "dark_gray".to_string(),
+            controls_bg: "default".to_string(),
             text_primary: "default".to_string(),
             text_secondary: "dark_gray".to_string(),
             text_inverse: "black".to_string(),
             table_header: "white".to_string(),
-            table_header_bg: "dark_gray".to_string(),
+            table_header_bg: "default".to_string(),
             column_separator: "cyan".to_string(),
             table_selected: "reversed".to_string(),
             sidebar_border: "dark_gray".to_string(),
@@ -1149,7 +1155,7 @@ impl ColorParser {
             "light_gray" | "light gray" | "light_grey" | "light grey" => Ok(Color::Indexed(7)),
 
             // Special modifiers (pass through as Reset - handled specially in rendering)
-            "reset" | "default" | "reversed" => Ok(Color::Reset),
+            "reset" | "default" | "none" | "reversed" => Ok(Color::Reset),
 
             _ => Err(eyre!(
                 "Unknown color name: '{}'. Supported: basic ANSI colors (red, blue, etc.), \

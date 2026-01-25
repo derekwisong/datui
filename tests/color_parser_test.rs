@@ -160,6 +160,8 @@ fn test_parse_special_modifiers() {
 
     // Special modifiers should parse as Reset
     assert_eq!(parser.parse("reset").unwrap(), Color::Reset);
+    assert_eq!(parser.parse("default").unwrap(), Color::Reset);
+    assert_eq!(parser.parse("none").unwrap(), Color::Reset);
     assert_eq!(parser.parse("reversed").unwrap(), Color::Reset);
 }
 

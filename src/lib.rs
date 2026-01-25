@@ -4691,10 +4691,10 @@ impl Widget for &mut App {
                     .collect();
 
                 let header = Row::new(vec![
-                    Cell::from("🔒").style(Style::default().add_modifier(Modifier::BOLD)),
-                    Cell::from("Order").style(Style::default().add_modifier(Modifier::BOLD)),
-                    Cell::from("Sort").style(Style::default().add_modifier(Modifier::BOLD)),
-                    Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
+                    Cell::from("🔒").style(Style::default()),
+                    Cell::from("Order").style(Style::default()),
+                    Cell::from("Sort").style(Style::default()),
+                    Cell::from("Name").style(Style::default()),
                 ])
                 .style(Style::default().add_modifier(Modifier::UNDERLINED));
 
@@ -5001,11 +5001,10 @@ impl Widget for &mut App {
 
                     // Header row
                     let header = Row::new(vec![
-                        Cell::from("●").style(Style::default().add_modifier(Modifier::BOLD)),
-                        Cell::from(" ").style(Style::default().add_modifier(Modifier::BOLD)), // Active column header (empty)
-                        Cell::from("Name").style(Style::default().add_modifier(Modifier::BOLD)),
-                        Cell::from("Description")
-                            .style(Style::default().add_modifier(Modifier::BOLD)),
+                        Cell::from("●").style(Style::default()),
+                        Cell::from(" ").style(Style::default()), // Active column header (empty)
+                        Cell::from("Name").style(Style::default()),
+                        Cell::from("Description").style(Style::default()),
                     ])
                     .style(Style::default().add_modifier(Modifier::UNDERLINED));
 
@@ -6231,8 +6230,8 @@ Delete Confirmation:
         // Build controls - use analysis-specific controls if analysis modal is active
         let mut controls = Controls::with_row_count(row_count.unwrap_or(0)).with_colors(
             self.color("controls_bg"),
-            self.color("keybind_hints"),  // Keys in cyan (bold)
-            self.color("keybind_labels"), // Labels in yellow
+            self.color("keybind_hints"),
+            self.color("keybind_labels"),
         );
 
         if self.analysis_modal.active {

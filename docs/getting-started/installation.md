@@ -1,7 +1,7 @@
 # Installation
 
-You can obtain Datui from [pre-build releases](#installing-a-pre-built-release) or by
-[building from source](#compiling-from-source).
+You can obtain Datui from [pre-built releases](#installing-a-pre-built-release) or by
+[comping from source](#compiling-from-source).
 
 Once installed, have a look at the [Quick Start Guide](quick-start.md).
 

@@ -99,7 +99,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 The following script can be used to set up your local repo for development:
 ```bash
-python scripts setup-dev.py
+python scripts/setup-dev.py
 ```
 
 See the [Setup Script Guide](https://derekwisong.github.io/datui/main/for-developers/contributing.html#setup-script)

@@ -19,7 +19,13 @@ Run [generate-all][generate-all] to use `vhs` to generate an animated gif file f
 > application when creating the demos.
 
 ```bash
-scripts/demos/generate-all.sh
+python3 scripts/demos/generate-all.py
+```
+
+Or if the script is executable:
+
+```bash
+scripts/demos/generate-all.py
 ```
 
 The animations will be placed in the [demos][demos] directory.
@@ -31,7 +37,7 @@ The animations will be placed in the [demos][demos] directory.
 ---
 
 [vhs]: https://github.com/charmbracelet/vhs
-[generate-all]: https://github.com/derekwisong/datui/tree/main/scripts/demos/generate-all.sh
+[generate-all]: https://github.com/derekwisong/datui/tree/main/scripts/demos/generate-all.py
 [demo-tapes]: https://github.com/derekwisong/datui/tree/main/scripts/demos
 [demos]: https://github.com/derekwisong/datui/tree/main/demos
 

@@ -3,11 +3,17 @@ Set FontSize 18
 Set Width 1200
 Set Height 800
 Set TypingSpeed 25ms
+# DO NOT DELETE - HEADER ABOVE
+Hide
 
 Type "datui tests/sample-data/people.parquet"
 Enter
 
 # Wait for TUI to load
+Sleep 0.5s
+
+Show
+
 Sleep 0.5s
 
 # Open query input (press '/')

@@ -17,7 +17,9 @@ cargo build --release
 vhs scripts/demos/01-basic-navigation.tape
 
 # Or generate all demos at once
-./scripts/demos/generate-all.sh
+python3 scripts/demos/generate-all.py
+# Or if executable:
+# ./scripts/demos/generate-all.py
 ```
 
 ### 3. View the Result
@@ -86,7 +88,9 @@ vhs scripts/demos/01-basic-navigation.tape
 
 **Generate all demos**:
 ```bash
-./scripts/demos/generate-all.sh
+python3 scripts/demos/generate-all.py
+# Or if executable:
+# ./scripts/demos/generate-all.py
 ```
 
 **Edit a demo script**:

@@ -28,13 +28,17 @@ This will generate `demos/01-basic-navigation.gif` in the root `demos/` director
 
 From the repository root:
 ```bash
-./scripts/demos/generate-all.sh
+python3 scripts/demos/generate-all.py
+# Or if executable:
+# ./scripts/demos/generate-all.py
 ```
 
 Or if you're in `scripts/demos/`:
 ```bash
 cd scripts/demos
-./generate-all.sh
+python3 generate-all.py
+# Or if executable:
+# ./generate-all.py
 ```
 
 This will generate all GIFs from all `.tape` files in `scripts/demos/`.

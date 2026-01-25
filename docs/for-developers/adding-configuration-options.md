@@ -72,7 +72,9 @@ impl DisplayConfig {
 - **Option fields**: If `other.field.is_some()`, take the value
 - **Non-Option fields**: If `other.field != default.field`, take the value
 
-### 4. Add Comments to Comment Constants
+### 4. Add Config File Comments
+
+The default config file is populated with comments useful to users.
 
 Add comments to the comment constant array right after the struct definition in `src/config.rs`:
 

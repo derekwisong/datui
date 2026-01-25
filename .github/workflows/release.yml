@@ -25,30 +25,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-release-
-
-      - name: Cache mdbook
-        id: cache-mdbook
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/mdbook
-          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-mdbook-
 
       - name: Install mdbook
-        if: steps.cache-mdbook.outputs.cache-hit != 'true'
         run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
 
       - name: Build release binary

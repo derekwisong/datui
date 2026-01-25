@@ -37,17 +37,9 @@ jobs:
           pip install -r scripts/requirements.txt
 
       - name: Cache cargo dependencies
-        uses: actions/cache@v4
+        uses: swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-ci-
+          key: "ci"
 
       - name: Cache mdbook
         id: cache-mdbook

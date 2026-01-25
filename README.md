@@ -6,7 +6,7 @@
 
 Datui is an interactive terminal user interface (TUI) for exploring and analyzing data files.
 
-> Datui is currently in rapid development—features and interfaces are evolving as we build. Expect some changes between releases as we work toward a stable foundation.
+> Datui is currently in rapid development—features and interfaces are evolving.
 
 📖 **Documentation**: For comprehensive documentation including user guides, reference, and examples, see the [full documentation][docs].
 

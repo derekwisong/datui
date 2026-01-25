@@ -1,6 +1,7 @@
 # Getting Started
 
-To get started, proceed to the [Installation Manual](getting-started/installation.md).
+See the [Installation Manual](getting-started/installation.md) for instructions
+to get Datui installed.
 
 Once you have Datui installed, have a look at the [Quick Start Guide](getting-started/quick-start.md) for a
 brief introduction.

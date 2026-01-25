@@ -16,10 +16,12 @@ python scripts/setup-dev.py
 The script will:
 
 - Set up the [Python Virtual Environment](#python-virtual-environment)
-  - Updates it if it already exists
-- Install/update [pre-commit hooks](#pre-commit-hooks)
-- Generates sample data needed to run the tests
+- Set up [pre-commit hooks](#pre-commit-hooks)
+- Generate sample data needed to run the tests
 - Configure and build the [documentation](documentation.md)
+
+Run the script again at any time to update
+everything.
 
 ### Python Virtual Environment
 

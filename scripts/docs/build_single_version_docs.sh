@@ -102,6 +102,7 @@ cp "$BUILD_DIR/book.toml" "$DOCS_TEMP/book.toml"
 
 # Generate command-line-options.md into temp docs (never touch repo docs).
 if [ -f "$BUILD_DIR/scripts/docs/generate_command_line_options.py" ]; then
+    echo "Generating command line argument docs (can take some time to build)"
     if (cd "$BUILD_DIR" && python3 scripts/docs/generate_command_line_options.py -o "$DOCS_TEMP/docs/reference/command-line-options.md"); then
         echo "✓ Generated command-line-options.md (temp)"
     else

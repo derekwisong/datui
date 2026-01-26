@@ -48,6 +48,14 @@ pub struct AnalysisModal {
     pub detail_section: usize, // Current section in detail view (0=Characteristics, 1=Outliers, 2=Percentiles)
     pub selected_theoretical_distribution: DistributionType, // Selected theoretical distribution for Q-Q plot
     pub distribution_selector_state: TableState,             // For distribution selector list
+    pub histogram_scale: HistogramScale,                     // Scale for histogram (linear or log)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HistogramScale {
+    #[default]
+    Linear,
+    Log,
 }
 
 impl AnalysisModal {

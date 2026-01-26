@@ -1842,6 +1842,21 @@ impl App {
                         _ => {}
                     }
                 }
+                KeyCode::Char('s') => {
+                    // Toggle histogram scale (linear/log) in distribution detail view
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::DistributionDetail
+                    {
+                        self.analysis_modal.histogram_scale =
+                            match self.analysis_modal.histogram_scale {
+                                analysis_modal::HistogramScale::Linear => {
+                                    analysis_modal::HistogramScale::Log
+                                }
+                                analysis_modal::HistogramScale::Log => {
+                                    analysis_modal::HistogramScale::Linear
+                                }
+                            };
+                    }
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
                         self.analysis_modal.previous_row();
@@ -5802,7 +5817,7 @@ impl Widget for &mut App {
                                         crate::statistics::compute_distribution_statistics(
                                             results,
                                             &lf,
-                                            None,
+                                            Some(self.sampling_threshold),
                                             self.analysis_modal.random_seed,
                                         )
                                     {
@@ -5854,6 +5869,7 @@ impl Widget for &mut App {
                         selected_theoretical_distribution: self
                             .analysis_modal
                             .selected_theoretical_distribution,
+                        histogram_scale: self.analysis_modal.histogram_scale,
                         theme: &self.theme,
                     };
                     let widget = widgets::analysis::AnalysisWidget::new(
@@ -5959,7 +5975,14 @@ Select different theoretical distributions from the list to overlay them for com
 Navigation:
 
 ↑↓ / j/k:    Scroll through distributions to compare different overlays
-Esc:         Return to distribution table"
+s:           Toggle histogram scale (Linear ↔ Log)
+Esc:         Return to distribution table
+
+Settings:
+
+Scale:       Toggle between Linear and Log scale for histogram
+             (Log scale requires positive values only)
+             Warning color indicates scale fallback (e.g., Log selected but Linear used due to negative values)"
                             .to_string(),
                     ),
                     analysis_modal::AnalysisView::CorrelationDetail => (

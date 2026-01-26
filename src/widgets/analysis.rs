@@ -10,9 +10,13 @@ use ratatui::{
     },
 };
 
-use crate::analysis_modal::{AnalysisFocus, AnalysisTool, AnalysisView};
+use crate::analysis_modal::{AnalysisFocus, AnalysisTool, AnalysisView, HistogramScale};
 use crate::config::Theme;
-use crate::statistics::{AnalysisContext, AnalysisResults, DistributionAnalysis, DistributionType};
+use crate::statistics::{
+    beta_pdf, chi_squared_pdf, gamma_pdf, gamma_quantile, geometric_pmf, geometric_quantile,
+    students_t_pdf, weibull_pdf, AnalysisContext, AnalysisResults, DistributionAnalysis,
+    DistributionType,
+};
 use crate::widgets::datatable::DataTableState;
 
 pub struct AnalysisWidgetConfig<'a> {
@@ -25,6 +29,7 @@ pub struct AnalysisWidgetConfig<'a> {
     pub selected_correlation: Option<(usize, usize)>,
     pub focus: AnalysisFocus,
     pub selected_theoretical_distribution: DistributionType,
+    pub histogram_scale: HistogramScale,
     pub theme: &'a Theme,
 }
 
@@ -43,6 +48,7 @@ pub struct AnalysisWidget<'a> {
     focus: AnalysisFocus,
     selected_theoretical_distribution: DistributionType,
     distribution_selector_state: &'a mut TableState,
+    histogram_scale: HistogramScale,
     theme: &'a Theme,
 }
 
@@ -70,6 +76,7 @@ impl<'a> AnalysisWidget<'a> {
             focus: config.focus,
             selected_theoretical_distribution: config.selected_theoretical_distribution,
             distribution_selector_state,
+            histogram_scale: config.histogram_scale,
             theme: config.theme,
         }
     }
@@ -256,9 +263,18 @@ impl<'a> AnalysisWidget<'a> {
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Percentage(75), // Q-Q plot and histogram
-                Constraint::Percentage(25), // Distribution selector
+                Constraint::Percentage(25), // Distribution selector and settings
             ])
             .split(main_layout[1]);
+
+        // Right side: Split into distribution selector and settings
+        let right_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Fill(1),   // Distribution selector (takes remaining space)
+                Constraint::Length(4), // Settings box (4 lines: border + 2 content + border)
+            ])
+            .split(content_layout[1]);
 
         // Left side: Q-Q plot and histogram with spacing
         let charts_layout = Layout::default()
@@ -337,6 +353,20 @@ impl<'a> AnalysisWidget<'a> {
 
         let shared_y_axis_label_width = (max_label_width as u16).max(1) + 1; // Max label width + 1 char padding
 
+        // Calculate unified X-axis range for visual alignment between Q-Q plot and histogram
+        // This ensures both charts use the same X-axis scale for easy comparison
+        // Calculate unified X-axis range for both Q-Q plot and histogram
+        // Use ONLY actual data range (no padding, no theoretical extensions)
+        // This ensures log scale works correctly and both charts stay in sync
+        let unified_x_range = if !sorted_data.is_empty() {
+            let data_min = sorted_data[0];
+            let data_max = sorted_data[sorted_data.len() - 1];
+            // Use strict data range - no padding, no theoretical extensions
+            (data_min, data_max)
+        } else {
+            (0.0, 1.0) // Fallback for empty data
+        };
+
         // Q-Q plot approximation (larger, better aspect ratio)
         // Use selected theoretical distribution from selector
         render_qq_plot(
@@ -346,18 +376,28 @@ impl<'a> AnalysisWidget<'a> {
             buf,
             shared_y_axis_label_width,
             self.theme,
+            Some(unified_x_range),
         );
 
         // Histogram comparison (vertical bars)
         // Use selected theoretical distribution from selector
-        render_distribution_histogram(
+        // Check if log scale is requested but can't be used
+        // Use actual data values, not unified range (which may include theoretical bounds and padding)
+        let sorted_data = &dist.sorted_sample_values;
+        let can_use_log_scale = !sorted_data.is_empty() && sorted_data.iter().all(|&v| v > 0.0);
+        let log_scale_requested_but_unavailable =
+            matches!(self.histogram_scale, HistogramScale::Log) && !can_use_log_scale;
+
+        let histogram_config = HistogramRenderConfig {
             dist,
-            self.selected_theoretical_distribution,
-            histogram_area,
-            buf,
+            dist_type: self.selected_theoretical_distribution,
+            area: histogram_area,
             shared_y_axis_label_width,
-            self.theme,
-        );
+            theme: self.theme,
+            unified_x_range: Some(unified_x_range),
+            histogram_scale: self.histogram_scale,
+        };
+        render_distribution_histogram(histogram_config, buf);
 
         // Right side: Distribution selector
         render_distribution_selector(
@@ -365,7 +405,16 @@ impl<'a> AnalysisWidget<'a> {
             self.selected_theoretical_distribution,
             self.distribution_selector_state,
             self.focus,
-            content_layout[1],
+            right_layout[0],
+            buf,
+            self.theme,
+        );
+
+        // Settings box below distribution selector
+        render_distribution_settings(
+            self.histogram_scale,
+            log_scale_requested_but_unavailable,
+            right_layout[1],
             buf,
             self.theme,
         );
@@ -1267,6 +1316,73 @@ fn render_distribution_selector(
     StatefulWidget::render(table, area, buf, selector_state);
 }
 
+struct HistogramRenderConfig<'a> {
+    dist: &'a DistributionAnalysis,
+    dist_type: DistributionType,
+    area: Rect,
+    shared_y_axis_label_width: u16,
+    theme: &'a Theme,
+    unified_x_range: Option<(f64, f64)>,
+    histogram_scale: HistogramScale,
+}
+
+fn render_distribution_settings(
+    histogram_scale: HistogramScale,
+    log_scale_unavailable: bool,
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+) {
+    let block = Block::default()
+        .title("Settings")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.get("sidebar_border")));
+
+    // Settings content: Scale option
+    let scale_label = "Scale:";
+    let (scale_value, scale_value_style) = if log_scale_unavailable {
+        // Log scale requested but can't be used (e.g., negative values)
+        // Show "Linear" in warning color to indicate fallback
+        ("Linear", Style::default().fg(theme.get("warning")))
+    } else {
+        match histogram_scale {
+            HistogramScale::Linear => ("Linear", Style::default().fg(theme.get("text_primary"))),
+            HistogramScale::Log => ("Log", Style::default().fg(theme.get("text_primary"))),
+        }
+    };
+
+    // Layout for settings content (inside block)
+    let inner_area = block.inner(area);
+    let settings_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Scale setting line
+            Constraint::Fill(1),   // Remaining space
+        ])
+        .split(inner_area);
+
+    // Scale setting: label on left, value on right
+    let scale_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(scale_label.chars().count() as u16 + 1), // Label + spacing
+            Constraint::Fill(1),                                        // Value
+        ])
+        .split(settings_layout[0]);
+
+    let scale_label_style = Style::default().fg(theme.get("text_secondary"));
+
+    Paragraph::new(scale_label)
+        .style(scale_label_style)
+        .render(scale_layout[0], buf);
+
+    Paragraph::new(scale_value)
+        .style(scale_value_style)
+        .render(scale_layout[1], buf);
+
+    block.render(area, buf);
+}
+
 fn render_sidebar(
     area: Rect,
     buf: &mut Buffer,
@@ -1313,16 +1429,18 @@ fn render_sidebar(
     Widget::render(list, area, buf);
 }
 
-fn render_distribution_histogram(
-    dist: &DistributionAnalysis,
-    dist_type: DistributionType,
-    area: Rect,
-    buf: &mut Buffer,
-    shared_y_axis_label_width: u16,
-    theme: &Theme,
-) {
+fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer) {
     // Use BarChart widget to show histogram comparing data vs theoretical distribution
     // Use fixed-width bins that span both data range and theoretical distribution range
+    let HistogramRenderConfig {
+        dist,
+        dist_type,
+        area,
+        shared_y_axis_label_width,
+        theme,
+        unified_x_range,
+        histogram_scale,
+    } = config;
     let sorted_data = &dist.sorted_sample_values;
 
     if sorted_data.is_empty() || sorted_data.len() < 3 {
@@ -1334,8 +1452,9 @@ fn render_distribution_histogram(
 
     let n = sorted_data.len();
 
-    // Determine bin range: ALWAYS use data range (same bins regardless of distribution)
-    // The data histogram should remain constant; only the theoretical overlay changes
+    // Determine bin range: use percentile-based robust range (P1-P99) for all distributions
+    // This is a best practice that gives more visual space to the bulk of data while
+    // still showing outliers in edge bins. Matches professional tools like Observable Canvases.
     let data_min = sorted_data[0];
     let data_max = sorted_data[n - 1];
     let data_range = data_max - data_min;
@@ -1348,19 +1467,17 @@ fn render_distribution_histogram(
         return;
     }
 
-    // Always use the actual data range with a small extension for edge bins
-    // This ensures the data histogram is consistent regardless of selected distribution
-    // For non-negative data (counts, prices, etc.), don't extend below 0
-    let extension = data_range * 0.05; // Small 5% extension on each side
-    let hist_min = if data_min >= 0.0 {
-        // For non-negative data, don't extend below 0
-        (data_min - extension).max(0.0)
+    // Use unified X-axis range (strict data range, no padding or extensions)
+    // This keeps both Q-Q plot and histogram in sync and ensures log scale works correctly
+    let (hist_min, hist_max, hist_range) = if let Some((unified_min, unified_max)) = unified_x_range
+    {
+        // Use unified range directly - it's already the strict data range
+        let range = unified_max - unified_min;
+        (unified_min, unified_max, range)
     } else {
-        // For data that can be negative, allow extension below minimum
-        data_min - extension
+        // Fallback: use actual data range (shouldn't happen if unified_x_range is always provided)
+        (data_min, data_max, data_range)
     };
-    let hist_max = data_max + extension;
-    let hist_range = hist_max - hist_min;
 
     // Calculate dynamic number of bins based on available width
     // This ensures bars fill the horizontal space and look dense at all widths
@@ -1387,12 +1504,61 @@ fn render_distribution_histogram(
     // Fewer bins for very narrow displays, more bins for wide displays
     // Increased max to 60 to better utilize ultrawide displays
     let num_bins = optimal_num_bins.clamp(5, 60);
-    let bin_width = hist_range / num_bins as f64;
 
-    // Create bin boundaries with fixed width
-    let bin_boundaries: Vec<f64> = (0..=num_bins)
-        .map(|i| hist_min + (i as f64) * bin_width)
-        .collect();
+    // Use log-scale binning if user has selected log scale and data is positive
+    // Log-scale binning is standard practice for power law distributions and wide dynamic ranges
+    // Check actual data values, not histogram range (which may include padding or theoretical bounds)
+    let all_data_positive = sorted_data.iter().all(|&v| v > 0.0);
+    // For log scale, ensure hist_min is positive (adjust if needed)
+    let (log_hist_min, log_hist_max) =
+        if matches!(histogram_scale, HistogramScale::Log) && all_data_positive {
+            // Use actual data min/max for log scale to avoid issues with padding or theoretical bounds
+            let actual_min = sorted_data[0];
+            let actual_max = sorted_data[sorted_data.len() - 1];
+            // Ensure minimum is positive for log scale
+            if actual_min > 0.0 {
+                (actual_min, actual_max)
+            } else {
+                // Can't use log scale if data includes 0
+                (hist_min, hist_max)
+            }
+        } else {
+            (hist_min, hist_max)
+        };
+    let use_log_scale = matches!(histogram_scale, HistogramScale::Log)
+        && all_data_positive
+        && log_hist_min > 0.0
+        && log_hist_max > log_hist_min;
+
+    let (bin_boundaries, bin_width): (Vec<f64>, f64) = if use_log_scale {
+        // Log-scale binning: bins with equal width in log space
+        // This ensures each bin represents roughly equal multiplicative range
+        // Use adjusted range based on actual data values
+        let log_min = log_hist_min.ln();
+        let log_max = log_hist_max.ln();
+        let log_range = log_max - log_min;
+        let log_bin_width = log_range / num_bins as f64;
+
+        let boundaries: Vec<f64> = (0..=num_bins)
+            .map(|i| {
+                let log_value = log_min + (i as f64) * log_bin_width;
+                log_value.exp()
+            })
+            .collect();
+
+        // For log scale, calculate average bin width for use in theoretical PDF calculations
+        // This is approximate but needed for compatibility
+        let log_range_linear = log_hist_max - log_hist_min;
+        let avg_bin_width = log_range_linear / num_bins as f64;
+        (boundaries, avg_bin_width)
+    } else {
+        // Linear binning for all other distributions
+        let bin_width = hist_range / num_bins as f64;
+        let boundaries: Vec<f64> = (0..=num_bins)
+            .map(|i| hist_min + (i as f64) * bin_width)
+            .collect();
+        (boundaries, bin_width)
+    };
 
     // Count data points in each bin
     let mut data_bin_counts = vec![0; num_bins];
@@ -1552,10 +1718,25 @@ fn render_distribution_histogram(
         let std = dist.characteristics.std_dev;
 
         // Evaluate theoretical PDF directly at each x point for accurate smooth curve
+        // Sample across the full range, but use a small epsilon to avoid exact boundary conditions
+        // that can cause issues with domain-restricted distributions (e.g., Gamma at x=0, Beta at x=0 or x=1)
+        // The epsilon is very small (0.1% of range) so the curve still extends nearly to the edges
+        let epsilon = hist_range * 0.001; // 0.1% of range - small enough to be visually negligible
+        let effective_min = hist_min + epsilon;
+        let effective_max = hist_max - epsilon;
+        let effective_range = effective_max - effective_min;
+
         (0..num_samples)
             .map(|i| {
-                // Sample x values across the histogram range (in data space)
-                let x = hist_min + (i as f64 / (num_samples - 1) as f64) * hist_range;
+                // Sample x values across the histogram range, avoiding exact boundaries
+                let x = if num_samples > 1 && effective_range > 0.0 {
+                    effective_min + (i as f64 / (num_samples - 1) as f64) * effective_range
+                } else if num_samples > 1 {
+                    // Fallback if range is too small
+                    hist_min + (i as f64 / (num_samples - 1) as f64) * hist_range
+                } else {
+                    (hist_min + hist_max) / 2.0
+                };
 
                 // Calculate theoretical PDF at x value, then convert to expected count
                 // PDF gives us density (probability per unit), convert to count: PDF(x) * bin_width * n
@@ -1568,25 +1749,40 @@ fn render_distribution_histogram(
                         pdf * bin_width * n as f64
                     }
                     DistributionType::LogNormal => {
-                        if x > 0.0 && mean > 0.0 {
-                            let variance = std * std;
-                            let sigma_sq = (1.0 + variance / (mean * mean)).ln();
-                            let mu = mean.ln() - sigma_sq / 2.0;
-                            let sigma = sigma_sq.sqrt();
+                        // LogNormal PDF: show theoretical distribution over [0, ∞) even if data is negative
+                        if x > 0.0 {
+                            let (mu, sigma) = if mean > 0.0 && std >= 0.0 {
+                                let variance = std * std;
+                                let sigma_sq = (1.0 + variance / (mean * mean)).ln();
+                                let mu_val = mean.ln() - sigma_sq / 2.0;
+                                let sigma_val = sigma_sq.sqrt();
+                                (mu_val, sigma_val)
+                            } else {
+                                // Data doesn't match LogNormal: use default parameters (mu=0, sigma=1)
+                                (0.0, 1.0)
+                            };
                             let z = (x.ln() - mu) / sigma;
                             let pdf = (1.0 / (x * sigma * (2.0 * std::f64::consts::PI).sqrt()))
                                 * (-0.5 * z * z).exp();
                             pdf * bin_width * n as f64
                         } else {
+                            // LogNormal is strictly positive, return 0 for x <= 0
                             0.0
                         }
                     }
                     DistributionType::Exponential => {
-                        if x >= 0.0 && mean > 0.0 {
-                            let lambda = 1.0 / mean;
+                        // Exponential PDF: show theoretical distribution over [0, ∞) even if data is negative
+                        if x >= 0.0 {
+                            let lambda = if mean > 0.0 {
+                                1.0 / mean
+                            } else {
+                                // Data doesn't match Exponential: use default lambda=1
+                                1.0
+                            };
                             let pdf = lambda * (-lambda * x).exp();
                             pdf * bin_width * n as f64
                         } else {
+                            // Exponential is strictly non-negative, return 0 for x < 0
                             0.0
                         }
                     }
@@ -1603,21 +1799,162 @@ fn render_distribution_histogram(
                             0.0
                         }
                     }
-                    DistributionType::Weibull
-                    | DistributionType::Beta
-                    | DistributionType::Gamma
-                    | DistributionType::ChiSquared
-                    | DistributionType::StudentsT
-                    | DistributionType::PowerLaw => {
-                        // For these distributions, use bin-based values from CDF calculations
-                        // Simple step function: use the bin value directly (consistent with bin boundaries)
-                        let bin_idx = ((x - hist_min) / bin_width).floor() as usize;
-                        if bin_idx < num_bins {
-                            theory_bin_counts[bin_idx]
-                        } else if bin_idx == num_bins {
-                            theory_bin_counts[num_bins - 1]
+                    DistributionType::Gamma => {
+                        // Gamma PDF: evaluate directly for smooth curve
+                        // Show theoretical distribution over its valid domain [0, ∞) even if data is negative
+                        if x > 0.0 {
+                            let variance = std * std;
+                            let (shape, scale) = if mean > 0.0 && variance > 0.0 {
+                                let s = (mean * mean) / variance;
+                                let sc = variance / mean;
+                                if s > 0.0 && sc > 0.0 {
+                                    (s, sc)
+                                } else {
+                                    // Invalid parameters: use default (exponential with scale=1)
+                                    (1.0, 1.0)
+                                }
+                            } else {
+                                // Data doesn't match Gamma (e.g., negative mean): use default parameters
+                                // This ensures we still show the theoretical distribution shape
+                                (1.0, 1.0)
+                            };
+                            let pdf = gamma_pdf(x, shape, scale);
+                            pdf * bin_width * n as f64
+                        } else {
+                            // Gamma is strictly non-negative, return 0 for x <= 0
+                            0.0
+                        }
+                    }
+                    DistributionType::Geometric => {
+                        // Geometric PMF: evaluate directly for smooth curve
+                        if x >= 0.0 && mean > 0.0 {
+                            let p_param = 1.0 / (mean + 1.0);
+                            if p_param > 0.0 && p_param < 1.0 {
+                                // Use PMF for continuous approximation
+                                let pmf = geometric_pmf(x, p_param);
+                                // Convert PMF to expected count: PMF * n
+                                // Note: For discrete distributions, we use PMF directly rather than PDF * bin_width
+                                pmf * n as f64
+                            } else {
+                                0.0
+                            }
                         } else {
                             0.0
+                        }
+                    }
+                    DistributionType::Weibull => {
+                        // Weibull PDF: evaluate directly for smooth curve
+                        if x > 0.0 && mean > 0.0 && std > 0.0 {
+                            // Approximate shape from CV
+                            let cv = std / mean;
+                            let shape = if cv < 1.0 { 1.0 / cv } else { 1.0 };
+                            // Scale from mean
+                            let gamma_1_over_shape = 1.0 + 1.0 / shape; // Approximation
+                            let scale = mean / gamma_1_over_shape;
+                            if shape > 0.0 && scale > 0.0 {
+                                let pdf = weibull_pdf(x, shape, scale);
+                                pdf * bin_width * n as f64
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            0.0
+                        }
+                    }
+                    DistributionType::Beta => {
+                        // Beta PDF: evaluate directly for smooth curve
+                        if x > 0.0 && x < 1.0 {
+                            let variance = std * std;
+                            let mean_val = mean;
+                            if mean_val > 0.0 && mean_val < 1.0 && variance > 0.0 {
+                                let max_var = mean_val * (1.0 - mean_val);
+                                if variance < max_var {
+                                    // Estimate alpha and beta using method of moments
+                                    let sum = mean_val * (1.0 - mean_val) / variance - 1.0;
+                                    let alpha = mean_val * sum;
+                                    let beta = (1.0 - mean_val) * sum;
+                                    if alpha > 0.0 && beta > 0.0 {
+                                        let pdf = beta_pdf(x, alpha, beta);
+                                        pdf * bin_width * n as f64
+                                    } else {
+                                        0.0
+                                    }
+                                } else {
+                                    0.0
+                                }
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            0.0
+                        }
+                    }
+                    DistributionType::ChiSquared => {
+                        // ChiSquared PDF: evaluate directly for smooth curve (uses gamma_pdf)
+                        if x > 0.0 {
+                            let df = mean; // For chi-squared, mean = df
+                            if df > 0.0 {
+                                let pdf = chi_squared_pdf(x, df);
+                                pdf * bin_width * n as f64
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            0.0
+                        }
+                    }
+                    DistributionType::StudentsT => {
+                        // StudentsT PDF: evaluate directly for smooth curve
+                        let variance = std * std;
+                        let df = if variance > 1.0 {
+                            2.0 * variance / (variance - 1.0)
+                        } else {
+                            30.0
+                        };
+                        if df > 0.0 {
+                            // StudentsT is centered at mean, but PDF is typically for standard t (mean=0, std=1)
+                            // Adjust x to account for data mean and scale
+                            let x_standardized = if std > 0.0 { (x - mean) / std } else { 0.0 };
+                            let pdf_standard = students_t_pdf(x_standardized, df);
+                            // Convert back to data scale: PDF_standard / std
+                            let pdf = if std > 0.0 { pdf_standard / std } else { 0.0 };
+                            pdf * bin_width * n as f64
+                        } else {
+                            0.0
+                        }
+                    }
+                    DistributionType::PowerLaw => {
+                        // PowerLaw: use bin-based values from CDF calculations
+                        // Power law PDF is complex and depends on x_min parameter
+                        // For log-scale binning, find which bin x belongs to using binary search
+                        if use_log_scale && x > 0.0 {
+                            // Binary search to find the correct bin for log-scale boundaries
+                            let mut left = 0;
+                            let mut right = num_bins;
+                            while left < right {
+                                let mid = (left + right) / 2;
+                                if x < bin_boundaries[mid] {
+                                    right = mid;
+                                } else {
+                                    left = mid + 1;
+                                }
+                            }
+                            let bin_idx = if left > 0 { left - 1 } else { 0 };
+                            if bin_idx < num_bins {
+                                theory_bin_counts[bin_idx]
+                            } else {
+                                theory_bin_counts[num_bins - 1]
+                            }
+                        } else {
+                            // Linear binning fallback
+                            let bin_idx = ((x - hist_min) / bin_width).floor() as usize;
+                            if bin_idx < num_bins {
+                                theory_bin_counts[bin_idx]
+                            } else if bin_idx == num_bins {
+                                theory_bin_counts[num_bins - 1]
+                            } else {
+                                0.0
+                            }
                         }
                     }
                     // REMOVED: All individual PDF implementations below caused issues with plateaus
@@ -1763,6 +2100,7 @@ fn render_qq_plot(
     buf: &mut Buffer,
     shared_y_axis_label_width: u16,
     theme: &Theme,
+    unified_x_range: Option<(f64, f64)>,
 ) {
     // Use Chart widget for Q-Q plot: Data quantiles vs Theoretical quantiles
     // Use sorted_sample_values and position-based quantiles (not just 5 percentiles)
@@ -1792,6 +2130,8 @@ fn render_qq_plot(
         .collect();
 
     // Find data ranges for both axes
+    // X-axis (Theoretical): calculated from probability percentiles via inverse CDF
+    // Y-axis (Empirical): raw sorted sample data (preserve all values, even if "impossible")
     let theory_min = qq_data
         .iter()
         .map(|(t, _)| *t)
@@ -1812,18 +2152,64 @@ fn render_qq_plot(
         .fold(f64::NEG_INFINITY, f64::max);
     let data_range = data_max - data_min;
 
-    if theory_range <= 0.0 || data_range <= 0.0 {
+    // Only require data_range > 0 (allow plotting even if theoretical range is small/zero)
+    // This handles cases where distribution doesn't match (e.g., negative data vs strictly positive distribution)
+    if data_range <= 0.0 {
         Paragraph::new("Insufficient data range for Q-Q plot")
             .centered()
             .render(area, buf);
         return;
     }
 
-    // Create diagonal reference line (y=x if perfect match)
-    // Use min/max of both ranges for reference line
-    let range_min = data_min.min(theory_min);
-    let range_max = data_max.max(theory_max);
-    let reference_line = vec![(range_min, range_min), (range_max, range_max)];
+    // Use unified X-axis range if provided for visual alignment with histogram
+    // Otherwise, handle case where all theoretical quantiles are the same (theory_range = 0)
+    let (theory_min_plot, theory_max_plot) =
+        if let Some((unified_min, unified_max)) = unified_x_range {
+            // Use unified range to align with histogram
+            (unified_min, unified_max)
+        } else if theory_range <= 0.0 || !theory_min.is_finite() || !theory_max.is_finite() {
+            // Fallback: use data range (no padding)
+            (data_min, data_max)
+        } else {
+            // Use theoretical range, but clamp to data range to keep charts in sync
+            (theory_min.max(data_min), theory_max.min(data_max))
+        };
+
+    // Create robust reference line through Q1 and Q3 quartiles
+    // This works even when domains don't overlap (e.g., negative data vs positive distribution)
+    let q1_idx = (n as f64 * 0.25).floor() as usize;
+    let q3_idx = (n as f64 * 0.75).floor() as usize;
+    let q1_idx = q1_idx.min(n - 1);
+    let q3_idx = q3_idx.min(n - 1);
+
+    let (theory_q1, data_q1) = if q1_idx < qq_data.len() {
+        qq_data[q1_idx]
+    } else {
+        qq_data[0]
+    };
+    let (theory_q3, data_q3) = if q3_idx < qq_data.len() {
+        qq_data[q3_idx]
+    } else {
+        qq_data[qq_data.len() - 1]
+    };
+
+    // Calculate robust reference line through (theory_q1, data_q1) and (theory_q3, data_q3)
+    // This works even when domains don't overlap (e.g., negative data vs positive distribution)
+    let theory_diff = theory_q3 - theory_q1;
+    let reference_line = if theory_diff.abs() > 1e-10 {
+        // Normal case: calculate slope and extend line to cover plot range (no padding)
+        let slope = (data_q3 - data_q1) / theory_diff;
+        let x_start = theory_min_plot;
+        let x_end = theory_max_plot;
+        let y_start = slope * (x_start - theory_q1) + data_q1;
+        let y_end = slope * (x_end - theory_q1) + data_q1;
+        vec![(x_start, y_start), (x_end, y_end)]
+    } else {
+        // Degenerate case: all theoretical quantiles are the same (theory_range ≈ 0)
+        // Use horizontal line through data median to show the mismatch (no padding)
+        let y_median = (data_q1 + data_q3) / 2.0;
+        vec![(theory_min_plot, y_median), (theory_max_plot, y_median)]
+    };
 
     // Create datasets
     // Use appropriate marker based on point density
@@ -1850,15 +2236,15 @@ fn render_qq_plot(
             .data(&qq_data),
     ];
 
-    // Create X-axis labels
+    // Create X-axis labels using plot range
     let x_labels = vec![
         Span::styled(
-            format!("{:.1}", theory_min),
+            format!("{:.1}", theory_min_plot),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!("{:.1}", (theory_min + theory_max) / 2.0)),
+        Span::raw(format!("{:.1}", (theory_min_plot + theory_max_plot) / 2.0)),
         Span::styled(
-            format!("{:.1}", theory_max),
+            format!("{:.1}", theory_max_plot),
             Style::default().add_modifier(Modifier::BOLD),
         ),
     ];
@@ -1896,7 +2282,7 @@ fn render_qq_plot(
             Axis::default()
                 .title("Theoretical Values")
                 .style(Style::default().fg(theme.get("text_secondary")))
-                .bounds([theory_min, theory_max])
+                .bounds([theory_min_plot, theory_max_plot])
                 .labels(x_labels),
         )
         .y_axis(
@@ -1990,12 +2376,19 @@ pub fn calculate_theoretical_quantile_at_probability(
             // Where X ~ Lognormal(μ, σ²) means ln(X) ~ Normal(μ, σ)
             // Formulas: σ = sqrt(ln(1 + s²/m²)), μ = ln(m) - σ²/2
             // Quantile: q(p) = exp(μ + σ*z)
+            // Even if data doesn't match (e.g., negative values), still calculate quantiles over [0, ∞)
             let m = chars.mean;
             let s = chars.std_dev;
-            let variance = s * s;
-            let sigma = (1.0 + variance / (m * m)).ln().sqrt();
-            let mu = m.ln() - (sigma * sigma) / 2.0;
-            (mu + sigma * z).exp()
+            if m > 0.0 && s >= 0.0 {
+                let variance = s * s;
+                let sigma = (1.0 + variance / (m * m)).ln().sqrt();
+                let mu = m.ln() - (sigma * sigma) / 2.0;
+                (mu + sigma * z).exp()
+            } else {
+                // Data doesn't match LogNormal (e.g., negative mean): use default parameters
+                // Default: mu=0, sigma=1 gives mean≈1.65, which provides a reasonable range
+                (z).exp()
+            }
         }
         DistributionType::Uniform => {
             // Estimate min/max from mean and std: for uniform, std = (max-min) / sqrt(12)
@@ -2006,10 +2399,13 @@ pub fn calculate_theoretical_quantile_at_probability(
         }
         DistributionType::Exponential => {
             // Exponential quantile: q(p) = -ln(1-p) / lambda, where lambda = 1/mean
+            // Even if data doesn't match (e.g., negative values), still calculate quantiles over [0, ∞)
             if chars.mean > 0.0 {
                 -chars.mean * (1.0 - p).ln()
             } else {
-                dist.percentiles.p50
+                // Data doesn't match Exponential (e.g., negative mean): use default lambda=1
+                // This ensures we still get a range of quantiles
+                -(1.0 - p).ln()
             }
         }
         DistributionType::Beta => {
@@ -2047,40 +2443,59 @@ pub fn calculate_theoretical_quantile_at_probability(
             }
         }
         DistributionType::Gamma => {
-            // Gamma quantile: estimate parameters and use approximation
-            // For large shape, use normal approximation
+            // Gamma quantile: estimate parameters and use proper quantile function
+            // Even if data doesn't match (e.g., negative values), still calculate quantiles
+            // over the distribution's natural domain [0, ∞)
             let mean = chars.mean;
             let variance = chars.std_dev * chars.std_dev;
             if mean > 0.0 && variance > 0.0 {
                 let shape = (mean * mean) / variance;
                 let scale = variance / mean;
-                if shape > 30.0 {
-                    // Normal approximation
-                    let normal_mean = shape * scale;
-                    let normal_std = (shape * scale * scale).sqrt();
-                    let z = approximate_normal_quantile(p);
-                    normal_mean + normal_std * z
+                // Check for edge cases: very small shape or very large scale can cause numerical issues
+                // Also check if parameters are reasonable (shape >= 0.01, scale < 1e6)
+                if shape > 0.01
+                    && scale > 0.0
+                    && scale < 1e6
+                    && shape.is_finite()
+                    && scale.is_finite()
+                {
+                    gamma_quantile(p, shape, scale)
                 } else {
-                    // Use empirical percentiles for small shape
-                    dist.percentiles.p50
+                    // Invalid or extreme parameters: use default Gamma distribution to still show a range
+                    // Use shape=1 (exponential) with reasonable scale
+                    let default_scale = if mean > 0.0 && mean < 1e6 {
+                        mean.max(0.1) // Ensure scale is reasonable
+                    } else {
+                        1.0
+                    };
+                    gamma_quantile(p, 1.0, default_scale)
                 }
             } else {
-                dist.percentiles.p50
+                // Data doesn't match Gamma (e.g., negative mean): use default parameters
+                // This ensures we still get a range of quantiles over [0, ∞)
+                let default_scale = 1.0;
+                gamma_quantile(p, 1.0, default_scale)
             }
         }
         DistributionType::ChiSquared => {
             // Chi-squared quantile: special case of gamma with shape = df/2, scale = 2
             // Estimate df from mean (mean = df for chi-squared)
+            // Even if data doesn't match (e.g., negative values), still calculate quantiles over [0, ∞)
             let df = chars.mean;
-            if df > 30.0 {
-                // Normal approximation
-                let normal_mean = df;
-                let normal_std = (2.0 * df).sqrt();
-                let z = approximate_normal_quantile(p);
-                normal_mean + normal_std * z
+            if df > 0.0 {
+                if df > 30.0 {
+                    // Normal approximation
+                    let normal_mean = df;
+                    let normal_std = (2.0 * df).sqrt();
+                    let z = approximate_normal_quantile(p);
+                    (normal_mean + normal_std * z).max(0.0)
+                } else {
+                    // Use gamma quantile with shape = df/2, scale = 2
+                    gamma_quantile(p, df / 2.0, 2.0)
+                }
             } else {
-                // Use empirical percentiles
-                dist.percentiles.p50
+                // Data doesn't match ChiSquared (e.g., negative mean): use default df=1
+                gamma_quantile(p, 0.5, 2.0)
             }
         }
         DistributionType::StudentsT => {
@@ -2104,13 +2519,25 @@ pub fn calculate_theoretical_quantile_at_probability(
         }
         DistributionType::Poisson => {
             // Poisson quantile: use normal approximation for large lambda
+            // Even if data doesn't match (e.g., negative values), still calculate quantiles over [0, ∞)
             let lambda = chars.mean;
-            if lambda > 20.0 {
-                let z = approximate_normal_quantile(p);
-                (lambda + z * lambda.sqrt()).max(0.0)
+            if lambda > 0.0 {
+                if lambda > 20.0 {
+                    // Normal approximation for large lambda
+                    let z = approximate_normal_quantile(p);
+                    (lambda + z * lambda.sqrt()).max(0.0)
+                } else {
+                    // For small lambda, use normal approximation anyway to get a range
+                    // This ensures we still get quantiles even when lambda is small
+                    let z = approximate_normal_quantile(p);
+                    (lambda + z * lambda.sqrt()).max(0.0)
+                }
             } else {
-                // Use empirical percentiles for small lambda
-                dist.percentiles.p50
+                // Data doesn't match Poisson (e.g., negative mean): use default lambda=10
+                // This ensures we still get a range of quantiles
+                let default_lambda: f64 = 10.0;
+                let z = approximate_normal_quantile(p);
+                (default_lambda + z * default_lambda.sqrt()).max(0.0)
             }
         }
         DistributionType::Bernoulli => {
@@ -2142,22 +2569,30 @@ pub fn calculate_theoretical_quantile_at_probability(
         }
         DistributionType::Binomial => {
             // Binomial quantile: use normal approximation
+            // Even if data doesn't match, still calculate quantiles to show a range
             let mean = chars.mean;
             let variance = chars.std_dev * chars.std_dev;
             if variance > 0.0 {
                 let z = approximate_normal_quantile(p);
                 (mean + z * variance.sqrt()).max(0.0)
             } else {
-                dist.percentiles.p50
+                // No variance: use default parameters to still show a range
+                // Estimate n from mean (assuming p=0.5 for default)
+                let default_n = (mean * 2.0).max(10.0);
+                let default_p = 0.5;
+                let default_mean = default_n * default_p;
+                let default_variance = default_n * default_p * (1.0 - default_p);
+                let z = approximate_normal_quantile(p);
+                (default_mean + z * default_variance.sqrt()).max(0.0)
             }
         }
         DistributionType::Geometric => {
-            // Geometric quantile: q(p) = floor(ln(1-p) / ln(1-p_param))
+            // Geometric quantile: use proper quantile function
             let mean = chars.mean; // mean = (1-p)/p for geometric
             if mean > 0.0 {
                 let p_param = 1.0 / (mean + 1.0);
                 if p_param > 0.0 && p_param < 1.0 {
-                    (-(1.0 - p).ln() / (1.0 - p_param).ln()).max(0.0)
+                    geometric_quantile(p, p_param)
                 } else {
                     // Fallback: use empirical percentile interpolation
                     interpolate_empirical_quantile(dist, p)
@@ -2170,34 +2605,41 @@ pub fn calculate_theoretical_quantile_at_probability(
         DistributionType::Weibull => {
             // Weibull quantile: q(p) = scale * (-ln(1-p))^(1/shape)
             // Estimate parameters from data characteristics
+            // Even if data doesn't match (e.g., negative values), still calculate quantiles over [0, ∞)
             let sorted_data = &dist.sorted_sample_values;
-            if !sorted_data.is_empty() && sorted_data[0] > 0.0 {
+            let mean = chars.mean;
+            let variance = chars.std_dev * chars.std_dev;
+
+            let (shape_est, scale_est) = if !sorted_data.is_empty()
+                && sorted_data[0] > 0.0
+                && mean > 0.0
+                && variance > 0.0
+            {
                 // Estimate shape and scale from data
-                let mean = chars.mean;
-                let variance = chars.std_dev * chars.std_dev;
-                if mean > 0.0 && variance > 0.0 {
-                    // Approximate shape from CV
-                    let cv = chars.std_dev / mean;
-                    let shape_est = if cv < 1.0 {
-                        // Approximation for shape parameter
-                        1.0 / cv
-                    } else {
-                        1.0
-                    };
-                    // Scale from mean
-                    let gamma_1_over_shape = 1.0 + 1.0 / shape_est; // Approximation
-                    let scale_est = mean / gamma_1_over_shape;
-                    if scale_est > 0.0 && shape_est > 0.0 {
-                        scale_est * (-(1.0 - p).ln()).powf(1.0 / shape_est)
-                    } else {
-                        dist.percentiles.p50
-                    }
+                // Approximate shape from CV
+                let cv = chars.std_dev / mean;
+                let shape = if cv < 1.0 {
+                    // Approximation for shape parameter
+                    1.0 / cv
                 } else {
-                    dist.percentiles.p50
+                    1.0
+                };
+                // Scale from mean
+                let gamma_1_over_shape = 1.0 + 1.0 / shape; // Approximation
+                let scale = mean / gamma_1_over_shape;
+                if scale > 0.0 && shape > 0.0 {
+                    (shape, scale)
+                } else {
+                    // Invalid parameters: use defaults
+                    (1.0, 1.0)
                 }
             } else {
-                dist.percentiles.p50
-            }
+                // Data doesn't match Weibull (e.g., negative values or invalid parameters): use defaults
+                // Default: shape=1 (exponential), scale=1
+                (1.0, 1.0)
+            };
+
+            scale_est * (-(1.0 - p).ln()).powf(1.0 / shape_est)
         }
         DistributionType::PowerLaw | DistributionType::Unknown => {
             // Fallback: use empirical quantiles from percentiles

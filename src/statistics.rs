@@ -2048,8 +2048,6 @@ fn compute_advanced_distribution_analysis(
     } else {
         (None, None)
     };
-
-    let variance = numeric_stats.std * numeric_stats.std;
     let coefficient_of_variation = if numeric_stats.mean != 0.0 {
         numeric_stats.std / numeric_stats.mean.abs()
     } else {
@@ -2066,7 +2064,7 @@ fn compute_advanced_distribution_analysis(
         mean: numeric_stats.mean,
         median: numeric_stats.median,
         std_dev: numeric_stats.std,
-        variance,
+        variance: numeric_stats.std * numeric_stats.std,
         coefficient_of_variation,
         mode,
     };
@@ -2463,8 +2461,30 @@ fn beta_cdf(x: f64, alpha: f64, beta: f64) -> f64 {
     }
 }
 
+// Beta distribution PDF
+pub(crate) fn beta_pdf(x: f64, alpha: f64, beta: f64) -> f64 {
+    if x <= 0.0 || x >= 1.0 || alpha <= 0.0 || beta <= 0.0 {
+        return 0.0;
+    }
+    // Beta PDF: x^(α-1) * (1-x)^(β-1) / B(α,β)
+    // where B(α,β) = Γ(α) * Γ(β) / Γ(α+β)
+    // Use log form to avoid overflow: ln(PDF) = (α-1)*ln(x) + (β-1)*ln(1-x) - ln(B(α,β))
+    let ln_x = x.ln();
+    let ln_one_minus_x = (1.0 - x).ln();
+    let ln_beta = ln_gamma_approx(alpha) + ln_gamma_approx(beta) - ln_gamma_approx(alpha + beta);
+    let ln_pdf = (alpha - 1.0) * ln_x + (beta - 1.0) * ln_one_minus_x - ln_beta;
+    // Clamp to avoid overflow/underflow
+    if ln_pdf < -700.0 {
+        return 0.0;
+    }
+    if ln_pdf > 700.0 {
+        return f64::INFINITY;
+    }
+    ln_pdf.exp()
+}
+
 // Gamma distribution CDF (requires incomplete gamma function approximation)
-fn gamma_cdf(x: f64, shape: f64, scale: f64) -> f64 {
+pub(crate) fn gamma_cdf(x: f64, shape: f64, scale: f64) -> f64 {
     if x <= 0.0 {
         return 0.0;
     }
@@ -2500,6 +2520,99 @@ fn gamma_cdf(x: f64, shape: f64, scale: f64) -> f64 {
     }
 }
 
+// Gamma distribution PDF
+pub(crate) fn gamma_pdf(x: f64, shape: f64, scale: f64) -> f64 {
+    if x <= 0.0 || shape <= 0.0 || scale <= 0.0 {
+        return 0.0;
+    }
+    // Gamma PDF: (x^(shape-1) * exp(-x/scale)) / (scale^shape * Gamma(shape))
+    // Use log form to avoid overflow: ln(PDF) = (shape-1)*ln(x) - x/scale - shape*ln(scale) - ln(Gamma(shape))
+    let ln_pdf = (shape - 1.0) * x.ln() - x / scale - shape * scale.ln() - ln_gamma_approx(shape);
+    // Clamp to reasonable range to avoid overflow/underflow
+    if ln_pdf < -700.0 {
+        return 0.0;
+    }
+    if ln_pdf > 700.0 {
+        return f64::INFINITY;
+    }
+    ln_pdf.exp()
+}
+
+// Gamma distribution quantile (inverse CDF) using binary search
+pub(crate) fn gamma_quantile(p: f64, shape: f64, scale: f64) -> f64 {
+    let p = p.clamp(0.0, 1.0);
+    if p <= 0.0 {
+        return 0.0;
+    }
+    if p >= 1.0 {
+        // For p=1, return a large value (mean + 5*std as approximation)
+        let mean = shape * scale;
+        let std = (shape * scale * scale).sqrt();
+        return mean + 5.0 * std;
+    }
+    if shape <= 0.0 || scale <= 0.0 {
+        return 0.0;
+    }
+
+    let mean = shape * scale;
+    let std = (shape * scale * scale).sqrt();
+
+    // For large shape, use normal approximation
+    if shape > 30.0 {
+        let z = normal_quantile(p);
+        return (mean + z * std).max(0.0);
+    }
+
+    // For very small shape (< 0.1), the series approximation in gamma_cdf may be unreliable
+    // Use normal approximation or exponential approximation (shape=1) as fallback
+    if shape < 0.1 {
+        // For very small shape, approximate as exponential (shape=1) with adjusted scale
+        // This avoids numerical issues with the series approximation
+        let exp_scale = mean; // For exponential, mean = scale
+        if exp_scale > 0.0 {
+            // Exponential quantile: -scale * ln(1-p)
+            return -exp_scale * (1.0 - p).ln();
+        } else {
+            // Fallback to normal approximation
+            let z = normal_quantile(p);
+            return (mean + z * std.max(mean * 0.1)).max(0.0);
+        }
+    }
+
+    // Binary search for quantile
+    // Initial bounds: [0, mean + 5*std]
+    let mut low = 0.0;
+    let mut high = mean + 5.0 * std;
+
+    // Ensure high is large enough
+    while gamma_cdf(high, shape, scale) < p {
+        high *= 2.0;
+        if high > 1e10 {
+            // Fallback: use normal approximation if search fails
+            let z = normal_quantile(p);
+            return (mean + z * std).max(0.0);
+        }
+    }
+
+    // Binary search with tolerance
+    let tolerance = 1e-6;
+    let mut mid = (low + high) / 2.0;
+    for _ in 0..100 {
+        let cdf_val = gamma_cdf(mid, shape, scale);
+        if (cdf_val - p).abs() < tolerance {
+            return mid;
+        }
+        if cdf_val < p {
+            low = mid;
+        } else {
+            high = mid;
+        }
+        mid = (low + high) / 2.0;
+    }
+
+    mid
+}
+
 // Chi-squared distribution CDF (special case of Gamma with shape = df/2, scale = 2)
 fn chi_squared_cdf(x: f64, df: f64) -> f64 {
     if x <= 0.0 {
@@ -2509,6 +2622,14 @@ fn chi_squared_cdf(x: f64, df: f64) -> f64 {
         return 0.0;
     }
     gamma_cdf(x, df / 2.0, 2.0)
+}
+
+// Chi-squared PDF (special case of Gamma with shape = df/2, scale = 2)
+pub(crate) fn chi_squared_pdf(x: f64, df: f64) -> f64 {
+    if x <= 0.0 || df <= 0.0 {
+        return 0.0;
+    }
+    gamma_pdf(x, df / 2.0, 2.0)
 }
 
 // Student's t distribution CDF (approximation)
@@ -2523,6 +2644,40 @@ fn students_t_cdf(x: f64, df: f64) -> f64 {
         // Approximation using normal with correction
         let z = x * (1.0 - 1.0 / (4.0 * df));
         normal_cdf(z, 0.0, 1.0)
+    }
+}
+
+// Student's t distribution PDF (approximation)
+pub(crate) fn students_t_pdf(x: f64, df: f64) -> f64 {
+    if df <= 0.0 {
+        return 0.0;
+    }
+    // Student's t PDF: Γ((df+1)/2) / (sqrt(df*π) * Γ(df/2)) * (1 + x²/df)^(-(df+1)/2)
+    // For large df, approximate with normal PDF
+    if df > 30.0 {
+        // Normal approximation: N(0, 1)
+        let z = x;
+        let pdf = (1.0 / (2.0 * std::f64::consts::PI).sqrt()) * (-0.5 * z * z).exp();
+        return pdf;
+    }
+    // For small df, use approximation
+    // Simplified: PDF ≈ (1 + x²/df)^(-(df+1)/2) * constant
+    // Constant normalization factor approximated
+    let x_sq_over_df = (x * x) / df;
+    let exponent = -(df + 1.0) / 2.0;
+    let power_term = (1.0 + x_sq_over_df).powf(exponent);
+    // Approximate normalization constant
+    let ln_gamma_half_df_plus_one = ln_gamma_approx((df + 1.0) / 2.0);
+    let ln_gamma_half_df = ln_gamma_approx(df / 2.0);
+    let ln_const =
+        ln_gamma_half_df_plus_one - ln_gamma_half_df - 0.5 * (df * std::f64::consts::PI).ln();
+    let const_term = ln_const.exp();
+    let pdf = const_term * power_term;
+    // Clamp to avoid overflow/underflow
+    if pdf.is_finite() && pdf > 0.0 {
+        pdf
+    } else {
+        0.0
     }
 }
 
@@ -2655,6 +2810,104 @@ fn geometric_cdf(x: f64, p: f64) -> f64 {
     result.clamp(0.0, 1.0)
 }
 
+// Geometric PMF (probability mass function) - for continuous approximation in histograms
+// Geometric PMF: P(X=k) = p * (1-p)^k for k = 0, 1, 2, ...
+// For continuous approximation, we use the PMF at the floor of x
+pub(crate) fn geometric_pmf(x: f64, p: f64) -> f64 {
+    if x < 0.0 || p <= 0.0 || p >= 1.0 {
+        return 0.0;
+    }
+    // For continuous approximation, use floor(x) as the discrete value
+    let k = x.floor().min(100.0); // Cap at reasonable value
+                                  // PMF: p * (1-p)^k
+                                  // Use log form: ln(PMF) = ln(p) + k * ln(1-p)
+    let log_p = p.ln();
+    let log_one_minus_p = (1.0 - p).ln();
+    if log_p.is_nan()
+        || log_p.is_infinite()
+        || log_one_minus_p.is_nan()
+        || log_one_minus_p.is_infinite()
+    {
+        return 0.0;
+    }
+    let ln_pmf = log_p + k * log_one_minus_p;
+    // Clamp to avoid overflow/underflow
+    if ln_pmf < -700.0 {
+        return 0.0;
+    }
+    if ln_pmf > 700.0 {
+        return f64::INFINITY;
+    }
+    ln_pmf.exp()
+}
+
+// Geometric quantile (inverse CDF) using binary search for better accuracy
+pub(crate) fn geometric_quantile(p: f64, p_param: f64) -> f64 {
+    let p = p.clamp(0.0, 1.0);
+    if p <= 0.0 {
+        return 0.0;
+    }
+    if p >= 1.0 {
+        // For p=1, return a large value (cap at 100 for Geometric)
+        return 100.0;
+    }
+    if p_param <= 0.0 || p_param >= 1.0 {
+        return 0.0;
+    }
+
+    // Direct formula: q(p) = floor(ln(1-p) / ln(1-p_param))
+    // But handle edge cases better
+    let log_one_minus_p = (1.0 - p).ln();
+    let log_one_minus_p_param = (1.0 - p_param).ln();
+
+    // Check for numerical issues
+    if log_one_minus_p.is_nan()
+        || log_one_minus_p.is_infinite()
+        || log_one_minus_p_param.is_nan()
+        || log_one_minus_p_param.is_infinite()
+        || log_one_minus_p_param.abs() < 1e-10
+    {
+        // Fallback: use binary search
+        return geometric_quantile_binary_search(p, p_param);
+    }
+
+    let quantile = log_one_minus_p / log_one_minus_p_param;
+    quantile.clamp(0.0, 100.0) // Cap at reasonable value
+}
+
+// Binary search fallback for Geometric quantile
+fn geometric_quantile_binary_search(p: f64, p_param: f64) -> f64 {
+    // Binary search for quantile
+    let mut low = 0.0;
+    let mut high = 100.0;
+
+    // Ensure high is large enough
+    while geometric_cdf(high, p_param) < p {
+        high *= 2.0;
+        if high > 1000.0 {
+            return 100.0; // Cap at 100
+        }
+    }
+
+    // Binary search with tolerance
+    let tolerance = 1e-6;
+    let mut mid = (low + high) / 2.0;
+    for _ in 0..100 {
+        let cdf_val = geometric_cdf(mid, p_param);
+        if (cdf_val - p).abs() < tolerance {
+            return mid;
+        }
+        if cdf_val < p {
+            low = mid;
+        } else {
+            high = mid;
+        }
+        mid = (low + high) / 2.0;
+    }
+
+    mid
+}
+
 // Weibull distribution CDF
 fn weibull_cdf(x: f64, shape: f64, scale: f64) -> f64 {
     if x <= 0.0 {
@@ -2665,6 +2918,24 @@ fn weibull_cdf(x: f64, shape: f64, scale: f64) -> f64 {
     }
     // Weibull CDF: 1 - exp(-(x/scale)^shape)
     1.0 - (-(x / scale).powf(shape)).exp()
+}
+
+// Weibull distribution PDF
+pub(crate) fn weibull_pdf(x: f64, shape: f64, scale: f64) -> f64 {
+    if x <= 0.0 || shape <= 0.0 || scale <= 0.0 {
+        return 0.0;
+    }
+    // Weibull PDF: (k/λ) * (x/λ)^(k-1) * exp(-(x/λ)^k)
+    // where k = shape, λ = scale
+    let ratio = x / scale;
+    let power = ratio.powf(shape);
+    let pdf = (shape / scale) * ratio.powf(shape - 1.0) * (-power).exp();
+    // Clamp to avoid overflow/underflow
+    if pdf.is_finite() {
+        pdf
+    } else {
+        0.0
+    }
 }
 
 // Calculate theoretical probability in an interval [lower, upper] for a distribution

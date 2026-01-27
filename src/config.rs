@@ -532,6 +532,8 @@ pub struct ColorConfig {
     pub distribution_skewed: String,
     pub distribution_other: String,
     pub outlier_marker: String,
+    pub cursor_focused: String,
+    pub cursor_dimmed: String,
 }
 
 // Field comments for ColorConfig
@@ -570,6 +572,14 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("distribution_skewed", "Skewed distribution indicator"),
     ("distribution_other", "Other distribution types"),
     ("outlier_marker", "Outlier indicators"),
+    (
+        "cursor_focused",
+        "Cursor color when text input is focused\nText under cursor uses reverse of this color",
+    ),
+    (
+        "cursor_dimmed",
+        "Cursor color when text input is unfocused (currently unused - unfocused inputs hide cursor)",
+    ),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -710,6 +720,8 @@ impl Default for ColorConfig {
             distribution_skewed: "yellow".to_string(),
             distribution_other: "white".to_string(),
             outlier_marker: "red".to_string(),
+            cursor_focused: "default".to_string(),
+            cursor_dimmed: "default".to_string(),
         }
     }
 }
@@ -931,6 +943,8 @@ impl ColorConfig {
         validate_color!(&self.distribution_skewed, "distribution_skewed");
         validate_color!(&self.distribution_other, "distribution_other");
         validate_color!(&self.outlier_marker, "outlier_marker");
+        validate_color!(&self.cursor_focused, "cursor_focused");
+        validate_color!(&self.cursor_dimmed, "cursor_dimmed");
 
         Ok(())
     }
@@ -1013,6 +1027,12 @@ impl ColorConfig {
         }
         if other.outlier_marker != default.outlier_marker {
             self.outlier_marker = other.outlier_marker;
+        }
+        if other.cursor_focused != default.cursor_focused {
+            self.cursor_focused = other.cursor_focused;
+        }
+        if other.cursor_dimmed != default.cursor_dimmed {
+            self.cursor_dimmed = other.cursor_dimmed;
         }
     }
 }
@@ -1345,6 +1365,14 @@ impl Theme {
         colors.insert(
             "outlier_marker".to_string(),
             parser.parse(&config.colors.outlier_marker)?,
+        );
+        colors.insert(
+            "cursor_focused".to_string(),
+            parser.parse(&config.colors.cursor_focused)?,
+        );
+        colors.insert(
+            "cursor_dimmed".to_string(),
+            parser.parse(&config.colors.cursor_dimmed)?,
         );
 
         Ok(Self { colors })

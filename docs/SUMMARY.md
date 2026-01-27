@@ -13,6 +13,7 @@
   - [Loading Data](user-guide/loading-data.md)
   - [Querying Data](user-guide/querying-data.md)
   - [Filtering and Sorting](user-guide/filtering-sorting.md)
+  - [Exporting Data](user-guide/exporting-data.md)
   - [Analysis Mode](user-guide/analysis-features.md)
   - [Reshaping: Pivot and Melt](user-guide/reshaping.md)
   - [Templates](user-guide/templates.md)

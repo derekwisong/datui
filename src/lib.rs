@@ -1,7 +1,6 @@
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::prelude::{LazyFrame, Schema};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
 use widgets::info::DataTableInfo;
@@ -18,6 +17,7 @@ pub mod analysis_modal;
 pub mod cache;
 pub mod cli;
 pub mod config;
+pub mod export_modal;
 pub mod filter_modal;
 pub mod pivot_melt_modal;
 mod query;
@@ -34,6 +34,7 @@ pub use config::{
 };
 
 use analysis_modal::AnalysisModal;
+use export_modal::{ExportFocus, ExportFormat, ExportModal};
 use filter_modal::{FilterFocus, FilterOperator, FilterStatement, LogicalOperator};
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
@@ -42,8 +43,10 @@ pub use template::{Template, TemplateManager};
 use widgets::controls::Controls;
 use widgets::datatable::{DataTable, DataTableState};
 use widgets::debug::DebugState;
+use widgets::export;
 use widgets::pivot_melt;
 use widgets::template_modal::{CreateFocus, TemplateFocus, TemplateModal, TemplateModalMode};
+use widgets::text_input::{TextInput, TextInputEvent};
 
 /// Application name used for cache directory and other app-specific paths
 pub const APP_NAME: &str = "datui";
@@ -256,6 +259,7 @@ pub enum AppEvent {
     Open(PathBuf, OpenOptions),
     DoLoad(PathBuf, OpenOptions), // Internal event to actually perform loading after UI update
     DoDecompress(PathBuf, OpenOptions), // Internal event to perform decompression after UI shows "Decompressing"
+    DoExport(PathBuf, ExportFormat, ExportOptions), // Internal event to perform export after UI shows progress
     Exit,
     Crash(String),
     Search(String),
@@ -264,10 +268,21 @@ pub enum AppEvent {
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
     Pivot(PivotSpec),
     Melt(MeltSpec),
+    Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
     Collect,
     Update,
     Reset,
     Resize(u16, u16), // resized (width, height)
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportOptions {
+    pub csv_delimiter: u8,
+    pub csv_include_header: bool,
+    pub csv_compression: Option<CompressionFormat>,
+    pub json_compression: Option<CompressionFormat>,
+    pub ndjson_compression: Option<CompressionFormat>,
+    pub parquet_compression: Option<CompressionFormat>, // Not used in UI, but kept for API compatibility
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -277,6 +292,7 @@ pub enum InputMode {
     SortFilter,
     PivotMelt,
     Editing,
+    Export,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +323,53 @@ impl ErrorModal {
     }
 }
 
+#[derive(Default)]
+pub struct SuccessModal {
+    pub active: bool,
+    pub message: String,
+}
+
+impl SuccessModal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn show(&mut self, message: String) {
+        self.active = true;
+        self.message = message;
+    }
+
+    pub fn hide(&mut self) {
+        self.active = false;
+        self.message.clear();
+    }
+}
+
+#[derive(Default)]
+pub struct ConfirmationModal {
+    pub active: bool,
+    pub message: String,
+    pub focus_yes: bool, // true = Yes focused, false = No focused
+}
+
+impl ConfirmationModal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn show(&mut self, message: String) {
+        self.active = true;
+        self.message = message;
+        self.focus_yes = true; // Default to Yes
+    }
+
+    pub fn hide(&mut self) {
+        self.active = false;
+        self.message.clear();
+        self.focus_yes = true;
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub enum LoadingState {
     #[default]
@@ -317,11 +380,19 @@ pub enum LoadingState {
         current_phase: String, // e.g., "Opening file", "Decompressing", "Building lazyframe", "Rendering data"
         progress_percent: u16, // 0-100
     },
+    Exporting {
+        file_path: PathBuf,
+        current_phase: String, // e.g., "Collecting data", "Writing file", "Compressing"
+        progress_percent: u16, // 0-100
+    },
 }
 
 impl LoadingState {
     pub fn is_loading(&self) -> bool {
-        matches!(self, LoadingState::Loading { .. })
+        matches!(
+            self,
+            LoadingState::Loading { .. } | LoadingState::Exporting { .. }
+        )
     }
 }
 
@@ -340,30 +411,33 @@ struct TemplateApplicationState {
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     path: Option<PathBuf>,
+    original_file_format: Option<ExportFormat>, // Track original file format for default export
+    original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
     events: Sender<AppEvent>,
     focus: u32,
     debug: DebugState,
     info_visible: bool,
-    input: String,
-    input_cursor: usize, // Cursor position in input string
+    query_input: TextInput, // Query input widget with history support
     pub input_mode: InputMode,
     input_type: Option<InputType>,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
     pub analysis_modal: AnalysisModal,
+    pub export_modal: ExportModal,
     error_modal: ErrorModal,
+    success_modal: SuccessModal,
+    confirmation_modal: ConfirmationModal,
+    pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
     cache: CacheManager,
     template_manager: TemplateManager,
     active_template_id: Option<String>, // ID of currently applied template
-    query_history: Vec<String>,         // History of successful queries
-    query_history_index: Option<usize>, // Current position in history (None = editing new query)
-    query_history_temp: Option<String>, // Temporary storage for current input when navigating history
     loading_state: LoadingState,        // Current loading state for progress indication
     theme: Theme,                       // Color theme for UI rendering
     sampling_threshold: usize,          // Threshold for sampling large datasets
+    history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
 }
 
 impl App {
@@ -372,45 +446,143 @@ impl App {
         Ok(())
     }
 
-    fn render_loading_gauge(loading_state: &LoadingState, area: Rect, buf: &mut Buffer) {
-        if let LoadingState::Loading {
-            current_phase,
-            progress_percent,
-            ..
-        } = loading_state
-        {
-            // Center the gauge in the area
-            let gauge_width = (area.width as f64 * 0.33) as u16; // 1/3 of available width
-            let gauge_height = 5u16; // Height for title, subtitle, and gauge
+    /// Helper function to ensure file path has the correct extension
+    /// Also adds compression extension if compression is enabled
+    fn ensure_file_extension(
+        path: &Path,
+        format: ExportFormat,
+        compression: Option<CompressionFormat>,
+    ) -> PathBuf {
+        // Determine the desired final extension
+        let desired_ext = if let Some(comp) = compression {
+            format!("{}.{}", format.extension(), comp.extension())
+        } else {
+            format.extension().to_string()
+        };
 
-            let center_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Fill(1),
-                    Constraint::Length(gauge_height),
-                    Constraint::Fill(1),
-                ])
-                .split(area);
+        // Check current extension
+        let current_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-            let gauge_area_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Fill(1),
-                    Constraint::Length(gauge_width),
-                    Constraint::Fill(1),
-                ])
-                .split(center_layout[1]);
+        // Check if current extension matches desired extension (case-insensitive)
+        let matches_desired = current_ext.eq_ignore_ascii_case(&desired_ext);
 
-            let gauge_area = gauge_area_layout[1];
+        // Check if current extension is just a compression extension (e.g., "file.gz")
+        let is_only_compression = matches!(
+            current_ext.to_lowercase().as_str(),
+            "gz" | "zst" | "bz2" | "xz"
+        ) && ExportFormat::from_extension(current_ext).is_none();
 
-            // Create gauge with progress percentage
-            let gauge = Gauge::default()
-                .block(Block::default().borders(Borders::ALL).title("Loading"))
-                .percent(*progress_percent)
-                .label(current_phase.clone());
+        // Check if path has both format and compression extensions already (e.g., "file.csv.gz")
+        let has_double_ext = if is_only_compression {
+            // Check if the stem has a format extension
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| {
+                    // Get the last part after splitting by '.'
+                    s.split('.')
+                        .next_back()
+                        .and_then(ExportFormat::from_extension)
+                })
+                .is_some()
+        } else {
+            false
+        };
 
-            gauge.render(gauge_area, buf);
+        let mut new_path = path.to_path_buf();
+
+        if matches_desired {
+            // Already has the correct extension, no change needed
+            return new_path;
+        } else if has_double_ext {
+            // Has format.compression already, but might need to update compression format
+            if let Some(comp) = compression {
+                // Extract the format extension from the stem
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if let Some(format_ext) = stem
+                        .split('.')
+                        .next_back()
+                        .and_then(ExportFormat::from_extension)
+                        .map(|f| f.extension())
+                    {
+                        // Rebuild with correct compression
+                        new_path =
+                            PathBuf::from(stem.rsplit_once('.').map(|x| x.0).unwrap_or(stem));
+                        new_path.set_extension(format!("{}.{}", format_ext, comp.extension()));
+                    }
+                }
+            }
+        } else if is_only_compression {
+            // Has only compression extension, need to add format before it
+            if let Some(comp) = compression {
+                // Get the base name without the compression extension
+                let base = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                new_path = PathBuf::from(base);
+                new_path.set_extension(format!("{}.{}", format.extension(), comp.extension()));
+            } else {
+                // No compression, just add format extension
+                new_path.set_extension(format.extension());
+            }
+        } else {
+            // No extension or wrong extension, set to desired
+            new_path.set_extension(&desired_ext);
         }
+
+        new_path
+    }
+
+    fn render_loading_gauge(loading_state: &LoadingState, area: Rect, buf: &mut Buffer) {
+        // Clear the area first to ensure opaque background
+        Clear.render(area, buf);
+
+        let (title, label_text, progress_percent) = match loading_state {
+            LoadingState::Loading {
+                current_phase,
+                progress_percent,
+                ..
+            } => ("Loading", current_phase.clone(), progress_percent),
+            LoadingState::Exporting {
+                file_path,
+                current_phase,
+                progress_percent,
+            } => {
+                // Include file path in the label
+                let label = format!("{}: {}", current_phase, file_path.display());
+                ("Exporting", label, progress_percent)
+            }
+            LoadingState::Idle => return,
+        };
+
+        // Center the gauge in the area
+        let gauge_width = (area.width as f64 * 0.33) as u16; // 1/3 of available width
+        let gauge_height = 5u16; // Height for title, subtitle, and gauge
+
+        let center_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Length(gauge_height),
+                Constraint::Fill(1),
+            ])
+            .split(area);
+
+        let gauge_area_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Length(gauge_width),
+                Constraint::Fill(1),
+            ])
+            .split(center_layout[1]);
+
+        let gauge_area = gauge_area_layout[1];
+
+        // Create gauge with progress percentage
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .percent(*progress_percent)
+            .label(label_text);
+
+        gauge.render(gauge_area, buf);
     }
 
     pub fn new(events: Sender<AppEvent>) -> App {
@@ -461,37 +633,40 @@ impl App {
             })
         });
 
-        let mut app = App {
+        App {
             path: None,
             data_table_state: None,
+            original_file_format: None,
+            original_file_delimiter: None,
             events,
             focus: 0,
             debug: DebugState::default(),
             info_visible: false,
-            input: String::new(),
-            input_cursor: 0,
+            query_input: TextInput::new()
+                .with_history_limit(app_config.query.history_limit)
+                .with_theme(&theme)
+                .with_history("query".to_string()),
             input_mode: InputMode::Normal,
             input_type: None,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
             analysis_modal: AnalysisModal::new(),
+            export_modal: ExportModal::new(),
             error_modal: ErrorModal::new(),
+            success_modal: SuccessModal::new(),
+            confirmation_modal: ConfirmationModal::new(),
+            pending_export: None,
             show_help: false,
             help_scroll: 0,
             cache,
             template_manager,
             active_template_id: None,
-            query_history: Vec::new(),
-            query_history_index: None,
-            query_history_temp: None,
             loading_state: LoadingState::Idle,
             theme,
             sampling_threshold: app_config.performance.sampling_threshold,
-        };
-
-        app.load_query_history();
-        app
+            history_limit: app_config.query.history_limit,
+        }
     }
 
     pub fn enable_debug(&mut self) {
@@ -501,83 +676,6 @@ impl App {
     /// Get a color from the theme by name
     fn color(&self, name: &str) -> Color {
         self.theme.get(name)
-    }
-
-    fn load_query_history(&mut self) {
-        let history_file = self.cache.cache_file("query_history.txt");
-
-        match std::fs::read_to_string(&history_file) {
-            Ok(content) => {
-                self.query_history = content
-                    .lines()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .take(1000)
-                    .collect();
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                eprintln!("Warning: Could not read query history: {}", e);
-            }
-        }
-    }
-
-    fn save_query_history(&self) {
-        if let Err(e) = self.cache.ensure_cache_dir() {
-            eprintln!("Warning: Could not create cache directory: {}", e);
-            return;
-        }
-
-        let history_file = self.cache.cache_file("query_history.txt");
-
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&history_file)
-        {
-            Ok(mut file) => {
-                if let Err(e) = fs2::FileExt::try_lock_exclusive(&file) {
-                    eprintln!("Warning: Could not lock history file: {}", e);
-                }
-
-                for query in &self.query_history {
-                    if let Err(e) = writeln!(file, "{}", query) {
-                        eprintln!("Warning: Could not write query to history: {}", e);
-                        break;
-                    }
-                }
-
-                if let Err(e) = file.flush() {
-                    eprintln!("Warning: Could not flush history file: {}", e);
-                }
-            }
-            Err(e) => {
-                eprintln!("Warning: Could not create history file: {}", e);
-            }
-        }
-    }
-
-    fn add_to_history(&mut self, query: String) {
-        let query = query.trim().to_string();
-
-        if query.is_empty() {
-            return;
-        }
-
-        if let Some(last) = self.query_history.last() {
-            if last == &query {
-                return;
-            }
-        }
-
-        self.query_history.push(query);
-
-        if self.query_history.len() > 1000 {
-            self.query_history.remove(0);
-        }
-
-        self.save_query_history();
     }
 
     fn load(&mut self, path: &Path, options: &OpenOptions) -> Result<()> {
@@ -638,6 +736,20 @@ impl App {
             self.loading_state = LoadingState::Idle;
             self.data_table_state = Some(lf);
             self.path = Some(path.to_path_buf());
+            // For compressed CSV, determine format from the base file name
+            let original_format =
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| {
+                        if stem.ends_with(".csv") {
+                            Some(ExportFormat::Csv)
+                        } else {
+                            None
+                        }
+                    });
+            self.original_file_format = original_format;
+            // Store delimiter for CSV export default (use comma if not specified)
+            self.original_file_delimiter = Some(options.delimiter.unwrap_or(b','));
             self.sort_filter_modal = SortFilterModal::new();
             self.pivot_melt_modal = PivotMeltModal::new();
             return Ok(());
@@ -658,6 +770,21 @@ impl App {
                 progress_percent: 60,
             };
         }
+
+        // Determine and store original file format
+        let original_format = path.extension().and_then(|e| e.to_str()).and_then(|ext| {
+            if ext.eq_ignore_ascii_case("parquet") {
+                Some(ExportFormat::Parquet)
+            } else if ext.eq_ignore_ascii_case("csv") {
+                Some(ExportFormat::Csv)
+            } else if ext.eq_ignore_ascii_case("json") {
+                Some(ExportFormat::Json)
+            } else if ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson") {
+                Some(ExportFormat::Ndjson)
+            } else {
+                None
+            }
+        });
 
         let lf = match path.extension() {
             Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(
@@ -732,6 +859,17 @@ impl App {
         self.loading_state = LoadingState::Idle;
         self.data_table_state = Some(lf);
         self.path = Some(path.to_path_buf());
+        self.original_file_format = original_format;
+        // Store delimiter based on file type
+        self.original_file_delimiter = match path.extension().and_then(|e| e.to_str()) {
+            Some(ext) if ext.eq_ignore_ascii_case("csv") => {
+                // For CSV, use delimiter from options or default to comma
+                Some(options.delimiter.unwrap_or(b','))
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("tsv") => Some(b'\t'),
+            Some(ext) if ext.eq_ignore_ascii_case("psv") => Some(b'|'),
+            _ => None, // Not a delimited file
+        };
         self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
         Ok(())
@@ -740,7 +878,53 @@ impl App {
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
-        // Handle error modal first - it has highest priority
+        // Handle modals first - they have highest priority
+        // Confirmation modal (for overwrite)
+        if self.confirmation_modal.active {
+            match event.code {
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.confirmation_modal.focus_yes = true;
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    self.confirmation_modal.focus_yes = false;
+                }
+                KeyCode::Tab => {
+                    // Toggle between Yes and No
+                    self.confirmation_modal.focus_yes = !self.confirmation_modal.focus_yes;
+                }
+                KeyCode::Enter => {
+                    if self.confirmation_modal.focus_yes {
+                        // User confirmed overwrite
+                        if let Some((path, format, options)) = self.pending_export.take() {
+                            self.confirmation_modal.hide();
+                            return Some(AppEvent::Export(path, format, options));
+                        }
+                    } else {
+                        // User cancelled
+                        self.pending_export = None;
+                        self.confirmation_modal.hide();
+                    }
+                }
+                KeyCode::Esc => {
+                    // Cancel
+                    self.pending_export = None;
+                    self.confirmation_modal.hide();
+                }
+                _ => {}
+            }
+            return None;
+        }
+        // Success modal
+        if self.success_modal.active {
+            match event.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.success_modal.hide();
+                }
+                _ => {}
+            }
+            return None;
+        }
+        // Error modal
         if self.error_modal.active {
             match event.code {
                 KeyCode::Esc | KeyCode::Enter => {
@@ -1080,93 +1264,28 @@ impl App {
                             .jump_selection_to_order(digit as usize);
                     }
                 }
-                KeyCode::Left
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
+                // Handle filter input field in sort tab
+                // Only handle keys that the text input should process
+                // Special keys like Tab, Esc, Enter are handled by other patterns above
+                _ if on_body
+                    && sort_tab
+                    && self.sort_filter_modal.sort.focus == SortFocus::Filter
+                    && !matches!(
+                        event.code,
+                        KeyCode::Tab
+                            | KeyCode::BackTab
+                            | KeyCode::Esc
+                            | KeyCode::Enter
+                            | KeyCode::Up
+                            | KeyCode::Down
+                    ) =>
                 {
-                    if self.sort_filter_modal.sort.filter_cursor > 0 {
-                        self.sort_filter_modal.sort.filter_cursor -= 1;
-                    }
-                }
-                KeyCode::Right
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
-                {
-                    let n = self.sort_filter_modal.sort.filter.chars().count();
-                    if self.sort_filter_modal.sort.filter_cursor < n {
-                        self.sort_filter_modal.sort.filter_cursor += 1;
-                    }
-                }
-                KeyCode::Home
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
-                {
-                    self.sort_filter_modal.sort.filter_cursor = 0;
-                }
-                KeyCode::End
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
-                {
-                    self.sort_filter_modal.sort.filter_cursor =
-                        self.sort_filter_modal.sort.filter.chars().count();
-                }
-                KeyCode::Char(c)
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
-                {
-                    let s = &mut self.sort_filter_modal.sort;
-                    let byte_pos: usize = s
-                        .filter
-                        .chars()
-                        .take(s.filter_cursor)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    s.filter.insert(byte_pos, c);
-                    s.filter_cursor += 1;
-                    s.table_state.select(None);
-                }
-                KeyCode::Backspace
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
-                {
-                    let s = &mut self.sort_filter_modal.sort;
-                    if s.filter_cursor > 0 {
-                        let prev: usize = s
-                            .filter
-                            .chars()
-                            .take(s.filter_cursor - 1)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        let ch = s.filter[prev..].chars().next().unwrap();
-                        s.filter.drain(prev..prev + ch.len_utf8());
-                        s.filter_cursor -= 1;
-                        s.table_state.select(None);
-                    }
-                }
-                KeyCode::Delete
-                    if on_body
-                        && sort_tab
-                        && self.sort_filter_modal.sort.focus == SortFocus::Filter =>
-                {
-                    let s = &mut self.sort_filter_modal.sort;
-                    let n = s.filter.chars().count();
-                    if s.filter_cursor < n {
-                        let byte_pos: usize = s
-                            .filter
-                            .chars()
-                            .take(s.filter_cursor)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        let ch = s.filter[byte_pos..].chars().next().unwrap();
-                        s.filter.drain(byte_pos..byte_pos + ch.len_utf8());
-                        s.table_state.select(None);
-                    }
+                    // Pass key events to the filter input
+                    let _ = self
+                        .sort_filter_modal
+                        .sort
+                        .filter_input
+                        .handle_key(event, Some(&self.cache));
                 }
                 KeyCode::Char(c)
                     if on_body
@@ -1232,6 +1351,301 @@ impl App {
             return None;
         }
 
+        if self.input_mode == InputMode::Export {
+            match event.code {
+                KeyCode::Esc => {
+                    self.export_modal.close();
+                    self.input_mode = InputMode::Normal;
+                }
+                KeyCode::Tab => self.export_modal.next_focus(),
+                KeyCode::BackTab => self.export_modal.prev_focus(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    match self.export_modal.focus {
+                        ExportFocus::FormatSelector => {
+                            // Cycle through formats
+                            let current_idx = ExportFormat::ALL
+                                .iter()
+                                .position(|&f| f == self.export_modal.selected_format)
+                                .unwrap_or(0);
+                            let prev_idx = if current_idx == 0 {
+                                ExportFormat::ALL.len() - 1
+                            } else {
+                                current_idx - 1
+                            };
+                            self.export_modal.selected_format = ExportFormat::ALL[prev_idx];
+                        }
+                        ExportFocus::PathInput => {
+                            // Pass to text input widget (for history navigation)
+                            self.export_modal.path_input.handle_key(event, None);
+                        }
+                        ExportFocus::CsvDelimiter => {
+                            // Pass to text input widget (for history navigation)
+                            self.export_modal
+                                .csv_delimiter_input
+                                .handle_key(event, None);
+                        }
+                        ExportFocus::CsvCompression
+                        | ExportFocus::JsonCompression
+                        | ExportFocus::NdjsonCompression => {
+                            // Left to move to previous compression option
+                            self.export_modal.cycle_compression_backward();
+                        }
+                        _ => {
+                            self.export_modal.prev_focus();
+                        }
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    match self.export_modal.focus {
+                        ExportFocus::FormatSelector => {
+                            // Cycle through formats
+                            let current_idx = ExportFormat::ALL
+                                .iter()
+                                .position(|&f| f == self.export_modal.selected_format)
+                                .unwrap_or(0);
+                            let next_idx = (current_idx + 1) % ExportFormat::ALL.len();
+                            self.export_modal.selected_format = ExportFormat::ALL[next_idx];
+                        }
+                        ExportFocus::PathInput => {
+                            // Pass to text input widget (for history navigation)
+                            self.export_modal.path_input.handle_key(event, None);
+                        }
+                        ExportFocus::CsvDelimiter => {
+                            // Pass to text input widget (for history navigation)
+                            self.export_modal
+                                .csv_delimiter_input
+                                .handle_key(event, None);
+                        }
+                        ExportFocus::CsvCompression
+                        | ExportFocus::JsonCompression
+                        | ExportFocus::NdjsonCompression => {
+                            // Right to move to next compression option
+                            self.export_modal.cycle_compression();
+                        }
+                        _ => {
+                            self.export_modal.next_focus();
+                        }
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    match self.export_modal.focus {
+                        ExportFocus::PathInput => {
+                            self.export_modal.path_input.handle_key(event, None);
+                        }
+                        ExportFocus::CsvDelimiter => {
+                            self.export_modal
+                                .csv_delimiter_input
+                                .handle_key(event, None);
+                        }
+                        ExportFocus::FormatSelector => {
+                            // Don't change focus in format selector
+                        }
+                        ExportFocus::CsvCompression
+                        | ExportFocus::JsonCompression
+                        | ExportFocus::NdjsonCompression => {
+                            // Move to previous compression option
+                            self.export_modal.cycle_compression_backward();
+                        }
+                        _ => self.export_modal.prev_focus(),
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    match self.export_modal.focus {
+                        ExportFocus::PathInput => {
+                            self.export_modal.path_input.handle_key(event, None);
+                        }
+                        ExportFocus::CsvDelimiter => {
+                            self.export_modal
+                                .csv_delimiter_input
+                                .handle_key(event, None);
+                        }
+                        ExportFocus::FormatSelector => {
+                            // Don't change focus in format selector
+                        }
+                        ExportFocus::CsvCompression
+                        | ExportFocus::JsonCompression
+                        | ExportFocus::NdjsonCompression => {
+                            // Move to next compression option
+                            self.export_modal.cycle_compression();
+                        }
+                        _ => self.export_modal.next_focus(),
+                    }
+                }
+                KeyCode::Enter => {
+                    match self.export_modal.focus {
+                        ExportFocus::PathInput => {
+                            // Enter from path input triggers export (same as Export button)
+                            let path_str = self.export_modal.path_input.value.trim();
+                            if !path_str.is_empty() {
+                                let mut path = PathBuf::from(path_str);
+                                let format = self.export_modal.selected_format;
+                                // Get compression format for this export format
+                                let compression = match format {
+                                    ExportFormat::Csv => self.export_modal.csv_compression,
+                                    ExportFormat::Json => self.export_modal.json_compression,
+                                    ExportFormat::Ndjson => self.export_modal.ndjson_compression,
+                                    ExportFormat::Parquet => None, // Parquet doesn't support compression in UI
+                                };
+                                // Ensure file extension is present (including compression extension if needed)
+                                let path_with_ext =
+                                    Self::ensure_file_extension(&path, format, compression);
+                                // Update the path input to show the extension
+                                if path_with_ext != path {
+                                    self.export_modal
+                                        .path_input
+                                        .set_value(path_with_ext.display().to_string());
+                                }
+                                path = path_with_ext;
+                                let delimiter =
+                                    self.export_modal
+                                        .csv_delimiter_input
+                                        .value
+                                        .chars()
+                                        .next()
+                                        .unwrap_or(',') as u8;
+                                let options = ExportOptions {
+                                    csv_delimiter: delimiter,
+                                    csv_include_header: self.export_modal.csv_include_header,
+                                    csv_compression: self.export_modal.csv_compression,
+                                    json_compression: self.export_modal.json_compression,
+                                    ndjson_compression: self.export_modal.ndjson_compression,
+                                    parquet_compression: None,
+                                };
+                                // Check if file exists and show confirmation
+                                if path.exists() {
+                                    let path_display = path.display().to_string();
+                                    self.pending_export = Some((path, format, options));
+                                    self.confirmation_modal.show(format!(
+                                        "File already exists:\n{}\n\nDo you wish to overwrite this file?",
+                                        path_display
+                                    ));
+                                    self.export_modal.close();
+                                    self.input_mode = InputMode::Normal;
+                                } else {
+                                    // Start export with progress
+                                    self.export_modal.close();
+                                    self.input_mode = InputMode::Normal;
+                                    return Some(AppEvent::Export(path, format, options));
+                                }
+                            }
+                        }
+                        ExportFocus::ExportButton => {
+                            if !self.export_modal.path_input.value.is_empty() {
+                                let mut path = PathBuf::from(&self.export_modal.path_input.value);
+                                let format = self.export_modal.selected_format;
+                                // Get compression format for this export format
+                                let compression = match format {
+                                    ExportFormat::Csv => self.export_modal.csv_compression,
+                                    ExportFormat::Json => self.export_modal.json_compression,
+                                    ExportFormat::Ndjson => self.export_modal.ndjson_compression,
+                                    ExportFormat::Parquet => None, // Parquet doesn't support compression in UI
+                                };
+                                // Ensure file extension is present (including compression extension if needed)
+                                let path_with_ext =
+                                    Self::ensure_file_extension(&path, format, compression);
+                                // Update the path input to show the extension
+                                if path_with_ext != path {
+                                    self.export_modal
+                                        .path_input
+                                        .set_value(path_with_ext.display().to_string());
+                                }
+                                path = path_with_ext;
+                                let delimiter =
+                                    self.export_modal
+                                        .csv_delimiter_input
+                                        .value
+                                        .chars()
+                                        .next()
+                                        .unwrap_or(',') as u8;
+                                let options = ExportOptions {
+                                    csv_delimiter: delimiter,
+                                    csv_include_header: self.export_modal.csv_include_header,
+                                    csv_compression: self.export_modal.csv_compression,
+                                    json_compression: self.export_modal.json_compression,
+                                    ndjson_compression: self.export_modal.ndjson_compression,
+                                    parquet_compression: None,
+                                };
+                                // Check if file exists and show confirmation
+                                if path.exists() {
+                                    let path_display = path.display().to_string();
+                                    self.pending_export = Some((path, format, options));
+                                    self.confirmation_modal.show(format!(
+                                        "File already exists:\n{}\n\nDo you wish to overwrite this file?",
+                                        path_display
+                                    ));
+                                    self.export_modal.close();
+                                    self.input_mode = InputMode::Normal;
+                                } else {
+                                    // Start export with progress
+                                    self.export_modal.close();
+                                    self.input_mode = InputMode::Normal;
+                                    return Some(AppEvent::Export(path, format, options));
+                                }
+                            }
+                        }
+                        ExportFocus::CancelButton => {
+                            self.export_modal.close();
+                            self.input_mode = InputMode::Normal;
+                        }
+                        ExportFocus::CsvIncludeHeader => {
+                            self.export_modal.csv_include_header =
+                                !self.export_modal.csv_include_header;
+                        }
+                        ExportFocus::CsvCompression
+                        | ExportFocus::JsonCompression
+                        | ExportFocus::NdjsonCompression => {
+                            // Enter to select current compression option
+                            // (Already selected via Left/Right navigation)
+                        }
+                        _ => {}
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    // Space to toggle checkboxes, but pass to text inputs if they're focused
+                    match self.export_modal.focus {
+                        ExportFocus::PathInput => {
+                            // Pass spacebar to text input
+                            self.export_modal.path_input.handle_key(event, None);
+                        }
+                        ExportFocus::CsvDelimiter => {
+                            // Pass spacebar to text input
+                            self.export_modal
+                                .csv_delimiter_input
+                                .handle_key(event, None);
+                        }
+                        ExportFocus::CsvIncludeHeader => {
+                            // Toggle checkbox
+                            self.export_modal.csv_include_header =
+                                !self.export_modal.csv_include_header;
+                        }
+                        _ => {}
+                    }
+                }
+                KeyCode::Char(_)
+                | KeyCode::Backspace
+                | KeyCode::Delete
+                | KeyCode::Home
+                | KeyCode::End => {
+                    match self.export_modal.focus {
+                        ExportFocus::PathInput => {
+                            self.export_modal.path_input.handle_key(event, None);
+                        }
+                        ExportFocus::CsvDelimiter => {
+                            self.export_modal
+                                .csv_delimiter_input
+                                .handle_key(event, None);
+                        }
+                        ExportFocus::FormatSelector => {
+                            // Don't input text in format selector
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+            return None;
+        }
+
         if self.input_mode == InputMode::PivotMelt {
             if event.code == KeyCode::Char('h') && event.modifiers.contains(KeyModifiers::CONTROL) {
                 self.show_help = true;
@@ -1246,14 +1660,14 @@ impl App {
                 KeyCode::BackTab => self.pivot_melt_modal.prev_focus(),
                 KeyCode::Left => {
                     if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter {
-                        if self.pivot_melt_modal.pivot_filter_cursor > 0 {
-                            self.pivot_melt_modal.pivot_filter_cursor -= 1;
-                        }
+                        self.pivot_melt_modal
+                            .pivot_filter_input
+                            .handle_key(event, None);
                         self.pivot_melt_modal.pivot_index_table.select(None);
                     } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter {
-                        if self.pivot_melt_modal.melt_filter_cursor > 0 {
-                            self.pivot_melt_modal.melt_filter_cursor -= 1;
-                        }
+                        self.pivot_melt_modal
+                            .melt_filter_input
+                            .handle_key(event, None);
                         self.pivot_melt_modal.melt_index_table.select(None);
                     } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern
                         && self.pivot_melt_modal.melt_pattern_cursor > 0
@@ -1275,15 +1689,6 @@ impl App {
                 }
                 KeyCode::Right => {
                     if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter {
-                        let n = self.pivot_melt_modal.pivot_filter.chars().count();
-                        if self.pivot_melt_modal.pivot_filter_cursor < n {
-                            self.pivot_melt_modal.pivot_filter_cursor += 1;
-                        }
-                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter {
-                        let n = self.pivot_melt_modal.melt_filter.chars().count();
-                        if self.pivot_melt_modal.melt_filter_cursor < n {
-                            self.pivot_melt_modal.melt_filter_cursor += 1;
-                        }
                     } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern {
                         let n = self.pivot_melt_modal.melt_pattern.chars().count();
                         if self.pivot_melt_modal.melt_pattern_cursor < n {
@@ -1407,125 +1812,29 @@ impl App {
                     }
                     _ => {}
                 },
-                KeyCode::Home if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter => {
-                    self.pivot_melt_modal.pivot_filter_cursor = 0;
-                }
-                KeyCode::End if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter => {
-                    self.pivot_melt_modal.pivot_filter_cursor =
-                        self.pivot_melt_modal.pivot_filter.chars().count();
-                }
-                KeyCode::Char(c) if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter => {
-                    let byte_pos: usize = self
-                        .pivot_melt_modal
-                        .pivot_filter
-                        .chars()
-                        .take(self.pivot_melt_modal.pivot_filter_cursor)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    self.pivot_melt_modal.pivot_filter.insert(byte_pos, c);
-                    self.pivot_melt_modal.pivot_filter_cursor += 1;
-                    self.pivot_melt_modal.pivot_index_table.select(None);
-                }
-                KeyCode::Backspace
+                KeyCode::Home
+                | KeyCode::End
+                | KeyCode::Char(_)
+                | KeyCode::Backspace
+                | KeyCode::Delete
                     if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter =>
                 {
-                    if self.pivot_melt_modal.pivot_filter_cursor > 0 {
-                        let prev_byte: usize = self
-                            .pivot_melt_modal
-                            .pivot_filter
-                            .chars()
-                            .take(self.pivot_melt_modal.pivot_filter_cursor - 1)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        let ch = self.pivot_melt_modal.pivot_filter[prev_byte..]
-                            .chars()
-                            .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .pivot_filter
-                            .drain(prev_byte..prev_byte + ch.len_utf8());
-                        self.pivot_melt_modal.pivot_filter_cursor -= 1;
-                        self.pivot_melt_modal.pivot_index_table.select(None);
-                    }
+                    self.pivot_melt_modal
+                        .pivot_filter_input
+                        .handle_key(event, None);
+                    self.pivot_melt_modal.pivot_index_table.select(None);
                 }
-                KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter => {
-                    let n = self.pivot_melt_modal.pivot_filter.chars().count();
-                    if self.pivot_melt_modal.pivot_filter_cursor < n {
-                        let byte_pos: usize = self
-                            .pivot_melt_modal
-                            .pivot_filter
-                            .chars()
-                            .take(self.pivot_melt_modal.pivot_filter_cursor)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        let ch = self.pivot_melt_modal.pivot_filter[byte_pos..]
-                            .chars()
-                            .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .pivot_filter
-                            .drain(byte_pos..byte_pos + ch.len_utf8());
-                        self.pivot_melt_modal.pivot_index_table.select(None);
-                    }
-                }
-                KeyCode::Home if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter => {
-                    self.pivot_melt_modal.melt_filter_cursor = 0;
-                }
-                KeyCode::End if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter => {
-                    self.pivot_melt_modal.melt_filter_cursor =
-                        self.pivot_melt_modal.melt_filter.chars().count();
-                }
-                KeyCode::Char(c) if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter => {
-                    let byte_pos: usize = self
-                        .pivot_melt_modal
-                        .melt_filter
-                        .chars()
-                        .take(self.pivot_melt_modal.melt_filter_cursor)
-                        .map(|ch| ch.len_utf8())
-                        .sum();
-                    self.pivot_melt_modal.melt_filter.insert(byte_pos, c);
-                    self.pivot_melt_modal.melt_filter_cursor += 1;
+                KeyCode::Home
+                | KeyCode::End
+                | KeyCode::Char(_)
+                | KeyCode::Backspace
+                | KeyCode::Delete
+                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter =>
+                {
+                    self.pivot_melt_modal
+                        .melt_filter_input
+                        .handle_key(event, None);
                     self.pivot_melt_modal.melt_index_table.select(None);
-                }
-                KeyCode::Backspace if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter => {
-                    if self.pivot_melt_modal.melt_filter_cursor > 0 {
-                        let prev_byte: usize = self
-                            .pivot_melt_modal
-                            .melt_filter
-                            .chars()
-                            .take(self.pivot_melt_modal.melt_filter_cursor - 1)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        let ch = self.pivot_melt_modal.melt_filter[prev_byte..]
-                            .chars()
-                            .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .melt_filter
-                            .drain(prev_byte..prev_byte + ch.len_utf8());
-                        self.pivot_melt_modal.melt_filter_cursor -= 1;
-                        self.pivot_melt_modal.melt_index_table.select(None);
-                    }
-                }
-                KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter => {
-                    let n = self.pivot_melt_modal.melt_filter.chars().count();
-                    if self.pivot_melt_modal.melt_filter_cursor < n {
-                        let byte_pos: usize = self
-                            .pivot_melt_modal
-                            .melt_filter
-                            .chars()
-                            .take(self.pivot_melt_modal.melt_filter_cursor)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        let ch = self.pivot_melt_modal.melt_filter[byte_pos..]
-                            .chars()
-                            .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .melt_filter
-                            .drain(byte_pos..byte_pos + ch.len_utf8());
-                        self.pivot_melt_modal.melt_index_table.select(None);
-                    }
                 }
                 KeyCode::Home if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern => {
                     self.pivot_melt_modal.melt_pattern_cursor = 0;
@@ -2174,14 +2483,15 @@ impl App {
                 }
                 KeyCode::Char('s') if self.template_modal.mode == TemplateModalMode::List => {
                     // Switch to create mode from list mode
-                    self.template_modal.enter_create_mode();
+                    self.template_modal
+                        .enter_create_mode(self.history_limit, &self.theme);
                     // Auto-populate fields
                     if let Some(ref path) = self.path {
                         // Auto-populate name
-                        self.template_modal.create_name =
+                        self.template_modal.create_name_input.value =
                             self.template_manager.generate_next_template_name();
-                        self.template_modal.create_name_cursor =
-                            self.template_modal.create_name.len();
+                        self.template_modal.create_name_input.cursor =
+                            self.template_modal.create_name_input.value.chars().count();
 
                         // Auto-populate exact_path (absolute) - canonicalize to ensure absolute path
                         let absolute_path = if path.is_absolute() {
@@ -2195,10 +2505,14 @@ impl App {
                                 path.to_path_buf()
                             }
                         };
-                        self.template_modal.create_exact_path =
+                        self.template_modal.create_exact_path_input.value =
                             absolute_path.to_string_lossy().to_string();
-                        self.template_modal.create_exact_path_cursor =
-                            self.template_modal.create_exact_path.len();
+                        self.template_modal.create_exact_path_input.cursor = self
+                            .template_modal
+                            .create_exact_path_input
+                            .value
+                            .chars()
+                            .count();
 
                         // Auto-populate relative_path from current working directory
                         if let Ok(cwd) = std::env::current_dir() {
@@ -2212,31 +2526,36 @@ impl App {
                                 if let Ok(rel_path) = abs_path.strip_prefix(&canonical_cwd) {
                                     // Ensure relative path starts with ./ or just the path
                                     let rel_str = rel_path.to_string_lossy().to_string();
-                                    self.template_modal.create_relative_path =
+                                    self.template_modal.create_relative_path_input.value =
                                         rel_str.strip_prefix('/').unwrap_or(&rel_str).to_string();
-                                    self.template_modal.create_relative_path_cursor =
-                                        self.template_modal.create_relative_path.len();
+                                    self.template_modal.create_relative_path_input.cursor = self
+                                        .template_modal
+                                        .create_relative_path_input
+                                        .value
+                                        .chars()
+                                        .count();
                                 } else {
                                     // Path is not under CWD, leave empty or use full path
-                                    self.template_modal.create_relative_path.clear();
-                                    self.template_modal.create_relative_path_cursor = 0;
+                                    self.template_modal.create_relative_path_input.clear();
                                 }
                             } else {
                                 // Fallback: try without canonicalization
                                 if let Ok(rel_path) = abs_path.strip_prefix(&cwd) {
                                     let rel_str = rel_path.to_string_lossy().to_string();
-                                    self.template_modal.create_relative_path =
+                                    self.template_modal.create_relative_path_input.value =
                                         rel_str.strip_prefix('/').unwrap_or(&rel_str).to_string();
-                                    self.template_modal.create_relative_path_cursor =
-                                        self.template_modal.create_relative_path.len();
+                                    self.template_modal.create_relative_path_input.cursor = self
+                                        .template_modal
+                                        .create_relative_path_input
+                                        .value
+                                        .chars()
+                                        .count();
                                 } else {
-                                    self.template_modal.create_relative_path.clear();
-                                    self.template_modal.create_relative_path_cursor = 0;
+                                    self.template_modal.create_relative_path_input.clear();
                                 }
                             }
                         } else {
-                            self.template_modal.create_relative_path.clear();
-                            self.template_modal.create_relative_path_cursor = 0;
+                            self.template_modal.create_relative_path_input.clear();
                         }
 
                         // Suggest path pattern
@@ -2244,8 +2563,14 @@ impl App {
                             if let Some(parent_str) = parent.to_str() {
                                 if path.file_name().is_some() {
                                     if let Some(ext) = path.extension() {
-                                        self.template_modal.create_path_pattern =
+                                        self.template_modal.create_path_pattern_input.value =
                                             format!("{}/*.{}", parent_str, ext.to_string_lossy());
+                                        self.template_modal.create_path_pattern_input.cursor = self
+                                            .template_modal
+                                            .create_path_pattern_input
+                                            .value
+                                            .chars()
+                                            .count();
                                     }
                                 }
                             }
@@ -2261,7 +2586,13 @@ impl App {
                                 if let Ok(re) = Regex::new(r"\d+") {
                                     pattern = re.replace_all(&pattern, "*").to_string();
                                 }
-                                self.template_modal.create_filename_pattern = pattern;
+                                self.template_modal.create_filename_pattern_input.value = pattern;
+                                self.template_modal.create_filename_pattern_input.cursor = self
+                                    .template_modal
+                                    .create_filename_pattern_input
+                                    .value
+                                    .chars()
+                                    .count();
                             }
                         }
                     }
@@ -2279,7 +2610,11 @@ impl App {
                     if let Some(idx) = self.template_modal.table_state.selected() {
                         if let Some((template, _)) = self.template_modal.templates.get(idx) {
                             let template_clone = template.clone();
-                            self.template_modal.enter_edit_mode(&template_clone);
+                            self.template_modal.enter_edit_mode(
+                                &template_clone,
+                                self.history_limit,
+                                &self.theme,
+                            );
                         }
                     }
                 }
@@ -2412,28 +2747,28 @@ impl App {
                         TemplateModalMode::Create | TemplateModalMode::Edit => {
                             // If in description field, Enter adds a newline instead of moving to next field
                             if self.template_modal.create_focus == CreateFocus::Description {
-                                let cursor = self.template_modal.create_description_cursor;
-                                self.template_modal.create_description.insert(cursor, '\n');
-                                self.template_modal.create_description_cursor += 1;
-                                // Auto-scroll
-                                let cursor_line = self
-                                    .template_modal
-                                    .create_description
-                                    .chars()
-                                    .take(cursor)
-                                    .filter(|&c| c == '\n')
-                                    .count();
-                                if cursor_line >= self.template_modal.description_scroll + 2 {
-                                    self.template_modal.description_scroll =
-                                        cursor_line.saturating_sub(1);
-                                }
+                                let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
+                                self.template_modal
+                                    .create_description_input
+                                    .handle_key(&event, None);
+                                // Auto-scroll to keep cursor visible
+                                let area_height = 10; // Estimate, will be adjusted in rendering
+                                self.template_modal
+                                    .create_description_input
+                                    .ensure_cursor_visible(area_height, 80);
                                 return None;
                             }
                             match self.template_modal.create_focus {
                                 CreateFocus::SaveButton => {
                                     // Validate name
                                     self.template_modal.name_error = None;
-                                    if self.template_modal.create_name.trim().is_empty() {
+                                    if self
+                                        .template_modal
+                                        .create_name_input
+                                        .value
+                                        .trim()
+                                        .is_empty()
+                                    {
                                         self.template_modal.name_error =
                                             Some("(required)".to_string());
                                         self.template_modal.create_focus = CreateFocus::Name;
@@ -2442,9 +2777,9 @@ impl App {
 
                                     // Check for duplicate name (only if creating new, not editing)
                                     if self.template_modal.editing_template_id.is_none()
-                                        && self
-                                            .template_manager
-                                            .template_exists(self.template_modal.create_name.trim())
+                                        && self.template_manager.template_exists(
+                                            self.template_modal.create_name_input.value.trim(),
+                                        )
                                     {
                                         self.template_modal.name_error =
                                             Some("(name already exists)".to_string());
@@ -2456,25 +2791,31 @@ impl App {
                                     let match_criteria = template::MatchCriteria {
                                         exact_path: if !self
                                             .template_modal
-                                            .create_exact_path
+                                            .create_exact_path_input
+                                            .value
                                             .trim()
                                             .is_empty()
                                         {
                                             Some(std::path::PathBuf::from(
-                                                self.template_modal.create_exact_path.trim(),
+                                                self.template_modal
+                                                    .create_exact_path_input
+                                                    .value
+                                                    .trim(),
                                             ))
                                         } else {
                                             None
                                         },
                                         relative_path: if !self
                                             .template_modal
-                                            .create_relative_path
+                                            .create_relative_path_input
+                                            .value
                                             .trim()
                                             .is_empty()
                                         {
                                             Some(
                                                 self.template_modal
-                                                    .create_relative_path
+                                                    .create_relative_path_input
+                                                    .value
                                                     .trim()
                                                     .to_string(),
                                             )
@@ -2483,20 +2824,30 @@ impl App {
                                         },
                                         path_pattern: if !self
                                             .template_modal
-                                            .create_path_pattern
+                                            .create_path_pattern_input
+                                            .value
                                             .is_empty()
                                         {
-                                            Some(self.template_modal.create_path_pattern.clone())
+                                            Some(
+                                                self.template_modal
+                                                    .create_path_pattern_input
+                                                    .value
+                                                    .clone(),
+                                            )
                                         } else {
                                             None
                                         },
                                         filename_pattern: if !self
                                             .template_modal
-                                            .create_filename_pattern
+                                            .create_filename_pattern_input
+                                            .value
                                             .is_empty()
                                         {
                                             Some(
-                                                self.template_modal.create_filename_pattern.clone(),
+                                                self.template_modal
+                                                    .create_filename_pattern_input
+                                                    .value
+                                                    .clone(),
                                             )
                                         } else {
                                             None
@@ -2518,12 +2869,21 @@ impl App {
                                         schema_types: None, // Can be enhanced later
                                     };
 
-                                    let description =
-                                        if !self.template_modal.create_description.is_empty() {
-                                            Some(self.template_modal.create_description.clone())
-                                        } else {
-                                            None
-                                        };
+                                    let description = if !self
+                                        .template_modal
+                                        .create_description_input
+                                        .value
+                                        .is_empty()
+                                    {
+                                        Some(
+                                            self.template_modal
+                                                .create_description_input
+                                                .value
+                                                .clone(),
+                                        )
+                                    } else {
+                                        None
+                                    };
 
                                     if let Some(ref editing_id) =
                                         self.template_modal.editing_template_id
@@ -2534,8 +2894,12 @@ impl App {
                                             .get_template_by_id(editing_id)
                                             .cloned()
                                         {
-                                            template.name =
-                                                self.template_modal.create_name.trim().to_string();
+                                            template.name = self
+                                                .template_modal
+                                                .create_name_input
+                                                .value
+                                                .trim()
+                                                .to_string();
                                             template.description = description;
                                             template.match_criteria = match_criteria;
                                             // Update settings from current state
@@ -2591,7 +2955,11 @@ impl App {
                                     } else {
                                         // Create new template
                                         match self.create_template_from_current_state(
-                                            self.template_modal.create_name.trim().to_string(),
+                                            self.template_modal
+                                                .create_name_input
+                                                .value
+                                                .trim()
+                                                .to_string(),
                                             description,
                                             match_criteria,
                                         ) {
@@ -2657,61 +3025,15 @@ impl App {
                         TemplateModalMode::Create | TemplateModalMode::Edit => {
                             // If in description field, move cursor up one line
                             if self.template_modal.create_focus == CreateFocus::Description {
-                                let lines: Vec<&str> =
-                                    self.template_modal.create_description.lines().collect();
-                                let cursor_line = self
-                                    .template_modal
-                                    .create_description
-                                    .chars()
-                                    .take(self.template_modal.create_description_cursor)
-                                    .filter(|&c| c == '\n')
-                                    .count();
-
-                                if cursor_line > 0 {
-                                    // Move to previous line
-                                    let prev_line_idx = cursor_line - 1;
-                                    let prev_line = lines.get(prev_line_idx).unwrap_or(&"");
-
-                                    // Calculate position in previous line (try to maintain column position)
-                                    let _current_line = lines.get(cursor_line).unwrap_or(&"");
-                                    let current_col = {
-                                        let chars_before_cursor: Vec<char> = self
-                                            .template_modal
-                                            .create_description
-                                            .chars()
-                                            .take(self.template_modal.create_description_cursor)
-                                            .collect();
-                                        let last_newline_pos = chars_before_cursor
-                                            .iter()
-                                            .rposition(|&c| c == '\n')
-                                            .map(|p| p + 1)
-                                            .unwrap_or(0);
-                                        chars_before_cursor.len() - last_newline_pos
-                                    };
-
-                                    // Calculate new cursor position
-                                    let new_col = current_col.min(prev_line.chars().count());
-                                    let mut new_cursor = 0;
-                                    for (i, line) in lines.iter().enumerate() {
-                                        if i < prev_line_idx {
-                                            new_cursor += line.chars().count() + 1;
-                                        // +1 for newline
-                                        } else if i == prev_line_idx {
-                                            new_cursor += new_col;
-                                            break;
-                                        }
-                                    }
-
-                                    self.template_modal.create_description_cursor = new_cursor;
-
-                                    // Auto-scroll to keep cursor visible
-                                    if cursor_line - 1 < self.template_modal.description_scroll {
-                                        self.template_modal.description_scroll = cursor_line - 1;
-                                    }
-                                } else {
-                                    // Already at first line, move to previous field
-                                    self.template_modal.prev_focus();
-                                }
+                                let event = KeyEvent::new(KeyCode::Up, KeyModifiers::empty());
+                                self.template_modal
+                                    .create_description_input
+                                    .handle_key(&event, None);
+                                // Auto-scroll to keep cursor visible
+                                let area_height = 10; // Estimate, will be adjusted in rendering
+                                self.template_modal
+                                    .create_description_input
+                                    .ensure_cursor_visible(area_height, 80);
                             } else {
                                 // Move to previous field (works for all fields)
                                 self.template_modal.prev_focus();
@@ -2744,65 +3066,15 @@ impl App {
                         TemplateModalMode::Create | TemplateModalMode::Edit => {
                             // If in description field, move cursor down one line
                             if self.template_modal.create_focus == CreateFocus::Description {
-                                let lines: Vec<&str> =
-                                    self.template_modal.create_description.lines().collect();
-                                let cursor_line = self
-                                    .template_modal
-                                    .create_description
-                                    .chars()
-                                    .take(self.template_modal.create_description_cursor)
-                                    .filter(|&c| c == '\n')
-                                    .count();
-
-                                if cursor_line < lines.len().saturating_sub(1) {
-                                    // Move to next line
-                                    let next_line_idx = cursor_line + 1;
-                                    let next_line = lines.get(next_line_idx).unwrap_or(&"");
-
-                                    // Calculate position in current line (to maintain column position)
-                                    let _current_line = lines.get(cursor_line).unwrap_or(&"");
-                                    let current_col = {
-                                        let chars_before_cursor: Vec<char> = self
-                                            .template_modal
-                                            .create_description
-                                            .chars()
-                                            .take(self.template_modal.create_description_cursor)
-                                            .collect();
-                                        let last_newline_pos = chars_before_cursor
-                                            .iter()
-                                            .rposition(|&c| c == '\n')
-                                            .map(|p| p + 1)
-                                            .unwrap_or(0);
-                                        chars_before_cursor.len() - last_newline_pos
-                                    };
-
-                                    // Calculate new cursor position
-                                    let new_col = current_col.min(next_line.chars().count());
-                                    let mut new_cursor = 0;
-                                    for (i, line) in lines.iter().enumerate() {
-                                        if i < next_line_idx {
-                                            new_cursor += line.chars().count() + 1;
-                                        // +1 for newline
-                                        } else if i == next_line_idx {
-                                            new_cursor += new_col;
-                                            break;
-                                        }
-                                    }
-
-                                    self.template_modal.create_description_cursor = new_cursor;
-
-                                    // Auto-scroll to keep cursor visible
-                                    let available_height = 6;
-                                    if next_line_idx
-                                        >= self.template_modal.description_scroll + available_height
-                                    {
-                                        self.template_modal.description_scroll =
-                                            next_line_idx.saturating_sub(available_height - 1);
-                                    }
-                                } else {
-                                    // Already at last line, move to next field
-                                    self.template_modal.next_focus();
-                                }
+                                let event = KeyEvent::new(KeyCode::Down, KeyModifiers::empty());
+                                self.template_modal
+                                    .create_description_input
+                                    .handle_key(&event, None);
+                                // Auto-scroll to keep cursor visible
+                                let area_height = 10; // Estimate, will be adjusted in rendering
+                                self.template_modal
+                                    .create_description_input
+                                    .ensure_cursor_visible(area_height, 80);
                             } else {
                                 // Move to next field (works for all fields)
                                 self.template_modal.next_focus();
@@ -2818,41 +3090,45 @@ impl App {
                         CreateFocus::Name => {
                             // Clear error when user starts typing
                             self.template_modal.name_error = None;
-                            let cursor = self.template_modal.create_name_cursor;
-                            self.template_modal.create_name.insert(cursor, c);
-                            self.template_modal.create_name_cursor += 1;
+                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+                            self.template_modal
+                                .create_name_input
+                                .handle_key(&event, None);
                         }
                         CreateFocus::Description => {
-                            let cursor = self.template_modal.create_description_cursor;
-                            if c == '\n' {
-                                self.template_modal.create_description.insert(cursor, '\n');
-                                self.template_modal.create_description_cursor += 1;
-                            } else {
-                                self.template_modal.create_description.insert(cursor, c);
-                                self.template_modal.create_description_cursor += 1;
-                            }
+                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+                            self.template_modal
+                                .create_description_input
+                                .handle_key(&event, None);
+                            // Auto-scroll to keep cursor visible
+                            let area_height = 10; // Estimate, will be adjusted in rendering
+                            self.template_modal
+                                .create_description_input
+                                .ensure_cursor_visible(area_height, 80);
                         }
                         CreateFocus::ExactPath => {
-                            let cursor = self.template_modal.create_exact_path_cursor;
-                            self.template_modal.create_exact_path.insert(cursor, c);
-                            self.template_modal.create_exact_path_cursor += 1;
+                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+                            self.template_modal
+                                .create_exact_path_input
+                                .handle_key(&event, None);
                         }
                         CreateFocus::RelativePath => {
-                            let cursor = self.template_modal.create_relative_path_cursor;
-                            self.template_modal.create_relative_path.insert(cursor, c);
-                            self.template_modal.create_relative_path_cursor += 1;
+                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+                            self.template_modal
+                                .create_relative_path_input
+                                .handle_key(&event, None);
                         }
                         CreateFocus::PathPattern => {
-                            let cursor = self.template_modal.create_path_pattern_cursor;
-                            self.template_modal.create_path_pattern.insert(cursor, c);
-                            self.template_modal.create_path_pattern_cursor += 1;
+                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+                            self.template_modal
+                                .create_path_pattern_input
+                                .handle_key(&event, None);
                         }
                         CreateFocus::FilenamePattern => {
-                            let cursor = self.template_modal.create_filename_pattern_cursor;
+                            let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
                             self.template_modal
-                                .create_filename_pattern
-                                .insert(cursor, c);
-                            self.template_modal.create_filename_pattern_cursor += 1;
+                                .create_filename_pattern_input
+                                .handle_key(&event, None);
                         }
                         CreateFocus::SchemaMatch => {
                             // Space toggles
@@ -2864,350 +3140,133 @@ impl App {
                         _ => {}
                     }
                 }
-                KeyCode::Left
+                KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
                     if self.template_modal.mode == TemplateModalMode::Create
                         || self.template_modal.mode == TemplateModalMode::Edit =>
                 {
                     match self.template_modal.create_focus {
-                        CreateFocus::Description => {
-                            if self.template_modal.create_description_cursor > 0 {
-                                self.template_modal.create_description_cursor -= 1;
-                            }
-                        }
                         CreateFocus::Name => {
-                            if self.template_modal.create_name_cursor > 0 {
-                                self.template_modal.create_name_cursor -= 1;
-                            }
+                            self.template_modal
+                                .create_name_input
+                                .handle_key(event, None);
+                        }
+                        CreateFocus::Description => {
+                            self.template_modal
+                                .create_description_input
+                                .handle_key(event, None);
+                            // Auto-scroll to keep cursor visible
+                            let area_height = 10;
+                            self.template_modal
+                                .create_description_input
+                                .ensure_cursor_visible(area_height, 80);
                         }
                         CreateFocus::ExactPath => {
-                            if self.template_modal.create_exact_path_cursor > 0 {
-                                self.template_modal.create_exact_path_cursor -= 1;
-                            }
+                            self.template_modal
+                                .create_exact_path_input
+                                .handle_key(event, None);
                         }
                         CreateFocus::RelativePath => {
-                            if self.template_modal.create_relative_path_cursor > 0 {
-                                self.template_modal.create_relative_path_cursor -= 1;
-                            }
+                            self.template_modal
+                                .create_relative_path_input
+                                .handle_key(event, None);
                         }
                         CreateFocus::PathPattern => {
-                            if self.template_modal.create_path_pattern_cursor > 0 {
-                                self.template_modal.create_path_pattern_cursor -= 1;
-                            }
+                            self.template_modal
+                                .create_path_pattern_input
+                                .handle_key(event, None);
                         }
                         CreateFocus::FilenamePattern => {
-                            if self.template_modal.create_filename_pattern_cursor > 0 {
-                                self.template_modal.create_filename_pattern_cursor -= 1;
-                            }
+                            self.template_modal
+                                .create_filename_pattern_input
+                                .handle_key(event, None);
                         }
                         _ => {}
                     }
                 }
-                KeyCode::Right
+                KeyCode::PageUp | KeyCode::PageDown
                     if self.template_modal.mode == TemplateModalMode::Create
                         || self.template_modal.mode == TemplateModalMode::Edit =>
                 {
-                    match self.template_modal.create_focus {
-                        CreateFocus::Description => {
-                            let char_count = self.template_modal.create_description.chars().count();
-                            if self.template_modal.create_description_cursor < char_count {
-                                self.template_modal.create_description_cursor += 1;
-                            }
-                        }
-                        CreateFocus::Name => {
-                            let char_count = self.template_modal.create_name.chars().count();
-                            if self.template_modal.create_name_cursor < char_count {
-                                self.template_modal.create_name_cursor += 1;
-                            }
-                        }
-                        CreateFocus::ExactPath => {
-                            let char_count = self.template_modal.create_exact_path.chars().count();
-                            if self.template_modal.create_exact_path_cursor < char_count {
-                                self.template_modal.create_exact_path_cursor += 1;
-                            }
-                        }
-                        CreateFocus::RelativePath => {
-                            let char_count =
-                                self.template_modal.create_relative_path.chars().count();
-                            if self.template_modal.create_relative_path_cursor < char_count {
-                                self.template_modal.create_relative_path_cursor += 1;
-                            }
-                        }
-                        CreateFocus::PathPattern => {
-                            let char_count =
-                                self.template_modal.create_path_pattern.chars().count();
-                            if self.template_modal.create_path_pattern_cursor < char_count {
-                                self.template_modal.create_path_pattern_cursor += 1;
-                            }
-                        }
-                        CreateFocus::FilenamePattern => {
-                            let char_count =
-                                self.template_modal.create_filename_pattern.chars().count();
-                            if self.template_modal.create_filename_pattern_cursor < char_count {
-                                self.template_modal.create_filename_pattern_cursor += 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                KeyCode::PageUp
-                    if self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit =>
-                {
+                    // PageUp/PageDown for description field - move cursor up/down by 5 lines
+                    // This is handled manually since MultiLineTextInput doesn't have built-in PageUp/PageDown
                     if self.template_modal.create_focus == CreateFocus::Description {
-                        // Move cursor up by 5 lines
-                        let lines: Vec<&str> =
-                            self.template_modal.create_description.lines().collect();
-                        let cursor_line = self
+                        let lines: Vec<&str> = self
                             .template_modal
-                            .create_description
-                            .chars()
-                            .take(self.template_modal.create_description_cursor)
-                            .filter(|&c| c == '\n')
-                            .count();
+                            .create_description_input
+                            .value
+                            .lines()
+                            .collect();
+                        let current_line = self.template_modal.create_description_input.cursor_line;
+                        let current_col = self.template_modal.create_description_input.cursor_col;
 
-                        if cursor_line >= 5 {
-                            let target_line = cursor_line - 5;
-                            let _current_line = lines.get(cursor_line).unwrap_or(&"");
-                            let current_col = {
-                                let chars_before_cursor: Vec<char> = self
-                                    .template_modal
-                                    .create_description
-                                    .chars()
-                                    .take(self.template_modal.create_description_cursor)
-                                    .collect();
-                                let last_newline_pos = chars_before_cursor
-                                    .iter()
-                                    .rposition(|&c| c == '\n')
-                                    .map(|p| p + 1)
-                                    .unwrap_or(0);
-                                chars_before_cursor.len() - last_newline_pos
-                            };
+                        let target_line = if event.code == KeyCode::PageUp {
+                            current_line.saturating_sub(5)
+                        } else {
+                            (current_line + 5).min(lines.len().saturating_sub(1))
+                        };
 
+                        if target_line < lines.len() {
                             let target_line_str = lines.get(target_line).unwrap_or(&"");
                             let new_col = current_col.min(target_line_str.chars().count());
-                            let mut new_cursor = 0;
-                            for (i, line) in lines.iter().enumerate() {
-                                if i < target_line {
-                                    new_cursor += line.chars().count() + 1;
-                                } else if i == target_line {
-                                    new_cursor += new_col;
-                                    break;
-                                }
-                            }
-
-                            self.template_modal.create_description_cursor = new_cursor;
-
+                            self.template_modal.create_description_input.cursor = self
+                                .template_modal
+                                .create_description_input
+                                .line_col_to_cursor(target_line, new_col);
+                            self.template_modal
+                                .create_description_input
+                                .update_line_col_from_cursor();
                             // Auto-scroll
-                            if target_line < self.template_modal.description_scroll {
-                                self.template_modal.description_scroll = target_line;
-                            }
-                        } else if cursor_line > 0 {
-                            // Move to first line
-                            let target_line = 0;
-                            let target_line_str = lines.get(target_line).unwrap_or(&"");
-                            let _current_line = lines.get(cursor_line).unwrap_or(&"");
-                            let current_col = {
-                                let chars_before_cursor: Vec<char> = self
-                                    .template_modal
-                                    .create_description
-                                    .chars()
-                                    .take(self.template_modal.create_description_cursor)
-                                    .collect();
-                                let last_newline_pos = chars_before_cursor
-                                    .iter()
-                                    .rposition(|&c| c == '\n')
-                                    .map(|p| p + 1)
-                                    .unwrap_or(0);
-                                chars_before_cursor.len() - last_newline_pos
-                            };
-                            let new_col = current_col.min(target_line_str.chars().count());
-                            self.template_modal.create_description_cursor = new_col;
-                            self.template_modal.description_scroll = 0;
-                        }
-                    }
-                }
-                KeyCode::PageDown
-                    if self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit =>
-                {
-                    if self.template_modal.create_focus == CreateFocus::Description {
-                        // Move cursor down by 5 lines
-                        let lines: Vec<&str> =
-                            self.template_modal.create_description.lines().collect();
-                        let cursor_line = self
-                            .template_modal
-                            .create_description
-                            .chars()
-                            .take(self.template_modal.create_description_cursor)
-                            .filter(|&c| c == '\n')
-                            .count();
-
-                        if cursor_line + 5 < lines.len() {
-                            let target_line = cursor_line + 5;
-                            let _current_line = lines.get(cursor_line).unwrap_or(&"");
-                            let current_col = {
-                                let chars_before_cursor: Vec<char> = self
-                                    .template_modal
-                                    .create_description
-                                    .chars()
-                                    .take(self.template_modal.create_description_cursor)
-                                    .collect();
-                                let last_newline_pos = chars_before_cursor
-                                    .iter()
-                                    .rposition(|&c| c == '\n')
-                                    .map(|p| p + 1)
-                                    .unwrap_or(0);
-                                chars_before_cursor.len() - last_newline_pos
-                            };
-
-                            let target_line_str = lines.get(target_line).unwrap_or(&"");
-                            let new_col = current_col.min(target_line_str.chars().count());
-                            let mut new_cursor = 0;
-                            for (i, line) in lines.iter().enumerate() {
-                                if i < target_line {
-                                    new_cursor += line.chars().count() + 1;
-                                } else if i == target_line {
-                                    new_cursor += new_col;
-                                    break;
-                                }
-                            }
-
-                            self.template_modal.create_description_cursor = new_cursor;
-
-                            // Auto-scroll
-                            let available_height = 6;
-                            if target_line
-                                >= self.template_modal.description_scroll + available_height
-                            {
-                                self.template_modal.description_scroll =
-                                    target_line.saturating_sub(available_height - 1);
-                            }
-                        } else if cursor_line < lines.len().saturating_sub(1) {
-                            // Move to last line
-                            let target_line = lines.len() - 1;
-                            let target_line_str = lines.get(target_line).unwrap_or(&"");
-                            let _current_line = lines.get(cursor_line).unwrap_or(&"");
-                            let current_col = {
-                                let chars_before_cursor: Vec<char> = self
-                                    .template_modal
-                                    .create_description
-                                    .chars()
-                                    .take(self.template_modal.create_description_cursor)
-                                    .collect();
-                                let last_newline_pos = chars_before_cursor
-                                    .iter()
-                                    .rposition(|&c| c == '\n')
-                                    .map(|p| p + 1)
-                                    .unwrap_or(0);
-                                chars_before_cursor.len() - last_newline_pos
-                            };
-                            let new_col = current_col.min(target_line_str.chars().count());
-                            let mut new_cursor = 0;
-                            for (i, line) in lines.iter().enumerate() {
-                                if i < target_line {
-                                    new_cursor += line.chars().count() + 1;
-                                } else if i == target_line {
-                                    new_cursor += new_col;
-                                    break;
-                                }
-                            }
-                            self.template_modal.create_description_cursor = new_cursor;
-
-                            // Auto-scroll
-                            let available_height = 6;
-                            let max_scroll = lines.len().saturating_sub(available_height).max(0);
-                            self.template_modal.description_scroll = max_scroll;
+                            let area_height = 10;
+                            self.template_modal
+                                .create_description_input
+                                .ensure_cursor_visible(area_height, 80);
                         }
                     }
                 }
                 KeyCode::Backspace
+                | KeyCode::Delete
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Home
+                | KeyCode::End
                     if self.template_modal.mode == TemplateModalMode::Create
                         || self.template_modal.mode == TemplateModalMode::Edit =>
                 {
                     match self.template_modal.create_focus {
                         CreateFocus::Name => {
-                            if self.template_modal.create_name_cursor > 0 {
-                                self.template_modal.create_name_cursor -= 1;
-                                self.template_modal
-                                    .create_name
-                                    .remove(self.template_modal.create_name_cursor);
-                            }
+                            self.template_modal
+                                .create_name_input
+                                .handle_key(event, None);
                         }
                         CreateFocus::Description => {
-                            if self.template_modal.create_description_cursor > 0 {
-                                self.template_modal.create_description_cursor -= 1;
-                                self.template_modal
-                                    .create_description
-                                    .remove(self.template_modal.create_description_cursor);
-                            }
-                        }
-                        CreateFocus::PathPattern => {
-                            self.template_modal.create_path_pattern.pop();
-                        }
-                        CreateFocus::FilenamePattern => {
-                            self.template_modal.create_filename_pattern.pop();
-                        }
-                        _ => {}
-                    }
-                }
-                KeyCode::Delete
-                    if self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit =>
-                {
-                    match self.template_modal.create_focus {
-                        CreateFocus::Name => {
-                            if self.template_modal.create_name_cursor
-                                < self.template_modal.create_name.chars().count()
-                            {
-                                self.template_modal
-                                    .create_name
-                                    .remove(self.template_modal.create_name_cursor);
-                            }
-                        }
-                        CreateFocus::Description => {
-                            if self.template_modal.create_description_cursor
-                                < self.template_modal.create_description.chars().count()
-                            {
-                                self.template_modal
-                                    .create_description
-                                    .remove(self.template_modal.create_description_cursor);
-                            }
+                            self.template_modal
+                                .create_description_input
+                                .handle_key(event, None);
+                            // Auto-scroll to keep cursor visible
+                            let area_height = 10;
+                            self.template_modal
+                                .create_description_input
+                                .ensure_cursor_visible(area_height, 80);
                         }
                         CreateFocus::ExactPath => {
-                            if self.template_modal.create_exact_path_cursor
-                                < self.template_modal.create_exact_path.chars().count()
-                            {
-                                self.template_modal
-                                    .create_exact_path
-                                    .remove(self.template_modal.create_exact_path_cursor);
-                            }
+                            self.template_modal
+                                .create_exact_path_input
+                                .handle_key(event, None);
                         }
                         CreateFocus::RelativePath => {
-                            if self.template_modal.create_relative_path_cursor
-                                < self.template_modal.create_relative_path.chars().count()
-                            {
-                                self.template_modal
-                                    .create_relative_path
-                                    .remove(self.template_modal.create_relative_path_cursor);
-                            }
+                            self.template_modal
+                                .create_relative_path_input
+                                .handle_key(event, None);
                         }
                         CreateFocus::PathPattern => {
-                            if self.template_modal.create_path_pattern_cursor
-                                < self.template_modal.create_path_pattern.chars().count()
-                            {
-                                self.template_modal
-                                    .create_path_pattern
-                                    .remove(self.template_modal.create_path_pattern_cursor);
-                            }
+                            self.template_modal
+                                .create_path_pattern_input
+                                .handle_key(event, None);
                         }
                         CreateFocus::FilenamePattern => {
-                            if self.template_modal.create_filename_pattern_cursor
-                                < self.template_modal.create_filename_pattern.chars().count()
-                            {
-                                self.template_modal
-                                    .create_filename_pattern
-                                    .remove(self.template_modal.create_filename_pattern_cursor);
-                            }
+                            self.template_modal
+                                .create_filename_pattern_input
+                                .handle_key(event, None);
                         }
                         _ => {}
                     }
@@ -3218,136 +3277,44 @@ impl App {
         }
 
         if self.input_mode == InputMode::Editing {
-            match event.code {
-                // History navigation (only for Search/Query input)
-                KeyCode::Up if self.input_type == Some(InputType::Search) => {
-                    if !self.query_history.is_empty() {
-                        if self.query_history_index.is_none() {
-                            // Save current input when starting to navigate history
-                            self.query_history_temp = Some(self.input.clone());
-                            self.query_history_index =
-                                Some(self.query_history.len().saturating_sub(1));
-                        } else if let Some(idx) = self.query_history_index {
-                            if idx > 0 {
-                                self.query_history_index = Some(idx - 1);
-                            }
-                        }
+            // Use TextInput widget for query input (Search type)
+            if self.input_type == Some(InputType::Search) {
+                self.query_input.set_focused(true);
+                let result = self.query_input.handle_key(event, Some(&self.cache));
 
-                        if let Some(idx) = self.query_history_index {
-                            if let Some(query) = self.query_history.get(idx) {
-                                self.input = query.clone();
-                                self.input_cursor = self.input.chars().count();
-                            }
+                match result {
+                    TextInputEvent::Submit => {
+                        // Save to history and execute query
+                        if let Err(e) = self.query_input.save_to_history(&self.cache) {
+                            eprintln!("Warning: Could not save query to history: {}", e);
+                        }
+                        let query = self.query_input.value.clone();
+                        self.query_input.set_focused(false);
+                        return Some(AppEvent::Search(query));
+                    }
+                    TextInputEvent::Cancel => {
+                        // Clear and exit input mode
+                        self.query_input.clear();
+                        self.query_input.set_focused(false);
+                        self.input_mode = InputMode::Normal;
+                        if let Some(state) = &mut self.data_table_state {
+                            // Clear error and re-enable error display in main view
+                            state.error = None;
+                            state.suppress_error_display = false;
                         }
                     }
-                }
-                KeyCode::Down if self.input_type == Some(InputType::Search) => {
-                    if let Some(idx) = self.query_history_index {
-                        if idx < self.query_history.len().saturating_sub(1) {
-                            // Move to next (newer) history entry
-                            self.query_history_index = Some(idx + 1);
-                            if let Some(query) = self.query_history.get(idx + 1) {
-                                self.input = query.clone();
-                                self.input_cursor = self.input.chars().count();
-                            }
-                        } else {
-                            // At end of history - restore temp input or clear
-                            self.query_history_index = None;
-                            self.input = self.query_history_temp.take().unwrap_or_default();
-                            self.input_cursor = self.input.chars().count();
-                        }
+                    TextInputEvent::HistoryChanged => {
+                        // History navigation occurred, nothing special needed
+                    }
+                    TextInputEvent::None => {
+                        // Regular input, nothing special needed
                     }
                 }
-                KeyCode::Enter => {
-                    if self.input_type == Some(InputType::Search) {
-                        // Clear history navigation state before executing
-                        self.query_history_index = None;
-                        self.query_history_temp = None;
-                        return Some(AppEvent::Search(self.input.clone()));
-                    }
-                    let _input = std::mem::take(&mut self.input);
-                    self.input_cursor = 0;
-                    self.input_mode = InputMode::Normal;
-                    return match self.input_type {
-                        Some(InputType::Filter) => None,
-                        None => None,
-                        _ => None,
-                    };
-                }
-                KeyCode::Esc => {
-                    // Clear history navigation state
-                    self.query_history_index = None;
-                    self.query_history_temp = None;
-                    self.input_mode = InputMode::Normal;
-                    self.input.clear();
-                    self.input_cursor = 0;
-                    if let Some(state) = &mut self.data_table_state {
-                        // Clear error and re-enable error display in main view
-                        state.error = None;
-                        state.suppress_error_display = false;
-                    }
-                }
-                KeyCode::Left => {
-                    if self.input_cursor > 0 {
-                        // Move cursor left by one character (not byte)
-                        self.input_cursor -= 1;
-                    }
-                }
-                KeyCode::Right => {
-                    let char_count = self.input.chars().count();
-                    if self.input_cursor < char_count {
-                        self.input_cursor += 1;
-                    }
-                }
-                KeyCode::Home => {
-                    self.input_cursor = 0;
-                }
-                KeyCode::End => {
-                    self.input_cursor = self.input.chars().count();
-                }
-                KeyCode::Char(c) => {
-                    // Convert character position to byte position
-                    let byte_pos = self
-                        .input
-                        .chars()
-                        .take(self.input_cursor)
-                        .map(|c| c.len_utf8())
-                        .sum();
-                    self.input.insert(byte_pos, c);
-                    self.input_cursor += 1;
-                }
-                KeyCode::Backspace => {
-                    if self.input_cursor > 0 {
-                        // Convert character position to byte position for the character before cursor
-                        let prev_byte_pos: usize = self
-                            .input
-                            .chars()
-                            .take(self.input_cursor - 1)
-                            .map(|c| c.len_utf8())
-                            .sum();
-                        let char_to_delete = self.input[prev_byte_pos..].chars().next().unwrap();
-                        let char_len = char_to_delete.len_utf8();
-                        self.input.drain(prev_byte_pos..prev_byte_pos + char_len);
-                        self.input_cursor -= 1;
-                    }
-                }
-                KeyCode::Delete => {
-                    let char_count = self.input.chars().count();
-                    if self.input_cursor < char_count {
-                        // Convert character position to byte position
-                        let byte_pos: usize = self
-                            .input
-                            .chars()
-                            .take(self.input_cursor)
-                            .map(|c| c.len_utf8())
-                            .sum();
-                        let char_to_delete = self.input[byte_pos..].chars().next().unwrap();
-                        let char_len = char_to_delete.len_utf8();
-                        self.input.drain(byte_pos..byte_pos + char_len);
-                    }
-                }
-                _ => {}
+                return None;
             }
+
+            // For other input types (Filter, etc.), keep old behavior for now
+            // TODO: Migrate these in later phases
             return None;
         }
 
@@ -3461,18 +3428,16 @@ impl App {
             KeyCode::Char('/') => {
                 self.input_mode = InputMode::Editing;
                 self.input_type = Some(InputType::Search);
-                // Clear history navigation state when opening query input
-                self.query_history_index = None;
-                self.query_history_temp = None;
+                // Initialize query input with current query if available
                 if let Some(state) = &mut self.data_table_state {
-                    self.input = state.active_query.clone();
-                    self.input_cursor = self.input.chars().count();
+                    self.query_input.value = state.active_query.clone();
+                    self.query_input.cursor = self.query_input.value.chars().count();
                     // Suppress error display in main view when query input is active
                     state.suppress_error_display = true;
                 } else {
-                    self.input.clear();
-                    self.input_cursor = 0;
+                    self.query_input.clear();
                 }
+                self.query_input.set_focused(true);
                 None
             }
             KeyCode::Char('T') => {
@@ -3550,7 +3515,7 @@ impl App {
                             }
                         })
                         .collect();
-                    self.sort_filter_modal.sort.filter.clear();
+                    self.sort_filter_modal.sort.filter_input.clear();
                     self.sort_filter_modal.sort.focus = SortFocus::ColumnList;
 
                     // Populate filter tab
@@ -3568,7 +3533,7 @@ impl App {
                         self.sort_filter_modal.filter.new_column_idx = 0;
                     }
 
-                    self.sort_filter_modal.open();
+                    self.sort_filter_modal.open(self.history_limit, &self.theme);
                     self.input_mode = InputMode::SortFilter;
                 }
                 None
@@ -3596,9 +3561,26 @@ impl App {
                             .iter()
                             .map(|(n, d)| (n.to_string(), d.clone()))
                             .collect();
-                        self.pivot_melt_modal.open();
+                        self.pivot_melt_modal.open(self.history_limit, &self.theme);
                         self.input_mode = InputMode::PivotMelt;
                     }
+                }
+                None
+            }
+            KeyCode::Char('e') => {
+                if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                    // Load config to get delimiter preference
+                    let config_delimiter = AppConfig::load(APP_NAME)
+                        .ok()
+                        .and_then(|config| config.file_loading.delimiter);
+                    self.export_modal.open(
+                        self.original_file_format,
+                        self.history_limit,
+                        &self.theme,
+                        self.original_file_delimiter,
+                        config_delimiter,
+                    );
+                    self.input_mode = InputMode::Export;
                 }
                 None
             }
@@ -3706,14 +3688,9 @@ impl App {
 
                 // Only close input mode if query succeeded (no error after execution)
                 if query_succeeded {
-                    // Add successful query to history
-                    self.add_to_history(query.clone());
-                    // Clear history navigation state
-                    self.query_history_index = None;
-                    self.query_history_temp = None;
+                    // History was already saved in TextInputEvent::Submit handler
                     self.input_mode = InputMode::Normal;
-                    self.input.clear();
-                    self.input_cursor = 0;
+                    self.query_input.set_focused(false);
                     // Re-enable error display in main view when closing query input
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
@@ -3783,6 +3760,62 @@ impl App {
                 } else {
                     None
                 }
+            }
+            AppEvent::Export(path, format, options) => {
+                if let Some(_state) = &self.data_table_state {
+                    // Show progress immediately
+                    self.loading_state = LoadingState::Exporting {
+                        file_path: path.clone(),
+                        current_phase: "Preparing export".to_string(),
+                        progress_percent: 0,
+                    };
+                    // Return DoExport to allow UI to render progress before blocking
+                    Some(AppEvent::DoExport(path.clone(), *format, options.clone()))
+                } else {
+                    None
+                }
+            }
+            AppEvent::DoExport(path, format, options) => {
+                if let Some(state) = &self.data_table_state {
+                    // Update progress: Writing file (or Compressing if compression is enabled)
+                    let has_compression = match *format {
+                        ExportFormat::Csv => options.csv_compression.is_some(),
+                        ExportFormat::Json => options.json_compression.is_some(),
+                        ExportFormat::Ndjson => options.ndjson_compression.is_some(),
+                        ExportFormat::Parquet => false, // Parquet doesn't support compression in our UI
+                    };
+
+                    let phase = if has_compression {
+                        "Writing and compressing file"
+                    } else {
+                        "Writing file"
+                    };
+
+                    self.loading_state = LoadingState::Exporting {
+                        file_path: path.clone(),
+                        current_phase: phase.to_string(),
+                        progress_percent: 50,
+                    };
+
+                    // Perform the export with improved error handling
+                    let result = Self::export_data(state, path, *format, options);
+
+                    // Clear loading state
+                    self.loading_state = LoadingState::Idle;
+
+                    match result {
+                        Ok(()) => {
+                            self.success_modal
+                                .show(format!("Data exported successfully to\n{}", path.display()));
+                        }
+                        Err(e) => {
+                            // Provide better error messages
+                            let error_msg = Self::format_export_error(&e, path);
+                            self.error_modal.show(error_msg);
+                        }
+                    }
+                }
+                None
             }
             _ => None,
         }
@@ -3927,6 +3960,170 @@ impl App {
         Ok(())
     }
 
+    /// Format export error messages to be more user-friendly
+    fn format_export_error(error: &color_eyre::eyre::Error, path: &Path) -> String {
+        let error_str = error.to_string();
+
+        // Check for common error patterns
+        if error_str.contains("Permission denied") || error_str.contains("permission") {
+            format!(
+                "Permission denied:\nCannot write to {}\n\nCheck file permissions and ensure you have write access to the directory.",
+                path.display()
+            )
+        } else if error_str.contains("No such file or directory") || error_str.contains("directory")
+        {
+            if let Some(parent) = path.parent() {
+                format!(
+                    "Directory does not exist:\n{}\n\nPlease create the directory or choose a different location.",
+                    parent.display()
+                )
+            } else {
+                format!(
+                    "Invalid path:\n{}\n\nPlease check the file path.",
+                    path.display()
+                )
+            }
+        } else if error_str.contains("No space left") || error_str.contains("space") {
+            format!(
+                "No space left on device:\nCannot write to {}\n\nFree up disk space and try again.",
+                path.display()
+            )
+        } else if error_str.contains("IO error") || error_str.contains("I/O") {
+            format!(
+                "I/O error:\nFailed to write to {}\n\n{}\n\nCheck disk space, permissions, and that the file is not in use.",
+                path.display(),
+                error_str
+            )
+        } else {
+            format!("Export failed:\n{}\n\nError: {}", path.display(), error_str)
+        }
+    }
+
+    fn export_data(
+        state: &DataTableState,
+        path: &Path,
+        format: ExportFormat,
+        options: &ExportOptions,
+    ) -> Result<()> {
+        use polars::prelude::*;
+        use std::fs::File;
+        use std::io::{BufWriter, Write};
+
+        // Collect the current LazyFrame to DataFrame
+        let mut df = state.lf.clone().collect()?;
+
+        match format {
+            ExportFormat::Csv => {
+                use polars::prelude::CsvWriter;
+                if let Some(compression) = options.csv_compression {
+                    // Write to compressed file
+                    let file = File::create(path)?;
+                    let writer: Box<dyn Write> = match compression {
+                        CompressionFormat::Gzip => Box::new(flate2::write::GzEncoder::new(
+                            file,
+                            flate2::Compression::default(),
+                        )),
+                        CompressionFormat::Zstd => {
+                            Box::new(zstd::Encoder::new(file, 0)?.auto_finish())
+                        }
+                        CompressionFormat::Bzip2 => Box::new(bzip2::write::BzEncoder::new(
+                            file,
+                            bzip2::Compression::default(),
+                        )),
+                        CompressionFormat::Xz => {
+                            Box::new(xz2::write::XzEncoder::new(
+                                file, 6, // compression level
+                            ))
+                        }
+                    };
+                    CsvWriter::new(writer)
+                        .with_separator(options.csv_delimiter)
+                        .include_header(options.csv_include_header)
+                        .finish(&mut df)?;
+                } else {
+                    // Write uncompressed
+                    let file = File::create(path)?;
+                    CsvWriter::new(file)
+                        .with_separator(options.csv_delimiter)
+                        .include_header(options.csv_include_header)
+                        .finish(&mut df)?;
+                }
+            }
+            ExportFormat::Parquet => {
+                use polars::prelude::ParquetWriter;
+                let file = File::create(path)?;
+                let mut writer = BufWriter::new(file);
+                ParquetWriter::new(&mut writer).finish(&mut df)?;
+            }
+            ExportFormat::Json => {
+                use polars::prelude::JsonWriter;
+                if let Some(compression) = options.json_compression {
+                    // Write to compressed file
+                    let file = File::create(path)?;
+                    let writer: Box<dyn Write> = match compression {
+                        CompressionFormat::Gzip => Box::new(flate2::write::GzEncoder::new(
+                            file,
+                            flate2::Compression::default(),
+                        )),
+                        CompressionFormat::Zstd => {
+                            Box::new(zstd::Encoder::new(file, 0)?.auto_finish())
+                        }
+                        CompressionFormat::Bzip2 => Box::new(bzip2::write::BzEncoder::new(
+                            file,
+                            bzip2::Compression::default(),
+                        )),
+                        CompressionFormat::Xz => {
+                            Box::new(xz2::write::XzEncoder::new(
+                                file, 6, // compression level
+                            ))
+                        }
+                    };
+                    JsonWriter::new(writer).finish(&mut df)?;
+                } else {
+                    // Write uncompressed
+                    let file = File::create(path)?;
+                    JsonWriter::new(file).finish(&mut df)?;
+                }
+            }
+            ExportFormat::Ndjson => {
+                use polars::prelude::{JsonFormat, JsonWriter};
+                if let Some(compression) = options.ndjson_compression {
+                    // Write to compressed file
+                    let file = File::create(path)?;
+                    let writer: Box<dyn Write> = match compression {
+                        CompressionFormat::Gzip => Box::new(flate2::write::GzEncoder::new(
+                            file,
+                            flate2::Compression::default(),
+                        )),
+                        CompressionFormat::Zstd => {
+                            Box::new(zstd::Encoder::new(file, 0)?.auto_finish())
+                        }
+                        CompressionFormat::Bzip2 => Box::new(bzip2::write::BzEncoder::new(
+                            file,
+                            bzip2::Compression::default(),
+                        )),
+                        CompressionFormat::Xz => {
+                            Box::new(xz2::write::XzEncoder::new(
+                                file, 6, // compression level
+                            ))
+                        }
+                    };
+                    JsonWriter::new(writer)
+                        .with_json_format(JsonFormat::JsonLines)
+                        .finish(&mut df)?;
+                } else {
+                    // Write uncompressed
+                    let file = File::create(path)?;
+                    JsonWriter::new(file)
+                        .with_json_format(JsonFormat::JsonLines)
+                        .finish(&mut df)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn restore_state(&mut self, saved: TemplateApplicationState) {
         if let Some(state) = &mut self.data_table_state {
             // Clone saved lf and schema so we can restore them after applying methods
@@ -4012,6 +4209,7 @@ Data Operations:
   /:                Open Query input
   s:                Open Sort & Filter modal (tabs: Sort, Filter)
   a:                Open Statistical Analysis
+  e:                Export data to file
   r:                Reverse sort order
   R:                Reset table (clear queries, filters, sorts, locks)
   T:                Apply most relevant template
@@ -4156,6 +4354,29 @@ Reshape data between long and wide formats.
 
 Pivot: long → wide (index, pivot col, value col, aggregation).
 Melt:  wide → long (index, strategy, variable/value names).",
+            ),
+            InputMode::Export => (
+                "Export Help",
+                "\
+Export current data to a file.
+
+  Tab / Shift+Tab:  Move focus between fields
+  ↑ / ↓:            In format selector: Change format
+                    In other fields: Move focus
+  Left / Right:     Move cursor in text fields
+  Enter:            Export (on Export button) or Cancel (on Cancel button)
+                    Toggle checkbox (on Include Header)
+  Esc:              Close without exporting
+
+Formats:
+  CSV:     Comma-separated values (configurable delimiter, header)
+  Parquet: Columnar format (efficient, compressed)
+  JSON:    JSON array format
+  NDJSON:  Newline-delimited JSON (one object per line)
+
+CSV Options:
+  Delimiter:        Character to separate columns (default: comma)
+  Include Header:   Whether to write column names as first row",
             ),
         };
         (title.to_string(), content.to_string())
@@ -4358,61 +4579,15 @@ impl Widget for &mut App {
                     ])
                     .split(inner_area);
 
-                // Render input with cursor
-                let input_text = self.input.as_str();
-                let cursor_pos = self.input_cursor.min(input_text.chars().count());
-                let mut chars = input_text.chars();
-                let before_cursor: String = chars.by_ref().take(cursor_pos).collect();
-                let at_cursor = chars
-                    .next()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| " ".to_string());
-                let after_cursor: String = chars.collect();
-
-                use ratatui::text::{Line, Span};
-                let mut line = Line::default();
-                line.spans.push(Span::raw(before_cursor));
-                line.spans.push(Span::styled(
-                    at_cursor,
-                    Style::default()
-                        .bg(self.color("text_primary"))
-                        .fg(self.color("text_inverse")),
-                ));
-                if !after_cursor.is_empty() {
-                    line.spans.push(Span::raw(after_cursor));
-                }
-
-                Paragraph::new(line).render(chunks[0], buf);
+                // Render input using TextInput widget
+                (&self.query_input).render(chunks[0], buf);
                 Paragraph::new(err_msg)
                     .style(Style::default().fg(self.color("error")))
                     .wrap(ratatui::widgets::Wrap { trim: true })
                     .render(chunks[2], buf);
             } else {
-                // Render input with cursor
-                let input_text = self.input.as_str();
-                let cursor_pos = self.input_cursor.min(input_text.chars().count());
-                let mut chars = input_text.chars();
-                let before_cursor: String = chars.by_ref().take(cursor_pos).collect();
-                let at_cursor = chars
-                    .next()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| " ".to_string());
-                let after_cursor: String = chars.collect();
-
-                use ratatui::text::{Line, Span};
-                let mut line = Line::default();
-                line.spans.push(Span::raw(before_cursor));
-                line.spans.push(Span::styled(
-                    at_cursor,
-                    Style::default()
-                        .bg(self.color("text_primary"))
-                        .fg(self.color("text_inverse")),
-                ));
-                if !after_cursor.is_empty() {
-                    line.spans.push(Span::raw(after_cursor));
-                }
-
-                Paragraph::new(line).render(inner_area, buf);
+                // Render input using TextInput widget
+                (&self.query_input).render(inner_area, buf);
             }
         }
 
@@ -4631,33 +4806,13 @@ impl Widget for &mut App {
                 let filter_inner_area = filter_block.inner(schunks[0]);
                 filter_block.render(schunks[0], buf);
 
-                let filter_text = self.sort_filter_modal.sort.filter.as_str();
-                let cursor_pos = self
-                    .sort_filter_modal
+                // Render filter input using TextInput widget
+                let is_focused = self.sort_filter_modal.sort.focus == SortFocus::Filter;
+                self.sort_filter_modal
                     .sort
-                    .filter_cursor
-                    .min(filter_text.chars().count());
-                let mut chars = filter_text.chars();
-                let before_cursor: String = chars.by_ref().take(cursor_pos).collect();
-                let at_cursor = chars
-                    .next()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| " ".to_string());
-                let after_cursor: String = chars.collect();
-
-                let mut line = ratatui::text::Line::default();
-                line.spans.push(ratatui::text::Span::raw(before_cursor));
-                line.spans.push(ratatui::text::Span::styled(
-                    at_cursor,
-                    Style::default()
-                        .bg(self.color("text_primary"))
-                        .fg(self.color("text_inverse")),
-                ));
-                if !after_cursor.is_empty() {
-                    line.spans.push(ratatui::text::Span::raw(after_cursor));
-                }
-
-                Paragraph::new(line).render(filter_inner_area, buf);
+                    .filter_input
+                    .set_focused(is_focused);
+                (&self.sort_filter_modal.sort.filter_input).render(filter_inner_area, buf);
 
                 let filtered = self.sort_filter_modal.sort.filtered_columns();
                 let rows: Vec<Row> = filtered
@@ -5134,47 +5289,12 @@ impl Widget for &mut App {
                         .border_style(name_style);
                     let name_inner = name_block.inner(chunks[0]);
                     name_block.render(chunks[0], buf);
-                    let name_display = format!(
-                        "{}{}",
-                        self.template_modal
-                            .create_name
-                            .chars()
-                            .take(self.template_modal.create_name_cursor)
-                            .collect::<String>(),
-                        self.template_modal
-                            .create_name
-                            .chars()
-                            .skip(self.template_modal.create_name_cursor)
-                            .collect::<String>()
-                    );
-                    let name_input_style = if self.template_modal.create_focus == CreateFocus::Name
-                    {
-                        Style::default().bg(self.color("surface"))
-                    } else {
-                        Style::default()
-                    };
-                    // Add cursor indicator
-                    let name_with_cursor = if self.template_modal.create_focus == CreateFocus::Name
-                    {
-                        format!(
-                            "{}█{}",
-                            self.template_modal
-                                .create_name
-                                .chars()
-                                .take(self.template_modal.create_name_cursor)
-                                .collect::<String>(),
-                            self.template_modal
-                                .create_name
-                                .chars()
-                                .skip(self.template_modal.create_name_cursor)
-                                .collect::<String>()
-                        )
-                    } else {
-                        name_display
-                    };
-                    Paragraph::new(name_with_cursor)
-                        .style(name_input_style)
-                        .render(name_inner, buf);
+                    // Render name input using TextInput widget
+                    let is_focused = self.template_modal.create_focus == CreateFocus::Name;
+                    self.template_modal
+                        .create_name_input
+                        .set_focused(is_focused);
+                    (&self.template_modal.create_name_input).render(name_inner, buf);
 
                     // Description input (scrollable, multi-line)
                     let desc_style = if self.template_modal.create_focus == CreateFocus::Description
@@ -5189,111 +5309,17 @@ impl Widget for &mut App {
                         .border_style(desc_style);
                     let desc_inner = desc_block.inner(chunks[1]);
                     desc_block.render(chunks[1], buf);
-                    let desc_input_style =
-                        if self.template_modal.create_focus == CreateFocus::Description {
-                            Style::default().bg(self.color("surface"))
-                        } else {
-                            Style::default()
-                        };
 
-                    // Split description into lines and handle cursor
-                    let lines: Vec<&str> = self.template_modal.create_description.lines().collect();
-                    let cursor_line = self
-                        .template_modal
-                        .create_description
-                        .chars()
-                        .take(self.template_modal.create_description_cursor)
-                        .filter(|&c| c == '\n')
-                        .count();
-                    // Calculate cursor position within the current line
-                    let cursor_pos_in_line = {
-                        let chars_before_cursor: Vec<char> = self
-                            .template_modal
-                            .create_description
-                            .chars()
-                            .take(self.template_modal.create_description_cursor)
-                            .collect();
-                        let last_newline_pos = chars_before_cursor
-                            .iter()
-                            .rposition(|&c| c == '\n')
-                            .map(|p| p + 1)
-                            .unwrap_or(0);
-                        chars_before_cursor.len() - last_newline_pos
-                    };
-
-                    // Calculate visible lines based on scroll
-                    let available_height = desc_inner.height as usize;
-                    let max_scroll = lines.len().saturating_sub(available_height).max(0);
-                    self.template_modal.description_scroll =
-                        self.template_modal.description_scroll.min(max_scroll);
-
+                    // Render description input using MultiLineTextInput widget
+                    let is_focused = self.template_modal.create_focus == CreateFocus::Description;
+                    self.template_modal
+                        .create_description_input
+                        .set_focused(is_focused);
                     // Auto-scroll to keep cursor visible
-                    if cursor_line < self.template_modal.description_scroll {
-                        self.template_modal.description_scroll = cursor_line;
-                    } else if cursor_line
-                        >= self.template_modal.description_scroll + available_height
-                    {
-                        self.template_modal.description_scroll =
-                            cursor_line.saturating_sub(available_height - 1);
-                    }
-
-                    // Render description with cursor using the same approach as query input
-                    use ratatui::text::{Line, Span};
-                    let desc_lines: Vec<Line> = if lines.is_empty()
-                        && self.template_modal.create_focus == CreateFocus::Description
-                    {
-                        // Empty description - show cursor on first line
-                        vec![Line::from(vec![Span::styled(
-                            " ",
-                            Style::default()
-                                .bg(self.color("text_primary"))
-                                .fg(self.color("text_inverse")),
-                        )])]
-                    } else {
-                        lines
-                            .iter()
-                            .skip(self.template_modal.description_scroll)
-                            .take(available_height)
-                            .enumerate()
-                            .map(|(i, line)| {
-                                let line_idx = self.template_modal.description_scroll + i;
-                                if self.template_modal.create_focus == CreateFocus::Description
-                                    && line_idx == cursor_line
-                                {
-                                    // This is the line with the cursor - render with styled cursor character
-                                    let before_cursor: String =
-                                        line.chars().take(cursor_pos_in_line).collect();
-                                    let mut chars_iter = line.chars().skip(cursor_pos_in_line);
-                                    let at_cursor = chars_iter
-                                        .next()
-                                        .map(|c| c.to_string())
-                                        .unwrap_or_else(|| " ".to_string());
-                                    let after_cursor: String = chars_iter.collect();
-
-                                    let mut line_spans = Line::default();
-                                    line_spans.spans.push(Span::raw(before_cursor));
-                                    line_spans.spans.push(Span::styled(
-                                        at_cursor,
-                                        Style::default()
-                                            .bg(self.color("text_primary"))
-                                            .fg(self.color("text_inverse")),
-                                    ));
-                                    if !after_cursor.is_empty() {
-                                        line_spans.spans.push(Span::raw(after_cursor));
-                                    }
-                                    line_spans
-                                } else {
-                                    // Regular line without cursor
-                                    Line::from(line.to_string())
-                                }
-                            })
-                            .collect()
-                    };
-
-                    Paragraph::new(desc_lines)
-                        .style(desc_input_style)
-                        .wrap(ratatui::widgets::Wrap { trim: false })
-                        .render(desc_inner, buf);
+                    self.template_modal
+                        .create_description_input
+                        .ensure_cursor_visible(desc_inner.height, desc_inner.width);
+                    (&self.template_modal.create_description_input).render(desc_inner, buf);
 
                     // Exact Path
                     let exact_path_style =
@@ -5308,33 +5334,12 @@ impl Widget for &mut App {
                         .border_style(exact_path_style);
                     let exact_path_inner = exact_path_block.inner(chunks[2]);
                     exact_path_block.render(chunks[2], buf);
-                    let exact_path_input_style =
-                        if self.template_modal.create_focus == CreateFocus::ExactPath {
-                            Style::default().bg(self.color("surface"))
-                        } else {
-                            Style::default()
-                        };
-                    let exact_path_with_cursor =
-                        if self.template_modal.create_focus == CreateFocus::ExactPath {
-                            format!(
-                                "{}█{}",
-                                self.template_modal
-                                    .create_exact_path
-                                    .chars()
-                                    .take(self.template_modal.create_exact_path_cursor)
-                                    .collect::<String>(),
-                                self.template_modal
-                                    .create_exact_path
-                                    .chars()
-                                    .skip(self.template_modal.create_exact_path_cursor)
-                                    .collect::<String>()
-                            )
-                        } else {
-                            self.template_modal.create_exact_path.clone()
-                        };
-                    Paragraph::new(exact_path_with_cursor)
-                        .style(exact_path_input_style)
-                        .render(exact_path_inner, buf);
+                    // Render exact path input using TextInput widget
+                    let is_focused = self.template_modal.create_focus == CreateFocus::ExactPath;
+                    self.template_modal
+                        .create_exact_path_input
+                        .set_focused(is_focused);
+                    (&self.template_modal.create_exact_path_input).render(exact_path_inner, buf);
 
                     // Relative Path
                     let relative_path_style =
@@ -5349,32 +5354,12 @@ impl Widget for &mut App {
                         .border_style(relative_path_style);
                     let relative_path_inner = relative_path_block.inner(chunks[3]);
                     relative_path_block.render(chunks[3], buf);
-                    let relative_path_input_style =
-                        if self.template_modal.create_focus == CreateFocus::RelativePath {
-                            Style::default().bg(self.color("surface"))
-                        } else {
-                            Style::default()
-                        };
-                    let relative_path_with_cursor =
-                        if self.template_modal.create_focus == CreateFocus::RelativePath {
-                            format!(
-                                "{}█{}",
-                                self.template_modal
-                                    .create_relative_path
-                                    .chars()
-                                    .take(self.template_modal.create_relative_path_cursor)
-                                    .collect::<String>(),
-                                self.template_modal
-                                    .create_relative_path
-                                    .chars()
-                                    .skip(self.template_modal.create_relative_path_cursor)
-                                    .collect::<String>()
-                            )
-                        } else {
-                            self.template_modal.create_relative_path.clone()
-                        };
-                    Paragraph::new(relative_path_with_cursor)
-                        .style(relative_path_input_style)
+                    // Render relative path input using TextInput widget
+                    let is_focused = self.template_modal.create_focus == CreateFocus::RelativePath;
+                    self.template_modal
+                        .create_relative_path_input
+                        .set_focused(is_focused);
+                    (&self.template_modal.create_relative_path_input)
                         .render(relative_path_inner, buf);
 
                     // Path Pattern
@@ -5390,32 +5375,12 @@ impl Widget for &mut App {
                         .border_style(path_pattern_style);
                     let path_pattern_inner = path_pattern_block.inner(chunks[4]);
                     path_pattern_block.render(chunks[4], buf);
-                    let path_pattern_input_style =
-                        if self.template_modal.create_focus == CreateFocus::PathPattern {
-                            Style::default().bg(self.color("surface"))
-                        } else {
-                            Style::default()
-                        };
-                    let path_pattern_with_cursor =
-                        if self.template_modal.create_focus == CreateFocus::PathPattern {
-                            format!(
-                                "{}█{}",
-                                self.template_modal
-                                    .create_path_pattern
-                                    .chars()
-                                    .take(self.template_modal.create_path_pattern_cursor)
-                                    .collect::<String>(),
-                                self.template_modal
-                                    .create_path_pattern
-                                    .chars()
-                                    .skip(self.template_modal.create_path_pattern_cursor)
-                                    .collect::<String>()
-                            )
-                        } else {
-                            self.template_modal.create_path_pattern.clone()
-                        };
-                    Paragraph::new(path_pattern_with_cursor)
-                        .style(path_pattern_input_style)
+                    // Render path pattern input using TextInput widget
+                    let is_focused = self.template_modal.create_focus == CreateFocus::PathPattern;
+                    self.template_modal
+                        .create_path_pattern_input
+                        .set_focused(is_focused);
+                    (&self.template_modal.create_path_pattern_input)
                         .render(path_pattern_inner, buf);
 
                     // Filename Pattern
@@ -5431,32 +5396,13 @@ impl Widget for &mut App {
                         .border_style(filename_pattern_style);
                     let filename_pattern_inner = filename_pattern_block.inner(chunks[5]);
                     filename_pattern_block.render(chunks[5], buf);
-                    let filename_pattern_input_style =
-                        if self.template_modal.create_focus == CreateFocus::FilenamePattern {
-                            Style::default().bg(self.color("surface"))
-                        } else {
-                            Style::default()
-                        };
-                    let filename_pattern_with_cursor =
-                        if self.template_modal.create_focus == CreateFocus::FilenamePattern {
-                            format!(
-                                "{}█{}",
-                                self.template_modal
-                                    .create_filename_pattern
-                                    .chars()
-                                    .take(self.template_modal.create_filename_pattern_cursor)
-                                    .collect::<String>(),
-                                self.template_modal
-                                    .create_filename_pattern
-                                    .chars()
-                                    .skip(self.template_modal.create_filename_pattern_cursor)
-                                    .collect::<String>()
-                            )
-                        } else {
-                            self.template_modal.create_filename_pattern.clone()
-                        };
-                    Paragraph::new(filename_pattern_with_cursor)
-                        .style(filename_pattern_input_style)
+                    // Render filename pattern input using TextInput widget
+                    let is_focused =
+                        self.template_modal.create_focus == CreateFocus::FilenamePattern;
+                    self.template_modal
+                        .create_filename_pattern_input
+                        .set_focused(is_focused);
+                    (&self.template_modal.create_filename_pattern_input)
                         .render(filename_pattern_inner, buf);
 
                     // Schema Match
@@ -5757,6 +5703,33 @@ impl Widget for &mut App {
             );
         }
 
+        if self.export_modal.active {
+            let border = self.color("modal_border");
+            let active = self.color("modal_border_active");
+            let text_primary = self.color("text_primary");
+            let text_inverse = self.color("text_inverse");
+            // Center the modal
+            let modal_width = (area.width * 3 / 4).min(80);
+            let modal_height = 20;
+            let modal_x = (area.width.saturating_sub(modal_width)) / 2;
+            let modal_y = (area.height.saturating_sub(modal_height)) / 2;
+            let modal_area = Rect {
+                x: modal_x,
+                y: modal_y,
+                width: modal_width,
+                height: modal_height,
+            };
+            export::render_export_modal(
+                modal_area,
+                buf,
+                &mut self.export_modal,
+                border,
+                active,
+                text_primary,
+                text_inverse,
+            );
+        }
+
         // Render analysis modal (full screen in main area, leaving toolbar visible)
         if self.analysis_modal.active {
             // Use main_area so toolbar remains visible at bottom
@@ -5899,7 +5872,123 @@ impl Widget for &mut App {
             // Don't return - continue to render toolbar and other UI elements
         }
 
-        // Render error modal (has highest priority, shows on top of everything)
+        // Render export progress bar (overlay when exporting)
+        if matches!(self.loading_state, LoadingState::Exporting { .. }) {
+            App::render_loading_gauge(&self.loading_state, area, buf);
+        }
+
+        // Render confirmation modal (highest priority)
+        if self.confirmation_modal.active {
+            let popup_area = centered_rect(area, 60, 20);
+            Clear.render(popup_area, buf);
+
+            // Set background color for the modal
+            let bg_color = self.color("background");
+            Block::default()
+                .style(Style::default().bg(bg_color))
+                .render(popup_area, buf);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Confirm")
+                .border_style(Style::default().fg(self.color("modal_border_active")))
+                .style(Style::default().bg(bg_color));
+            let inner_area = block.inner(popup_area);
+            block.render(popup_area, buf);
+
+            // Split inner area into message and buttons
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(6),    // Message (minimum 6 lines for file path + question)
+                    Constraint::Length(3), // Buttons
+                ])
+                .split(inner_area);
+
+            // Render confirmation message (wrapped)
+            Paragraph::new(self.confirmation_modal.message.as_str())
+                .style(Style::default().fg(self.color("text_primary")).bg(bg_color))
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .render(chunks[0], buf);
+
+            // Render Yes/No buttons
+            let button_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(12), // Yes button
+                    Constraint::Length(2),  // Spacing
+                    Constraint::Length(12), // No button
+                    Constraint::Fill(1),
+                ])
+                .split(chunks[1]);
+
+            let yes_style = if self.confirmation_modal.focus_yes {
+                Style::default().fg(self.color("modal_border_active"))
+            } else {
+                Style::default()
+            };
+            let no_style = if !self.confirmation_modal.focus_yes {
+                Style::default().fg(self.color("modal_border_active"))
+            } else {
+                Style::default()
+            };
+
+            Paragraph::new("Yes")
+                .centered()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(yes_style),
+                )
+                .render(button_chunks[1], buf);
+
+            Paragraph::new("No")
+                .centered()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(no_style),
+                )
+                .render(button_chunks[3], buf);
+        }
+
+        // Render success modal
+        if self.success_modal.active {
+            let popup_area = centered_rect(area, 70, 40);
+            Clear.render(popup_area, buf);
+            let block = Block::default().borders(Borders::ALL).title("Success");
+            let inner_area = block.inner(popup_area);
+            block.render(popup_area, buf);
+
+            // Split inner area into message and button
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(0),    // Message (takes available space)
+                    Constraint::Length(3), // OK button
+                ])
+                .split(inner_area);
+
+            // Render success message (wrapped)
+            Paragraph::new(self.success_modal.message.as_str())
+                .style(Style::default().fg(self.color("text_primary")))
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .render(chunks[0], buf);
+
+            // Render OK button
+            let ok_style = Style::default().fg(self.color("modal_border_active"));
+            Paragraph::new("OK")
+                .centered()
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(ok_style),
+                )
+                .render(chunks[1], buf);
+        }
+
+        // Render error modal
         if self.error_modal.active {
             let popup_area = centered_rect(area, 70, 40);
             Clear.render(popup_area, buf);
@@ -5927,7 +6016,7 @@ impl Widget for &mut App {
 
             // Render OK button
             let ok_style = Style::default().fg(self.color("modal_border_active"));
-            Paragraph::new("[ OK ]")
+            Paragraph::new("OK")
                 .centered()
                 .block(
                     Block::default()

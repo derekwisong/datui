@@ -307,6 +307,8 @@ fn test_theme_with_custom_colors() {
         text_secondary: "gray".to_string(),
         text_inverse: "black".to_string(),
         table_header: "white".to_string(),
+        cursor_focused: "default".to_string(),
+        cursor_dimmed: "default".to_string(),
         table_header_bg: "indexed(236)".to_string(),
         column_separator: "cyan".to_string(),
         table_selected: "reversed".to_string(),

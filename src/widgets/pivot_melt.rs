@@ -146,8 +146,8 @@ fn render_pivot_body(
     modal: &mut PivotMeltModal,
     border_color: Color,
     active_color: Color,
-    text_primary: Color,
-    text_inverse: Color,
+    _text_primary: Color,
+    _text_inverse: Color,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -174,29 +174,10 @@ fn render_pivot_body(
     let filter_inner = filter_block.inner(chunks[0]);
     filter_block.render(chunks[0], buf);
 
-    let filter_text = modal.pivot_filter.as_str();
-    let cursor_pos = modal.pivot_filter_cursor.min(filter_text.chars().count());
-    let mut chars = filter_text.chars();
-    let before: String = chars.by_ref().take(cursor_pos).collect();
-    let at = chars
-        .next()
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| " ".to_string());
-    let after: String = chars.collect();
-    let mut line = Line::default();
-    line.spans.push(Span::raw(before));
-    if modal.focus == PivotMeltFocus::PivotFilter {
-        line.spans.push(Span::styled(
-            at,
-            Style::default().bg(text_inverse).fg(text_primary),
-        ));
-    } else {
-        line.spans.push(Span::raw(at));
-    }
-    if !after.is_empty() {
-        line.spans.push(Span::raw(after));
-    }
-    Paragraph::new(line).render(filter_inner, buf);
+    // Render filter input using TextInput widget
+    let is_focused = modal.focus == PivotMeltFocus::PivotFilter;
+    modal.pivot_filter_input.set_focused(is_focused);
+    (&modal.pivot_filter_input).render(filter_inner, buf);
 
     // Index list
     let list_style = if modal.focus == PivotMeltFocus::PivotIndexList {
@@ -379,29 +360,10 @@ fn render_melt_body(
     let filter_inner = filter_block.inner(chunks[0]);
     filter_block.render(chunks[0], buf);
 
-    let ft = modal.melt_filter.as_str();
-    let cp = modal.melt_filter_cursor.min(ft.chars().count());
-    let mut ch = ft.chars();
-    let before: String = ch.by_ref().take(cp).collect();
-    let at = ch
-        .next()
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| " ".to_string());
-    let af: String = ch.collect();
-    let mut line = Line::default();
-    line.spans.push(Span::raw(before));
-    if modal.focus == PivotMeltFocus::MeltFilter {
-        line.spans.push(Span::styled(
-            at,
-            Style::default().bg(text_inverse).fg(text_primary),
-        ));
-    } else {
-        line.spans.push(Span::raw(at));
-    }
-    if !af.is_empty() {
-        line.spans.push(Span::raw(af));
-    }
-    Paragraph::new(line).render(filter_inner, buf);
+    // Render filter input using TextInput widget
+    let is_focused = modal.focus == PivotMeltFocus::MeltFilter;
+    modal.melt_filter_input.set_focused(is_focused);
+    (&modal.melt_filter_input).render(filter_inner, buf);
 
     // Index list
     let list_style = if modal.focus == PivotMeltFocus::MeltIndexList {

@@ -1,3 +1,4 @@
+use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
 
 #[derive(Debug, Clone)]
@@ -23,26 +24,26 @@ pub enum SortFocus {
 
 pub struct SortModal {
     pub active: bool,
-    pub filter: String,
-    pub filter_cursor: usize, // Cursor position in filter string
+    pub filter_input: TextInput,
     pub columns: Vec<SortColumn>,
     pub table_state: TableState,
     pub ascending: bool,
     pub focus: SortFocus,
     pub has_unapplied_changes: bool,
+    pub history_limit: usize,
 }
 
 impl Default for SortModal {
     fn default() -> Self {
         Self {
             active: false,
-            filter: String::new(),
-            filter_cursor: 0,
+            filter_input: TextInput::new(),
             columns: Vec::new(),
             table_state: TableState::default(),
             ascending: true,
             focus: SortFocus::default(),
             has_unapplied_changes: false,
+            history_limit: 1000,
         }
     }
 }
@@ -53,11 +54,12 @@ impl SortModal {
     }
 
     pub fn filtered_columns(&self) -> Vec<(usize, &SortColumn)> {
+        let filter_text = self.filter_input.value.to_lowercase();
         let mut filtered: Vec<_> = self
             .columns
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.name.to_lowercase().contains(&self.filter.to_lowercase()))
+            .filter(|(_, c)| c.name.to_lowercase().contains(&filter_text))
             .collect();
         // Sort by display_order to show columns in their current order
         filtered.sort_by_key(|(_, c)| c.display_order);
@@ -547,7 +549,7 @@ mod tests {
     fn test_sort_modal_new() {
         let modal = SortModal::new();
         assert!(!modal.active);
-        assert_eq!(modal.filter, "");
+        assert_eq!(modal.filter_input.value, "");
         assert!(modal.columns.is_empty());
         assert!(modal.table_state.selected().is_none());
         assert!(modal.ascending);
@@ -583,7 +585,7 @@ mod tests {
                 is_visible: true,
             },
         ];
-        modal.filter = "an".to_string();
+        modal.filter_input.value = "an".to_string();
         let filtered = modal.filtered_columns();
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].1.name, "Banana");

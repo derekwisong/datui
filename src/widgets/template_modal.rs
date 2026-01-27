@@ -1,4 +1,6 @@
 use crate::template::Template;
+use crate::widgets::multiline_text_input::MultiLineTextInput;
+use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
 
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
@@ -44,26 +46,20 @@ pub struct TemplateModal {
     pub table_state: TableState,
     pub templates: Vec<(Template, f64)>, // Templates with relevance scores
     // Create/Edit mode fields
-    pub create_name: String,
-    pub create_name_cursor: usize,
-    pub create_description: String,
-    pub create_description_cursor: usize,
-    pub create_exact_path: String,
-    pub create_exact_path_cursor: usize,
-    pub create_relative_path: String,
-    pub create_relative_path_cursor: usize,
-    pub create_path_pattern: String,
-    pub create_path_pattern_cursor: usize,
-    pub create_filename_pattern: String,
-    pub create_filename_pattern_cursor: usize,
+    pub create_name_input: TextInput,
+    pub create_description_input: MultiLineTextInput,
+    pub create_exact_path_input: TextInput,
+    pub create_relative_path_input: TextInput,
+    pub create_path_pattern_input: TextInput,
+    pub create_filename_pattern_input: TextInput,
     pub create_schema_match_enabled: bool,
     pub editing_template_id: Option<String>, // ID of template being edited (None for create)
     pub show_help: bool,                     // Show help modal
     pub delete_confirm: bool,                // Show delete confirmation
     pub delete_confirm_focus: bool, // true = Delete button, false = Cancel button (default)
     pub name_error: Option<String>, // Error message for name validation
-    pub description_scroll: usize,  // Scroll position for description field
-    pub show_score_details: bool,   // Show score details popup
+    pub history_limit: usize,
+    pub show_score_details: bool, // Show score details popup
 }
 
 impl TemplateModal {
@@ -118,61 +114,104 @@ impl TemplateModal {
         }
     }
 
-    pub fn enter_create_mode(&mut self) {
+    pub fn enter_create_mode(&mut self, history_limit: usize, theme: &crate::config::Theme) {
         self.mode = TemplateModalMode::Create;
         self.create_focus = CreateFocus::Name;
         self.editing_template_id = None;
         self.name_error = None;
-        // Reset create fields (will be populated by caller)
-        self.create_name.clear();
-        self.create_name_cursor = 0;
-        self.create_description.clear();
-        self.create_description_cursor = 0;
-        self.create_exact_path.clear();
-        self.create_exact_path_cursor = 0;
-        self.create_relative_path.clear();
-        self.create_relative_path_cursor = 0;
-        self.create_path_pattern.clear();
-        self.create_path_pattern_cursor = 0;
-        self.create_filename_pattern.clear();
-        self.create_filename_pattern_cursor = 0;
+        self.history_limit = history_limit;
+        // Initialize text input widgets
+        self.create_name_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_description_input = MultiLineTextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_exact_path_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_relative_path_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_path_pattern_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_filename_pattern_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        // Clear all fields
+        self.create_name_input.clear();
+        self.create_description_input.clear();
+        self.create_exact_path_input.clear();
+        self.create_relative_path_input.clear();
+        self.create_path_pattern_input.clear();
+        self.create_filename_pattern_input.clear();
         self.create_schema_match_enabled = false;
     }
 
-    pub fn enter_edit_mode(&mut self, template: &Template) {
+    pub fn enter_edit_mode(
+        &mut self,
+        template: &Template,
+        history_limit: usize,
+        theme: &crate::config::Theme,
+    ) {
         self.mode = TemplateModalMode::Edit;
         self.create_focus = CreateFocus::Name;
         self.editing_template_id = Some(template.id.clone());
+        self.history_limit = history_limit;
+        // Initialize text input widgets
+        self.create_name_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_description_input = MultiLineTextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_exact_path_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_relative_path_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_path_pattern_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.create_filename_pattern_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
         // Populate fields from template
-        self.create_name = template.name.clone();
-        self.create_name_cursor = self.create_name.len();
-        self.create_description = template.description.clone().unwrap_or_default();
-        self.create_description_cursor = self.create_description.len();
-        self.create_exact_path = template
+        self.create_name_input.value = template.name.clone();
+        self.create_name_input.cursor = self.create_name_input.value.chars().count();
+        self.create_description_input.value = template.description.clone().unwrap_or_default();
+        self.create_description_input.cursor = self.create_description_input.value.chars().count();
+        self.create_description_input.update_line_col_from_cursor();
+        self.create_exact_path_input.value = template
             .match_criteria
             .exact_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        self.create_exact_path_cursor = self.create_exact_path.len();
-        self.create_relative_path = template
+        self.create_exact_path_input.cursor = self.create_exact_path_input.value.chars().count();
+        self.create_relative_path_input.value = template
             .match_criteria
             .relative_path
             .clone()
             .unwrap_or_default();
-        self.create_relative_path_cursor = self.create_relative_path.len();
-        self.create_path_pattern = template
+        self.create_relative_path_input.cursor =
+            self.create_relative_path_input.value.chars().count();
+        self.create_path_pattern_input.value = template
             .match_criteria
             .path_pattern
             .clone()
             .unwrap_or_default();
-        self.create_path_pattern_cursor = self.create_path_pattern.len();
-        self.create_filename_pattern = template
+        self.create_path_pattern_input.cursor =
+            self.create_path_pattern_input.value.chars().count();
+        self.create_filename_pattern_input.value = template
             .match_criteria
             .filename_pattern
             .clone()
             .unwrap_or_default();
-        self.create_filename_pattern_cursor = self.create_filename_pattern.len();
+        self.create_filename_pattern_input.cursor =
+            self.create_filename_pattern_input.value.chars().count();
         self.create_schema_match_enabled = template.match_criteria.schema_columns.is_some();
     }
 

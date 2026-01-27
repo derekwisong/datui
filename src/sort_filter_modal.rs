@@ -34,11 +34,15 @@ impl SortFilterModal {
         Self::default()
     }
 
-    pub fn open(&mut self) {
+    pub fn open(&mut self, history_limit: usize, theme: &crate::config::Theme) {
         self.active = true;
         self.active_tab = SortFilterTab::Sort;
         self.focus = SortFilterFocus::TabBar;
         self.sort.focus = SortFocus::ColumnList;
+        self.sort.history_limit = history_limit;
+        self.sort.filter_input = crate::widgets::text_input::TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
         self.filter.focus = FilterFocus::Column;
     }
 

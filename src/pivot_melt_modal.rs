@@ -2,6 +2,7 @@
 //!
 //! Phase 4: Pivot tab UI. Phase 5: Melt tab UI.
 
+use crate::widgets::text_input::TextInput;
 use polars::datatypes::DataType;
 use ratatui::widgets::TableState;
 use serde::{Deserialize, Serialize};
@@ -156,8 +157,7 @@ pub struct PivotMeltModal {
     pub column_dtypes: HashMap<String, DataType>,
 
     // Pivot form
-    pub pivot_filter: String,
-    pub pivot_filter_cursor: usize,
+    pub pivot_filter_input: TextInput,
     pub pivot_index_table: TableState,
     pub index_columns: Vec<String>,
     pub pivot_column: Option<String>,
@@ -170,8 +170,7 @@ pub struct PivotMeltModal {
     pub sort_new_columns: bool,
 
     // Melt form
-    pub melt_filter: String,
-    pub melt_filter_cursor: usize,
+    pub melt_filter_input: TextInput,
     pub melt_index_table: TableState,
     pub melt_index_columns: Vec<String>,
     pub melt_value_strategy: MeltValueStrategy,
@@ -194,8 +193,7 @@ impl Default for PivotMeltModal {
             focus: PivotMeltFocus::default(),
             available_columns: Vec::new(),
             column_dtypes: HashMap::new(),
-            pivot_filter: String::new(),
-            pivot_filter_cursor: 0,
+            pivot_filter_input: TextInput::new(),
             pivot_index_table: TableState::default(),
             index_columns: Vec::new(),
             pivot_column: None,
@@ -206,8 +204,7 @@ impl Default for PivotMeltModal {
             value_pool_table: TableState::default(),
             aggregation_idx: 0,
             sort_new_columns: false,
-            melt_filter: String::new(),
-            melt_filter_cursor: 0,
+            melt_filter_input: TextInput::new(),
             melt_index_table: TableState::default(),
             melt_index_columns: Vec::new(),
             melt_value_strategy: MeltValueStrategy::default(),
@@ -229,10 +226,16 @@ impl PivotMeltModal {
         Self::default()
     }
 
-    pub fn open(&mut self) {
+    pub fn open(&mut self, history_limit: usize, theme: &crate::config::Theme) {
         self.active = true;
         self.active_tab = PivotMeltTab::Pivot;
         self.focus = PivotMeltFocus::TabBar;
+        self.pivot_filter_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
+        self.melt_filter_input = TextInput::new()
+            .with_history_limit(history_limit)
+            .with_theme(theme);
         self.reset_form();
     }
 
@@ -241,8 +244,7 @@ impl PivotMeltModal {
     }
 
     pub fn reset_form(&mut self) {
-        self.pivot_filter.clear();
-        self.pivot_filter_cursor = 0;
+        self.pivot_filter_input.clear();
         self.pivot_index_table
             .select(if self.available_columns.is_empty() {
                 None
@@ -271,8 +273,7 @@ impl PivotMeltModal {
         }
         self.aggregation_idx = 0;
         self.sort_new_columns = false;
-        self.melt_filter.clear();
-        self.melt_filter_cursor = 0;
+        self.melt_filter_input.clear();
         self.melt_index_table
             .select(if self.available_columns.is_empty() {
                 None
@@ -387,7 +388,7 @@ impl PivotMeltModal {
     // ----- Pivot helpers -----
 
     pub fn pivot_filtered_columns(&self) -> Vec<String> {
-        let filter_lower = self.pivot_filter.to_lowercase();
+        let filter_lower = self.pivot_filter_input.value.to_lowercase();
         self.available_columns
             .iter()
             .filter(|c| c.to_lowercase().contains(&filter_lower))
@@ -612,7 +613,7 @@ impl PivotMeltModal {
     // ----- Melt helpers -----
 
     pub fn melt_filtered_columns(&self) -> Vec<String> {
-        let filter_lower = self.melt_filter.to_lowercase();
+        let filter_lower = self.melt_filter_input.value.to_lowercase();
         self.available_columns
             .iter()
             .filter(|c| c.to_lowercase().contains(&filter_lower))
@@ -865,7 +866,9 @@ mod tests {
     #[test]
     fn test_open_close() {
         let mut m = PivotMeltModal::new();
-        m.open();
+        let config = crate::config::AppConfig::default();
+        let theme = crate::config::Theme::from_config(&config.theme).unwrap();
+        m.open(1000, &theme);
         assert!(m.active);
         assert!(matches!(m.active_tab, PivotMeltTab::Pivot));
         assert!(matches!(m.focus, PivotMeltFocus::TabBar));
@@ -876,7 +879,9 @@ mod tests {
     #[test]
     fn test_switch_tab() {
         let mut m = PivotMeltModal::new();
-        m.open();
+        let config = crate::config::AppConfig::default();
+        let theme = crate::config::Theme::from_config(&config.theme).unwrap();
+        m.open(1000, &theme);
         assert!(matches!(m.active_tab, PivotMeltTab::Pivot));
         m.switch_tab();
         assert!(matches!(m.active_tab, PivotMeltTab::Melt));

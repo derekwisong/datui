@@ -113,13 +113,39 @@ impl Widget for &Controls {
             DEFAULT_CONTROLS.to_vec()
         };
 
-        // Key width: +3 padding (was +2). Extra space avoids cut-off/deformed text when
-        // terminals render bold or colored text slightly wider (e.g. VS Code xterm-256).
-        let mut constraints = controls.iter().fold(vec![], |mut acc, (key, action)| {
-            acc.push(Constraint::Length(key.chars().count() as u16 + 3));
-            acc.push(Constraint::Length(action.chars().count() as u16 + 1));
-            acc
-        });
+        // Width of one key-label pair (fixed; pairs are never shrunk).
+        // Key: key.len() + 1 (one trailing space). Label: action.len() + 1 (one trailing = gap before next key).
+        let pair_width = |(key, action): &(&str, &str)| -> u16 {
+            (key.chars().count() as u16 + 1) + (action.chars().count() as u16 + 1)
+        };
+
+        // Reserve space for fill and row count; only show pairs that fit.
+        let right_reserved = if self.row_count.is_some() { 21 } else { 1 };
+        let mut available = area.width.saturating_sub(right_reserved);
+
+        let mut n_show = 0;
+        for pair in controls.iter() {
+            let need = pair_width(pair);
+            if available >= need {
+                available -= need;
+                n_show += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Key: +1 trailing (avoids cut-off when terminals render bold/colored wider). Left-aligned so no leading gap.
+        // Label: +1 trailing (single space between label and next key).
+        let mut constraints: Vec<Constraint> = controls
+            .iter()
+            .take(n_show)
+            .flat_map(|(key, action)| {
+                [
+                    Constraint::Length(key.chars().count() as u16 + 1),
+                    Constraint::Length(action.chars().count() as u16 + 1),
+                ]
+            })
+            .collect();
 
         constraints.push(Constraint::Fill(1));
         if self.row_count.is_some() {
@@ -139,18 +165,15 @@ impl Widget for &Controls {
             (base.fg(self.key_color), base.fg(self.label_color), base)
         };
 
-        for (i, (key, action)) in controls.iter().enumerate() {
+        for (i, (key, action)) in controls.iter().take(n_show).enumerate() {
             let j = i * 2;
-            Paragraph::new(*key)
-                .style(key_style)
-                .centered()
-                .render(layout[j], buf);
+            Paragraph::new(*key).style(key_style).render(layout[j], buf);
             Paragraph::new(*action)
                 .style(label_style)
                 .render(layout[j + 1], buf);
         }
 
-        let fill_idx = controls.len() * 2;
+        let fill_idx = n_show * 2;
         if let Some(count) = self.row_count {
             let row_count_text = format!("Rows: {}", format_number_with_commas(count));
             Paragraph::new(row_count_text)

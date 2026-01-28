@@ -1,5 +1,7 @@
-Set FontSize 18
-Set Width 1500
+Set FontSize 14
+Set Width 1200
 Set Height 800
 Set TypingSpeed 25ms
-Set Theme "tokyonight"
+Set Theme "deep"
+Set FontFamily "JetBrainsMono Nerd Font"
+Require datui

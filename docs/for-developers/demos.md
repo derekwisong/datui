@@ -3,9 +3,19 @@
 The Datui demo animations are created using [vhs][vhs], which lets you script and
 record keystrokes to a terminal app.
 
-## Install `vhs`
+## Prerequisites
+
+### VHS
 
 See [vhs install instructions](https://github.com/charmbracelet/vhs?tab=readme-ov-file#installation).
+
+### JetBrainsMono Nerd Font
+
+- Get it from [nerdfonts.com](https://www.nerdfonts.com/font-downloads) and install it manually
+- Get it from your distribution's package manager
+  - [Arch Linux](https://archlinux.org/packages/extra/any/ttf-jetbrains-mono-nerd/)
+  - Other distributions may have their own packages
+
 
 ## Define Tapes
 
@@ -15,7 +25,7 @@ are included when generating all demos.
 
 ## Generating the Animations
 
-Run [generate_demos][generate-demos] to use `vhs` to generate an animated gif file for each
+Run [generate_demos.py][generate-demos] to use `vhs` to generate an animated gif file for each
 matching tape. The script builds the debug binary, then runs VHS in parallel (one process per
 tape by default, using all available cores).
 
@@ -23,7 +33,7 @@ tape by default, using all available cores).
 
 ```bash
 # Generate all demos (parallel, uses all cores)
-python3 scripts/demos/generate_demos.py
+python scripts/demos/generate_demos.py
 ```
 
 Or if the script is executable:
@@ -43,10 +53,10 @@ Examples:
 
 ```bash
 # Generate only the second demo
-python3 scripts/demos/generate_demos.py --number 2
+python scripts/demos/generate_demos.py --number 2
 
 # Generate all demos using 4 worker processes
-python3 scripts/demos/generate_demos.py -n 4
+python scripts/demos/generate_demos.py -n 4
 ```
 
 The animations will be placed in the [demos][demos] directory. A percentage bar shows

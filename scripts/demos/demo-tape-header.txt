@@ -2,3 +2,4 @@ Set FontSize 18
 Set Width 1500
 Set Height 800
 Set TypingSpeed 25ms
+Set Theme "tokyonight"

@@ -3,6 +3,10 @@
 Datui supports reshaping tabular data between **long** and **wide** formats via the **Pivot & Melt** dialog.
 Open it with **`p`** from the main view.
 
+**Pivot demo:** ![Pivot Demo](../demos/04-pivot.gif)
+
+**Melt demo:** ![Melt Demo](../demos/05-melt.gif)
+
 - **Pivot** (long → wide): Turn rows with a key column into new columns. Example: `id`, `date`, `key`, `value` → `id`, `date`, `key_A`, `key_B`, `key_C`.
 - **Melt** (wide → long): Collapse many columns into `variable` and `value` columns. Example: `id`, `Q1`, `Q2`, `Q3` → `id`, `variable`, `value`.
 

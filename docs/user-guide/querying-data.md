@@ -1,5 +1,7 @@
 # Querying Data
 
+![Querying Demo](../demos/02-querying.gif)
+
 See the [Query Syntax Reference][query-syntax-reference] for additional detail about the structure
 of Datui queries.
 

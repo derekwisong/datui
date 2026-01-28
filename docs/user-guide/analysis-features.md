@@ -34,5 +34,7 @@ Displays summary statistics about your data, similar to Polars'
 
 ### Correlation Matrix
 
-Discover the relationships in your data with the correlation matrix tool. Colors will be used to note
+Discover the relationships in your data with the correlation matrix tool. Colors are used to note
 the degree of correlation.
+
+![Correlation Matrix Demo](../demos/09-correlation-matrix.gif)

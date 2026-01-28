@@ -12,6 +12,7 @@ This script generates various CSV and Parquet files with different characteristi
 - Large and small datasets
 - Error case testing
 - Pivot and Melt reshape testing (long-format for pivot, wide-format for melt)
+- Correlation matrix demo (100k rows, 10 numeric columns with varying correlations)
 
 Uses Polars instead of Pandas.
 """
@@ -449,6 +450,87 @@ def generate_melt_wide_many():
     return pl.DataFrame(data)
 
 
+def generate_correlation_matrix_data():
+    """
+    Generate numeric data with designed pairwise correlations for correlation matrix demos.
+
+    Produces 100_000 rows and 10 numeric columns with realistic names. Correlations
+    are chosen to span the full range (strong negative to strong positive) so the
+    correlation matrix heatmap uses the full color scale.
+
+    Columns: revenue, profit, operating_cost, margin_pct, unit_volume, price_index,
+             growth_rate, market_share, roi, cash_flow
+    """
+    np.random.seed(54)
+    random.seed(54)
+
+    n = 100_000
+    col_names = [
+        "revenue",
+        "profit",
+        "operating_cost",
+        "margin_pct",
+        "unit_volume",
+        "price_index",
+        "growth_rate",
+        "market_share",
+        "roi",
+        "cash_flow",
+    ]
+    k = len(col_names)
+
+    # Target correlation matrix (symmetric, 1 on diagonal). Order matches col_names.
+    # Designed for variety: strong +/-, moderate +/-, weak +/-, near zero.
+    R = np.array(
+        [
+            [1.00, 0.92, 0.88, 0.45, 0.72, 0.15, 0.08, -0.05, 0.68, 0.85],   # revenue
+            [0.92, 1.00, 0.78, 0.82, 0.58, 0.22, 0.12, 0.02, 0.90, 0.88],   # profit
+            [0.88, 0.78, 1.00, -0.75, 0.65, -0.10, -0.02, -0.08, 0.52, 0.62], # operating_cost
+            [0.45, 0.82, -0.75, 1.00, 0.20, 0.55, 0.18, 0.25, 0.78, 0.70],   # margin_pct
+            [0.72, 0.58, 0.65, 0.20, 1.00, -0.35, 0.30, 0.40, 0.35, 0.48],   # unit_volume
+            [0.15, 0.22, -0.10, 0.55, -0.35, 1.00, 0.05, 0.12, 0.28, 0.18], # price_index
+            [0.08, 0.12, -0.02, 0.18, 0.30, 0.05, 1.00, 0.42, 0.15, 0.10],   # growth_rate
+            [-0.05, 0.02, -0.08, 0.25, 0.40, 0.12, 0.42, 1.00, 0.08, 0.02],  # market_share
+            [0.68, 0.90, 0.52, 0.78, 0.35, 0.28, 0.15, 0.08, 1.00, 0.82],   # roi
+            [0.85, 0.88, 0.62, 0.70, 0.48, 0.18, 0.10, 0.02, 0.82, 1.00],   # cash_flow
+        ],
+        dtype=np.float64,
+    )
+
+    # Standard deviations (scale each column to realistic ranges)
+    scales = np.array([2.5e6, 4e5, 1.8e6, 8.0, 1.2e4, 15.0, 0.12, 5.0, 0.25, 3e5])
+    # Covariance = diag(scales) @ R @ diag(scales)
+    cov = np.outer(scales, scales) * R
+
+    # Ensure covariance is positive definite (numerical safety)
+    cov = (cov + cov.T) / 2
+    min_eig = np.min(np.linalg.eigvalsh(cov))
+    if min_eig < 1e-6:
+        cov += (1e-6 - min_eig) * np.eye(k)
+
+    mean = np.array(
+        [1e7, 1.5e6, 6e6, 22.0, 5e4, 100.0, 0.05, 12.0, 0.15, 1e6],
+        dtype=np.float64,
+    )
+
+    raw = np.random.multivariate_normal(mean, cov, size=n)
+
+    # Clip to plausible non-negative ranges where needed (e.g. revenue, profit, %)
+    raw[:, 0] = np.clip(raw[:, 0], 1e5, None)   # revenue
+    raw[:, 1] = np.clip(raw[:, 1], -1e6, None)  # profit can be negative
+    raw[:, 2] = np.clip(raw[:, 2], 1e4, None)   # operating_cost
+    raw[:, 3] = np.clip(raw[:, 3], 0.1, 60.0)  # margin_pct
+    raw[:, 4] = np.clip(raw[:, 4], 100, None)   # unit_volume
+    raw[:, 5] = np.clip(raw[:, 5], 50, 200)    # price_index
+    raw[:, 6] = np.clip(raw[:, 6], -0.5, 0.8)  # growth_rate
+    raw[:, 7] = np.clip(raw[:, 7], 0, 40)      # market_share
+    raw[:, 8] = np.clip(raw[:, 8], -0.2, 0.6)  # roi
+    raw[:, 9] = np.clip(raw[:, 9], -5e5, None) # cash_flow can be negative
+
+    data = {col_names[i]: [round(float(x), 4) for x in raw[:, i]] for i in range(k)}
+    return pl.DataFrame(data)
+
+
 def save_csv(df, filename, **kwargs):
     """Save DataFrame as CSV, compressed with gzip."""
     # Remove .csv extension if present, we'll add .csv.gz
@@ -553,6 +635,11 @@ def main():
     melt_wide_many_df = generate_melt_wide_many()
     save_csv(melt_wide_many_df, "melt_wide_many.csv")
     save_parquet(melt_wide_many_df, "melt_wide_many.parquet")
+
+    # Correlation matrix demo (Parquet only: 100k rows, 10 numeric columns)
+    print("\n10. Generating correlation matrix demo data...")
+    corr_df = generate_correlation_matrix_data()
+    save_parquet(corr_df, "correlation_matrix_demo.parquet")
 
     print("\n✅ Sample data generation complete!")
 

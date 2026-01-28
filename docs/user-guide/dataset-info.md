@@ -2,6 +2,8 @@
 
 The **Info** panel shows technical details about the loaded dataset. Press `i` from the main view to open it. **Esc** or **i** closes it.
 
+![Info Panel Demo](../demos/03-info.gif)
+
 **Navigation** (when the panel is open):
 
 - **Tab** / **Shift+Tab**: On the Schema tab, move focus between the **tab bar** and the **schema table**. On the Resources tab, focus stays on the tab bar.

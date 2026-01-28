@@ -1,6 +1,6 @@
 Output demos/02-querying.gif
 Set FontSize 18
-Set Width 1200
+Set Width 100
 Set Height 800
 Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE

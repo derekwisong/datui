@@ -2,7 +2,7 @@
 """
 Generate all demo GIFs from VHS .tape files.
 
-This script builds the release binary, ensures it's on PATH, and then generates
+This script builds the debug binary, ensures it's on PATH, and then generates
 GIFs from all .tape files in the scripts/demos directory.
 
 Must be run from repository root for paths to work correctly.
@@ -93,20 +93,20 @@ def main():
         print(f"Error: Header file not found: {header_file}", file=sys.stderr)
         sys.exit(1)
     
-    # Build release binary
-    print("Building release binary...")
+    # Build debug binary
+    print("Building debug binary...")
     try:
         subprocess.run(
-            ["cargo", "build", "--release"],
+            ["cargo", "build", "--bin", "datui"],
             cwd=repo_root,
             check=True,
         )
     except subprocess.CalledProcessError as e:
-        print(f"Error: Failed to build release binary: {e}", file=sys.stderr)
+        print(f"Error: Failed to build binary: {e}", file=sys.stderr)
         sys.exit(1)
     
     # Check if binary exists
-    binary_path = repo_root / "target" / "release" / "datui"
+    binary_path = repo_root / "target" / "debug" / "datui"
     if not binary_path.exists():
         print("Error: datui binary not found. Please build it first.", file=sys.stderr)
         sys.exit(1)

@@ -11,6 +11,7 @@ In the main view, the following keyboard shortcuts are available:
 | `a` | Open the analysis tools (See [Analysis Features](../user-guide/analysis-features.md)) |
 | `t` | Open template manager (See [Templates](../user-guide/templates.md)) |
 | `T` | Apply most relevant template |
+| `i` | Open **Info** panel (modal); `Tab` / `Shift+Tab` move focus (tab bar ↔ schema table); `Left` / `Right` switch tabs (See [Dataset Info](../user-guide/dataset-info.md)) |
 | `r` | Reset (clear query, filters, sort) |
 | `q` | Quit |
 | `Ctrl-h` | Help |

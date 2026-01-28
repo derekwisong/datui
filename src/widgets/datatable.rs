@@ -796,6 +796,11 @@ impl DataTableState {
             .collect()
     }
 
+    /// Estimated heap size in bytes of the currently buffered (visible) slice, if collected.
+    pub fn buffered_memory_bytes(&self) -> Option<usize> {
+        self.df.as_ref().map(|df| df.estimated_size())
+    }
+
     pub fn drill_down_into_group(&mut self, group_index: usize) -> Result<()> {
         if !self.is_grouped() {
             return Ok(());

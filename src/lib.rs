@@ -3,7 +3,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::prelude::{LazyFrame, Schema};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
-use widgets::info::DataTableInfo;
+use widgets::info::{
+    read_parquet_metadata, DataTableInfo, InfoContext, InfoFocus, InfoModal, InfoTab,
+    ParquetMetadataCache,
+};
 
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -293,6 +296,7 @@ pub enum InputMode {
     PivotMelt,
     Editing,
     Export,
+    Info,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,7 +420,8 @@ pub struct App {
     events: Sender<AppEvent>,
     focus: u32,
     debug: DebugState,
-    info_visible: bool,
+    info_modal: InfoModal,
+    parquet_metadata_cache: Option<ParquetMetadataCache>,
     query_input: TextInput, // Query input widget with history support
     pub input_mode: InputMode,
     input_type: Option<InputType>,
@@ -641,7 +646,8 @@ impl App {
             events,
             focus: 0,
             debug: DebugState::default(),
-            info_visible: false,
+            info_modal: InfoModal::new(),
+            parquet_metadata_cache: None,
             query_input: TextInput::new()
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
@@ -679,6 +685,7 @@ impl App {
     }
 
     fn load(&mut self, path: &Path, options: &OpenOptions) -> Result<()> {
+        self.parquet_metadata_cache = None;
         // Check for compressed CSV files (e.g., file.csv.gz, file.csv.zst, etc.)
         let compression = options
             .compression
@@ -2009,6 +2016,49 @@ impl App {
                             .melt_value_name
                             .drain(byte_pos..byte_pos + ch.len_utf8());
                     }
+                }
+                _ => {}
+            }
+            return None;
+        }
+
+        if self.input_mode == InputMode::Info {
+            let on_tab_bar = self.info_modal.focus == InfoFocus::TabBar;
+            let on_body = self.info_modal.focus == InfoFocus::Body;
+            let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
+            let total_rows = self
+                .data_table_state
+                .as_ref()
+                .map(|s| s.schema.len())
+                .unwrap_or(0);
+            let visible = self.info_modal.schema_visible_height;
+
+            match event.code {
+                KeyCode::Esc | KeyCode::Char('i') if event.is_press() => {
+                    self.info_modal.close();
+                    self.input_mode = InputMode::Normal;
+                }
+                KeyCode::Tab if event.is_press() => {
+                    if schema_tab {
+                        self.info_modal.next_focus();
+                    }
+                }
+                KeyCode::BackTab if event.is_press() => {
+                    if schema_tab {
+                        self.info_modal.prev_focus();
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') if event.is_press() && on_tab_bar => {
+                    self.info_modal.switch_tab();
+                }
+                KeyCode::Right | KeyCode::Char('l') if event.is_press() && on_tab_bar => {
+                    self.info_modal.switch_tab();
+                }
+                KeyCode::Down | KeyCode::Char('j') if event.is_press() && on_body && schema_tab => {
+                    self.info_modal.schema_table_down(total_rows, visible);
+                }
+                KeyCode::Up | KeyCode::Char('k') if event.is_press() && on_body && schema_tab => {
+                    self.info_modal.schema_table_up(total_rows, visible);
                 }
                 _ => {}
             }
@@ -3348,12 +3398,8 @@ impl App {
                         return None;
                     }
                 }
-                // Close info dialog if visible
-                // Note: Modals handle Esc themselves, so this only applies when no modals are active
-                if self.info_visible {
-                    self.info_visible = false;
-                }
                 // Escape no longer exits - use 'q' or Ctrl-C to exit
+                // (Info modal handles Esc in its own block)
                 None
             }
             code if event.is_press() && RIGHT_KEYS.contains(&code) => {
@@ -3421,8 +3467,15 @@ impl App {
                 self.focus = (self.focus + 1) % 2;
                 None
             }
+            KeyCode::BackTab if event.is_press() => {
+                self.focus = (self.focus + 1) % 2;
+                None
+            }
             KeyCode::Char('i') if event.is_press() => {
-                self.info_visible = !self.info_visible;
+                if self.data_table_state.is_some() {
+                    self.info_modal.open();
+                    self.input_mode = InputMode::Info;
+                }
                 None
             }
             KeyCode::Char('/') => {
@@ -4216,7 +4269,9 @@ Data Operations:
   t:                Open Template menu
 
 Display:
-  i:                Toggle Info view
+  i:                Open Info panel (modal: Schema & Resources)
+  Tab / Shift+Tab:  In Info: move focus (tab bar ↔ schema table)
+  Left / Right:     In Info, on tab bar: switch Schema | Resources
   N:                Toggle row numbers
   Ctrl+h:           Toggle this help
 
@@ -4378,6 +4433,17 @@ CSV Options:
   Delimiter:        Character to separate columns (default: comma)
   Include Header:   Whether to write column names as first row",
             ),
+            InputMode::Info => (
+                "Info Panel Help",
+                "\
+Dataset technical info (Schema and Resources tabs).
+
+  Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
+                    On Resources: focus stays on tab bar.
+  Left / Right:     On tab bar: switch Schema | Resources tabs
+  ↑ / ↓:            When schema table focused: scroll and move selection
+  Esc / i:          Close info panel",
+            ),
         };
         (title.to_string(), content.to_string())
     }
@@ -4446,6 +4512,14 @@ impl Widget for &mut App {
             data_area = chunks[0];
             sort_area = chunks[1];
         }
+        if self.info_modal.active {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Max(72)])
+                .split(main_area);
+            data_area = chunks[0];
+            sort_area = chunks[1];
+        }
 
         // Extract colors before mutable borrow to avoid borrow checker issues
         let primary_color = self.color("keybind_hints");
@@ -4453,8 +4527,22 @@ impl Widget for &mut App {
         let table_header_color = self.color("table_header");
         let dimmed_color = self.color("dimmed");
         let column_separator_color = self.color("column_separator");
-        let sidebar_border_color = self.color("sidebar_border");
         let table_header_bg_color = self.color("table_header_bg");
+        let modal_border_color = self.color("modal_border");
+        let info_active_color = self.color("modal_border_active");
+
+        // Lazy-fill Parquet metadata cache when info panel is visible
+        if self.info_modal.active {
+            if let (Some(ref p), Some(ExportFormat::Parquet)) =
+                (&self.path, self.original_file_format)
+            {
+                if self.parquet_metadata_cache.is_none() {
+                    if let Some(meta) = read_parquet_metadata(p) {
+                        self.parquet_metadata_cache = Some(meta);
+                    }
+                }
+            }
+        }
 
         match &mut self.data_table_state {
             Some(state) => {
@@ -4503,11 +4591,7 @@ impl Widget for &mut App {
                     }
                 }
 
-                if self.info_visible {
-                    let info_layout = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Fill(1), Constraint::Max(50)])
-                        .split(table_area);
+                if self.info_modal.active {
                     DataTable::new()
                         .with_colors(
                             table_header_bg_color,
@@ -4515,10 +4599,20 @@ impl Widget for &mut App {
                             dimmed_color,
                             column_separator_color,
                         )
-                        .render(info_layout[0], buf, state);
-                    DataTableInfo::new(state)
-                        .with_border_color(sidebar_border_color)
-                        .render(info_layout[1], buf);
+                        .render(table_area, buf, state);
+                    let ctx = InfoContext {
+                        path: self.path.as_deref(),
+                        format: self.original_file_format,
+                        parquet_metadata: self.parquet_metadata_cache.as_ref(),
+                    };
+                    let mut info_widget = DataTableInfo::new(
+                        state,
+                        ctx,
+                        &mut self.info_modal,
+                        modal_border_color,
+                        info_active_color,
+                    );
+                    info_widget.render(sort_area, buf);
                 } else {
                     DataTable::new()
                         .with_colors(
@@ -6337,6 +6431,7 @@ Delete Confirmation:
             || self.input_mode == InputMode::Editing
             || self.input_mode == InputMode::SortFilter
             || self.input_mode == InputMode::PivotMelt
+            || self.input_mode == InputMode::Info
             || self.sort_filter_modal.active;
 
         // Build controls - use analysis-specific controls if analysis modal is active

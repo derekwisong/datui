@@ -763,6 +763,7 @@ dependencies = [
  "flate2",
  "fs2",
  "polars",
+ "polars-parquet",
  "ratatui",
  "regex",
  "serde",

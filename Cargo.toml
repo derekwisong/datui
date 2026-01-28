@@ -43,6 +43,10 @@ features = [
     "decompress"
 ]
 
+[dependencies.polars-parquet]
+version = "0.52.0"
+default-features = false
+
 [dev-dependencies]
 tempfile = "3.8"
 

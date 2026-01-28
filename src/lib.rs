@@ -4131,11 +4131,15 @@ impl App {
                             ))
                         }
                     };
-                    JsonWriter::new(writer).finish(&mut df)?;
+                    JsonWriter::new(writer)
+                        .with_json_format(JsonFormat::Json)
+                        .finish(&mut df)?;
                 } else {
                     // Write uncompressed
                     let file = File::create(path)?;
-                    JsonWriter::new(file).finish(&mut df)?;
+                    JsonWriter::new(file)
+                        .with_json_format(JsonFormat::Json)
+                        .finish(&mut df)?;
                 }
             }
             ExportFormat::Ndjson => {

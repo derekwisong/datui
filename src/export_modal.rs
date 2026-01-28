@@ -29,7 +29,7 @@ impl ExportFormat {
             Self::Csv => "csv",
             Self::Parquet => "parquet",
             Self::Json => "json",
-            Self::Ndjson => "ndjson",
+            Self::Ndjson => "jsonl",
         }
     }
 

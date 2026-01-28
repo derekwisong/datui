@@ -50,17 +50,35 @@ def bump_version(current: str, bump_type: str) -> str:
         raise ValueError(f"Invalid bump type: {bump_type}. Must be major, minor, or patch.")
 
 
+def _package_section_bounds(content: str) -> tuple[int, int] | None:
+    """Return (start, end) byte range of the [package] section, or None if not found."""
+    match = re.search(r'^\[package\]\s*$', content, re.MULTILINE)
+    if not match:
+        return None
+    start = match.end()
+    # End at next section header [.*] or end of file
+    rest = content[start:]
+    end_match = re.search(r'^\s*\[', rest, re.MULTILINE)
+    end = start + (end_match.start() if end_match else len(rest))
+    return (start, end)
+
+
 def update_cargo_toml(
     file_path: Path, old_version: str, new_version: str, project_root: Path
 ) -> None:
-    """Update version in a Cargo.toml file."""
+    """Update version in the [package] section of a Cargo.toml file only."""
     content = file_path.read_text()
+    bounds = _package_section_bounds(content)
+    if not bounds:
+        raise ValueError(f"Could not find [package] section in {file_path}")
+    start, end = bounds
+    head, section, tail = content[:start], content[start:end], content[end:]
     pattern = rf'version\s*=\s*"{re.escape(old_version)}"'
     replacement = f'version = "{new_version}"'
-    new_content = re.sub(pattern, replacement, content)
-
-    if new_content == content:
-        raise ValueError(f"Could not find version {old_version} in {file_path}")
+    new_section = re.sub(pattern, replacement, section)
+    if new_section == section:
+        raise ValueError(f"Could not find version {old_version} in [package] of {file_path}")
+    new_content = head + new_section + tail
     file_path.write_text(new_content)
     try:
         rel = file_path.relative_to(project_root)
@@ -72,20 +90,17 @@ def update_cargo_toml(
 def update_cargo_toml_to_version(
     file_path: Path, target_version: str, project_root: Path
 ) -> None:
-    """Update version in a Cargo.toml file to a specific version, regardless of current version.
-    
-    This is used for ensuring datui-cli matches the main Cargo.toml version.
-    """
+    """Update version in the [package] section to target_version (used for datui-cli)."""
     content = file_path.read_text()
-    
-    # First, check what the current version is
-    old_match = re.search(r'version\s*=\s*"([^"]+)"', content)
+    bounds = _package_section_bounds(content)
+    if not bounds:
+        raise ValueError(f"Could not find [package] section in {file_path}")
+    start, end = bounds
+    head, section, tail = content[:start], content[start:end], content[end:]
+    old_match = re.search(r'version\s*=\s*"([^"]+)"', section)
     if not old_match:
-        raise ValueError(f"Could not find version field in {file_path}")
-    
+        raise ValueError(f"Could not find version field in [package] of {file_path}")
     old_version = old_match.group(1)
-    
-    # If already at target version, no change needed
     if old_version == target_version:
         try:
             rel = file_path.relative_to(project_root)
@@ -93,19 +108,9 @@ def update_cargo_toml_to_version(
             rel = file_path
         print(f"✓ {rel} already at version {target_version} (no change needed)")
         return
-    
-    # Match any version string and replace it with target_version
-    pattern = r'version\s*=\s*"([^"]+)"'
-    
-    def replace_version(match):
-        return f'version = "{target_version}"'
-    
-    new_content = re.sub(pattern, replace_version, content)
-    
-    if new_content == content:
-        raise ValueError(f"Could not update version in {file_path}")
-    
-    file_path.write_text(new_content)
+    pattern = r'version\s*=\s*"[^"]+"'
+    new_section = re.sub(pattern, f'version = "{target_version}"', section, count=1)
+    file_path.write_text(head + new_section + tail)
     try:
         rel = file_path.relative_to(project_root)
     except ValueError:
@@ -113,27 +118,35 @@ def update_cargo_toml_to_version(
     print(f"✓ Updated {rel}: {old_version} -> {target_version}")
 
 
-def update_readme(file_path: Path, old_version: str, new_version: str) -> None:
-    """Update version badge in README.md."""
+def update_readme(file_path: Path, new_version: str) -> None:
+    """Update version badge in README.md to the desired version (any current value)."""
     content = file_path.read_text()
-    # Match: ![Version](https://img.shields.io/badge/version-0.2.1-orange.svg)
-    pattern = rf'!\[Version\]\(https://img\.shields\.io/badge/version-{re.escape(old_version)}-orange\.svg\)'
+    # Match badge with any version: ![Version](https://img.shields.io/badge/version-X.Y.Z-orange.svg)
+    pattern = r'!\[Version\]\(https://img\.shields\.io/badge/version-[^)-]+-orange\.svg\)'
     replacement = f'![Version](https://img.shields.io/badge/version-{new_version}-orange.svg)'
     new_content = re.sub(pattern, replacement, content)
 
     if new_content == content:
-        raise ValueError(f"Could not find version {old_version} in README.md badge")
-    
+        raise ValueError(
+            "Could not find version badge in README.md "
+            '(expected: ![Version](https://img.shields.io/badge/version-X.Y.Z-orange.svg))'
+        )
+
     file_path.write_text(new_content)
-    print(f"✓ Updated README.md: {old_version} -> {new_version}")
+    print(f"✓ Updated README.md badge -> {new_version}")
 
 
 def get_current_version(cargo_toml_path: Path) -> str:
-    """Extract current version from Cargo.toml."""
+    """Extract current version from [package] section of Cargo.toml."""
     content = cargo_toml_path.read_text()
-    match = re.search(r'version\s*=\s*"([^"]+)"', content)
+    bounds = _package_section_bounds(content)
+    if not bounds:
+        raise ValueError("Could not find [package] section in Cargo.toml")
+    start, end = bounds
+    section = content[start:end]
+    match = re.search(r'version\s*=\s*"([^"]+)"', section)
     if not match:
-        raise ValueError("Could not find version in Cargo.toml")
+        raise ValueError("Could not find version in [package] of Cargo.toml")
     return match.group(1)
 
 
@@ -252,7 +265,7 @@ Examples:
         if datui_cli_cargo.exists():
             update_cargo_toml_to_version(datui_cli_cargo, new_version, project_root)
         
-        update_readme(readme_path, current_version, new_version)
+        update_readme(readme_path, new_version)
         print()
         print(f"✓ Version bumped successfully: {current_version} -> {new_version}")
         

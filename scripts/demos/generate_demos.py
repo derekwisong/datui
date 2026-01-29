@@ -22,10 +22,46 @@ import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 # Pattern for tape filenames: {number}-{name}.tape (e.g. 01-basic-navigation.tape)
 TAPE_PATTERN = re.compile(r"^(\d+)-(.+)\.tape$")
+
+# Type for pre/post demo actions: (repo_root, tape_number) -> None; raise on error
+TapeAction = Callable[[Path, int], None]
+
+# Per-tape pre- and post-demo actions. Pre-actions run before the tape; post-actions after.
+# Keys are tape numbers (e.g. 8 for 08-export.tape).
+TAPE_ACTIONS: dict[int, dict[str, list[TapeAction]]] = {}
+
+
+def _require_file_absent(path: Path, message: str = "Remove it and re-run.") -> TapeAction:
+    """Return an action that raises if the file exists."""
+
+    def action(_repo_root: Path, _tape_number: int) -> None:
+        if path.exists():
+            raise SystemExit(
+                f"Error: {path} already exists. {message}"
+            )
+
+    return action
+
+
+def _remove_file_if_present(path: Path) -> TapeAction:
+    """Return an action that deletes the file if it exists."""
+
+    def action(_repo_root: Path, _tape_number: int) -> None:
+        if path.exists():
+            path.unlink(missing_ok=True)
+
+    return action
+
+
+# Tape 8 (export): demo creates /tmp/people_export.parquet; require absent before, delete after
+TAPE_ACTIONS[8] = {
+    "pre": [_require_file_absent(Path("/tmp/people_export.parquet"))],
+    "post": [_remove_file_if_present(Path("/tmp/people_export.parquet"))],
+}
 
 
 class VHSTapeDemo:
@@ -135,7 +171,7 @@ def _prepare_tape_file(
 
 def _run_one_demo(args: NamedTuple) -> tuple[Path, bool, str | None]:
     """Worker entry point for process pool. Must be top-level for pickling."""
-    tape_path, output_path, repo_root, header_file, env = args
+    tape_path, output_path, _tape_number, repo_root, header_file, env = args
     demo = VHSTapeDemo(tape_path=Path(tape_path), output_path=Path(output_path))
     return demo.run(Path(repo_root), Path(header_file), env)
 
@@ -143,6 +179,7 @@ def _run_one_demo(args: NamedTuple) -> tuple[Path, bool, str | None]:
 class _DemoArgs(NamedTuple):
     tape_path: str
     output_path: str
+    tape_number: int
     repo_root: str
     header_file: str
     env: dict
@@ -225,6 +262,8 @@ def main() -> None:
     binary_dir = str(binary_path.parent)
     env = os.environ.copy()
     env["PATH"] = f"{binary_dir}:{env.get('PATH', '')}"
+    if "PS1" in env:
+        del env["PS1"]
 
     demos_dir.mkdir(parents=True, exist_ok=True)
 
@@ -246,10 +285,25 @@ def main() -> None:
         print(f"Error: No tape files matching '{{number}}-{{name}}.tape' in {tapes_dir}.", file=sys.stderr)
         sys.exit(1)
 
-    # Build list of (tape_path, output_path) for pool
-    demo_list = [(tp, demos_dir / (tp.stem + ".gif")) for tp, _ in all_tapes]
+    # Build list of (tape_path, output_path, tape_number) for pool
+    demo_list = [(tp, demos_dir / (tp.stem + ".gif"), num) for tp, num in all_tapes]
     total = len(demo_list)
     workers = min(args.workers, total)
+
+    # Run pre-actions for all tapes that have them; abort on first failure
+    for tape_path, _output_path, tape_number in demo_list:
+        if tape_number in TAPE_ACTIONS:
+            for pre_action in TAPE_ACTIONS[tape_number].get("pre", []):
+                try:
+                    pre_action(repo_root, tape_number)
+                except SystemExit:
+                    raise
+                except Exception as e:
+                    print(
+                        f"Error: Pre-action for tape {tape_number} failed: {e}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
 
     print(f"\nGenerating {total} demo(s) with {workers} worker(s)...\n")
 
@@ -257,11 +311,12 @@ def main() -> None:
         _DemoArgs(
             tape_path=str(tape_path),
             output_path=str(output_path),
+            tape_number=tape_number,
             repo_root=str(repo_root),
             header_file=str(header_file),
             env=env,
         )
-        for tape_path, output_path in demo_list
+        for tape_path, output_path, tape_number in demo_list
     ]
 
     completed = 0
@@ -270,12 +325,23 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(_run_one_demo, a): a for a in worker_args}
         for future in as_completed(futures):
+            args = futures[future]
             out_path, success, err = future.result()
             completed += 1
             sys.stdout.write(_progress_bar(completed, total))
             sys.stdout.flush()
             if not success:
                 failed.append((out_path.name, err or "unknown error"))
+            # Run post-actions for this tape (e.g. delete temp file created by demo)
+            if args.tape_number in TAPE_ACTIONS:
+                for post_action in TAPE_ACTIONS[args.tape_number].get("post", []):
+                    try:
+                        post_action(repo_root, args.tape_number)
+                    except Exception as e:
+                        print(
+                            f"Warning: Post-action for tape {args.tape_number} failed: {e}",
+                            file=sys.stderr,
+                        )
 
     print()  # newline after progress bar
 
@@ -288,7 +354,7 @@ def main() -> None:
 
     if demo_list and not failed:
         print("\nGenerated GIF(s):")
-        for _, out_path in demo_list:
+        for _, out_path, _ in demo_list:
             if out_path.exists():
                 size_kb = out_path.stat().st_size / 1024
                 print(f"  - {out_path.name} ({size_kb:.1f} KB)")

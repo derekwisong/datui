@@ -431,7 +431,7 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
     ("row_start_index", "Starting index for row numbers (0 or 1)"),
     (
         "table_cell_padding",
-        "Number of spaces between columns in the main data table (>= 0)\nDefault 1",
+        "Number of spaces between columns in the main data table (>= 0)\nDefault 2",
     ),
 ];
 
@@ -462,6 +462,10 @@ pub struct ThemeConfig {
 
 // Field comments for ThemeConfig
 const THEME_COMMENTS: &[(&str, &str)] = &[];
+
+fn default_row_numbers_color() -> String {
+    "dark_gray".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -528,6 +532,9 @@ pub struct ColorConfig {
     pub text_inverse: String,
     pub table_header: String,
     pub table_header_bg: String,
+    /// Row numbers column text. Use "default" for terminal default.
+    #[serde(default = "default_row_numbers_color")]
+    pub row_numbers: String,
     pub column_separator: String,
     pub table_selected: String,
     pub sidebar_border: String,
@@ -570,6 +577,7 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("text_inverse", "Text on light backgrounds"),
     ("table_header", "Table column header text"),
     ("table_header_bg", "Table column header background"),
+    ("row_numbers", "Row numbers column text; use \"default\" for terminal default"),
     ("column_separator", "Vertical line between columns"),
     ("table_selected", "Selected row style"),
     ("sidebar_border", "Sidebar borders"),
@@ -690,7 +698,7 @@ impl Default for DisplayConfig {
             pages_lookback: 3,
             row_numbers: false,
             row_start_index: 1,
-            table_cell_padding: 1,
+            table_cell_padding: 2,
         }
     }
 }
@@ -723,6 +731,7 @@ impl Default for ColorConfig {
             text_inverse: "black".to_string(),
             table_header: "white".to_string(),
             table_header_bg: "indexed(235)".to_string(),
+            row_numbers: "dark_gray".to_string(),
             column_separator: "cyan".to_string(),
             table_selected: "reversed".to_string(),
             sidebar_border: "dark_gray".to_string(),
@@ -950,6 +959,7 @@ impl ColorConfig {
         validate_color!(&self.text_inverse, "text_inverse");
         validate_color!(&self.table_header, "table_header");
         validate_color!(&self.table_header_bg, "table_header_bg");
+        validate_color!(&self.row_numbers, "row_numbers");
         validate_color!(&self.column_separator, "column_separator");
         validate_color!(&self.table_selected, "table_selected");
         validate_color!(&self.sidebar_border, "sidebar_border");
@@ -1019,6 +1029,9 @@ impl ColorConfig {
         }
         if other.table_header_bg != default.table_header_bg {
             self.table_header_bg = other.table_header_bg;
+        }
+        if other.row_numbers != default.row_numbers {
+            self.row_numbers = other.row_numbers;
         }
         if other.column_separator != default.column_separator {
             self.column_separator = other.column_separator;
@@ -1351,6 +1364,10 @@ impl Theme {
         colors.insert(
             "table_header_bg".to_string(),
             parser.parse(&config.colors.table_header_bg)?,
+        );
+        colors.insert(
+            "row_numbers".to_string(),
+            parser.parse(&config.colors.row_numbers)?,
         );
         colors.insert(
             "column_separator".to_string(),

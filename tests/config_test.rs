@@ -30,7 +30,8 @@ fn test_default_config() {
 
     // Check theme defaults
     assert_eq!(config.theme.colors.keybind_hints, "cyan");
-    assert_eq!(config.theme.colors.alternate_row_color, "default");
+    assert_eq!(config.theme.colors.row_numbers, "dark_gray");
+    assert_eq!(config.theme.colors.alternate_row_color, "indexed(234)");
 
     // Check query defaults
     assert_eq!(config.query.history_limit, 1000);

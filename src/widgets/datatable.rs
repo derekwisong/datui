@@ -1565,7 +1565,8 @@ impl DataTable {
                 row.push(Cell::from(Line::from(val_str)));
             }
 
-            let overflows = (used_width + max_len) >= area.width;
+            // Use > not >= so the last column is shown when it fits exactly (no padding needed after it)
+            let overflows = (used_width + max_len) > area.width;
 
             if overflows && col_data.dtype() == &DataType::String {
                 let visible_width = area.width - used_width;
@@ -1623,6 +1624,23 @@ impl DataTable {
     }
 
     fn render_row_numbers(&self, area: Rect, buf: &mut Buffer, params: RowNumbersParams) {
+        // Header row: same style as the rest of the column headers (fill full width so color matches)
+        let header_style = if self.header_bg == Color::Reset {
+            Style::default().fg(self.header_fg)
+        } else {
+            Style::default().bg(self.header_bg).fg(self.header_fg)
+        };
+        let header_fill = " ".repeat(area.width as usize);
+        Paragraph::new(header_fill).style(header_style).render(
+            Rect {
+                x: area.x,
+                y: area.y,
+                width: area.width,
+                height: 1,
+            },
+            buf,
+        );
+
         // Only render up to the actual number of rows in the data
         let rows_to_render = params
             .visible_rows
@@ -1646,16 +1664,24 @@ impl DataTable {
             let padding = max_width.saturating_sub(row_num_text.len());
             let padded_text = format!("{}{}", " ".repeat(padding), row_num_text);
 
-            // Highlight row number if this row is selected
+            // Match main table background: default when row is even (or no alternate);
+            // when alternate_row_bg is set, odd rows use that background.
+            // When selected: same background as row (no inversion), foreground = terminal default.
             let is_selected = params.selected_row == Some(row_idx);
-            let row_num_style = if is_selected {
-                // Must match the table's row_highlight_style exactly. Using a different
-                // style (e.g. fg + REVERSED) creates a style boundary at the row-number
-                // | first-data-column edge; some terminals (VS Code, xterm-256) then
-                // render that boundary with artifacts (bleeding, cut-off glyphs).
-                Style::default().add_modifier(Modifier::REVERSED)
+            let (fg, bg) = if is_selected {
+                (
+                    Color::Reset,
+                    self.alternate_row_bg.filter(|_| row_idx % 2 == 1),
+                )
             } else {
-                Style::default().fg(self.row_numbers_fg)
+                (
+                    self.row_numbers_fg,
+                    self.alternate_row_bg.filter(|_| row_idx % 2 == 1),
+                )
+            };
+            let row_num_style = match bg {
+                Some(bg_color) => Style::default().fg(fg).bg(bg_color),
+                None => Style::default().fg(fg),
             };
 
             let y = area.y + row_idx as u16 + 1; // +1 for header row

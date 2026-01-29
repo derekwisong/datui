@@ -4620,7 +4620,7 @@ impl Widget for &mut App {
         let primary_color = self.color("keybind_hints");
         let _controls_bg_color = self.color("controls_bg");
         let table_header_color = self.color("table_header");
-        let dimmed_color = self.color("dimmed");
+        let row_numbers_color = self.color("row_numbers");
         let column_separator_color = self.color("column_separator");
         let table_header_bg_color = self.color("table_header_bg");
         let modal_border_color = self.color("modal_border");
@@ -4691,7 +4691,7 @@ impl Widget for &mut App {
                         .with_colors(
                             table_header_bg_color,
                             table_header_color,
-                            dimmed_color,
+                            row_numbers_color,
                             column_separator_color,
                         )
                         .with_cell_padding(self.table_cell_padding)
@@ -4715,7 +4715,7 @@ impl Widget for &mut App {
                         .with_colors(
                             table_header_bg_color,
                             table_header_color,
-                            dimmed_color,
+                            row_numbers_color,
                             column_separator_color,
                         )
                         .with_cell_padding(self.table_cell_padding)

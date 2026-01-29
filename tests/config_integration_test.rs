@@ -24,6 +24,7 @@ fn test_config_used_for_row_numbers() {
         row_start_index: None,
         generate_config: false,
         force: false,
+        hive: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -57,6 +58,7 @@ fn test_cli_args_override_config() {
         row_start_index: Some(1), // Override config
         generate_config: false,
         force: false,
+        hive: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -90,6 +92,7 @@ fn test_config_display_settings() {
         row_start_index: None,
         generate_config: false,
         force: false,
+        hive: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -123,6 +126,7 @@ fn test_config_file_loading_settings() {
         row_start_index: None,
         generate_config: false,
         force: false,
+        hive: false,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);

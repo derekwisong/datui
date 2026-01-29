@@ -1,7 +1,9 @@
 use color_eyre::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::{fs::File, path::Path};
+use std::{fs, fs::File, path::Path};
 
+use polars::io::HiveOptions;
 use polars::prelude::*;
 use ratatui::{
     buffer::Buffer,
@@ -71,6 +73,8 @@ pub struct DataTableState {
     last_pivot_spec: Option<PivotSpec>,
     /// Last applied melt spec, if current lf is result of a melt. Used for templates.
     last_melt_spec: Option<MeltSpec>,
+    /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
+    pub partition_columns: Option<Vec<String>>,
 }
 
 impl DataTableState {
@@ -114,6 +118,7 @@ impl DataTableState {
             row_start_index: 1,     // Will be set from options
             last_pivot_spec: None,
             last_melt_spec: None,
+            partition_columns: None,
         })
     }
 
@@ -142,6 +147,7 @@ impl DataTableState {
         self.grouped_lf = None;
         self.last_pivot_spec = None;
         self.last_melt_spec = None;
+        // partition_columns is preserved across reset (same dataset)
 
         // Invalidate buffer on reset
         self.buffered_start_row = 0;
@@ -167,6 +173,162 @@ impl DataTableState {
         let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Discover hive partition column names from a directory path by walking a single
+    /// "spine" (one branch) of key=value directories. Partition keys are uniform across
+    /// the tree, so we only need one path to infer [year, month, day] etc. Returns columns
+    /// in path order. Stops after max_depth levels to avoid runaway on malformed trees.
+    fn discover_partition_columns_from_path(path: &Path) -> Vec<String> {
+        const MAX_PARTITION_DEPTH: usize = 64;
+        let mut columns = Vec::<String>::new();
+        let mut seen = HashSet::<String>::new();
+        Self::discover_partition_columns_spine(
+            path,
+            &mut columns,
+            &mut seen,
+            0,
+            MAX_PARTITION_DEPTH,
+        );
+        columns
+    }
+
+    /// Walk one branch: at this directory, find the first child that is a key=value dir,
+    /// record the key (if not already seen), then recurse into that one child only.
+    /// This does O(depth) read_dir calls instead of walking the entire tree.
+    fn discover_partition_columns_spine(
+        path: &Path,
+        columns: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+        depth: usize,
+        max_depth: usize,
+    ) {
+        if depth >= max_depth {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        let mut first_partition_child: Option<std::path::PathBuf> = None;
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() {
+                if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
+                    if let Some((key, _)) = name.split_once('=') {
+                        if !key.is_empty() && seen.insert(key.to_string()) {
+                            columns.push(key.to_string());
+                        }
+                        if first_partition_child.is_none() {
+                            first_partition_child = Some(child);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(one) = first_partition_child {
+            Self::discover_partition_columns_spine(&one, columns, seen, depth + 1, max_depth);
+        }
+    }
+
+    /// Infer partition column names from a glob pattern path (e.g. "data/year=*/month=*/*.parquet").
+    fn discover_partition_columns_from_glob_pattern(path: &Path) -> Vec<String> {
+        let path_str = path.as_os_str().to_string_lossy();
+        let mut columns = Vec::<String>::new();
+        let mut seen = HashSet::<String>::new();
+        for segment in path_str.split('/') {
+            if let Some((key, rest)) = segment.split_once('=') {
+                if !key.is_empty()
+                    && (rest == "*" || !rest.contains('*'))
+                    && seen.insert(key.to_string())
+                {
+                    columns.push(key.to_string());
+                }
+            }
+        }
+        columns
+    }
+
+    /// Load Parquet with Hive partitioning from a directory or glob path.
+    /// When path is a directory, partition columns are discovered from path structure.
+    /// When path contains glob (e.g. `**/*.parquet`), partition columns are inferred from the pattern (e.g. `year=*/month=*`).
+    /// Partition columns are moved to the left in the initial LazyFrame before state is created.
+    ///
+    /// **Performance**: The slow part is Polars, not our code. `scan_parquet` + `collect_schema()` trigger
+    /// path expansion (full directory tree or glob) and parquet metadata reads; we only do a single-spine
+    /// walk for partition key discovery and cheap schema/select work.
+    pub fn from_parquet_hive(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        let path_str = path.as_os_str().to_string_lossy();
+        let is_glob = path_str.contains('*');
+        let pl_path = PlPath::Local(Arc::from(path));
+        let args = ScanArgsParquet {
+            hive_options: HiveOptions::new_enabled(),
+            glob: is_glob,
+            ..Default::default()
+        };
+        let mut lf = LazyFrame::scan_parquet(pl_path, args)?;
+        let schema = lf.collect_schema()?;
+
+        let mut discovered = if path.is_dir() {
+            Self::discover_partition_columns_from_path(path)
+        } else {
+            Self::discover_partition_columns_from_glob_pattern(path)
+        };
+
+        // Fallback: glob like "**/*.parquet" has no key= in the pattern, so discovery is empty.
+        // Try discovering from a directory prefix (e.g. path.parent() or walk up until we find a dir).
+        if discovered.is_empty() {
+            let mut dir = path;
+            while !dir.is_dir() {
+                match dir.parent() {
+                    Some(p) => dir = p,
+                    None => break,
+                }
+            }
+            if dir.is_dir() {
+                discovered = Self::discover_partition_columns_from_path(dir);
+            }
+        }
+
+        let partition_columns: Vec<String> = discovered
+            .into_iter()
+            .filter(|c| schema.contains(c.as_str()))
+            .collect();
+
+        let new_order: Vec<String> = if partition_columns.is_empty() {
+            schema.iter_names().map(|s| s.to_string()).collect()
+        } else {
+            let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
+            let all_names: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
+            let rest: Vec<String> = all_names
+                .into_iter()
+                .filter(|c| !part_set.contains(c.as_str()))
+                .collect();
+            partition_columns.iter().cloned().chain(rest).collect()
+        };
+
+        if !partition_columns.is_empty() {
+            let exprs: Vec<Expr> = new_order.iter().map(|s| col(s.as_str())).collect();
+            lf = lf.select(exprs);
+        }
+
+        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        state.partition_columns = if partition_columns.is_empty() {
+            None
+        } else {
+            Some(partition_columns)
+        };
+        // Ensure display order is partition-first (Self::new uses schema order; be explicit).
+        state.set_column_order(new_order);
         Ok(state)
     }
 

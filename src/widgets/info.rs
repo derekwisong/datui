@@ -43,17 +43,50 @@ pub enum InfoTab {
     #[default]
     Schema,
     Resources,
+    Partitions,
 }
 
 impl InfoTab {
-    pub fn next(self) -> Self {
+    /// Next tab; when `has_partitions` is false, Partitions is skipped.
+    pub fn next(self, has_partitions: bool) -> Self {
         match self {
             InfoTab::Schema => InfoTab::Resources,
-            InfoTab::Resources => InfoTab::Schema,
+            InfoTab::Resources => {
+                if has_partitions {
+                    InfoTab::Partitions
+                } else {
+                    InfoTab::Schema
+                }
+            }
+            InfoTab::Partitions => InfoTab::Schema,
         }
     }
-    pub fn prev(self) -> Self {
-        self.next()
+    pub fn prev(self, has_partitions: bool) -> Self {
+        match self {
+            InfoTab::Schema => {
+                if has_partitions {
+                    InfoTab::Partitions
+                } else {
+                    InfoTab::Resources
+                }
+            }
+            InfoTab::Resources => InfoTab::Schema,
+            InfoTab::Partitions => InfoTab::Resources,
+        }
+    }
+    /// Tab index for display (0 = Schema, 1 = Resources, 2 = Partitions when has_partitions).
+    pub fn index(self, has_partitions: bool) -> usize {
+        match self {
+            InfoTab::Schema => 0,
+            InfoTab::Resources => 1,
+            InfoTab::Partitions => {
+                if has_partitions {
+                    2
+                } else {
+                    0
+                }
+            }
+        }
     }
 }
 
@@ -109,8 +142,21 @@ impl InfoModal {
         };
     }
 
-    pub fn switch_tab(&mut self) {
-        self.active_tab = self.active_tab.next();
+    /// Switch to next tab; `has_partitions` determines whether Partitions tab is available.
+    pub fn switch_tab(&mut self, has_partitions: bool) {
+        self.active_tab = self.active_tab.next(has_partitions);
+        if self.active_tab == InfoTab::Schema {
+            self.schema_selected_index = 0;
+            self.schema_scroll_offset = 0;
+            self.schema_table_state.select(Some(0));
+        } else {
+            self.focus = InfoFocus::TabBar;
+        }
+    }
+
+    /// Switch to previous tab; `has_partitions` determines whether Partitions tab is available.
+    pub fn switch_tab_prev(&mut self, has_partitions: bool) {
+        self.active_tab = self.active_tab.prev(has_partitions);
         if self.active_tab == InfoTab::Schema {
             self.schema_selected_index = 0;
             self.schema_scroll_offset = 0;
@@ -506,6 +552,48 @@ impl<'a> DataTableInfo<'a> {
             buf,
         );
     }
+
+    fn render_partitioned_data_tab(&self, area: Rect, buf: &mut Buffer) {
+        let y = area.y;
+        let w = area.width;
+
+        let Some(partition_columns) = self.state.partition_columns.as_ref() else {
+            Paragraph::new("No partition metadata.").render(
+                Rect {
+                    y,
+                    width: w,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
+            return;
+        };
+
+        if partition_columns.is_empty() {
+            Paragraph::new("No partition columns.").render(
+                Rect {
+                    y,
+                    width: w,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
+            return;
+        }
+
+        let line = format!("Partition columns: {}", partition_columns.join(", "));
+        Paragraph::new(line).render(
+            Rect {
+                y,
+                width: w,
+                height: 1,
+                ..area
+            },
+            buf,
+        );
+    }
 }
 
 fn format_int(n: usize) -> String {
@@ -553,11 +641,19 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             .constraints([Constraint::Length(1), Constraint::Length(1)])
             .split(chunks[0]);
 
-        let sel = match self.modal.active_tab {
-            InfoTab::Schema => 0,
-            InfoTab::Resources => 1,
+        let has_partitions = self
+            .state
+            .partition_columns
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let tab_titles: Vec<&str> = if has_partitions {
+            vec!["Schema", "Resources", "Partitions"]
+        } else {
+            vec!["Schema", "Resources"]
         };
-        let tabs = Tabs::new(vec!["Schema", "Resources"])
+        let sel = self.modal.active_tab.index(has_partitions);
+        let tabs = Tabs::new(tab_titles)
             .style(Style::default().fg(self.border_color))
             .highlight_style(
                 Style::default()
@@ -579,6 +675,13 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         match self.modal.active_tab {
             InfoTab::Schema => self.render_schema_tab(chunks[1], buf),
             InfoTab::Resources => self.render_resources_tab(chunks[1], buf),
+            InfoTab::Partitions => {
+                if has_partitions {
+                    self.render_partitioned_data_tab(chunks[1], buf)
+                } else {
+                    self.render_schema_tab(chunks[1], buf)
+                }
+            }
         }
     }
 }

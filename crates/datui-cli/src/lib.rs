@@ -80,6 +80,10 @@ pub struct Args {
     #[arg(long = "debug", action)]
     pub debug: bool,
 
+    /// Enable Hive-style partitioning for directory or glob paths; ignored for a single file
+    #[arg(long = "hive", action)]
+    pub hive: bool,
+
     /// Clear all cache data and exit
     #[arg(long = "clear-cache", action)]
     pub clear_cache: bool,

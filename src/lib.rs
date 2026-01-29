@@ -156,6 +156,8 @@ pub struct OpenOptions {
     pub pages_lookback: Option<usize>,
     pub row_numbers: bool,
     pub row_start_index: usize,
+    /// When true, use hive load path for directory/glob; single file uses normal load.
+    pub hive: bool,
 }
 
 impl OpenOptions {
@@ -170,6 +172,7 @@ impl OpenOptions {
             pages_lookback: None,
             row_numbers: false,
             row_start_index: 1,
+            hive: false,
         }
     }
 
@@ -244,6 +247,9 @@ impl OpenOptions {
         opts.row_start_index = args
             .row_start_index
             .unwrap_or(config.display.row_start_index);
+
+        // Hive partitioning: CLI only (no config option yet)
+        opts.hive = args.hive;
 
         opts
     }
@@ -760,6 +766,69 @@ impl App {
             self.sort_filter_modal = SortFilterModal::new();
             self.pivot_melt_modal = PivotMeltModal::new();
             return Ok(());
+        }
+
+        // Hive path: when --hive and path is directory or glob (not a single file), use hive load.
+        // Single file with --hive uses the same path as without --hive (see extension match below).
+        if options.hive {
+            let path_str = path.as_os_str().to_string_lossy();
+            let is_single_file = path.exists()
+                && path.is_file()
+                && !path_str.contains('*')
+                && !path_str.contains("**");
+            if !is_single_file {
+                // Directory or glob: only Parquet supported for hive in this implementation
+                let use_parquet_hive = path.is_dir()
+                    || path_str.contains(".parquet")
+                    || path_str.contains("*.parquet");
+                if use_parquet_hive {
+                    if let LoadingState::Loading {
+                        file_path,
+                        file_size,
+                        ..
+                    } = &self.loading_state
+                    {
+                        self.loading_state = LoadingState::Loading {
+                            file_path: file_path.clone(),
+                            file_size: *file_size,
+                            current_phase: "Scanning partitioned dataset".to_string(),
+                            progress_percent: 60,
+                        };
+                    }
+                    let lf = DataTableState::from_parquet_hive(
+                        path,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?;
+                    if let LoadingState::Loading {
+                        file_path,
+                        file_size,
+                        ..
+                    } = &self.loading_state
+                    {
+                        self.loading_state = LoadingState::Loading {
+                            file_path: file_path.clone(),
+                            file_size: *file_size,
+                            current_phase: "Rendering data".to_string(),
+                            progress_percent: 90,
+                        };
+                    }
+                    self.loading_state = LoadingState::Idle;
+                    self.data_table_state = Some(lf);
+                    self.path = Some(path.to_path_buf());
+                    self.original_file_format = Some(ExportFormat::Parquet);
+                    self.original_file_delimiter = None;
+                    self.sort_filter_modal = SortFilterModal::new();
+                    self.pivot_melt_modal = PivotMeltModal::new();
+                    return Ok(());
+                }
+                self.loading_state = LoadingState::Idle;
+                return Err(color_eyre::eyre::eyre!(
+                    "With --hive use a directory or a glob pattern for Parquet (e.g. path/to/dir or path/**/*.parquet)"
+                ));
+            }
         }
 
         // For non-gzipped files, proceed with normal loading
@@ -2049,10 +2118,22 @@ impl App {
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') if event.is_press() && on_tab_bar => {
-                    self.info_modal.switch_tab();
+                    let has_partitions = self
+                        .data_table_state
+                        .as_ref()
+                        .and_then(|s| s.partition_columns.as_ref())
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false);
+                    self.info_modal.switch_tab_prev(has_partitions);
                 }
                 KeyCode::Right | KeyCode::Char('l') if event.is_press() && on_tab_bar => {
-                    self.info_modal.switch_tab();
+                    let has_partitions = self
+                        .data_table_state
+                        .as_ref()
+                        .and_then(|s| s.partition_columns.as_ref())
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false);
+                    self.info_modal.switch_tab(has_partitions);
                 }
                 KeyCode::Down | KeyCode::Char('j') if event.is_press() && on_body && schema_tab => {
                     self.info_modal.schema_table_down(total_rows, visible);
@@ -3648,11 +3729,19 @@ impl App {
             AppEvent::Open(path, options) => {
                 // Set loading state first, then trigger a render before actually loading
                 let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                let path_str = path.as_os_str().to_string_lossy();
+                let is_partitioned_path = options.hive
+                    && (path.is_dir() || path_str.contains('*') || path_str.contains("**"));
+                let phase = if is_partitioned_path {
+                    "Opening partitioned path"
+                } else {
+                    "Opening file"
+                };
 
                 self.loading_state = LoadingState::Loading {
                     file_path: path.clone(),
                     file_size,
-                    current_phase: "Opening file".to_string(),
+                    current_phase: phase.to_string(),
                     progress_percent: 10,
                 };
 

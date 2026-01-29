@@ -186,6 +186,7 @@ mod tests {
             row_start_index: None,
             generate_config: false,
             force: false,
+            hive: false,
         };
         let opts: OpenOptions = (&args).into();
         assert_eq!(opts.skip_lines, Some(1));

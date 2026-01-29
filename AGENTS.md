@@ -478,7 +478,7 @@ See `plans/` directory for detailed implementation plans:
 - **Analysis Improvements**: Enhanced distribution analysis, better Q-Q plots
 - **Histogram Fixes**: Distribution-specific theoretical histograms
 - **Info Panel** (`plans/info-panel-plan.md`): Tabbed Schema + Resources sidebar (known vs inferred schema, Parquet compression, file size, memory, format-specific details)
-- **Partitioned Data** (`plans/partitioned-data-plan.md`): Load Hive-style partitioned Parquet (and optionally IPC), persist partition metadata, show in info panel
+- **Partitioned Data**: Hive-style partitioning via directory/glob and `--hive`; Parquet (and CSV/NDJSON where supported); partition predicate pushdown; Partitioned data tab in Info panel
 - **Polars Upgrades**: Version compatibility and API migration
 - **UI Enhancements**: Improved sort modal, better visualizations
 

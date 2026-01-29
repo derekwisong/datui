@@ -52,6 +52,8 @@ pub struct DataTableState {
     pub suppress_error_display: bool, // When true, don't show errors in main view (e.g., when query input is active)
     pub schema: Arc<Schema>,
     pub num_rows: usize,
+    /// When true, num_rows is valid and collect() should skip the expensive len() query.
+    num_rows_valid: bool,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
@@ -100,6 +102,7 @@ impl DataTableState {
             suppress_error_display: false,
             schema,
             num_rows: 0,
+            num_rows_valid: false,
             filters: Vec::new(),
             sort_columns: Vec::new(),
             sort_ascending: true,
@@ -124,6 +127,7 @@ impl DataTableState {
     }
 
     pub fn reset(&mut self) {
+        self.invalidate_num_rows();
         self.lf = self.original_lf.clone();
         self.schema = self
             .original_lf
@@ -567,7 +571,8 @@ impl DataTableState {
             (self.start_row as i64 + rows) as usize
         };
 
-        // Check if new position is within buffer and not approaching edges
+        // Only call collect() when the view is actually outside the buffer (or buffer empty).
+        // When within buffer, just update start_row (fast path).
         let view_end = new_start_row
             + self
                 .visible_rows
@@ -577,31 +582,12 @@ impl DataTableState {
             && self.buffered_end_row > 0;
 
         if within_buffer {
-            // Check proximity to buffer edges
-            let dist_to_start = new_start_row.saturating_sub(self.buffered_start_row);
-            let dist_to_end = self.buffered_end_row.saturating_sub(view_end);
-
-            // Only skip collect if well within buffer (not approaching edges)
-            if dist_to_start > self.proximity_threshold && dist_to_end > self.proximity_threshold {
-                // Fast path: just update start_row, no collect needed
-                self.start_row = new_start_row;
-                return;
-            }
+            self.start_row = new_start_row;
+            return;
         }
 
-        // Need to collect (either outside buffer or approaching edge)
         self.start_row = new_start_row;
         self.collect();
-
-        if self.num_rows > 0 {
-            let max_start = self.num_rows.saturating_sub(1);
-            if self.start_row > max_start {
-                self.start_row = max_start;
-                self.collect();
-            }
-        } else {
-            self.start_row = 0;
-        }
     }
 
     pub fn collect(&mut self) {
@@ -610,20 +596,24 @@ impl DataTableState {
             self.proximity_threshold = self.visible_rows;
         }
 
-        self.num_rows = match self.lf.clone().select([len()]).collect() {
-            Ok(df) => {
-                if let Some(col) = df.get(0) {
-                    if let Some(AnyValue::UInt32(len)) = col.first() {
-                        *len as usize
+        // Only run expensive len() when the LazyFrame has changed (query, filter, sort, pivot, melt, reset, drill).
+        if !self.num_rows_valid {
+            self.num_rows = match self.lf.clone().select([len()]).collect() {
+                Ok(df) => {
+                    if let Some(col) = df.get(0) {
+                        if let Some(AnyValue::UInt32(len)) = col.first() {
+                            *len as usize
+                        } else {
+                            0
+                        }
                     } else {
                         0
                     }
-                } else {
-                    0
                 }
-            }
-            Err(_) => 0,
-        };
+                Err(_) => 0,
+            };
+            self.num_rows_valid = true;
+        }
 
         if self.num_rows > 0 {
             let max_start = self.num_rows.saturating_sub(1);
@@ -689,6 +679,11 @@ impl DataTableState {
 
         // Slice displayed portion from buffered DataFrame
         self.slice_from_buffer();
+    }
+
+    /// Call whenever the LazyFrame is mutated so collect() will re-run len() next time.
+    fn invalidate_num_rows(&mut self) {
+        self.num_rows_valid = false;
     }
 
     fn load_buffer(&mut self, buffer_start: usize, buffer_end: usize) {
@@ -1058,6 +1053,7 @@ impl DataTableState {
 
         let group_df = DataFrame::new(columns)?;
 
+        self.invalidate_num_rows();
         self.lf = group_df.lazy();
         self.schema = self.lf.clone().collect_schema()?;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
@@ -1073,6 +1069,7 @@ impl DataTableState {
 
     pub fn drill_up(&mut self) -> Result<()> {
         if let Some(grouped_lf) = self.grouped_lf.take() {
+            self.invalidate_num_rows();
             self.lf = grouped_lf;
             self.schema = self.lf.clone().collect_schema()?;
             self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
@@ -1165,6 +1162,7 @@ impl DataTableState {
     }
 
     fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
+        self.invalidate_num_rows();
         self.lf = lf;
         self.schema = self.lf.clone().collect_schema()?;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
@@ -1276,6 +1274,7 @@ impl DataTableState {
             lf = lf.reverse();
         }
 
+        self.invalidate_num_rows();
         self.lf = lf;
         self.collect();
     }
@@ -1303,12 +1302,14 @@ impl DataTableState {
                     .collect(),
                 ..Default::default()
             };
+            self.invalidate_num_rows();
             self.lf = self.lf.clone().sort_by_exprs(
                 self.sort_columns.iter().map(col).collect::<Vec<_>>(),
                 options,
             );
             self.collect();
         } else {
+            self.invalidate_num_rows();
             self.lf = self.lf.clone().reverse();
             self.collect();
         }
@@ -1326,6 +1327,7 @@ impl DataTableState {
 
         let trimmed_query = query.trim();
         if trimmed_query.is_empty() {
+            self.invalidate_num_rows();
             self.lf = self.original_lf.clone();
             self.schema = self
                 .original_lf
@@ -1401,6 +1403,7 @@ impl DataTableState {
                 };
 
                 self.schema = schema;
+                self.invalidate_num_rows();
                 self.lf = lf;
                 self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
 

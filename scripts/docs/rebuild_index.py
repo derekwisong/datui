@@ -8,8 +8,9 @@ using a Jinja2 template.
 import os
 import subprocess
 import sys
+import re
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 try:
     from jinja2 import Environment, FileSystemLoader, TemplateNotFound
@@ -67,10 +68,44 @@ def check_git_ref_exists(ref: str) -> bool:
         return False
 
 
-def collect_versions(output_dir: Path) -> List[Dict[str, any]]:
-    """Collect all version directories and their metadata."""
-    versions = []
-    
+# Match vX.Y.Z or vX.Y (patch 0) or vX (minor/patch 0). No leading zeros in numbers.
+_VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$|^v(\d+)\.(\d+)$|^v(\d+)$")
+
+
+def parse_version(name: str) -> Optional[Tuple[int, int, int]]:
+    """Parse a version string like v1.2.3 into (major, minor, patch). Returns None if not parseable."""
+    m = _VERSION_RE.match(name)
+    if not m:
+        return None
+    g = m.groups()
+    if g[0] is not None:
+        return (int(g[0]), int(g[1]), int(g[2]))
+    if g[3] is not None:
+        return (int(g[3]), int(g[4]), 0)
+    if g[5] is not None:
+        return (int(g[5]), 0, 0)
+    return None
+
+
+def sort_version_dirs(version_dirs: List[Path]) -> List[Path]:
+    """Sort version directories by 3-part semantic version (newest first). Unparseable names last."""
+    def key(path: Path):
+        t = parse_version(path.name)
+        if t is None:
+            return (0, 0, 0)  # put unparseable at end when reverse=True
+        return t
+
+    return sorted(version_dirs, key=key, reverse=True)
+
+
+def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict]]:
+    """Collect version directories and return (recent_versions, older_versions).
+    recent_versions: main (if present) + 5 most recent tags.
+    older_versions: remaining tags, sorted newest first.
+    """
+    recent: List[Dict] = []
+    older: List[Dict] = []
+
     # Add main/latest version first if it exists
     main_dir = output_dir / "main"
     if main_dir.exists() and main_dir.is_dir():
@@ -79,43 +114,40 @@ def collect_versions(output_dir: Path) -> List[Dict[str, any]]:
             main_date = get_git_date("main")
             if main_date:
                 date_str = main_date
-        
-        versions.append({
+        recent.append({
             "name": "main",
             "path": "main",
             "is_development": True,
             "is_latest_stable": False,
-            "date_str": date_str
+            "date_str": date_str,
         })
-    
-    # Get all version tags from the book directory
-    if output_dir.exists():
-        # Find all directories that look like version tags (v*)
-        version_dirs = sorted(
-            [d for d in output_dir.iterdir() if d.is_dir() and d.name.startswith("v")],
-            key=lambda x: x.name,
-            reverse=True
-        )
-        
-        # Mark the first (newest) tag as latest stable
-        for idx, version_dir in enumerate(version_dirs):
-            version_name = version_dir.name
-            
-            date_str = "Release version"
-            if check_git_ref_exists(version_name):
-                tag_date = get_git_date(version_name)
-                if tag_date:
-                    date_str = tag_date
-            
-            versions.append({
-                "name": version_name,
-                "path": version_name,
-                "is_development": False,
-                "is_latest_stable": idx == 0,  # First tag is latest stable
-                "date_str": date_str
-            })
-    
-    return versions
+
+    if not output_dir.exists():
+        return (recent, older)
+
+    version_dirs = [d for d in output_dir.iterdir() if d.is_dir() and d.name.startswith("v")]
+    sorted_dirs = sort_version_dirs(version_dirs)
+
+    RECENT_TAG_COUNT = 5
+    tag_entries: List[Dict] = []
+    for idx, version_dir in enumerate(sorted_dirs):
+        version_name = version_dir.name
+        date_str = "Release version"
+        if check_git_ref_exists(version_name):
+            tag_date = get_git_date(version_name)
+            if tag_date:
+                date_str = tag_date
+        tag_entries.append({
+            "name": version_name,
+            "path": version_name,
+            "is_development": False,
+            "is_latest_stable": idx == 0,
+            "date_str": date_str,
+        })
+
+    recent.extend(tag_entries[:RECENT_TAG_COUNT])
+    older.extend(tag_entries[RECENT_TAG_COUNT:])
+    return (recent, older)
 
 
 def main():
@@ -148,10 +180,13 @@ def main():
     
     # Collect version information
     print("Rebuilding index page...")
-    versions = collect_versions(output_dir)
-    
+    recent_versions, older_versions = collect_versions(output_dir)
+
     # Render the template
-    output_html = template.render(versions=versions)
+    output_html = template.render(
+        recent_versions=recent_versions,
+        older_versions=older_versions,
+    )
     
     # Write the output file
     output_file = output_dir / "index.html"

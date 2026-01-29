@@ -22,7 +22,7 @@ fn test_default_config() {
     assert_eq!(config.display.pages_lookback, 3);
     assert!(!config.display.row_numbers);
     assert_eq!(config.display.row_start_index, 1);
-    assert_eq!(config.display.table_cell_padding, 1);
+    assert_eq!(config.display.table_cell_padding, 2);
 
     // Check performance defaults
     assert_eq!(config.performance.sampling_threshold, 10000);

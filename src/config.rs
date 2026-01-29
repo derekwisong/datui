@@ -548,6 +548,14 @@ pub struct ColorConfig {
     pub cursor_dimmed: String,
     /// "default" = no alternate row color; any other value is parsed as a color (e.g. "dark_gray")
     pub alternate_row_color: String,
+    /// Chart view: series colors 1–7 (line/scatter/bar series)
+    pub chart_series_color_1: String,
+    pub chart_series_color_2: String,
+    pub chart_series_color_3: String,
+    pub chart_series_color_4: String,
+    pub chart_series_color_5: String,
+    pub chart_series_color_6: String,
+    pub chart_series_color_7: String,
 }
 
 // Field comments for ColorConfig
@@ -599,6 +607,13 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
         "alternate_row_color",
         "Background color for every other row in the main data table\nSet to \"default\" to disable alternate row coloring",
     ),
+    ("chart_series_color_1", "Chart view: first series color"),
+    ("chart_series_color_2", "Chart view: second series color"),
+    ("chart_series_color_3", "Chart view: third series color"),
+    ("chart_series_color_4", "Chart view: fourth series color"),
+    ("chart_series_color_5", "Chart view: fifth series color"),
+    ("chart_series_color_6", "Chart view: sixth series color"),
+    ("chart_series_color_7", "Chart view: seventh series color"),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -744,6 +759,13 @@ impl Default for ColorConfig {
             cursor_focused: "default".to_string(),
             cursor_dimmed: "default".to_string(),
             alternate_row_color: "indexed(234)".to_string(),
+            chart_series_color_1: "cyan".to_string(),
+            chart_series_color_2: "magenta".to_string(),
+            chart_series_color_3: "green".to_string(),
+            chart_series_color_4: "yellow".to_string(),
+            chart_series_color_5: "blue".to_string(),
+            chart_series_color_6: "red".to_string(),
+            chart_series_color_7: "bright_cyan".to_string(),
         }
     }
 }
@@ -974,6 +996,13 @@ impl ColorConfig {
         if self.alternate_row_color != "default" {
             validate_color!(&self.alternate_row_color, "alternate_row_color");
         }
+        validate_color!(&self.chart_series_color_1, "chart_series_color_1");
+        validate_color!(&self.chart_series_color_2, "chart_series_color_2");
+        validate_color!(&self.chart_series_color_3, "chart_series_color_3");
+        validate_color!(&self.chart_series_color_4, "chart_series_color_4");
+        validate_color!(&self.chart_series_color_5, "chart_series_color_5");
+        validate_color!(&self.chart_series_color_6, "chart_series_color_6");
+        validate_color!(&self.chart_series_color_7, "chart_series_color_7");
 
         Ok(())
     }
@@ -1068,6 +1097,27 @@ impl ColorConfig {
         }
         if other.alternate_row_color != default.alternate_row_color {
             self.alternate_row_color = other.alternate_row_color;
+        }
+        if other.chart_series_color_1 != default.chart_series_color_1 {
+            self.chart_series_color_1 = other.chart_series_color_1;
+        }
+        if other.chart_series_color_2 != default.chart_series_color_2 {
+            self.chart_series_color_2 = other.chart_series_color_2;
+        }
+        if other.chart_series_color_3 != default.chart_series_color_3 {
+            self.chart_series_color_3 = other.chart_series_color_3;
+        }
+        if other.chart_series_color_4 != default.chart_series_color_4 {
+            self.chart_series_color_4 = other.chart_series_color_4;
+        }
+        if other.chart_series_color_5 != default.chart_series_color_5 {
+            self.chart_series_color_5 = other.chart_series_color_5;
+        }
+        if other.chart_series_color_6 != default.chart_series_color_6 {
+            self.chart_series_color_6 = other.chart_series_color_6;
+        }
+        if other.chart_series_color_7 != default.chart_series_color_7 {
+            self.chart_series_color_7 = other.chart_series_color_7;
         }
     }
 }
@@ -1419,6 +1469,34 @@ impl Theme {
                 parser.parse(&config.colors.alternate_row_color)?,
             );
         }
+        colors.insert(
+            "chart_series_color_1".to_string(),
+            parser.parse(&config.colors.chart_series_color_1)?,
+        );
+        colors.insert(
+            "chart_series_color_2".to_string(),
+            parser.parse(&config.colors.chart_series_color_2)?,
+        );
+        colors.insert(
+            "chart_series_color_3".to_string(),
+            parser.parse(&config.colors.chart_series_color_3)?,
+        );
+        colors.insert(
+            "chart_series_color_4".to_string(),
+            parser.parse(&config.colors.chart_series_color_4)?,
+        );
+        colors.insert(
+            "chart_series_color_5".to_string(),
+            parser.parse(&config.colors.chart_series_color_5)?,
+        );
+        colors.insert(
+            "chart_series_color_6".to_string(),
+            parser.parse(&config.colors.chart_series_color_6)?,
+        );
+        colors.insert(
+            "chart_series_color_7".to_string(),
+            parser.parse(&config.colors.chart_series_color_7)?,
+        );
 
         Ok(Self { colors })
     }

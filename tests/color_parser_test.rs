@@ -321,6 +321,13 @@ fn test_theme_with_custom_colors() {
         distribution_other: "white".to_string(),
         outlier_marker: "red".to_string(),
         alternate_row_color: "default".to_string(),
+        chart_series_color_1: "cyan".to_string(),
+        chart_series_color_2: "magenta".to_string(),
+        chart_series_color_3: "green".to_string(),
+        chart_series_color_4: "yellow".to_string(),
+        chart_series_color_5: "blue".to_string(),
+        chart_series_color_6: "red".to_string(),
+        chart_series_color_7: "bright_cyan".to_string(),
     };
 
     let result = Theme::from_config(&config.theme);

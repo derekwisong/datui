@@ -1,5 +1,6 @@
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use polars::datatypes::DataType;
 use polars::prelude::{LazyFrame, Schema};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
@@ -18,6 +19,10 @@ use ratatui::widgets::{
 
 pub mod analysis_modal;
 pub mod cache;
+pub mod chart_data;
+pub mod chart_export;
+pub mod chart_export_modal;
+pub mod chart_modal;
 pub mod cli;
 pub mod config;
 pub mod export_modal;
@@ -37,6 +42,11 @@ pub use config::{
 };
 
 use analysis_modal::AnalysisModal;
+use chart_export::{
+    write_chart_eps, write_chart_png, ChartExportBounds, ChartExportFormat, ChartExportSeries,
+};
+use chart_export_modal::{ChartExportFocus, ChartExportModal};
+use chart_modal::{ChartFocus, ChartModal, ChartType};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 use filter_modal::{FilterFocus, FilterOperator, FilterStatement, LogicalOperator};
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
@@ -278,6 +288,7 @@ pub enum AppEvent {
     Pivot(PivotSpec),
     Melt(MeltSpec),
     Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
+    ChartExport(PathBuf, ChartExportFormat),      // Chart export: path, format (PNG/EPS)
     Collect,
     Update,
     Reset,
@@ -303,6 +314,7 @@ pub enum InputMode {
     Editing,
     Export,
     Info,
+    Chart,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -435,11 +447,14 @@ pub struct App {
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
     pub analysis_modal: AnalysisModal,
+    pub chart_modal: ChartModal,
+    pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
     error_modal: ErrorModal,
     success_modal: SuccessModal,
     confirmation_modal: ConfirmationModal,
     pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
+    pending_chart_export: Option<(PathBuf, ChartExportFormat)>,
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
     cache: CacheManager,
@@ -665,11 +680,14 @@ impl App {
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
             analysis_modal: AnalysisModal::new(),
+            chart_modal: ChartModal::new(),
+            chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
             error_modal: ErrorModal::new(),
             success_modal: SuccessModal::new(),
             confirmation_modal: ConfirmationModal::new(),
             pending_export: None,
+            pending_chart_export: None,
             show_help: false,
             help_scroll: 0,
             cache,
@@ -972,19 +990,29 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
-                        // User confirmed overwrite
+                        // User confirmed overwrite: chart export first, then dataframe export
+                        if let Some((path, format)) = self.pending_chart_export.take() {
+                            self.confirmation_modal.hide();
+                            return Some(AppEvent::ChartExport(path, format));
+                        }
                         if let Some((path, format, options)) = self.pending_export.take() {
                             self.confirmation_modal.hide();
                             return Some(AppEvent::Export(path, format, options));
                         }
                     } else {
-                        // User cancelled
+                        // User cancelled: if chart export overwrite, reopen chart export modal with path pre-filled
+                        if let Some((path, format)) = self.pending_chart_export.take() {
+                            self.chart_export_modal.reopen_with_path(&path, format);
+                        }
                         self.pending_export = None;
                         self.confirmation_modal.hide();
                     }
                 }
                 KeyCode::Esc => {
-                    // Cancel
+                    // Cancel: if chart export overwrite, reopen chart export modal with path pre-filled
+                    if let Some((path, format)) = self.pending_chart_export.take() {
+                        self.chart_export_modal.reopen_with_path(&path, format);
+                    }
                     self.pending_export = None;
                     self.confirmation_modal.hide();
                 }
@@ -2144,6 +2172,188 @@ impl App {
                     self.info_modal.schema_table_up(total_rows, visible);
                 }
                 _ => {}
+            }
+            return None;
+        }
+
+        if self.input_mode == InputMode::Chart {
+            // Chart export modal (sub-dialog within Chart mode)
+            if self.chart_export_modal.active {
+                match event.code {
+                    KeyCode::Esc if event.is_press() => {
+                        self.chart_export_modal.close();
+                    }
+                    KeyCode::Tab if event.is_press() => {
+                        self.chart_export_modal.next_focus();
+                    }
+                    KeyCode::BackTab if event.is_press() => {
+                        self.chart_export_modal.prev_focus();
+                    }
+                    // Only use h/j/k/l and arrows for format selector; when path input focused, pass all keys to path input
+                    KeyCode::Left | KeyCode::Char('h')
+                        if event.is_press()
+                            && self.chart_export_modal.focus
+                                == ChartExportFocus::FormatSelector =>
+                    {
+                        let idx = ChartExportFormat::ALL
+                            .iter()
+                            .position(|&f| f == self.chart_export_modal.selected_format)
+                            .unwrap_or(0);
+                        let prev = if idx == 0 {
+                            ChartExportFormat::ALL.len() - 1
+                        } else {
+                            idx - 1
+                        };
+                        self.chart_export_modal.selected_format = ChartExportFormat::ALL[prev];
+                    }
+                    KeyCode::Right | KeyCode::Char('l')
+                        if event.is_press()
+                            && self.chart_export_modal.focus
+                                == ChartExportFocus::FormatSelector =>
+                    {
+                        let idx = ChartExportFormat::ALL
+                            .iter()
+                            .position(|&f| f == self.chart_export_modal.selected_format)
+                            .unwrap_or(0);
+                        let next = (idx + 1) % ChartExportFormat::ALL.len();
+                        self.chart_export_modal.selected_format = ChartExportFormat::ALL[next];
+                    }
+                    KeyCode::Enter if event.is_press() => match self.chart_export_modal.focus {
+                        ChartExportFocus::PathInput | ChartExportFocus::ExportButton => {
+                            let path_str = self.chart_export_modal.path_input.value.trim();
+                            if !path_str.is_empty() {
+                                let mut path = PathBuf::from(path_str);
+                                let format = self.chart_export_modal.selected_format;
+                                if path.extension().map(|e| e.to_str())
+                                    != Some(Some(format.extension()))
+                                {
+                                    path.set_extension(format.extension());
+                                }
+                                let path_display = path.display().to_string();
+                                if path.exists() {
+                                    self.pending_chart_export = Some((path, format));
+                                    self.chart_export_modal.close();
+                                    self.confirmation_modal.show(format!(
+                                            "File already exists:\n{}\n\nDo you wish to overwrite this file?",
+                                            path_display
+                                        ));
+                                } else {
+                                    self.chart_export_modal.close();
+                                    return Some(AppEvent::ChartExport(path, format));
+                                }
+                            }
+                        }
+                        ChartExportFocus::CancelButton => {
+                            self.chart_export_modal.close();
+                        }
+                        _ => {}
+                    },
+                    _ => {
+                        if event.is_press()
+                            && self.chart_export_modal.focus == ChartExportFocus::PathInput
+                        {
+                            let _ = self.chart_export_modal.path_input.handle_key(event, None);
+                        }
+                    }
+                }
+                return None;
+            }
+
+            match event.code {
+                KeyCode::Char('e')
+                    if event.is_press()
+                        && self.chart_modal.focus != ChartFocus::XInput
+                        && self.chart_modal.focus != ChartFocus::YInput =>
+                {
+                    // Open chart export modal (only when we have chartable data)
+                    if let Some(ref _state) = self.data_table_state {
+                        let x = self.chart_modal.x_column.as_ref();
+                        let y_ok = !self.chart_modal.y_columns.is_empty();
+                        if x.is_some() && y_ok {
+                            self.chart_export_modal
+                                .open(&self.theme, self.history_limit);
+                        }
+                    }
+                }
+                // q/Q do nothing in chart view (no exit)
+                KeyCode::Char('h')
+                    if event.is_press() && event.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.show_help = true;
+                }
+                KeyCode::Esc if event.is_press() => {
+                    self.chart_modal.close();
+                    self.input_mode = InputMode::Normal;
+                }
+                KeyCode::Tab if event.is_press() => {
+                    self.chart_modal.next_focus();
+                }
+                KeyCode::BackTab if event.is_press() => {
+                    self.chart_modal.prev_focus();
+                }
+                KeyCode::Enter | KeyCode::Char(' ') if event.is_press() => {
+                    match self.chart_modal.focus {
+                        ChartFocus::YStartsAtZero => self.chart_modal.toggle_y_starts_at_zero(),
+                        ChartFocus::LogScale => self.chart_modal.toggle_log_scale(),
+                        ChartFocus::ShowLegend => self.chart_modal.toggle_show_legend(),
+                        ChartFocus::XList => self.chart_modal.x_list_select(),
+                        ChartFocus::YList => self.chart_modal.y_list_select(),
+                        ChartFocus::ChartType => self.chart_modal.next_chart_type(),
+                        _ => {}
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h')
+                    if event.is_press()
+                        && self.chart_modal.focus != ChartFocus::XInput
+                        && self.chart_modal.focus != ChartFocus::YInput =>
+                {
+                    if self.chart_modal.focus == ChartFocus::ChartType {
+                        self.chart_modal.prev_chart_type();
+                    }
+                }
+                KeyCode::Right | KeyCode::Char('l')
+                    if event.is_press()
+                        && self.chart_modal.focus != ChartFocus::XInput
+                        && self.chart_modal.focus != ChartFocus::YInput =>
+                {
+                    if self.chart_modal.focus == ChartFocus::ChartType {
+                        self.chart_modal.next_chart_type();
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k')
+                    if event.is_press()
+                        && self.chart_modal.focus != ChartFocus::XInput
+                        && self.chart_modal.focus != ChartFocus::YInput =>
+                {
+                    match self.chart_modal.focus {
+                        ChartFocus::ChartType => self.chart_modal.prev_chart_type(),
+                        ChartFocus::XList => self.chart_modal.x_list_up(),
+                        ChartFocus::YList => self.chart_modal.y_list_up(),
+                        _ => {}
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j')
+                    if event.is_press()
+                        && self.chart_modal.focus != ChartFocus::XInput
+                        && self.chart_modal.focus != ChartFocus::YInput =>
+                {
+                    match self.chart_modal.focus {
+                        ChartFocus::ChartType => self.chart_modal.next_chart_type(),
+                        ChartFocus::XList => self.chart_modal.x_list_down(),
+                        ChartFocus::YList => self.chart_modal.y_list_down(),
+                        _ => {}
+                    }
+                }
+                _ => {
+                    // Pass key to text inputs when X or Y input is focused (including h/j/k/l for typing)
+                    if event.is_press() {
+                        if self.chart_modal.focus == ChartFocus::XInput {
+                            let _ = self.chart_modal.x_input.handle_key(event, None);
+                        } else if self.chart_modal.focus == ChartFocus::YInput {
+                            let _ = self.chart_modal.y_input.handle_key(event, None);
+                        }
+                    }
+                }
             }
             return None;
         }
@@ -3687,6 +3897,50 @@ impl App {
                 }
                 None
             }
+            KeyCode::Char('c') => {
+                if let Some(state) = &self.data_table_state {
+                    if self.input_mode == InputMode::Normal {
+                        let numeric_columns: Vec<String> = state
+                            .schema
+                            .iter()
+                            .filter(|(_, dtype)| {
+                                matches!(
+                                    dtype,
+                                    DataType::Int8
+                                        | DataType::Int16
+                                        | DataType::Int32
+                                        | DataType::Int64
+                                        | DataType::UInt8
+                                        | DataType::UInt16
+                                        | DataType::UInt32
+                                        | DataType::UInt64
+                                        | DataType::Float32
+                                        | DataType::Float64
+                                )
+                            })
+                            .map(|(name, _)| name.to_string())
+                            .collect();
+                        let datetime_columns: Vec<String> = state
+                            .schema
+                            .iter()
+                            .filter(|(_, dtype)| {
+                                matches!(
+                                    dtype,
+                                    DataType::Datetime(_, _) | DataType::Date | DataType::Time
+                                )
+                            })
+                            .map(|(name, _)| name.to_string())
+                            .collect();
+                        self.chart_modal.open(&numeric_columns, &datetime_columns);
+                        self.chart_modal.x_input =
+                            std::mem::take(&mut self.chart_modal.x_input).with_theme(&self.theme);
+                        self.chart_modal.y_input =
+                            std::mem::take(&mut self.chart_modal.y_input).with_theme(&self.theme);
+                        self.input_mode = InputMode::Chart;
+                    }
+                }
+                None
+            }
             KeyCode::Char('p') => {
                 if let Some(state) = &self.data_table_state {
                     if self.input_mode == InputMode::Normal {
@@ -3905,6 +4159,25 @@ impl App {
                     None
                 }
             }
+            AppEvent::ChartExport(path, format) => {
+                let result = self.do_chart_export(path, *format);
+                match result {
+                    Ok(()) => {
+                        self.success_modal.show(format!(
+                            "Chart exported successfully to\n{}",
+                            path.display()
+                        ));
+                        self.chart_export_modal.close();
+                    }
+                    Err(e) => {
+                        self.error_modal.show(e.to_string());
+                        // Reopen chart export modal with path pre-filled so user can try again
+                        self.chart_export_modal.reopen_with_path(path, *format);
+                    }
+                }
+                // Stay in Chart mode
+                None
+            }
             AppEvent::Export(path, format, options) => {
                 if let Some(_state) = &self.data_table_state {
                     // Show progress immediately
@@ -3962,6 +4235,106 @@ impl App {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// Perform chart export to file. Builds series and bounds from current chart state and data.
+    fn do_chart_export(&self, path: &Path, format: ChartExportFormat) -> color_eyre::Result<()> {
+        let state = self
+            .data_table_state
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("No data loaded"))?;
+        let x_column = self
+            .chart_modal
+            .x_column
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("No X axis column selected"))?;
+        let y_columns = &self.chart_modal.y_columns;
+        if y_columns.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No Y axis columns selected"));
+        }
+
+        let chart_data_result =
+            chart_data::prepare_chart_data(&state.lf, &state.schema, x_column, y_columns)?;
+
+        let log_scale = self.chart_modal.log_scale;
+        let series: Vec<ChartExportSeries> = chart_data_result
+            .series
+            .iter()
+            .zip(y_columns.iter())
+            .map(|(points, name)| {
+                let pts = if log_scale {
+                    points
+                        .iter()
+                        .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
+                        .collect()
+                } else {
+                    points.clone()
+                };
+                ChartExportSeries {
+                    name: name.clone(),
+                    points: pts,
+                }
+            })
+            .filter(|s| !s.points.is_empty())
+            .collect();
+
+        if series.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+        }
+
+        let mut all_x_min = f64::INFINITY;
+        let mut all_x_max = f64::NEG_INFINITY;
+        let mut all_y_min = f64::INFINITY;
+        let mut all_y_max = f64::NEG_INFINITY;
+        for s in &series {
+            for &(x, y) in &s.points {
+                all_x_min = all_x_min.min(x);
+                all_x_max = all_x_max.max(x);
+                all_y_min = all_y_min.min(y);
+                all_y_max = all_y_max.max(y);
+            }
+        }
+
+        let chart_type = self.chart_modal.chart_type;
+        let y_starts_at_zero = self.chart_modal.y_starts_at_zero;
+        let y_min_bounds = if chart_type == ChartType::Bar {
+            0.0_f64.min(all_y_min)
+        } else if y_starts_at_zero {
+            0.0
+        } else {
+            all_y_min
+        };
+        let y_max_bounds = if all_y_max > y_min_bounds {
+            all_y_max
+        } else {
+            y_min_bounds + 1.0
+        };
+        let x_min_bounds = if all_x_max > all_x_min {
+            all_x_min
+        } else {
+            all_x_min - 0.5
+        };
+        let x_max_bounds = if all_x_max > all_x_min {
+            all_x_max
+        } else {
+            all_x_min + 0.5
+        };
+
+        let x_label = x_column.clone();
+        let y_label = y_columns.join(", ");
+        let bounds = ChartExportBounds {
+            x_min: x_min_bounds,
+            x_max: x_max_bounds,
+            y_min: y_min_bounds,
+            y_max: y_max_bounds,
+            x_label: x_label.clone(),
+            y_label: y_label.clone(),
+        };
+
+        match format {
+            ChartExportFormat::Png => write_chart_png(path, &series, chart_type, &bounds),
+            ChartExportFormat::Eps => write_chart_eps(path, &series, chart_type, &bounds),
         }
     }
 
@@ -4538,6 +4911,17 @@ Dataset technical info (Schema and Resources tabs).
   Left / Right:     On tab bar: switch Schema | Resources tabs
   ↑ / ↓:            When schema table focused: scroll and move selection
   Esc / i:          Close info panel",
+            ),
+            InputMode::Chart => (
+                "Chart Help",
+                "\
+Chart view: visualize data as line, scatter, or bar.
+
+  Tab / BackTab:    Move focus (chart type → X input → X list → Y input → Y list → checkboxes)
+  ← / →:            Change chart type (Line / Scatter / Bar) when chart type focused
+  ↑ / ↓:            Move selection in X or Y column list when list focused
+  Enter / Space:    Select from list, or toggle checkboxes (Start y at 0, Log scale, Legend)
+  Esc:              Back to main view",
             ),
         };
         (title.to_string(), content.to_string())
@@ -6065,6 +6449,67 @@ impl Widget for &mut App {
             // Don't return - continue to render toolbar and other UI elements
         }
 
+        // Render chart view (full screen in main area)
+        if self.input_mode == InputMode::Chart {
+            let chart_area = main_area;
+            Clear.render(chart_area, buf);
+            let (chart_data, x_axis_kind) = self
+                .chart_modal
+                .x_column
+                .as_ref()
+                .and_then(|x| {
+                    let state = self.data_table_state.as_ref()?;
+                    chart_data::prepare_chart_data(
+                        &state.lf,
+                        &state.schema,
+                        x,
+                        &self.chart_modal.y_columns,
+                    )
+                    .ok()
+                    .map(|r| (r.series, r.x_axis_kind))
+                })
+                .unwrap_or((Vec::new(), crate::chart_data::XAxisTemporalKind::Numeric));
+            let chart_data_opt = if chart_data.iter().any(|s| !s.is_empty()) {
+                Some(&chart_data)
+            } else {
+                None
+            };
+            widgets::chart::render_chart_view(
+                chart_area,
+                buf,
+                &mut self.chart_modal,
+                &self.theme,
+                chart_data_opt,
+                x_axis_kind,
+            );
+
+            if self.chart_export_modal.active {
+                let border = self.color("modal_border");
+                let active = self.color("modal_border_active");
+                // 3 rows of 3 lines each + 2 for outer border = 11; fixed height so dialog is no taller than content
+                const CHART_EXPORT_MODAL_HEIGHT: u16 = 11;
+                let modal_width = (chart_area.width * 3 / 4).clamp(40, 54);
+                let modal_height = CHART_EXPORT_MODAL_HEIGHT
+                    .min(chart_area.height)
+                    .max(CHART_EXPORT_MODAL_HEIGHT);
+                let modal_x = chart_area.x + chart_area.width.saturating_sub(modal_width) / 2;
+                let modal_y = chart_area.y + chart_area.height.saturating_sub(modal_height) / 2;
+                let modal_area = Rect {
+                    x: modal_x,
+                    y: modal_y,
+                    width: modal_width,
+                    height: modal_height,
+                };
+                widgets::chart_export_modal::render_chart_export_modal(
+                    modal_area,
+                    buf,
+                    &mut self.chart_export_modal,
+                    border,
+                    active,
+                );
+            }
+        }
+
         // Render export progress bar (overlay when exporting)
         if matches!(self.loading_state, LoadingState::Exporting { .. }) {
             App::render_loading_gauge(&self.loading_state, area, buf);
@@ -6072,7 +6517,7 @@ impl Widget for &mut App {
 
         // Render confirmation modal (highest priority)
         if self.confirmation_modal.active {
-            let popup_area = centered_rect(area, 60, 20);
+            let popup_area = centered_rect_with_min(area, 64, 26, 50, 12);
             Clear.render(popup_area, buf);
 
             // Set background color for the modal
@@ -6525,7 +6970,7 @@ Delete Confirmation:
             .as_ref()
             .map(|s| !s.active_query.trim().is_empty())
             .unwrap_or(false);
-        // Dim controls when any modal is active (except analysis modal uses its own controls)
+        // Dim controls when any modal is active (except analysis/chart modals use their own controls)
         let is_modal_active = self.show_help
             || self.input_mode == InputMode::Editing
             || self.input_mode == InputMode::SortFilter
@@ -6558,6 +7003,9 @@ Delete Confirmation:
             }
 
             controls = controls.with_custom_controls(analysis_controls);
+        } else if self.input_mode == InputMode::Chart {
+            let chart_controls = vec![("Esc", "Back"), ("e", "Export")];
+            controls = controls.with_custom_controls(chart_controls);
         } else {
             controls = controls
                 .with_dimmed(is_modal_active)
@@ -6589,4 +7037,21 @@ fn centered_rect(r: Rect, percent_x: u16, percent_y: u16) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+/// Like `centered_rect` but enforces minimum width and height so the dialog
+/// stays usable on very small terminals.
+fn centered_rect_with_min(
+    r: Rect,
+    percent_x: u16,
+    percent_y: u16,
+    min_width: u16,
+    min_height: u16,
+) -> Rect {
+    let inner = centered_rect(r, percent_x, percent_y);
+    let width = inner.width.max(min_width).min(r.width);
+    let height = inner.height.max(min_height).min(r.height);
+    let x = r.x + r.width.saturating_sub(width) / 2;
+    let y = r.y + r.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width, height)
 }

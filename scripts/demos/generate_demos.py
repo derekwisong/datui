@@ -63,6 +63,12 @@ TAPE_ACTIONS[8] = {
     "post": [_remove_file_if_present(Path("/tmp/people_export.parquet"))],
 }
 
+# Tape 10 (charting): demo creates /tmp/datui_scatter.png; require absent before, delete after
+TAPE_ACTIONS[10] = {
+    "pre": [_require_file_absent(Path("/tmp/datui_scatter.png"))],
+    "post": [_remove_file_if_present(Path("/tmp/datui_scatter.png"))],
+}
+
 
 class VHSTapeDemo:
     """

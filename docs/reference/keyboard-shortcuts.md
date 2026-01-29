@@ -9,6 +9,7 @@ In the main view, the following keyboard shortcuts are available:
 | `s` | Open **Sort & Filter** controls (See [Sorting and Filtering](../user-guide/filtering-sorting.md)) |
 | `e` | Open export controls (See [Exporting Data](../user-guide/exporting-data.md)) |
 | `a` | Open the analysis tools (See [Analysis Features](../user-guide/analysis-features.md)) |
+| `c` | Open **Chart** view (See [Charting](../user-guide/charting.md)) |
 | `t` | Open template manager (See [Templates](../user-guide/templates.md)) |
 | `T` | Apply most relevant template |
 | `i` | Open **Info** panel (modal); `Tab` / `Shift+Tab` move focus (tab bar ↔ schema table); `Left` / `Right` switch tabs (See [Dataset Info](../user-guide/dataset-info.md)) |

@@ -58,9 +58,12 @@ src/
 │   ├── schema.rs       # Schema display widget
 │   ├── debug.rs        # Debug overlay widget
 │   ├── analysis.rs     # Analysis modal rendering
+│   ├── chart.rs        # Chart view widget (sidebar + chart area)
 │   ├── pivot_melt.rs   # Pivot & Melt modal rendering
 │   └── template_modal.rs # Template management UI
 ├── query.rs            # Query parser and executor
+├── chart_modal.rs      # Chart view state (type, x/y columns, options, export)
+├── chart_data.rs       # Chart data preparation (LazyFrame → series points)
 ├── pivot_melt_modal.rs # Pivot & Melt modal state and specs
 ├── statistics.rs       # Statistical computation module
 ├── analysis_modal.rs   # Analysis modal state management

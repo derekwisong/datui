@@ -85,6 +85,13 @@ keybind_hints = "cyan"              # Keybind hints
 keybind_labels = "yellow"           # Action labels
 primary_chart_series_color = "cyan" # Chart data
 secondary_chart_series_color = "dark_gray" # Chart theory
+chart_series_color_1 = "cyan"       # Chart view: first series
+chart_series_color_2 = "magenta"    # Chart view: second series
+chart_series_color_3 = "green"      # Chart view: third series
+chart_series_color_4 = "yellow"    # Chart view: fourth series
+chart_series_color_5 = "blue"      # Chart view: fifth series
+chart_series_color_6 = "red"       # Chart view: sixth series
+chart_series_color_7 = "bright_cyan" # Chart view: seventh series
 error = "red"                       # Error messages
 success = "green"                   # Success indicators
 warning = "yellow"                  # Warnings
@@ -156,6 +163,7 @@ All UI colors can be customized:
 | `keybind_labels` | Action labels in controls bar | yellow |
 | `primary_chart_series_color` | Chart data (histogram bars, Q-Q plot data points) | cyan |
 | `secondary_chart_series_color` | Chart theory (histogram overlays, Q-Q plot reference line) | dark_gray |
+| `chart_series_color_1` … `chart_series_color_7` | Chart view: series colors (line/scatter/bar) | cyan, magenta, green, yellow, blue, red, bright_cyan |
 | `success` | Success indicators, normal distributions | green |
 | `error` | Error messages, outliers | red |
 | `warning` | Warnings, skewed distributions | yellow |

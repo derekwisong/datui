@@ -29,7 +29,7 @@ See [Querying Data](user-guide/querying-data.md) for detailed query syntax and e
 
 **What it shows:**
 - Opening the Info panel with `i`
-- Scrolling the schema table and switching to the Resources tab
+- Viewing information about the dataset
 
 See [Dataset Info](user-guide/dataset-info.md) for details about the Schema and Resources tabs.
 
@@ -49,7 +49,7 @@ See [Pivot and Melt](user-guide/reshaping.md) for pivot and melt options.
 
 **What it shows:**
 - Switching to the Melt tab and selecting index columns
-- Applying a melt (wide → long) with the default "All except index" strategy
+- Applying a melt (wide → long)
 
 See [Pivot and Melt](user-guide/reshaping.md) for pivot and melt options.
 
@@ -89,6 +89,17 @@ See [Exporting Data](user-guide/exporting-data.md) for supported formats and opt
 
 **What it shows:**
 - Opening analysis with `a` and selecting the Correlation Matrix tool
-- Scrolling the correlation matrix and closing the analysis view
+- Scrolling the correlation matrix
 
-See [Analysis Features](user-guide/analysis-features.md) for the Describe, Distribution Analysis, and Correlation Matrix tools.
+See [Analysis Features](user-guide/analysis-features.md) for details.
+
+## Charting
+
+![Charting Demo](demos/10-charting.gif)
+
+**What it shows:**
+- Opening the chart with `c`
+- Viewing data in a line chart, and then a scatter plot
+- Exporting the chart to a PNG file
+
+See [Charting](user-guide/charting.md) for more details.

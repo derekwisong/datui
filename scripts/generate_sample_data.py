@@ -450,6 +450,82 @@ def generate_melt_wide_many():
     return pl.DataFrame(data)
 
 
+def generate_charting_demo():
+    """
+    Generate daily time-series data for chart view demos and testing.
+
+    One row per day for 10 years (2015-01-01 through 2024-12-31). Columns:
+    - date: sequential daily dates
+    - day_of_week: Mon, Tue, ..., Sun (categorical)
+    - stock_market: fictitious index (random walk with drift/volatility)
+    - high_temp: daily high (seasonal + noise)
+    - 20d_avg_high_temp: 20-day rolling average of high_temp
+    - customer_count: integer (seasonal + weekday + noise)
+    - shark_sightings: integer daily count (low with occasional spikes)
+    """
+    np.random.seed(55)
+    random.seed(55)
+
+    base = datetime(2015, 1, 1).date()
+    days = (datetime(2024, 12, 31).date() - base).days + 1
+    dates = [base + timedelta(days=i) for i in range(days)]
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    # day_of_week from date (2015-01-01 is Thursday → weekday 3)
+    day_of_week = [
+        day_names[(base.weekday() + i) % 7] for i in range(days)
+    ]
+
+    # Stock market: random walk with slight upward drift and volatility
+    walk = np.zeros(days)
+    walk[0] = 1000.0
+    for i in range(1, days):
+        walk[i] = walk[i - 1] + np.random.normal(0.5, 15.0)
+    stock_market = [round(float(x), 2) for x in walk]
+
+    # High temp: seasonal sine + noise (roughly 30–100 °F)
+    t = np.arange(days, dtype=float)
+    seasonal = 65.0 + 25.0 * np.sin(2 * np.pi * t / 365.25 - 1.6)
+    noise = np.random.normal(0, 5.0, days)
+    high_temp = [round(float(np.clip(seasonal[i] + noise[i], 25, 105)), 1) for i in range(days)]
+
+    # 20-day rolling average of high_temp
+    high_temp_arr = np.array(high_temp, dtype=float)
+    avg_20d = np.zeros(days)
+    for i in range(days):
+        lo = max(0, i - 19)
+        avg_20d[i] = high_temp_arr[lo : i + 1].mean()
+    avg_20d_list = [round(float(x), 1) for x in avg_20d]
+
+    # Customer count: base + weekday effect + seasonal + noise (non-negative int)
+    weekday_effect = np.array([0, 0, 0, 0, 10, 25, 15])  # Fri/Sat/Sun higher
+    base_cust = 500
+    cust = np.zeros(days)
+    for i in range(days):
+        wd = (base.weekday() + i) % 7
+        seasonal_cust = 80 * np.sin(2 * np.pi * i / 365.25)
+        cust[i] = base_cust + weekday_effect[wd] + seasonal_cust + np.random.normal(0, 30)
+    customer_count = [max(0, int(round(x))) for x in cust]
+
+    # Shark sightings: low counts, occasional spikes (Poisson-like with rare spikes)
+    lam = np.ones(days) * 0.3
+    for _ in range(12):
+        idx = random.randint(0, days - 1)
+        lam[idx] = 8.0 + random.uniform(0, 5)
+    shark_sightings = [np.random.poisson(l) for l in lam]
+
+    data = {
+        "date": dates,
+        "day_of_week": day_of_week,
+        "stock_market": stock_market,
+        "high_temp": high_temp,
+        "20d_avg_high_temp": avg_20d_list,
+        "customer_count": customer_count,
+        "shark_sightings": shark_sightings,
+    }
+    return pl.DataFrame(data)
+
+
 def generate_correlation_matrix_data():
     """
     Generate numeric data with designed pairwise correlations for correlation matrix demos.
@@ -636,8 +712,13 @@ def main():
     save_csv(melt_wide_many_df, "melt_wide_many.csv")
     save_parquet(melt_wide_many_df, "melt_wide_many.parquet")
 
+    # Charting demo (10 years daily time series)
+    print("\n10. Generating charting demo data...")
+    chart_df = generate_charting_demo()
+    save_parquet(chart_df, "charting_demo.parquet")
+
     # Correlation matrix demo (Parquet only: 100k rows, 10 numeric columns)
-    print("\n10. Generating correlation matrix demo data...")
+    print("\n11. Generating correlation matrix demo data...")
     corr_df = generate_correlation_matrix_data()
     save_parquet(corr_df, "correlation_matrix_demo.parquet")
 

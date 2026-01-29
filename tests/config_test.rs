@@ -398,6 +398,14 @@ fn test_new_color_fields() {
         config.theme.colors.secondary_chart_series_color,
         "dark_gray"
     );
+    // Chart view series colors
+    assert_eq!(config.theme.colors.chart_series_color_1, "cyan");
+    assert_eq!(config.theme.colors.chart_series_color_2, "magenta");
+    assert_eq!(config.theme.colors.chart_series_color_3, "green");
+    assert_eq!(config.theme.colors.chart_series_color_4, "yellow");
+    assert_eq!(config.theme.colors.chart_series_color_5, "blue");
+    assert_eq!(config.theme.colors.chart_series_color_6, "red");
+    assert_eq!(config.theme.colors.chart_series_color_7, "bright_cyan");
     assert_eq!(config.theme.colors.controls_bg, "indexed(235)");
     assert_eq!(config.theme.colors.table_header_bg, "indexed(235)");
     assert_eq!(config.theme.colors.column_separator, "cyan");
@@ -408,6 +416,8 @@ fn test_new_color_fields() {
     if std::env::var("NO_COLOR").is_err() {
         assert_ne!(theme.get("primary_chart_series_color"), Color::Reset);
         assert_ne!(theme.get("secondary_chart_series_color"), Color::Reset);
+        assert_ne!(theme.get("chart_series_color_1"), Color::Reset);
+        assert_ne!(theme.get("chart_series_color_7"), Color::Reset);
         // controls_bg and table_header_bg default to indexed(235)
         assert_eq!(theme.get("controls_bg"), Color::Indexed(235));
         assert_eq!(theme.get("table_header_bg"), Color::Indexed(235));
@@ -430,6 +440,19 @@ fn test_new_color_fields_custom_values() {
     // Should validate successfully
     let result = config.validate();
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_validate_config_with_invalid_chart_series_color() {
+    std::env::remove_var("NO_COLOR");
+    let mut config = AppConfig::default();
+    config.theme.colors.chart_series_color_1 = "invalid_color_name".to_string();
+    let result = config.validate();
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Invalid color value"));
 }
 
 #[test]

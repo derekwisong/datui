@@ -1,4 +1,6 @@
 pub mod analysis;
+pub mod chart;
+pub mod chart_export_modal;
 pub mod controls;
 pub mod datatable;
 pub mod debug;

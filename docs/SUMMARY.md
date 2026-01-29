@@ -14,6 +14,7 @@
   - [Querying Data](user-guide/querying-data.md)
   - [Filtering and Sorting](user-guide/filtering-sorting.md)
   - [Exporting Data](user-guide/exporting-data.md)
+  - [Charting](user-guide/charting.md)
   - [Dataset Info](user-guide/dataset-info.md)
   - [Analysis Mode](user-guide/analysis-features.md)
   - [Reshaping: Pivot and Melt](user-guide/reshaping.md)

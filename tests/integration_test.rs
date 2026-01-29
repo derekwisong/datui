@@ -105,3 +105,72 @@ fn test_full_workflow() {
     let df = datatable.lf.clone().collect().unwrap();
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(97));
 }
+
+#[test]
+fn test_chart_open_and_esc_back() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx);
+
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join("chart_integration_test.csv");
+
+    let mut df = df!(
+        "x" => (0..10).collect::<Vec<i32>>(),
+        "y" => (0..10).map(|i| i * 2).collect::<Vec<i32>>()
+    )
+    .unwrap();
+    let mut file = File::create(&csv_path).unwrap();
+    CsvWriter::new(&mut file).finish(&mut df).unwrap();
+
+    let event = AppEvent::Open(csv_path.clone(), OpenOptions::default());
+    if let Some(next_event) = app.event(&event) {
+        if let Some(collect_event) = app.event(&next_event) {
+            app.event(&collect_event);
+        }
+    }
+    assert!(app.data_table_state.is_some());
+    assert_eq!(app.input_mode, InputMode::Normal);
+
+    let key_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+    app.event(&AppEvent::Key(key_c));
+    assert_eq!(app.input_mode, InputMode::Chart);
+    assert!(app.chart_modal.active);
+
+    let key_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    app.event(&AppEvent::Key(key_esc));
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(!app.chart_modal.active);
+}
+
+#[test]
+fn test_chart_q_does_not_exit() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx);
+
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join("chart_q_test.csv");
+
+    let mut df = df!("a" => &[1_i32], "b" => &[2_i32]).unwrap();
+    let mut file = File::create(&csv_path).unwrap();
+    CsvWriter::new(&mut file).finish(&mut df).unwrap();
+
+    let event = AppEvent::Open(csv_path, OpenOptions::default());
+    if let Some(next_event) = app.event(&event) {
+        if let Some(collect_event) = app.event(&next_event) {
+            app.event(&collect_event);
+        }
+    }
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.input_mode, InputMode::Chart);
+
+    // q does nothing in chart view (no exit)
+    let key_q = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+    let out = app.event(&AppEvent::Key(key_q));
+    assert!(out.is_none());
+    assert_eq!(app.input_mode, InputMode::Chart);
+}

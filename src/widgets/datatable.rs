@@ -1973,6 +1973,46 @@ mod tests {
         .lazy()
     }
 
+    /// LazyFrame with 500 rows for scroll benchmark (enough to hit buffer-edge path when scrolling).
+    fn create_bench_scroll_lf() -> LazyFrame {
+        const N: usize = 500;
+        df!(
+            "a" => (0..N).map(|i| i as i32).collect::<Vec<i32>>(),
+            "b" => (0..N).map(|i| format!("text_{}", i)).collect::<Vec<String>>(),
+            "c" => (0..N).map(|i| i as i32 % 3).collect::<Vec<i32>>(),
+            "d" => (0..N).map(|i| i as i32 % 5).collect::<Vec<i32>>()
+        )
+        .unwrap()
+        .lazy()
+    }
+
+    /// Benchmark: time N row-down scrolls. Run with:
+    ///   cargo test scroll_bench --release -- --nocapture --ignored
+    /// Output includes SCROLL_BENCH_MS=<ms> and SCROLL_BENCH_ITERS=<n> for scripts/bench_scroll.sh.
+    #[test]
+    #[ignore]
+    fn scroll_bench() {
+        use std::time::Instant;
+
+        const SCROLL_ITERS: usize = 200;
+        const VISIBLE_ROWS: usize = 20;
+
+        let lf = create_bench_scroll_lf();
+        let mut state = DataTableState::new(lf, Some(3), Some(3)).unwrap();
+        state.visible_rows = VISIBLE_ROWS;
+        state.collect();
+
+        let start = Instant::now();
+        for _ in 0..SCROLL_ITERS {
+            state.select_next();
+        }
+        let elapsed = start.elapsed();
+
+        let ms = elapsed.as_secs_f64() * 1000.0;
+        println!("SCROLL_BENCH_MS={:.2}", ms);
+        println!("SCROLL_BENCH_ITERS={}", SCROLL_ITERS);
+    }
+
     #[test]
     fn test_from_csv() {
         // Ensure sample data is generated before running test

@@ -1,4 +1,5 @@
 use color_eyre::Result;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::{fs, fs::File, path::Path};
@@ -1540,7 +1541,11 @@ impl DataTable {
                 .enumerate()
             {
                 let value = col_data.get(row_index).unwrap();
-                let val_str = value.str_value();
+                let val_str: Cow<str> = if matches!(value, AnyValue::Null) {
+                    Cow::Borrowed("")
+                } else {
+                    value.str_value()
+                };
                 let len = val_str.chars().count() as u16;
                 max_len = max_len.max(len);
                 row.push(Cell::from(Line::from(val_str)));
@@ -1706,7 +1711,11 @@ impl StatefulWidget for DataTable {
                 let col_data = &locked_df[col_index];
                 for row_index in 0..locked_df.height().min(state.visible_rows) {
                     let value = col_data.get(row_index).unwrap();
-                    let val_str = value.str_value();
+                    let val_str: Cow<str> = if matches!(value, AnyValue::Null) {
+                        Cow::Borrowed("")
+                    } else {
+                        value.str_value()
+                    };
                     let len = val_str.chars().count() as u16;
                     max_len = max_len.max(len);
                 }

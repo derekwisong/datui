@@ -22,6 +22,7 @@ fn test_default_config() {
     assert_eq!(config.display.pages_lookback, 3);
     assert!(!config.display.row_numbers);
     assert_eq!(config.display.row_start_index, 1);
+    assert_eq!(config.display.table_cell_padding, 1);
 
     // Check performance defaults
     assert_eq!(config.performance.sampling_threshold, 10000);
@@ -29,6 +30,7 @@ fn test_default_config() {
 
     // Check theme defaults
     assert_eq!(config.theme.colors.keybind_hints, "cyan");
+    assert_eq!(config.theme.colors.alternate_row_color, "default");
 
     // Check query defaults
     assert_eq!(config.query.history_limit, 1000);
@@ -346,6 +348,7 @@ fn test_merge_does_not_override_with_defaults() {
         pages_lookback: 5,
         row_numbers: true,
         row_start_index: 0,
+        table_cell_padding: 1,
     };
 
     let override_config = DisplayConfig::default();

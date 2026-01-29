@@ -1461,6 +1461,8 @@ pub struct DataTable {
     pub header_fg: Color,
     pub row_numbers_fg: Color,
     pub separator_fg: Color,
+    pub table_cell_padding: u16,
+    pub alternate_row_bg: Option<Color>,
 }
 
 impl Default for DataTable {
@@ -1470,6 +1472,8 @@ impl Default for DataTable {
             header_fg: Color::White,
             row_numbers_fg: Color::DarkGray,
             separator_fg: Color::White,
+            table_cell_padding: 1,
+            alternate_row_bg: None,
         }
     }
 }
@@ -1499,6 +1503,16 @@ impl DataTable {
         self.header_fg = header_fg;
         self.row_numbers_fg = row_numbers_fg;
         self.separator_fg = separator_fg;
+        self
+    }
+
+    pub fn with_cell_padding(mut self, padding: u16) -> Self {
+        self.table_cell_padding = padding;
+        self
+    }
+
+    pub fn with_alternate_row_bg(mut self, color: Option<Color>) -> Self {
+        self.alternate_row_bg = color;
         self
     }
 
@@ -1561,21 +1575,29 @@ impl DataTable {
             } else if !overflows {
                 visible_columns += 1;
                 widths[col_index] = max_len;
-                used_width += max_len + 1;
+                used_width += max_len + self.table_cell_padding;
             } else {
                 break;
             }
         }
 
         widths.truncate(visible_columns);
-        // convert rows to a vector of Row
-        let rows = rows
+        // convert rows to a vector of Row, with optional alternate row background
+        let rows: Vec<Row> = rows
             .into_iter()
-            .map(|mut row| {
+            .enumerate()
+            .map(|(row_index, mut row)| {
                 row.truncate(visible_columns);
-                Row::new(row)
+                let row_style = if row_index % 2 == 1 {
+                    self.alternate_row_bg
+                        .map(|c| Style::default().bg(c))
+                        .unwrap_or_default()
+                } else {
+                    Style::default()
+                };
+                Row::new(row).style(row_style)
             })
-            .collect::<Vec<Row>>();
+            .collect();
 
         let header_row_style = if self.header_bg == Color::Reset {
             Style::default().fg(self.header_fg)
@@ -1591,7 +1613,7 @@ impl DataTable {
 
         StatefulWidget::render(
             Table::new(rows, widths)
-                .column_spacing(1)
+                .column_spacing(self.table_cell_padding)
                 .header(Row::new(headers).style(header_row_style))
                 .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
             area,

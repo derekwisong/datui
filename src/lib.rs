@@ -449,6 +449,7 @@ pub struct App {
     theme: Theme,                       // Color theme for UI rendering
     sampling_threshold: usize,          // Threshold for sampling large datasets
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
+    table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
 }
 
 impl App {
@@ -678,6 +679,7 @@ impl App {
             theme,
             sampling_threshold: app_config.performance.sampling_threshold,
             history_limit: app_config.query.history_limit,
+            table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
         }
     }
 
@@ -4692,6 +4694,8 @@ impl Widget for &mut App {
                             dimmed_color,
                             column_separator_color,
                         )
+                        .with_cell_padding(self.table_cell_padding)
+                        .with_alternate_row_bg(self.theme.get_optional("alternate_row_color"))
                         .render(table_area, buf, state);
                     let ctx = InfoContext {
                         path: self.path.as_deref(),
@@ -4714,6 +4718,8 @@ impl Widget for &mut App {
                             dimmed_color,
                             column_separator_color,
                         )
+                        .with_cell_padding(self.table_cell_padding)
+                        .with_alternate_row_bg(self.theme.get_optional("alternate_row_color"))
                         .render(table_area, buf, state);
                 }
             }

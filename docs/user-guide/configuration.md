@@ -51,6 +51,7 @@ pages_lookahead = 3   # Pages to buffer ahead (smoother scrolling)
 pages_lookback = 3    # Pages to buffer behind
 row_numbers = false   # Show row numbers on left side
 row_start_index = 1   # Starting index for row numbers (0 or 1)
+table_cell_padding = 1   # Spaces between columns in the main table (>= 0)
 ```
 
 **Example: Enable row numbers starting at 0**
@@ -88,6 +89,7 @@ error = "red"                       # Error messages
 success = "green"                   # Success indicators
 warning = "yellow"                  # Warnings
 dimmed = "dark_gray"                # Dimmed elements
+alternate_row_color = "default"    # Background for every other row ("default" = off, or a color name)
 ```
 
 #### Color Formats

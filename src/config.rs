@@ -414,6 +414,7 @@ pub struct DisplayConfig {
     pub pages_lookback: usize,
     pub row_numbers: bool,
     pub row_start_index: usize,
+    pub table_cell_padding: usize,
 }
 
 // Field comments for DisplayConfig
@@ -428,6 +429,10 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
     ),
     ("row_numbers", "Display row numbers on the left side of the table"),
     ("row_start_index", "Starting index for row numbers (0 or 1)"),
+    (
+        "table_cell_padding",
+        "Number of spaces between columns in the main data table (>= 0)\nDefault 1",
+    ),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -534,6 +539,8 @@ pub struct ColorConfig {
     pub outlier_marker: String,
     pub cursor_focused: String,
     pub cursor_dimmed: String,
+    /// "default" = no alternate row color; any other value is parsed as a color (e.g. "dark_gray")
+    pub alternate_row_color: String,
 }
 
 // Field comments for ColorConfig
@@ -579,6 +586,10 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     (
         "cursor_dimmed",
         "Cursor color when text input is unfocused (currently unused - unfocused inputs hide cursor)",
+    ),
+    (
+        "alternate_row_color",
+        "Background color for every other row in the main data table\nSet to \"default\" to disable alternate row coloring",
     ),
 ];
 
@@ -679,6 +690,7 @@ impl Default for DisplayConfig {
             pages_lookback: 3,
             row_numbers: false,
             row_start_index: 1,
+            table_cell_padding: 1,
         }
     }
 }
@@ -722,6 +734,7 @@ impl Default for ColorConfig {
             outlier_marker: "red".to_string(),
             cursor_focused: "default".to_string(),
             cursor_dimmed: "default".to_string(),
+            alternate_row_color: "indexed(234)".to_string(),
         }
     }
 }
@@ -879,6 +892,9 @@ impl DisplayConfig {
         if other.row_start_index != default.row_start_index {
             self.row_start_index = other.row_start_index;
         }
+        if other.table_cell_padding != default.table_cell_padding {
+            self.table_cell_padding = other.table_cell_padding;
+        }
     }
 }
 
@@ -945,6 +961,9 @@ impl ColorConfig {
         validate_color!(&self.outlier_marker, "outlier_marker");
         validate_color!(&self.cursor_focused, "cursor_focused");
         validate_color!(&self.cursor_dimmed, "cursor_dimmed");
+        if self.alternate_row_color != "default" {
+            validate_color!(&self.alternate_row_color, "alternate_row_color");
+        }
 
         Ok(())
     }
@@ -1033,6 +1052,9 @@ impl ColorConfig {
         }
         if other.cursor_dimmed != default.cursor_dimmed {
             self.cursor_dimmed = other.cursor_dimmed;
+        }
+        if other.alternate_row_color != default.alternate_row_color {
+            self.alternate_row_color = other.alternate_row_color;
         }
     }
 }
@@ -1374,6 +1396,12 @@ impl Theme {
             "cursor_dimmed".to_string(),
             parser.parse(&config.colors.cursor_dimmed)?,
         );
+        if config.colors.alternate_row_color != "default" {
+            colors.insert(
+                "alternate_row_color".to_string(),
+                parser.parse(&config.colors.alternate_row_color)?,
+            );
+        }
 
         Ok(Self { colors })
     }

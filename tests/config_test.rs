@@ -347,6 +347,8 @@ fn test_merge_does_not_override_with_defaults() {
     let mut base = DisplayConfig {
         pages_lookahead: 5,
         pages_lookback: 5,
+        max_buffered_rows: 100_000,
+        max_buffered_mb: 512,
         row_numbers: true,
         row_start_index: 0,
         table_cell_padding: 1,

@@ -164,6 +164,8 @@ pub struct OpenOptions {
     pub compression: Option<CompressionFormat>,
     pub pages_lookahead: Option<usize>,
     pub pages_lookback: Option<usize>,
+    pub max_buffered_rows: Option<usize>,
+    pub max_buffered_mb: Option<usize>,
     pub row_numbers: bool,
     pub row_start_index: usize,
     /// When true, use hive load path for directory/glob; single file uses normal load.
@@ -180,6 +182,8 @@ impl OpenOptions {
             compression: None,
             pages_lookahead: None,
             pages_lookback: None,
+            max_buffered_rows: None,
+            max_buffered_mb: None,
             row_numbers: false,
             row_start_index: 1,
             hive: false,
@@ -249,6 +253,8 @@ impl OpenOptions {
             .pages_lookahead
             .or(Some(config.display.pages_lookahead));
         opts.pages_lookback = args.pages_lookback.or(Some(config.display.pages_lookback));
+        opts.max_buffered_rows = Some(config.display.max_buffered_rows);
+        opts.max_buffered_mb = Some(config.display.max_buffered_mb);
 
         // Row numbers: CLI flag overrides config
         opts.row_numbers = args.row_numbers || config.display.row_numbers;
@@ -819,6 +825,8 @@ impl App {
                         path,
                         options.pages_lookahead,
                         options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
                         options.row_numbers,
                         options.row_start_index,
                     )?;
@@ -887,6 +895,8 @@ impl App {
                 path,
                 options.pages_lookahead,
                 options.pages_lookback,
+                options.max_buffered_rows,
+                options.max_buffered_mb,
                 options.row_numbers,
                 options.row_start_index,
             )?,
@@ -898,6 +908,8 @@ impl App {
                 b'\t',
                 options.pages_lookahead,
                 options.pages_lookback,
+                options.max_buffered_rows,
+                options.max_buffered_mb,
                 options.row_numbers,
                 options.row_start_index,
             )?,
@@ -906,6 +918,8 @@ impl App {
                 b'|',
                 options.pages_lookahead,
                 options.pages_lookback,
+                options.max_buffered_rows,
+                options.max_buffered_mb,
                 options.row_numbers,
                 options.row_start_index,
             )?,
@@ -913,6 +927,8 @@ impl App {
                 path,
                 options.pages_lookahead,
                 options.pages_lookback,
+                options.max_buffered_rows,
+                options.max_buffered_mb,
                 options.row_numbers,
                 options.row_start_index,
             )?,
@@ -920,6 +936,8 @@ impl App {
                 path,
                 options.pages_lookahead,
                 options.pages_lookback,
+                options.max_buffered_rows,
+                options.max_buffered_mb,
                 options.row_numbers,
                 options.row_start_index,
             )?,
@@ -927,6 +945,8 @@ impl App {
                 path,
                 options.pages_lookahead,
                 options.pages_lookback,
+                options.max_buffered_rows,
+                options.max_buffered_mb,
                 options.row_numbers,
                 options.row_start_index,
             )?,

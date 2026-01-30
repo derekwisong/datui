@@ -14,9 +14,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
+    Block, Borders, Gauge, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
 };
 
 use super::datatable::DataTableState;
@@ -451,12 +451,30 @@ impl<'a> DataTableInfo<'a> {
     }
 
     fn render_resources_tab(&self, area: Rect, buf: &mut Buffer) {
+        const LABEL_WIDTH: u16 = 16;
+        let label_constraint = Constraint::Length(LABEL_WIDTH);
+        let value_constraint = Constraint::Min(1);
         let mut y = area.y;
+        let h = area.height;
         let w = area.width;
 
+        fn label_value_row(label: &str, value: &str, area: Rect, buf: &mut Buffer, label_w: u16) {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(label_w), Constraint::Min(1)])
+                .split(area);
+            Paragraph::new(label).render(chunks[0], buf);
+            Paragraph::new(value).render(chunks[1], buf);
+        }
+
+        if y >= area.y + h {
+            return;
+        }
         let file_size = self.ctx.file_size_bytes().map(format_bytes);
-        let line = format!("File size: {}", file_size.as_deref().unwrap_or("—"));
-        Paragraph::new(line).render(
+        let file_size_str = file_size.as_deref().unwrap_or("—");
+        label_value_row(
+            "File size:",
+            file_size_str,
             Rect {
                 y,
                 width: w,
@@ -464,15 +482,17 @@ impl<'a> DataTableInfo<'a> {
                 ..area
             },
             buf,
+            LABEL_WIDTH,
         );
         y += 1;
 
-        let mem = self
-            .state
-            .buffered_memory_bytes()
-            .map(|b| format_bytes(b as u64));
-        let line = format!("Buffered (visible): {}", mem.as_deref().unwrap_or("—"));
-        Paragraph::new(line).render(
+        if y >= area.y + h {
+            return;
+        }
+        let fmt = self.ctx.format.map(|f| f.as_str()).unwrap_or("—");
+        label_value_row(
+            "Format:",
+            fmt,
             Rect {
                 y,
                 width: w,
@@ -480,19 +500,91 @@ impl<'a> DataTableInfo<'a> {
                 ..area
             },
             buf,
+            LABEL_WIDTH,
         );
+        y += 1;
+
+        if y >= area.y + h {
+            return;
+        }
+        let buf_rows = self.state.buffered_rows();
+        let max_rows = self.state.max_buffered_rows();
+        let row_area = Rect {
+            y,
+            width: w,
+            height: 1,
+            ..area
+        };
+        let row_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([label_constraint, value_constraint])
+            .split(row_area);
+        Paragraph::new("Buffer (Rows):").render(row_chunks[0], buf);
+        if max_rows > 0 {
+            let ratio = (buf_rows as f64 / max_rows as f64).min(1.0);
+            let label = format!("{} / {}", format_int(buf_rows), format_int(max_rows));
+            Gauge::default()
+                .gauge_style(Style::default().fg(self.active_color))
+                .ratio(ratio)
+                .label(Span::raw(label))
+                .render(row_chunks[1], buf);
+        } else {
+            Paragraph::new(format_int(buf_rows)).render(row_chunks[1], buf);
+        }
+        y += 1;
+
+        if y >= area.y + h {
+            return;
+        }
+        let buf_mb = self
+            .state
+            .buffered_memory_bytes()
+            .map(|b| b / (1024 * 1024));
+        let max_mb = self.state.max_buffered_mb();
+        let mb_area = Rect {
+            y,
+            width: w,
+            height: 1,
+            ..area
+        };
+        let mb_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([label_constraint, value_constraint])
+            .split(mb_area);
+        Paragraph::new("Buffer (MB):").render(mb_chunks[0], buf);
+        if max_mb > 0 {
+            let current_mb = buf_mb.unwrap_or(0);
+            let ratio = (current_mb as f64 / max_mb as f64).min(1.0);
+            let label = match buf_mb {
+                Some(m) => format!("{:.1} / {} MiB", m as f64, max_mb),
+                None => "—".to_string(),
+            };
+            Gauge::default()
+                .gauge_style(Style::default().fg(self.active_color))
+                .ratio(ratio)
+                .label(Span::raw(label))
+                .render(mb_chunks[1], buf);
+        } else {
+            let value = buf_mb
+                .map(|m| format!("{:.1} MiB", m as f64))
+                .unwrap_or_else(|| {
+                    self.state
+                        .buffered_memory_bytes()
+                        .map(|b| format_bytes(b as u64))
+                        .unwrap_or_else(|| "—".to_string())
+                });
+            Paragraph::new(value).render(mb_chunks[1], buf);
+        }
         y += 1;
 
         if let Some(ref meta) = self.ctx.parquet_metadata {
             let (comp, uncomp) = parquet_overall_sizes(meta.as_ref());
-            if comp > 0 && uncomp > 0 {
+            if comp > 0 && uncomp > 0 && y < area.y + h {
                 let ratio = uncomp as f64 / comp as f64;
-                let line = format!(
-                    "Parquet compression: {:.1}× (uncomp. {})",
-                    ratio,
-                    format_bytes(uncomp)
-                );
-                Paragraph::new(line).render(
+                let value = format!("{:.1}× (uncomp. {})", ratio, format_bytes(uncomp));
+                label_value_row(
+                    "Parquet comp.:",
+                    &value,
                     Rect {
                         y,
                         width: w,
@@ -500,34 +592,14 @@ impl<'a> DataTableInfo<'a> {
                         ..area
                     },
                     buf,
+                    LABEL_WIDTH,
                 );
                 y += 1;
             }
-            let line = format!("Row groups: {}", meta.row_groups.len());
-            Paragraph::new(line).render(
-                Rect {
-                    y,
-                    width: w,
-                    height: 1,
-                    ..area
-                },
-                buf,
-            );
-            y += 1;
-            let line = format!("Parquet version: {}", meta.version);
-            Paragraph::new(line).render(
-                Rect {
-                    y,
-                    width: w,
-                    height: 1,
-                    ..area
-                },
-                buf,
-            );
-            y += 1;
-            if let Some(ref cb) = meta.created_by {
-                let line = format!("Created by: {}", cb);
-                Paragraph::new(line).render(
+            if y < area.y + h {
+                label_value_row(
+                    "Row groups:",
+                    &meta.row_groups.len().to_string(),
                     Rect {
                         y,
                         width: w,
@@ -535,22 +607,42 @@ impl<'a> DataTableInfo<'a> {
                         ..area
                     },
                     buf,
+                    LABEL_WIDTH,
                 );
                 y += 1;
+            }
+            if y < area.y + h {
+                label_value_row(
+                    "Parquet version:",
+                    &meta.version.to_string(),
+                    Rect {
+                        y,
+                        width: w,
+                        height: 1,
+                        ..area
+                    },
+                    buf,
+                    LABEL_WIDTH,
+                );
+                y += 1;
+            }
+            if let Some(ref cb) = meta.created_by {
+                if y < area.y + h {
+                    label_value_row(
+                        "Created by:",
+                        cb,
+                        Rect {
+                            y,
+                            width: w,
+                            height: 1,
+                            ..area
+                        },
+                        buf,
+                        LABEL_WIDTH,
+                    );
+                }
             }
         }
-
-        let fmt = self.ctx.format.map(|f| f.as_str()).unwrap_or("—");
-        let line = format!("Format: {}", fmt);
-        Paragraph::new(line).render(
-            Rect {
-                y,
-                width: w,
-                height: 1,
-                ..area
-            },
-            buf,
-        );
     }
 
     fn render_partitioned_data_tab(&self, area: Rect, buf: &mut Buffer) {

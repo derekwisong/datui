@@ -412,6 +412,10 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
 pub struct DisplayConfig {
     pub pages_lookahead: usize,
     pub pages_lookback: usize,
+    /// Max rows in scroll buffer (0 = no limit).
+    pub max_buffered_rows: usize,
+    /// Max buffer size in MB (0 = no limit).
+    pub max_buffered_mb: usize,
     pub row_numbers: bool,
     pub row_start_index: usize,
     pub table_cell_padding: usize,
@@ -426,6 +430,14 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
     (
         "pages_lookback",
         "Number of pages to buffer behind visible area\nLarger values = smoother scrolling but more memory",
+    ),
+    (
+        "max_buffered_rows",
+        "Maximum rows in scroll buffer (0 = no limit)\nPrevents unbounded memory use when scrolling",
+    ),
+    (
+        "max_buffered_mb",
+        "Maximum buffer size in MB (0 = no limit)\nUses estimated memory; helps with very wide tables",
     ),
     ("row_numbers", "Display row numbers on the left side of the table"),
     ("row_start_index", "Starting index for row numbers (0 or 1)"),
@@ -711,6 +723,8 @@ impl Default for DisplayConfig {
         Self {
             pages_lookahead: 3,
             pages_lookback: 3,
+            max_buffered_rows: 100_000,
+            max_buffered_mb: 512,
             row_numbers: false,
             row_start_index: 1,
             table_cell_padding: 2,
@@ -916,6 +930,12 @@ impl DisplayConfig {
         }
         if other.pages_lookback != default.pages_lookback {
             self.pages_lookback = other.pages_lookback;
+        }
+        if other.max_buffered_rows != default.max_buffered_rows {
+            self.max_buffered_rows = other.max_buffered_rows;
+        }
+        if other.max_buffered_mb != default.max_buffered_mb {
+            self.max_buffered_mb = other.max_buffered_mb;
         }
         if other.row_numbers != default.row_numbers {
             self.row_numbers = other.row_numbers;

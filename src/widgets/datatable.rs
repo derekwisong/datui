@@ -52,7 +52,7 @@ pub struct DataTableState {
     pub suppress_error_display: bool, // When true, don't show errors in main view (e.g., when query input is active)
     pub schema: Arc<Schema>,
     pub num_rows: usize,
-    /// When true, num_rows is valid and collect() should skip the expensive len() query.
+    /// When true, collect() skips the len() query.
     num_rows_valid: bool,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
@@ -64,14 +64,15 @@ pub struct DataTableState {
     drilled_down_group_index: Option<usize>, // Index of the group we're viewing
     pub drilled_down_group_key: Option<Vec<String>>, // Key values of the drilled down group
     pub drilled_down_group_key_columns: Option<Vec<String>>, // Key column names of the drilled down group
-    // Buffer tracking for proximity-based loading
-    pages_lookahead: usize,     // Maximum pages to buffer ahead
-    pages_lookback: usize,      // Maximum pages to buffer behind
-    buffered_start_row: usize,  // Start row of currently buffered data
-    buffered_end_row: usize,    // End row (exclusive) of currently buffered data
-    proximity_threshold: usize, // Rows from buffer edge before triggering expansion
-    row_numbers: bool,          // Whether to display row numbers
-    row_start_index: usize,     // Starting index for row numbers (0 or 1)
+    pages_lookahead: usize,
+    pages_lookback: usize,
+    max_buffered_rows: usize, // 0 = no limit
+    max_buffered_mb: usize,   // 0 = no limit
+    buffered_start_row: usize,
+    buffered_end_row: usize,
+    proximity_threshold: usize,
+    row_numbers: bool,
+    row_start_index: usize,
     /// Last applied pivot spec, if current lf is result of a pivot. Used for templates.
     last_pivot_spec: Option<PivotSpec>,
     /// Last applied melt spec, if current lf is result of a melt. Used for templates.
@@ -85,6 +86,8 @@ impl DataTableState {
         lf: LazyFrame,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
     ) -> Result<Self> {
         let schema = lf.clone().collect_schema()?;
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
@@ -115,6 +118,8 @@ impl DataTableState {
             drilled_down_group_key_columns: None,
             pages_lookahead: pages_lookahead.unwrap_or(3),
             pages_lookback: pages_lookback.unwrap_or(3),
+            max_buffered_rows: max_buffered_rows.unwrap_or(100_000),
+            max_buffered_mb: max_buffered_mb.unwrap_or(512),
             buffered_start_row: 0,
             buffered_end_row: 0,
             proximity_threshold: 0, // Will be set when visible_rows is known
@@ -170,12 +175,20 @@ impl DataTableState {
         path: &Path,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
         let pl_path = PlPath::Local(Arc::from(path));
         let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
-        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
         Ok(state)
@@ -267,6 +280,8 @@ impl DataTableState {
         path: &Path,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
@@ -324,7 +339,13 @@ impl DataTableState {
             lf = lf.select(exprs);
         }
 
-        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
         state.partition_columns = if partition_columns.is_empty() {
@@ -374,7 +395,13 @@ impl DataTableState {
                         .try_into_reader_with_file_path(Some(path.into()))?
                         .finish()?;
                     let lf = df.lazy();
-                    let mut state = Self::new(lf, options.pages_lookahead, options.pages_lookback)?;
+                    let mut state = Self::new(
+                        lf,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                    )?;
                     state.row_numbers = options.row_numbers;
                     state.row_start_index = options.row_start_index;
                     Ok(state)
@@ -401,7 +428,13 @@ impl DataTableState {
                         .with_options(read_options)
                         .finish()?;
                     let lf = df.lazy();
-                    let mut state = Self::new(lf, options.pages_lookahead, options.pages_lookback)?;
+                    let mut state = Self::new(
+                        lf,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                    )?;
                     state.row_numbers = options.row_numbers;
                     state.row_start_index = options.row_start_index;
                     Ok(state)
@@ -428,7 +461,13 @@ impl DataTableState {
                         .with_options(read_options)
                         .finish()?;
                     let lf = df.lazy();
-                    Self::new(lf, options.pages_lookahead, options.pages_lookback)
+                    Self::new(
+                        lf,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                    )
                 }
             }
         } else {
@@ -437,6 +476,8 @@ impl DataTableState {
                 path,
                 options.pages_lookahead,
                 options.pages_lookback,
+                options.max_buffered_rows,
+                options.max_buffered_mb,
                 |mut reader| {
                     if let Some(skip_lines) = options.skip_lines {
                         reader = reader.with_skip_lines(skip_lines);
@@ -459,6 +500,8 @@ impl DataTableState {
         path: &Path,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
         func: F,
     ) -> Result<Self>
     where
@@ -467,19 +510,33 @@ impl DataTableState {
         let pl_path = PlPath::Local(Arc::from(path));
         let reader = LazyCsvReader::new(pl_path);
         let lf = func(reader).finish()?;
-        Self::new(lf, pages_lookahead, pages_lookback)
+        Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )
     }
 
     pub fn from_ndjson(
         path: &Path,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
         let pl_path = PlPath::Local(Arc::from(path));
         let lf = LazyJsonLineReader::new(pl_path).finish()?;
-        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
         Ok(state)
@@ -489,6 +546,8 @@ impl DataTableState {
         path: &Path,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
@@ -496,6 +555,8 @@ impl DataTableState {
             path,
             pages_lookahead,
             pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
             row_numbers,
             row_start_index,
             JsonFormat::Json,
@@ -506,6 +567,8 @@ impl DataTableState {
         path: &Path,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
@@ -513,16 +576,21 @@ impl DataTableState {
             path,
             pages_lookahead,
             pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
             row_numbers,
             row_start_index,
             JsonFormat::JsonLines,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_json_with_format(
         path: &Path,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
         row_numbers: bool,
         row_start_index: usize,
         format: JsonFormat,
@@ -532,24 +600,39 @@ impl DataTableState {
             .with_json_format(format)
             .finish()?
             .lazy();
-        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
         Ok(state)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn from_delimited(
         path: &Path,
         delimiter: u8,
         pages_lookahead: Option<usize>,
         pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
         let pl_path = PlPath::Local(Arc::from(path));
         let reader = LazyCsvReader::new(pl_path).with_separator(delimiter);
         let lf = reader.finish()?;
-        let mut state = Self::new(lf, pages_lookahead, pages_lookback)?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
         Ok(state)
@@ -571,8 +654,7 @@ impl DataTableState {
             (self.start_row as i64 + rows) as usize
         };
 
-        // Only call collect() when the view is actually outside the buffer (or buffer empty).
-        // When within buffer, just update start_row (fast path).
+        // Call collect() only when view is outside buffer; otherwise just update start_row.
         let view_end = new_start_row
             + self
                 .visible_rows
@@ -596,7 +678,7 @@ impl DataTableState {
             self.proximity_threshold = self.visible_rows;
         }
 
-        // Only run expensive len() when the LazyFrame has changed (query, filter, sort, pivot, melt, reset, drill).
+        // Run len() only when lf has changed (query, filter, sort, pivot, melt, reset, drill).
         if !self.num_rows_valid {
             self.num_rows = match self.lf.clone().select([len()]).collect() {
                 Ok(df) => {
@@ -636,8 +718,11 @@ impl DataTableState {
             && view_end <= self.buffered_end_row
             && self.buffered_end_row > 0;
 
+        // Buffer grows incrementally: initial load and each expansion add only a few pages (lookahead + lookback).
+        // clamp_buffer_to_max_size caps at max_buffered_rows and slides the window when at cap.
+        let page_rows = self.visible_rows.max(1);
+
         if within_buffer {
-            // Check proximity to buffer edges
             let dist_to_start = view_start.saturating_sub(self.buffered_start_row);
             let dist_to_end = self.buffered_end_row.saturating_sub(view_end);
 
@@ -646,44 +731,117 @@ impl DataTableState {
             let needs_expansion_forward =
                 dist_to_end <= self.proximity_threshold && self.buffered_end_row < self.num_rows;
 
-            // If not approaching edges, use existing buffer (fast path)
             if !needs_expansion_back && !needs_expansion_forward {
-                // Fast path: just slice from existing buffer
                 self.slice_from_buffer();
                 return;
             }
 
-            // Need to expand buffer
-            let new_buffer_start = if needs_expansion_back {
-                view_start.saturating_sub(self.pages_lookback * self.visible_rows.max(1))
+            let mut new_buffer_start = if needs_expansion_back {
+                view_start.saturating_sub(self.pages_lookback * page_rows)
             } else {
                 self.buffered_start_row
             };
 
-            let new_buffer_end = if needs_expansion_forward {
-                (view_end + self.pages_lookahead * self.visible_rows.max(1)).min(self.num_rows)
+            let mut new_buffer_end = if needs_expansion_forward {
+                (view_end + self.pages_lookahead * page_rows).min(self.num_rows)
             } else {
                 self.buffered_end_row
             };
 
+            self.clamp_buffer_to_max_size(
+                view_start,
+                view_end,
+                &mut new_buffer_start,
+                &mut new_buffer_end,
+            );
             self.load_buffer(new_buffer_start, new_buffer_end);
         } else {
-            // View is outside buffer or buffer doesn't exist - calculate new buffer
-            let new_buffer_start =
-                view_start.saturating_sub(self.pages_lookback * self.visible_rows.max(1));
-            let new_buffer_end =
-                (view_end + self.pages_lookahead * self.visible_rows.max(1)).min(self.num_rows);
+            // Outside buffer: either extend the previous buffer (so it grows) or load a fresh small window.
+            let mut new_buffer_start;
+            let mut new_buffer_end;
 
+            let had_buffer = self.buffered_end_row > 0;
+            let scrolled_past_end = had_buffer && view_start >= self.buffered_end_row;
+            let scrolled_past_start = had_buffer && view_end <= self.buffered_start_row;
+
+            if scrolled_past_end {
+                // Extend forward: keep buffer start, extend end so buffer grows.
+                new_buffer_start = self.buffered_start_row;
+                new_buffer_end = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+            } else if scrolled_past_start {
+                // Extend backward: keep buffer end, extend start.
+                new_buffer_start = view_start.saturating_sub(self.pages_lookback * page_rows);
+                new_buffer_end = self.buffered_end_row;
+            } else {
+                // No buffer yet or big jump: load a fresh small window (view ± a few pages).
+                new_buffer_start = view_start.saturating_sub(self.pages_lookback * page_rows);
+                new_buffer_end = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+
+                // Ensure at least (1 + lookahead + lookback) pages so buffer size is consistent (e.g. 364 at 52 visible).
+                let min_initial_len = (1 + self.pages_lookahead + self.pages_lookback) * page_rows;
+                let current_len = new_buffer_end.saturating_sub(new_buffer_start);
+                if current_len < min_initial_len {
+                    let need = min_initial_len.saturating_sub(current_len);
+                    let can_extend_end = self.num_rows.saturating_sub(new_buffer_end);
+                    let can_extend_start = new_buffer_start;
+                    if can_extend_end >= need {
+                        new_buffer_end = (new_buffer_end + need).min(self.num_rows);
+                    } else if can_extend_start >= need {
+                        new_buffer_start = new_buffer_start.saturating_sub(need);
+                    } else {
+                        new_buffer_end = (new_buffer_end + can_extend_end).min(self.num_rows);
+                        new_buffer_start =
+                            new_buffer_start.saturating_sub(need.saturating_sub(can_extend_end));
+                    }
+                }
+            }
+
+            self.clamp_buffer_to_max_size(
+                view_start,
+                view_end,
+                &mut new_buffer_start,
+                &mut new_buffer_end,
+            );
             self.load_buffer(new_buffer_start, new_buffer_end);
         }
 
-        // Slice displayed portion from buffered DataFrame
         self.slice_from_buffer();
     }
 
-    /// Call whenever the LazyFrame is mutated so collect() will re-run len() next time.
+    /// Invalidate num_rows cache when lf is mutated.
     fn invalidate_num_rows(&mut self) {
         self.num_rows_valid = false;
+    }
+
+    /// Clamp buffer to max_buffered_rows; when at cap, slide window to keep view inside.
+    fn clamp_buffer_to_max_size(
+        &self,
+        view_start: usize,
+        view_end: usize,
+        buffer_start: &mut usize,
+        buffer_end: &mut usize,
+    ) {
+        if self.max_buffered_rows == 0 {
+            return;
+        }
+        let max_len = self.max_buffered_rows;
+        let requested_len = buffer_end.saturating_sub(*buffer_start);
+        if requested_len <= max_len {
+            return;
+        }
+        let view_len = view_end.saturating_sub(view_start);
+        if view_len >= max_len {
+            *buffer_start = view_start;
+            *buffer_end = (view_start + max_len).min(self.num_rows);
+        } else {
+            let half = (max_len - view_len) / 2;
+            *buffer_end = (view_end + half).min(self.num_rows);
+            *buffer_start = (*buffer_end).saturating_sub(max_len);
+            if *buffer_start > view_start {
+                *buffer_start = view_start;
+            }
+            *buffer_end = (*buffer_start + max_len).min(self.num_rows);
+        }
     }
 
     fn load_buffer(&mut self, buffer_start: usize, buffer_end: usize) {
@@ -692,88 +850,105 @@ impl DataTableState {
             return;
         }
 
-        self.buffered_start_row = buffer_start;
-        self.buffered_end_row = buffer_end;
+        let all_columns: Vec<_> = self
+            .column_order
+            .iter()
+            .map(|name| col(name.as_str()))
+            .collect();
 
-        // Load locked columns buffer
+        let mut full_df = match self
+            .lf
+            .clone()
+            .select(all_columns)
+            .slice(buffer_start as i64, buffer_size as u32)
+            .collect()
+        {
+            Ok(df) => df,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+
+        let mut effective_buffer_end = buffer_end;
+        if self.max_buffered_mb > 0 {
+            let size = full_df.estimated_size();
+            let max_bytes = self.max_buffered_mb * 1024 * 1024;
+            if size > max_bytes {
+                let rows = full_df.height();
+                if rows > 0 {
+                    let bytes_per_row = size / rows;
+                    let max_rows = (max_bytes / bytes_per_row.max(1)).min(rows);
+                    if max_rows < rows {
+                        full_df = full_df.slice(0, max_rows);
+                        effective_buffer_end = buffer_start + max_rows;
+                    }
+                }
+            }
+        }
+
         if self.locked_columns_count > 0 {
-            let locked_columns: Vec<_> = self
+            let locked_names: Vec<&str> = self
                 .column_order
                 .iter()
                 .take(self.locked_columns_count)
-                .map(|name| col(name.as_str()))
+                .map(|s| s.as_str())
                 .collect();
-
-            match self
-                .lf
-                .clone()
-                .select(locked_columns)
-                .slice(buffer_start as i64, buffer_size as u32)
-                .collect()
-            {
-                Ok(df) => {
-                    if self.is_grouped() {
-                        match self.format_grouped_dataframe(df) {
-                            Ok(formatted_df) => {
-                                self.locked_df = Some(formatted_df);
-                            }
-                            Err(e) => {
-                                self.error = Some(PolarsError::ComputeError(e.to_string().into()));
-                                return;
-                            }
-                        }
-                    } else {
-                        self.locked_df = Some(df);
-                    }
-                }
+            let locked_df = match full_df.select(locked_names) {
+                Ok(df) => df,
                 Err(e) => {
                     self.error = Some(e);
                     return;
                 }
-            }
+            };
+            self.locked_df = if self.is_grouped() {
+                match self.format_grouped_dataframe(locked_df) {
+                    Ok(formatted_df) => Some(formatted_df),
+                    Err(e) => {
+                        self.error = Some(PolarsError::ComputeError(e.to_string().into()));
+                        return;
+                    }
+                }
+            } else {
+                Some(locked_df)
+            };
         } else {
             self.locked_df = None;
         }
 
-        // Load scrollable columns buffer
-        let columns_to_select: Vec<_> = self
+        let scroll_names: Vec<&str> = self
             .column_order
             .iter()
             .skip(self.locked_columns_count + self.termcol_index)
-            .map(|name| col(name.as_str()))
+            .map(|s| s.as_str())
             .collect();
-
-        match self
-            .lf
-            .clone()
-            .select(columns_to_select)
-            .slice(buffer_start as i64, buffer_size as u32)
-            .collect()
-        {
-            Ok(df) => {
-                if self.is_grouped() {
-                    match self.format_grouped_dataframe(df) {
-                        Ok(formatted_df) => {
-                            self.df = Some(formatted_df);
-                            if self.error.is_none() {
-                                self.error = None;
-                            }
-                        }
-                        Err(e) => {
-                            self.error = Some(PolarsError::ComputeError(e.to_string().into()));
-                        }
-                    }
-                } else {
-                    self.df = Some(df);
-                    if self.error.is_none() {
-                        self.error = None;
+        if scroll_names.is_empty() {
+            self.df = None;
+        } else {
+            let scroll_df = match full_df.select(scroll_names) {
+                Ok(df) => df,
+                Err(e) => {
+                    self.error = Some(e);
+                    return;
+                }
+            };
+            self.df = if self.is_grouped() {
+                match self.format_grouped_dataframe(scroll_df) {
+                    Ok(formatted_df) => Some(formatted_df),
+                    Err(e) => {
+                        self.error = Some(PolarsError::ComputeError(e.to_string().into()));
+                        return;
                     }
                 }
-            }
-            Err(e) => {
-                self.error = Some(e);
-            }
+            } else {
+                Some(scroll_df)
+            };
         }
+        if self.error.is_some() {
+            self.error = None;
+        }
+        self.buffered_start_row = buffer_start;
+        self.buffered_end_row = effective_buffer_end;
     }
 
     fn slice_from_buffer(&mut self) {
@@ -954,9 +1129,35 @@ impl DataTableState {
             .collect()
     }
 
-    /// Estimated heap size in bytes of the currently buffered (visible) slice, if collected.
+    /// Estimated heap size in bytes of the currently buffered slice (locked + scrollable), if collected.
     pub fn buffered_memory_bytes(&self) -> Option<usize> {
-        self.df.as_ref().map(|df| df.estimated_size())
+        let locked = self
+            .locked_df
+            .as_ref()
+            .map(|df| df.estimated_size())
+            .unwrap_or(0);
+        let scroll = self.df.as_ref().map(|df| df.estimated_size()).unwrap_or(0);
+        if locked == 0 && scroll == 0 {
+            None
+        } else {
+            Some(locked + scroll)
+        }
+    }
+
+    /// Number of rows currently in the buffer. 0 if no buffer loaded.
+    pub fn buffered_rows(&self) -> usize {
+        self.buffered_end_row
+            .saturating_sub(self.buffered_start_row)
+    }
+
+    /// Maximum buffer size in rows (0 = no limit).
+    pub fn max_buffered_rows(&self) -> usize {
+        self.max_buffered_rows
+    }
+
+    /// Maximum buffer size in MiB (0 = no limit).
+    pub fn max_buffered_mb(&self) -> usize {
+        self.max_buffered_mb
     }
 
     pub fn drill_down_into_group(&mut self, group_index: usize) -> Result<()> {
@@ -1976,46 +2177,6 @@ mod tests {
         .lazy()
     }
 
-    /// LazyFrame with 500 rows for scroll benchmark (enough to hit buffer-edge path when scrolling).
-    fn create_bench_scroll_lf() -> LazyFrame {
-        const N: usize = 500;
-        df!(
-            "a" => (0..N).map(|i| i as i32).collect::<Vec<i32>>(),
-            "b" => (0..N).map(|i| format!("text_{}", i)).collect::<Vec<String>>(),
-            "c" => (0..N).map(|i| i as i32 % 3).collect::<Vec<i32>>(),
-            "d" => (0..N).map(|i| i as i32 % 5).collect::<Vec<i32>>()
-        )
-        .unwrap()
-        .lazy()
-    }
-
-    /// Benchmark: time N row-down scrolls. Run with:
-    ///   cargo test scroll_bench --release -- --nocapture --ignored
-    /// Output includes SCROLL_BENCH_MS=<ms> and SCROLL_BENCH_ITERS=<n> for scripts/bench_scroll.sh.
-    #[test]
-    #[ignore]
-    fn scroll_bench() {
-        use std::time::Instant;
-
-        const SCROLL_ITERS: usize = 200;
-        const VISIBLE_ROWS: usize = 20;
-
-        let lf = create_bench_scroll_lf();
-        let mut state = DataTableState::new(lf, Some(3), Some(3)).unwrap();
-        state.visible_rows = VISIBLE_ROWS;
-        state.collect();
-
-        let start = Instant::now();
-        for _ in 0..SCROLL_ITERS {
-            state.select_next();
-        }
-        let elapsed = start.elapsed();
-
-        let ms = elapsed.as_secs_f64() * 1000.0;
-        println!("SCROLL_BENCH_MS={:.2}", ms);
-        println!("SCROLL_BENCH_ITERS={}", SCROLL_ITERS);
-    }
-
     #[test]
     fn test_from_csv() {
         // Ensure sample data is generated before running test
@@ -2041,14 +2202,14 @@ mod tests {
         // Ensure sample data is generated before running test
         crate::tests::ensure_sample_data();
         let path = Path::new("tests/sample-data/people.parquet");
-        let state = DataTableState::from_parquet(path, None, None, false, 1).unwrap();
+        let state = DataTableState::from_parquet(path, None, None, None, None, false, 1).unwrap();
         assert!(!state.schema.is_empty());
     }
 
     #[test]
     fn test_filter() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let filters = vec![FilterStatement {
             column: "a".to_string(),
             operator: FilterOperator::Gt,
@@ -2064,7 +2225,7 @@ mod tests {
     #[test]
     fn test_sort() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         state.sort(vec!["a".to_string()], false);
         let df = state.lf.clone().collect().unwrap();
         assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(3));
@@ -2073,7 +2234,7 @@ mod tests {
     #[test]
     fn test_query() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         state.query("select b where a = 2".to_string());
         let df = state.lf.clone().collect().unwrap();
         assert_eq!(df.shape(), (1, 1));
@@ -2086,7 +2247,7 @@ mod tests {
     #[test]
     fn test_select_next_previous() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         state.visible_rows = 10;
         state.table_state.select(Some(5));
 
@@ -2100,7 +2261,7 @@ mod tests {
     #[test]
     fn test_page_up_down() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         state.visible_rows = 20;
         state.collect();
 
@@ -2118,7 +2279,7 @@ mod tests {
     #[test]
     fn test_scroll_left_right() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         assert_eq!(state.termcol_index, 0);
         state.scroll_right();
         assert_eq!(state.termcol_index, 1);
@@ -2133,7 +2294,7 @@ mod tests {
     #[test]
     fn test_reverse() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         state.sort(vec!["a".to_string()], true);
         assert_eq!(
             state
@@ -2165,7 +2326,7 @@ mod tests {
     #[test]
     fn test_filter_multiple() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let filters = vec![
             FilterStatement {
                 column: "c".to_string(),
@@ -2188,7 +2349,7 @@ mod tests {
     #[test]
     fn test_filter_and_sort() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let filters = vec![FilterStatement {
             column: "c".to_string(),
             operator: FilterOperator::Eq,
@@ -2230,7 +2391,7 @@ mod tests {
     #[test]
     fn test_pivot_basic() {
         let lf = create_pivot_long_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let spec = PivotSpec {
             index: vec!["id".to_string(), "date".to_string()],
             pivot_column: "key".to_string(),
@@ -2252,7 +2413,7 @@ mod tests {
     #[test]
     fn test_pivot_aggregation_last() {
         let lf = create_pivot_long_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let spec = PivotSpec {
             index: vec!["id".to_string(), "date".to_string()],
             pivot_column: "key".to_string(),
@@ -2272,7 +2433,7 @@ mod tests {
     #[test]
     fn test_pivot_aggregation_first() {
         let lf = create_pivot_long_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let spec = PivotSpec {
             index: vec!["id".to_string(), "date".to_string()],
             pivot_column: "key".to_string(),
@@ -2290,7 +2451,7 @@ mod tests {
     #[test]
     fn test_pivot_aggregation_min_max() {
         let lf = create_pivot_long_lf();
-        let mut state_min = DataTableState::new(lf.clone(), None, None).unwrap();
+        let mut state_min = DataTableState::new(lf.clone(), None, None, None, None).unwrap();
         state_min
             .pivot(&PivotSpec {
                 index: vec!["id".to_string(), "date".to_string()],
@@ -2306,7 +2467,7 @@ mod tests {
             AnyValue::Float64(10.0)
         );
 
-        let mut state_max = DataTableState::new(lf, None, None).unwrap();
+        let mut state_max = DataTableState::new(lf, None, None, None, None).unwrap();
         state_max
             .pivot(&PivotSpec {
                 index: vec!["id".to_string(), "date".to_string()],
@@ -2326,7 +2487,7 @@ mod tests {
     #[test]
     fn test_pivot_aggregation_avg_count() {
         let lf = create_pivot_long_lf();
-        let mut state_avg = DataTableState::new(lf.clone(), None, None).unwrap();
+        let mut state_avg = DataTableState::new(lf.clone(), None, None, None, None).unwrap();
         state_avg
             .pivot(&PivotSpec {
                 index: vec!["id".to_string(), "date".to_string()],
@@ -2344,7 +2505,7 @@ mod tests {
             panic!("expected float");
         }
 
-        let mut state_count = DataTableState::new(lf, None, None).unwrap();
+        let mut state_count = DataTableState::new(lf, None, None, None, None).unwrap();
         state_count
             .pivot(&PivotSpec {
                 index: vec!["id".to_string(), "date".to_string()],
@@ -2368,7 +2529,7 @@ mod tests {
         )
         .unwrap();
         let lf = df.lazy();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let spec = PivotSpec {
             index: vec!["id".to_string()],
             pivot_column: "key".to_string(),
@@ -2391,7 +2552,7 @@ mod tests {
     #[test]
     fn test_melt_basic() {
         let lf = create_melt_wide_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let spec = MeltSpec {
             index: vec!["id".to_string(), "date".to_string()],
             value_columns: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
@@ -2411,7 +2572,7 @@ mod tests {
     #[test]
     fn test_melt_all_except_index() {
         let lf = create_melt_wide_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         let spec = MeltSpec {
             index: vec!["id".to_string(), "date".to_string()],
             value_columns: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
@@ -2427,7 +2588,7 @@ mod tests {
     #[test]
     fn test_pivot_on_current_view_after_filter() {
         let lf = create_pivot_long_lf();
-        let mut state = DataTableState::new(lf, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
         state.filter(vec![FilterStatement {
             column: "id".to_string(),
             operator: FilterOperator::Eq,

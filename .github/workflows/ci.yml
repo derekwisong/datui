@@ -227,6 +227,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev
+          target_commitish: ${{ github.sha }}
           name: "Development Build (${{ steps.version.outputs.version }})"
           prerelease: true
           body: |

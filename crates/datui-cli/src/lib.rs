@@ -51,7 +51,7 @@ impl CompressionFormat {
 #[command(
     name = "datui",
     version,
-    about = "Terminal User Interface for Data Exploration",
+    about = "Data Exploration in the Terminal",
     long_about = include_str!("../long_about.txt")
 )]
 pub struct Args {

@@ -1,7 +1,7 @@
 [package]
 name = "datui"
 authors = ["Derek Wisong"]
-description = "A terminal user interface for data analysis"
+description = "Data Exploration in the Terminal"
 repository = "https://github.com/derekwisong/datui"
 version = "0.2.13-dev"
 edition = "2021"

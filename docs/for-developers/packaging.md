@@ -72,6 +72,34 @@ sudo install -Dm644 target/release/datui.1.gz /usr/share/man/man1/datui.1.gz
 
 Or use the included `PKGBUILD` with `makepkg`.
 
+### AUR Release Workflow
+
+To update the AUR package when you release a new version:
+
+1. Checkout the release tag and build the AUR package:
+   ```bash
+   git checkout vX.Y.Z
+   cargo build --release --locked
+   python3 scripts/build_package.py aur --no-build
+   ```
+
+2. Generate `.SRCINFO` and copy to your AUR repo:
+   ```bash
+   cd target/cargo-aur
+   makepkg --printsrcinfo > .SRCINFO
+   cp PKGBUILD .SRCINFO /path/to/aur-datui-bin/
+   ```
+
+3. Commit and push to the AUR:
+   ```bash
+   cd /path/to/aur-datui-bin
+   git add PKGBUILD .SRCINFO
+   git commit -m "Upstream update: X.Y.Z"
+   git push
+   ```
+
+Use **stable** release tags only (e.g. `v0.2.11`); the AUR package fetches the tarball from the GitHub release. Dev builds are available from the `dev` release tag.
+
 ## More Information
 
 For detailed information about packaging metadata, policies, and AUR submission, see

@@ -220,8 +220,22 @@ jobs:
           DATE=$(date -u +%Y-%m-%d)
           echo "date=$DATE" >> $GITHUB_OUTPUT
 
-      - name: Delete existing dev release
-        run: gh release delete dev --yes --cleanup-tag || true
+      - name: Delete existing dev release and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Use API to ensure clean delete (gh CLI can fail silently with accumulated assets)
+          REPO="${{ github.repository }}"
+          TAG="dev"
+          RELEASE_ID=$(curl -sS -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" | jq -r '.id // empty')
+          if [ -n "$RELEASE_ID" ]; then
+            curl -sS -X DELETE -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/${REPO}/releases/${RELEASE_ID}"
+          fi
+          # Delete the tag ref (release delete does not remove the tag)
+          curl -sS -X DELETE -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${REPO}/git/refs/tags/${TAG}" || true
 
       - name: Create dev release
         uses: softprops/action-gh-release@v2

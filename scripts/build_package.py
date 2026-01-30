@@ -69,11 +69,11 @@ def ensure_gzipped_manpage(repo_root: Path) -> bool:
 def fix_aur_pkgbuild(repo_root: Path) -> bool:
     """Fix PKGBUILD for Arch compatibility: replace '-dev' with '.dev' in version.
     
-    Arch pkgver cannot contain hyphens. This also renames the tarball to match.
+    Arch pkgver cannot contain hyphens. For dev versions:
+    - Rename tarball to use .dev
+    - Fix source URL to use 'dev' tag (dev releases use tag 'dev', not 'v0.2.11.dev')
     Returns True on success.
     """
-    import re
-    
     aur_dir = repo_root / "target" / "cargo-aur"
     pkgbuild = aur_dir / "PKGBUILD"
     
@@ -88,6 +88,14 @@ def fix_aur_pkgbuild(repo_root: Path) -> bool:
     
     # Replace -dev with .dev in the PKGBUILD content
     new_content = content.replace("-dev", ".dev")
+    
+    # For dev versions, the source URL must use tag 'dev', not 'v$pkgver'
+    # (GitHub dev release is at /releases/tag/dev)
+    new_content = new_content.replace(
+        'releases/download/v$pkgver/',
+        'releases/download/dev/',
+    )
+    
     pkgbuild.write_text(new_content)
     
     # Rename the tarball to match (if it exists with -dev in the name)
@@ -97,7 +105,7 @@ def fix_aur_pkgbuild(repo_root: Path) -> bool:
         tarball.rename(new_path)
         print(f"Renamed: {tarball.name} -> {new_name}")
     
-    print("Fixed PKGBUILD: replaced '-dev' with '.dev' for Arch compatibility")
+    print("Fixed PKGBUILD: replaced '-dev' with '.dev', source URL uses 'dev' tag")
     return True
 
 

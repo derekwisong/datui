@@ -30,4 +30,5 @@ cargo build --release    # Optimized release build (slow build, small binary, op
 
 - There is a [Setup Script](for-developers/contributing.md#setup-script) that will help you get your environment ready
 - Learn how to [run the tests](for-developers/tests.md)
+- Build OS packages (deb, rpm, AUR) with [Building Packages](for-developers/packaging.md)
 - See the [Contributing Guide](for-developers/contributing.md) for more

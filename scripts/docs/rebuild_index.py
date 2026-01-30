@@ -98,6 +98,35 @@ def sort_version_dirs(version_dirs: List[Path]) -> List[Path]:
     return sorted(version_dirs, key=key, reverse=True)
 
 
+def get_dev_version(repo_root: Path) -> Optional[str]:
+    """Get the current dev version from Cargo.toml (e.g., '0.2.11-dev')."""
+    try:
+        cargo_toml = repo_root / "Cargo.toml"
+        if not cargo_toml.exists():
+            return None
+        content = cargo_toml.read_text()
+        # Find version in [package] section
+        match = re.search(r'^\[package\]', content, re.MULTILINE)
+        if not match:
+            return None
+        # Find version field after [package], before next section
+        start = match.end()
+        rest = content[start:]
+        # Stop at next section header
+        next_section = re.search(r'^\[', rest, re.MULTILINE)
+        section = rest[:next_section.start()] if next_section else rest
+        
+        version_match = re.search(r'version\s*=\s*"([^"]+)"', section)
+        if version_match:
+            version = version_match.group(1)
+            # Only return if it's a dev version
+            if version.endswith('-dev'):
+                return version
+    except Exception:
+        pass
+    return None
+
+
 def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict]]:
     """Collect version directories and return (recent_versions, older_versions).
     recent_versions: main (if present) + 5 most recent tags.
@@ -114,8 +143,15 @@ def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict]]:
             main_date = get_git_date("main")
             if main_date:
                 date_str = main_date
+        
+        # Get dev version from Cargo.toml if available
+        repo_root = get_repo_root()
+        dev_version = get_dev_version(repo_root)
+        # Add "v" prefix to match release version format
+        display_name = f"v{dev_version}" if dev_version else "main"
+        
         recent.append({
-            "name": "main",
+            "name": display_name,
             "path": "main",
             "is_development": True,
             "is_latest_stable": False,

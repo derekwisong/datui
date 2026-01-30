@@ -53,6 +53,14 @@
             }
         }
 
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            overflow-x: hidden;
+        }
+
         body {
             min-height: 100vh;
             display: flex;
@@ -71,7 +79,6 @@
             max-width: 1400px;
             margin: 0 auto;
             padding: 2rem;
-            width: 100%;
         }
 
         @media (max-width: 768px) {
@@ -98,6 +105,17 @@
             display: flex;
             align-items: center;
             gap: 0.5rem;
+        }
+
+        @media (max-width: 900px) {
+            .header-content {
+                padding-right: 0;
+            }
+
+            .header-actions {
+                position: static;
+                margin-top: 1rem;
+            }
         }
 
         .github-link {
@@ -130,16 +148,6 @@
             fill: currentColor;
         }
 
-        @media (max-width: 768px) {
-            .header-content {
-                padding-right: 0;
-            }
-
-            .header-actions {
-                position: static;
-                margin-top: 1rem;
-            }
-        }
 
         .header h1 {
             font-size: 2.5rem;
@@ -213,6 +221,20 @@
             }
         }
 
+        .demo-showcase {
+            margin-bottom: 2rem;
+            text-align: center;
+        }
+
+        .demo-gif {
+            max-width: 600px;
+            width: 100%;
+            height: auto;
+            display: inline-block;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
         .versions-heading {
             font-size: 1.25rem;
             font-weight: 600;
@@ -270,10 +292,10 @@
             font-weight: bold;
             font-family: var(--font-mono);
             color: var(--text-color);
-            min-width: 120px;
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            flex-wrap: wrap;
         }
 
         .version-card .version-date {
@@ -347,8 +369,11 @@
             transform: rotate(90deg);
         }
 
-        .older-versions summary:hover {
+        .older-versions summary:hover,
+        .older-versions summary:focus,
+        .older-versions summary.focused {
             background: var(--selection-bg);
+            outline: none;
         }
 
         .older-versions .version-list {
@@ -411,13 +436,20 @@
             </div>
             <div class="controls">
                 <span class="keyboard-hint">
-                    Navigate: <kbd>j</kbd>/<kbd>k</kbd> | Select: <kbd>Enter</kbd> | Theme: <kbd>t</kbd>
+                    Navigate: <kbd>j</kbd>/<kbd>k</kbd> | Select: <kbd>Enter</kbd> | Expand Older Versions: <kbd>o</kbd> | Toggle Theme: <kbd>t</kbd>
                 </span>
             </div>
         </header>
 
         <main id="main-content">
-            <h2 class="versions-heading">Documentation Versions:</h2>
+            <div class="demo-showcase">
+                <img src="main/demos/01-basic-navigation.gif" 
+                     alt="Datui demo showing basic navigation" 
+                     class="demo-gif"
+                     loading="lazy">
+            </div>
+
+            <h2 class="versions-heading">Documentation:</h2>
             <div class="version-list" role="list">
                 {% for version in recent_versions %}
                 <a href="{{ version.path }}/index.html" 
@@ -439,7 +471,7 @@
             </div>
             {% if older_versions %}
             <details class="older-versions" id="older-versions">
-                <summary>Older Versions</summary>
+                <summary tabindex="0">Older Versions</summary>
                 <div class="version-list" role="list">
                     {% for version in older_versions %}
                     <a href="{{ version.path }}/index.html" 
@@ -496,36 +528,60 @@
                 toggleTheme();
             });
 
-            // Keyboard navigation with vim keybinds (only visible cards: exclude those inside closed details)
+            // Keyboard navigation with vim keybinds
+            // Navigable items: version cards (visible ones) + older-versions summary
             const allVersionCards = Array.from(document.querySelectorAll('.version-card'));
-            function getVisibleCards() {
-                return allVersionCards.filter(function(card) {
+            const olderVersionsDetails = document.getElementById('older-versions');
+            const olderVersionsSummary = olderVersionsDetails?.querySelector('summary');
+            
+            function getNavigableItems() {
+                // Get visible version cards (not inside closed details)
+                const visibleCards = allVersionCards.filter(function(card) {
                     const details = card.closest('details');
                     return !details || details.open;
                 });
+                
+                // Insert the "Older Versions" summary after the recent versions (before older version cards)
+                if (olderVersionsSummary) {
+                    // Find where recent versions end (cards not inside details)
+                    const recentCards = visibleCards.filter(function(card) {
+                        return !card.closest('details');
+                    });
+                    const olderCards = visibleCards.filter(function(card) {
+                        return card.closest('details');
+                    });
+                    return [...recentCards, olderVersionsSummary, ...olderCards];
+                }
+                return visibleCards;
             }
-            let versionCards = getVisibleCards();
+            
+            let navigableItems = getNavigableItems();
             let focusedIndex = -1;
 
-            function focusCard(index) {
-                versionCards = getVisibleCards();
-                versionCards.forEach(function(card) {
-                    card.classList.remove('focused');
-                    card.blur();
+            function focusItem(index) {
+                navigableItems = getNavigableItems();
+                // Remove focus from all items
+                navigableItems.forEach(function(item) {
+                    item.classList.remove('focused');
+                    item.blur();
                 });
-                if (index >= 0 && index < versionCards.length) {
-                    versionCards[index].classList.add('focused');
-                    versionCards[index].focus();
-                    versionCards[index].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                if (index >= 0 && index < navigableItems.length) {
+                    navigableItems[index].classList.add('focused');
+                    navigableItems[index].focus();
+                    navigableItems[index].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 }
             }
 
-            document.getElementById('older-versions')?.addEventListener('toggle', function() {
-                versionCards = getVisibleCards();
-                if (focusedIndex >= versionCards.length && versionCards.length > 0) {
-                    focusedIndex = versionCards.length - 1;
+            olderVersionsDetails?.addEventListener('toggle', function() {
+                navigableItems = getNavigableItems();
+                // Keep focus on summary after toggle
+                const summaryIndex = navigableItems.indexOf(olderVersionsSummary);
+                if (summaryIndex >= 0) {
+                    focusedIndex = summaryIndex;
+                } else if (focusedIndex >= navigableItems.length && navigableItems.length > 0) {
+                    focusedIndex = navigableItems.length - 1;
                 }
-                focusCard(focusedIndex);
+                focusItem(focusedIndex);
             });
 
             function handleKeydown(e) {
@@ -539,31 +595,46 @@
                     case 'ArrowDown':
                         e.preventDefault();
                         if (focusedIndex < 0) {
-                            // Start from first card
+                            // Start from first item
                             focusedIndex = 0;
-                        } else if (focusedIndex < versionCards.length - 1) {
+                        } else if (focusedIndex < navigableItems.length - 1) {
                             focusedIndex++;
                         }
-                        focusCard(focusedIndex);
+                        focusItem(focusedIndex);
                         break;
                     
                     case 'k':
                     case 'ArrowUp':
                         e.preventDefault();
                         if (focusedIndex < 0) {
-                            // Start from last card
-                            focusedIndex = versionCards.length - 1;
+                            // Start from last item
+                            focusedIndex = navigableItems.length - 1;
                         } else if (focusedIndex > 0) {
                             focusedIndex--;
                         }
-                        focusCard(focusedIndex);
+                        focusItem(focusedIndex);
                         break;
                     
                     case 'Enter':
                     case ' ':
-                        if (focusedIndex >= 0 && focusedIndex < versionCards.length) {
+                        if (focusedIndex >= 0 && focusedIndex < navigableItems.length) {
                             e.preventDefault();
-                            versionCards[focusedIndex].click();
+                            const item = navigableItems[focusedIndex];
+                            if (item === olderVersionsSummary) {
+                                // Toggle the details element
+                                olderVersionsDetails.open = !olderVersionsDetails.open;
+                            } else {
+                                // Navigate to version
+                                item.click();
+                            }
+                        }
+                        break;
+                    
+                    case 'o':
+                        // Toggle older versions with 'o' key
+                        if (!e.ctrlKey && !e.metaKey && !e.altKey && olderVersionsDetails) {
+                            e.preventDefault();
+                            olderVersionsDetails.open = !olderVersionsDetails.open;
                         }
                         break;
                     
@@ -578,13 +649,13 @@
                     case 'Home':
                         e.preventDefault();
                         focusedIndex = 0;
-                        focusCard(focusedIndex);
+                        focusItem(focusedIndex);
                         break;
                     
                     case 'End':
                         e.preventDefault();
-                        focusedIndex = versionCards.length - 1;
-                        focusCard(focusedIndex);
+                        focusedIndex = navigableItems.length - 1;
+                        focusItem(focusedIndex);
                         break;
                 }
             }
@@ -592,18 +663,30 @@
             // Handle card focus events (for mouse/touch interaction)
             allVersionCards.forEach(function(card) {
                 card.addEventListener('mouseenter', function() {
-                    versionCards = getVisibleCards();
-                    const index = versionCards.indexOf(card);
+                    navigableItems = getNavigableItems();
+                    const index = navigableItems.indexOf(card);
                     if (index >= 0) {
                         focusedIndex = index;
-                        focusCard(index);
+                        focusItem(index);
                     }
                 });
                 card.addEventListener('click', function() {
-                    versionCards = getVisibleCards();
-                    focusedIndex = versionCards.indexOf(card);
+                    navigableItems = getNavigableItems();
+                    focusedIndex = navigableItems.indexOf(card);
                 });
             });
+            
+            // Handle older versions summary hover
+            if (olderVersionsSummary) {
+                olderVersionsSummary.addEventListener('mouseenter', function() {
+                    navigableItems = getNavigableItems();
+                    const index = navigableItems.indexOf(olderVersionsSummary);
+                    if (index >= 0) {
+                        focusedIndex = index;
+                        focusItem(index);
+                    }
+                });
+            }
 
             // Global keyboard listener
             document.addEventListener('keydown', handleKeydown);

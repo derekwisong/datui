@@ -34,3 +34,4 @@
   - [Documentation](for-developers/documentation.md)
   - [Generating the Demos](for-developers/demos.md)
   - [Contributing](for-developers/contributing.md)
+  - [Building Packages](for-developers/packaging.md)

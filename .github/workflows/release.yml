@@ -28,6 +28,16 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
       - name: Install mdbook
         run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
 
@@ -39,12 +49,31 @@ jobs:
           test -f target/release/datui || (echo "Release binary not found" && exit 1)
           test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
 
+      - name: Install cargo packaging tools
+        run: |
+          cargo install cargo-deb
+          cargo install cargo-generate-rpm
+          cargo install cargo-aur
+
+      - name: Build deb package
+        run: python3 scripts/build_package.py deb --no-build
+
+      - name: Build rpm package
+        run: python3 scripts/build_package.py rpm --no-build
+
+      - name: Build AUR package
+        run: python3 scripts/build_package.py aur --no-build
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             target/release/datui
             target/release/datui.1
+            target/debian/*.deb
+            target/generate-rpm/*.rpm
+            target/cargo-aur/*.tar.gz
+            target/cargo-aur/PKGBUILD
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -53,17 +82,6 @@ jobs:
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
-
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r scripts/requirements.txt
 
       - name: Build all historical tag documentation
         run: |

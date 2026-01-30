@@ -2,18 +2,37 @@
 """
 Bump version number in Cargo.toml and README.md
 
+With -dev suffix workflow:
+  1. During development: version is "X.Y.Z-dev"
+  2. Prepare release: "X.Y.Z-dev" -> "X.Y.Z" (remove -dev, commit, tag)
+  3. Start next cycle: "X.Y.Z" -> "X.Y.Z+1-dev" (bump + add -dev, commit)
+
 Usage:
-    python scripts/bump_version.py [major|minor|patch] [--commit] [--tag]
+    python scripts/bump_version.py release [--commit] [--tag]
+    python scripts/bump_version.py [major|minor|patch] [--commit]
+
+Commands:
+    release         Remove -dev suffix (0.2.11-dev -> 0.2.11) for release
+    major           Bump major version and add -dev (0.2.11 -> 1.0.0-dev)
+    minor           Bump minor version and add -dev (0.2.11 -> 0.3.0-dev)
+    patch           Bump patch version and add -dev (0.2.11 -> 0.2.12-dev)
 
 Options:
-    --commit    Commit the version changes with message "Version bumped to <version> with <script_name>"
-    --tag       Create a git tag for the version bump commit with message "Release <version>"
-                (implies --commit)
+    --commit        Commit the version changes
+    --tag           Create a git tag (only for 'release' command, implies --commit)
 
 Examples:
-    python scripts/bump_version.py patch           # 0.2.1 -> 0.2.2
-    python scripts/bump_version.py patch --commit  # Bump and commit
-    python scripts/bump_version.py minor --tag     # Bump, commit, and tag
+    # Prepare for release (remove -dev)
+    python scripts/bump_version.py release --commit --tag
+
+    # Start next development cycle (bump + add -dev)
+    python scripts/bump_version.py patch --commit
+
+    # Typical release workflow:
+    python scripts/bump_version.py release --tag    # 0.2.11-dev -> 0.2.11, tag v0.2.11
+    git push && git push --tags                      # Push release
+    python scripts/bump_version.py patch --commit    # 0.2.11 -> 0.2.12-dev
+    git push                                         # Start next cycle
 """
 
 import argparse
@@ -23,31 +42,43 @@ import sys
 from pathlib import Path
 
 
-def parse_version(version_str: str) -> tuple[int, int, int]:
-    """Parse version string like '0.2.1' into (major, minor, patch)."""
-    match = re.match(r'^(\d+)\.(\d+)\.(\d+)$', version_str)
+def parse_version(version_str: str) -> tuple[int, int, int, str]:
+    """Parse version string like '0.2.1' or '0.2.1-dev' into (major, minor, patch, suffix)."""
+    match = re.match(r'^(\d+)\.(\d+)\.(\d+)(-dev)?$', version_str)
     if not match:
-        raise ValueError(f"Invalid version format: {version_str}")
-    return tuple(map(int, match.groups()))
+        raise ValueError(f"Invalid version format: {version_str} (expected X.Y.Z or X.Y.Z-dev)")
+    major, minor, patch, suffix = match.groups()
+    return (int(major), int(minor), int(patch), suffix or "")
 
 
-def format_version(major: int, minor: int, patch: int) -> str:
-    """Format version tuple into string like '0.2.1'."""
-    return f"{major}.{minor}.{patch}"
+def format_version(major: int, minor: int, patch: int, suffix: str = "") -> str:
+    """Format version tuple into string like '0.2.1' or '0.2.1-dev'."""
+    return f"{major}.{minor}.{patch}{suffix}"
 
 
 def bump_version(current: str, bump_type: str) -> str:
-    """Bump version according to type (major, minor, or patch)."""
-    major, minor, patch = parse_version(current)
-
+    """Bump version according to type (major, minor, or patch) and add -dev suffix."""
+    major, minor, patch, suffix = parse_version(current)
+    
+    # Remove -dev suffix if present (we're bumping from a release version)
+    # If current is X.Y.Z-dev, we treat it as X.Y.Z for bumping purposes
+    
     if bump_type == "major":
-        return format_version(major + 1, 0, 0)
+        return format_version(major + 1, 0, 0, "-dev")
     elif bump_type == "minor":
-        return format_version(major, minor + 1, 0)
+        return format_version(major, minor + 1, 0, "-dev")
     elif bump_type == "patch":
-        return format_version(major, minor, patch + 1)
+        return format_version(major, minor, patch + 1, "-dev")
     else:
         raise ValueError(f"Invalid bump type: {bump_type}. Must be major, minor, or patch.")
+
+
+def prepare_release(current: str) -> str:
+    """Remove -dev suffix to prepare for release (0.2.11-dev -> 0.2.11)."""
+    major, minor, patch, suffix = parse_version(current)
+    if suffix != "-dev":
+        raise ValueError(f"Current version {current} is not a dev version (expected X.Y.Z-dev)")
+    return format_version(major, minor, patch)
 
 
 def _package_section_bounds(content: str) -> tuple[int, int] | None:
@@ -122,8 +153,11 @@ def update_readme(file_path: Path, new_version: str) -> None:
     """Update version badge in README.md to the desired version (any current value)."""
     content = file_path.read_text()
     # Match badge with any version: ![Version](https://img.shields.io/badge/version-X.Y.Z-orange.svg)
+    # Also match versions with -dev suffix
     pattern = r'!\[Version\]\(https://img\.shields\.io/badge/version-[^)-]+-orange\.svg\)'
-    replacement = f'![Version](https://img.shields.io/badge/version-{new_version}-orange.svg)'
+    # URL-encode the version (replace - with --)
+    url_version = new_version.replace('-', '--')
+    replacement = f'![Version](https://img.shields.io/badge/version-{url_version}-orange.svg)'
     new_content = re.sub(pattern, replacement, content)
 
     if new_content == content:
@@ -150,11 +184,14 @@ def get_current_version(cargo_toml_path: Path) -> str:
     return match.group(1)
 
 
-def commit_version_changes(project_root: Path, version: str, script_name: str) -> None:
+def commit_version_changes(project_root: Path, version: str, script_name: str, is_release: bool) -> None:
     """Commit version changes to git."""
     try:
         # Stage the files (Cargo.lock may not exist for library crates)
-        files_to_add = ["Cargo.toml", "README.md"]
+        files_to_add = ["Cargo.toml"]
+        # Only include README.md for releases (badge only updated for releases)
+        if is_release:
+            files_to_add.append("README.md")
         if (project_root / "crates" / "datui-cli" / "Cargo.toml").exists():
             files_to_add.append("crates/datui-cli/Cargo.toml")
         cargo_lock_path = project_root / "Cargo.lock"
@@ -167,8 +204,12 @@ def commit_version_changes(project_root: Path, version: str, script_name: str) -
             check=True,
         )
         
-        # Commit with message
-        commit_message = f"Version bumped to {version} with {script_name}"
+        # Commit with appropriate message
+        if is_release:
+            commit_message = f"chore: release {version}"
+        else:
+            commit_message = f"chore: bump version to {version}"
+        
         subprocess.run(
             ["git", "commit", "-m", commit_message],
             cwd=project_root,
@@ -199,35 +240,55 @@ def main():
         description="Bump version number in Cargo.toml and README.md",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Commands:
+  release         Remove -dev suffix (0.2.11-dev -> 0.2.11) for release
+  major           Bump major version and add -dev (0.2.11 -> 1.0.0-dev)
+  minor           Bump minor version and add -dev (0.2.11 -> 0.3.0-dev)
+  patch           Bump patch version and add -dev (0.2.11 -> 0.2.12-dev)
+
 Examples:
-  python scripts/bump_version.py patch           # 0.2.1 -> 0.2.2
-  python scripts/bump_version.py patch --commit  # Bump and commit
-  python scripts/bump_version.py minor --tag     # Bump, commit, and tag
+  # Prepare for release (remove -dev)
+  python scripts/bump_version.py release --commit --tag
+
+  # Start next development cycle (bump + add -dev)
+  python scripts/bump_version.py patch --commit
+
+  # Typical release workflow:
+  python scripts/bump_version.py release --tag    # 0.2.11-dev -> 0.2.11, tag v0.2.11
+  git push && git push --tags                      # Push release
+  python scripts/bump_version.py patch --commit    # 0.2.11 -> 0.2.12-dev
+  git push                                         # Start next cycle
         """,
     )
     parser.add_argument(
-        "bump_type",
-        choices=["major", "minor", "patch"],
-        help="Type of version bump (major, minor, or patch)",
+        "command",
+        choices=["release", "major", "minor", "patch"],
+        help="Version operation: 'release' removes -dev, others bump and add -dev",
     )
     parser.add_argument(
         "--commit",
         action="store_true",
-        help='Commit the version changes with message "Version bumped to <version> with <script_name>"',
+        help="Commit the version changes",
     )
     parser.add_argument(
         "--tag",
         action="store_true",
-        help='Create a git tag for the version bump commit with message "Release <version>" (implies --commit)',
+        help="Create a git tag (only for 'release' command, implies --commit)",
     )
     
     args = parser.parse_args()
+    
+    # --tag only valid for release
+    if args.tag and args.command != "release":
+        print("Error: --tag can only be used with 'release' command", file=sys.stderr)
+        sys.exit(1)
     
     # --tag implies --commit
     if args.tag:
         args.commit = True
     
-    bump_type = args.bump_type.lower()
+    command = args.command.lower()
+    is_release = (command == "release")
 
     # Get project root (parent of scripts/)
     script_dir = Path(__file__).parent
@@ -249,8 +310,16 @@ Examples:
     current_version = get_current_version(cargo_toml_path)
     print(f"Current version (from main Cargo.toml): {current_version}")
 
-    # Calculate new version based on main Cargo.toml
-    new_version = bump_version(current_version, bump_type)
+    # Calculate new version
+    try:
+        if is_release:
+            new_version = prepare_release(current_version)
+        else:
+            new_version = bump_version(current_version, command)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    
     print(f"New version: {new_version}")
     print()
 
@@ -265,9 +334,14 @@ Examples:
         if datui_cli_cargo.exists():
             update_cargo_toml_to_version(datui_cli_cargo, new_version, project_root)
         
-        update_readme(readme_path, new_version)
+        # Only update README badge for releases (not dev versions)
+        if is_release:
+            update_readme(readme_path, new_version)
+        else:
+            print(f"✓ README.md badge unchanged (only updated for releases)")
+        
         print()
-        print(f"✓ Version bumped successfully: {current_version} -> {new_version}")
+        print(f"✓ Version updated successfully: {current_version} -> {new_version}")
         
         # Update Cargo.lock by running cargo build/check
         print()
@@ -286,15 +360,19 @@ Examples:
         
         # Handle git operations if requested
         if args.commit:
-            commit_version_changes(project_root, new_version, script_name)
+            commit_version_changes(project_root, new_version, script_name, is_release)
             
             if args.tag:
                 create_version_tag(project_root, new_version)
                 print()
-                print(f"✓ Version bump complete: {current_version} -> {new_version} (committed and tagged)")
+                print(f"✓ Release complete: {current_version} -> {new_version} (committed and tagged)")
+                print()
+                print("Next steps:")
+                print("  1. git push && git push --tags")
+                print(f"  2. python scripts/bump_version.py patch --commit  # Start next dev cycle")
             else:
                 print()
-                print(f"✓ Version bump complete: {current_version} -> {new_version} (committed)")
+                print(f"✓ Version update complete: {current_version} -> {new_version} (committed)")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

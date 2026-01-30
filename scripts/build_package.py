@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Build OS packages (deb, rpm, aur) for datui.
+
+Single entry point used by CI, release workflows, and local developers.
+Run from repo root.
+
+Usage:
+    python3 scripts/build_package.py <deb|rpm|aur> [--no-build] [--repo-root PATH]
+    ./scripts/build_package.py deb
+
+Options:
+    --no-build    Skip 'cargo build --release'; use when artifacts already exist.
+    --repo-root   Repository root (default: git rev-parse --show-toplevel).
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import subprocess
+import sys
+from pathlib import Path
+
+PKG_CHOICES = ("deb", "rpm", "aur")
+
+# (cargo subcommand, check-cmd, output (dir, glob) or "aur", human label)
+PKG_CONFIG = {
+    "deb": ("deb", ["cargo", "deb", "--help"], ("target/debian", "*.deb"), "deb"),
+    "rpm": ("generate-rpm", ["cargo", "generate-rpm", "--help"], ("target/generate-rpm", "*.rpm"), "rpm"),
+    "aur": ("aur", ["cargo", "aur", "--help"], "aur", "AUR"),
+}
+
+
+def find_repo_root(cwd: Path | None = None) -> Path:
+    """Return git repository root, or cwd if not in a repo."""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=cwd or Path.cwd(),
+        )
+        return Path(r.stdout.strip())
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return Path.cwd()
+
+
+def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+
+
+def ensure_gzipped_manpage(repo_root: Path) -> bool:
+    """Ensure target/release/datui.1.gz exists. Create from .1 if needed. Return True on success."""
+    man = repo_root / "target" / "release" / "datui.1"
+    gz = repo_root / "target" / "release" / "datui.1.gz"
+    if gz.exists():
+        return True
+    if not man.exists():
+        return False
+    proc = run(["gzip", "-9", "-k", "-f", str(man)], cwd=repo_root)
+    if proc.returncode != 0:
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+        return False
+    return (repo_root / "target" / "release" / "datui.1.gz").exists()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Build OS packages (deb, rpm, aur) for datui.",
+    )
+    parser.add_argument(
+        "pkg",
+        choices=PKG_CHOICES,
+        help="Packaging system: deb, rpm, or aur",
+    )
+    parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Skip 'cargo build --release'; caller guarantees release artifacts exist",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Repository root (default: git rev-parse --show-toplevel)",
+    )
+    args = parser.parse_args()
+
+    repo_root = (args.repo_root or find_repo_root()).resolve()
+    if not (repo_root / "Cargo.toml").exists():
+        sys.stderr.write(f"error: Cargo.toml not found at {repo_root}\n")
+        return 1
+
+    subcmd, check_cmd, out_spec, label = PKG_CONFIG[args.pkg]
+    out_dir_or_aur = out_spec
+
+    # 1. Build release (and manpage) unless --no-build
+    if not args.no_build:
+        proc = run(["cargo", "build", "--release", "--locked"], cwd=repo_root)
+        if proc.returncode != 0:
+            if proc.stderr:
+                sys.stderr.write(proc.stderr)
+            sys.stderr.write("error: cargo build --release failed\n")
+            return 1
+        man = repo_root / "target" / "release" / "datui.1"
+        if not man.exists():
+            sys.stderr.write("error: manpage target/release/datui.1 not found after build\n")
+            return 1
+
+    # 2. Ensure gzipped manpage exists
+    if not ensure_gzipped_manpage(repo_root):
+        sys.stderr.write(
+            "error: target/release/datui.1.gz missing; "
+            "ensure target/release/datui.1 exists and gzip is available\n"
+        )
+        return 1
+
+    # 3. Check packaging tool is installed
+    proc = run(check_cmd, cwd=repo_root)
+    if proc.returncode != 0:
+        sys.stderr.write(
+            f"error: cargo {subcmd} not found or failed. "
+            f"Install with: cargo install cargo-{subcmd}\n"
+        )
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+        return 1
+
+    # 4. Run packaging command
+    if args.pkg == "aur":
+        cmd = ["cargo", "aur"]
+    else:
+        cmd = ["cargo", subcmd]
+    proc = run(cmd, cwd=repo_root)
+    if proc.returncode != 0:
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+        sys.stderr.write(f"error: cargo {subcmd} failed\n")
+        return 1
+
+    # 5. Verify outputs and print paths
+    if out_dir_or_aur == "aur":
+        out_dir = repo_root / "target" / "cargo-aur"
+        if not out_dir.is_dir():
+            sys.stderr.write(f"error: expected output directory {out_dir} not found\n")
+            return 1
+        pkgs = list(out_dir.glob("PKGBUILD"))
+        tar = list(out_dir.glob("*.tar.gz"))
+        artifacts = pkgs + tar
+        if not artifacts:
+            sys.stderr.write(f"error: no PKGBUILD or tarball found in {out_dir}\n")
+            return 1
+    else:
+        out_dir, glob_pat = out_dir_or_aur
+        pattern = str(repo_root / out_dir / glob_pat)
+        artifacts = [Path(p) for p in glob.glob(pattern)]
+        if not artifacts:
+            sys.stderr.write(f"error: no {label} artifact found matching {pattern}\n")
+            return 1
+
+    for p in sorted(artifacts):
+        print(p)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

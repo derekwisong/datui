@@ -1,9 +1,53 @@
 # Installation
 
 You can obtain Datui from [pre-built releases](#installing-a-pre-built-release) or by
-[comping from source](#compiling-from-source).
+[compiling from source](#compiling-from-source).
 
 Once installed, have a look at the [Quick Start Guide](quick-start.md).
+
+## Installing a Pre-built Release
+
+To acquire a pre-built copy of Datui, you may download one from the
+[Datui Releases Page on GitHub][datui-releases].
+
+## Package Managers
+
+### Arch Linux (AUR)
+
+Datui is available in the [Arch User Repository](https://aur.archlinux.org/) as `datui-bin`.
+Install it with an AUR helper such as [paru](https://github.com/Morganamilo/paru) or [yay](https://github.com/Jguer/yay):
+
+```bash
+paru -S datui-bin
+```
+
+or
+
+```bash
+yay -S datui-bin
+```
+
+### RPM-based (Fedora, RedHat)
+
+> Datui is not yet available in the any of the offical repositores for RPM-based distributions.
+
+Get the link to the `.rpm` file for the release version you want from the [Releases Page][datui-releases].
+
+Use `dnf` to install that link.
+```bash
+dnf install https://github.com/derekwisong/datui/releases/download/vX.Y.Z/datui-X.Y.Z-1.x86_64.rpm
+```
+
+### Deb-based (Debian, Ubuntu)
+
+> Datui is not yet available in the any of the offical repositores for Deb-based distributions.
+
+Download the `.deb` file for the release version you want from the [Releases Page][datui-releases].
+
+Use `apt` to install that file:
+```bash
+apt install ./datui-X.Y.Z-1.x86_64.deb
+```
 
 ## Compiling from Source
 
@@ -45,11 +89,4 @@ cargo install --path .
 > On Linux: `export PATH=$PATH:~/.cargo/bin`
 
 
-## Installing a Pre-built Release
-
-To acquire a pre-built copy of Datui, you may download one from the
-[Datui Releases Page on GitHub](https://github.com/derekwisong/datui/releases).
-
-## Package Managers
-
-> Datui is not yet installable with package managers.
+[datui-releases]: https://github.com/derekwisong/datui/releases

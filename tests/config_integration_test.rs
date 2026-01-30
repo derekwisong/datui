@@ -8,7 +8,7 @@ fn test_config_used_for_row_numbers() {
     config.display.row_start_index = 0;
 
     let args = Args {
-        path: Some(std::path::PathBuf::from("test.csv")),
+        paths: vec![std::path::PathBuf::from("test.csv")],
         skip_lines: None,
         skip_rows: None,
         no_header: None,
@@ -42,7 +42,7 @@ fn test_cli_args_override_config() {
     config.display.pages_lookahead = 10;
 
     let args = Args {
-        path: Some(std::path::PathBuf::from("test.csv")),
+        paths: vec![std::path::PathBuf::from("test.csv")],
         skip_lines: None,
         skip_rows: None,
         no_header: None,
@@ -76,7 +76,7 @@ fn test_config_display_settings() {
     config.display.row_numbers = true;
 
     let args = Args {
-        path: Some(std::path::PathBuf::from("test.csv")),
+        paths: vec![std::path::PathBuf::from("test.csv")],
         skip_lines: None,
         skip_rows: None,
         no_header: None,
@@ -110,7 +110,7 @@ fn test_config_file_loading_settings() {
     config.file_loading.skip_lines = Some(2);
 
     let args = Args {
-        path: Some(std::path::PathBuf::from("test.csv")),
+        paths: vec![std::path::PathBuf::from("test.csv")],
         skip_lines: None,
         skip_rows: None,
         no_header: None,

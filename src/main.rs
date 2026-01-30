@@ -19,9 +19,9 @@ fn run(mut terminal: DefaultTerminal, args: &Args, config: &AppConfig, theme: Th
     let opts = OpenOptions::from_args_and_config(args, config);
     render(&mut terminal, &mut app)?;
 
-    // Path should be present if we got here (required_unless_present ensures this)
-    let path = args.path.as_ref().expect("Path should be present");
-    tx.send(AppEvent::Open(path.clone(), opts))?;
+    // Paths should be non-empty if we got here (required_unless_present ensures this)
+    let paths = args.paths.clone();
+    tx.send(AppEvent::Open(paths, opts))?;
 
     loop {
         if crossterm::event::poll(std::time::Duration::from_millis(
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn test_args_to_open_options() {
         let args = Args {
-            path: Some(PathBuf::from("test.csv")),
+            paths: vec![PathBuf::from("test.csv")],
             skip_lines: Some(1),
             skip_rows: Some(2),
             no_header: Some(true),
@@ -217,7 +217,7 @@ mod tests {
         assert!(result.is_ok());
 
         let args = result.unwrap();
-        assert!(args.path.is_none());
+        assert!(args.paths.is_empty());
         assert!(args.generate_config);
     }
 
@@ -230,7 +230,7 @@ mod tests {
         assert!(result.is_ok());
 
         let args = result.unwrap();
-        assert!(args.path.is_none());
+        assert!(args.paths.is_empty());
         assert!(args.clear_cache);
     }
 
@@ -243,7 +243,7 @@ mod tests {
         assert!(result.is_ok());
 
         let args = result.unwrap();
-        assert!(args.path.is_none());
+        assert!(args.paths.is_empty());
         assert!(args.remove_templates);
     }
 
@@ -256,7 +256,7 @@ mod tests {
         assert!(result.is_ok());
 
         let args = result.unwrap();
-        assert_eq!(args.path, Some(PathBuf::from("test.csv")));
+        assert_eq!(args.paths, vec![PathBuf::from("test.csv")]);
         assert!(args.generate_config);
     }
 }

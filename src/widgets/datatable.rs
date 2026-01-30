@@ -194,6 +194,49 @@ impl DataTableState {
         Ok(state)
     }
 
+    /// Load multiple Parquet files and concatenate them into one LazyFrame (same schema assumed).
+    pub fn from_parquet_paths(
+        paths: &[impl AsRef<Path>],
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No paths provided"));
+        }
+        if paths.len() == 1 {
+            return Self::from_parquet(
+                paths[0].as_ref(),
+                pages_lookahead,
+                pages_lookback,
+                max_buffered_rows,
+                max_buffered_mb,
+                row_numbers,
+                row_start_index,
+            );
+        }
+        let mut lazy_frames = Vec::with_capacity(paths.len());
+        for p in paths {
+            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
+            lazy_frames.push(lf);
+        }
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
     /// Discover hive partition column names from a directory path by walking a single
     /// "spine" (one branch) of key=value directories. Partition keys are uniform across
     /// the tree, so we only need one path to infer [year, month, day] etc. Returns columns
@@ -519,6 +562,43 @@ impl DataTableState {
         )
     }
 
+    /// Load multiple CSV files (uncompressed) and concatenate into one LazyFrame.
+    pub fn from_csv_paths(paths: &[impl AsRef<Path>], options: &OpenOptions) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No paths provided"));
+        }
+        if paths.len() == 1 {
+            return Self::from_csv(paths[0].as_ref(), options);
+        }
+        let mut lazy_frames = Vec::with_capacity(paths.len());
+        for p in paths {
+            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let mut reader = LazyCsvReader::new(pl_path);
+            if let Some(skip_lines) = options.skip_lines {
+                reader = reader.with_skip_lines(skip_lines);
+            }
+            if let Some(skip_rows) = options.skip_rows {
+                reader = reader.with_skip_rows(skip_rows);
+            }
+            if let Some(has_header) = options.has_header {
+                reader = reader.with_has_header(has_header);
+            }
+            let lf = reader.finish()?;
+            lazy_frames.push(lf);
+        }
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
+        let mut state = Self::new(
+            lf,
+            options.pages_lookahead,
+            options.pages_lookback,
+            options.max_buffered_rows,
+            options.max_buffered_mb,
+        )?;
+        state.row_numbers = options.row_numbers;
+        state.row_start_index = options.row_start_index;
+        Ok(state)
+    }
+
     pub fn from_ndjson(
         path: &Path,
         pages_lookahead: Option<usize>,
@@ -530,6 +610,49 @@ impl DataTableState {
     ) -> Result<Self> {
         let pl_path = PlPath::Local(Arc::from(path));
         let lf = LazyJsonLineReader::new(pl_path).finish()?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Load multiple NDJSON files and concatenate into one LazyFrame.
+    pub fn from_ndjson_paths(
+        paths: &[impl AsRef<Path>],
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No paths provided"));
+        }
+        if paths.len() == 1 {
+            return Self::from_ndjson(
+                paths[0].as_ref(),
+                pages_lookahead,
+                pages_lookback,
+                max_buffered_rows,
+                max_buffered_mb,
+                row_numbers,
+                row_start_index,
+            );
+        }
+        let mut lazy_frames = Vec::with_capacity(paths.len());
+        for p in paths {
+            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let lf = LazyJsonLineReader::new(pl_path).finish()?;
+            lazy_frames.push(lf);
+        }
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
         let mut state = Self::new(
             lf,
             pages_lookahead,
@@ -600,6 +723,104 @@ impl DataTableState {
             .with_json_format(format)
             .finish()?
             .lazy();
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Load multiple JSON (array) files and concatenate into one LazyFrame.
+    pub fn from_json_paths(
+        paths: &[impl AsRef<Path>],
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        Self::from_json_with_format_paths(
+            paths,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+            row_numbers,
+            row_start_index,
+            JsonFormat::Json,
+        )
+    }
+
+    /// Load multiple JSON Lines files and concatenate into one LazyFrame.
+    pub fn from_json_lines_paths(
+        paths: &[impl AsRef<Path>],
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        Self::from_json_with_format_paths(
+            paths,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+            row_numbers,
+            row_start_index,
+            JsonFormat::JsonLines,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_json_with_format_paths(
+        paths: &[impl AsRef<Path>],
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+        format: JsonFormat,
+    ) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No paths provided"));
+        }
+        if paths.len() == 1 {
+            return Self::from_json_with_format(
+                paths[0].as_ref(),
+                pages_lookahead,
+                pages_lookback,
+                max_buffered_rows,
+                max_buffered_mb,
+                row_numbers,
+                row_start_index,
+                format,
+            );
+        }
+        let mut lazy_frames = Vec::with_capacity(paths.len());
+        for p in paths {
+            let file = File::open(p.as_ref())?;
+            let lf = match &format {
+                JsonFormat::Json => JsonReader::new(file)
+                    .with_json_format(JsonFormat::Json)
+                    .finish()?
+                    .lazy(),
+                JsonFormat::JsonLines => JsonReader::new(file)
+                    .with_json_format(JsonFormat::JsonLines)
+                    .finish()?
+                    .lazy(),
+            };
+            lazy_frames.push(lf);
+        }
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
         let mut state = Self::new(
             lf,
             pages_lookahead,

@@ -3,14 +3,14 @@
 ## Usage
 
 ```
-Usage: datui [OPTIONS] [PATH]
+Usage: datui [OPTIONS] [PATH]...
 ```
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `[<PATH>]` | Path to the data file to open (not required with --generate-config, --clear-cache, or --remove-templates) |
+| `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table (not required with --generate-config, --clear-cache, or --remove-templates) |
 | `--skip-lines <SKIP_LINES>` | Skip this many lines when reading a file |
 | `--skip-rows <SKIP_ROWS>` | Skip this many rows when reading a file |
 | `--no-header <NO_HEADER>` | Specify that the file has no header |

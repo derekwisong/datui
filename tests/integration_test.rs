@@ -35,7 +35,7 @@ fn test_full_workflow() {
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
     // 2. Open the file
-    let event = AppEvent::Open(csv_path.clone(), OpenOptions::default());
+    let event = AppEvent::Open(vec![csv_path.clone()], OpenOptions::default());
     if let Some(next_event) = app.event(&event) {
         if let Some(collect_event) = app.event(&next_event) {
             app.event(&collect_event);
@@ -123,7 +123,7 @@ fn test_chart_open_and_esc_back() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    let event = AppEvent::Open(csv_path.clone(), OpenOptions::default());
+    let event = AppEvent::Open(vec![csv_path.clone()], OpenOptions::default());
     if let Some(next_event) = app.event(&event) {
         if let Some(collect_event) = app.event(&next_event) {
             app.event(&collect_event);
@@ -156,7 +156,7 @@ fn test_chart_q_does_not_exit() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    let event = AppEvent::Open(csv_path, OpenOptions::default());
+    let event = AppEvent::Open(vec![csv_path], OpenOptions::default());
     if let Some(next_event) = app.event(&event) {
         if let Some(collect_event) = app.event(&next_event) {
             app.event(&collect_event);

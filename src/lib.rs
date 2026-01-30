@@ -281,9 +281,9 @@ impl From<&cli::Args> for OpenOptions {
 
 pub enum AppEvent {
     Key(KeyEvent),
-    Open(PathBuf, OpenOptions),
-    DoLoad(PathBuf, OpenOptions), // Internal event to actually perform loading after UI update
-    DoDecompress(PathBuf, OpenOptions), // Internal event to perform decompression after UI shows "Decompressing"
+    Open(Vec<PathBuf>, OpenOptions),
+    DoLoad(Vec<PathBuf>, OpenOptions), // Internal event to actually perform loading after UI update
+    DoDecompress(Vec<PathBuf>, OpenOptions), // Internal event to perform decompression after UI shows "Decompressing"
     DoExport(PathBuf, ExportFormat, ExportOptions), // Internal event to perform export after UI shows progress
     Exit,
     Crash(String),
@@ -716,9 +716,10 @@ impl App {
         self.theme.get(name)
     }
 
-    fn load(&mut self, path: &Path, options: &OpenOptions) -> Result<()> {
+    fn load(&mut self, paths: &[PathBuf], options: &OpenOptions) -> Result<()> {
         self.parquet_metadata_cache = None;
-        // Check for compressed CSV files (e.g., file.csv.gz, file.csv.zst, etc.)
+        let path = &paths[0]; // Primary path for format detection and single-path logic
+                              // Check for compressed CSV files (e.g., file.csv.gz, file.csv.zst, etc.) — only single-file
         let compression = options
             .compression
             .or_else(|| CompressionFormat::from_extension(path));
@@ -734,7 +735,7 @@ impl App {
                         .unwrap_or(false)
             })
             .unwrap_or(false);
-        let is_compressed_csv = compression.is_some() && is_csv;
+        let is_compressed_csv = paths.len() == 1 && compression.is_some() && is_csv;
 
         // For compressed files, decompression phase is already set in DoLoad handler
         // Now actually perform decompression and CSV reading (this is the slow part)
@@ -774,7 +775,7 @@ impl App {
             // Clear loading state after successful load
             self.loading_state = LoadingState::Idle;
             self.data_table_state = Some(lf);
-            self.path = Some(path.to_path_buf());
+            self.path = Some(path.clone());
             // For compressed CSV, determine format from the base file name
             let original_format =
                 path.file_stem()
@@ -794,9 +795,9 @@ impl App {
             return Ok(());
         }
 
-        // Hive path: when --hive and path is directory or glob (not a single file), use hive load.
-        // Single file with --hive uses the same path as without --hive (see extension match below).
-        if options.hive {
+        // Hive path: when --hive and single path is directory or glob (not a single file), use hive load.
+        // Multiple paths or single file with --hive use the normal path below.
+        if paths.len() == 1 && options.hive {
             let path_str = path.as_os_str().to_string_lossy();
             let is_single_file = path.exists()
                 && path.is_file()
@@ -845,7 +846,7 @@ impl App {
                     }
                     self.loading_state = LoadingState::Idle;
                     self.data_table_state = Some(lf);
-                    self.path = Some(path.to_path_buf());
+                    self.path = Some(path.clone());
                     self.original_file_format = Some(ExportFormat::Parquet);
                     self.original_file_delimiter = None;
                     self.sort_filter_modal = SortFilterModal::new();
@@ -875,7 +876,7 @@ impl App {
             };
         }
 
-        // Determine and store original file format
+        // Determine and store original file format (from first path)
         let original_format = path.extension().and_then(|e| e.to_str()).and_then(|ext| {
             if ext.eq_ignore_ascii_case("parquet") {
                 Some(ExportFormat::Parquet)
@@ -890,69 +891,126 @@ impl App {
             }
         });
 
-        let lf = match path.extension() {
-            Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(
-                path,
-                options.pages_lookahead,
-                options.pages_lookback,
-                options.max_buffered_rows,
-                options.max_buffered_mb,
-                options.row_numbers,
-                options.row_start_index,
-            )?,
-            Some(ext) if ext.eq_ignore_ascii_case("csv") => {
-                DataTableState::from_csv(path, options)? // Already passes row_numbers via options
+        let lf = if paths.len() > 1 {
+            // Multiple files: same format assumed (from first path), concatenated into one LazyFrame
+            match path.extension() {
+                Some(ext) if ext.eq_ignore_ascii_case("parquet") => {
+                    DataTableState::from_parquet_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("csv") => {
+                    DataTableState::from_csv_paths(paths, options)?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("jsonl") => {
+                    DataTableState::from_json_lines_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("ndjson") => {
+                    DataTableState::from_ndjson_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                _ => {
+                    self.loading_state = LoadingState::Idle;
+                    return Err(color_eyre::eyre::eyre!(
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson only)"
+                    ));
+                }
             }
-            Some(ext) if ext.eq_ignore_ascii_case("tsv") => DataTableState::from_delimited(
-                path,
-                b'\t',
-                options.pages_lookahead,
-                options.pages_lookback,
-                options.max_buffered_rows,
-                options.max_buffered_mb,
-                options.row_numbers,
-                options.row_start_index,
-            )?,
-            Some(ext) if ext.eq_ignore_ascii_case("psv") => DataTableState::from_delimited(
-                path,
-                b'|',
-                options.pages_lookahead,
-                options.pages_lookback,
-                options.max_buffered_rows,
-                options.max_buffered_mb,
-                options.row_numbers,
-                options.row_start_index,
-            )?,
-            Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json(
-                path,
-                options.pages_lookahead,
-                options.pages_lookback,
-                options.max_buffered_rows,
-                options.max_buffered_mb,
-                options.row_numbers,
-                options.row_start_index,
-            )?,
-            Some(ext) if ext.eq_ignore_ascii_case("jsonl") => DataTableState::from_json_lines(
-                path,
-                options.pages_lookahead,
-                options.pages_lookback,
-                options.max_buffered_rows,
-                options.max_buffered_mb,
-                options.row_numbers,
-                options.row_start_index,
-            )?,
-            Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(
-                path,
-                options.pages_lookahead,
-                options.pages_lookback,
-                options.max_buffered_rows,
-                options.max_buffered_mb,
-                options.row_numbers,
-                options.row_start_index,
-            )?,
-            _ => {
-                self.loading_state = LoadingState::Idle;
-                return Err(color_eyre::eyre::eyre!("Unsupported file type"));
+        } else {
+            match path.extension() {
+                Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("csv") => {
+                    DataTableState::from_csv(path, options)? // Already passes row_numbers via options
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("tsv") => DataTableState::from_delimited(
+                    path,
+                    b'\t',
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("psv") => DataTableState::from_delimited(
+                    path,
+                    b'|',
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("jsonl") => DataTableState::from_json_lines(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                _ => {
+                    self.loading_state = LoadingState::Idle;
+                    return Err(color_eyre::eyre::eyre!("Unsupported file type"));
+                }
             }
         };
 
@@ -974,7 +1032,7 @@ impl App {
         // Clear loading state after successful load
         self.loading_state = LoadingState::Idle;
         self.data_table_state = Some(lf);
-        self.path = Some(path.to_path_buf());
+        self.path = Some(path.clone());
         self.original_file_format = original_format;
         // Store delimiter based on file type
         self.original_file_delimiter = match path.extension().and_then(|e| e.to_str()) {
@@ -4002,46 +4060,51 @@ impl App {
         self.debug.num_events += 1;
         match event {
             AppEvent::Key(key) => self.key(key),
-            AppEvent::Open(path, options) => {
+            AppEvent::Open(paths, options) => {
                 // Set loading state first, then trigger a render before actually loading
-                let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                let path_str = path.as_os_str().to_string_lossy();
-                let is_partitioned_path = options.hive
-                    && (path.is_dir() || path_str.contains('*') || path_str.contains("**"));
+                let first = &paths[0];
+                let file_size = std::fs::metadata(first).map(|m| m.len()).unwrap_or(0);
+                let path_str = first.as_os_str().to_string_lossy();
+                let is_partitioned_path = paths.len() == 1
+                    && options.hive
+                    && (first.is_dir() || path_str.contains('*') || path_str.contains("**"));
                 let phase = if is_partitioned_path {
                     "Opening partitioned path"
+                } else if paths.len() > 1 {
+                    "Opening files"
                 } else {
                     "Opening file"
                 };
 
                 self.loading_state = LoadingState::Loading {
-                    file_path: path.clone(),
+                    file_path: first.clone(),
                     file_size,
                     current_phase: phase.to_string(),
                     progress_percent: 10,
                 };
 
                 // Return DoLoad event to perform actual loading after UI renders
-                Some(AppEvent::DoLoad(path.clone(), options.clone()))
+                Some(AppEvent::DoLoad(paths.clone(), options.clone()))
             }
-            AppEvent::DoLoad(path, options) => {
-                // Check if file is compressed
+            AppEvent::DoLoad(paths, options) => {
+                let first = &paths[0];
+                // Check if file is compressed (only single-file compressed CSV supported for now)
                 let compression = options
                     .compression
-                    .or_else(|| CompressionFormat::from_extension(path));
-                let is_csv = path
+                    .or_else(|| CompressionFormat::from_extension(first));
+                let is_csv = first
                     .file_stem()
                     .and_then(|stem| stem.to_str())
                     .map(|stem| {
                         stem.ends_with(".csv")
-                            || path
+                            || first
                                 .extension()
                                 .and_then(|e| e.to_str())
                                 .map(|e| e.eq_ignore_ascii_case("csv"))
                                 .unwrap_or(false)
                     })
                     .unwrap_or(false);
-                let is_compressed_csv = compression.is_some() && is_csv;
+                let is_compressed_csv = paths.len() == 1 && compression.is_some() && is_csv;
 
                 if is_compressed_csv {
                     // Set "Decompressing" phase and return event to trigger render
@@ -4059,10 +4122,10 @@ impl App {
                         };
                     }
                     // Return DoDecompress to allow UI to render "Decompressing" before blocking
-                    Some(AppEvent::DoDecompress(path.clone(), options.clone()))
+                    Some(AppEvent::DoDecompress(paths.clone(), options.clone()))
                 } else {
                     // For non-compressed files, proceed with normal loading
-                    match self.load(path, options) {
+                    match self.load(paths, options) {
                         Ok(_) => Some(AppEvent::Collect),
                         Err(e) => {
                             // Clear loading state on error
@@ -4072,9 +4135,9 @@ impl App {
                     }
                 }
             }
-            AppEvent::DoDecompress(path, options) => {
+            AppEvent::DoDecompress(paths, options) => {
                 // Actually perform decompression now (after UI has rendered "Decompressing")
-                match self.load(path, options) {
+                match self.load(paths, options) {
                     Ok(_) => Some(AppEvent::Collect),
                     Err(e) => {
                         // Clear loading state on error

@@ -18,7 +18,7 @@ fn ensure_sample_data() {
 }
 
 fn load_file(app: &mut App, path: PathBuf) {
-    let event = AppEvent::Open(path, OpenOptions::default());
+    let event = AppEvent::Open(vec![path], OpenOptions::default());
     let mut next = app.event(&event);
     while let Some(ev) = next.take() {
         next = app.event(&ev);

@@ -115,19 +115,21 @@ jobs:
 
       - name: Build documentation for main branch
         run: |
-          # build_single_version_docs uses temp docs tree; repo docs/ (incl. command-line-options.md) are never modified
-          ORIGINAL_COMMIT=$(git rev-parse HEAD)
-          git checkout main || (echo "Warning: Could not checkout main branch, using current HEAD" && true)
+          # Build main's docs in a worktree - never checkout main in main repo (stays on tag)
+          # build_single_version_docs supports --worktree; output goes to main repo's book/
+          REPO_ROOT=$(pwd)
+          git fetch origin main
           [ -f scripts/docs/build_single_version_docs.sh ] || (echo "Error: scripts/docs/build_single_version_docs.sh not found" && exit 1)
           [ -f scripts/docs/rebuild_index.py ] || (echo "Error: scripts/docs/rebuild_index.py not found" && exit 1)
           [ -f scripts/docs/index.html.j2 ] || (echo "Error: scripts/docs/index.html.j2 not found" && exit 1)
           chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py scripts/docs/generate_command_line_options.py scripts/docs/check_doc_links.sh
           rm -rf book/demos
-          ./scripts/docs/build_single_version_docs.sh "main"
+          WORKTREE_DIR="${REPO_ROOT}/.docs-main-worktree"
+          git worktree add "$WORKTREE_DIR" origin/main
+          (cd "$WORKTREE_DIR" && DATUI_REPO_ROOT="$REPO_ROOT" "$REPO_ROOT/scripts/docs/build_single_version_docs.sh" "main" --worktree) || true
+          git worktree remove -f "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
           rm -rf book/demos
           python3 scripts/docs/rebuild_index.py
-          # Return to original tag commit (not necessary for deployment, but clean)
-          git checkout "$ORIGINAL_COMMIT" 2>/dev/null || true
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

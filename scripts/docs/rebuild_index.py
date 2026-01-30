@@ -101,9 +101,35 @@ def sort_version_dirs(version_dirs: List[Path]) -> List[Path]:
 def get_dev_version(repo_root: Path) -> Optional[str]:
     """Get the version from Cargo.toml for 'main' branch docs display.
 
-    Reads the actual version from the current checkout (main when called from
-    the docs build). No inference - uses whatever version main actually has.
+    Reads from origin/main explicitly so we get main's actual version regardless
+    of the current checkout (e.g. when release workflow has tag checked out).
+    Falls back to local Cargo.toml if origin/main is unavailable.
     """
+    for ref in ("origin/main", "main"):
+        try:
+            result = subprocess.run(
+                ["git", "show", f"{ref}:Cargo.toml"],
+                capture_output=True,
+                text=True,
+                cwd=repo_root,
+                timeout=5,
+            )
+            if result.returncode != 0 or not result.stdout:
+                continue
+            content = result.stdout
+            match = re.search(r'^\[package\]', content, re.MULTILINE)
+            if not match:
+                continue
+            start = match.end()
+            rest = content[start:]
+            next_section = re.search(r'^\[', rest, re.MULTILINE)
+            section = rest[:next_section.start()] if next_section else rest
+            version_match = re.search(r'version\s*=\s*"([^"]+)"', section)
+            if version_match:
+                return version_match.group(1)
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+            continue
+    # Fallback: read from filesystem (current checkout)
     try:
         cargo_toml = repo_root / "Cargo.toml"
         if not cargo_toml.exists():
@@ -134,10 +160,13 @@ def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict]]:
     main_dir = output_dir / "main"
     if main_dir.exists() and main_dir.is_dir():
         date_str = "Development version - most current features"
-        if check_git_ref_exists("main"):
-            main_date = get_git_date("main")
-            if main_date:
-                date_str = main_date
+        # Try origin/main first (release workflow may not have local main)
+        for ref in ("origin/main", "main"):
+            if check_git_ref_exists(ref):
+                main_date = get_git_date(ref)
+                if main_date:
+                    date_str = main_date
+                    break
         
         # Get dev version from Cargo.toml if available
         repo_root = get_repo_root()

@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "datui"
-version = "0.2.13"
+version = "0.2.14-dev"
 dependencies = [
  "arrow",
  "bzip2",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "datui-cli"
-version = "0.2.13"
+version = "0.2.14-dev"
 dependencies = [
  "clap",
 ]

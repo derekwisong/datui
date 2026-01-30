@@ -28,22 +28,28 @@ xz2 = "0.1"
 flate2 = "1.0"
 zstd = "0.13"
 plotters = "0.3"
+calamine = { version = "0.32", features = ["chrono"] }
+orc-rust = "0.7"
+arrow = "57"
+tempfile = "3.14"
 
 [dependencies.polars]
 version = "0.52.0"
 default-features = false
 features = [
+    "avro",
     "csv",
+    "decompress",
     "dtype-datetime",
+    "ipc",
     "json",
     "lazy",
     "parquet",
     "polars-io",
+    "pivot",
     "temporal",
     "timezones",
     "strings",
-    "pivot",
-    "decompress"
 ]
 
 [dependencies.polars-parquet]

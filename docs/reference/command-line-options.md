@@ -18,6 +18,8 @@ Usage: datui [OPTIONS] [PATH]...
 | `--compression <COMPRESSION>` | Specify the compression format explicitly (gzip, zstd, bzip2, xz) If not specified, compression is auto-detected from file extension. Supported formats: gzip (.gz), zstd (.zst), bzip2 (.bz2), xz (.xz) |
 | `--debug` | Enable debug mode to show operational information |
 | `--hive` | Enable Hive-style partitioning for directory or glob paths; ignored for a single file |
+| `--parse-dates <BOOL>` | Try to parse CSV string columns as dates (e.g. YYYY-MM-DD, ISO datetime). Default: true |
+| `--sheet <SHEET>` | Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales") |
 | `--clear-cache` | Clear all cache data and exit |
 | `--template <TEMPLATE>` | Apply a template by name when starting the application |
 | `--remove-templates` | Remove all templates and exit |

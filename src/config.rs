@@ -386,6 +386,12 @@ pub struct FileLoadingConfig {
     pub skip_lines: Option<usize>,
     pub skip_rows: Option<usize>,
     pub compression: Option<String>,
+    /// When true, CSV reader tries to parse string columns as dates (YYYY-MM-DD, ISO datetime). Default: true.
+    pub parse_dates: Option<bool>,
+    /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
+    pub decompress_in_memory: Option<bool>,
+    /// Directory for decompression temp files. null = system default (e.g. TMPDIR).
+    pub temp_dir: Option<String>,
 }
 
 // Field comments for FileLoadingConfig
@@ -404,6 +410,18 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "compression",
         "Default compression format (auto-detected from extension if not specified)\nOptions: \"gzip\", \"zstd\", \"bzip2\", \"xz\"",
+    ),
+    (
+        "parse_dates",
+        "When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)",
+    ),
+    (
+        "decompress_in_memory",
+        "When true, decompress compressed CSV into memory (eager). When false (default), decompress to a temp file and use lazy scan",
+    ),
+    (
+        "temp_dir",
+        "Directory for decompression temp files. null = system default (e.g. TMPDIR)",
     ),
 ];
 
@@ -918,6 +936,15 @@ impl FileLoadingConfig {
         }
         if other.compression.is_some() {
             self.compression = other.compression;
+        }
+        if other.parse_dates.is_some() {
+            self.parse_dates = other.parse_dates;
+        }
+        if other.decompress_in_memory.is_some() {
+            self.decompress_in_memory = other.decompress_in_memory;
+        }
+        if other.temp_dir.is_some() {
+            self.temp_dir = other.temp_dir.clone();
         }
     }
 }

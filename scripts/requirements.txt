@@ -1,4 +1,7 @@
 polars>=0.20.0
 numpy>=1.24.0
+pyarrow>=14.0.0
+fastavro>=1.8.0
+openpyxl>=3.1.0
 pre-commit
 jinja2>=3.0.0

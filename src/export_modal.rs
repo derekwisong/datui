@@ -10,10 +10,20 @@ pub enum ExportFormat {
     Parquet,
     Json,
     Ndjson,
+    /// Arrow IPC / Feather v2
+    Ipc,
+    Avro,
 }
 
 impl ExportFormat {
-    pub const ALL: [Self; 4] = [Self::Csv, Self::Parquet, Self::Json, Self::Ndjson];
+    pub const ALL: [Self; 6] = [
+        Self::Csv,
+        Self::Parquet,
+        Self::Json,
+        Self::Ndjson,
+        Self::Ipc,
+        Self::Avro,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -21,6 +31,8 @@ impl ExportFormat {
             Self::Parquet => "Parquet",
             Self::Json => "JSON",
             Self::Ndjson => "NDJSON",
+            Self::Ipc => "Arrow IPC / Feather",
+            Self::Avro => "Avro",
         }
     }
 
@@ -30,6 +42,8 @@ impl ExportFormat {
             Self::Parquet => "parquet",
             Self::Json => "json",
             Self::Ndjson => "jsonl",
+            Self::Ipc => "arrow",
+            Self::Avro => "avro",
         }
     }
 
@@ -39,6 +53,8 @@ impl ExportFormat {
             "parquet" => Some(Self::Parquet),
             "json" => Some(Self::Json),
             "ndjson" | "jsonl" => Some(Self::Ndjson),
+            "arrow" | "ipc" | "feather" => Some(Self::Ipc),
+            "avro" => Some(Self::Avro),
             _ => None,
         }
     }
@@ -135,7 +151,9 @@ impl ExportModal {
                 ExportFormat::Csv => ExportFocus::CsvDelimiter,
                 ExportFormat::Json => ExportFocus::JsonCompression,
                 ExportFormat::Ndjson => ExportFocus::NdjsonCompression,
-                ExportFormat::Parquet => ExportFocus::ExportButton,
+                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
+                    ExportFocus::ExportButton
+                }
             },
             ExportFocus::CsvDelimiter => ExportFocus::CsvIncludeHeader,
             ExportFocus::CsvIncludeHeader => ExportFocus::CsvCompression,
@@ -170,7 +188,9 @@ impl ExportModal {
                 ExportFormat::Csv => ExportFocus::CsvCompression,
                 ExportFormat::Json => ExportFocus::JsonCompression,
                 ExportFormat::Ndjson => ExportFocus::NdjsonCompression,
-                ExportFormat::Parquet => ExportFocus::PathInput,
+                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
+                    ExportFocus::PathInput
+                }
             },
             ExportFocus::CancelButton => ExportFocus::ExportButton,
         };

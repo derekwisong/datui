@@ -5,10 +5,21 @@ and a path to open.
 
 ## Supported Formats
 
-- Parquet
-- CSV (or other delimited text formats)
-- NDJSON (`.jsonl` files)
-- JSON
+| Format | Extensions | Eager load only | Hive partitioning |
+|--------|------------|-----------------|-------------------|
+| Parquet | `.parquet` | No | Yes |
+| CSV (or other-delimited) | `.csv`, `.tsv`, `.psv`, etc. | No | No |
+| NDJSON | `.jsonl` | No | No |
+| JSON | `.json` | Yes | No |
+| Arrow IPC / Feather v2 | `.arrow`, `.ipc`, `.feather` | No | No |
+| Avro | `.avro` | Yes | No |
+| Excel | `.xls`, `.xlsx`, `.xlsm`, `.xlsb` | Yes | No |
+| ORC | `.orc` | Yes | No |
+
+**Eager load only** — The file is read fully into memory before use; no lazy streaming. **Hive partitioning** — Use the `--hive` flag with a directory or glob; see [Hive-partitioned data](#hive-partitioned-data) below.
+**Excel** — Use the `--sheet` flag to specify which sheet to open.
+
+**CSV date inference** — By default, CSV string columns that look like dates (e.g. `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`) are parsed as Polars Date/Datetime. Use `--parse-dates false` or set `parse_dates = false` in [configuration](configuration.md) to disable.
 
 ## Compression
 
@@ -20,6 +31,7 @@ Compressed files will be identified by extension and decompressed before loading
 ### Supported Compression Formats
 
 - gz
+- zstd
 - bzip2
 - xz
 

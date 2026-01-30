@@ -9,4 +9,8 @@ Press the `e` key from the main window to export your data. See
 
 ## Supported Formats
 
-See [Supported Formats](./loading-data.md#supported-formats) for details.
+You can export to: CSV, Parquet, JSON, NDJSON, Arrow IPC (`.arrow`), and Avro (`.avro`).
+
+> Excel is supported for loading only, not export.
+
+See [Loading Data](./loading-data.md#supported-formats) for the full list of input formats.

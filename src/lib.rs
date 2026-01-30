@@ -155,7 +155,7 @@ pub mod tests {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct OpenOptions {
     pub delimiter: Option<u8>,
     pub has_header: Option<bool>,
@@ -170,6 +170,14 @@ pub struct OpenOptions {
     pub row_start_index: usize,
     /// When true, use hive load path for directory/glob; single file uses normal load.
     pub hive: bool,
+    /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
+    pub parse_dates: bool,
+    /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
+    pub decompress_in_memory: bool,
+    /// Directory for decompression temp files. None = system default (e.g. TMPDIR).
+    pub temp_dir: Option<std::path::PathBuf>,
+    /// Excel sheet: 0-based index or sheet name (CLI only).
+    pub excel_sheet: Option<String>,
 }
 
 impl OpenOptions {
@@ -187,9 +195,21 @@ impl OpenOptions {
             row_numbers: false,
             row_start_index: 1,
             hive: false,
+            parse_dates: true,
+            decompress_in_memory: false,
+            temp_dir: None,
+            excel_sheet: None,
         }
     }
+}
 
+impl Default for OpenOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OpenOptions {
     pub fn with_skip_lines(mut self, skip_lines: usize) -> Self {
         self.skip_lines = Some(skip_lines);
         self
@@ -266,6 +286,30 @@ impl OpenOptions {
 
         // Hive partitioning: CLI only (no config option yet)
         opts.hive = args.hive;
+
+        // CSV date inference: CLI overrides config; default true
+        opts.parse_dates = args
+            .parse_dates
+            .or(config.file_loading.parse_dates)
+            .unwrap_or(true);
+
+        // Decompress-in-memory: CLI overrides config; default false (decompress to temp, use scan)
+        opts.decompress_in_memory = args
+            .decompress_in_memory
+            .or(config.file_loading.decompress_in_memory)
+            .unwrap_or(false);
+
+        // Temp directory for decompression: CLI overrides config; default None (system temp)
+        opts.temp_dir = args.temp_dir.clone().or_else(|| {
+            config
+                .file_loading
+                .temp_dir
+                .as_ref()
+                .map(std::path::PathBuf::from)
+        });
+
+        // Excel sheet (CLI only)
+        opts.excel_sheet = args.excel_sheet.clone();
 
         opts
     }
@@ -886,6 +930,13 @@ impl App {
                 Some(ExportFormat::Json)
             } else if ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson") {
                 Some(ExportFormat::Ndjson)
+            } else if ext.eq_ignore_ascii_case("arrow")
+                || ext.eq_ignore_ascii_case("ipc")
+                || ext.eq_ignore_ascii_case("feather")
+            {
+                Some(ExportFormat::Ipc)
+            } else if ext.eq_ignore_ascii_case("avro") {
+                Some(ExportFormat::Avro)
             } else {
                 None
             }
@@ -939,10 +990,43 @@ impl App {
                         options.row_start_index,
                     )?
                 }
+                Some(ext)
+                    if ext.eq_ignore_ascii_case("arrow")
+                        || ext.eq_ignore_ascii_case("ipc")
+                        || ext.eq_ignore_ascii_case("feather") =>
+                {
+                    DataTableState::from_ipc_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("avro") => DataTableState::from_avro_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("orc") => DataTableState::from_orc_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
                 _ => {
                     self.loading_state = LoadingState::Idle;
                     return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson only)"
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only)"
                     ));
                 }
             }
@@ -999,6 +1083,56 @@ impl App {
                     options.row_start_index,
                 )?,
                 Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext)
+                    if ext.eq_ignore_ascii_case("arrow")
+                        || ext.eq_ignore_ascii_case("ipc")
+                        || ext.eq_ignore_ascii_case("feather") =>
+                {
+                    DataTableState::from_ipc(
+                        path,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("avro") => DataTableState::from_avro(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext)
+                    if ext.eq_ignore_ascii_case("xls")
+                        || ext.eq_ignore_ascii_case("xlsx")
+                        || ext.eq_ignore_ascii_case("xlsm")
+                        || ext.eq_ignore_ascii_case("xlsb") =>
+                {
+                    DataTableState::from_excel(
+                        path,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                        options.excel_sheet.as_deref(),
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("orc") => DataTableState::from_orc(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1668,7 +1802,9 @@ impl App {
                                     ExportFormat::Csv => self.export_modal.csv_compression,
                                     ExportFormat::Json => self.export_modal.json_compression,
                                     ExportFormat::Ndjson => self.export_modal.ndjson_compression,
-                                    ExportFormat::Parquet => None, // Parquet doesn't support compression in UI
+                                    ExportFormat::Parquet
+                                    | ExportFormat::Ipc
+                                    | ExportFormat::Avro => None,
                                 };
                                 // Ensure file extension is present (including compression extension if needed)
                                 let path_with_ext =
@@ -1722,7 +1858,9 @@ impl App {
                                     ExportFormat::Csv => self.export_modal.csv_compression,
                                     ExportFormat::Json => self.export_modal.json_compression,
                                     ExportFormat::Ndjson => self.export_modal.ndjson_compression,
-                                    ExportFormat::Parquet => None, // Parquet doesn't support compression in UI
+                                    ExportFormat::Parquet
+                                    | ExportFormat::Ipc
+                                    | ExportFormat::Avro => None,
                                 };
                                 // Ensure file extension is present (including compression extension if needed)
                                 let path_with_ext =
@@ -4282,7 +4420,7 @@ impl App {
                         ExportFormat::Csv => options.csv_compression.is_some(),
                         ExportFormat::Json => options.json_compression.is_some(),
                         ExportFormat::Ndjson => options.ndjson_compression.is_some(),
-                        ExportFormat::Parquet => false, // Parquet doesn't support compression in our UI
+                        ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => false,
                     };
 
                     let phase = if has_compression {
@@ -4722,6 +4860,18 @@ impl App {
                         .with_json_format(JsonFormat::JsonLines)
                         .finish(&mut df)?;
                 }
+            }
+            ExportFormat::Ipc => {
+                use polars::prelude::IpcWriter;
+                let file = File::create(path)?;
+                let mut writer = BufWriter::new(file);
+                IpcWriter::new(&mut writer).finish(&mut df)?;
+            }
+            ExportFormat::Avro => {
+                use polars::io::avro::AvroWriter;
+                let file = File::create(path)?;
+                let mut writer = BufWriter::new(file);
+                AvroWriter::new(&mut writer).finish(&mut df)?;
             }
         }
 

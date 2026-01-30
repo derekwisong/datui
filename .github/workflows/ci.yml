@@ -242,7 +242,7 @@ jobs:
         with:
           tag_name: dev
           target_commitish: ${{ github.sha }}
-          name: "Development Build (${{ steps.version.outputs.version }})"
+          name: "v${{ steps.version.outputs.version }}"
           prerelease: true
           body: |
             **Development build from main branch**

@@ -236,7 +236,9 @@ pub struct InfoContext<'a> {
 impl<'a> InfoContext<'a> {
     pub fn schema_source(&self) -> &'static str {
         match self.format {
-            Some(ExportFormat::Parquet) => "Known",
+            Some(ExportFormat::Parquet) | Some(ExportFormat::Ipc) | Some(ExportFormat::Avro) => {
+                "Known"
+            }
             _ => "Inferred",
         }
     }

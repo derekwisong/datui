@@ -15,6 +15,7 @@ fn test_config_used_for_row_numbers() {
         delimiter: None,
         compression: None,
         debug: false,
+        excel_sheet: None,
         clear_cache: false,
         template: None,
         remove_templates: false,
@@ -25,6 +26,9 @@ fn test_config_used_for_row_numbers() {
         generate_config: false,
         force: false,
         hive: false,
+        parse_dates: None,
+        decompress_in_memory: None,
+        temp_dir: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -49,6 +53,7 @@ fn test_cli_args_override_config() {
         delimiter: None,
         compression: None,
         debug: false,
+        excel_sheet: None,
         clear_cache: false,
         template: None,
         remove_templates: false,
@@ -59,6 +64,9 @@ fn test_cli_args_override_config() {
         generate_config: false,
         force: false,
         hive: false,
+        parse_dates: None,
+        decompress_in_memory: None,
+        temp_dir: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -83,6 +91,7 @@ fn test_config_display_settings() {
         delimiter: None,
         compression: None,
         debug: false,
+        excel_sheet: None,
         clear_cache: false,
         template: None,
         remove_templates: false,
@@ -93,6 +102,9 @@ fn test_config_display_settings() {
         generate_config: false,
         force: false,
         hive: false,
+        parse_dates: None,
+        decompress_in_memory: None,
+        temp_dir: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -117,6 +129,7 @@ fn test_config_file_loading_settings() {
         delimiter: None,
         compression: None,
         debug: false,
+        excel_sheet: None,
         clear_cache: false,
         template: None,
         remove_templates: false,
@@ -127,6 +140,9 @@ fn test_config_file_loading_settings() {
         generate_config: false,
         force: false,
         hive: false,
+        parse_dates: None,
+        decompress_in_memory: None,
+        temp_dir: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);

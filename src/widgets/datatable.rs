@@ -23,6 +23,18 @@ use crate::{CompressionFormat, OpenOptions};
 use polars::lazy::frame::pivot::{pivot, pivot_stable};
 use std::io::{BufReader, Read};
 
+use calamine::{open_workbook_auto, Data, Reader};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use orc_rust::ArrowReaderBuilder;
+use tempfile::NamedTempFile;
+
+use arrow::array::types::{
+    Date32Type, Date64Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
+    TimestampMillisecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+};
+use arrow::array::{Array, AsArray};
+use arrow::record_batch::RecordBatch;
+
 fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
     let e = col(PlSmallStr::from_static(""));
     let expr = match agg {
@@ -79,6 +91,19 @@ pub struct DataTableState {
     last_melt_spec: Option<MeltSpec>,
     /// When set, dataset was loaded with hive partitioning; partition column names for Info panel and predicate pushdown.
     pub partition_columns: Option<Vec<String>>,
+    /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
+    decompress_temp_file: Option<NamedTempFile>,
+}
+
+/// Inferred type for an Excel column (preserves numbers, bools, dates; avoids stringifying).
+#[derive(Clone, Copy)]
+enum ExcelColType {
+    Int64,
+    Float64,
+    Boolean,
+    Utf8,
+    Date,
+    Datetime,
 }
 
 impl DataTableState {
@@ -128,6 +153,7 @@ impl DataTableState {
             last_pivot_spec: None,
             last_melt_spec: None,
             partition_columns: None,
+            decompress_temp_file: None,
         })
     }
 
@@ -235,6 +261,688 @@ impl DataTableState {
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
         Ok(state)
+    }
+
+    /// Load a single Arrow IPC / Feather v2 file (lazy).
+    pub fn from_ipc(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        let pl_path = PlPath::Local(Arc::from(path));
+        let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Load multiple Arrow IPC / Feather files and concatenate into one LazyFrame.
+    pub fn from_ipc_paths(
+        paths: &[impl AsRef<Path>],
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No paths provided"));
+        }
+        if paths.len() == 1 {
+            return Self::from_ipc(
+                paths[0].as_ref(),
+                pages_lookahead,
+                pages_lookback,
+                max_buffered_rows,
+                max_buffered_mb,
+                row_numbers,
+                row_start_index,
+            );
+        }
+        let mut lazy_frames = Vec::with_capacity(paths.len());
+        for p in paths {
+            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
+            lazy_frames.push(lf);
+        }
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Load a single Avro file (eager read, then lazy).
+    pub fn from_avro(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        let file = File::open(path)?;
+        let df = polars::io::avro::AvroReader::new(file).finish()?;
+        let lf = df.lazy();
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Load multiple Avro files and concatenate into one LazyFrame.
+    pub fn from_avro_paths(
+        paths: &[impl AsRef<Path>],
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No paths provided"));
+        }
+        if paths.len() == 1 {
+            return Self::from_avro(
+                paths[0].as_ref(),
+                pages_lookahead,
+                pages_lookback,
+                max_buffered_rows,
+                max_buffered_mb,
+                row_numbers,
+                row_start_index,
+            );
+        }
+        let mut lazy_frames = Vec::with_capacity(paths.len());
+        for p in paths {
+            let file = File::open(p.as_ref())?;
+            let df = polars::io::avro::AvroReader::new(file).finish()?;
+            lazy_frames.push(df.lazy());
+        }
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Load a single Excel file (xls, xlsx, xlsm, xlsb) using calamine (eager read, then lazy).
+    /// Sheet is selected by 0-based index or name via `excel_sheet`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_excel(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+        excel_sheet: Option<&str>,
+    ) -> Result<Self> {
+        let mut workbook =
+            open_workbook_auto(path).map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?;
+        let sheet_names = workbook.sheet_names().to_vec();
+        if sheet_names.is_empty() {
+            return Err(color_eyre::eyre::eyre!("Excel file has no worksheets"));
+        }
+        let range = if let Some(sheet_sel) = excel_sheet {
+            if let Ok(idx) = sheet_sel.parse::<usize>() {
+                workbook
+                    .worksheet_range_at(idx)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("Excel: no sheet at index {}", idx))?
+                    .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?
+            } else {
+                workbook
+                    .worksheet_range(sheet_sel)
+                    .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?
+            }
+        } else {
+            workbook
+                .worksheet_range_at(0)
+                .ok_or_else(|| color_eyre::eyre::eyre!("Excel: no first sheet"))?
+                .map_err(|e| color_eyre::eyre::eyre!("Excel: {}", e))?
+        };
+        let rows: Vec<Vec<Data>> = range.rows().map(|r| r.to_vec()).collect();
+        if rows.is_empty() {
+            let empty_df = DataFrame::new(vec![])?;
+            let mut state = Self::new(
+                empty_df.lazy(),
+                pages_lookahead,
+                pages_lookback,
+                max_buffered_rows,
+                max_buffered_mb,
+            )?;
+            state.row_numbers = row_numbers;
+            state.row_start_index = row_start_index;
+            return Ok(state);
+        }
+        let headers: Vec<String> = rows[0]
+            .iter()
+            .map(|c| calamine::DataType::as_string(c).unwrap_or_else(|| c.to_string()))
+            .collect();
+        let n_cols = headers.len();
+        let mut series_vec = Vec::with_capacity(n_cols);
+        for (col_idx, header) in headers.iter().enumerate() {
+            let col_cells: Vec<Option<&Data>> =
+                rows[1..].iter().map(|row| row.get(col_idx)).collect();
+            let inferred = Self::excel_infer_column_type(&col_cells);
+            let name = if header.is_empty() {
+                format!("column_{}", col_idx + 1)
+            } else {
+                header.clone()
+            };
+            let series = Self::excel_column_to_series(name.as_str(), &col_cells, inferred)?;
+            series_vec.push(series.into());
+        }
+        let df = DataFrame::new(series_vec)?;
+        let mut state = Self::new(
+            df.lazy(),
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Infers column type: prefers Int64 for whole-number floats; infers Date/Datetime for
+    /// calamine DateTime/DateTimeIso or for string columns that parse as ISO date/datetime.
+    fn excel_infer_column_type(cells: &[Option<&Data>]) -> ExcelColType {
+        use calamine::DataType as CalamineTrait;
+        let mut has_string = false;
+        let mut has_float = false;
+        let mut has_int = false;
+        let mut has_bool = false;
+        let mut has_datetime = false;
+        for cell in cells.iter().flatten() {
+            if CalamineTrait::is_string(*cell) {
+                has_string = true;
+                break;
+            }
+            if CalamineTrait::is_float(*cell)
+                || CalamineTrait::is_datetime(*cell)
+                || CalamineTrait::is_datetime_iso(*cell)
+            {
+                has_float = true;
+            }
+            if CalamineTrait::is_int(*cell) {
+                has_int = true;
+            }
+            if CalamineTrait::is_bool(*cell) {
+                has_bool = true;
+            }
+            if CalamineTrait::is_datetime(*cell) || CalamineTrait::is_datetime_iso(*cell) {
+                has_datetime = true;
+            }
+        }
+        if has_string {
+            let any_parsed = cells
+                .iter()
+                .flatten()
+                .any(|c| Self::excel_cell_to_naive_datetime(c).is_some());
+            let all_non_empty_parse = cells.iter().flatten().all(|c| {
+                CalamineTrait::is_empty(*c) || Self::excel_cell_to_naive_datetime(c).is_some()
+            });
+            if any_parsed && all_non_empty_parse {
+                if Self::excel_parsed_cells_all_midnight(cells) {
+                    ExcelColType::Date
+                } else {
+                    ExcelColType::Datetime
+                }
+            } else {
+                ExcelColType::Utf8
+            }
+        } else if has_int {
+            ExcelColType::Int64
+        } else if has_datetime {
+            if Self::excel_parsed_cells_all_midnight(cells) {
+                ExcelColType::Date
+            } else {
+                ExcelColType::Datetime
+            }
+        } else if has_float {
+            let all_whole = cells.iter().flatten().all(|cell| {
+                cell.as_f64()
+                    .is_none_or(|f| f.is_finite() && (f - f.trunc()).abs() < 1e-10)
+            });
+            if all_whole {
+                ExcelColType::Int64
+            } else {
+                ExcelColType::Float64
+            }
+        } else if has_bool {
+            ExcelColType::Boolean
+        } else {
+            ExcelColType::Utf8
+        }
+    }
+
+    /// True if every cell that parses as datetime has time 00:00:00.
+    fn excel_parsed_cells_all_midnight(cells: &[Option<&Data>]) -> bool {
+        let midnight = NaiveTime::from_hms_opt(0, 0, 0).expect("valid time");
+        cells
+            .iter()
+            .flatten()
+            .filter_map(|c| Self::excel_cell_to_naive_datetime(c))
+            .all(|dt| dt.time() == midnight)
+    }
+
+    /// Converts a calamine cell to NaiveDateTime (Excel serial, DateTimeIso, or parseable string).
+    fn excel_cell_to_naive_datetime(cell: &Data) -> Option<NaiveDateTime> {
+        use calamine::DataType;
+        if let Some(dt) = cell.as_datetime() {
+            return Some(dt);
+        }
+        let s = cell.get_datetime_iso().or_else(|| cell.get_string())?;
+        Self::parse_naive_datetime_str(s)
+    }
+
+    /// Parses an ISO-style date/datetime string; tries FORMATS in order.
+    fn parse_naive_datetime_str(s: &str) -> Option<NaiveDateTime> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        const FORMATS: &[&str] = &[
+            "%Y-%m-%dT%H:%M:%S%.f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S%.f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+        ];
+        for fmt in FORMATS {
+            if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
+                return Some(dt);
+            }
+        }
+        if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            return Some(d.and_hms_opt(0, 0, 0).expect("midnight"));
+        }
+        None
+    }
+
+    /// Build a Polars Series from a column of calamine cells using the inferred type.
+    fn excel_column_to_series(
+        name: &str,
+        cells: &[Option<&Data>],
+        col_type: ExcelColType,
+    ) -> Result<Series> {
+        use calamine::DataType as CalamineTrait;
+        use polars::datatypes::TimeUnit;
+        let series = match col_type {
+            ExcelColType::Int64 => {
+                let v: Vec<Option<i64>> = cells
+                    .iter()
+                    .map(|c| c.and_then(|cell| cell.as_i64()))
+                    .collect();
+                Series::new(name.into(), v)
+            }
+            ExcelColType::Float64 => {
+                let v: Vec<Option<f64>> = cells
+                    .iter()
+                    .map(|c| c.and_then(|cell| cell.as_f64()))
+                    .collect();
+                Series::new(name.into(), v)
+            }
+            ExcelColType::Boolean => {
+                let v: Vec<Option<bool>> = cells
+                    .iter()
+                    .map(|c| c.and_then(|cell| cell.get_bool()))
+                    .collect();
+                Series::new(name.into(), v)
+            }
+            ExcelColType::Utf8 => {
+                let v: Vec<Option<String>> = cells
+                    .iter()
+                    .map(|c| c.and_then(|cell| cell.as_string()))
+                    .collect();
+                Series::new(name.into(), v)
+            }
+            ExcelColType::Date => {
+                let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid date");
+                let v: Vec<Option<i32>> = cells
+                    .iter()
+                    .map(|c| {
+                        c.and_then(Self::excel_cell_to_naive_datetime)
+                            .map(|dt| (dt.date() - epoch).num_days() as i32)
+                    })
+                    .collect();
+                Series::new(name.into(), v).cast(&DataType::Date)?
+            }
+            ExcelColType::Datetime => {
+                let v: Vec<Option<i64>> = cells
+                    .iter()
+                    .map(|c| {
+                        c.and_then(Self::excel_cell_to_naive_datetime)
+                            .map(|dt| dt.and_utc().timestamp_micros())
+                    })
+                    .collect();
+                Series::new(name.into(), v)
+                    .cast(&DataType::Datetime(TimeUnit::Microseconds, None))?
+            }
+        };
+        Ok(series)
+    }
+
+    /// Load a single ORC file (eager read via orc-rust → Arrow, then convert to Polars, then lazy).
+    /// ORC is read fully into memory; see loading-data docs for large-file notes.
+    pub fn from_orc(
+        path: &Path,
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        let file = File::open(path)?;
+        let reader = ArrowReaderBuilder::try_new(file)
+            .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?
+            .build();
+        let batches: Vec<RecordBatch> = reader
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?;
+        let df = Self::arrow_record_batches_to_dataframe(&batches)?;
+        let lf = df.lazy();
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Load multiple ORC files and concatenate into one LazyFrame.
+    pub fn from_orc_paths(
+        paths: &[impl AsRef<Path>],
+        pages_lookahead: Option<usize>,
+        pages_lookback: Option<usize>,
+        max_buffered_rows: Option<usize>,
+        max_buffered_mb: Option<usize>,
+        row_numbers: bool,
+        row_start_index: usize,
+    ) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(color_eyre::eyre::eyre!("No paths provided"));
+        }
+        if paths.len() == 1 {
+            return Self::from_orc(
+                paths[0].as_ref(),
+                pages_lookahead,
+                pages_lookback,
+                max_buffered_rows,
+                max_buffered_mb,
+                row_numbers,
+                row_start_index,
+            );
+        }
+        let mut lazy_frames = Vec::with_capacity(paths.len());
+        for p in paths {
+            let file = File::open(p.as_ref())?;
+            let reader = ArrowReaderBuilder::try_new(file)
+                .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?
+                .build();
+            let batches: Vec<RecordBatch> = reader
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?;
+            let df = Self::arrow_record_batches_to_dataframe(&batches)?;
+            lazy_frames.push(df.lazy());
+        }
+        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
+        let mut state = Self::new(
+            lf,
+            pages_lookahead,
+            pages_lookback,
+            max_buffered_rows,
+            max_buffered_mb,
+        )?;
+        state.row_numbers = row_numbers;
+        state.row_start_index = row_start_index;
+        Ok(state)
+    }
+
+    /// Convert Arrow (arrow crate 57) RecordBatches to Polars DataFrame by value (ORC uses
+    /// arrow 57; Polars uses polars-arrow, so we cannot use Series::from_arrow).
+    fn arrow_record_batches_to_dataframe(batches: &[RecordBatch]) -> Result<DataFrame> {
+        if batches.is_empty() {
+            return Ok(DataFrame::new(vec![])?);
+        }
+        let mut all_dfs = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let n_cols = batch.num_columns();
+            let schema = batch.schema();
+            let mut series_vec = Vec::with_capacity(n_cols);
+            for (i, col) in batch.columns().iter().enumerate() {
+                let name = schema.field(i).name().as_str();
+                let s = Self::arrow_array_to_polars_series(name, col)?;
+                series_vec.push(s.into());
+            }
+            let df = DataFrame::new(series_vec)?;
+            all_dfs.push(df);
+        }
+        let mut out = all_dfs.remove(0);
+        for df in all_dfs {
+            out = out.vstack(&df)?;
+        }
+        Ok(out)
+    }
+
+    fn arrow_array_to_polars_series(name: &str, array: &dyn Array) -> Result<Series> {
+        use arrow::datatypes::DataType as ArrowDataType;
+        let len = array.len();
+        match array.data_type() {
+            ArrowDataType::Int8 => {
+                let a = array
+                    .as_primitive_opt::<Int8Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int8 array"))?;
+                let v: Vec<Option<i8>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Int16 => {
+                let a = array
+                    .as_primitive_opt::<Int16Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int16 array"))?;
+                let v: Vec<Option<i16>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Int32 => {
+                let a = array
+                    .as_primitive_opt::<Int32Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int32 array"))?;
+                let v: Vec<Option<i32>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Int64 => {
+                let a = array
+                    .as_primitive_opt::<Int64Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int64 array"))?;
+                let v: Vec<Option<i64>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::UInt8 => {
+                let a = array
+                    .as_primitive_opt::<UInt8Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt8 array"))?;
+                let v: Vec<Option<i64>> = (0..len)
+                    .map(|i| {
+                        if a.is_null(i) {
+                            None
+                        } else {
+                            Some(a.value(i) as i64)
+                        }
+                    })
+                    .collect();
+                Ok(Series::new(name.into(), v).cast(&DataType::UInt8)?)
+            }
+            ArrowDataType::UInt16 => {
+                let a = array
+                    .as_primitive_opt::<UInt16Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt16 array"))?;
+                let v: Vec<Option<i64>> = (0..len)
+                    .map(|i| {
+                        if a.is_null(i) {
+                            None
+                        } else {
+                            Some(a.value(i) as i64)
+                        }
+                    })
+                    .collect();
+                Ok(Series::new(name.into(), v).cast(&DataType::UInt16)?)
+            }
+            ArrowDataType::UInt32 => {
+                let a = array
+                    .as_primitive_opt::<UInt32Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt32 array"))?;
+                let v: Vec<Option<u32>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::UInt64 => {
+                let a = array
+                    .as_primitive_opt::<UInt64Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt64 array"))?;
+                let v: Vec<Option<u64>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Float32 => {
+                let a = array
+                    .as_primitive_opt::<Float32Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Float32 array"))?;
+                let v: Vec<Option<f32>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Float64 => {
+                let a = array
+                    .as_primitive_opt::<Float64Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Float64 array"))?;
+                let v: Vec<Option<f64>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Boolean => {
+                let a = array
+                    .as_boolean_opt()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Boolean array"))?;
+                let v: Vec<Option<bool>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Utf8 => {
+                let a = array
+                    .as_string_opt::<i32>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Utf8 array"))?;
+                let v: Vec<Option<String>> = (0..len)
+                    .map(|i| {
+                        if a.is_null(i) {
+                            None
+                        } else {
+                            Some(a.value(i).to_string())
+                        }
+                    })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::LargeUtf8 => {
+                let a = array
+                    .as_string_opt::<i64>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected LargeUtf8 array"))?;
+                let v: Vec<Option<String>> = (0..len)
+                    .map(|i| {
+                        if a.is_null(i) {
+                            None
+                        } else {
+                            Some(a.value(i).to_string())
+                        }
+                    })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Date32 => {
+                let a = array
+                    .as_primitive_opt::<Date32Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Date32 array"))?;
+                let v: Vec<Option<i32>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Date64 => {
+                let a = array
+                    .as_primitive_opt::<Date64Type>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Date64 array"))?;
+                let v: Vec<Option<i64>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            ArrowDataType::Timestamp(_, _) => {
+                let a = array
+                    .as_primitive_opt::<TimestampMillisecondType>()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Timestamp array"))?;
+                let v: Vec<Option<i64>> = (0..len)
+                    .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                    .collect();
+                Ok(Series::new(name.into(), v))
+            }
+            other => Err(color_eyre::eyre::eyre!(
+                "ORC: unsupported column type {:?} for column '{}'",
+                other,
+                name
+            )),
+        }
     }
 
     /// Discover hive partition column names from a directory path by walking a single
@@ -409,6 +1117,37 @@ impl DataTableState {
         self.row_numbers = !self.row_numbers;
     }
 
+    /// Decompress a compressed file to a temp file for lazy CSV scan.
+    fn decompress_compressed_csv_to_temp(
+        path: &Path,
+        compression: CompressionFormat,
+        temp_dir: &Path,
+    ) -> Result<NamedTempFile> {
+        let mut temp = NamedTempFile::new_in(temp_dir)?;
+        let out = temp.as_file_mut();
+        let mut reader: Box<dyn Read> = match compression {
+            CompressionFormat::Gzip => {
+                let f = File::open(path)?;
+                Box::new(flate2::read::GzDecoder::new(BufReader::new(f)))
+            }
+            CompressionFormat::Zstd => {
+                let f = File::open(path)?;
+                Box::new(zstd::Decoder::new(BufReader::new(f))?)
+            }
+            CompressionFormat::Bzip2 => {
+                let f = File::open(path)?;
+                Box::new(bzip2::read::BzDecoder::new(BufReader::new(f)))
+            }
+            CompressionFormat::Xz => {
+                let f = File::open(path)?;
+                Box::new(xz2::read::XzDecoder::new(BufReader::new(f)))
+            }
+        };
+        std::io::copy(&mut reader, out)?;
+        out.sync_all()?;
+        Ok(temp)
+    }
+
     pub fn from_csv(path: &Path, options: &OpenOptions) -> Result<Self> {
         // Determine compression format: explicit option, or auto-detect from extension
         let compression = options
@@ -416,102 +1155,133 @@ impl DataTableState {
             .or_else(|| CompressionFormat::from_extension(path));
 
         if let Some(compression) = compression {
-            // For compressed files, we need to use eager reading
-            // Polars natively supports gzip and zstd via the decompress feature
-            // For bzip2 and xz, we need to decompress manually
-            match compression {
-                CompressionFormat::Gzip | CompressionFormat::Zstd => {
-                    // Polars natively handles gzip and zstd
-                    let mut read_options = CsvReadOptions::default();
-
-                    if let Some(skip_lines) = options.skip_lines {
-                        read_options.skip_lines = skip_lines;
+            if options.decompress_in_memory {
+                // Eager read: decompress into memory, then CSV read
+                match compression {
+                    CompressionFormat::Gzip | CompressionFormat::Zstd => {
+                        let mut read_options = CsvReadOptions::default();
+                        if let Some(skip_lines) = options.skip_lines {
+                            read_options.skip_lines = skip_lines;
+                        }
+                        if let Some(skip_rows) = options.skip_rows {
+                            read_options.skip_rows = skip_rows;
+                        }
+                        if let Some(has_header) = options.has_header {
+                            read_options.has_header = has_header;
+                        }
+                        read_options = read_options.map_parse_options(|opts| {
+                            opts.with_try_parse_dates(options.parse_dates)
+                        });
+                        let df = read_options
+                            .try_into_reader_with_file_path(Some(path.into()))?
+                            .finish()?;
+                        let lf = df.lazy();
+                        let mut state = Self::new(
+                            lf,
+                            options.pages_lookahead,
+                            options.pages_lookback,
+                            options.max_buffered_rows,
+                            options.max_buffered_mb,
+                        )?;
+                        state.row_numbers = options.row_numbers;
+                        state.row_start_index = options.row_start_index;
+                        Ok(state)
                     }
-                    if let Some(skip_rows) = options.skip_rows {
-                        read_options.skip_rows = skip_rows;
+                    CompressionFormat::Bzip2 => {
+                        let file = File::open(path)?;
+                        let mut decoder = bzip2::read::BzDecoder::new(BufReader::new(file));
+                        let mut decompressed = Vec::new();
+                        decoder.read_to_end(&mut decompressed)?;
+                        let mut read_options = CsvReadOptions::default();
+                        if let Some(skip_lines) = options.skip_lines {
+                            read_options.skip_lines = skip_lines;
+                        }
+                        if let Some(skip_rows) = options.skip_rows {
+                            read_options.skip_rows = skip_rows;
+                        }
+                        if let Some(has_header) = options.has_header {
+                            read_options.has_header = has_header;
+                        }
+                        read_options = read_options.map_parse_options(|opts| {
+                            opts.with_try_parse_dates(options.parse_dates)
+                        });
+                        let df = CsvReader::new(std::io::Cursor::new(decompressed))
+                            .with_options(read_options)
+                            .finish()?;
+                        let lf = df.lazy();
+                        let mut state = Self::new(
+                            lf,
+                            options.pages_lookahead,
+                            options.pages_lookback,
+                            options.max_buffered_rows,
+                            options.max_buffered_mb,
+                        )?;
+                        state.row_numbers = options.row_numbers;
+                        state.row_start_index = options.row_start_index;
+                        Ok(state)
                     }
-                    if let Some(has_header) = options.has_header {
-                        read_options.has_header = has_header;
+                    CompressionFormat::Xz => {
+                        let file = File::open(path)?;
+                        let mut decoder = xz2::read::XzDecoder::new(BufReader::new(file));
+                        let mut decompressed = Vec::new();
+                        decoder.read_to_end(&mut decompressed)?;
+                        let mut read_options = CsvReadOptions::default();
+                        if let Some(skip_lines) = options.skip_lines {
+                            read_options.skip_lines = skip_lines;
+                        }
+                        if let Some(skip_rows) = options.skip_rows {
+                            read_options.skip_rows = skip_rows;
+                        }
+                        if let Some(has_header) = options.has_header {
+                            read_options.has_header = has_header;
+                        }
+                        read_options = read_options.map_parse_options(|opts| {
+                            opts.with_try_parse_dates(options.parse_dates)
+                        });
+                        let df = CsvReader::new(std::io::Cursor::new(decompressed))
+                            .with_options(read_options)
+                            .finish()?;
+                        let lf = df.lazy();
+                        let mut state = Self::new(
+                            lf,
+                            options.pages_lookahead,
+                            options.pages_lookback,
+                            options.max_buffered_rows,
+                            options.max_buffered_mb,
+                        )?;
+                        state.row_numbers = options.row_numbers;
+                        state.row_start_index = options.row_start_index;
+                        Ok(state)
                     }
-
-                    let df = read_options
-                        .try_into_reader_with_file_path(Some(path.into()))?
-                        .finish()?;
-                    let lf = df.lazy();
-                    let mut state = Self::new(
-                        lf,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                    )?;
-                    state.row_numbers = options.row_numbers;
-                    state.row_start_index = options.row_start_index;
-                    Ok(state)
                 }
-                CompressionFormat::Bzip2 => {
-                    // Decompress bzip2 manually, then read CSV
-                    let file = File::open(path)?;
-                    let mut decoder = bzip2::read::BzDecoder::new(BufReader::new(file));
-                    let mut decompressed = Vec::new();
-                    decoder.read_to_end(&mut decompressed)?;
-
-                    let mut read_options = CsvReadOptions::default();
-                    if let Some(skip_lines) = options.skip_lines {
-                        read_options.skip_lines = skip_lines;
-                    }
-                    if let Some(skip_rows) = options.skip_rows {
-                        read_options.skip_rows = skip_rows;
-                    }
-                    if let Some(has_header) = options.has_header {
-                        read_options.has_header = has_header;
-                    }
-
-                    let df = CsvReader::new(std::io::Cursor::new(decompressed))
-                        .with_options(read_options)
-                        .finish()?;
-                    let lf = df.lazy();
-                    let mut state = Self::new(
-                        lf,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                    )?;
-                    state.row_numbers = options.row_numbers;
-                    state.row_start_index = options.row_start_index;
-                    Ok(state)
-                }
-                CompressionFormat::Xz => {
-                    // Decompress xz manually, then read CSV
-                    let file = File::open(path)?;
-                    let mut decoder = xz2::read::XzDecoder::new(BufReader::new(file));
-                    let mut decompressed = Vec::new();
-                    decoder.read_to_end(&mut decompressed)?;
-
-                    let mut read_options = CsvReadOptions::default();
-                    if let Some(skip_lines) = options.skip_lines {
-                        read_options.skip_lines = skip_lines;
-                    }
-                    if let Some(skip_rows) = options.skip_rows {
-                        read_options.skip_rows = skip_rows;
-                    }
-                    if let Some(has_header) = options.has_header {
-                        read_options.has_header = has_header;
-                    }
-
-                    let df = CsvReader::new(std::io::Cursor::new(decompressed))
-                        .with_options(read_options)
-                        .finish()?;
-                    let lf = df.lazy();
-                    Self::new(
-                        lf,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                    )
-                }
+            } else {
+                // Decompress to temp file, then lazy scan
+                let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
+                let temp = Self::decompress_compressed_csv_to_temp(path, compression, &temp_dir)?;
+                let mut state = Self::from_csv_customize(
+                    temp.path(),
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    |mut reader| {
+                        if let Some(skip_lines) = options.skip_lines {
+                            reader = reader.with_skip_lines(skip_lines);
+                        }
+                        if let Some(skip_rows) = options.skip_rows {
+                            reader = reader.with_skip_rows(skip_rows);
+                        }
+                        if let Some(has_header) = options.has_header {
+                            reader = reader.with_has_header(has_header);
+                        }
+                        reader = reader.with_try_parse_dates(options.parse_dates);
+                        reader
+                    },
+                )?;
+                state.row_numbers = options.row_numbers;
+                state.row_start_index = options.row_start_index;
+                state.decompress_temp_file = Some(temp);
+                Ok(state)
             }
         } else {
             // For uncompressed files, use lazy scanning (more efficient)
@@ -531,6 +1301,7 @@ impl DataTableState {
                     if let Some(has_header) = options.has_header {
                         reader = reader.with_has_header(has_header);
                     }
+                    reader = reader.with_try_parse_dates(options.parse_dates);
                     reader
                 },
             )?;
@@ -583,6 +1354,7 @@ impl DataTableState {
             if let Some(has_header) = options.has_header {
                 reader = reader.with_has_header(has_header);
             }
+            reader = reader.with_try_parse_dates(options.parse_dates);
             let lf = reader.finish()?;
             lazy_frames.push(lf);
         }
@@ -2425,6 +3197,82 @@ mod tests {
         let path = Path::new("tests/sample-data/people.parquet");
         let state = DataTableState::from_parquet(path, None, None, None, None, false, 1).unwrap();
         assert!(!state.schema.is_empty());
+    }
+
+    #[test]
+    fn test_from_ipc() {
+        use polars::prelude::IpcWriter;
+        use std::io::BufWriter;
+        let mut df = df!(
+            "x" => &[1_i32, 2, 3],
+            "y" => &["a", "b", "c"]
+        )
+        .unwrap();
+        let dir = std::env::temp_dir();
+        let path = dir.join("datui_test_ipc.arrow");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = BufWriter::new(file);
+        IpcWriter::new(&mut writer).finish(&mut df).unwrap();
+        drop(writer);
+        let state = DataTableState::from_ipc(&path, None, None, None, None, false, 1).unwrap();
+        assert_eq!(state.schema.len(), 2);
+        assert!(state.schema.contains("x"));
+        assert!(state.schema.contains("y"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_from_avro() {
+        use polars::io::avro::AvroWriter;
+        use std::io::BufWriter;
+        let mut df = df!(
+            "id" => &[1_i32, 2, 3],
+            "name" => &["alice", "bob", "carol"]
+        )
+        .unwrap();
+        let dir = std::env::temp_dir();
+        let path = dir.join("datui_test_avro.avro");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut writer = BufWriter::new(file);
+        AvroWriter::new(&mut writer).finish(&mut df).unwrap();
+        drop(writer);
+        let state = DataTableState::from_avro(&path, None, None, None, None, false, 1).unwrap();
+        assert_eq!(state.schema.len(), 2);
+        assert!(state.schema.contains("id"));
+        assert!(state.schema.contains("name"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_from_orc() {
+        use arrow::array::{Int64Array, StringArray};
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use orc_rust::ArrowWriterBuilder;
+        use std::io::BufWriter;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let id_array = Arc::new(Int64Array::from(vec![1_i64, 2, 3]));
+        let name_array = Arc::new(StringArray::from(vec!["a", "b", "c"]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![id_array, name_array]).unwrap();
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("datui_test_orc.orc");
+        let file = std::fs::File::create(&path).unwrap();
+        let writer = BufWriter::new(file);
+        let mut orc_writer = ArrowWriterBuilder::new(writer, schema).try_build().unwrap();
+        orc_writer.write(&batch).unwrap();
+        orc_writer.close().unwrap();
+
+        let state = DataTableState::from_orc(&path, None, None, None, None, false, 1).unwrap();
+        assert_eq!(state.schema.len(), 2);
+        assert!(state.schema.contains("id"));
+        assert!(state.schema.contains("name"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

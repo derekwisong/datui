@@ -10,6 +10,9 @@ Once installed, have a look at the [Quick Start Guide](quick-start.md).
 To acquire a pre-built copy of Datui, you may download one from the
 [Datui Releases Page on GitHub][datui-releases].
 
+> There is a [dev release](https://github.com/derekwisong/datui/releases/tag/dev) that tracks
+> the latest development build. This release will have the freshest features but may be less stable.
+
 ## Package Managers
 
 ### Arch Linux (AUR)

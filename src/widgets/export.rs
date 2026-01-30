@@ -183,6 +183,9 @@ fn render_format_options(
         ExportFormat::Parquet => {
             render_parquet_options(inner, buf, modal, border_color, active_color)
         }
+        ExportFormat::Ipc | ExportFormat::Avro => {
+            render_parquet_options(inner, buf, modal, border_color, active_color)
+        }
     }
 }
 

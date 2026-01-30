@@ -89,6 +89,22 @@ pub struct Args {
     #[arg(long = "hive", action)]
     pub hive: bool,
 
+    /// Try to parse CSV string columns as dates (e.g. YYYY-MM-DD, ISO datetime). Default: true
+    #[arg(long = "parse-dates", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    pub parse_dates: Option<bool>,
+
+    /// Decompress compressed CSV into memory (eager read). Default: decompress to temp file and use lazy scan
+    #[arg(long = "decompress-in-memory", default_missing_value = "true", num_args = 0..=1, value_parser = clap::value_parser!(bool))]
+    pub decompress_in_memory: Option<bool>,
+
+    /// Directory for decompression temp files (default: system temp, e.g. TMPDIR)
+    #[arg(long = "temp-dir", value_name = "DIR")]
+    pub temp_dir: Option<std::path::PathBuf>,
+
+    /// Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales")
+    #[arg(long = "sheet", value_name = "SHEET")]
+    pub excel_sheet: Option<String>,
+
     /// Clear all cache data and exit
     #[arg(long = "clear-cache", action)]
     pub clear_cache: bool,

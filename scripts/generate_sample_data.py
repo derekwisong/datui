@@ -2,7 +2,7 @@
 """
 Generate sample data files for datui testing.
 
-This script generates various CSV and Parquet files with different characteristics:
+This script generates various CSV, Parquet, IPC/Arrow, Avro, and Excel files:
 - Different data types
 - Missing data (nulls)
 - Empty tables
@@ -14,7 +14,7 @@ This script generates various CSV and Parquet files with different characteristi
 - Pivot and Melt reshape testing (long-format for pivot, wide-format for melt)
 - Correlation matrix demo (100k rows, 10 numeric columns with varying correlations)
 
-Uses Polars instead of Pandas.
+Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 """
 
 import os
@@ -22,9 +22,19 @@ import sys
 from pathlib import Path
 import polars as pl
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import random
 import gzip
+
+# Optional deps for extra formats (fail gracefully if missing)
+try:
+    import fastavro
+except ImportError:
+    fastavro = None
+try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
 
 # Output directory
 OUTPUT_DIR = Path(__file__).parent.parent / "tests" / "sample-data"
@@ -633,6 +643,94 @@ def save_parquet(df, filename):
     df.write_parquet(filepath)
     print(f"Generated: {filepath}")
 
+
+def save_ipc(df, filename):
+    """Save DataFrame as Arrow IPC / Feather (e.g. .arrow, .ipc)."""
+    base = filename.replace(".arrow", "").replace(".ipc", "")
+    filepath = OUTPUT_DIR / f"{base}.arrow"
+    df.write_ipc(filepath)
+    print(f"Generated: {filepath}")
+
+
+def _polars_dtype_to_avro(dtype):
+    """Map Polars dtype to Avro schema (nullable union). Date/Datetime use logical types."""
+    if dtype == pl.Int64:
+        return ["null", "long"]
+    if dtype == pl.Float64:
+        return ["null", "double"]
+    if dtype == pl.Utf8:
+        return ["null", "string"]
+    if dtype == pl.Boolean:
+        return ["null", "boolean"]
+    if dtype == pl.Date:
+        return ["null", {"type": "int", "logicalType": "date"}]
+    if dtype == pl.Datetime("us") or dtype == pl.Datetime("ms"):
+        return ["null", {"type": "long", "logicalType": "timestamp-micros"}]
+    # fallback
+    return ["null", "string"]
+
+
+def save_avro(df, filename):
+    """Save DataFrame as Avro (requires fastavro)."""
+    if fastavro is None:
+        print("Skipping Avro (fastavro not installed):", filename)
+        return
+    filepath = OUTPUT_DIR / filename
+    fields = []
+    for name in df.columns:
+        dtype = df.schema[name]
+        avro_type = _polars_dtype_to_avro(dtype)
+        fields.append({"name": name, "type": avro_type})
+    schema = {"type": "record", "name": "Record", "fields": fields}
+    parsed = fastavro.parse_schema(schema)
+
+    epoch_date = date(1970, 1, 1)
+
+    def row_to_record(row):
+        record = {}
+        for i, name in enumerate(df.columns):
+            val = row[i]
+            dtype = df.schema[name]
+            if val is None:
+                record[name] = None
+            elif dtype == pl.Date and isinstance(val, date):
+                record[name] = (val - epoch_date).days
+            elif dtype in (pl.Datetime("us"), pl.Datetime("ms")) and hasattr(val, "timestamp"):
+                record[name] = int(val.timestamp() * 1_000_000)
+            elif hasattr(val, "isoformat"):
+                record[name] = val.isoformat()
+            else:
+                record[name] = val
+        return record
+
+    records = [row_to_record(row) for row in df.iter_rows()]
+    with open(filepath, "wb") as out:
+        fastavro.writer(out, parsed, records, codec="deflate")
+    print(f"Generated: {filepath}")
+
+
+def save_excel(df, filename):
+    """Save DataFrame as Excel .xlsx (requires openpyxl)."""
+    if openpyxl is None:
+        print("Skipping Excel (openpyxl not installed):", filename)
+        return
+    filepath = OUTPUT_DIR / filename
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    if ws is None:
+        return
+    for c, name in enumerate(df.columns, 1):
+        ws.cell(row=1, column=c, value=name)
+    for r in range(df.height):
+        row = df.row(r)
+        for c, val in enumerate(row, 1):
+            if hasattr(val, "isoformat"):
+                val = val.isoformat()
+            ws.cell(row=r + 2, column=c, value=val)
+    wb.save(filepath)
+    print(f"Generated: {filepath}")
+
+
 def main():
     print("Generating sample data files...")
     print(f"Output directory: {OUTPUT_DIR}")
@@ -642,18 +740,27 @@ def main():
     people_df = generate_people_data()
     save_csv(people_df, "people.csv")
     save_parquet(people_df, "people.parquet")
-    
+    save_ipc(people_df, "people.arrow")
+    save_avro(people_df, "people.avro")
+    save_excel(people_df, "people.xlsx")
+
     # Sales data for aggregates
     print("\n2. Generating sales data...")
     sales_df = generate_sales_data()
     save_csv(sales_df, "sales.csv")
     save_parquet(sales_df, "sales.parquet")
-    
+    save_ipc(sales_df, "sales.arrow")
+    save_avro(sales_df, "sales.avro")
+    save_excel(sales_df, "sales.xlsx")
+
     # Mixed types
     print("\n3. Generating mixed types data...")
     mixed_df = generate_mixed_types()
     save_csv(mixed_df, "mixed_types.csv")
     save_parquet(mixed_df, "mixed_types.parquet")
+    save_ipc(mixed_df, "mixed_types.arrow")
+    save_avro(mixed_df, "mixed_types.avro")
+    save_excel(mixed_df, "mixed_types.xlsx")
     
     # Generate a small uncompressed CSV for testing (3 columns, good coverage)
     print("\n3a. Generating small test CSV (uncompressed)...")
@@ -675,12 +782,18 @@ def main():
     empty_df = generate_empty_table()
     save_csv(empty_df, "empty.csv")
     save_parquet(empty_df, "empty.parquet")
-    
+    save_ipc(empty_df, "empty.arrow")
+    save_avro(empty_df, "empty.avro")
+    save_excel(empty_df, "empty.xlsx")
+
     # Single row
     print("\n6. Generating single row table...")
     single_df = generate_single_row()
     save_csv(single_df, "single_row.csv")
     save_parquet(single_df, "single_row.parquet")
+    save_ipc(single_df, "single_row.arrow")
+    save_avro(single_df, "single_row.avro")
+    save_excel(single_df, "single_row.xlsx")
     
     # Large dataset
     print("\n7. Generating large dataset...")
@@ -702,12 +815,18 @@ def main():
     pivot_long_df = generate_pivot_long()
     save_csv(pivot_long_df, "pivot_long.csv")
     save_parquet(pivot_long_df, "pivot_long.parquet")
+    save_ipc(pivot_long_df, "pivot_long.arrow")
+    save_avro(pivot_long_df, "pivot_long.avro")
+    save_excel(pivot_long_df, "pivot_long.xlsx")
     pivot_long_string_df = generate_pivot_long_string()
     save_csv(pivot_long_string_df, "pivot_long_string.csv")
     save_parquet(pivot_long_string_df, "pivot_long_string.parquet")
     melt_wide_df = generate_melt_wide()
     save_csv(melt_wide_df, "melt_wide.csv")
     save_parquet(melt_wide_df, "melt_wide.parquet")
+    save_ipc(melt_wide_df, "melt_wide.arrow")
+    save_avro(melt_wide_df, "melt_wide.avro")
+    save_excel(melt_wide_df, "melt_wide.xlsx")
     melt_wide_many_df = generate_melt_wide_many()
     save_csv(melt_wide_many_df, "melt_wide_many.csv")
     save_parquet(melt_wide_many_df, "melt_wide_many.parquet")

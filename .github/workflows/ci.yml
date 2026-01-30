@@ -220,7 +220,10 @@ jobs:
           DATE=$(date -u +%Y-%m-%d)
           echo "date=$DATE" >> $GITHUB_OUTPUT
 
-      - name: Update dev release
+      - name: Delete existing dev release
+        run: gh release delete dev --yes --cleanup-tag || true
+
+      - name: Create dev release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev

@@ -99,32 +99,27 @@ def sort_version_dirs(version_dirs: List[Path]) -> List[Path]:
 
 
 def get_dev_version(repo_root: Path) -> Optional[str]:
-    """Get the current dev version from Cargo.toml (e.g., '0.2.11-dev')."""
+    """Get the version from Cargo.toml for 'main' branch docs display.
+
+    Reads the actual version from the current checkout (main when called from
+    the docs build). No inference - uses whatever version main actually has.
+    """
     try:
         cargo_toml = repo_root / "Cargo.toml"
         if not cargo_toml.exists():
             return None
         content = cargo_toml.read_text()
-        # Find version in [package] section
         match = re.search(r'^\[package\]', content, re.MULTILINE)
         if not match:
             return None
-        # Find version field after [package], before next section
         start = match.end()
         rest = content[start:]
-        # Stop at next section header
         next_section = re.search(r'^\[', rest, re.MULTILINE)
         section = rest[:next_section.start()] if next_section else rest
-        
         version_match = re.search(r'version\s*=\s*"([^"]+)"', section)
-        if version_match:
-            version = version_match.group(1)
-            # Only return if it's a dev version
-            if version.endswith('-dev'):
-                return version
+        return version_match.group(1) if version_match else None
     except Exception:
-        pass
-    return None
+        return None
 
 
 def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict]]:

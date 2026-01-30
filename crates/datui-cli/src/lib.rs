@@ -48,7 +48,12 @@ impl CompressionFormat {
 
 /// Command-line arguments for datui
 #[derive(Parser, Debug)]
-#[command(name = "datui", version, about = "datui")]
+#[command(
+    name = "datui",
+    version,
+    about = "Terminal User Interface for Data Exploration",
+    long_about = include_str!("../long_about.txt")
+)]
 pub struct Args {
     /// Path to the data file to open (not required with --generate-config, --clear-cache, or --remove-templates)
     #[arg(required_unless_present_any = ["generate_config", "clear_cache", "remove_templates"])]

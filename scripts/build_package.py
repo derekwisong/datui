@@ -66,6 +66,41 @@ def ensure_gzipped_manpage(repo_root: Path) -> bool:
     return (repo_root / "target" / "release" / "datui.1.gz").exists()
 
 
+def fix_aur_pkgbuild(repo_root: Path) -> bool:
+    """Fix PKGBUILD for Arch compatibility: replace '-dev' with '.dev' in version.
+    
+    Arch pkgver cannot contain hyphens. This also renames the tarball to match.
+    Returns True on success.
+    """
+    import re
+    
+    aur_dir = repo_root / "target" / "cargo-aur"
+    pkgbuild = aur_dir / "PKGBUILD"
+    
+    if not pkgbuild.exists():
+        return False
+    
+    content = pkgbuild.read_text()
+    
+    # Check if there's a -dev version that needs fixing
+    if "-dev" not in content:
+        return True  # Nothing to fix
+    
+    # Replace -dev with .dev in the PKGBUILD content
+    new_content = content.replace("-dev", ".dev")
+    pkgbuild.write_text(new_content)
+    
+    # Rename the tarball to match (if it exists with -dev in the name)
+    for tarball in aur_dir.glob("*-dev*.tar.gz"):
+        new_name = tarball.name.replace("-dev", ".dev")
+        new_path = tarball.parent / new_name
+        tarball.rename(new_path)
+        print(f"Renamed: {tarball.name} -> {new_name}")
+    
+    print("Fixed PKGBUILD: replaced '-dev' with '.dev' for Arch compatibility")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build OS packages (deb, rpm, aur) for datui.",
@@ -140,7 +175,12 @@ def main() -> int:
         sys.stderr.write(f"error: cargo {subcmd} failed\n")
         return 1
 
-    # 5. Verify outputs and print paths
+    # 5. Post-process AUR package for Arch compatibility
+    if args.pkg == "aur":
+        if not fix_aur_pkgbuild(repo_root):
+            sys.stderr.write("warning: failed to fix PKGBUILD for Arch compatibility\n")
+
+    # 6. Verify outputs and print paths
     if out_dir_or_aur == "aur":
         out_dir = repo_root / "target" / "cargo-aur"
         if not out_dir.is_dir():

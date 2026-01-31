@@ -3,6 +3,17 @@
 # Run manually with: pre-commit run --all-files
 
 repos:
+  # Keep local dev tag in sync with remote (avoids push/pull issues when dev is force-updated)
+  - repo: local
+    hooks:
+      - id: fetch-dev-tag
+        name: fetch dev tag
+        entry: bash -c 'timeout 1 git fetch origin refs/tags/dev:refs/tags/dev --force 2>/dev/null || true'
+        language: system
+        pass_filenames: false
+        always_run: true
+        description: Force-fetch dev tag from origin so local ref stays in sync
+
   # Rust formatting with cargo fmt
   - repo: local
     hooks:

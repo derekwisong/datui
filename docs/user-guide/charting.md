@@ -9,16 +9,14 @@ Press **`c`** from the main view to open the chart.
 ## Controls in Chart View
 
 - **Chart type**: Line, Scatter, or Bar (cycle with ↑/↓ or ←/→ when focused).
-- **X axis**: Search for and select a numeric or temporal column
-- **Y axis**: Search for and select a numeric column
+- **X axis**: Search for and select a numeric or temporal column (single selection).
+- **Y axis**: Search for and select one or more numeric columns. Use **`Space`** to toggle columns on or off; up to seven series can be plotted at once.
 - **Options**: 
   - Y axis starts at 0 (defaults to data range)
   - Log scale
   - Show legend
 - `Tab` / `Shift+Tab` move focus
 - `Esc` returns to the main view
-
-> Currently, only a single series can be charted at a time.
 
 ## Export to File
 

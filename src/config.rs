@@ -512,6 +512,7 @@ fn default_row_numbers_color() -> String {
 /// **UI Element Colors:**
 /// - `keybind_hints`: Keybind hints (modals, breadcrumb, correlation matrix)
 /// - `keybind_labels`: Action labels in controls bar
+/// - `throbber`: Busy indicator (spinner) in control bar
 /// - `table_header`: Table column header text
 /// - `table_header_bg`: Table column header background
 /// - `column_separator`: Vertical line between columns
@@ -548,6 +549,7 @@ fn default_row_numbers_color() -> String {
 pub struct ColorConfig {
     pub keybind_hints: String,
     pub keybind_labels: String,
+    pub throbber: String,
     pub primary_chart_series_color: String,
     pub secondary_chart_series_color: String,
     pub success: String,
@@ -595,6 +597,7 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
         "Keybind hints (modals, breadcrumb, correlation matrix)",
     ),
     ("keybind_labels", "Action labels in controls bar"),
+    ("throbber", "Busy indicator (spinner) in control bar"),
     (
         "primary_chart_series_color",
         "Chart data (histogram bars, Q-Q plot data points)",
@@ -764,6 +767,7 @@ impl Default for ColorConfig {
         Self {
             keybind_hints: "cyan".to_string(),
             keybind_labels: "light_gray".to_string(),
+            throbber: "cyan".to_string(),
             primary_chart_series_color: "cyan".to_string(),
             secondary_chart_series_color: "dark_gray".to_string(),
             success: "green".to_string(),
@@ -1008,6 +1012,7 @@ impl ColorConfig {
 
         validate_color!(&self.keybind_hints, "keybind_hints");
         validate_color!(&self.keybind_labels, "keybind_labels");
+        validate_color!(&self.throbber, "throbber");
         validate_color!(
             &self.primary_chart_series_color,
             "primary_chart_series_color"
@@ -1063,6 +1068,9 @@ impl ColorConfig {
         }
         if other.keybind_labels != default.keybind_labels {
             self.keybind_labels = other.keybind_labels;
+        }
+        if other.throbber != default.throbber {
+            self.throbber = other.throbber;
         }
         if other.primary_chart_series_color != default.primary_chart_series_color {
             self.primary_chart_series_color = other.primary_chart_series_color;
@@ -1420,6 +1428,10 @@ impl Theme {
         colors.insert(
             "keybind_labels".to_string(),
             parser.parse(&config.colors.keybind_labels)?,
+        );
+        colors.insert(
+            "throbber".to_string(),
+            parser.parse(&config.colors.throbber)?,
         );
         colors.insert(
             "primary_chart_series_color".to_string(),

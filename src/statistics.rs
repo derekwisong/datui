@@ -368,6 +368,84 @@ pub fn compute_statistics_with_options(
     })
 }
 
+/// Computes describe statistics for a single column of an already-collected DataFrame.
+///
+/// Used by the UI to compute stats per column and yield between columns for progress display.
+/// No progress or chunk types; the library only exposes granularity.
+pub fn compute_describe_column(
+    df: &DataFrame,
+    schema: &Schema,
+    column_index: usize,
+    options: &ComputeOptions,
+    actual_sample_size: Option<usize>,
+    is_sampled: bool,
+) -> Result<ColumnStatistics> {
+    let (name, dtype) = schema
+        .iter()
+        .nth(column_index)
+        .ok_or_else(|| color_eyre::eyre::eyre!("column index {} out of range", column_index))?;
+    let col = df.column(name)?;
+    let series = col.as_materialized_series();
+    let count = series.len();
+    let null_count = series.null_count();
+
+    let numeric_stats = if is_numeric_type(dtype) {
+        Some(compute_numeric_stats(
+            series,
+            options.include_skewness_kurtosis_outliers,
+        )?)
+    } else {
+        None
+    };
+
+    let categorical_stats = if is_categorical_type(dtype) {
+        Some(compute_categorical_stats(series)?)
+    } else {
+        None
+    };
+
+    let distribution_info =
+        if options.include_distribution_info && is_numeric_type(dtype) && null_count < count {
+            Some(infer_distribution(
+                series,
+                series,
+                actual_sample_size.unwrap_or(count),
+                is_sampled,
+            ))
+        } else {
+            None
+        };
+
+    Ok(ColumnStatistics {
+        name: name.to_string(),
+        dtype: dtype.clone(),
+        count,
+        null_count,
+        numeric_stats,
+        categorical_stats,
+        distribution_info,
+    })
+}
+
+/// Builds describe-only AnalysisResults from a list of column statistics.
+///
+/// Used when completing chunked describe; correlation and distribution analyses stay empty/None.
+pub fn analysis_results_from_describe(
+    column_statistics: Vec<ColumnStatistics>,
+    total_rows: usize,
+    sample_size: Option<usize>,
+    sample_seed: u64,
+) -> AnalysisResults {
+    AnalysisResults {
+        column_statistics,
+        total_rows,
+        sample_size,
+        sample_seed,
+        correlation_matrix: None,
+        distribution_analyses: Vec::new(),
+    }
+}
+
 /// Computes distribution statistics for numeric columns.
 ///
 /// - Infers distribution types for numeric columns missing distribution_info
@@ -491,7 +569,8 @@ fn is_categorical_type(dtype: &DataType) -> bool {
     matches!(dtype, DataType::String | DataType::Categorical(..))
 }
 
-fn sample_dataframe(lf: &LazyFrame, sample_size: usize, seed: u64) -> Result<DataFrame> {
+/// Samples a LazyFrame for analysis when row count exceeds threshold. Used by chunked describe.
+pub fn sample_dataframe(lf: &LazyFrame, sample_size: usize, seed: u64) -> Result<DataFrame> {
     let collect_multiplier = if sample_size <= 1000 {
         5
     } else if sample_size <= 5000 {

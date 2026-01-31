@@ -1,6 +1,8 @@
 # Keyboard Shortcuts
 
-In the main view, the following keyboard shortcuts are available:
+In the main view, the following keyboard shortcuts are available.
+
+**Busy state:** When the app is working (loading data, scrolling, exporting, analysis, pivot/melt), a throbber appears in the control bar.
 
 | Key | Action |
 |-----|--------|

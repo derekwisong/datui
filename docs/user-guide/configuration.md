@@ -172,6 +172,7 @@ All UI colors can be customized:
 |-------|---------|---------|
 | `keybind_hints` | Keybind hints (modals, breadcrumb, correlation matrix) | cyan |
 | `keybind_labels` | Action labels in controls bar | yellow |
+| `throbber` | Busy indicator (spinner) in control bar | cyan |
 | `primary_chart_series_color` | Chart data (histogram bars, Q-Q plot data points) | cyan |
 | `secondary_chart_series_color` | Chart theory (histogram overlays, Q-Q plot reference line) | dark_gray |
 | `chart_series_color_1` … `chart_series_color_7` | Chart view: series colors (line/scatter/bar) | cyan, magenta, green, yellow, blue, red, bright_cyan |

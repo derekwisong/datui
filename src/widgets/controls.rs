@@ -13,6 +13,10 @@ pub struct Controls {
     pub bg_color: Color,
     pub key_color: Color,   // Color for keybind hints (keys in toolbar)
     pub label_color: Color, // Color for action labels
+    pub throbber_color: Color,
+    pub use_unicode_throbber: bool, // When true, use 8-dot braille spinner (4 rows tall); else |/-\
+    pub busy: bool,                 // When true, show throbber at far right
+    pub throbber_frame: u8,         // Spinner frame (0..3 or 0..7 for unicode)
 }
 
 impl Default for Controls {
@@ -25,6 +29,10 @@ impl Default for Controls {
             bg_color: Color::Indexed(236), // Default for backward compatibility
             key_color: Color::Cyan,        // Keys in cyan
             label_color: Color::White,     // Labels in white
+            throbber_color: Color::Cyan,
+            use_unicode_throbber: false,
+            busy: false,
+            throbber_frame: 0,
         }
     }
 }
@@ -43,7 +51,17 @@ impl Controls {
             bg_color: Color::Indexed(236), // Default
             key_color: Color::Cyan,        // Keys in cyan
             label_color: Color::White,     // Labels in white
+            throbber_color: Color::Cyan,
+            use_unicode_throbber: false,
+            busy: false,
+            throbber_frame: 0,
         }
+    }
+
+    pub fn with_busy(mut self, busy: bool, throbber_frame: u8) -> Self {
+        self.busy = busy;
+        self.throbber_frame = throbber_frame;
+        self
     }
 
     pub fn with_dimmed(mut self, dimmed: bool) -> Self {
@@ -61,10 +79,22 @@ impl Controls {
         self
     }
 
-    pub fn with_colors(mut self, bg_color: Color, key_color: Color, label_color: Color) -> Self {
+    pub fn with_colors(
+        mut self,
+        bg_color: Color,
+        key_color: Color,
+        label_color: Color,
+        throbber_color: Color,
+    ) -> Self {
         self.bg_color = bg_color;
         self.key_color = key_color;
         self.label_color = label_color;
+        self.throbber_color = throbber_color;
+        self
+    }
+
+    pub fn with_unicode_throbber(mut self, use_unicode: bool) -> Self {
+        self.use_unicode_throbber = use_unicode;
         self
     }
 
@@ -73,6 +103,7 @@ impl Controls {
         bg_color: Color,
         key_color: Color,
         label_color: Color,
+        throbber_color: Color,
     ) -> Self {
         Self {
             row_count: Some(row_count),
@@ -82,6 +113,10 @@ impl Controls {
             bg_color,
             key_color,
             label_color,
+            throbber_color,
+            use_unicode_throbber: false,
+            busy: false,
+            throbber_frame: 0,
         }
     }
 }
@@ -120,8 +155,9 @@ impl Widget for &Controls {
             (key.chars().count() as u16 + 1) + (action.chars().count() as u16 + 1)
         };
 
-        // Reserve space for fill and row count; only show pairs that fit.
-        let right_reserved = if self.row_count.is_some() { 21 } else { 1 };
+        // Reserve space for fill, row count, and throbber (fixed width so layout never shifts).
+        const THROBBER_WIDTH: u16 = 3;
+        let right_reserved = (if self.row_count.is_some() { 21 } else { 1 }) + THROBBER_WIDTH;
         let mut available = area.width.saturating_sub(right_reserved);
 
         let mut n_show = 0;
@@ -152,6 +188,7 @@ impl Widget for &Controls {
         if self.row_count.is_some() {
             constraints.push(Constraint::Length(20));
         }
+        constraints.push(Constraint::Length(THROBBER_WIDTH));
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
 
@@ -186,6 +223,31 @@ impl Widget for &Controls {
         Paragraph::new("")
             .style(fill_style)
             .render(layout[fill_idx], buf);
+
+        // Throbber slot is always present (fixed width); animate only when busy.
+        // ASCII: |/-\ (4 frames). Unicode: 8-dot braille (8 frames, 4 rows tall) when LANG has UTF-8.
+        // Same as throbber-widgets-tui BRAILLE_EIGHT: https://ratatui.rs/showcase/third-party-widgets/
+        const THROBBER_ASCII: [char; 4] = ['|', '/', '-', '\\'];
+        const THROBBER_BRAILLE_EIGHT: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
+        let throbber_idx = fill_idx + if self.row_count.is_some() { 2 } else { 1 };
+        let throbber_ch = if self.busy {
+            if self.use_unicode_throbber {
+                THROBBER_BRAILLE_EIGHT[self.throbber_frame as usize % 8].to_string()
+            } else {
+                THROBBER_ASCII[self.throbber_frame as usize % 4].to_string()
+            }
+        } else {
+            " ".to_string()
+        };
+        let throbber_style = if no_bg {
+            Style::default().fg(self.throbber_color)
+        } else {
+            Style::default().bg(self.bg_color).fg(self.throbber_color)
+        };
+        Paragraph::new(throbber_ch)
+            .style(throbber_style)
+            .centered()
+            .render(layout[throbber_idx], buf);
     }
 }
 

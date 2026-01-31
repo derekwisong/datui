@@ -31,7 +31,7 @@ impl ExportFormat {
             Self::Parquet => "Parquet",
             Self::Json => "JSON",
             Self::Ndjson => "NDJSON",
-            Self::Ipc => "Arrow IPC / Feather",
+            Self::Ipc => "Arrow",
             Self::Avro => "Avro",
         }
     }

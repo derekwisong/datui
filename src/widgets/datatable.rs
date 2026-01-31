@@ -20,7 +20,7 @@ use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 use crate::query::parse_query;
 use crate::{CompressionFormat, OpenOptions};
-use polars::lazy::frame::pivot::{pivot, pivot_stable};
+use polars::lazy::frame::pivot::pivot_stable;
 use std::io::{BufReader, Read};
 
 use calamine::{open_workbook_auto, Data, Reader};
@@ -1631,6 +1631,32 @@ impl DataTableState {
         Ok(state)
     }
 
+    /// Returns true if a scroll by `rows` would trigger a collect (view would leave the buffer).
+    /// Used so the UI only shows the throbber when actual data loading will occur.
+    pub fn scroll_would_trigger_collect(&self, rows: i64) -> bool {
+        if rows < 0 && self.start_row == 0 {
+            return false;
+        }
+        let new_start_row = if self.start_row as i64 + rows <= 0 {
+            0
+        } else {
+            if let Some(df) = self.df.as_ref() {
+                if rows > 0 && df.shape().0 <= self.visible_rows {
+                    return false;
+                }
+            }
+            (self.start_row as i64 + rows) as usize
+        };
+        let view_end = new_start_row
+            + self
+                .visible_rows
+                .min(self.num_rows.saturating_sub(new_start_row));
+        let within_buffer = new_start_row >= self.buffered_start_row
+            && view_end <= self.buffered_end_row
+            && self.buffered_end_row > 0;
+        !within_buffer
+    }
+
     fn slide_table(&mut self, rows: i64) {
         if rows < 0 && self.start_row == 0 {
             return;
@@ -2299,6 +2325,8 @@ impl DataTableState {
 
     /// Pivot the current `LazyFrame` (long → wide). Never uses `original_lf`.
     /// Collects current `lf`, runs `pivot_stable`, then replaces `lf` with result.
+    /// We use pivot_stable for all aggregation types: Polars' non-stable pivot() prints
+    /// "unstable pivot not yet supported, using stable pivot" to stdout, which corrupts the TUI.
     pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
         let df = self.lf.clone().collect()?;
         let agg_expr = pivot_agg_expr(spec.aggregation)?;
@@ -2308,30 +2336,15 @@ impl DataTableState {
         } else {
             Some(index_str)
         };
-        let pivoted = if matches!(
-            spec.aggregation,
-            PivotAggregation::First | PivotAggregation::Last
-        ) {
-            pivot_stable(
-                &df,
-                [spec.pivot_column.as_str()],
-                index_opt,
-                Some([spec.value_column.as_str()]),
-                spec.sort_columns,
-                Some(agg_expr),
-                None,
-            )?
-        } else {
-            pivot(
-                &df,
-                [spec.pivot_column.as_str()],
-                index_opt,
-                Some([spec.value_column.as_str()]),
-                spec.sort_columns,
-                Some(agg_expr),
-                None,
-            )?
-        };
+        let pivoted = pivot_stable(
+            &df,
+            [spec.pivot_column.as_str()],
+            index_opt,
+            Some([spec.value_column.as_str()]),
+            spec.sort_columns,
+            Some(agg_expr),
+            None,
+        )?;
         self.last_pivot_spec = Some(spec.clone());
         self.last_melt_spec = None;
         self.replace_lf_after_reshape(pivoted.lazy())?;

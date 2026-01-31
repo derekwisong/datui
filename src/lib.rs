@@ -1,7 +1,8 @@
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use polars::datatypes::AnyValue;
 use polars::datatypes::DataType;
-use polars::prelude::{LazyFrame, Schema};
+use polars::prelude::{len, DataFrame, LazyFrame, Schema};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
 use widgets::info::{
@@ -41,7 +42,7 @@ pub use config::{
     rgb_to_256_color, rgb_to_basic_ansi, AppConfig, ColorParser, ConfigManager, Theme,
 };
 
-use analysis_modal::AnalysisModal;
+use analysis_modal::{AnalysisModal, AnalysisProgress};
 use chart_export::{
     write_chart_eps, write_chart_png, ChartExportBounds, ChartExportFormat, ChartExportSeries,
 };
@@ -99,8 +100,6 @@ pub mod tests {
                     .any(|file| !sample_data_dir.join(file).exists());
 
             if needs_generation {
-                eprintln!("Sample data not found. Generating test data...");
-
                 // Get the path to the Python script
                 let script_path = Path::new("scripts/generate_sample_data.py");
                 if !script_path.exists() {
@@ -148,8 +147,6 @@ pub mod tests {
                         stderr
                     );
                 }
-
-                eprintln!("Sample data generation complete!");
             }
         });
     }
@@ -329,6 +326,9 @@ pub enum AppEvent {
     DoLoad(Vec<PathBuf>, OpenOptions), // Internal event to actually perform loading after UI update
     DoDecompress(Vec<PathBuf>, OpenOptions), // Internal event to perform decompression after UI shows "Decompressing"
     DoExport(PathBuf, ExportFormat, ExportOptions), // Internal event to perform export after UI shows progress
+    DoExportCollect(PathBuf, ExportFormat, ExportOptions), // Collect data for export; then emit DoExportWrite
+    DoExportWrite(PathBuf, ExportFormat, ExportOptions),   // Write collected DataFrame to file
+    DoLoadParquetMetadata, // Load Parquet metadata when info panel is opened (deferred from render)
     Exit,
     Crash(String),
     Search(String),
@@ -339,10 +339,21 @@ pub enum AppEvent {
     Melt(MeltSpec),
     Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
     ChartExport(PathBuf, ChartExportFormat, String), // Chart export: path, format, optional title
+    DoChartExport(PathBuf, ChartExportFormat, String), // Deferred: show progress bar then run chart export
     Collect,
     Update,
     Reset,
     Resize(u16, u16), // resized (width, height)
+    DoScrollDown,     // Deferred scroll: perform page_down after one frame (throbber)
+    DoScrollUp,       // Deferred scroll: perform page_up
+    DoScrollNext,     // Deferred scroll: perform select_next (one row down)
+    DoScrollPrev,     // Deferred scroll: perform select_previous (one row up)
+    /// Run the next chunk of analysis (describe/distribution); drives per-column progress.
+    AnalysisChunk,
+    /// Run distribution analysis (deferred so progress overlay can show first).
+    AnalysisDistributionCompute,
+    /// Run correlation matrix (deferred so progress overlay can show first).
+    AnalysisCorrelationCompute,
 }
 
 #[derive(Debug, Clone)]
@@ -468,6 +479,18 @@ impl LoadingState {
     }
 }
 
+/// In-progress analysis computation state (orchestration in App; modal only displays progress).
+struct AnalysisComputationState {
+    df: Option<DataFrame>,
+    schema: Option<Arc<Schema>>,
+    partial_stats: Vec<crate::statistics::ColumnStatistics>,
+    current: usize,
+    total: usize,
+    total_rows: usize,
+    sample_seed: u64,
+    sample_size: Option<usize>,
+}
+
 // Helper struct to save state before template application
 struct TemplateApplicationState {
     lf: LazyFrame,
@@ -504,6 +527,8 @@ pub struct App {
     success_modal: SuccessModal,
     confirmation_modal: ConfirmationModal,
     pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
+    /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
+    export_df: Option<DataFrame>,
     pending_chart_export: Option<(PathBuf, ChartExportFormat, String)>,
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
@@ -515,93 +540,87 @@ pub struct App {
     sampling_threshold: usize,          // Threshold for sampling large datasets
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
+    busy: bool,           // When true, show throbber and ignore keys
+    throbber_frame: u8,   // Spinner frame index (0..3) for control bar
+    drain_keys_on_next_loop: bool, // Main loop drains crossterm key buffer when true
+    analysis_computation: Option<AnalysisComputationState>,
 }
 
 impl App {
+    /// Returns true when the main loop should drain the crossterm key buffer after render.
+    pub fn should_drain_keys(&self) -> bool {
+        self.drain_keys_on_next_loop
+    }
+
+    /// Clears the drain-keys request after the main loop has drained the buffer.
+    pub fn clear_drain_keys_request(&mut self) {
+        self.drain_keys_on_next_loop = false;
+    }
+
     pub fn send_event(&mut self, event: AppEvent) -> Result<()> {
         self.events.send(event)?;
         Ok(())
     }
 
-    /// Helper function to ensure file path has the correct extension
-    /// Also adds compression extension if compression is enabled
+    /// Ensures file path has an extension when user did not provide one; only adds
+    /// compression suffix (e.g. .gz) when compression is selected. If the user
+    /// provided a path with an extension (e.g. foo.feather), that extension is kept.
     fn ensure_file_extension(
         path: &Path,
         format: ExportFormat,
         compression: Option<CompressionFormat>,
     ) -> PathBuf {
-        // Determine the desired final extension
-        let desired_ext = if let Some(comp) = compression {
-            format!("{}.{}", format.extension(), comp.extension())
-        } else {
-            format.extension().to_string()
-        };
-
-        // Check current extension
         let current_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-        // Check if current extension matches desired extension (case-insensitive)
-        let matches_desired = current_ext.eq_ignore_ascii_case(&desired_ext);
-
-        // Check if current extension is just a compression extension (e.g., "file.gz")
-        let is_only_compression = matches!(
-            current_ext.to_lowercase().as_str(),
-            "gz" | "zst" | "bz2" | "xz"
-        ) && ExportFormat::from_extension(current_ext).is_none();
-
-        // Check if path has both format and compression extensions already (e.g., "file.csv.gz")
-        let has_double_ext = if is_only_compression {
-            // Check if the stem has a format extension
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| {
-                    // Get the last part after splitting by '.'
-                    s.split('.')
-                        .next_back()
-                        .and_then(ExportFormat::from_extension)
-                })
-                .is_some()
-        } else {
-            false
-        };
-
         let mut new_path = path.to_path_buf();
 
-        if matches_desired {
-            // Already has the correct extension, no change needed
-            return new_path;
-        } else if has_double_ext {
-            // Has format.compression already, but might need to update compression format
-            if let Some(comp) = compression {
-                // Extract the format extension from the stem
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Some(format_ext) = stem
-                        .split('.')
-                        .next_back()
-                        .and_then(ExportFormat::from_extension)
-                        .map(|f| f.extension())
-                    {
-                        // Rebuild with correct compression
-                        new_path =
-                            PathBuf::from(stem.rsplit_once('.').map(|x| x.0).unwrap_or(stem));
-                        new_path.set_extension(format!("{}.{}", format_ext, comp.extension()));
-                    }
-                }
-            }
-        } else if is_only_compression {
-            // Has only compression extension, need to add format before it
-            if let Some(comp) = compression {
-                // Get the base name without the compression extension
-                let base = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                new_path = PathBuf::from(base);
-                new_path.set_extension(format!("{}.{}", format.extension(), comp.extension()));
+        if current_ext.is_empty() {
+            // No extension: use default for format (and add compression if selected)
+            let desired_ext = if let Some(comp) = compression {
+                format!("{}.{}", format.extension(), comp.extension())
             } else {
-                // No compression, just add format extension
-                new_path.set_extension(format.extension());
-            }
-        } else {
-            // No extension or wrong extension, set to desired
+                format.extension().to_string()
+            };
             new_path.set_extension(&desired_ext);
+        } else {
+            // User provided an extension: keep it. Only add compression suffix when compression is selected.
+            let is_compression_only = matches!(
+                current_ext.to_lowercase().as_str(),
+                "gz" | "zst" | "bz2" | "xz"
+            ) && ExportFormat::from_extension(current_ext).is_none();
+
+            if is_compression_only {
+                // Path has only compression ext (e.g. file.gz); stem may have format (file.csv.gz)
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let stem_has_format = stem
+                    .split('.')
+                    .next_back()
+                    .and_then(ExportFormat::from_extension)
+                    .is_some();
+                if stem_has_format {
+                    if let Some(comp) = compression {
+                        if let Some(format_ext) = stem
+                            .split('.')
+                            .next_back()
+                            .and_then(ExportFormat::from_extension)
+                            .map(|f| f.extension())
+                        {
+                            new_path =
+                                PathBuf::from(stem.rsplit_once('.').map(|x| x.0).unwrap_or(stem));
+                            new_path.set_extension(format!("{}.{}", format_ext, comp.extension()));
+                        }
+                    }
+                } else if let Some(comp) = compression {
+                    new_path.set_extension(format!("{}.{}", format.extension(), comp.extension()));
+                } else {
+                    new_path.set_extension(format.extension());
+                }
+            } else if let Some(comp) = compression {
+                if format.supports_compression() {
+                    new_path.set_extension(format!("{}.{}", current_ext, comp.extension()));
+                }
+                // else: path stays as-is (e.g. foo.feather stays foo.feather)
+            }
+            // else: path with format extension stays as-is
         }
 
         new_path
@@ -664,11 +683,7 @@ impl App {
 
     pub fn new(events: Sender<AppEvent>) -> App {
         // Create default theme for backward compatibility
-        let theme = Theme::from_config(&AppConfig::default().theme).unwrap_or_else(|e| {
-            eprintln!(
-                "Warning: Failed to create default theme: {}. Using fallback.",
-                e
-            );
+        let theme = Theme::from_config(&AppConfig::default().theme).unwrap_or_else(|_| {
             // Create a minimal fallback theme
             Theme {
                 colors: std::collections::HashMap::new(),
@@ -683,22 +698,15 @@ impl App {
     }
 
     pub fn new_with_config(events: Sender<AppEvent>, theme: Theme, app_config: AppConfig) -> App {
-        let cache = CacheManager::new(APP_NAME).unwrap_or_else(|e| {
-            eprintln!("Warning: Could not initialize cache manager: {}", e);
-            CacheManager {
-                cache_dir: std::env::temp_dir().join(APP_NAME),
-            }
+        let cache = CacheManager::new(APP_NAME).unwrap_or_else(|_| CacheManager {
+            cache_dir: std::env::temp_dir().join(APP_NAME),
         });
 
-        let config_manager = ConfigManager::new(APP_NAME).unwrap_or_else(|e| {
-            eprintln!("Warning: Could not initialize config manager: {}", e);
-            ConfigManager {
-                config_dir: std::env::temp_dir().join(APP_NAME).join("config"),
-            }
+        let config_manager = ConfigManager::new(APP_NAME).unwrap_or_else(|_| ConfigManager {
+            config_dir: std::env::temp_dir().join(APP_NAME).join("config"),
         });
 
-        let template_manager = TemplateManager::new(&config_manager).unwrap_or_else(|e| {
-            eprintln!("Warning: Could not initialize template manager: {}", e);
+        let template_manager = TemplateManager::new(&config_manager).unwrap_or_else(|_| {
             let temp_config = ConfigManager::new("datui").unwrap_or_else(|_| ConfigManager {
                 config_dir: std::env::temp_dir().join("datui").join("config"),
             });
@@ -737,6 +745,7 @@ impl App {
             success_modal: SuccessModal::new(),
             confirmation_modal: ConfirmationModal::new(),
             pending_export: None,
+            export_df: None,
             pending_chart_export: None,
             show_help: false,
             help_scroll: 0,
@@ -748,6 +757,10 @@ impl App {
             sampling_threshold: app_config.performance.sampling_threshold,
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
+            busy: false,
+            throbber_frame: 0,
+            drain_keys_on_next_loop: false,
+            analysis_computation: None,
         }
     }
 
@@ -762,6 +775,7 @@ impl App {
 
     fn load(&mut self, paths: &[PathBuf], options: &OpenOptions) -> Result<()> {
         self.parquet_metadata_cache = None;
+        self.export_df = None;
         let path = &paths[0]; // Primary path for format detection and single-path logic
                               // Check for compressed CSV files (e.g., file.csv.gz, file.csv.zst, etc.) — only single-file
         let compression = options
@@ -2442,9 +2456,8 @@ impl App {
                                     self.chart_export_modal.title_input.value.trim().to_string();
                                 let mut path = PathBuf::from(path_str);
                                 let format = self.chart_export_modal.selected_format;
-                                if path.extension().map(|e| e.to_str())
-                                    != Some(Some(format.extension()))
-                                {
+                                // Only add default extension when user did not provide one
+                                if path.extension().is_none() {
                                     path.set_extension(format.extension());
                                 }
                                 let path_display = path.display().to_string();
@@ -2617,6 +2630,34 @@ impl App {
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
                             // Select tool from sidebar
                             self.analysis_modal.select_tool();
+                            // Defer Distribution/Correlation compute so progress overlay and throbber show first
+                            if let Some(ref results) = self.analysis_modal.analysis_results {
+                                match self.analysis_modal.selected_tool {
+                                    analysis_modal::AnalysisTool::DistributionAnalysis
+                                        if results.distribution_analyses.is_empty() =>
+                                    {
+                                        self.analysis_modal.computing = Some(AnalysisProgress {
+                                            phase: "Distribution".to_string(),
+                                            current: 0,
+                                            total: 1,
+                                        });
+                                        self.busy = true;
+                                        return Some(AppEvent::AnalysisDistributionCompute);
+                                    }
+                                    analysis_modal::AnalysisTool::CorrelationMatrix
+                                        if results.correlation_matrix.is_none() =>
+                                    {
+                                        self.analysis_modal.computing = Some(AnalysisProgress {
+                                            phase: "Correlation".to_string(),
+                                            current: 0,
+                                            total: 1,
+                                        });
+                                        self.busy = true;
+                                        return Some(AppEvent::AnalysisCorrelationCompute);
+                                    }
+                                    _ => {}
+                                }
+                            }
                         } else {
                             // Enter in main area opens detail view if applicable
                             match self.analysis_modal.selected_tool {
@@ -3202,8 +3243,8 @@ impl App {
                     // Delete with capital D
                     if let Some(idx) = self.template_modal.table_state.selected() {
                         if let Some((template, _)) = self.template_modal.templates.get(idx) {
-                            if let Err(e) = self.template_manager.delete_template(&template.id) {
-                                eprintln!("Error deleting template: {}", e);
+                            if self.template_manager.delete_template(&template.id).is_err() {
+                                // Delete failed; list will be unchanged
                             } else {
                                 // Reload templates
                                 if let Some(ref state) = self.data_table_state {
@@ -3240,9 +3281,8 @@ impl App {
                         // Delete button is selected
                         if let Some(idx) = self.template_modal.table_state.selected() {
                             if let Some((template, _)) = self.template_modal.templates.get(idx) {
-                                if let Err(e) = self.template_manager.delete_template(&template.id)
-                                {
-                                    eprintln!("Error deleting template: {}", e);
+                                if self.template_manager.delete_template(&template.id).is_err() {
+                                    // Delete failed; list will be unchanged
                                 } else {
                                     // Reload templates
                                     if let Some(ref state) = self.data_table_state {
@@ -3510,8 +3550,8 @@ impl App {
                                                     }
                                                     self.template_modal.exit_create_mode();
                                                 }
-                                                Err(e) => {
-                                                    eprintln!("Error updating template: {}", e);
+                                                Err(_) => {
+                                                    // Update failed; stay in edit mode
                                                 }
                                             }
                                         }
@@ -3551,8 +3591,8 @@ impl App {
                                                 }
                                                 self.template_modal.exit_create_mode();
                                             }
-                                            Err(e) => {
-                                                eprintln!("Error creating template: {}", e);
+                                            Err(_) => {
+                                                // Create failed; stay in create mode
                                             }
                                         }
                                     }
@@ -3848,9 +3888,7 @@ impl App {
                 match result {
                     TextInputEvent::Submit => {
                         // Save to history and execute query
-                        if let Err(e) = self.query_input.save_to_history(&self.cache) {
-                            eprintln!("Warning: Could not save query to history: {}", e);
-                        }
+                        let _ = self.query_input.save_to_history(&self.cache);
                         let query = self.query_input.value.clone();
                         self.query_input.set_focused(false);
                         return Some(AppEvent::Search(query));
@@ -3905,9 +3943,7 @@ impl App {
                 // First check if we're in drill-down mode
                 if let Some(ref mut state) = self.data_table_state {
                     if state.is_drilled_down() {
-                        if let Err(e) = state.drill_up() {
-                            eprintln!("Error drilling up: {}", e);
-                        }
+                        let _ = state.drill_up();
                         return None;
                     }
                 }
@@ -3928,22 +3964,52 @@ impl App {
                 None
             }
             code if event.is_press() && DOWN_KEYS.contains(&code) => {
-                if let Some(ref mut state) = self.data_table_state {
-                    state.select_next();
+                let would_collect = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| s.scroll_would_trigger_collect(1))
+                    .unwrap_or(false);
+                if would_collect {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollNext)
+                } else {
+                    if let Some(ref mut s) = self.data_table_state {
+                        s.select_next();
+                    }
+                    None
                 }
-                None
             }
             code if event.is_press() && UP_KEYS.contains(&code) => {
-                if let Some(ref mut state) = self.data_table_state {
-                    state.select_previous();
+                let would_collect = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| s.scroll_would_trigger_collect(-1))
+                    .unwrap_or(false);
+                if would_collect {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollPrev)
+                } else {
+                    if let Some(ref mut s) = self.data_table_state {
+                        s.select_previous();
+                    }
+                    None
                 }
-                None
             }
             KeyCode::PageDown if event.is_press() => {
-                if let Some(ref mut state) = self.data_table_state {
-                    state.page_down();
+                let would_collect = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| s.scroll_would_trigger_collect(s.visible_rows as i64))
+                    .unwrap_or(false);
+                if would_collect {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollDown)
+                } else {
+                    if let Some(ref mut s) = self.data_table_state {
+                        s.page_down();
+                    }
+                    None
                 }
-                None
             }
             KeyCode::Home if event.is_press() => {
                 if let Some(ref mut state) = self.data_table_state {
@@ -3955,10 +4021,20 @@ impl App {
                 None
             }
             KeyCode::PageUp if event.is_press() => {
-                if let Some(ref mut state) = self.data_table_state {
-                    state.page_up();
+                let would_collect = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| s.scroll_would_trigger_collect(-(s.visible_rows as i64)))
+                    .unwrap_or(false);
+                if would_collect {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollUp)
+                } else {
+                    if let Some(ref mut s) = self.data_table_state {
+                        s.page_up();
+                    }
+                    None
                 }
-                None
             }
             KeyCode::Enter if event.is_press() => {
                 // Only drill down if not in a modal and viewing grouped data
@@ -3967,9 +4043,7 @@ impl App {
                         if state.is_grouped() && !state.is_drilled_down() {
                             if let Some(selected) = state.table_state.selected() {
                                 let group_index = state.start_row + selected;
-                                if let Err(e) = state.drill_down_into_group(group_index) {
-                                    eprintln!("Error drilling down: {}", e);
-                                }
+                                let _ = state.drill_down_into_group(group_index);
                             }
                         }
                     }
@@ -3988,6 +4062,14 @@ impl App {
                 if self.data_table_state.is_some() {
                     self.info_modal.open();
                     self.input_mode = InputMode::Info;
+                    // Defer Parquet metadata load so UI can show throbber; avoid blocking in render
+                    if self.path.is_some()
+                        && self.original_file_format == Some(ExportFormat::Parquet)
+                        && self.parquet_metadata_cache.is_none()
+                    {
+                        self.busy = true;
+                        return Some(AppEvent::DoLoadParquetMetadata);
+                    }
                 }
                 None
             }
@@ -4111,9 +4193,27 @@ impl App {
                 None
             }
             KeyCode::Char('a') => {
-                // Open analysis modal if data is available
+                // Open analysis modal if data is available; start chunked describe so progress overlay can show
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
                     self.analysis_modal.open();
+                    self.analysis_modal.analysis_results = None;
+                    self.analysis_modal.computing = Some(AnalysisProgress {
+                        phase: "Describe".to_string(),
+                        current: 0,
+                        total: 0,
+                    });
+                    self.analysis_computation = Some(AnalysisComputationState {
+                        df: None,
+                        schema: None,
+                        partial_stats: Vec::new(),
+                        current: 0,
+                        total: 0,
+                        total_rows: 0,
+                        sample_seed: self.analysis_modal.random_seed,
+                        sample_size: None,
+                    });
+                    self.busy = true;
+                    return Some(AppEvent::AnalysisChunk);
                 }
                 None
             }
@@ -4201,8 +4301,14 @@ impl App {
     pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
         self.debug.num_events += 1;
         match event {
-            AppEvent::Key(key) => self.key(key),
+            AppEvent::Key(key) => {
+                if self.busy {
+                    return None;
+                }
+                self.key(key)
+            }
             AppEvent::Open(paths, options) => {
+                self.busy = true;
                 // Set loading state first, then trigger a render before actually loading
                 let first = &paths[0];
                 let file_size = std::fs::metadata(first).map(|m| m.len()).unwrap_or(0);
@@ -4268,10 +4374,15 @@ impl App {
                 } else {
                     // For non-compressed files, proceed with normal loading
                     match self.load(paths, options) {
-                        Ok(_) => Some(AppEvent::Collect),
+                        Ok(_) => {
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            Some(AppEvent::Collect)
+                        }
                         Err(e) => {
-                            // Clear loading state on error
                             self.loading_state = LoadingState::Idle;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
                             Some(AppEvent::Crash(e.to_string()))
                         }
                     }
@@ -4280,25 +4391,220 @@ impl App {
             AppEvent::DoDecompress(paths, options) => {
                 // Actually perform decompression now (after UI has rendered "Decompressing")
                 match self.load(paths, options) {
-                    Ok(_) => Some(AppEvent::Collect),
+                    Ok(_) => {
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        Some(AppEvent::Collect)
+                    }
                     Err(e) => {
-                        // Clear loading state on error
                         self.loading_state = LoadingState::Idle;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
                         Some(AppEvent::Crash(e.to_string()))
                     }
                 }
             }
             AppEvent::Resize(_cols, rows) => {
+                self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
                     state.visible_rows = *rows as usize;
                     state.collect();
                 }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::Collect => {
+                self.busy = true;
                 if let Some(ref mut state) = self.data_table_state {
                     state.collect();
                 }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::DoScrollDown => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.page_down();
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::DoScrollUp => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.page_up();
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::DoScrollNext => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.select_next();
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::DoScrollPrev => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.select_previous();
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::AnalysisChunk => {
+                let lf = match &self.data_table_state {
+                    Some(state) => state.lf.clone(),
+                    None => {
+                        self.analysis_computation = None;
+                        self.analysis_modal.computing = None;
+                        self.busy = false;
+                        return None;
+                    }
+                };
+                let mut comp = self.analysis_computation.take()?;
+                if comp.df.is_none() {
+                    // First chunk: collect schema, count rows, collect or sample df
+                    let schema = match lf.clone().collect_schema() {
+                        Ok(s) => s,
+                        Err(_e) => {
+                            self.analysis_modal.computing = None;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            return None;
+                        }
+                    };
+                    let total_rows = match lf.clone().select([len()]).collect() {
+                        Ok(count_df) => {
+                            if let Some(col) = count_df.get(0) {
+                                match col.first() {
+                                    Some(AnyValue::UInt32(n)) => *n as usize,
+                                    _ => 0,
+                                }
+                            } else {
+                                0
+                            }
+                        }
+                        Err(_e) => {
+                            self.analysis_modal.computing = None;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            return None;
+                        }
+                    };
+                    let threshold = self.sampling_threshold;
+                    let should_sample = total_rows >= threshold;
+                    let actual_sample_size = if should_sample { Some(threshold) } else { None };
+                    let df = match if should_sample {
+                        crate::statistics::sample_dataframe(&lf, threshold, comp.sample_seed)
+                    } else {
+                        lf.collect().map_err(|e| color_eyre::eyre::eyre!("{}", e))
+                    } {
+                        Ok(d) => d,
+                        Err(_e) => {
+                            self.analysis_modal.computing = None;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            return None;
+                        }
+                    };
+                    comp.df = Some(df);
+                    let total_len = schema.len();
+                    comp.schema = Some(schema);
+                    comp.total = total_len;
+                    comp.total_rows = total_rows;
+                    comp.sample_size = actual_sample_size;
+                    self.analysis_modal.computing = Some(AnalysisProgress {
+                        phase: "Describe".to_string(),
+                        current: 0,
+                        total: total_len,
+                    });
+                    self.analysis_computation = Some(comp);
+                    return Some(AppEvent::AnalysisChunk);
+                }
+                let df = comp.df.as_ref().unwrap();
+                let schema = comp.schema.as_ref().unwrap();
+                // Describe-only: no distribution/correlation work; those run only when user selects those tools.
+                let options = crate::statistics::ComputeOptions {
+                    include_distribution_info: false,
+                    include_distribution_analyses: false,
+                    include_correlation_matrix: false,
+                    include_skewness_kurtosis_outliers: false,
+                };
+                match crate::statistics::compute_describe_column(
+                    df,
+                    schema,
+                    comp.current,
+                    &options,
+                    comp.sample_size,
+                    comp.sample_size.is_some(),
+                ) {
+                    Ok(col_stat) => {
+                        comp.partial_stats.push(col_stat);
+                        comp.current += 1;
+                        self.analysis_modal.computing = Some(AnalysisProgress {
+                            phase: "Describe".to_string(),
+                            current: comp.current,
+                            total: comp.total,
+                        });
+                        if comp.current >= comp.total {
+                            let results = crate::statistics::analysis_results_from_describe(
+                                comp.partial_stats,
+                                comp.total_rows,
+                                comp.sample_size,
+                                comp.sample_seed,
+                            );
+                            self.analysis_modal.analysis_results = Some(results);
+                            self.analysis_modal.computing = None;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            None
+                        } else {
+                            self.analysis_computation = Some(comp);
+                            Some(AppEvent::AnalysisChunk)
+                        }
+                    }
+                    Err(_e) => {
+                        self.analysis_modal.computing = None;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        None
+                    }
+                }
+            }
+            AppEvent::AnalysisDistributionCompute => {
+                if let Some(state) = &self.data_table_state {
+                    if let Some(ref mut results) = self.analysis_modal.analysis_results {
+                        if crate::statistics::compute_distribution_statistics(
+                            results,
+                            &state.lf,
+                            Some(self.sampling_threshold),
+                            self.analysis_modal.random_seed,
+                        )
+                        .is_err()
+                        {
+                            // Distribution computation failed; analysis view will show error state
+                        }
+                    }
+                }
+                self.analysis_modal.computing = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::AnalysisCorrelationCompute => {
+                if let Some(state) = &self.data_table_state {
+                    if let Some(ref mut results) = self.analysis_modal.analysis_results {
+                        let _ =
+                            crate::statistics::compute_correlation_statistics(results, &state.lf);
+                    }
+                }
+                self.analysis_modal.computing = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::Search(query) => {
@@ -4351,6 +4657,7 @@ impl App {
                 None
             }
             AppEvent::Pivot(spec) => {
+                self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
                     match state.pivot(spec) {
                         Ok(()) => {
@@ -4359,15 +4666,18 @@ impl App {
                             Some(AppEvent::Collect)
                         }
                         Err(e) => {
+                            self.busy = false;
                             self.error_modal.show(e.to_string());
                             None
                         }
                     }
                 } else {
+                    self.busy = false;
                     None
                 }
             }
             AppEvent::Melt(spec) => {
+                self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
                     match state.melt(spec) {
                         Ok(()) => {
@@ -4376,16 +4686,34 @@ impl App {
                             Some(AppEvent::Collect)
                         }
                         Err(e) => {
+                            self.busy = false;
                             self.error_modal.show(e.to_string());
                             None
                         }
                     }
                 } else {
+                    self.busy = false;
                     None
                 }
             }
             AppEvent::ChartExport(path, format, title) => {
+                self.busy = true;
+                self.loading_state = LoadingState::Exporting {
+                    file_path: path.clone(),
+                    current_phase: "Exporting chart".to_string(),
+                    progress_percent: 0,
+                };
+                Some(AppEvent::DoChartExport(
+                    path.clone(),
+                    *format,
+                    title.clone(),
+                ))
+            }
+            AppEvent::DoChartExport(path, format, title) => {
                 let result = self.do_chart_export(path, *format, title);
+                self.loading_state = LoadingState::Idle;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
                 match result {
                     Ok(()) => {
                         self.success_modal.show(format!(
@@ -4403,6 +4731,7 @@ impl App {
             }
             AppEvent::Export(path, format, options) => {
                 if let Some(_state) = &self.data_table_state {
+                    self.busy = true;
                     // Show progress immediately
                     self.loading_state = LoadingState::Exporting {
                         file_path: path.clone(),
@@ -4416,45 +4745,98 @@ impl App {
                 }
             }
             AppEvent::DoExport(path, format, options) => {
-                if let Some(state) = &self.data_table_state {
-                    // Update progress: Writing file (or Compressing if compression is enabled)
-                    let has_compression = match *format {
-                        ExportFormat::Csv => options.csv_compression.is_some(),
-                        ExportFormat::Json => options.json_compression.is_some(),
-                        ExportFormat::Ndjson => options.ndjson_compression.is_some(),
-                        ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => false,
-                    };
-
-                    let phase = if has_compression {
-                        "Writing and compressing file"
-                    } else {
-                        "Writing file"
-                    };
-
+                if let Some(_state) = &self.data_table_state {
+                    // Phase 1: show "Collecting data" so UI can redraw before blocking collect
                     self.loading_state = LoadingState::Exporting {
                         file_path: path.clone(),
-                        current_phase: phase.to_string(),
-                        progress_percent: 50,
+                        current_phase: "Collecting data".to_string(),
+                        progress_percent: 10,
                     };
-
-                    // Perform the export with improved error handling
-                    let result = Self::export_data(state, path, *format, options);
-
-                    // Clear loading state
-                    self.loading_state = LoadingState::Idle;
-
-                    match result {
-                        Ok(()) => {
-                            self.success_modal
-                                .show(format!("Data exported successfully to\n{}", path.display()));
+                    Some(AppEvent::DoExportCollect(
+                        path.clone(),
+                        *format,
+                        options.clone(),
+                    ))
+                } else {
+                    self.busy = false;
+                    None
+                }
+            }
+            AppEvent::DoExportCollect(path, format, options) => {
+                if let Some(state) = &self.data_table_state {
+                    match state.lf.clone().collect() {
+                        Ok(df) => {
+                            self.export_df = Some(df);
+                            let has_compression = match format {
+                                ExportFormat::Csv => options.csv_compression.is_some(),
+                                ExportFormat::Json => options.json_compression.is_some(),
+                                ExportFormat::Ndjson => options.ndjson_compression.is_some(),
+                                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
+                                    false
+                                }
+                            };
+                            let phase = if has_compression {
+                                "Writing and compressing file"
+                            } else {
+                                "Writing file"
+                            };
+                            self.loading_state = LoadingState::Exporting {
+                                file_path: path.clone(),
+                                current_phase: phase.to_string(),
+                                progress_percent: 50,
+                            };
+                            Some(AppEvent::DoExportWrite(
+                                path.clone(),
+                                *format,
+                                options.clone(),
+                            ))
                         }
                         Err(e) => {
-                            // Provide better error messages
-                            let error_msg = Self::format_export_error(&e, path);
-                            self.error_modal.show(error_msg);
+                            self.loading_state = LoadingState::Idle;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            self.error_modal.show(Self::format_export_error(
+                                &color_eyre::eyre::eyre!("{}", e),
+                                path,
+                            ));
+                            None
                         }
                     }
+                } else {
+                    self.busy = false;
+                    None
                 }
+            }
+            AppEvent::DoExportWrite(path, format, options) => {
+                let result = self
+                    .export_df
+                    .take()
+                    .map(|mut df| Self::export_data_from_df(&mut df, path, *format, options));
+                self.loading_state = LoadingState::Idle;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                match result {
+                    Some(Ok(())) => {
+                        self.success_modal
+                            .show(format!("Data exported successfully to\n{}", path.display()));
+                    }
+                    Some(Err(e)) => {
+                        let error_msg = Self::format_export_error(&e, path);
+                        self.error_modal.show(error_msg);
+                    }
+                    None => {}
+                }
+                None
+            }
+            AppEvent::DoLoadParquetMetadata => {
+                let path = self.path.clone();
+                if let Some(p) = &path {
+                    if let Some(meta) = read_parquet_metadata(p) {
+                        self.parquet_metadata_cache = Some(meta);
+                    }
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
                 None
             }
             _ => None,
@@ -4703,9 +5085,7 @@ impl App {
             updated_template.last_matched_file = Some(path.clone());
 
             // Save updated template
-            if let Err(e) = self.template_manager.save_template(&updated_template) {
-                eprintln!("Warning: Could not save template usage stats: {}", e);
-            }
+            let _ = self.template_manager.save_template(&updated_template);
         }
 
         // Track active template
@@ -4753,8 +5133,9 @@ impl App {
         }
     }
 
-    fn export_data(
-        state: &DataTableState,
+    /// Write an already-collected DataFrame to file. Used by two-phase export (DoExportWrite).
+    fn export_data_from_df(
+        df: &mut DataFrame,
         path: &Path,
         format: ExportFormat,
         options: &ExportOptions,
@@ -4762,9 +5143,6 @@ impl App {
         use polars::prelude::*;
         use std::fs::File;
         use std::io::{BufWriter, Write};
-
-        // Collect the current LazyFrame to DataFrame
-        let mut df = state.lf.clone().collect()?;
 
         match format {
             ExportFormat::Csv => {
@@ -4793,21 +5171,21 @@ impl App {
                     CsvWriter::new(writer)
                         .with_separator(options.csv_delimiter)
                         .include_header(options.csv_include_header)
-                        .finish(&mut df)?;
+                        .finish(df)?;
                 } else {
                     // Write uncompressed
                     let file = File::create(path)?;
                     CsvWriter::new(file)
                         .with_separator(options.csv_delimiter)
                         .include_header(options.csv_include_header)
-                        .finish(&mut df)?;
+                        .finish(df)?;
                 }
             }
             ExportFormat::Parquet => {
                 use polars::prelude::ParquetWriter;
                 let file = File::create(path)?;
                 let mut writer = BufWriter::new(file);
-                ParquetWriter::new(&mut writer).finish(&mut df)?;
+                ParquetWriter::new(&mut writer).finish(df)?;
             }
             ExportFormat::Json => {
                 use polars::prelude::JsonWriter;
@@ -4834,13 +5212,13 @@ impl App {
                     };
                     JsonWriter::new(writer)
                         .with_json_format(JsonFormat::Json)
-                        .finish(&mut df)?;
+                        .finish(df)?;
                 } else {
                     // Write uncompressed
                     let file = File::create(path)?;
                     JsonWriter::new(file)
                         .with_json_format(JsonFormat::Json)
-                        .finish(&mut df)?;
+                        .finish(df)?;
                 }
             }
             ExportFormat::Ndjson => {
@@ -4868,30 +5246,41 @@ impl App {
                     };
                     JsonWriter::new(writer)
                         .with_json_format(JsonFormat::JsonLines)
-                        .finish(&mut df)?;
+                        .finish(df)?;
                 } else {
                     // Write uncompressed
                     let file = File::create(path)?;
                     JsonWriter::new(file)
                         .with_json_format(JsonFormat::JsonLines)
-                        .finish(&mut df)?;
+                        .finish(df)?;
                 }
             }
             ExportFormat::Ipc => {
                 use polars::prelude::IpcWriter;
                 let file = File::create(path)?;
                 let mut writer = BufWriter::new(file);
-                IpcWriter::new(&mut writer).finish(&mut df)?;
+                IpcWriter::new(&mut writer).finish(df)?;
             }
             ExportFormat::Avro => {
                 use polars::io::avro::AvroWriter;
                 let file = File::create(path)?;
                 let mut writer = BufWriter::new(file);
-                AvroWriter::new(&mut writer).finish(&mut df)?;
+                AvroWriter::new(&mut writer).finish(df)?;
             }
         }
 
         Ok(())
+    }
+
+    #[allow(dead_code)] // Used only when not using two-phase export; kept for tests/single-shot use
+    fn export_data(
+        state: &DataTableState,
+        path: &Path,
+        format: ExportFormat,
+        options: &ExportOptions,
+    ) -> Result<()> {
+        let mut df = state.lf.clone().collect()?;
+        Self::export_data_from_df(&mut df, path, format, options)
     }
 
     fn restore_state(&mut self, saved: TemplateApplicationState) {
@@ -5181,6 +5570,10 @@ impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.debug.num_frames += 1;
 
+        // Clear entire area first so no ghost text from any widget (loading gauge label,
+        // modals, controls, etc.) can persist when layout or visibility changes (e.g. after pivot).
+        Clear.render(area, buf);
+
         // Set background color for the entire application area
         let background_color = self.color("background");
         Block::default()
@@ -5213,6 +5606,8 @@ impl Widget for &mut App {
             .split(area);
 
         let main_area = layout[0];
+        // Clear entire main content so no ghost text from modals or previous layout persists (e.g. after pivot).
+        Clear.render(main_area, buf);
         let mut data_area = main_area;
         let mut sort_area = Rect::default();
 
@@ -5259,18 +5654,7 @@ impl Widget for &mut App {
         let modal_border_color = self.color("modal_border");
         let info_active_color = self.color("modal_border_active");
 
-        // Lazy-fill Parquet metadata cache when info panel is visible
-        if self.info_modal.active {
-            if let (Some(ref p), Some(ExportFormat::Parquet)) =
-                (&self.path, self.original_file_format)
-            {
-                if self.parquet_metadata_cache.is_none() {
-                    if let Some(meta) = read_parquet_metadata(p) {
-                        self.parquet_metadata_cache = Some(meta);
-                    }
-                }
-            }
-        }
+        // Parquet metadata is loaded via DoLoadParquetMetadata when info panel is opened (not in render)
 
         match &mut self.data_table_state {
             Some(state) => {
@@ -5319,6 +5703,7 @@ impl Widget for &mut App {
                     }
                 }
 
+                Clear.render(table_area, buf);
                 if self.info_modal.active {
                     DataTable::new()
                         .with_colors(
@@ -6561,8 +6946,52 @@ impl Widget for &mut App {
             // Use main_area so toolbar remains visible at bottom
             let analysis_area = main_area;
 
-            if let Some(state) = &self.data_table_state {
-                // Compute statistics if not already computed or if seed changed
+            // Progress overlay when chunked describe is running
+            if let Some(ref progress) = self.analysis_modal.computing {
+                let border = self.color("modal_border");
+                let text_primary = self.color("text_primary");
+                let label = self.color("label");
+                let percent = if progress.total > 0 {
+                    (progress.current as u16).saturating_mul(100) / progress.total as u16
+                } else {
+                    0
+                };
+                Clear.render(analysis_area, buf);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border))
+                    .title(" Analysis ");
+                let inner = block.inner(analysis_area);
+                block.render(analysis_area, buf);
+                let text = format!(
+                    "{}: {} / {}",
+                    progress.phase, progress.current, progress.total
+                );
+                Paragraph::new(text)
+                    .style(Style::default().fg(text_primary))
+                    .render(
+                        Rect {
+                            x: inner.x,
+                            y: inner.y,
+                            width: inner.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
+                Gauge::default()
+                    .gauge_style(Style::default().fg(label))
+                    .ratio(percent as f64 / 100.0)
+                    .render(
+                        Rect {
+                            x: inner.x,
+                            y: inner.y + 1,
+                            width: inner.width,
+                            height: 1,
+                        },
+                        buf,
+                    );
+            } else if let Some(state) = &self.data_table_state {
+                // Compute statistics if not already computed or if seed changed (sync fallback when not chunking)
                 let needs_recompute = self.analysis_modal.analysis_results.is_none()
                     || self
                         .analysis_modal
@@ -6572,6 +7001,7 @@ impl Widget for &mut App {
                         .unwrap_or(true);
 
                 if needs_recompute {
+                    self.busy = true;
                     // Use the LazyFrame directly from state (it already respects queries/filters)
                     let lf = state.lf.clone();
                     // Only compute basic statistics by default (no distribution analysis, no correlation matrix)
@@ -6591,7 +7021,6 @@ impl Widget for &mut App {
                             self.analysis_modal.analysis_results = Some(results);
                         }
                         Err(e) => {
-                            eprintln!("Error computing statistics: {}", e);
                             // Still render the modal with error message
                             Clear.render(analysis_area, buf);
                             let error_msg = format!("Error computing statistics: {}", e);
@@ -6602,43 +7031,12 @@ impl Widget for &mut App {
                             // Don't return - continue to render toolbar
                         }
                     }
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
 
-                // Lazy computation: compute additional stats if needed for the selected tool
-                {
-                    let lf = state.lf.clone();
-                    let selected_tool = self.analysis_modal.selected_tool;
-                    if let Some(ref mut results) = self.analysis_modal.analysis_results {
-                        match selected_tool {
-                            crate::analysis_modal::AnalysisTool::DistributionAnalysis => {
-                                if results.distribution_analyses.is_empty() {
-                                    if let Err(e) =
-                                        crate::statistics::compute_distribution_statistics(
-                                            results,
-                                            &lf,
-                                            Some(self.sampling_threshold),
-                                            self.analysis_modal.random_seed,
-                                        )
-                                    {
-                                        eprintln!("Error computing distribution statistics: {}", e);
-                                    }
-                                }
-                            }
-                            crate::analysis_modal::AnalysisTool::CorrelationMatrix => {
-                                if results.correlation_matrix.is_none() {
-                                    if let Err(e) =
-                                        crate::statistics::compute_correlation_statistics(
-                                            results, &lf,
-                                        )
-                                    {
-                                        eprintln!("Error computing correlation statistics: {}", e);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                // Distribution and Correlation are computed via deferred events (AnalysisDistributionCompute
+                // / AnalysisCorrelationCompute) when the user selects that tool, so progress overlay and throbber show first.
 
                 if let Some(ref results) = self.analysis_modal.analysis_results {
                     let context = state.get_analysis_context();
@@ -7249,11 +7647,17 @@ Delete Confirmation:
             || self.sort_filter_modal.active;
 
         // Build controls - use analysis-specific controls if analysis modal is active
-        let mut controls = Controls::with_row_count(row_count.unwrap_or(0)).with_colors(
-            self.color("controls_bg"),
-            self.color("keybind_hints"),
-            self.color("keybind_labels"),
-        );
+        let use_unicode_throbber = std::env::var("LANG")
+            .map(|l| l.to_uppercase().contains("UTF-8"))
+            .unwrap_or(false);
+        let mut controls = Controls::with_row_count(row_count.unwrap_or(0))
+            .with_colors(
+                self.color("controls_bg"),
+                self.color("keybind_hints"),
+                self.color("keybind_labels"),
+                self.color("throbber"),
+            )
+            .with_unicode_throbber(use_unicode_throbber);
 
         if self.analysis_modal.active {
             // Build analysis-specific controls based on view
@@ -7282,6 +7686,10 @@ Delete Confirmation:
                 .with_query_active(query_active);
         }
 
+        if self.busy {
+            self.throbber_frame = self.throbber_frame.wrapping_add(1);
+        }
+        controls = controls.with_busy(self.busy, self.throbber_frame);
         controls.render(controls_area, buf);
         if self.debug.enabled && layout.len() > debug_area_index {
             self.debug.render(layout[debug_area_index], buf);

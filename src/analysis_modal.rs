@@ -17,6 +17,14 @@ pub enum AnalysisTool {
     CorrelationMatrix,    // Correlation matrix
 }
 
+/// Progress state for the analysis progress overlay (display only).
+#[derive(Debug, Clone)]
+pub struct AnalysisProgress {
+    pub phase: String,
+    pub current: usize,
+    pub total: usize,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum AnalysisFocus {
     #[default]
@@ -39,6 +47,8 @@ pub struct AnalysisModal {
     pub correlation_table_state: TableState,  // For correlation matrix
     pub sidebar_state: TableState,            // For sidebar tool list
     pub analysis_results: Option<AnalysisResults>,
+    /// When Some, show progress overlay (phase, current/total); in-progress data lives in App.
+    pub computing: Option<AnalysisProgress>,
     pub show_help: bool,
     pub view: AnalysisView,
     pub focus: AnalysisFocus,
@@ -80,6 +90,7 @@ impl AnalysisModal {
         self.selected_distribution = Some(0);
         self.selected_correlation = Some((0, 0));
         self.detail_section = 0;
+        self.computing = None;
         // Generate initial random seed
         self.random_seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -100,6 +111,7 @@ impl AnalysisModal {
         self.selected_distribution = None;
         self.selected_correlation = None;
         self.detail_section = 0;
+        self.computing = None;
     }
 
     pub fn switch_focus(&mut self) {

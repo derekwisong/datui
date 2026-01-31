@@ -294,6 +294,7 @@ fn test_theme_with_custom_colors() {
     config.theme.colors = ColorConfig {
         keybind_hints: "#ff0000".to_string(),
         keybind_labels: "blue".to_string(),
+        throbber: "cyan".to_string(),
         primary_chart_series_color: "cyan".to_string(),
         secondary_chart_series_color: "dark_gray".to_string(),
         success: "bright_green".to_string(),

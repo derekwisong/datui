@@ -57,6 +57,13 @@ fn run(mut terminal: DefaultTerminal, args: &Args, config: &AppConfig, theme: Th
 
         if updated {
             render(&mut terminal, &mut app)?;
+            // After blocking work, drain queued key events so they don't fire unexpectedly
+            if app.should_drain_keys() {
+                while crossterm::event::poll(std::time::Duration::from_millis(0))? {
+                    let _ = crossterm::event::read();
+                }
+                app.clear_drain_keys_request();
+            }
         }
     }
     Ok(())

@@ -180,11 +180,8 @@ fn render_format_options(
         ExportFormat::Ndjson => {
             render_ndjson_options(inner, buf, modal, border_color, active_color)
         }
-        ExportFormat::Parquet => {
-            render_parquet_options(inner, buf, modal, border_color, active_color)
-        }
-        ExportFormat::Ipc | ExportFormat::Avro => {
-            render_parquet_options(inner, buf, modal, border_color, active_color)
+        ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
+            render_no_format_options(inner, buf, modal, border_color, active_color)
         }
     }
 }
@@ -412,15 +409,18 @@ fn render_ndjson_options(
     }
 }
 
-fn render_parquet_options(
+fn render_no_format_options(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
-    _modal: &mut ExportModal,
+    modal: &mut ExportModal,
     border_color: Color,
     _active_color: Color,
 ) {
-    // Parquet has no options
-    Paragraph::new("No additional options for Parquet format")
+    let msg = format!(
+        "No additional options for {} format",
+        modal.selected_format.as_str()
+    );
+    Paragraph::new(msg)
         .style(Style::default().fg(border_color))
         .centered()
         .render(area, buf);

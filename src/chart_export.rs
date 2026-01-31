@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
+use crate::chart_data::{format_axis_label, format_x_axis_label, XAxisTemporalKind};
 use crate::chart_modal::ChartType;
 
 /// Escape a string for PostScript ( and ) and \.
@@ -51,21 +52,9 @@ fn nice_ticks(min: f64, max: f64, max_ticks: usize) -> Vec<f64> {
     ticks
 }
 
-/// Format a tick value for display (compact: integer when whole, else 1–2 decimals).
+/// Format a numeric tick for display (used for y when not log scale).
 fn format_tick(v: f64) -> String {
-    if v == 0.0 {
-        return "0".to_string();
-    }
-    let abs = v.abs();
-    if abs >= 1000.0 || (abs <= 0.01 && abs > 0.0) {
-        format!("{:e}", v)
-    } else if (v - v.round()).abs() < 1e-10 {
-        format!("{:.0}", v)
-    } else if abs >= 1.0 {
-        format!("{:.1}", v)
-    } else {
-        format!("{:.2}", v)
-    }
+    format_axis_label(v)
 }
 
 /// Bounds and options for rendering the chart to a file.
@@ -74,10 +63,16 @@ pub struct ChartExportBounds {
     pub x_max: f64,
     pub y_min: f64,
     pub y_max: f64,
-    /// X-axis column name (for axis label).
+    /// X-axis column name (for axis title).
     pub x_label: String,
-    /// Y-axis column name(s), e.g. "col" or "a, b" (for axis label).
+    /// Y-axis column name(s), e.g. "col" or "a, b" (for axis title).
     pub y_label: String,
+    /// How to format x-axis tick labels (date/datetime/time vs numeric).
+    pub x_axis_kind: XAxisTemporalKind,
+    /// If true, y values in data/bounds are ln(1+y); y-axis labels must be shown in linear space (exp_m1).
+    pub log_scale: bool,
+    /// Optional chart title shown on export. None or empty = no title.
+    pub chart_title: Option<String>,
 }
 
 /// One series: name and (x, y) points (y already log-transformed if log scale).
@@ -153,6 +148,18 @@ pub fn write_chart_eps(
     writeln!(f, "gsave")?;
     writeln!(f, "1 setlinewidth")?;
 
+    // Optional chart title at top center
+    if let Some(ref title) = bounds.chart_title {
+        if !title.is_empty() {
+            const CHAR_W: f64 = 6.0;
+            writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
+            let title_w = title.len() as f64 * CHAR_W;
+            let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
+            writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
+            writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
+        }
+    }
+
     // Tick positions for grid, ticks, and labels
     const MAX_TICKS: usize = 8;
     let x_ticks = nice_ticks(x_min, x_max, MAX_TICKS);
@@ -217,10 +224,11 @@ pub fn write_chart_eps(
     // Tick labels and axis titles (text)
     writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
     let char_w: f64 = 5.0;
+    let format_x_tick = |v: f64| format_x_axis_label(v, bounds.x_axis_kind);
     for &v in &x_ticks {
         let px = to_x(v);
         if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            let s = format_tick(v);
+            let s = format_x_tick(v);
             let label_w = s.len() as f64 * char_w;
             let tx = (px - label_w / 2.0)
                 .max(MARGIN_LEFT)
@@ -234,10 +242,17 @@ pub fn write_chart_eps(
             )?;
         }
     }
+    let format_y_tick = |v: f64| {
+        if bounds.log_scale {
+            format_axis_label(v.exp_m1())
+        } else {
+            format_tick(v)
+        }
+    };
     for &v in &y_ticks {
         let py = to_y(v);
         if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            let s = format_tick(v);
+            let s = format_y_tick(v);
             let label_w = s.len() as f64 * char_w;
             let tx = (MARGIN_LEFT - label_w - 4.0).max(2.0);
             writeln!(f, "{} {} moveto ({}) show", tx, py - 3.0, ps_escape(&s))?;
@@ -349,16 +364,34 @@ pub fn write_chart_png(
     let y_min = bounds.y_min;
     let y_max = bounds.y_max;
 
-    let mut chart = ChartBuilder::on(&root)
-        .margin(30)
+    let mut binding = ChartBuilder::on(&root);
+    let builder = binding.margin(30);
+    let builder = if let Some(t) = bounds.chart_title.as_ref().filter(|s| !s.is_empty()) {
+        builder.caption(t.as_str(), ("sans-serif", 20))
+    } else {
+        builder
+    };
+    let mut chart = builder
         .x_label_area_size(40)
         .y_label_area_size(50)
         .build_cartesian_2d(x_min..x_max, y_min..y_max)?;
 
+    let x_axis_kind = bounds.x_axis_kind;
+    let log_scale = bounds.log_scale;
+    let x_formatter = move |v: &f64| format_x_axis_label(*v, x_axis_kind);
+    let y_formatter = move |v: &f64| {
+        if log_scale {
+            format_axis_label(v.exp_m1())
+        } else {
+            format_axis_label(*v)
+        }
+    };
     chart
         .configure_mesh()
         .x_desc(bounds.x_label.as_str())
         .y_desc(bounds.y_label.as_str())
+        .x_label_formatter(&x_formatter)
+        .y_label_formatter(&y_formatter)
         .draw()?;
 
     let colors = [
@@ -432,6 +465,9 @@ mod tests {
             y_max: 2.5,
             x_label: "x_col".to_string(),
             y_label: "y_col".to_string(),
+            x_axis_kind: XAxisTemporalKind::Numeric,
+            log_scale: false,
+            chart_title: None,
         };
 
         let dir = tempfile::tempdir().expect("temp dir");

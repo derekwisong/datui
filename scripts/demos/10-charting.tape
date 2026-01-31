@@ -31,7 +31,7 @@ Tab
 Sleep 0.5s
 
 # Enter to select high_temp as X axis
-Enter
+Space
 Sleep 0.5s
 
 # Tab to Y axis filter
@@ -48,7 +48,9 @@ Sleep 1s
 
 # j to move down in Y list
 Type "j"
-Sleep 1.5s
+Sleep 0.5s
+Space
+Sleep 1s
 
 # Shift+Tab 4 times back to chart type (Y list → Y input → X list → X input → Chart type)
 Shift+Tab

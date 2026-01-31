@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     symbols,
     text::{Line, Span},
     widgets::{
@@ -11,14 +11,50 @@ use ratatui::{
     },
 };
 
-use crate::chart_data::XAxisTemporalKind;
+use crate::chart_data::{format_axis_label, format_x_axis_label, XAxisTemporalKind};
 use crate::chart_modal::{ChartFocus, ChartModal, ChartType};
 use crate::config::Theme;
+use std::collections::HashSet;
 
 const SIDEBAR_WIDTH: u16 = 42;
 const LABEL_WIDTH: u16 = 20;
 
+/// Renders a single axis column list (shared by X and Y). Display order: selected (remembered) items first.
+/// Remembered items use modal_border_active; others use text_primary. Selected row uses REVERSED (like main datatable).
+fn render_axis_list(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    list_state: &mut ratatui::widgets::ListState,
+    display_items: &[String],
+    selected_set: &HashSet<String>,
+    is_focused: bool,
+    theme: &Theme,
+) {
+    let active_color = theme.get("modal_border_active");
+    let text_primary = theme.get("text_primary");
+
+    let list_items: Vec<ListItem> = display_items
+        .iter()
+        .map(|name| {
+            let style = if selected_set.contains(name) {
+                Style::default().fg(active_color)
+            } else {
+                Style::default().fg(text_primary)
+            };
+            ListItem::new(Line::from(Span::styled(name.as_str(), style)))
+        })
+        .collect();
+
+    let list = List::new(list_items).highlight_style(if is_focused {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default()
+    });
+    StatefulWidget::render(list, area, buf, list_state);
+}
+
 /// Renders the chart view: title, left sidebar (chart type, x/y inputs+lists, checkboxes), and chart area (no border).
+/// When only x is selected (no chart data), `x_bounds` may be `Some((min, max))` from the x column so the x axis shows the proper range.
 pub fn render_chart_view(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -26,6 +62,7 @@ pub fn render_chart_view(
     theme: &Theme,
     chart_data: Option<&Vec<Vec<(f64, f64)>>>,
     x_axis_kind: XAxisTemporalKind,
+    x_bounds: Option<(f64, f64)>,
 ) {
     modal.clamp_list_selections_to_filtered();
 
@@ -66,8 +103,10 @@ pub fn render_chart_view(
     let log_scale = modal.log_scale;
     let show_legend = modal.show_legend;
     let focus = modal.focus;
-    let x_filtered = modal.x_filtered();
-    let y_filtered = modal.y_filtered();
+    let x_display = modal.x_display_list();
+    let y_display = modal.y_display_list();
+    let x_selected_set: HashSet<String> = modal.x_column.iter().cloned().collect();
+    let y_selected_set: HashSet<String> = modal.y_columns.iter().cloned().collect();
 
     // Sidebar content: one row after another, with padding between chart type and X, and between X and Y groups
     let sidebar_content = Layout::default()
@@ -128,7 +167,7 @@ pub fn render_chart_view(
         .style(Style::default().fg(text_primary))
         .render(sidebar_content[3], buf);
 
-    // X axis: one box "Filter Columns" (input + divider + list); border lights when input or list focused
+    // X axis: one box "Filter Columns" (input + divider + list); frame highlighted when input or list focused
     let x_box_area = sidebar_content[4];
     let x_group_border = match focus {
         ChartFocus::XInput | ChartFocus::XList => active_color,
@@ -153,38 +192,27 @@ pub fn render_chart_view(
     modal.x_input.set_focused(focus == ChartFocus::XInput);
     modal.x_input.render(x_inner[0], buf);
 
-    // Border between input and list
     let x_divider = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(x_group_border));
     x_divider.render(x_inner[1], buf);
 
-    let x_list_items: Vec<ListItem> = x_filtered
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let selected = modal.x_list_state.selected() == Some(i);
-            let style = if selected && focus == ChartFocus::XList {
-                Style::default().fg(active_color)
-            } else if selected {
-                Style::default().fg(border_color)
-            } else {
-                Style::default().fg(text_secondary)
-            };
-            ListItem::new(Line::from(Span::styled(name.as_str(), style)))
-        })
-        .collect();
-    let x_list = List::new(x_list_items);
-    let mut x_list_state = std::mem::take(&mut modal.x_list_state);
-    StatefulWidget::render(x_list, x_inner[2], buf, &mut x_list_state);
-    modal.x_list_state = x_list_state;
+    render_axis_list(
+        x_inner[2],
+        buf,
+        &mut modal.x_list_state,
+        &x_display,
+        &x_selected_set,
+        focus == ChartFocus::XList,
+        theme,
+    );
 
     // Y axis label (normal text color)
     Paragraph::new("Y axis:")
         .style(Style::default().fg(text_primary))
         .render(sidebar_content[6], buf);
 
-    // Y axis: one box "Filter Columns" (input + divider + list); border lights when input or list focused
+    // Y axis: one box "Filter Columns" (input + divider + list); frame highlighted when input or list focused
     let y_box_area = sidebar_content[7];
     let y_group_border = match focus {
         ChartFocus::YInput | ChartFocus::YList => active_color,
@@ -209,31 +237,20 @@ pub fn render_chart_view(
     modal.y_input.set_focused(focus == ChartFocus::YInput);
     modal.y_input.render(y_inner[0], buf);
 
-    // Border between input and list
     let y_divider = Block::default()
         .borders(Borders::TOP)
         .border_style(Style::default().fg(y_group_border));
     y_divider.render(y_inner[1], buf);
 
-    let y_list_items: Vec<ListItem> = y_filtered
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let selected = modal.y_list_state.selected() == Some(i);
-            let style = if selected && focus == ChartFocus::YList {
-                Style::default().fg(active_color)
-            } else if selected {
-                Style::default().fg(border_color)
-            } else {
-                Style::default().fg(text_secondary)
-            };
-            ListItem::new(Line::from(Span::styled(name.as_str(), style)))
-        })
-        .collect();
-    let y_list = List::new(y_list_items);
-    let mut y_list_state = std::mem::take(&mut modal.y_list_state);
-    StatefulWidget::render(y_list, y_inner[2], buf, &mut y_list_state);
-    modal.y_list_state = y_list_state;
+    render_axis_list(
+        y_inner[2],
+        buf,
+        &mut modal.y_list_state,
+        &y_display,
+        &y_selected_set,
+        focus == ChartFocus::YList,
+        theme,
+    );
 
     // Start y axis at 0: label + checkbox
     let y0_row = Layout::default()
@@ -320,13 +337,69 @@ pub fn render_chart_view(
     // Chart area: no border, no title
     let chart_inner = main_layout[1];
 
+    let has_x_selected = modal.effective_x_column().is_some();
     let has_data = chart_data
         .map(|d| d.iter().any(|s| !s.is_empty()))
         .unwrap_or(false);
 
+    // When user has selected x (and optionally y) but no data yet, show chart frame with x axis label/range; y has no data/range
+    if has_x_selected && !has_data {
+        let x_name = modal
+            .effective_x_column()
+            .map(|s| s.as_str())
+            .unwrap_or("X");
+        let y_names: String = modal.effective_y_columns().join(", ");
+        let axis_label_style = Style::default().fg(theme.get("text_primary"));
+        const PLACEHOLDER_MIN: f64 = 0.0;
+        const PLACEHOLDER_MAX: f64 = 1.0;
+        let (x_min, x_max) = x_bounds.unwrap_or((PLACEHOLDER_MIN, PLACEHOLDER_MAX));
+        let format_x = |v: f64| format_x_axis_label(v, x_axis_kind);
+        let x_labels = vec![
+            Span::styled(format_x(x_min), axis_label_style),
+            Span::styled(format_x((x_min + x_max) / 2.0), axis_label_style),
+            Span::styled(format_x(x_max), axis_label_style),
+        ];
+        let y_labels = vec![
+            Span::styled(format_axis_label(PLACEHOLDER_MIN), axis_label_style),
+            Span::styled(
+                format_axis_label((PLACEHOLDER_MIN + PLACEHOLDER_MAX) / 2.0),
+                axis_label_style,
+            ),
+            Span::styled(format_axis_label(PLACEHOLDER_MAX), axis_label_style),
+        ];
+        let x_axis = Axis::default()
+            .title(x_name)
+            .bounds([x_min, x_max])
+            .style(Style::default().fg(theme.get("text_primary")))
+            .labels(x_labels);
+        let y_axis = Axis::default()
+            .title(y_names)
+            .bounds([PLACEHOLDER_MIN, PLACEHOLDER_MAX])
+            .style(Style::default().fg(theme.get("text_primary")))
+            .labels(y_labels);
+        let empty_dataset = Dataset::default()
+            .name("")
+            .data(&[])
+            .graph_type(match chart_type {
+                ChartType::Line => GraphType::Line,
+                ChartType::Scatter => GraphType::Scatter,
+                ChartType::Bar => GraphType::Bar,
+            });
+        let mut chart = Chart::new(vec![empty_dataset])
+            .x_axis(x_axis)
+            .y_axis(y_axis);
+        if show_legend {
+            chart = chart.legend_position(Some(ratatui::widgets::LegendPosition::TopRight));
+        } else {
+            chart = chart.legend_position(None);
+        }
+        chart.render(chart_inner, buf);
+        return;
+    }
+
     if has_data {
         let data = chart_data.unwrap();
-        let y_columns = &modal.y_columns;
+        let y_columns = modal.effective_y_columns();
         let graph_type = match chart_type {
             ChartType::Line => GraphType::Line,
             ChartType::Scatter => GraphType::Scatter,
@@ -469,11 +542,15 @@ pub fn render_chart_view(
             Span::styled(format_y_label(y_max_bounds), axis_label_style),
         ];
 
+        let x_axis_title = modal.effective_x_column().map(|s| s.as_str()).unwrap_or("");
+        let y_axis_title = y_columns.join(", ");
         let x_axis = Axis::default()
+            .title(x_axis_title)
             .bounds([x_min_bounds, x_max_bounds])
             .style(Style::default().fg(theme.get("text_primary")))
             .labels(x_labels);
         let y_axis = Axis::default()
+            .title(y_axis_title)
             .bounds([y_min_bounds, y_max_bounds])
             .style(Style::default().fg(theme.get("text_primary")))
             .labels(y_labels);
@@ -490,51 +567,5 @@ pub fn render_chart_view(
             .style(Style::default().fg(text_secondary))
             .centered()
             .render(chart_inner, buf);
-    }
-}
-
-fn format_axis_label(v: f64) -> String {
-    if v.abs() >= 1e6 || (v.abs() < 1e-2 && v != 0.0) {
-        format!("{:.2e}", v)
-    } else {
-        format!("{:.2}", v)
-    }
-}
-
-/// Format x-axis label: dates/datetimes/times when kind is temporal, else numeric.
-fn format_x_axis_label(v: f64, kind: XAxisTemporalKind) -> String {
-    use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
-
-    match kind {
-        XAxisTemporalKind::Numeric => format_axis_label(v),
-        XAxisTemporalKind::Date => {
-            const UNIX_EPOCH_CE_DAYS: i32 = 719_163;
-            let days = v.trunc() as i32;
-            match NaiveDate::from_num_days_from_ce_opt(UNIX_EPOCH_CE_DAYS.saturating_add(days)) {
-                Some(d) => d.format("%Y-%m-%d").to_string(),
-                None => format_axis_label(v),
-            }
-        }
-        XAxisTemporalKind::DatetimeUs => DateTime::from_timestamp_micros(v.trunc() as i64)
-            .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| format_axis_label(v)),
-        XAxisTemporalKind::DatetimeMs => DateTime::from_timestamp_millis(v.trunc() as i64)
-            .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_else(|| format_axis_label(v)),
-        XAxisTemporalKind::DatetimeNs => {
-            let millis = (v.trunc() as i64) / 1_000_000;
-            DateTime::from_timestamp_millis(millis)
-                .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%d %H:%M").to_string())
-                .unwrap_or_else(|| format_axis_label(v))
-        }
-        XAxisTemporalKind::Time => {
-            let nsecs = v.trunc() as u64;
-            let secs = (nsecs / 1_000_000_000) as u32;
-            let subsec = (nsecs % 1_000_000_000) as u32;
-            match NaiveTime::from_num_seconds_from_midnight_opt(secs, subsec) {
-                Some(t) => t.format("%H:%M:%S").to_string(),
-                None => format_axis_label(v),
-            }
-        }
     }
 }

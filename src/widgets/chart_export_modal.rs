@@ -1,4 +1,4 @@
-//! Chart export modal rendering: format (PNG/EPS) and path.
+//! Chart export modal rendering: format (PNG/EPS), optional title, and path.
 
 use crate::chart_export::ChartExportFormat;
 use crate::chart_export_modal::{ChartExportFocus, ChartExportModal};
@@ -28,8 +28,9 @@ pub fn render_chart_export_modal(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Format row
+            Constraint::Length(3), // Chart title (optional)
             Constraint::Length(3), // Path row
-            Constraint::Length(3), // Buttons: just tall enough for label + border
+            Constraint::Length(3), // Buttons
         ])
         .split(inner);
 
@@ -79,8 +80,24 @@ pub fn render_chart_export_modal(
         .render(cell_area, buf);
     }
 
+    // Chart title (optional; blank = no title on export)
+    let title_area = chunks[1];
+    let is_title_focused = modal.focus == ChartExportFocus::TitleInput;
+    let title_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if is_title_focused {
+            active_color
+        } else {
+            border_color
+        }))
+        .title(" Chart Title ");
+    let title_inner = title_block.inner(title_area);
+    title_block.render(title_area, buf);
+    modal.title_input.set_focused(is_title_focused);
+    (&modal.title_input).render(title_inner, buf);
+
     // Path input
-    let path_area = chunks[1];
+    let path_area = chunks[2];
     let is_path_focused = modal.focus == ChartExportFocus::PathInput;
     let path_block = Block::default()
         .borders(Borders::ALL)
@@ -96,7 +113,7 @@ pub fn render_chart_export_modal(
     (&modal.path_input).render(path_inner, buf);
 
     // Buttons
-    let btn_area = chunks[2];
+    let btn_area = chunks[3];
     let btn_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])

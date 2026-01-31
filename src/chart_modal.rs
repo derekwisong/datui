@@ -39,14 +39,17 @@ pub enum ChartFocus {
     ShowLegend,
 }
 
+/// Maximum number of y-axis series that can be selected (remembered).
+pub const Y_SERIES_MAX: usize = 7;
+
 /// Chart modal state: type, x/y column selection, and options.
 #[derive(Default)]
 pub struct ChartModal {
     pub active: bool,
     pub chart_type: ChartType,
-    /// Selected x-axis column name (from schema).
+    /// Remembered x-axis column (single; set with spacebar).
     pub x_column: Option<String>,
-    /// Selected y-axis column names (order = series order).
+    /// Remembered y-axis column names (order = series order; set with spacebar, max Y_SERIES_MAX).
     pub y_columns: Vec<String>,
     pub y_starts_at_zero: bool,
     pub log_scale: bool,
@@ -56,9 +59,9 @@ pub struct ChartModal {
     pub x_input: TextInput,
     /// Text input for y-axis column search.
     pub y_input: TextInput,
-    /// List state for x-axis column list (index into filtered list).
+    /// List state for x-axis list (index into x_display_list).
     pub x_list_state: ListState,
-    /// List state for y-axis column list (index into filtered list).
+    /// List state for y-axis list (index into y_display_list).
     pub y_list_state: ListState,
     /// Available columns for x-axis (datetime + numeric, order preserved for list).
     pub x_candidates: Vec<String>,
@@ -71,7 +74,7 @@ impl ChartModal {
         Self::default()
     }
 
-    /// Open the chart modal and set defaults from schema (column names for x/y).
+    /// Open the chart modal. No default x or y columns; user selects with spacebar.
     pub fn open(&mut self, numeric_columns: &[String], datetime_columns: &[String]) {
         self.active = true;
         self.chart_type = ChartType::Line;
@@ -89,43 +92,19 @@ impl ChartModal {
         }
         self.y_candidates = numeric_columns.to_vec();
 
-        // Default x: first datetime column, else first numeric.
-        self.x_column = datetime_columns
-            .first()
-            .cloned()
-            .or_else(|| numeric_columns.first().cloned());
+        // No default x or y; user selects with spacebar.
+        self.x_column = None;
+        self.y_columns.clear();
 
-        // Default y: first numeric column (that isn't x), or just first numeric.
-        self.y_columns = numeric_columns
-            .iter()
-            .filter(|c| Some((*c).clone()) != self.x_column)
-            .take(1)
-            .cloned()
-            .collect();
-        if self.y_columns.is_empty() {
-            self.y_columns = numeric_columns.first().cloned().into_iter().collect();
-        }
-
-        // Do not auto-fill filter inputs; leave them empty for the user to type
         self.x_input.set_value(String::new());
         self.y_input.set_value(String::new());
 
-        let x_filtered = self.x_filtered();
-        let y_filtered = self.y_filtered();
-        let x_idx = self
-            .x_column
-            .as_ref()
-            .and_then(|x| x_filtered.iter().position(|c| c == x))
-            .unwrap_or(0);
-        let y_idx = self
-            .y_columns
-            .first()
-            .and_then(|y| y_filtered.iter().position(|c| c == y))
-            .unwrap_or(0);
+        let x_display = self.x_display_list();
+        let y_display = self.y_display_list();
         self.x_list_state
-            .select(Some(x_idx.min(x_filtered.len().saturating_sub(1))));
+            .select(if x_display.is_empty() { None } else { Some(0) });
         self.y_list_state
-            .select(Some(y_idx.min(y_filtered.len().saturating_sub(1))));
+            .select(if y_display.is_empty() { None } else { Some(0) });
     }
 
     /// X-axis candidates filtered by current x search string (case-insensitive substring).
@@ -154,25 +133,94 @@ impl ChartModal {
             .collect()
     }
 
-    /// Clamp x/y list selection to filtered list length (e.g. after search filter changes).
+    /// X display list: remembered x first (if in filtered), then rest of filtered. Used for list rendering and index.
+    pub fn x_display_list(&self) -> Vec<String> {
+        let filtered = self.x_filtered();
+        if let Some(ref x) = self.x_column {
+            if let Some(pos) = filtered.iter().position(|c| c == x) {
+                let mut out = vec![filtered[pos].clone()];
+                for (i, c) in filtered.iter().enumerate() {
+                    if i != pos {
+                        out.push(c.clone());
+                    }
+                }
+                return out;
+            }
+        }
+        filtered
+    }
+
+    /// Y display list: remembered y columns first (in order, that are in filtered), then rest of filtered.
+    pub fn y_display_list(&self) -> Vec<String> {
+        let filtered = self.y_filtered();
+        let mut out: Vec<String> = self
+            .y_columns
+            .iter()
+            .filter(|c| filtered.contains(c))
+            .cloned()
+            .collect();
+        for c in &filtered {
+            if !out.contains(c) {
+                out.push(c.clone());
+            }
+        }
+        out
+    }
+
+    /// Effective x column for chart/export: the remembered x (no preview on scroll).
+    pub fn effective_x_column(&self) -> Option<&String> {
+        self.x_column.as_ref()
+    }
+
+    /// Effective y columns for chart/export: when Y list focused, remembered + highlighted (if not already remembered); else just remembered.
+    pub fn effective_y_columns(&self) -> Vec<String> {
+        let mut out = self.y_columns.clone();
+        if self.focus == ChartFocus::YList {
+            let display = self.y_display_list();
+            if let Some(i) = self.y_list_state.selected() {
+                if i < display.len() {
+                    let name = &display[i];
+                    if !out.contains(name) {
+                        out.push(name.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Called when Y list loses focus: if no series remembered and we had a highlighted row, remember it.
+    pub fn y_list_blur(&mut self) {
+        if !self.y_columns.is_empty() {
+            return;
+        }
+        let display = self.y_display_list();
+        if let Some(i) = self.y_list_state.selected() {
+            if i < display.len() {
+                self.y_columns.push(display[i].clone());
+            }
+        }
+    }
+
+    /// Clamp x/y list selection to display list length (e.g. after search filter changes).
     pub fn clamp_list_selections_to_filtered(&mut self) {
-        let xf = self.x_filtered();
-        let yf = self.y_filtered();
+        let x_display = self.x_display_list();
+        let y_display = self.y_display_list();
         if let Some(s) = self.x_list_state.selected() {
-            if s >= xf.len() {
-                self.x_list_state.select(if xf.is_empty() {
+            if s >= x_display.len() {
+                self.x_list_state.select(if x_display.is_empty() {
                     None
                 } else {
-                    Some(xf.len() - 1)
+                    Some(x_display.len().saturating_sub(1))
                 });
             }
         }
         if let Some(s) = self.y_list_state.selected() {
-            if s >= yf.len() {
-                self.y_list_state.select(if yf.is_empty() {
+            if s >= y_display.len() {
+                self.y_list_state.select(if y_display.is_empty() {
                     None
                 } else {
-                    Some(yf.len() - 1)
+                    Some(y_display.len().saturating_sub(1))
                 });
             }
         }
@@ -187,8 +235,11 @@ impl ChartModal {
         self.focus = ChartFocus::ChartType;
     }
 
-    /// Move focus to next/previous in sidebar.
+    /// Move focus to next/previous in sidebar. When leaving Y list, apply blur (remember highlight if only one).
     pub fn next_focus(&mut self) {
+        if self.focus == ChartFocus::YList {
+            self.y_list_blur();
+        }
         self.focus = match self.focus {
             ChartFocus::ChartType => ChartFocus::XInput,
             ChartFocus::XInput => ChartFocus::XList,
@@ -202,6 +253,9 @@ impl ChartModal {
     }
 
     pub fn prev_focus(&mut self) {
+        if self.focus == ChartFocus::YList {
+            self.y_list_blur();
+        }
         self.focus = match self.focus {
             ChartFocus::ChartType => ChartFocus::ShowLegend,
             ChartFocus::XInput => ChartFocus::ChartType,
@@ -246,10 +300,10 @@ impl ChartModal {
         };
     }
 
-    /// Move x-axis list selection down; updates x_column from filtered list.
+    /// Move x-axis list highlight down (does not change remembered x; use spacebar to remember).
     pub fn x_list_down(&mut self) {
-        let filtered = self.x_filtered();
-        let len = filtered.len();
+        let display = self.x_display_list();
+        let len = display.len();
         if len == 0 {
             return;
         }
@@ -260,35 +314,33 @@ impl ChartModal {
             .saturating_add(1)
             .min(len.saturating_sub(1));
         self.x_list_state.select(Some(i));
-        self.x_column = Some(filtered[i].clone());
     }
 
-    /// Move x-axis list selection up; updates x_column from filtered list.
+    /// Move x-axis list highlight up.
     pub fn x_list_up(&mut self) {
-        let filtered = self.x_filtered();
-        let len = filtered.len();
+        let display = self.x_display_list();
+        let len = display.len();
         if len == 0 {
             return;
         }
         let i = self.x_list_state.selected().unwrap_or(0).saturating_sub(1);
         self.x_list_state.select(Some(i));
-        self.x_column = Some(filtered[i].clone());
     }
 
-    /// Confirm x selection from list (Enter); updates x_column only; filter input is unchanged.
-    pub fn x_list_select(&mut self) {
-        let filtered = self.x_filtered();
+    /// Toggle x selection with spacebar: set remembered x to the highlighted row (single selection).
+    pub fn x_list_toggle(&mut self) {
+        let display = self.x_display_list();
         if let Some(i) = self.x_list_state.selected() {
-            if i < filtered.len() {
-                self.x_column = Some(filtered[i].clone());
+            if i < display.len() {
+                self.x_column = Some(display[i].clone());
             }
         }
     }
 
-    /// Move y-axis list selection down; updates y_columns from filtered list.
+    /// Move y-axis list highlight down (does not change remembered y; use spacebar to toggle).
     pub fn y_list_down(&mut self) {
-        let filtered = self.y_filtered();
-        let len = filtered.len();
+        let display = self.y_display_list();
+        let len = display.len();
         if len == 0 {
             return;
         }
@@ -299,46 +351,51 @@ impl ChartModal {
             .saturating_add(1)
             .min(len.saturating_sub(1));
         self.y_list_state.select(Some(i));
-        self.y_columns = vec![filtered[i].clone()];
     }
 
-    /// Move y-axis list selection up; updates y_columns from filtered list.
+    /// Move y-axis list highlight up.
     pub fn y_list_up(&mut self) {
-        let filtered = self.y_filtered();
-        let len = filtered.len();
+        let display = self.y_display_list();
+        let len = display.len();
         if len == 0 {
             return;
         }
         let i = self.y_list_state.selected().unwrap_or(0).saturating_sub(1);
         self.y_list_state.select(Some(i));
-        self.y_columns = vec![filtered[i].clone()];
     }
 
-    /// Confirm y selection from list (Enter); updates y_columns only; filter input is unchanged.
-    pub fn y_list_select(&mut self) {
-        let filtered = self.y_filtered();
-        if let Some(i) = self.y_list_state.selected() {
-            if i < filtered.len() {
-                self.y_columns = vec![filtered[i].clone()];
-            }
+    /// Toggle y selection with spacebar: add highlighted to remembered (up to Y_SERIES_MAX) or remove if already remembered.
+    pub fn y_list_toggle(&mut self) {
+        let display = self.y_display_list();
+        let Some(i) = self.y_list_state.selected() else {
+            return;
+        };
+        if i >= display.len() {
+            return;
+        }
+        let name = display[i].clone();
+        if let Some(pos) = self.y_columns.iter().position(|c| c == &name) {
+            self.y_columns.remove(pos);
+        } else if self.y_columns.len() < Y_SERIES_MAX {
+            self.y_columns.push(name);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ChartFocus, ChartModal, ChartType};
+    use super::{ChartFocus, ChartModal, ChartType, Y_SERIES_MAX};
 
     #[test]
-    fn open_sets_sensible_defaults() {
+    fn open_no_default_columns() {
         let numeric = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let datetime = vec!["date".to_string()];
         let mut modal = ChartModal::new();
         modal.open(&numeric, &datetime);
         assert!(modal.active);
         assert_eq!(modal.chart_type, ChartType::Line);
-        assert_eq!(modal.x_column.as_deref(), Some("date"));
-        assert_eq!(modal.y_columns, vec!["a"]);
+        assert!(modal.x_column.is_none());
+        assert!(modal.y_columns.is_empty());
         assert!(!modal.y_starts_at_zero);
         assert!(!modal.log_scale);
         assert!(modal.show_legend);
@@ -346,12 +403,12 @@ mod tests {
     }
 
     #[test]
-    fn open_numeric_only_defaults() {
+    fn open_numeric_only_no_defaults() {
         let numeric = vec!["x".to_string(), "y".to_string()];
         let mut modal = ChartModal::new();
         modal.open(&numeric, &[]);
-        assert_eq!(modal.x_column.as_deref(), Some("x"));
-        assert_eq!(modal.y_columns, vec!["y"]);
+        assert!(modal.x_column.is_none());
+        assert!(modal.y_columns.is_empty());
     }
 
     #[test]
@@ -365,5 +422,45 @@ mod tests {
         assert!(modal.log_scale);
         modal.toggle_show_legend();
         assert!(!modal.show_legend);
+    }
+
+    #[test]
+    fn x_display_list_puts_remembered_first() {
+        let mut modal = ChartModal::new();
+        modal.open(&["a".into(), "b".into(), "c".into()], &[]);
+        assert_eq!(modal.x_display_list(), vec!["a", "b", "c"]);
+        modal.x_column = Some("c".to_string());
+        assert_eq!(modal.x_display_list(), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn y_list_toggle_add_remove() {
+        let mut modal = ChartModal::new();
+        modal.open(&["a".into(), "b".into(), "c".into()], &[]);
+        modal.y_list_state.select(Some(0)); // highlight "a"
+        modal.y_list_toggle();
+        assert_eq!(modal.y_columns, vec!["a"]);
+        modal.y_list_toggle(); // toggle "a" off
+        assert!(modal.y_columns.is_empty());
+        modal.y_list_toggle(); // toggle "a" on again
+        assert_eq!(modal.y_columns, vec!["a"]);
+        modal.y_list_state.select(Some(1));
+        modal.y_list_toggle();
+        assert_eq!(modal.y_columns.len(), 2);
+    }
+
+    #[test]
+    fn y_series_max_cap() {
+        let mut modal = ChartModal::new();
+        let cols: Vec<String> = (0..10).map(|i| format!("col_{}", i)).collect();
+        modal.open(&cols, &[]);
+        for i in 0..Y_SERIES_MAX {
+            modal.y_list_state.select(Some(i));
+            modal.y_list_toggle();
+        }
+        assert_eq!(modal.y_columns.len(), Y_SERIES_MAX);
+        modal.y_list_state.select(Some(Y_SERIES_MAX));
+        modal.y_list_toggle(); // should not add
+        assert_eq!(modal.y_columns.len(), Y_SERIES_MAX);
     }
 }

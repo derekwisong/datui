@@ -1117,6 +1117,11 @@ impl DataTableState {
         self.row_numbers = !self.row_numbers;
     }
 
+    /// Row number display start (0 or 1); used by go-to-line to interpret user input.
+    pub fn row_start_index(&self) -> usize {
+        self.row_start_index
+    }
+
     /// Decompress a compressed file to a temp file for lazy CSV scan.
     fn decompress_compressed_csv_to_temp(
         path: &Path,
@@ -1751,7 +1756,8 @@ impl DataTableState {
                 dist_to_end <= self.proximity_threshold && self.buffered_end_row < self.num_rows;
 
             if !needs_expansion_back && !needs_expansion_forward {
-                self.slice_from_buffer();
+                // Rebuild displayed columns from current buffer (termcol_index may have changed via scroll_left/scroll_right)
+                self.load_buffer(self.buffered_start_row, self.buffered_end_row);
                 return;
             }
 
@@ -2048,6 +2054,101 @@ impl DataTableState {
             self.start_row = index;
             self.collect();
         }
+    }
+
+    /// Scroll so that the given row index is centered in the view when possible (respects table bounds).
+    /// Selects that row. Used by go-to-line.
+    pub fn scroll_to_row_centered(&mut self, row_index: usize) {
+        self.ensure_num_rows();
+        if self.num_rows == 0 || self.visible_rows == 0 {
+            return;
+        }
+        let center_offset = self.visible_rows / 2;
+        let mut start_row = row_index.saturating_sub(center_offset);
+        let max_start = self.num_rows.saturating_sub(self.visible_rows);
+        start_row = start_row.min(max_start);
+
+        if self.start_row == start_row {
+            let display_idx = row_index
+                .saturating_sub(start_row)
+                .min(self.visible_rows.saturating_sub(1));
+            self.table_state.select(Some(display_idx));
+            return;
+        }
+
+        self.start_row = start_row;
+        self.collect();
+        let display_idx = row_index
+            .saturating_sub(start_row)
+            .min(self.visible_rows.saturating_sub(1));
+        self.table_state.select(Some(display_idx));
+    }
+
+    /// Ensure num_rows is up to date (runs len() query if needed). Used before scroll_to_end.
+    fn ensure_num_rows(&mut self) {
+        if self.num_rows_valid {
+            return;
+        }
+        if self.visible_rows > 0 {
+            self.proximity_threshold = self.visible_rows;
+        }
+        self.num_rows = match self.lf.clone().select([len()]).collect() {
+            Ok(df) => {
+                if let Some(col) = df.get(0) {
+                    if let Some(AnyValue::UInt32(len)) = col.first() {
+                        *len as usize
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            }
+            Err(_) => 0,
+        };
+        self.num_rows_valid = true;
+    }
+
+    /// Jump to the last page; buffer is trimmed/loaded as needed. Selects the last row.
+    pub fn scroll_to_end(&mut self) {
+        self.ensure_num_rows();
+        if self.num_rows == 0 {
+            self.start_row = 0;
+            self.buffered_start_row = 0;
+            self.buffered_end_row = 0;
+            return;
+        }
+        let end_start = self.num_rows.saturating_sub(self.visible_rows);
+        if self.start_row == end_start {
+            self.select_last_visible_row();
+            return;
+        }
+        self.start_row = end_start;
+        self.collect();
+        self.select_last_visible_row();
+    }
+
+    /// Set table selection to the last row in the current view (for use after scroll_to_end).
+    fn select_last_visible_row(&mut self) {
+        if self.num_rows == 0 {
+            return;
+        }
+        let last_row_display_idx = (self.num_rows - 1).saturating_sub(self.start_row);
+        let sel = last_row_display_idx.min(self.visible_rows.saturating_sub(1));
+        self.table_state.select(Some(sel));
+    }
+
+    pub fn half_page_down(&mut self) {
+        let half = (self.visible_rows / 2).max(1) as i64;
+        self.slide_table(half);
+    }
+
+    pub fn half_page_up(&mut self) {
+        if self.start_row == 0 {
+            return;
+        }
+        let half = (self.visible_rows / 2).max(1) as i64;
+        self.slide_table(-half);
     }
 
     pub fn page_up(&mut self) {

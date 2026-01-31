@@ -4,6 +4,21 @@ In the main view, the following keyboard shortcuts are available.
 
 **Busy state:** When the app is working (loading data, scrolling, exporting, analysis, pivot/melt), a throbber appears in the control bar.
 
+**Navigation (main table):**
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` or `j` / `k` | Move selection one row |
+| `←` / `→` or `h` / `l` | Scroll columns |
+| `Home` | Jump to first row |
+| `End` or `G` | Jump to last row |
+| `Page Up` / `Page Down` | Scroll one page |
+| `Ctrl-F` / `Ctrl-B` | Page down / page up |
+| `Ctrl-D` / `Ctrl-U` | Half page down / half page up |
+| `:` | Go to line: type a line number and press Enter (e.g. `:0` Enter for first row); Esc to cancel |
+
+**Actions:**
+
 | Key | Action |
 |-----|--------|
 | `/` | Query input (See [Querying Data](../user-guide/querying-data.md)) |

@@ -11,6 +11,8 @@ pub struct DebugState {
     pub num_key_events: usize,
     pub last_key_event_name: String,
     pub last_type_name: String,
+    /// Last action taken (e.g. "scroll_left") for debugging key handling.
+    pub last_action: String,
     pub enabled: bool,
 }
 
@@ -25,11 +27,12 @@ impl DebugState {
 impl Widget for &DebugState {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Paragraph::new(format!(
-            "num_events={} num_key_events={} last_key_name={} last_type={} num_frames={}",
+            "events={} keys={} last_key={} kind={} last_action={} frames={}",
             self.num_events,
             self.num_key_events,
             self.last_key_event_name,
             self.last_type_name,
+            self.last_action,
             self.num_frames
         ))
         .render(area, buf);

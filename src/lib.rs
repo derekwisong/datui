@@ -348,6 +348,10 @@ pub enum AppEvent {
     DoScrollUp,       // Deferred scroll: perform page_up
     DoScrollNext,     // Deferred scroll: perform select_next (one row down)
     DoScrollPrev,     // Deferred scroll: perform select_previous (one row up)
+    DoScrollEnd,      // Deferred scroll: jump to last page (throbber)
+    DoScrollHalfDown, // Deferred scroll: half page down
+    DoScrollHalfUp,   // Deferred scroll: half page up
+    GoToLine(usize),  // Deferred: jump to line number (when collect needed)
     /// Run the next chunk of analysis (describe/distribution); drives per-column progress.
     AnalysisChunk,
     /// Run distribution analysis (deferred so progress overlay can show first).
@@ -382,6 +386,7 @@ pub enum InputMode {
 pub enum InputType {
     Search,
     Filter,
+    GoToLine,
 }
 
 #[derive(Default)]
@@ -1267,6 +1272,44 @@ impl App {
             return None;
         }
 
+        // Main table: left/right scroll columns (before help/mode blocks so column scroll always works in Normal).
+        // No is_press()/is_release() check: some terminals do not report key kind correctly.
+        // Exclude template/analysis modals so they can handle Left/Right themselves.
+        let in_main_table = !(self.input_mode != InputMode::Normal
+            || self.show_help
+            || self.template_modal.active
+            || self.analysis_modal.active);
+        if in_main_table {
+            let did_scroll = match event.code {
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if let Some(ref mut state) = self.data_table_state {
+                        state.scroll_right();
+                        if self.debug.enabled {
+                            self.debug.last_action = "scroll_right".to_string();
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if let Some(ref mut state) = self.data_table_state {
+                        state.scroll_left();
+                        if self.debug.enabled {
+                            self.debug.last_action = "scroll_left".to_string();
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if did_scroll {
+                return None;
+            }
+        }
+
         if self.show_help
             || (self.template_modal.active && self.template_modal.show_help)
             || (self.analysis_modal.active && self.analysis_modal.show_help)
@@ -1502,7 +1545,7 @@ impl App {
                     };
                     m.list_state.select(Some(i));
                 }
-                KeyCode::Down if on_body && sort_tab => {
+                KeyCode::Down | KeyCode::Char('j') if on_body && sort_tab => {
                     let s = &mut self.sort_filter_modal.sort;
                     if s.focus == SortFocus::ColumnList {
                         let i = match s.table_state.selected() {
@@ -1520,7 +1563,7 @@ impl App {
                         let _ = s.next_body_focus();
                     }
                 }
-                KeyCode::Up if on_body && sort_tab => {
+                KeyCode::Up | KeyCode::Char('k') if on_body && sort_tab => {
                     let s = &mut self.sort_filter_modal.sort;
                     if s.focus == SortFocus::ColumnList {
                         let i = match s.table_state.selected() {
@@ -3914,6 +3957,43 @@ impl App {
                 return None;
             }
 
+            // Line number input (GoToLine): ":" then type line number, Enter to jump, Esc to cancel
+            if self.input_type == Some(InputType::GoToLine) {
+                self.query_input.set_focused(true);
+                let result = self.query_input.handle_key(event, None);
+                match result {
+                    TextInputEvent::Submit => {
+                        let value = self.query_input.value.trim().to_string();
+                        self.query_input.clear();
+                        self.query_input.set_focused(false);
+                        self.input_mode = InputMode::Normal;
+                        self.input_type = None;
+                        if let Some(state) = &mut self.data_table_state {
+                            if let Ok(display_line) = value.parse::<usize>() {
+                                let row_index =
+                                    display_line.saturating_sub(state.row_start_index());
+                                let would_collect = state.scroll_would_trigger_collect(
+                                    row_index as i64 - state.start_row as i64,
+                                );
+                                if would_collect {
+                                    self.busy = true;
+                                    return Some(AppEvent::GoToLine(row_index));
+                                }
+                                state.scroll_to_row_centered(row_index);
+                            }
+                        }
+                    }
+                    TextInputEvent::Cancel => {
+                        self.query_input.clear();
+                        self.query_input.set_focused(false);
+                        self.input_mode = InputMode::Normal;
+                        self.input_type = None;
+                    }
+                    TextInputEvent::HistoryChanged | TextInputEvent::None => {}
+                }
+                return None;
+            }
+
             // For other input types (Filter, etc.), keep old behavior for now
             // TODO: Migrate these in later phases
             return None;
@@ -3951,15 +4031,21 @@ impl App {
                 // (Info modal handles Esc in its own block)
                 None
             }
-            code if event.is_press() && RIGHT_KEYS.contains(&code) => {
+            code if RIGHT_KEYS.contains(&code) => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.scroll_right();
+                    if self.debug.enabled {
+                        self.debug.last_action = "scroll_right".to_string();
+                    }
                 }
                 None
             }
-            code if event.is_press() && LEFT_KEYS.contains(&code) => {
+            code if LEFT_KEYS.contains(&code) => {
                 if let Some(ref mut state) = self.data_table_state {
                     state.scroll_left();
+                    if self.debug.enabled {
+                        self.debug.last_action = "scroll_left".to_string();
+                    }
                 }
                 None
             }
@@ -4013,12 +4099,110 @@ impl App {
             }
             KeyCode::Home if event.is_press() => {
                 if let Some(ref mut state) = self.data_table_state {
-                    // Only scroll if not already at top
                     if state.start_row > 0 {
                         state.scroll_to(0);
                     }
+                    state.table_state.select(Some(0));
                 }
                 None
+            }
+            KeyCode::End if event.is_press() => {
+                if self.data_table_state.is_some() {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollEnd)
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('G') if event.is_press() => {
+                if self.data_table_state.is_some() {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollEnd)
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('f')
+                if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
+            {
+                let would_collect = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| s.scroll_would_trigger_collect(s.visible_rows as i64))
+                    .unwrap_or(false);
+                if would_collect {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollDown)
+                } else {
+                    if let Some(ref mut s) = self.data_table_state {
+                        s.page_down();
+                    }
+                    None
+                }
+            }
+            KeyCode::Char('b')
+                if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
+            {
+                let would_collect = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| s.scroll_would_trigger_collect(-(s.visible_rows as i64)))
+                    .unwrap_or(false);
+                if would_collect {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollUp)
+                } else {
+                    if let Some(ref mut s) = self.data_table_state {
+                        s.page_up();
+                    }
+                    None
+                }
+            }
+            KeyCode::Char('d')
+                if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
+            {
+                let half = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| (s.visible_rows / 2).max(1) as i64)
+                    .unwrap_or(1);
+                let would_collect = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| s.scroll_would_trigger_collect(half))
+                    .unwrap_or(false);
+                if would_collect {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollHalfDown)
+                } else {
+                    if let Some(ref mut s) = self.data_table_state {
+                        s.half_page_down();
+                    }
+                    None
+                }
+            }
+            KeyCode::Char('u')
+                if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
+            {
+                let half = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| (s.visible_rows / 2).max(1) as i64)
+                    .unwrap_or(1);
+                let would_collect = self
+                    .data_table_state
+                    .as_ref()
+                    .map(|s| s.scroll_would_trigger_collect(-half))
+                    .unwrap_or(false);
+                if would_collect {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollHalfUp)
+                } else {
+                    if let Some(ref mut s) = self.data_table_state {
+                        s.half_page_up();
+                    }
+                    None
+                }
             }
             KeyCode::PageUp if event.is_press() => {
                 let would_collect = self
@@ -4086,6 +4270,16 @@ impl App {
                     self.query_input.clear();
                 }
                 self.query_input.set_focused(true);
+                None
+            }
+            KeyCode::Char(':') if event.is_press() => {
+                if self.data_table_state.is_some() {
+                    self.input_mode = InputMode::Editing;
+                    self.input_type = Some(InputType::GoToLine);
+                    self.query_input.value.clear();
+                    self.query_input.cursor = 0;
+                    self.query_input.set_focused(true);
+                }
                 None
             }
             KeyCode::Char('T') => {
@@ -4302,7 +4496,12 @@ impl App {
         self.debug.num_events += 1;
         match event {
             AppEvent::Key(key) => {
-                if self.busy {
+                // Allow Left/Right/h/l for column scroll even when busy (e.g. throbber showing)
+                let is_column_scroll = matches!(
+                    key.code,
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
+                );
+                if self.busy && !is_column_scroll {
                     return None;
                 }
                 self.key(key)
@@ -4450,6 +4649,38 @@ impl App {
             AppEvent::DoScrollPrev => {
                 if let Some(state) = &mut self.data_table_state {
                     state.select_previous();
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::DoScrollEnd => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.scroll_to_end();
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::DoScrollHalfDown => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.half_page_down();
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::DoScrollHalfUp => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.half_page_up();
+                }
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::GoToLine(n) => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.scroll_to_row_centered(*n);
                 }
                 self.busy = false;
                 self.drain_keys_on_next_loop = true;
@@ -5361,8 +5592,10 @@ impl App {
                 "\
 Navigation:
   Arrows (h/j/k/l): Scroll table
-  PgUp/PgDown:     Scroll pages
-  Home:             Go to top
+  PgUp/PgDown:     Scroll pages (Ctrl+F / Ctrl+B)
+  Home/End:        Go to first/last row (G = End)
+  Ctrl+D/Ctrl+U:   Half page down/up
+  ::               Go to line number (e.g. :0 Enter for top)
 
 Data Operations:
   /:                Open Query input
@@ -5761,6 +5994,7 @@ impl Widget for &mut App {
             let title = match self.input_type {
                 Some(InputType::Search) => "Query",
                 Some(InputType::Filter) => "Filter",
+                Some(InputType::GoToLine) => "Go to line",
                 None => "Input",
             };
 

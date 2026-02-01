@@ -67,6 +67,20 @@ select a, b: c+d where c > 0
 
 > See the [Syntax Reference][query-syntax-reference] for important details about the expression syntax.
 
+## Working with dates and times
+
+For columns of type **Date** or **Datetime**, use **dot accessors** to extract components:
+
+```
+select event_date: timestamp.date, year: timestamp.year
+select where created_at.date > 2024.01.01, created_at.month = 12
+select order_date, order_date.month, order_date.dow by order_date.year
+```
+
+Use **YYYY.MM.DD** for date literals in comparisons (e.g. `where dt_col.date > 2021.01.01`).
+
+Available accessors include `date`, `time`, `year`, `month`, `week`, `day`, `dow` (day of week), `month_start`, `month_end`, and `tz` (timezone). See the [Query Syntax Reference][query-syntax-reference] for the full list and more examples.
+
 ## Grouping and Aggregation
 
 The `by` clause in the query language allows you to group your data, or aggregate it within group.

@@ -5886,6 +5886,7 @@ impl Widget for &mut App {
         let table_header_bg_color = self.color("table_header_bg");
         let modal_border_color = self.color("modal_border");
         let info_active_color = self.color("modal_border_active");
+        let info_primary_color = self.color("text_primary");
 
         // Parquet metadata is loaded via DoLoadParquetMetadata when info panel is opened (not in render)
 
@@ -5959,6 +5960,7 @@ impl Widget for &mut App {
                         &mut self.info_modal,
                         modal_border_color,
                         info_active_color,
+                        info_primary_color,
                     );
                     info_widget.render(sort_area, buf);
                 } else {

@@ -1422,7 +1422,7 @@ fn render_sidebar(
     let block = Block::default()
         .title("Analysis Tools")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.get("sidebar_border")));
+        .border_style(Style::default().fg(theme.get("modal_border")));
 
     let list = List::new(items).block(block);
 

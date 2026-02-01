@@ -49,6 +49,12 @@ features = [
     "pivot",
     "temporal",
     "timezones",
+    "month_start",
+    "month_end",
+    "coalesce",
+    "regex",
+    "abs",
+    "round_series",
     "strings",
 ]
 

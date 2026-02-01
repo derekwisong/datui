@@ -148,7 +148,97 @@ In **where** conditions, each comparison operator compares a left-hand expressio
 
 - **Arithmetic**: **`+`** **`-`** **`*`** **`%`** ( **`%`** is division, not modulo).
 - **Comparison**: See [Comparison operators (where clauses)](#comparison-operators) above.
-- **Literals**: Numbers (**`42`**, **`3.14`**), strings (**`"hello"`**, **`\"`** for embedded quotes).
+- **Literals**: Numbers (**`42`**, **`3.14`**), strings (**`"hello"`**, **`\"`** for embedded quotes), date literals (**`2021.01.01`** in YYYY.MM.DD format), timestamp literals (**`2021.01.15T14:30:00.123456`** in YYYY.MM.DDTHH:MM:SS[.fff...] format; fractional seconds set precision: 1–3 digits = ms, 4–6 = μs, 7–9 = ns).
+- **Coalesce**: **`^`** — first non-null from left to right. `a^b^c` = coalesce(a, b, c). Right-to-left binding: `a^b^c` = `a^(b^c)`.
+
+---
+
+## Date and datetime accessors
+
+For columns of type **Date** or **Datetime**, use **dot notation** to extract components:
+
+```
+column_ref.accessor
+```
+
+### Datetime accessors
+
+Apply to **Datetime** columns (with or without timezone):
+
+| Accessor | Result | Description |
+|----------|--------|-------------|
+| **`date`** | Date | Date part (year-month-day) |
+| **`time`** | Time | Time part (Polars Time type) |
+| **`year`** | Int32 | Year |
+| **`month`** | Int8 | Month (1–12) |
+| **`week`** | Int8 | Week number |
+| **`day`** | Int8 | Day of month (1–31) |
+| **`dow`** | Int8 | Day of week (1=Monday … 7=Sunday, ISO) |
+| **`month_start`** | Datetime/Date | First day of month at midnight |
+| **`month_end`** | Datetime/Date | Last day of month |
+| **`format["fmt"]`** | String | Format as string (chrono strftime, e.g. `"%Y-%m"`) |
+
+### Date accessors
+
+Apply to **Date** columns:
+
+| Accessor | Result | Description |
+|----------|--------|-------------|
+| **`year`** | Int32 | Year |
+| **`month`** | Int8 | Month (1–12) |
+| **`week`** | Int8 | Week number |
+| **`day`** | Int8 | Day of month |
+| **`dow`** | Int8 | Day of week (1=Monday … 7=Sunday) |
+| **`month_start`** | Date | First day of month |
+| **`month_end`** | Date | Last day of month |
+| **`format["fmt"]`** | String | Format as string (chrono strftime) |
+
+### String accessors
+
+Apply to **String** columns:
+
+| Accessor | Result | Description |
+|----------|--------|-------------|
+| **`len`** | Int32 | Character length |
+| **`upper`** | String | Uppercase |
+| **`lower`** | String | Lowercase |
+| **`starts_with["x"]`** | Boolean | True if string starts with `x` |
+| **`ends_with["x"]`** | Boolean | True if string ends with `x` |
+| **`contains["x"]`** | Boolean | True if string contains `x` |
+
+### Accessor aliases
+
+When you use an accessor on a column, the result is automatically aliased to **`{column}_{accessor}`** (e.g. `timestamp.date` → `timestamp_date`). This avoids duplicate column names and keeps results clear.
+
+### Syntax examples
+
+**Select:**
+
+```
+select event_date: timestamp.date
+select col["Created At"].date, col["Created At"].year
+select name, event_time.time
+select order_date, order_date.month, order_date.dow by order_date.year
+```
+
+**Where (with date literal YYYY.MM.DD, timestamp literal):**
+
+```
+select where created_at.date > other_date_col
+select where dt_col.date > 2021.01.01
+select where ts_col > 2021.01.15T14:30:00.123456
+select where event_ts.month = 12, event_ts.dow = 1
+select where city_name.ends_with["lanta"]
+select where null col1
+select where not null col1
+```
+
+**Select (coalesce, string accessors, format):**
+
+```
+select a: coln^cola^colb
+select name.len, name.upper, dt_col.format["%Y-%m"]
+```
 
 ---
 
@@ -165,14 +255,30 @@ Functions are used for aggregation (typically in **select** with **by**) and for
 | **`max`** | — | Maximum | `select max[amount] by id` |
 | **`count`** | — | Count of non-null values | `select count[id] by status` |
 | **`sum`** | — | Sum | `select sum[amount] by year` |
+| **`first`** | — | First value in group | `select first[value] by group` |
+| **`last`** | — | Last value in group | `select last[value] by group` |
 | **`std`** | `stddev` | Standard deviation | `select std[score] by group` |
 | **`med`** | `median` | Median | `select med[price] by type` |
+| **`len`** | `length` | String length (chars) | `select len[name] by category` |
 
-### Logic function
+### Logic functions
 
 | Function | Description | Example |
 |----------|-------------|---------|
 | **`not`** | Logical negation | `where not[a = b]`, `where not x > 10` |
+| **`null`** | Is null | `where null col1`, `where null[col1]` |
+| **`not null`** | Is not null | `where not null col1` |
+
+### Scalar functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| **`len`** / **`length`** | String length | `select len[name]`, `where len[name] > 5` |
+| **`upper`** | Uppercase string | `select upper[name]`, `where upper[city] = "ATLANTA"` |
+| **`lower`** | Lowercase string | `select lower[name]` |
+| **`abs`** | Absolute value | `select abs[x]` |
+| **`floor`** | Numeric floor | `select floor[price]` |
+| **`ceil`** / **`ceiling`** | Numeric ceiling | `select ceil[score]` |
 
 ---
 
@@ -183,6 +289,10 @@ Functions are used for aggregation (typically in **select** with **by**) and for
 | **Query shape** | `select [cols] [by groups] [where conditions]` |
 | **`:`** | `name : expression` in **select** and **by** |
 | **Spaces in names** | `col["name"]` or `col[identifier]` |
+| **Date/datetime accessors** | `col.date`, `col.time`, `col.year`, `col.month`, `col.week`, `col.day`, `col.dow`, `col.month_start`, `col.month_end`, `col.format["fmt"]` |
+| **String accessors** | `col.len`, `col.upper`, `col.lower`, `col.starts_with["x"]`, `col.ends_with["x"]`, `col.contains["x"]` |
+| **Literals** | Numbers, strings, `YYYY.MM.DD`, `YYYY.MM.DDTHH:MM:SS[.fff...]` |
+| **Coalesce** | `a^b^c` = first non-null of a, b, c |
 | **Expressions** | Right‑to‑left; right side binds tighter; use **`()`** to override |
 | **Where `,`** | AND between top‑level conditions |
 | **Where `\|`** | OR within one top‑level condition |

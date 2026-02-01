@@ -1,10 +1,13 @@
-Datui is an interactive terminal application for exploring and analyzing data.
+Datui is a terminal application for exploring and analyzing data.
 
-Features include:
+Full documentation: https://derekwisong.github.io/datui/
 
-  - Support for hive-partitioned datasets
-  - Filtering, sorting, querying
-  - Charting
-  - Analysis (correlation matrix, distribution analysis, etc.)
-  - Reshaping data with pivot and melt
-  - Export to supported formats
+Use Datui to:
+
+- Read tabular data from many formats
+- Work efficiently with large datasets (hive partitioning, lazy evaluation)
+- Export data to file
+- Create charts in the terminal and export them to a file
+- Save your filter, sort, and query to a template for reuse
+- See relationships with a correlation matrix
+- And more

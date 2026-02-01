@@ -18,7 +18,7 @@ use ratatui::{
 
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
-use crate::query::parse_query;
+use crate::query::{parse_query, sanitize_query_error};
 use crate::{CompressionFormat, OpenOptions};
 use polars::lazy::frame::pivot::pivot_stable;
 use std::io::{BufReader, Read};
@@ -1730,6 +1730,8 @@ impl DataTableState {
             self.start_row = 0;
             self.buffered_start_row = 0;
             self.buffered_end_row = 0;
+            self.df = None;
+            self.locked_df = None;
             return;
         }
 
@@ -1758,6 +1760,9 @@ impl DataTableState {
             if !needs_expansion_back && !needs_expansion_forward {
                 // Rebuild displayed columns from current buffer (termcol_index may have changed via scroll_left/scroll_right)
                 self.load_buffer(self.buffered_start_row, self.buffered_end_row);
+                if self.table_state.selected().is_none() {
+                    self.table_state.select(Some(0));
+                }
                 return;
             }
 
@@ -1782,6 +1787,9 @@ impl DataTableState {
             self.load_buffer(new_buffer_start, new_buffer_end);
         } else {
             // Outside buffer: either extend the previous buffer (so it grows) or load a fresh small window.
+            // Only extend when the view is "close" to the existing buffer (e.g. user paged down a bit).
+            // A big jump (e.g. jump to end) should load just a window around the new view, not extend
+            // the buffer across the whole dataset.
             let mut new_buffer_start;
             let mut new_buffer_end;
 
@@ -1789,14 +1797,39 @@ impl DataTableState {
             let scrolled_past_end = had_buffer && view_start >= self.buffered_end_row;
             let scrolled_past_start = had_buffer && view_end <= self.buffered_start_row;
 
-            if scrolled_past_end {
-                // Extend forward: keep buffer start, extend end so buffer grows.
+            let extend_forward_ok = scrolled_past_end
+                && (view_start - self.buffered_end_row) <= self.pages_lookahead * page_rows;
+            let extend_backward_ok = scrolled_past_start
+                && (self.buffered_start_row - view_end) <= self.pages_lookback * page_rows;
+
+            if extend_forward_ok {
+                // View is just a few pages past buffer end; extend forward.
                 new_buffer_start = self.buffered_start_row;
                 new_buffer_end = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
-            } else if scrolled_past_start {
-                // Extend backward: keep buffer end, extend start.
+            } else if extend_backward_ok {
+                // View is just a few pages before buffer start; extend backward.
                 new_buffer_start = view_start.saturating_sub(self.pages_lookback * page_rows);
                 new_buffer_end = self.buffered_end_row;
+            } else if scrolled_past_end || scrolled_past_start {
+                // Big jump (e.g. jump to end or jump to start): load a fresh window around the view.
+                new_buffer_start = view_start.saturating_sub(self.pages_lookback * page_rows);
+                new_buffer_end = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+                let min_initial_len = (1 + self.pages_lookahead + self.pages_lookback) * page_rows;
+                let current_len = new_buffer_end.saturating_sub(new_buffer_start);
+                if current_len < min_initial_len {
+                    let need = min_initial_len.saturating_sub(current_len);
+                    let can_extend_end = self.num_rows.saturating_sub(new_buffer_end);
+                    let can_extend_start = new_buffer_start;
+                    if can_extend_end >= need {
+                        new_buffer_end = (new_buffer_end + need).min(self.num_rows);
+                    } else if can_extend_start >= need {
+                        new_buffer_start = new_buffer_start.saturating_sub(need);
+                    } else {
+                        new_buffer_end = (new_buffer_end + can_extend_end).min(self.num_rows);
+                        new_buffer_start =
+                            new_buffer_start.saturating_sub(need.saturating_sub(can_extend_end));
+                    }
+                }
             } else {
                 // No buffer yet or big jump: load a fresh small window (view ± a few pages).
                 new_buffer_start = view_start.saturating_sub(self.pages_lookback * page_rows);
@@ -1831,6 +1864,9 @@ impl DataTableState {
         }
 
         self.slice_from_buffer();
+        if self.table_state.selected().is_none() {
+            self.table_state.select(Some(0));
+        }
     }
 
     /// Invalidate num_rows cache when lf is mutated.
@@ -2678,7 +2714,9 @@ impl DataTableState {
                         let schema = match lf.clone().collect_schema() {
                             Ok(s) => s,
                             Err(e) => {
-                                self.error = Some(e);
+                                self.error = Some(PolarsError::ComputeError(
+                                    sanitize_query_error(&e.to_string()).into(),
+                                ));
                                 return; // Don't modify state on error
                             }
                         };
@@ -2705,7 +2743,9 @@ impl DataTableState {
                 let schema = match lf.collect_schema() {
                     Ok(schema) => schema,
                     Err(e) => {
-                        self.error = Some(e);
+                        self.error = Some(PolarsError::ComputeError(
+                            sanitize_query_error(&e.to_string()).into(),
+                        ));
                         return;
                     }
                 };
@@ -2760,8 +2800,8 @@ impl DataTableState {
                 }
             }
             Err(e) => {
-                // Only set error, don't modify any state
-                self.error = Some(PolarsError::ComputeError(e.into()));
+                // Only set error, don't modify any state (parse errors are already user-facing)
+                self.error = Some(PolarsError::ComputeError(sanitize_query_error(&e).into()));
             }
         }
     }
@@ -2880,7 +2920,7 @@ impl DataTable {
             let overflows = (used_width + max_len) > area.width;
 
             if overflows && col_data.dtype() == &DataType::String {
-                let visible_width = area.width - used_width;
+                let visible_width = area.width.saturating_sub(used_width);
                 visible_columns += 1;
                 widths[col_index] = visible_width;
                 break;
@@ -3252,7 +3292,54 @@ impl StatefulWidget for DataTable {
                     );
                 }
             }
+        } else if !state.column_order.is_empty() {
+            // Empty result (0 rows) but we have a schema - show empty table with header, no rows
+            let empty_columns: Vec<_> = state
+                .column_order
+                .iter()
+                .map(|name| Series::new(name.as_str().into(), Vec::<String>::new()).into())
+                .collect();
+            if let Ok(empty_df) = DataFrame::new(empty_columns) {
+                if state.row_numbers {
+                    let row_num_area = Rect {
+                        x: area.x,
+                        y: area.y,
+                        width: row_num_width,
+                        height: area.height,
+                    };
+                    self.render_row_numbers(
+                        row_num_area,
+                        buf,
+                        RowNumbersParams {
+                            start_row: 0,
+                            visible_rows: state.visible_rows,
+                            num_rows: 0,
+                            row_start_index: state.row_start_index,
+                            selected_row: None,
+                        },
+                    );
+                    let data_area = Rect {
+                        x: area.x + row_num_width,
+                        y: area.y,
+                        width: area.width.saturating_sub(row_num_width),
+                        height: area.height,
+                    };
+                    self.render_dataframe(
+                        &empty_df,
+                        data_area,
+                        buf,
+                        &mut state.table_state,
+                        false,
+                        0,
+                    );
+                } else {
+                    self.render_dataframe(&empty_df, area, buf, &mut state.table_state, false, 0);
+                }
+            } else {
+                Paragraph::new("No data").render(area, buf);
+            }
         } else {
+            // Truly empty: no schema, not loaded, or blank file
             Paragraph::new("No data").render(area, buf);
         }
     }
@@ -3424,6 +3511,101 @@ mod tests {
         assert_eq!(
             df.column("b").unwrap().get(0).unwrap(),
             AnyValue::String("y")
+        );
+    }
+
+    #[test]
+    fn test_query_date_accessors() {
+        use chrono::NaiveDate;
+        let df = df!(
+            "event_date" => [
+                NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 6, 20).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 12, 31).unwrap(),
+            ],
+            "name" => &["a", "b", "c"],
+        )
+        .unwrap();
+        let lf = df.lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+
+        // Select with date accessors
+        state.query("select name, year: event_date.year, month: event_date.month".to_string());
+        assert!(
+            state.error.is_none(),
+            "query should succeed: {:?}",
+            state.error
+        );
+        let df = state.lf.clone().collect().unwrap();
+        assert_eq!(df.shape(), (3, 3));
+        assert_eq!(
+            df.column("year").unwrap().get(0).unwrap(),
+            AnyValue::Int32(2024)
+        );
+        assert_eq!(
+            df.column("month").unwrap().get(0).unwrap(),
+            AnyValue::Int8(1)
+        );
+        assert_eq!(
+            df.column("month").unwrap().get(1).unwrap(),
+            AnyValue::Int8(6)
+        );
+
+        // Filter with date accessor
+        state.query("select name, event_date where event_date.month = 12".to_string());
+        assert!(
+            state.error.is_none(),
+            "filter should succeed: {:?}",
+            state.error
+        );
+        let df = state.lf.clone().collect().unwrap();
+        assert_eq!(df.height(), 1);
+        assert_eq!(
+            df.column("name").unwrap().get(0).unwrap(),
+            AnyValue::String("c")
+        );
+
+        // Filter with YYYY.MM.DD date literal
+        state.query("select name, event_date where event_date.date > 2024.06.15".to_string());
+        assert!(
+            state.error.is_none(),
+            "date literal filter should succeed: {:?}",
+            state.error
+        );
+        let df = state.lf.clone().collect().unwrap();
+        assert_eq!(
+            df.height(),
+            2,
+            "2024-06-20 and 2024-12-31 are after 2024-06-15"
+        );
+
+        // String accessors: upper, lower, len, ends_with
+        state.query(
+            "select name, upper_name: name.upper, name_len: name.len where name.ends_with[\"c\"]"
+                .to_string(),
+        );
+        assert!(
+            state.error.is_none(),
+            "string accessors should succeed: {:?}",
+            state.error
+        );
+        let df = state.lf.clone().collect().unwrap();
+        assert_eq!(df.height(), 1, "only 'c' ends with 'c'");
+        assert_eq!(
+            df.column("upper_name").unwrap().get(0).unwrap(),
+            AnyValue::String("C")
+        );
+
+        // Query that returns 0 rows: df and locked_df must be cleared for correct empty-table render
+        state.query("select where event_date.date = 2020.01.01".to_string());
+        assert!(state.error.is_none());
+        assert_eq!(state.num_rows, 0);
+        state.visible_rows = 10;
+        state.collect();
+        assert!(state.df.is_none(), "df must be cleared when num_rows is 0");
+        assert!(
+            state.locked_df.is_none(),
+            "locked_df must be cleared when num_rows is 0"
         );
     }
 

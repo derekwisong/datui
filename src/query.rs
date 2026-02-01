@@ -1,3 +1,4 @@
+use polars::prelude::StrptimeOptions;
 use polars::prelude::*;
 use std::ops::{Add, Div, Mul, Sub};
 
@@ -6,6 +7,14 @@ enum Token {
     Identifier(String),
     Number(f64),
     String(String),
+    /// Date literal in YYYY.MM.DD format, stored as ISO "YYYY-MM-DD" for Polars
+    DateLiteral(String),
+    /// Timestamp literal YYYY.MM.DDTHH:MM:SS[.fff...]
+    TimestampLiteral {
+        iso: String,
+        format_str: String,
+        time_unit: TimeUnit,
+    },
     Op(String),
     LParen,
     RParen,
@@ -14,9 +23,79 @@ enum Token {
     Comma,
     Colon,
     Pipe,
+    Dot,
     Select,
     Where,
     By,
+}
+
+/// Parse YYYY.MM.DDTHH:MM:SS[.fff...] timestamp. Consumes from chars. Returns (iso_string, format, time_unit) or None.
+fn parse_timestamp_literal(
+    date_part: &str,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> Option<(String, String, TimeUnit)> {
+    if chars.peek() != Some(&'T') {
+        return None;
+    }
+    chars.next(); // consume 'T'
+    let mut time_part = String::new();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() || c == ':' || c == '.' {
+            time_part.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    let parts: Vec<&str> = time_part.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let (h, m, s) = (parts[0], parts[1], parts[2]);
+    if h.len() != 2 || m.len() != 2 || s.len() < 2 {
+        return None;
+    }
+    let (sec_part, frac) = match s.split_once('.') {
+        Some((a, f)) => (a, f),
+        None => (s, ""),
+    };
+    let (time_unit, format_str) = match frac.len() {
+        0 => (TimeUnit::Microseconds, "%Y-%m-%dT%H:%M:%S".to_string()),
+        1..=3 => (TimeUnit::Milliseconds, "%Y-%m-%dT%H:%M:%S%.3f".to_string()),
+        4..=6 => (TimeUnit::Microseconds, "%Y-%m-%dT%H:%M:%S%.6f".to_string()),
+        7..=9 => (TimeUnit::Nanoseconds, "%Y-%m-%dT%H:%M:%S%.9f".to_string()),
+        _ => (TimeUnit::Nanoseconds, "%Y-%m-%dT%H:%M:%S%.9f".to_string()),
+    };
+    let iso_date = parse_date_literal(date_part)?;
+    let frac_padded = match time_unit {
+        TimeUnit::Milliseconds => format!("{:0<3}", frac),
+        TimeUnit::Microseconds => format!("{:0<6}", frac),
+        TimeUnit::Nanoseconds => format!("{:0<9}", frac),
+    };
+    let iso = if frac.is_empty() {
+        format!("{}T{}:{}:{}", iso_date, h, m, sec_part)
+    } else {
+        format!("{}T{}:{}:{}.{}", iso_date, h, m, sec_part, frac_padded)
+    };
+    Some((iso, format_str, time_unit))
+}
+
+/// Parse YYYY.MM.DD date literal (e.g. 2021.01.01). Returns ISO string "YYYY-MM-DD" or None.
+fn parse_date_literal(s: &str) -> Option<String> {
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let year: u32 = parts[0].parse().ok()?;
+    let month: u32 = parts[1].parse().ok()?;
+    let day: u32 = parts[2].parse().ok()?;
+    if parts[0].len() != 4 || !(1000..=9999).contains(&year) {
+        return None;
+    }
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(format!("{:04}-{:02}-{:02}", year, month, day))
 }
 
 fn tokenize(input: &str) -> Result<Vec<Token>, String> {
@@ -110,6 +189,10 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 }
                 tokens.push(Token::String(string_val));
             }
+            '^' => {
+                tokens.push(Token::Op("^".to_string()));
+                chars.next();
+            }
             '+' | '-' | '*' | '%' | '=' | '<' | '>' | '!' => {
                 let mut op = c.to_string();
                 chars.next();
@@ -124,7 +207,28 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 }
                 tokens.push(Token::Op(op));
             }
-            '0'..='9' | '.' => {
+            '.' => {
+                chars.next();
+                if chars.peek().is_some_and(|nc| nc.is_ascii_digit()) {
+                    let mut num_str = String::from('.');
+                    while let Some(&nc) = chars.peek() {
+                        if nc.is_ascii_digit() {
+                            num_str.push(nc);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Ok(n) = num_str.parse::<f64>() {
+                        tokens.push(Token::Number(n));
+                    } else {
+                        return Err(format!("Invalid number: {}", num_str));
+                    }
+                } else {
+                    tokens.push(Token::Dot);
+                }
+            }
+            '0'..='9' => {
                 let mut num_str = String::new();
                 while let Some(&nc) = chars.peek() {
                     if nc.is_ascii_digit() || nc == '.' {
@@ -134,7 +238,25 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                         break;
                     }
                 }
-                if let Ok(n) = num_str.parse::<f64>() {
+                // Check for YYYY.MM.DDTHH:MM:SS timestamp literal (peek for 'T' before consuming)
+                let is_timestamp =
+                    parse_date_literal(&num_str).is_some() && chars.peek() == Some(&'T');
+                if is_timestamp {
+                    if let Some((iso, format_str, time_unit)) =
+                        parse_timestamp_literal(&num_str, &mut chars)
+                    {
+                        tokens.push(Token::TimestampLiteral {
+                            iso,
+                            format_str,
+                            time_unit,
+                        });
+                        continue;
+                    }
+                }
+                // Check for YYYY.MM.DD date literal
+                if let Some(iso) = parse_date_literal(&num_str) {
+                    tokens.push(Token::DateLiteral(iso));
+                } else if let Ok(n) = num_str.parse::<f64>() {
                     tokens.push(Token::Number(n));
                 } else {
                     return Err(format!("Invalid number: {}", num_str));
@@ -195,6 +317,7 @@ fn apply_op(left: Expr, op: &str, right: Expr) -> Result<Expr, String> {
         "-" => Ok(left.sub(right)),
         "*" => Ok(left.mul(right)),
         "%" => Ok(left.div(right)),
+        "^" => Ok(coalesce(&[left, right])),
         "=" => Ok(left.eq(right)),
         "<" => Ok(left.lt(right)),
         ">" => Ok(left.gt(right)),
@@ -222,11 +345,13 @@ fn parse_agg_function(name: &str, args: &[Token]) -> Result<Expr, String> {
         "std" | "stddev" => Ok(expr.std(1)),
         "med" | "median" => Ok(expr.median()),
         "sum" => Ok(expr.sum()),
+        "first" => Ok(expr.first()),
+        "last" => Ok(expr.last()),
         _ => Err(format!("Unknown aggregation function: {}", name)),
     }
 }
 
-// Parse function like not[a=b]
+// Parse function like not[a=b], null[col], len[x], upper[x], etc.
 fn parse_function(name: &str, args: &[Token]) -> Result<Expr, String> {
     if args.is_empty() {
         return Err(format!("Function {} requires an argument", name));
@@ -234,8 +359,134 @@ fn parse_function(name: &str, args: &[Token]) -> Result<Expr, String> {
     let expr = parse_expr(args)?;
     match name.to_lowercase().as_str() {
         "not" => Ok(expr.not()),
+        "null" => Ok(expr.is_null()),
+        "len" | "length" => Ok(expr.str().len_chars()),
+        "upper" => Ok(expr.str().to_uppercase()),
+        "lower" => Ok(expr.str().to_lowercase()),
+        "abs" => Ok(expr.abs()),
+        "floor" => Ok(expr.floor()),
+        "ceil" | "ceiling" => Ok(expr.ceil()),
         _ => Err(format!("Unknown function: {}", name)),
     }
+}
+
+/// Apply a date/datetime accessor to an expression.
+fn apply_dt_accessor(expr: Expr, accessor: &str, _arg: Option<&str>) -> Result<Expr, String> {
+    let dt = expr.dt();
+    match accessor.to_lowercase().as_str() {
+        "date" => Ok(dt.date()),
+        "time" => Ok(dt.time()),
+        "year" => Ok(dt.year()),
+        "month" => Ok(dt.month()),
+        "week" => Ok(dt.week()),
+        "day" => Ok(dt.day()),
+        "dow" => Ok(dt.weekday()),
+        "weekday" => Ok(dt.weekday()),
+        "month_start" => Ok(dt.month_start()),
+        "month_end" => Ok(dt.month_end()),
+        "format" => {
+            let fmt = _arg.ok_or("format accessor requires an argument, e.g. .format[\"%Y-%m\"]")?;
+            Ok(dt.to_string(fmt))
+        }
+        _ => Err(format!(
+            "Unknown date/time accessor: '{}'. Valid: date, time, year, month, week, day, dow, month_start, month_end, format",
+            accessor
+        )),
+    }
+}
+
+/// Apply a string accessor or method to an expression.
+fn apply_str_accessor(expr: Expr, accessor: &str, arg: Option<&str>) -> Result<Expr, String> {
+    let s = expr.str();
+    match accessor.to_lowercase().as_str() {
+        "len" | "length" => Ok(s.len_chars()),
+        "upper" => Ok(s.to_uppercase()),
+        "lower" => Ok(s.to_lowercase()),
+        "starts_with" => {
+            let pat = arg.ok_or("starts_with requires an argument, e.g. .starts_with[\"x\"]")?;
+            Ok(s.starts_with(lit(pat)))
+        }
+        "ends_with" => {
+            let pat = arg.ok_or("ends_with requires an argument, e.g. .ends_with[\"x\"]")?;
+            Ok(s.ends_with(lit(pat)))
+        }
+        "contains" => {
+            let pat = arg.ok_or("contains requires an argument, e.g. .contains[\"x\"]")?;
+            Ok(s.contains_literal(lit(pat)))
+        }
+        _ => Err(format!(
+            "Unknown string accessor: '{}'. Valid: len, upper, lower, starts_with, ends_with, contains",
+            accessor
+        )),
+    }
+}
+
+/// Apply accessor (date, string, or string method). Tries date first, then string.
+fn apply_accessor(expr: Expr, accessor: &str, arg: Option<&str>) -> Result<Expr, String> {
+    if let Ok(e) = apply_dt_accessor(expr.clone(), accessor, arg) {
+        return Ok(e);
+    }
+    if let Ok(e) = apply_str_accessor(expr, accessor, arg) {
+        return Ok(e);
+    }
+    Err(format!(
+        "Unknown accessor: '{}'. Valid date: date, time, year, month, week, day, dow, month_start, month_end, format. Valid string: len, upper, lower, starts_with, ends_with, contains",
+        accessor
+    ))
+}
+
+/// Parse optional dot accessors from remaining tokens. Returns (expr_with_accessors, remaining).
+/// When base_name is Some, each accessor result is aliased to {base}_{accessor} (or {base}_{acc1}_{acc2} for chained)
+/// to avoid duplicate column names.
+fn parse_accessors<'a>(
+    mut expr: Expr,
+    mut tokens: &'a [Token],
+    base_name: Option<&str>,
+) -> Result<(Expr, &'a [Token]), String> {
+    let mut alias_suffix = String::new();
+    while tokens.len() >= 2 {
+        if let (Token::Dot, Token::Identifier(accessor)) = (&tokens[0], &tokens[1]) {
+            let (arg, consumed) = if tokens.len() >= 5
+                && tokens[2] == Token::LBracket
+                && matches!(tokens[3], Token::String(_) | Token::Identifier(_))
+                && tokens[4] == Token::RBracket
+            {
+                // accessor["arg"] or accessor[arg]
+                let arg = match &tokens[3] {
+                    Token::String(s) => s.clone(),
+                    Token::Identifier(id) => id.clone(),
+                    _ => {
+                        return Err(
+                            "Bracket accessor requires string or identifier argument".to_string()
+                        )
+                    }
+                };
+                (Some(arg), 5)
+            } else {
+                (None, 2)
+            };
+            expr = apply_accessor(expr, accessor, arg.as_deref())?;
+            if !alias_suffix.is_empty() {
+                alias_suffix.push('_');
+            }
+            alias_suffix.push_str(accessor);
+            if let Some(ref a) = arg {
+                alias_suffix.push('_');
+                alias_suffix.push_str(a);
+            }
+            tokens = &tokens[consumed..];
+        } else {
+            break;
+        }
+    }
+    if !alias_suffix.is_empty() {
+        let alias = match base_name {
+            Some(name) => format!("{}_{}", name, alias_suffix),
+            None => alias_suffix,
+        };
+        expr = expr.alias(&alias);
+    }
+    Ok((expr, tokens))
 }
 
 // Check if an identifier is a known function name
@@ -253,7 +504,18 @@ fn is_function_name(name: &str) -> bool {
             | "med"
             | "median"
             | "sum"
+            | "first"
+            | "last"
+            | "len"
+            | "length"
             | "not"
+            | "null"
+            | "upper"
+            | "lower"
+            | "abs"
+            | "floor"
+            | "ceil"
+            | "ceiling"
     )
 }
 
@@ -289,7 +551,9 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
                     Token::Identifier(id) => id.clone(),
                     _ => return Err("col[] must contain a string or identifier".to_string()),
                 };
-                Ok((col(&col_name), &tokens[i..]))
+                let expr = col(&col_name);
+                let (expr, remaining) = parse_accessors(expr, &tokens[i..], Some(&col_name))?;
+                Ok((expr, remaining))
             }
             // Check if it's a function call (using square brackets)
             else if tokens.len() > 1 && tokens[1] == Token::LBracket {
@@ -310,20 +574,49 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
                 let args = &tokens[2..i - 1];
                 // Try aggregation function first, then regular function
                 match parse_agg_function(name, args) {
-                    Ok(expr) => Ok((expr, &tokens[i..])),
+                    Ok(expr) => {
+                        let (expr, remaining) = parse_accessors(expr, &tokens[i..], None)?;
+                        Ok((expr, remaining))
+                    }
                     Err(_) => {
-                        // Try regular function (like not)
-                        parse_function(name, args).map(|expr| (expr, &tokens[i..]))
+                        let expr = parse_function(name, args)?;
+                        let (expr, remaining) = parse_accessors(expr, &tokens[i..], None)?;
+                        Ok((expr, remaining))
                     }
                 }
             } else {
                 // Regular column reference
                 // (Function calls without brackets are handled in parse_expr)
-                Ok((col(name), &tokens[1..]))
+                let expr = col(name);
+                let (expr, remaining) = parse_accessors(expr, &tokens[1..], Some(name))?;
+                Ok((expr, remaining))
             }
         }
-        Token::Number(n) => Ok((lit(*n), &tokens[1..])),
-        Token::String(s) => Ok((lit(s.as_str()), &tokens[1..])),
+        Token::Number(n) => Ok((lit(*n), &tokens[1..])), // Numbers don't support accessors
+        Token::String(s) => Ok((lit(s.as_str()), &tokens[1..])), // Strings don't support accessors
+        Token::DateLiteral(iso) => {
+            let opts = StrptimeOptions {
+                format: Some("%Y-%m-%d".into()),
+                ..Default::default()
+            };
+            Ok((lit(iso.as_str()).str().to_date(opts), &tokens[1..]))
+        }
+        Token::TimestampLiteral {
+            iso,
+            format_str,
+            time_unit,
+        } => {
+            let opts = StrptimeOptions {
+                format: Some(format_str.as_str().into()),
+                ..Default::default()
+            };
+            Ok((
+                lit(iso.as_str())
+                    .str()
+                    .to_datetime(Some(*time_unit), None, opts, lit("raise")),
+                &tokens[1..],
+            ))
+        }
         Token::LParen => {
             let mut depth = 1;
             let mut i = 1;
@@ -339,7 +632,8 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
                 return Err("Unmatched parenthesis".to_string());
             }
             let inner = parse_expr(&tokens[1..i - 1])?;
-            Ok((inner, &tokens[i..]))
+            let (expr, remaining) = parse_accessors(inner, &tokens[i..], None)?;
+            Ok((expr, remaining))
         }
         // Square brackets are only for function calls, not grouping
         // Parentheses are used for grouping
@@ -374,7 +668,16 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
                 "std" | "stddev" => return Ok(expr.std(1)),
                 "med" | "median" => return Ok(expr.median()),
                 "sum" => return Ok(expr.sum()),
+                "first" => return Ok(expr.first()),
+                "last" => return Ok(expr.last()),
+                "len" | "length" => return Ok(expr.str().len_chars()),
                 "not" => return Ok(expr.not()),
+                "null" => return Ok(expr.is_null()),
+                "upper" => return Ok(expr.str().to_uppercase()),
+                "lower" => return Ok(expr.str().to_lowercase()),
+                "abs" => return Ok(expr.abs()),
+                "floor" => return Ok(expr.floor()),
+                "ceil" | "ceiling" => return Ok(expr.ceil()),
                 _ => {}
             }
         }
@@ -429,6 +732,29 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
 }
 
 type ParseQueryResult = Result<(Vec<Expr>, Option<Expr>, Vec<Expr>, Vec<String>), String>;
+
+/// Convert Polars-specific error messages to user-friendly query errors.
+pub fn sanitize_query_error(msg: &str) -> String {
+    let msg_lower = msg.to_lowercase();
+    if msg_lower.contains("duplicate")
+        && (msg_lower.contains("output name") || msg_lower.contains("projection"))
+    {
+        let name = msg
+            .split('\'')
+            .nth(1)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "column".to_string());
+        return format!(
+            "Duplicate column name '{}' in result. Use aliases to rename columns, e.g. `select my_date: timestamp.date`",
+            name
+        );
+    }
+    if msg_lower.contains(".alias(") || msg_lower.contains("try renaming") {
+        return "Duplicate column names in result. Use aliases to rename columns, e.g. `select my_date: timestamp.date`"
+            .to_string();
+    }
+    msg.to_string()
+}
 
 pub fn parse_query(query: &str) -> ParseQueryResult {
     // Empty query is equivalent to "select" - return all columns with no filter or grouping
@@ -970,5 +1296,237 @@ mod tests {
         // Should parse as c > (c % n)
         let expected = col("c").gt(col("c").div(col("n")));
         assert_eq!(filter, Some(expected));
+    }
+
+    // --- Date/datetime accessor tests ---
+
+    #[test]
+    fn test_tokenize_dot_accessor() {
+        let tokens = tokenize("foo.date").unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier("foo".to_string()),
+                Token::Dot,
+                Token::Identifier("date".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tokenize_decimal_number() {
+        let tokens = tokenize(".5").unwrap();
+        assert_eq!(tokens, vec![Token::Number(0.5)]);
+    }
+
+    #[test]
+    fn test_parse_simple_date_accessor() {
+        let tokens = tokenize("timestamp.date").unwrap();
+        let expr = parse_expr(&tokens).unwrap();
+        assert_eq!(expr, col("timestamp").dt().date().alias("timestamp_date"));
+    }
+
+    #[test]
+    fn test_parse_col_with_date_accessor() {
+        let tokens = tokenize("col[\"Created At\"].year").unwrap();
+        let expr = parse_expr(&tokens).unwrap();
+        assert_eq!(expr, col("Created At").dt().year().alias("Created At_year"));
+    }
+
+    #[test]
+    fn test_parse_chained_accessors() {
+        let tokens = tokenize("dt_col.date.year").unwrap();
+        let expr = parse_expr(&tokens).unwrap();
+        assert_eq!(
+            expr,
+            col("dt_col")
+                .dt()
+                .date()
+                .dt()
+                .year()
+                .alias("dt_col_date_year")
+        );
+    }
+
+    #[test]
+    fn test_parse_query_select_with_date_accessor() {
+        let query = "select event_date: timestamp.date";
+        let (cols, _, _, _) = parse_query(query).unwrap();
+        assert_eq!(cols.len(), 1);
+        assert_eq!(
+            cols[0],
+            col("timestamp")
+                .dt()
+                .date()
+                .alias("timestamp_date")
+                .alias("event_date")
+        );
+    }
+
+    #[test]
+    fn test_parse_query_select_col_with_accessor() {
+        let query = "select col[\"Event Time\"].date, col[\"Event Time\"].year";
+        let (cols, _, _, _) = parse_query(query).unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(
+            cols[0],
+            col("Event Time").dt().date().alias("Event Time_date")
+        );
+        assert_eq!(
+            cols[1],
+            col("Event Time").dt().year().alias("Event Time_year")
+        );
+    }
+
+    #[test]
+    fn test_parse_query_where_with_date_accessor() {
+        let query = "select where created_at.month = 12";
+        let (_, filter, _, _) = parse_query(query).unwrap();
+        assert_eq!(
+            filter,
+            Some(
+                col("created_at")
+                    .dt()
+                    .month()
+                    .alias("created_at_month")
+                    .eq(lit(12.0))
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_query_where_dow() {
+        let query = "select where event_ts.dow = 1";
+        let (_, filter, _, _) = parse_query(query).unwrap();
+        assert_eq!(
+            filter,
+            Some(
+                col("event_ts")
+                    .dt()
+                    .weekday()
+                    .alias("event_ts_dow")
+                    .eq(lit(1.0))
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_all_accessors() {
+        let accessors = [
+            "date",
+            "time",
+            "year",
+            "month",
+            "week",
+            "day",
+            "dow",
+            "month_start",
+            "month_end",
+        ];
+        for accessor in accessors {
+            let query = format!("select x.{}", accessor);
+            let result = parse_query(&query);
+            assert!(
+                result.is_ok(),
+                "Accessor '{}' should parse: {:?}",
+                accessor,
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_unknown_accessor() {
+        let query = "select x.nosuchaccessor";
+        let result = parse_query(query);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Unknown accessor"));
+        assert!(err.contains("nosuchaccessor"));
+    }
+
+    #[test]
+    fn test_parse_date_literal() {
+        let tokens = tokenize("2021.01.01").unwrap();
+        assert_eq!(tokens, vec![Token::DateLiteral("2021-01-01".to_string())]);
+    }
+
+    #[test]
+    fn test_parse_query_where_date_literal() {
+        let query = "select where dt_col.date > 2021.01.01";
+        let (_, filter, _, _) = parse_query(query).unwrap();
+        assert!(filter.is_some());
+        // Verify the filter parses without error (date literal 2021.01.01 -> ISO 2021-01-01)
+    }
+
+    #[test]
+    fn test_number_not_parsed_as_date() {
+        let tokens = tokenize("2.5").unwrap();
+        assert_eq!(tokens, vec![Token::Number(2.5)]);
+    }
+
+    #[test]
+    fn test_sanitize_duplicate_column_error() {
+        let polars_msg = "duplicate: projections contained duplicate output name 'timestamp'. It's possible that multiple expressions are returning the same default column name. If this is the case, try renaming the columns with `.alias(\"new_name\")` to avoid duplicate column names.";
+        let sanitized = sanitize_query_error(polars_msg);
+        assert!(sanitized.contains("Duplicate column name"));
+        assert!(sanitized.contains("timestamp"));
+        assert!(sanitized.contains("my_date: timestamp.date"));
+        assert!(!sanitized.contains(".alias("));
+    }
+
+    #[test]
+    fn test_parse_timestamp_literal() {
+        let tokens = tokenize("2021.01.15T14:30:00.123456").unwrap();
+        assert!(matches!(tokens[0], Token::TimestampLiteral { .. }));
+    }
+
+    #[test]
+    fn test_parse_null_and_not_null() {
+        let (_, f1, _, _) = parse_query("select where null col1").unwrap();
+        assert!(f1.is_some());
+        let (_, f2, _, _) = parse_query("select where not null col1").unwrap();
+        assert!(f2.is_some());
+    }
+
+    #[test]
+    fn test_parse_coalesce() {
+        let (cols, _, _, _) = parse_query("select a: coln^cola^colb").unwrap();
+        assert_eq!(cols.len(), 1);
+        // coalesce(coln, coalesce(cola, colb)) - parsing succeeds
+    }
+
+    #[test]
+    fn test_parse_first_last_aggregation() {
+        let (cols, _, _, _) = parse_query("select first[value], last[value] by group").unwrap();
+        assert_eq!(cols.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_string_accessors() {
+        let (_, filter, _, _) = parse_query("select where city_name.ends_with[\"lanta\"]").unwrap();
+        assert!(filter.is_some());
+        let (cols, _, _, _) = parse_query("select name.len, name.upper").unwrap();
+        assert_eq!(cols.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_format_accessor() {
+        let tokens = tokenize("dt_col.format[\"%Y-%m\"]").unwrap();
+        let expr = parse_expr(&tokens).unwrap();
+        // dt_col.format["%Y-%m"] parses to dt.to_string - verify we got an expr
+        assert!(!format!("{:?}", expr).is_empty());
+    }
+
+    #[test]
+    fn test_parse_by_with_date_accessor() {
+        let query = "select order_date, count: count id by order_date.year";
+        let (cols, _, group_by_cols, _) = parse_query(query).unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(group_by_cols.len(), 1);
+        assert_eq!(
+            group_by_cols[0],
+            col("order_date").dt().year().alias("order_date_year")
+        );
     }
 }

@@ -308,6 +308,7 @@ pub struct DataTableInfo<'a> {
     pub modal: &'a mut InfoModal,
     pub border_color: ratatui::style::Color,
     pub active_color: ratatui::style::Color,
+    pub primary_color: ratatui::style::Color,
 }
 
 impl<'a> DataTableInfo<'a> {
@@ -317,6 +318,7 @@ impl<'a> DataTableInfo<'a> {
         modal: &'a mut InfoModal,
         border_color: ratatui::style::Color,
         active_color: ratatui::style::Color,
+        primary_color: ratatui::style::Color,
     ) -> Self {
         Self {
             state,
@@ -324,6 +326,7 @@ impl<'a> DataTableInfo<'a> {
             modal,
             border_color,
             active_color,
+            primary_color,
         }
     }
 
@@ -526,7 +529,7 @@ impl<'a> DataTableInfo<'a> {
             let ratio = (buf_rows as f64 / max_rows as f64).min(1.0);
             let label = format!("{} / {}", format_int(buf_rows), format_int(max_rows));
             Gauge::default()
-                .gauge_style(Style::default().fg(self.active_color))
+                .gauge_style(Style::default().fg(self.primary_color))
                 .ratio(ratio)
                 .label(Span::raw(label))
                 .render(row_chunks[1], buf);
@@ -562,7 +565,7 @@ impl<'a> DataTableInfo<'a> {
                 None => "—".to_string(),
             };
             Gauge::default()
-                .gauge_style(Style::default().fg(self.active_color))
+                .gauge_style(Style::default().fg(self.primary_color))
                 .ratio(ratio)
                 .label(Span::raw(label))
                 .render(mb_chunks[1], buf);

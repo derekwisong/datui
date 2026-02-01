@@ -16,9 +16,10 @@ use ratatui::{
     },
 };
 
+use crate::error_display::user_message_from_polars;
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
-use crate::query::{parse_query, sanitize_query_error};
+use crate::query::parse_query;
 use crate::{CompressionFormat, OpenOptions};
 use polars::lazy::frame::pivot::pivot_stable;
 use std::io::{BufReader, Read};
@@ -1966,7 +1967,9 @@ impl DataTableState {
                 match self.format_grouped_dataframe(locked_df) {
                     Ok(formatted_df) => Some(formatted_df),
                     Err(e) => {
-                        self.error = Some(PolarsError::ComputeError(e.to_string().into()));
+                        self.error = Some(PolarsError::ComputeError(
+                            crate::error_display::user_message_from_report(&e, None).into(),
+                        ));
                         return;
                     }
                 }
@@ -1997,7 +2000,9 @@ impl DataTableState {
                 match self.format_grouped_dataframe(scroll_df) {
                     Ok(formatted_df) => Some(formatted_df),
                     Err(e) => {
-                        self.error = Some(PolarsError::ComputeError(e.to_string().into()));
+                        self.error = Some(PolarsError::ComputeError(
+                            crate::error_display::user_message_from_report(&e, None).into(),
+                        ));
                         return;
                     }
                 }
@@ -2714,9 +2719,7 @@ impl DataTableState {
                         let schema = match lf.clone().collect_schema() {
                             Ok(s) => s,
                             Err(e) => {
-                                self.error = Some(PolarsError::ComputeError(
-                                    sanitize_query_error(&e.to_string()).into(),
-                                ));
+                                self.error = Some(e);
                                 return; // Don't modify state on error
                             }
                         };
@@ -2743,9 +2746,7 @@ impl DataTableState {
                 let schema = match lf.collect_schema() {
                     Ok(schema) => schema,
                     Err(e) => {
-                        self.error = Some(PolarsError::ComputeError(
-                            sanitize_query_error(&e.to_string()).into(),
-                        ));
+                        self.error = Some(e);
                         return;
                     }
                 };
@@ -2800,8 +2801,8 @@ impl DataTableState {
                 }
             }
             Err(e) => {
-                // Only set error, don't modify any state (parse errors are already user-facing)
-                self.error = Some(PolarsError::ComputeError(sanitize_query_error(&e).into()));
+                // Parse errors are already user-facing strings; store as ComputeError
+                self.error = Some(PolarsError::ComputeError(e.into()));
             }
         }
     }
@@ -3078,7 +3079,7 @@ impl StatefulWidget for DataTable {
         // Query errors should only be shown in the query input frame
         if let Some(error) = state.error.as_ref() {
             if !state.suppress_error_display {
-                Paragraph::new(format!("Error: {}", error))
+                Paragraph::new(format!("Error: {}", user_message_from_polars(error)))
                     .centered()
                     .block(
                         Block::default()

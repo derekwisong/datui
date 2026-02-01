@@ -1,6 +1,6 @@
 use clap::Parser;
 use color_eyre::Result;
-use datui::{App, AppConfig, AppEvent, Args, OpenOptions, Theme, APP_NAME};
+use datui::{error_display, App, AppConfig, AppEvent, Args, OpenOptions, Theme, APP_NAME};
 use ratatui::DefaultTerminal;
 use std::sync::mpsc::channel;
 
@@ -78,12 +78,18 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
                     return Ok(Some(()));
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    eprintln!(
+                        "Error: {}",
+                        error_display::user_message_from_report(&e, None)
+                    );
                     std::process::exit(1);
                 }
             },
             Err(e) => {
-                eprintln!("Error initializing config manager: {}", e);
+                eprintln!(
+                    "Error: {}",
+                    error_display::user_message_from_report(&e, None)
+                );
                 std::process::exit(1);
             }
         }
@@ -93,7 +99,10 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
         match datui::CacheManager::new(datui::APP_NAME) {
             Ok(cache) => {
                 if let Err(e) = cache.clear_all() {
-                    eprintln!("Error clearing cache: {}", e);
+                    eprintln!(
+                        "Error: {}",
+                        error_display::user_message_from_report(&e, None)
+                    );
                     std::process::exit(1);
                 }
                 println!("Cache cleared successfully");
@@ -113,20 +122,29 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
                 match TemplateManager::new(&config) {
                     Ok(mut template_manager) => {
                         if let Err(e) = template_manager.remove_all_templates() {
-                            eprintln!("Error removing templates: {}", e);
+                            eprintln!(
+                                "Error: {}",
+                                error_display::user_message_from_report(&e, None)
+                            );
                             std::process::exit(1);
                         }
                         println!("All templates removed successfully");
                         return Ok(Some(()));
                     }
                     Err(e) => {
-                        eprintln!("Error initializing template manager: {}", e);
+                        eprintln!(
+                            "Error: {}",
+                            error_display::user_message_from_report(&e, None)
+                        );
                         std::process::exit(1);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Error initializing config manager: {}", e);
+                eprintln!(
+                    "Error: {}",
+                    error_display::user_message_from_report(&e, None)
+                );
                 std::process::exit(1);
             }
         }

@@ -26,6 +26,7 @@ pub mod chart_export_modal;
 pub mod chart_modal;
 pub mod cli;
 pub mod config;
+pub mod error_display;
 pub mod export_modal;
 pub mod filter_modal;
 pub mod pivot_melt_modal;
@@ -1044,6 +1045,13 @@ impl App {
                 )?,
                 _ => {
                     self.loading_state = LoadingState::Idle;
+                    if !paths.is_empty() && !path.exists() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("File not found: {}", path.display()),
+                        )
+                        .into());
+                    }
                     return Err(color_eyre::eyre::eyre!(
                         "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only)"
                     ));
@@ -1162,6 +1170,13 @@ impl App {
                 )?,
                 _ => {
                     self.loading_state = LoadingState::Idle;
+                    if paths.len() == 1 && !path.exists() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("File not found: {}", path.display()),
+                        )
+                        .into());
+                    }
                     return Err(color_eyre::eyre::eyre!("Unsupported file type"));
                 }
             }
@@ -4582,7 +4597,11 @@ impl App {
                             self.loading_state = LoadingState::Idle;
                             self.busy = false;
                             self.drain_keys_on_next_loop = true;
-                            Some(AppEvent::Crash(e.to_string()))
+                            let msg = crate::error_display::user_message_from_report(
+                                &e,
+                                paths.first().map(|p| p.as_path()),
+                            );
+                            Some(AppEvent::Crash(msg))
                         }
                     }
                 }
@@ -4599,7 +4618,11 @@ impl App {
                         self.loading_state = LoadingState::Idle;
                         self.busy = false;
                         self.drain_keys_on_next_loop = true;
-                        Some(AppEvent::Crash(e.to_string()))
+                        let msg = crate::error_display::user_message_from_report(
+                            &e,
+                            paths.first().map(|p| p.as_path()),
+                        );
+                        Some(AppEvent::Crash(msg))
                     }
                 }
             }
@@ -4898,7 +4921,8 @@ impl App {
                         }
                         Err(e) => {
                             self.busy = false;
-                            self.error_modal.show(e.to_string());
+                            self.error_modal
+                                .show(crate::error_display::user_message_from_report(&e, None));
                             None
                         }
                     }
@@ -4918,7 +4942,8 @@ impl App {
                         }
                         Err(e) => {
                             self.busy = false;
-                            self.error_modal.show(e.to_string());
+                            self.error_modal
+                                .show(crate::error_display::user_message_from_report(&e, None));
                             None
                         }
                     }
@@ -4954,7 +4979,11 @@ impl App {
                         self.chart_export_modal.close();
                     }
                     Err(e) => {
-                        self.error_modal.show(e.to_string());
+                        self.error_modal
+                            .show(crate::error_display::user_message_from_report(
+                                &e,
+                                Some(path),
+                            ));
                         self.chart_export_modal.reopen_with_path(path, *format);
                     }
                 }
@@ -5026,9 +5055,9 @@ impl App {
                             self.loading_state = LoadingState::Idle;
                             self.busy = false;
                             self.drain_keys_on_next_loop = true;
-                            self.error_modal.show(Self::format_export_error(
-                                &color_eyre::eyre::eyre!("{}", e),
-                                path,
+                            self.error_modal.show(format!(
+                                "Export failed: {}",
+                                crate::error_display::user_message_from_polars(&e)
                             ));
                             None
                         }
@@ -5221,7 +5250,10 @@ impl App {
                             self.restore_state(saved);
                         }
                         self.active_template_id = saved_active_template_id;
-                        return Err(color_eyre::eyre::eyre!("{}", error));
+                        return Err(color_eyre::eyre::eyre!(
+                            "{}",
+                            crate::error_display::user_message_from_polars(&error)
+                        ));
                     }
                 }
             }
@@ -5266,7 +5298,10 @@ impl App {
                         self.restore_state(saved);
                     }
                     self.active_template_id = saved_active_template_id;
-                    return Err(color_eyre::eyre::eyre!("{}", e));
+                    return Err(color_eyre::eyre::eyre!(
+                        "{}",
+                        crate::error_display::user_message_from_report(&e, None)
+                    ));
                 }
             } else if let Some(ref spec) = template.settings.melt {
                 if let Err(e) = state.melt(spec) {
@@ -5274,7 +5309,10 @@ impl App {
                         self.restore_state(saved);
                     }
                     self.active_template_id = saved_active_template_id;
-                    return Err(color_eyre::eyre::eyre!("{}", e));
+                    return Err(color_eyre::eyre::eyre!(
+                        "{}",
+                        crate::error_display::user_message_from_report(&e, None)
+                    ));
                 }
             }
 
@@ -5325,43 +5363,23 @@ impl App {
         Ok(())
     }
 
-    /// Format export error messages to be more user-friendly
-    fn format_export_error(error: &color_eyre::eyre::Error, path: &Path) -> String {
-        let error_str = error.to_string();
+    /// Format export error messages to be more user-friendly using type-based handling.
+    fn format_export_error(error: &color_eyre::eyre::Report, path: &Path) -> String {
+        use std::io;
 
-        // Check for common error patterns
-        if error_str.contains("Permission denied") || error_str.contains("permission") {
-            format!(
-                "Permission denied:\nCannot write to {}\n\nCheck file permissions and ensure you have write access to the directory.",
-                path.display()
-            )
-        } else if error_str.contains("No such file or directory") || error_str.contains("directory")
-        {
-            if let Some(parent) = path.parent() {
-                format!(
-                    "Directory does not exist:\n{}\n\nPlease create the directory or choose a different location.",
-                    parent.display()
-                )
-            } else {
-                format!(
-                    "Invalid path:\n{}\n\nPlease check the file path.",
-                    path.display()
-                )
+        for cause in error.chain() {
+            if let Some(io_err) = cause.downcast_ref::<io::Error>() {
+                let msg = crate::error_display::user_message_from_io(io_err, None);
+                return format!("Cannot write to {}: {}", path.display(), msg);
             }
-        } else if error_str.contains("No space left") || error_str.contains("space") {
-            format!(
-                "No space left on device:\nCannot write to {}\n\nFree up disk space and try again.",
-                path.display()
-            )
-        } else if error_str.contains("IO error") || error_str.contains("I/O") {
-            format!(
-                "I/O error:\nFailed to write to {}\n\n{}\n\nCheck disk space, permissions, and that the file is not in use.",
-                path.display(),
-                error_str
-            )
-        } else {
-            format!("Export failed:\n{}\n\nError: {}", path.display(), error_str)
+            if let Some(pe) = cause.downcast_ref::<polars::prelude::PolarsError>() {
+                let msg = crate::error_display::user_message_from_polars(pe);
+                return format!("Export failed: {}", msg);
+            }
         }
+        let error_str = error.to_string();
+        let first_line = error_str.lines().next().unwrap_or("Unknown error").trim();
+        format!("Export failed: {}", first_line)
     }
 
     /// Write an already-collected DataFrame to file. Used by two-phase export (DoExportWrite).
@@ -5821,7 +5839,7 @@ impl Widget for &mut App {
         if let Some(state) = &self.data_table_state {
             if let Some(e) = &state.error {
                 has_error = true;
-                err_msg = e.to_string().lines().next().unwrap_or_default().to_string();
+                err_msg = crate::error_display::user_message_from_polars(e);
             }
         }
 
@@ -7259,7 +7277,10 @@ impl Widget for &mut App {
                         Err(e) => {
                             // Still render the modal with error message
                             Clear.render(analysis_area, buf);
-                            let error_msg = format!("Error computing statistics: {}", e);
+                            let error_msg = format!(
+                                "Error computing statistics: {}",
+                                crate::error_display::user_message_from_report(&e, None)
+                            );
                             Paragraph::new(error_msg)
                                 .centered()
                                 .style(Style::default().fg(self.color("error")))

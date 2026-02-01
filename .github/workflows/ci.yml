@@ -214,11 +214,17 @@ jobs:
   build-dev-packages:
     permissions:
       contents: write
-    needs: build-and-test
+    needs: [build-and-test, python-package]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download Python wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: python-wheels
+          path: python-wheels
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -311,6 +317,7 @@ jobs:
             - `.deb` (Debian/Ubuntu)
             - `.rpm` (Fedora/RHEL)
             - `.tar.gz` + `PKGBUILD` (Arch Linux)
+            - Python wheel (`.whl`)
             - Linux binary
             - Manpage
           files: |
@@ -318,6 +325,7 @@ jobs:
             target/generate-rpm/*.rpm
             target/cargo-aur/*.tar.gz
             target/cargo-aur/PKGBUILD
+            python-wheels/*.whl
             target/release/datui
             target/release/datui.1
         env:

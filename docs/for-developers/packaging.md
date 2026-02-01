@@ -100,6 +100,20 @@ To update the AUR package when you release a new version:
 
 Use **stable** release tags only (e.g. `v0.2.11`); the AUR package fetches the tarball from the GitHub release. Dev builds are available from the `dev` release tag.
 
+### Automated AUR updates (GitHub Actions)
+
+The release workflow can push PKGBUILD and .SRCINFO to the AUR automatically when you push a version tag. It uses [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur): the action clones the AUR repo, copies our PKGBUILD and tarball, runs `makepkg --printsrcinfo > .SRCINFO`, then commits and pushes via SSH.
+
+**Required repository secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Description |
+|--------|-------------|
+| `AUR_SSH_PRIVATE_KEY` | Your SSH **private** key. Add the matching **public** key to your [AUR account](https://aur.archlinux.org/account/) (My Account → SSH Public Key). |
+| `AUR_USERNAME` | Your AUR account name (used as git commit author). |
+| `AUR_EMAIL` | Email for the AUR git commit (can be a noreply address). |
+
+If these secrets are not set, the "Publish to AUR" step will fail. To disable automated AUR updates, remove or comment out that step in `.github/workflows/release.yml`.
+
 ## More Information
 
 For detailed information about packaging metadata, policies, and AUR submission, see

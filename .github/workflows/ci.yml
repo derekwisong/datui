@@ -185,22 +185,22 @@ jobs:
         with:
           key: "ci-python"
 
-      - name: Build release binary
-        run: cargo build --release --locked -p datui
+      - name: Build binary
+        run: cargo build --locked -p datui
 
       - name: Bundle CLI for wheel
         run: |
           mkdir -p python/datui_bin
-          cp target/release/datui python/datui_bin/
+          cp target/debug/datui python/datui_bin/
 
       - name: Build and install Python package
-        run: cd python && maturin develop --release
+        run: cd python && maturin develop
 
       - name: Run Python tests
         run: pytest python/tests/ -v
 
       - name: Build Python wheel
-        run: cd python && maturin build --release --out dist
+        run: cd python && maturin build --out dist
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4

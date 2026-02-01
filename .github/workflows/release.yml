@@ -89,6 +89,8 @@ jobs:
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: Update to ${{ github.ref_name }}
+          # Exclude dsa (deprecated); newer OpenSSH reports "Unknown key type dsa".
+          ssh_keyscan_types: rsa,ecdsa,ed25519
 
       - name: Get tag name
         id: tag

@@ -4,8 +4,11 @@
 Running the tests is done using Cargo's test command.
 
 ```bash
-cargo test
+# Run all workspace tests (library + datui-bin + datui-cli)
+cargo test --workspace
 ```
+
+From the repo root, `cargo test` without `--workspace` runs only the root package (the **datui** library). Use `cargo test --workspace` to include the CLI and datui-cli tests (e.g. CI and full local check).
 
 However, the tests require sample data which are too large to add to the repo. Instead,
 the data must be generated before the tests can be run.

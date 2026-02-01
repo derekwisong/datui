@@ -42,7 +42,7 @@ jobs:
         run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo build --release --locked --workspace -p datui-bin
 
       - name: Verify release artifacts
         run: |

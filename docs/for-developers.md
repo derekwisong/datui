@@ -11,17 +11,46 @@
 If you don't have Rust installed, please see the
 [Rust Installation Instructions](https://rust-lang.org/tools/install/).
 
+## Workspace and crates
+
+The repo is a **Cargo workspace** with three packages:
+
+| Package       | Path               | Role |
+|---------------|--------------------|------|
+| **datui**     | (root)             | Core library; no binary. |
+| **datui-cli** | `crates/datui-cli` | Shared CLI definitions (Args, etc.) and the **gen_docs** binary used by the docs build. |
+| **datui-bin** | `crates/datui-bin` | The **datui** CLI binary (the one you run). |
+
+**When to use `--workspace` or `-p`:**
+
+- **From the repo root**, `cargo build` and `cargo test` build/test **only the root package** (datui, the library). They do **not** build or test `datui-bin` or `datui-cli` by default.
+- To build or test **everything** (library + CLI + gen_docs), use:
+  - `cargo build --workspace` (or `cargo build --workspace --tests` to include tests)
+  - `cargo test --workspace`
+- To build or run a **specific package**, use `-p <name>`:
+  - `cargo build -p datui-bin` — build the datui CLI binary
+  - `cargo run -p datui-bin` — run the CLI (same as `cargo run` when the root had the binary)
+  - `cargo run -p datui-cli --bin gen_docs` — run the docs generator (used by the docs build script)
+
+So: use **`--workspace`** when you want “all crates” (e.g. CI, full check, release). Use **`-p <package>`** when you want one crate (e.g. “just the CLI” or “just gen_docs”). You do **not** need `--workspace` for normal library-only work from the root.
+
 ## Compiling
 
 Compile Datui using `cargo`:
 
 ```bash
-cargo build              # Debug build (fast build, large binary, debugging extras)
-cargo build --release    # Optimized release build (slow build, small binary, optimized)
+# Build everything (library + CLI + gen_docs)
+cargo build --workspace
+
+# Build only the CLI binary (faster if you're iterating on the app)
+cargo build -p datui-bin
+
+# Release build of the CLI (what gets installed / packaged)
+cargo build --release -p datui-bin
 ```
 
-- The debug build will be available in the `target/debug` directory
-- The release build will be available in the `target/release` directory
+- The **datui** CLI binary is at `target/debug/datui` or `target/release/datui` (built from **datui-bin**).
+- The **gen_docs** binary is built from **datui-cli** and is used by the documentation build; it only needs the CLI definitions, so it compiles quickly.
 
 > The release build will take significantly longer to compile than debug. But, the release build is
 > faster and has **significantly** smaller size.

@@ -1180,7 +1180,6 @@ dependencies = [
  "calamine",
  "chrono",
  "clap",
- "clap_mangen",
  "color-eyre",
  "crossterm 0.29.0",
  "datui-cli",
@@ -1201,6 +1200,19 @@ dependencies = [
  "tui-textarea",
  "xz2",
  "zstd",
+]
+
+[[package]]
+name = "datui-bin"
+version = "0.2.17-dev"
+dependencies = [
+ "clap",
+ "clap_mangen",
+ "color-eyre",
+ "crossterm 0.29.0",
+ "datui",
+ "datui-cli",
+ "ratatui",
 ]
 
 [[package]]

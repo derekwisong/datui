@@ -9,19 +9,6 @@ set -e
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
-# mdbook might be installed in the ~/.cargo/bin which may not be on the path.
-# if mdbook is not found, try there
-if ! command -v mdbook &> /dev/null; then
-    echo "mdbook not found, trying ${HOME}/.cargo/bin"
-    if [ -f "${HOME}/.cargo/bin/mdbook" ]; then
-        export PATH="${HOME}/.cargo/bin:$PATH"
-        echo "mdbook found in ${HOME}/.cargo/bin"
-    else
-        echo "mdbook not found in ${HOME}/.cargo/bin"
-        exit 1
-    fi
-fi
-
 echo "Building all documentation locally..."
 echo ""
 
@@ -43,8 +30,9 @@ mkdir -p book
 # Make scripts executable
 chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py scripts/docs/generate_command_line_options.py scripts/docs/check_doc_links.sh
 
-# Set up temporary worktree directory
-WORKTREE_DIR="${REPO_ROOT}/.docs-build-worktree"
+# Set up temporary worktree directory *outside* the repo so Cargo doesn't see the
+# main repo's workspace when building from the worktree (e.g. gen_docs for tags).
+WORKTREE_DIR=$(mktemp -d)
 WORKTREE_CLEANUP=true
 
 # Cleanup function
@@ -53,7 +41,8 @@ cleanup_worktree() {
         echo ""
         echo "Cleaning up worktree..."
         cd "$REPO_ROOT"
-        git worktree remove -f "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+        git worktree remove -f "$WORKTREE_DIR" 2>/dev/null || true
+        rm -rf "$WORKTREE_DIR"
     fi
 }
 

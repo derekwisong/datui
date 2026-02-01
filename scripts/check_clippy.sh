@@ -4,4 +4,4 @@
 
 set -e
 
-cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings

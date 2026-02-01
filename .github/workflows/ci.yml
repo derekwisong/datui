@@ -64,13 +64,13 @@ jobs:
         run: ./scripts/check_format.sh
 
       - name: Build
-        run: cargo build --tests --locked
+        run: cargo build --workspace --tests --locked
 
       - name: Run clippy
         run: ./scripts/check_clippy.sh
 
       - name: Run tests
-        run: cargo test --all --locked
+        run: cargo test --workspace --locked
 
       - name: Verify binary exists
         run: test -f target/debug/datui || (echo "Binary not found" && exit 1)

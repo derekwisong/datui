@@ -85,6 +85,19 @@ if [ ! -f "$BUILD_DIR/book.toml" ]; then
     exit 1
 fi
 
+# mdbook might be installed in the ~/.cargo/bin which may not be on the path.
+# if mdbook is not found, try there
+if ! command -v mdbook &> /dev/null; then
+    echo "mdbook not found, trying ${HOME}/.cargo/bin"
+    if [ -f "${HOME}/.cargo/bin/mdbook" ]; then
+        export PATH="${HOME}/.cargo/bin:$PATH"
+        echo "mdbook found in ${HOME}/.cargo/bin"
+    else
+        echo "Error: mdbook not found (on PATH or in ${HOME}/.cargo/bin)"
+        exit 1
+    fi
+fi
+
 # Build mdbook for this version
 # Always use repo root for output, not current directory (which might be a worktree)
 OUTPUT_PATH="${REPO_ROOT}/${OUTPUT_DIR}/${VERSION_NAME}"
@@ -101,13 +114,20 @@ cp -r "$BUILD_DIR/docs" "$DOCS_TEMP/docs"
 cp "$BUILD_DIR/book.toml" "$DOCS_TEMP/book.toml"
 
 # Generate command-line-options.md into temp docs (never touch repo docs).
-if [ -f "$BUILD_DIR/scripts/docs/generate_command_line_options.py" ]; then
+# When DATUI_REPO_ROOT is set (e.g. build_all_docs_local.sh building a tag), use the repo-root
+# script so one script supports both old layout (gen_docs in root) and new (gen_docs in datui-cli).
+GEN_DOCS_SCRIPT=
+if [ -n "$DATUI_REPO_ROOT" ] && [ -f "$DATUI_REPO_ROOT/scripts/docs/generate_command_line_options.py" ]; then
+    GEN_DOCS_SCRIPT="$DATUI_REPO_ROOT/scripts/docs/generate_command_line_options.py"
+elif [ -f "$BUILD_DIR/scripts/docs/generate_command_line_options.py" ]; then
+    GEN_DOCS_SCRIPT="$BUILD_DIR/scripts/docs/generate_command_line_options.py"
+fi
+if [ -n "$GEN_DOCS_SCRIPT" ]; then
     echo "Generating command line argument docs (can take some time to build)"
-    if (cd "$BUILD_DIR" && python3 scripts/docs/generate_command_line_options.py -o "$DOCS_TEMP/docs/reference/command-line-options.md"); then
+    if ( cd "$BUILD_DIR" && python3 "$GEN_DOCS_SCRIPT" -o "$DOCS_TEMP/docs/reference/command-line-options.md" ); then
         echo "✓ Generated command-line-options.md (temp)"
     else
-        echo "Error: generate_command_line_options.py failed (cargo build required)"
-        exit 1
+        echo "  Warning: generate_command_line_options.py failed (tag may lack gen_docs); using existing docs if present"
     fi
 else
     echo "  Warning: generate_command_line_options.py not found - skipping"

@@ -139,9 +139,12 @@ def main() -> int:
     subcmd, check_cmd, out_spec, label = PKG_CONFIG[args.pkg]
     out_dir_or_aur = out_spec
 
-    # 1. Build release (and manpage) unless --no-build
+    # 1. Build release (and manpage) unless --no-build. Build datui-bin so binary and manpage exist.
     if not args.no_build:
-        proc = run(["cargo", "build", "--release", "--locked"], cwd=repo_root)
+        proc = run(
+            ["cargo", "build", "--release", "--locked", "--workspace", "-p", "datui-bin"],
+            cwd=repo_root,
+        )
         if proc.returncode != 0:
             if proc.stderr:
                 sys.stderr.write(proc.stderr)
@@ -171,11 +174,11 @@ def main() -> int:
             sys.stderr.write(proc.stderr)
         return 1
 
-    # 4. Run packaging command
+    # 4. Run packaging command (package datui-bin for deb/rpm/aur)
     if args.pkg == "aur":
-        cmd = ["cargo", "aur"]
+        cmd = ["cargo", "aur", "-p", "datui-bin"]
     else:
-        cmd = ["cargo", subcmd]
+        cmd = ["cargo", subcmd, "-p", "datui-bin"]
     proc = run(cmd, cwd=repo_root)
     if proc.returncode != 0:
         if proc.stderr:

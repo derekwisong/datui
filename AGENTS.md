@@ -478,6 +478,7 @@ datui --clear-cache     # Clear all cache data
 
 See `plans/` directory for detailed implementation plans:
 
+- **Library and Python bindings** (`plans/library-and-python-bindings-plan.md`): Datui as a Rust library with a `run(RunInput::LazyFrame(...))` entry point; Python package via pyo3-polars/maturin exposing `datui.view(lf)`; three-crate layout (datui lib, datui-cli, datui-bin); PyPI distribution with bundled CLI; panic-safe bindings and pytest.
 - **Analysis Improvements**: Enhanced distribution analysis, better Q-Q plots
 - **Histogram Fixes**: Distribution-specific theoretical histograms
 - **Info Panel** (`plans/info-panel-plan.md`): Tabbed Schema + Resources sidebar (known vs inferred schema, Parquet compression, file size, memory, format-specific details)

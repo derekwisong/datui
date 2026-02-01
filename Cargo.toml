@@ -83,13 +83,15 @@ opt-level = 3     # Optimize for speed
 # Packaging: deb, rpm, AUR. See plans/packaging-deb-rpm-aur-plan.md.
 [package.metadata.deb]
 maintainer = "Derek Wisong"
-# Install gzipped manpage (Debian Policy: manual pages must be gzip-9 compressed)
+license-file = ["LICENSE", "0"]
+# $auto = binary to /usr/bin; add gzipped manpage (Debian Policy: manual pages must be gzip-9 compressed)
 assets = [
+    "$auto",
     ["target/release/datui.1.gz", "usr/share/man/man1/datui.1.gz", "0644"],
 ]
 
 [package.metadata.generate-rpm]
-# Binary and gzipped manpage. Build with: cargo build --release, gzip manpage, then cargo generate-rpm.
+# Binary, gzipped manpage, and license. Build with: cargo build --release, gzip manpage, then cargo generate-rpm.
 [[package.metadata.generate-rpm.assets]]
 source = "target/release/datui"
 dest = "/usr/bin/datui"
@@ -99,6 +101,12 @@ mode = "0755"
 source = "target/release/datui.1.gz"
 dest = "/usr/share/man/man1/datui.1.gz"
 mode = "0644"
+
+[[package.metadata.generate-rpm.assets]]
+source = "LICENSE"
+dest = "/usr/share/licenses/datui/LICENSE"
+mode = "0644"
+doc = true
 
 [package.metadata.aur]
 # depends = []

@@ -203,7 +203,7 @@ jobs:
         run: . .venv/bin/activate && pytest python/tests/ -v
 
       - name: Build Python wheel
-        run: cd python && maturin build --out dist
+        run: . .venv/bin/activate && cd python && maturin build --out dist
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4

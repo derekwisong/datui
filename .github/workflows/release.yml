@@ -160,7 +160,7 @@ jobs:
           python-version: '3.x'
 
       - name: Install maturin
-        run: pip install maturin
+        run: pip install "maturin>=2.0"
 
       - name: Build release binary
         run: cargo build --release --locked -p datui

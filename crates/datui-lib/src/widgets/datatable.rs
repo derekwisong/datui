@@ -158,6 +158,20 @@ impl DataTableState {
         })
     }
 
+    /// Create state from an existing LazyFrame (e.g. from Python or in-memory). Uses OpenOptions for display/buffer settings.
+    pub fn from_lazyframe(lf: LazyFrame, options: &crate::OpenOptions) -> Result<Self> {
+        let mut state = Self::new(
+            lf,
+            options.pages_lookahead,
+            options.pages_lookback,
+            options.max_buffered_rows,
+            options.max_buffered_mb,
+        )?;
+        state.row_numbers = options.row_numbers;
+        state.row_start_index = options.row_start_index;
+        Ok(state)
+    }
+
     pub fn reset(&mut self) {
         self.invalidate_num_rows();
         self.lf = self.original_lf.clone();
@@ -3375,29 +3389,26 @@ mod tests {
     #[test]
     fn test_from_csv() {
         // Ensure sample data is generated before running test
-        crate::tests::ensure_sample_data();
         // Test uncompressed CSV loading
-        let path = Path::new("tests/sample-data/3-sfd-header.csv");
-        let state = DataTableState::from_csv(path, &Default::default()).unwrap(); // Uses default buffer params from options
+        let path = crate::tests::sample_data_dir().join("3-sfd-header.csv");
+        let state = DataTableState::from_csv(&path, &Default::default()).unwrap(); // Uses default buffer params from options
         assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
     }
 
     #[test]
     fn test_from_csv_gzipped() {
         // Ensure sample data is generated before running test
-        crate::tests::ensure_sample_data();
         // Test gzipped CSV loading
-        let path = Path::new("tests/sample-data/mixed_types.csv.gz");
-        let state = DataTableState::from_csv(path, &Default::default()).unwrap(); // Uses default buffer params from options
+        let path = crate::tests::sample_data_dir().join("mixed_types.csv.gz");
+        let state = DataTableState::from_csv(&path, &Default::default()).unwrap(); // Uses default buffer params from options
         assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
     }
 
     #[test]
     fn test_from_parquet() {
         // Ensure sample data is generated before running test
-        crate::tests::ensure_sample_data();
-        let path = Path::new("tests/sample-data/people.parquet");
-        let state = DataTableState::from_parquet(path, None, None, None, None, false, 1).unwrap();
+        let path = crate::tests::sample_data_dir().join("people.parquet");
+        let state = DataTableState::from_parquet(&path, None, None, None, None, false, 1).unwrap();
         assert!(!state.schema.is_empty());
     }
 

@@ -1,7 +1,17 @@
-polars>=0.20.0
-numpy>=1.24.0
-pyarrow>=14.0.0
-fastavro>=1.8.0
-openpyxl>=3.1.0
+# Match Rust polars 0.52 (required for datui Python bindings / LazyFrame DSL_SCHEMA_HASH)
+polars>=1.35,<1.36
+
+# for building sample data
+numpy
+pyarrow
+fastavro
+openpyxl
+jinja2
+
+# for running the pre-commit hooks
 pre-commit
-jinja2>=3.0.0
+
+# for building the Python bindings
+patchelf
+maturin
+pytest

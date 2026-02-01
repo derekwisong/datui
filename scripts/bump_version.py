@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bump version number in Cargo.toml and README.md
+Bump version number in Cargo.toml, README.md, Python bindings (datui-pyo3, python/pyproject.toml).
 
 With -dev suffix workflow:
   1. During development: version is "X.Y.Z-dev"
@@ -149,6 +149,56 @@ def update_cargo_toml_to_version(
     print(f"✓ Updated {rel}: {old_version} -> {target_version}")
 
 
+def _project_section_bounds(content: str) -> tuple[int, int] | None:
+    """Return (start, end) byte range of the [project] section, or None if not found."""
+    match = re.search(r'^\[project\]\s*$', content, re.MULTILINE)
+    if not match:
+        return None
+    start = match.end()
+    rest = content[start:]
+    end_match = re.search(r'^\s*\[', rest, re.MULTILINE)
+    end = start + (end_match.start() if end_match else len(rest))
+    return (start, end)
+
+
+def update_pyproject_toml(
+    file_path: Path, new_version: str, project_root: Path, is_release: bool
+) -> None:
+    """Update version in the [project] section of python/pyproject.toml.
+    Release: X.Y.Z. Bump: X.Y.Z.dev0 (PEP 440) to match next release.
+    """
+    content = file_path.read_text()
+    bounds = _project_section_bounds(content)
+    if not bounds:
+        raise ValueError(f"Could not find [project] section in {file_path}")
+    start, end = bounds
+    head, section, tail = content[:start], content[start:end], content[end:]
+    if is_release:
+        py_version = new_version  # e.g. 0.2.17
+    else:
+        # Convert 0.2.18-dev -> 0.2.18.dev0 (PEP 440)
+        py_version = new_version.replace("-dev", ".dev0")
+    old_match = re.search(r'version\s*=\s*"([^"]+)"', section)
+    if not old_match:
+        raise ValueError(f"Could not find version field in [project] of {file_path}")
+    old_version = old_match.group(1)
+    if old_version == py_version:
+        try:
+            rel = file_path.relative_to(project_root)
+        except ValueError:
+            rel = file_path
+        print(f"✓ {rel} already at version {py_version} (no change needed)")
+        return
+    pattern = r'version\s*=\s*"[^"]+"'
+    new_section = re.sub(pattern, f'version = "{py_version}"', section, count=1)
+    file_path.write_text(head + new_section + tail)
+    try:
+        rel = file_path.relative_to(project_root)
+    except ValueError:
+        rel = file_path
+    print(f"✓ Updated {rel}: {old_version} -> {py_version}")
+
+
 def update_readme(file_path: Path, new_version: str) -> None:
     """Update version badge in README.md to the desired version (any current value)."""
     content = file_path.read_text()
@@ -194,6 +244,12 @@ def commit_version_changes(project_root: Path, version: str, script_name: str, i
             files_to_add.append("README.md")
         if (project_root / "crates" / "datui-cli" / "Cargo.toml").exists():
             files_to_add.append("crates/datui-cli/Cargo.toml")
+        if (project_root / "crates" / "datui-lib" / "Cargo.toml").exists():
+            files_to_add.append("crates/datui-lib/Cargo.toml")
+        if (project_root / "crates" / "datui-pyo3" / "Cargo.toml").exists():
+            files_to_add.append("crates/datui-pyo3/Cargo.toml")
+        if (project_root / "python" / "pyproject.toml").exists():
+            files_to_add.append("python/pyproject.toml")
         cargo_lock_path = project_root / "Cargo.lock"
         if cargo_lock_path.exists():
             files_to_add.append("Cargo.lock")
@@ -324,6 +380,9 @@ Examples:
     print()
 
     datui_cli_cargo = project_root / "crates" / "datui-cli" / "Cargo.toml"
+    datui_lib_cargo = project_root / "crates" / "datui-lib" / "Cargo.toml"
+    datui_pyo3_cargo = project_root / "crates" / "datui-pyo3" / "Cargo.toml"
+    pyproject_path = project_root / "python" / "pyproject.toml"
 
     # Update files
     try:
@@ -333,6 +392,18 @@ Examples:
         # Update datui-cli Cargo.toml to match the new version (regardless of its current version)
         if datui_cli_cargo.exists():
             update_cargo_toml_to_version(datui_cli_cargo, new_version, project_root)
+        
+        # Update crates/datui-lib Cargo.toml to match the new version
+        if datui_lib_cargo.exists():
+            update_cargo_toml_to_version(datui_lib_cargo, new_version, project_root)
+        
+        # Update datui-pyo3 Cargo.toml to match the new version
+        if datui_pyo3_cargo.exists():
+            update_cargo_toml_to_version(datui_pyo3_cargo, new_version, project_root)
+        
+        # Update python/pyproject.toml: release -> X.Y.Z, bump -> X.Y.Z.dev0 (PEP 440)
+        if pyproject_path.exists():
+            update_pyproject_toml(pyproject_path, new_version, project_root, is_release)
         
         # Only update README badge for releases (not dev versions)
         if is_release:

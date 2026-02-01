@@ -82,7 +82,9 @@ pub mod tests {
     /// even if called from multiple tests.
     pub fn ensure_sample_data() {
         INIT.call_once(|| {
-            let sample_data_dir = Path::new("tests/sample-data");
+            // When the lib is in crates/datui-lib, repo root is CARGO_MANIFEST_DIR/../..
+            let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let sample_data_dir = repo_root.join("tests/sample-data");
 
             // Check if key files exist to determine if we need to generate data
             // We check for a few representative files that should always be generated
@@ -101,8 +103,8 @@ pub mod tests {
                     .any(|file| !sample_data_dir.join(file).exists());
 
             if needs_generation {
-                // Get the path to the Python script
-                let script_path = Path::new("scripts/generate_sample_data.py");
+                // Get the path to the Python script (at repo root)
+                let script_path = repo_root.join("scripts/generate_sample_data.py");
                 if !script_path.exists() {
                     panic!(
                         "Sample data generation script not found at: {}. \
@@ -150,6 +152,14 @@ pub mod tests {
                 }
             }
         });
+    }
+
+    /// Path to the tests/sample-data directory (at repo root). Call `ensure_sample_data()` first if needed.
+    pub fn sample_data_dir() -> std::path::PathBuf {
+        ensure_sample_data();
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("tests/sample-data")
     }
 }
 
@@ -324,6 +334,8 @@ impl From<&cli::Args> for OpenOptions {
 pub enum AppEvent {
     Key(KeyEvent),
     Open(Vec<PathBuf>, OpenOptions),
+    /// Open with an existing LazyFrame (e.g. from Python binding); no file load.
+    OpenLazyFrame(Box<LazyFrame>, OpenOptions),
     DoLoad(Vec<PathBuf>, OpenOptions), // Internal event to actually perform loading after UI update
     DoDecompress(Vec<PathBuf>, OpenOptions), // Internal event to perform decompression after UI shows "Decompressing"
     DoExport(PathBuf, ExportFormat, ExportOptions), // Internal event to perform export after UI shows progress
@@ -359,6 +371,13 @@ pub enum AppEvent {
     AnalysisDistributionCompute,
     /// Run correlation matrix (deferred so progress overlay can show first).
     AnalysisCorrelationCompute,
+}
+
+/// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
+#[derive(Clone)]
+pub enum RunInput {
+    Paths(Vec<PathBuf>, OpenOptions),
+    LazyFrame(Box<LazyFrame>, OpenOptions),
 }
 
 #[derive(Debug, Clone)]
@@ -4548,6 +4567,31 @@ impl App {
                 // Return DoLoad event to perform actual loading after UI renders
                 Some(AppEvent::DoLoad(paths.clone(), options.clone()))
             }
+            AppEvent::OpenLazyFrame(lf, options) => {
+                match DataTableState::from_lazyframe((**lf).clone(), options) {
+                    Ok(state) => {
+                        self.loading_state = LoadingState::Idle;
+                        self.parquet_metadata_cache = None;
+                        self.export_df = None;
+                        self.data_table_state = Some(state);
+                        self.path = None;
+                        self.original_file_format = None;
+                        self.original_file_delimiter = None;
+                        self.sort_filter_modal = SortFilterModal::new();
+                        self.pivot_melt_modal = PivotMeltModal::new();
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        Some(AppEvent::Collect)
+                    }
+                    Err(e) => {
+                        self.loading_state = LoadingState::Idle;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        let msg = crate::error_display::user_message_from_report(&e, None);
+                        Some(AppEvent::Crash(msg))
+                    }
+                }
+            }
             AppEvent::DoLoad(paths, options) => {
                 let first = &paths[0];
                 // Check if file is compressed (only single-file compressed CSV supported for now)
@@ -7989,4 +8033,100 @@ fn centered_rect_with_min(
     let x = r.x + r.width.saturating_sub(width) / 2;
     let y = r.y + r.height.saturating_sub(height) / 2;
     Rect::new(x, y, width, height)
+}
+
+/// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.
+pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()> {
+    use std::sync::{mpsc, Mutex, Once};
+
+    let config = config.unwrap_or_else(|| {
+        AppConfig::load(APP_NAME).unwrap_or_else(|e| {
+            eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
+            AppConfig::default()
+        })
+    });
+
+    let theme = Theme::from_config(&config.theme).unwrap_or_else(|e| {
+        eprintln!(
+            "Warning: Failed to create theme from config: {}. Using default theme.",
+            e
+        );
+        Theme::from_config(&AppConfig::default().theme)
+            .expect("Default theme should always be valid")
+    });
+
+    // Install color_eyre at most once per process (e.g. first datui.view() in Python).
+    // Subsequent run() calls skip install and reuse the result; no error-message detection.
+    static COLOR_EYRE_INIT: Once = Once::new();
+    static INSTALL_RESULT: Mutex<Option<Result<(), color_eyre::Report>>> = Mutex::new(None);
+    COLOR_EYRE_INIT.call_once(|| {
+        *INSTALL_RESULT.lock().expect("color_eyre install mutex") = Some(color_eyre::install());
+    });
+    if let Some(Err(e)) = INSTALL_RESULT
+        .lock()
+        .expect("color_eyre install mutex")
+        .as_ref()
+    {
+        return Err(color_eyre::eyre::eyre!(e.to_string()));
+    }
+    let mut terminal = ratatui::init();
+    let (tx, rx) = mpsc::channel::<AppEvent>();
+    let mut app = App::new_with_config(tx.clone(), theme, config.clone());
+    if debug {
+        app.enable_debug();
+    }
+
+    terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+
+    match input {
+        RunInput::Paths(paths, opts) => tx.send(AppEvent::Open(paths, opts))?,
+        RunInput::LazyFrame(lf, opts) => tx.send(AppEvent::OpenLazyFrame(lf, opts))?,
+    }
+
+    loop {
+        if crossterm::event::poll(std::time::Duration::from_millis(
+            config.performance.event_poll_interval_ms,
+        ))? {
+            match crossterm::event::read()? {
+                crossterm::event::Event::Key(key) => tx.send(AppEvent::Key(key))?,
+                crossterm::event::Event::Resize(cols, rows) => {
+                    tx.send(AppEvent::Resize(cols, rows))?
+                }
+                _ => {}
+            }
+        }
+
+        let updated = match rx.recv_timeout(std::time::Duration::from_millis(0)) {
+            Ok(event) => {
+                match event {
+                    AppEvent::Exit => break,
+                    AppEvent::Crash(msg) => {
+                        ratatui::restore();
+                        return Err(color_eyre::eyre::eyre!(msg));
+                    }
+                    event => {
+                        if let Some(next) = app.event(&event) {
+                            tx.send(next)?;
+                        }
+                    }
+                }
+                true
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => false,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+
+        if updated {
+            terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+            if app.should_drain_keys() {
+                while crossterm::event::poll(std::time::Duration::from_millis(0))? {
+                    let _ = crossterm::event::read();
+                }
+                app.clear_drain_keys_request();
+            }
+        }
+    }
+
+    ratatui::restore();
+    Ok(())
 }

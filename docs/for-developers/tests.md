@@ -4,11 +4,11 @@
 Running the tests is done using Cargo's test command.
 
 ```bash
-# Run all workspace tests (library + datui-bin + datui-cli)
+# Run all workspace tests (root datui + datui-lib + datui-cli)
 cargo test --workspace
 ```
 
-From the repo root, `cargo test` without `--workspace` runs only the root package (the **datui** library). Use `cargo test --workspace` to include the CLI and datui-cli tests (e.g. CI and full local check).
+From the repo root, `cargo test` without `--workspace` runs only the root package (the **datui** CLI). Use `cargo test --workspace` to include datui-lib and datui-cli tests (e.g. CI and full local check). The **datui-pyo3** crate is not in the workspace; to run Python binding tests, use `pytest python/tests/` after installing the package with `maturin develop` (see [Python package](../../python/README.md)).
 
 However, the tests require sample data which are too large to add to the repo. Instead,
 the data must be generated before the tests can be run.
@@ -33,7 +33,7 @@ the `scripts/` directory, and activated it, you're ready to run the tests for th
 source .venv/bin/activate
 
 # run the tests
-cargo test
+cargo test --workspace
 ```
 
 The tests will look for the files and run the generation script if they don't already exist.

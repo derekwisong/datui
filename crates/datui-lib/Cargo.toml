@@ -1,0 +1,68 @@
+[package]
+name = "datui-lib"
+version = "0.2.17-dev"
+edition = "2021"
+description = "Data Exploration in the Terminal (library)"
+authors = ["Derek Wisong"]
+repository = "https://github.com/derekwisong/datui"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+datui-cli = { path = "../datui-cli" }
+clap = { version = "4.5.54", features = ["derive"] }
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+dirs = "5.0"
+fs2 = "0.4"
+ratatui = { version = "0.29.0", features = ["all-widgets"] }
+regex = "1.10"
+chrono = "0.4"
+tui-textarea = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+supports-color = "3.0"
+toml = "0.8"
+bzip2 = "0.4"
+xz2 = "0.1"
+flate2 = "1.0"
+zstd = "0.13"
+plotters = "0.3"
+calamine = { version = "0.32", features = ["chrono"] }
+orc-rust = "0.7"
+arrow = "57"
+tempfile = "3.14"
+
+[dependencies.polars]
+version = "0.52"
+default-features = false
+features = [
+    "avro",
+    "csv",
+    "decompress",
+    "dtype-datetime",
+    "ipc",
+    "json",
+    "lazy",
+    "parquet",
+    "polars-io",
+    "pivot",
+    "temporal",
+    "timezones",
+    "month_start",
+    "month_end",
+    "coalesce",
+    "regex",
+    "abs",
+    "round_series",
+    "strings",
+]
+
+[dependencies.polars-parquet]
+version = "0.52"
+default-features = false
+
+[dev-dependencies]
+tempfile = "3.8"

@@ -1,5 +1,7 @@
 /plans
+# Cargo build output (root and any crate subdirectory)
 /target
+target/
 /.vscode
 /.venv
 /book
@@ -13,3 +15,7 @@ __pycache__/
 
 # Personal notes
 notes
+
+# Python package build artifacts
+python/dist/
+python/datui_bin/

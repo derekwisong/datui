@@ -1,77 +1,11 @@
 use clap::Parser;
 use color_eyre::Result;
-use datui::{error_display, App, AppConfig, AppEvent, Args, OpenOptions, Theme, APP_NAME};
-use ratatui::DefaultTerminal;
-use std::sync::mpsc::channel;
-
-fn render(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
-    terminal.draw(|frame| frame.render_widget(app, frame.area()))?;
-    Ok(())
-}
-
-fn run(mut terminal: DefaultTerminal, args: &Args, config: &AppConfig, theme: Theme) -> Result<()> {
-    let (tx, rx) = channel::<AppEvent>();
-    let mut app = App::new_with_config(tx.clone(), theme, config.clone());
-    if args.debug {
-        app.enable_debug();
-    }
-    // Create OpenOptions with config defaults, CLI args override
-    let opts = OpenOptions::from_args_and_config(args, config);
-    render(&mut terminal, &mut app)?;
-
-    // Paths should be non-empty if we got here (required_unless_present ensures this)
-    let paths = args.paths.clone();
-    tx.send(AppEvent::Open(paths, opts))?;
-
-    loop {
-        if crossterm::event::poll(std::time::Duration::from_millis(
-            config.performance.event_poll_interval_ms,
-        ))? {
-            match crossterm::event::read()? {
-                crossterm::event::Event::Key(key) => tx.send(AppEvent::Key(key))?,
-                crossterm::event::Event::Resize(cols, rows) => {
-                    tx.send(AppEvent::Resize(cols, rows))?
-                }
-                _ => {}
-            }
-        }
-
-        let updated = match rx.recv_timeout(std::time::Duration::from_millis(0)) {
-            Ok(event) => {
-                match event {
-                    AppEvent::Exit => break,
-                    AppEvent::Crash(msg) => {
-                        return Err(color_eyre::eyre::eyre!(msg));
-                    }
-                    event => {
-                        if let Some(event) = app.event(&event) {
-                            tx.send(event)?;
-                        }
-                    }
-                }
-                true
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-
-        if updated {
-            render(&mut terminal, &mut app)?;
-            // After blocking work, drain queued key events so they don't fire unexpectedly
-            if app.should_drain_keys() {
-                while crossterm::event::poll(std::time::Duration::from_millis(0))? {
-                    let _ = crossterm::event::read();
-                }
-                app.clear_drain_keys_request();
-            }
-        }
-    }
-    Ok(())
-}
+use datui::{error_display, Args, OpenOptions, RunInput, APP_NAME};
+use datui::{AppConfig, ConfigManager, TemplateManager};
 
 fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
     if args.generate_config {
-        match datui::ConfigManager::new(datui::APP_NAME) {
+        match ConfigManager::new(APP_NAME) {
             Ok(config_manager) => match config_manager.write_default_config(args.force) {
                 Ok(path) => {
                     println!("Configuration file written to: {}", path.display());
@@ -96,7 +30,7 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
     }
 
     if args.clear_cache {
-        match datui::CacheManager::new(datui::APP_NAME) {
+        match datui::CacheManager::new(APP_NAME) {
             Ok(cache) => {
                 if let Err(e) = cache.clear_all() {
                     eprintln!(
@@ -116,30 +50,27 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
     }
 
     if args.remove_templates {
-        match datui::ConfigManager::new(datui::APP_NAME) {
-            Ok(config) => {
-                use datui::TemplateManager;
-                match TemplateManager::new(&config) {
-                    Ok(mut template_manager) => {
-                        if let Err(e) = template_manager.remove_all_templates() {
-                            eprintln!(
-                                "Error: {}",
-                                error_display::user_message_from_report(&e, None)
-                            );
-                            std::process::exit(1);
-                        }
-                        println!("All templates removed successfully");
-                        return Ok(Some(()));
-                    }
-                    Err(e) => {
+        match ConfigManager::new(APP_NAME) {
+            Ok(config) => match TemplateManager::new(&config) {
+                Ok(mut template_manager) => {
+                    if let Err(e) = template_manager.remove_all_templates() {
                         eprintln!(
                             "Error: {}",
                             error_display::user_message_from_report(&e, None)
                         );
                         std::process::exit(1);
                     }
+                    println!("All templates removed successfully");
+                    return Ok(Some(()));
                 }
-            }
+                Err(e) => {
+                    eprintln!(
+                        "Error: {}",
+                        error_display::user_message_from_report(&e, None)
+                    );
+                    std::process::exit(1);
+                }
+            },
             Err(e) => {
                 eprintln!(
                     "Error: {}",
@@ -160,27 +91,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Load configuration (default + user config)
     let config = AppConfig::load(APP_NAME).unwrap_or_else(|e| {
         eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
         AppConfig::default()
     });
 
-    // Create theme from config
-    let theme = Theme::from_config(&config.theme).unwrap_or_else(|e| {
-        eprintln!(
-            "Warning: Failed to create theme from config: {}. Using default theme.",
-            e
-        );
-        Theme::from_config(&AppConfig::default().theme)
-            .expect("Default theme should always be valid")
-    });
+    let opts = OpenOptions::from_args_and_config(&args, &config);
+    let input = RunInput::Paths(args.paths.clone(), opts);
 
-    color_eyre::install()?;
-    let terminal = ratatui::init();
-    let result = run(terminal, &args, &config, theme);
-    ratatui::restore();
-    if let Err(e) = result {
+    if let Err(e) = datui::run(input, Some(config), args.debug) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
@@ -228,7 +147,6 @@ mod tests {
     fn test_path_required_for_normal_operation() {
         use clap::Parser;
 
-        // Test that path is required when no special flags are present
         let result = Args::try_parse_from(vec!["datui"]);
         assert!(result.is_err());
 
@@ -241,7 +159,6 @@ mod tests {
     fn test_path_not_required_with_generate_config() {
         use clap::Parser;
 
-        // Path should not be required with --generate-config
         let result = Args::try_parse_from(vec!["datui", "--generate-config"]);
         assert!(result.is_ok());
 
@@ -254,7 +171,6 @@ mod tests {
     fn test_path_not_required_with_clear_cache() {
         use clap::Parser;
 
-        // Path should not be required with --clear-cache
         let result = Args::try_parse_from(vec!["datui", "--clear-cache"]);
         assert!(result.is_ok());
 
@@ -267,7 +183,6 @@ mod tests {
     fn test_path_not_required_with_remove_templates() {
         use clap::Parser;
 
-        // Path should not be required with --remove-templates
         let result = Args::try_parse_from(vec!["datui", "--remove-templates"]);
         assert!(result.is_ok());
 
@@ -280,7 +195,6 @@ mod tests {
     fn test_path_accepted_with_generate_config() {
         use clap::Parser;
 
-        // Path should still be accepted even with --generate-config
         let result = Args::try_parse_from(vec!["datui", "--generate-config", "test.csv"]);
         assert!(result.is_ok());
 

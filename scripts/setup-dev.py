@@ -10,6 +10,10 @@ This script:
 - Regenerates test data
 - Builds local documentation
 
+The Rust workspace has the main app at the root (datui) and library crates (datui-lib, datui-cli). The Python
+binding crate (datui-pyo3) is not in the workspace and is built separately
+with maturin. See the final "Next steps" output for build/test commands.
+
 Can be run multiple times safely - it's idempotent and non-destructive.
 """
 
@@ -358,6 +362,15 @@ def main():
         print(f"  {VENV_DIR}\\Scripts\\activate")
     else:
         print(f"  source {VENV_DIR}/bin/activate")
+    print()
+    print("Rust (workspace: root = datui binary, crates/datui-lib, crates/datui-cli):")
+    print("  cargo build --workspace")
+    print("  cargo test --workspace")
+    print("  cargo run -- <args>   # run the CLI (from repo root)")
+    print()
+    print("Python bindings (optional; requires maturin and compatible polars versions):")
+    print("  maturin develop --manifest-path crates/datui-pyo3/Cargo.toml")
+    print("  pytest python/tests/ -v")
     print()
     print("You can run this script again at any time to update dependencies.")
 

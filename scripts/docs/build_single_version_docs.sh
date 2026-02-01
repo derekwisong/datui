@@ -114,13 +114,15 @@ cp -r "$BUILD_DIR/docs" "$DOCS_TEMP/docs"
 cp "$BUILD_DIR/book.toml" "$DOCS_TEMP/book.toml"
 
 # Generate command-line-options.md into temp docs (never touch repo docs).
-# When DATUI_REPO_ROOT is set (e.g. build_all_docs_local.sh building a tag), use the repo-root
-# script so one script supports both old layout (gen_docs in root) and new (gen_docs in datui-cli).
+# Only regenerate for non-tag builds (main/current branch); for tags use the committed file
+# to avoid slow gen_docs builds for every tagged version.
 GEN_DOCS_SCRIPT=
-if [ -n "$DATUI_REPO_ROOT" ] && [ -f "$DATUI_REPO_ROOT/scripts/docs/generate_command_line_options.py" ]; then
-    GEN_DOCS_SCRIPT="$DATUI_REPO_ROOT/scripts/docs/generate_command_line_options.py"
-elif [ -f "$BUILD_DIR/scripts/docs/generate_command_line_options.py" ]; then
-    GEN_DOCS_SCRIPT="$BUILD_DIR/scripts/docs/generate_command_line_options.py"
+if [ "$IS_TAG" = false ]; then
+    if [ -n "$DATUI_REPO_ROOT" ] && [ -f "$DATUI_REPO_ROOT/scripts/docs/generate_command_line_options.py" ]; then
+        GEN_DOCS_SCRIPT="$DATUI_REPO_ROOT/scripts/docs/generate_command_line_options.py"
+    elif [ -f "$BUILD_DIR/scripts/docs/generate_command_line_options.py" ]; then
+        GEN_DOCS_SCRIPT="$BUILD_DIR/scripts/docs/generate_command_line_options.py"
+    fi
 fi
 if [ -n "$GEN_DOCS_SCRIPT" ]; then
     echo "Generating command line argument docs (can take some time to build)"
@@ -129,6 +131,8 @@ if [ -n "$GEN_DOCS_SCRIPT" ]; then
     else
         echo "  Warning: generate_command_line_options.py failed (tag may lack gen_docs); using existing docs if present"
     fi
+elif [ "$IS_TAG" = true ]; then
+    echo "Skipping command line docs for tag (using committed docs)"
 else
     echo "  Warning: generate_command_line_options.py not found - skipping"
 fi

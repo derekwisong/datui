@@ -35,3 +35,5 @@
   - [Generating the Demos](for-developers/demos.md)
   - [Contributing](for-developers/contributing.md)
   - [Building Packages](for-developers/packaging.md)
+  - [Python Bindings](for-developers/python-bindings.md)
+  - [PyPI Deployment](for-developers/pypi-deployment.md)

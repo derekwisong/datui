@@ -106,8 +106,9 @@ fn view_from_json(
 
 /// Run the datui CLI with the current process arguments (e.g. from `datui file.csv`).
 ///
-/// Looks for a bundled binary next to the extension module (`datui_bin/datui`), then falls
-/// back to `datui` on PATH. Exits the process with the CLI's exit code (via sys.exit).
+/// Looks for a bundled binary next to the extension module (`datui_bin/datui`). Does not
+/// fall back to `datui` on PATH, because that may be this same Python script (infinite loop).
+/// Exits the process with the CLI's exit code (via sys.exit).
 #[pyfunction]
 fn run_cli(py: Python<'_>) -> PyResult<()> {
     let sys = py.import("sys")?;
@@ -115,46 +116,66 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
     let modules = sys.getattr("modules")?;
     let datui_module = modules.get_item("datui")?;
     let file: Option<String> = datui_module.getattr("__file__")?.extract().ok();
-    let binary = if let Some(ref f) = file {
-        let parent = Path::new(f).parent().unwrap_or(Path::new("."));
-        let bundled = parent.join("datui_bin").join({
-            #[cfg(windows)]
-            {
-                "datui.exe"
-            }
-            #[cfg(not(windows))]
-            {
-                "datui"
-            }
-        });
-        if bundled.exists() {
-            bundled
-        } else {
-            Path::new({
-                #[cfg(windows)]
-                {
-                    "datui.exe"
-                }
-                #[cfg(not(windows))]
-                {
-                    "datui"
-                }
-            })
-            .to_path_buf()
+    let bin_name = {
+        #[cfg(windows)]
+        {
+            "datui.exe"
         }
-    } else {
-        Path::new({
-            #[cfg(windows)]
-            {
-                "datui.exe"
-            }
-            #[cfg(not(windows))]
-            {
-                "datui"
-            }
-        })
-        .to_path_buf()
+        #[cfg(not(windows))]
+        {
+            "datui"
+        }
     };
+    // Prefer datui package __file__ (__init__.py); fallback to this extension's __file__ (_datui.so) for package dir.
+    let package_dir = file
+        .as_ref()
+        .map(|f| Path::new(f).parent().unwrap_or(Path::new(".")).to_path_buf());
+    let package_dir = match package_dir {
+        Some(d) => d,
+        None => {
+            // Fallback: use this extension module's path (we're in datui/_datui.*.so, so parent = package dir).
+            let mod_datui = modules.get_item("datui")?.getattr("_datui")?;
+            let ext_file: Option<String> = mod_datui.getattr("__file__")?.extract().ok();
+            ext_file
+                .as_ref()
+                .and_then(|f| Path::new(f).parent().map(|p| p.to_path_buf()))
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(
+                        "datui CLI: cannot find package location. Install a wheel that bundles the binary.",
+                    )
+                })?
+        }
+    };
+    let binary = {
+        // Wheel layout: datui/ and datui_bin/ are siblings under site-packages (include = ["datui_bin/*"]).
+        let bundled_sibling = package_dir.parent().unwrap_or(&package_dir).join("datui_bin").join(bin_name);
+        // Editable/dev layout: datui/datui_bin/ next to __init__.py (or _datui.so).
+        let bundled_inside = package_dir.join("datui_bin").join(bin_name);
+        if bundled_sibling.exists() {
+            bundled_sibling
+        } else if bundled_inside.exists() {
+            bundled_inside
+        } else {
+            return Err(PyRuntimeError::new_err(format!(
+                "datui CLI binary not found (looked for {} and {}). \
+                 For local dev, run: cp target/debug/datui python/datui_bin/ then maturin develop. \
+                 Or install a wheel that bundles the binary.",
+                bundled_sibling.display(),
+                bundled_inside.display()
+            )));
+        }
+    };
+    // Refuse to run if the path is a script (e.g. venv bin/datui wrapper); prevents infinite loop.
+    if let Ok(prefix) = std::fs::read(&binary).and_then(|b| Ok(b.get(0..2).unwrap_or_default().to_vec())) {
+        if prefix == b"#!" {
+            return Err(PyRuntimeError::new_err(format!(
+                "datui CLI: {} is a script, not the datui binary. \
+                 Do not use the Python wrapper to run itself. \
+                 Copy the real binary to datui_bin/ or run the standalone datui from PATH.",
+                binary.display()
+            )));
+        }
+    }
     let status = std::process::Command::new(&binary)
         .args(&argv[1..])
         .status()

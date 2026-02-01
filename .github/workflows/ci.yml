@@ -181,7 +181,7 @@ jobs:
       - name: Install maturin and test dependencies into venv
         run: |
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install "maturin>=2.0" "polars>=0.20" "pytest>=7.0"
+          .venv/bin/pip install -r scripts/requirements.txt
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2

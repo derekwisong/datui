@@ -81,7 +81,7 @@ jobs:
       # Publish PKGBUILD and .SRCINFO to AUR (aur.archlinux.org). Requires repo secrets:
       # AUR_SSH_PRIVATE_KEY, AUR_USERNAME, AUR_EMAIL. See docs/for-developers/packaging.md.
       - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2.0.7
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.1
         with:
           pkgname: datui
           pkgbuild: target/cargo-aur/PKGBUILD

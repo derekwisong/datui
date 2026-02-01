@@ -180,6 +180,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install maturin "polars>=0.20" "pytest>=7.0"
 
+      - name: Create virtual environment
+        run: python -m venv .venv
+
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
         with:
@@ -194,10 +197,10 @@ jobs:
           cp target/debug/datui python/datui_bin/
 
       - name: Build and install Python package
-        run: cd python && maturin develop
+        run: . .venv/bin/activate && cd python && maturin develop
 
       - name: Run Python tests
-        run: pytest python/tests/ -v
+        run: . .venv/bin/activate && pytest python/tests/ -v
 
       - name: Build Python wheel
         run: cd python && maturin build --out dist

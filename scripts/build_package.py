@@ -175,8 +175,12 @@ def main() -> int:
         return 1
 
     # 4. Run packaging command (package datui for deb/rpm/aur)
+    # Run from repo root; datui is the root package. cargo generate-rpm -p datui looks for
+    # datui/Cargo.toml (wrong). cargo-aur does not support -p. So only deb uses -p datui.
     if args.pkg == "aur":
-        cmd = ["cargo", "aur", "-p", "datui"]
+        cmd = ["cargo", "aur"]
+    elif args.pkg == "rpm":
+        cmd = ["cargo", subcmd]
     else:
         cmd = ["cargo", subcmd, "-p", "datui"]
     proc = run(cmd, cwd=repo_root)

@@ -19,3 +19,6 @@ notes
 # Python package build artifacts
 python/dist/
 python/datui_bin/
+# Maturin-built extension and generated stubs (maturin develop/build output)
+python/datui/*.so
+python/datui/*.pyi

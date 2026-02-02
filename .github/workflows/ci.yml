@@ -39,6 +39,20 @@ jobs:
       - name: Run clippy
         run: ./scripts/check_clippy.sh
 
+      - name: Set up Python and install dependencies
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Create virtual environment and install requirements
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r scripts/requirements.txt
+
+      - name: Generate sample data
+        run: .venv/bin/python scripts/generate_sample_data.py
+
       - name: Run tests
         run: cargo test --workspace --locked
 

@@ -1,6 +1,6 @@
 [package]
 name = "datui-lib"
-version = "0.2.24-dev"
+version = "0.2.24"
 edition = "2021"
 description = "Data Exploration in the Terminal (library)"
 authors = ["Derek Wisong"]

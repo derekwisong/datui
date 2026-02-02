@@ -443,10 +443,12 @@
 
         <main id="main-content">
             <div class="demo-showcase">
-                <img src="main/demos/01-basic-navigation.gif" 
+                {% if latest_stable_path %}
+                <img src="{{ latest_stable_path }}/demos/01-basic-navigation.gif" 
                      alt="Datui demo showing basic navigation" 
                      class="demo-gif"
                      loading="lazy">
+                {% endif %}
             </div>
 
             <h2 class="versions-heading">Documentation:</h2>
@@ -459,10 +461,8 @@
                    tabindex="0">
                     <span class="version-name">
                         {{ version.name }}
-                        {% if version.is_development %}
-                        <span class="version-badge development">Development</span>
-                        {% elif version.is_latest_stable %}
-                        <span class="version-badge stable">Latest Stable</span>
+                        {% if version.is_latest_stable %}
+                        <span class="version-badge stable">Latest</span>
                         {% endif %}
                     </span>
                     <span class="version-date">{{ version.date_str }}</span>

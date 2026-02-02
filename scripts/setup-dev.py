@@ -257,15 +257,11 @@ def regenerate_test_data():
 def build_local_documentation():
     """Build local documentation using the build script."""
     print("Building local documentation...")
-    doc_script = Path(__file__).parent / "docs" / "build_all_docs_local.sh"
+    doc_script = Path(__file__).parent / "docs" / "build_all_docs_local.py"
     
     if not doc_script.exists():
         print(f"Warning: {doc_script} not found. Skipping documentation build.")
         return
-    
-    # Make sure the script is executable
-    if sys.platform != "win32":
-        os.chmod(doc_script, 0o755)
     
     # Check if mdbook is available (required for docs)
     mdbook_path = find_mdbook()
@@ -277,38 +273,25 @@ def build_local_documentation():
     # Ensure mdbook is in PATH for the script
     env = os.environ.copy()
     if mdbook_path and str(Path(mdbook_path).parent) not in env.get("PATH", ""):
-        # Add mdbook's directory to PATH if it's not already there
         cargo_bin = str(Path(mdbook_path).parent)
         if sys.platform == "win32":
             env["PATH"] = f"{cargo_bin};{env.get('PATH', '')}"
         else:
             env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
     
-    # Run the documentation build script
-    # Use bash explicitly for better cross-platform compatibility
-    # Redirect stdin to /dev/null to ensure non-interactive mode
-    if sys.platform == "win32":
-        # On Windows, try to use Git Bash or WSL if available
-        result = run_command(
-            ["bash", str(doc_script)],
-            check=False,
-            env=env,
-            stdin=subprocess.DEVNULL
-        )
-    else:
-        result = run_command(
-            ["bash", str(doc_script)],
-            check=False,
-            env=env,
-            stdin=subprocess.DEVNULL
-        )
+    result = run_command(
+        [sys.executable, str(doc_script)],
+        check=False,
+        env=env,
+        stdin=subprocess.DEVNULL
+    )
     
     if result.returncode == 0:
         print("✓ Local documentation built successfully")
         print(f"  Documentation is available in: {REPO_ROOT / 'book'}")
     else:
         print("Warning: Documentation build had errors. Check output above.")
-        print("  You can manually run: bash scripts/docs/build_all_docs_local.sh")
+        print("  You can manually run: python3 scripts/docs/build_all_docs_local.py")
 
 
 def main():

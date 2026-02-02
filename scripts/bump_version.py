@@ -24,15 +24,11 @@ Options:
 Examples:
     # Prepare for release (remove -dev)
     python scripts/bump_version.py release --commit --tag
+    git push && git push --tags
 
     # Start next development cycle (bump + add -dev)
     python scripts/bump_version.py patch --commit
-
-    # Typical release workflow:
-    python scripts/bump_version.py release --tag    # 0.2.11-dev -> 0.2.11, tag v0.2.11
-    git push && git push --tags                      # Push release
-    python scripts/bump_version.py patch --commit    # 0.2.11 -> 0.2.12-dev
-    git push                                         # Start next cycle
+    git push
 """
 
 import argparse
@@ -59,10 +55,7 @@ def format_version(major: int, minor: int, patch: int, suffix: str = "") -> str:
 def bump_version(current: str, bump_type: str) -> str:
     """Bump version according to type (major, minor, or patch) and add -dev suffix."""
     major, minor, patch, suffix = parse_version(current)
-    
-    # Remove -dev suffix if present (we're bumping from a release version)
-    # If current is X.Y.Z-dev, we treat it as X.Y.Z for bumping purposes
-    
+
     if bump_type == "major":
         return format_version(major + 1, 0, 0, "-dev")
     elif bump_type == "minor":
@@ -305,15 +298,11 @@ Commands:
 Examples:
   # Prepare for release (remove -dev)
   python scripts/bump_version.py release --commit --tag
+  git push && git push --tags
 
   # Start next development cycle (bump + add -dev)
   python scripts/bump_version.py patch --commit
-
-  # Typical release workflow:
-  python scripts/bump_version.py release --tag    # 0.2.11-dev -> 0.2.11, tag v0.2.11
-  git push && git push --tags                      # Push release
-  python scripts/bump_version.py patch --commit    # 0.2.11 -> 0.2.12-dev
-  git push                                         # Start next cycle
+  git push
         """,
     )
     parser.add_argument(
@@ -409,7 +398,7 @@ Examples:
         if is_release:
             update_readme(readme_path, new_version)
         else:
-            print(f"✓ README.md badge unchanged (only updated for releases)")
+            print("✓ README.md badge unchanged (only updated for releases)")
         
         print()
         print(f"✓ Version updated successfully: {current_version} -> {new_version}")
@@ -440,7 +429,7 @@ Examples:
                 print()
                 print("Next steps:")
                 print("  1. git push && git push --tags")
-                print(f"  2. python scripts/bump_version.py patch --commit  # Start next dev cycle")
+                print("  2. python scripts/bump_version.py patch --commit  # Start next dev cycle")
             else:
                 print()
                 print(f"✓ Version update complete: {current_version} -> {new_version} (committed)")

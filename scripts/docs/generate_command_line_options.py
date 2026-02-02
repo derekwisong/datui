@@ -56,7 +56,7 @@ def main() -> int:
     repo_root = repo_root.resolve()
 
     # Try current layout first (gen_docs in datui-cli); fall back to old layout (gen_docs in root).
-    # This lets build_all_docs_local.sh work for both main and historical tags.
+    # This lets build_all_docs_local.py work for both main and historical tags.
     for cmd in (
         ["cargo", "run", "-p", "datui-cli", "--bin", "gen_docs", "--quiet"],
         ["cargo", "run", "--bin", "gen_docs", "--quiet"],

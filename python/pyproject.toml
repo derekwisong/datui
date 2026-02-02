@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "datui"
-version = "0.2.20.dev0"
+version = "0.2.20"
 description = "View Polars LazyFrames and DataFrames in the terminal with datui"
 readme = "README.md"
 requires-python = ">=3.8"

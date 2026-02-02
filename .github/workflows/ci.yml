@@ -9,19 +9,12 @@ on:
 permissions:
   contents: read
 
-env:
-  MDBOOK_VERSION: "0.5.2"
-
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    # Skip CI when a tag is pushed (release workflow handles that)
     if: startsWith(github.ref, 'refs/heads/')
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -29,33 +22,10 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r scripts/requirements.txt
-
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
         with:
           key: "ci"
-
-      - name: Cache mdbook
-        id: cache-mdbook
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/mdbook
-          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-mdbook-
-
-      - name: Install mdbook
-        if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
 
       - name: Make scripts executable
         run: chmod +x scripts/check_format.sh scripts/check_clippy.sh
@@ -81,86 +51,9 @@ jobs:
             echo "Manpage not found" && exit 1
           fi
 
-      - name: Build documentation for PR verification
-        if: github.event_name == 'pull_request'
-        run: |
-          # build_single_version_docs uses temp docs tree; repo docs/ (incl. command-line-options.md) are never modified
-          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py scripts/docs/generate_command_line_options.py scripts/docs/check_doc_links.sh
-          PR_BRANCH_NAME="${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD)}"
-          SANITIZED_BRANCH_NAME=$(echo "$PR_BRANCH_NAME" | sed 's/\//-/g')
-          ./scripts/docs/build_single_version_docs.sh "$SANITIZED_BRANCH_NAME"
-
-      - name: Build all historical tag documentation
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        run: |
-          # build_single_version_docs uses temp docs tree; repo docs/ (incl. command-line-options.md) are never modified
-          ORIGINAL_COMMIT=$(git rev-parse HEAD)
-          ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py scripts/docs/generate_command_line_options.py scripts/docs/check_doc_links.sh
-          
-          SCRIPT_DIR="/tmp/datui-build-scripts-$$"
-          mkdir -p "$SCRIPT_DIR"
-          cp scripts/docs/build_single_version_docs.sh "$SCRIPT_DIR/"
-          cp scripts/docs/rebuild_index.py "$SCRIPT_DIR/" 2>/dev/null || true
-          cp scripts/docs/index.html.j2 "$SCRIPT_DIR/" 2>/dev/null || true
-          chmod +x "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/*.py 2>/dev/null || true
-          
-          mkdir -p book
-          rm -rf book/demos
-          VERSION_TAGS=$(git tag -l "v*" | sort -V)
-          
-          for tag in $VERSION_TAGS; do
-            "$SCRIPT_DIR/build_single_version_docs.sh" "$tag" || true
-            git checkout "$ORIGINAL_COMMIT" 2>/dev/null || git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout main 2>/dev/null
-          done
-          
-          CURRENT_COMMIT=$(git rev-parse HEAD)
-          [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
-          rm -rf "$SCRIPT_DIR"
-
-      - name: Build documentation for main branch
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        run: |
-          # build_single_version_docs uses temp docs tree; repo docs/ (incl. command-line-options.md) are never modified
-          [ ! -f scripts/docs/build_single_version_docs.sh ] && git checkout "$(git rev-parse HEAD)"
-          [ -f scripts/docs/build_single_version_docs.sh ] || (echo "Error: scripts/docs/build_single_version_docs.sh not found" && exit 1)
-          [ -f scripts/docs/rebuild_index.py ] || (echo "Error: scripts/docs/rebuild_index.py not found" && exit 1)
-          [ -f scripts/docs/index.html.j2 ] || (echo "Error: scripts/docs/index.html.j2 not found" && exit 1)
-          chmod +x scripts/docs/build_single_version_docs.sh scripts/docs/rebuild_index.py scripts/docs/generate_command_line_options.py scripts/docs/check_doc_links.sh
-          rm -rf book/demos
-          ./scripts/docs/build_single_version_docs.sh "main"
-          rm -rf book/demos
-          python3 scripts/docs/rebuild_index.py
-
-
-      - name: Setup Pages
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@v4
-
-      - name: Upload Pages artifact
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./book
-
-  deploy-docs:
-    permissions:
-      pages: write
-      id-token: write
-    needs: build-and-test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
   python-package:
     runs-on: ubuntu-latest
-    needs: build-and-test
+    if: startsWith(github.ref, 'refs/heads/')
     steps:
       - uses: actions/checkout@v4
 
@@ -201,132 +94,3 @@ jobs:
 
       - name: Run Python tests
         run: . .venv/bin/activate && pytest python/tests/ -v
-
-      - name: Build Python wheel
-        run: . .venv/bin/activate && cd python && maturin build --out dist
-
-      - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-wheels
-          path: python/dist/
-
-  build-dev-packages:
-    permissions:
-      contents: write
-    needs: [build-and-test, python-package]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Python wheels
-        uses: actions/download-artifact@v4
-        with:
-          name: python-wheels
-          path: python-wheels
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          key: "release"
-
-      - name: Cache cargo packaging tools
-        id: cache-cargo-tools
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-packaging-tools-v1
-          restore-keys: |
-            ${{ runner.os }}-cargo-packaging-tools-
-
-      - name: Install cargo packaging tools
-        run: |
-          command -v cargo-deb || cargo install cargo-deb
-          command -v cargo-generate-rpm || cargo install cargo-generate-rpm
-          command -v cargo-aur || cargo install cargo-aur
-
-      - name: Build release
-        run: cargo build --release --locked
-
-      - name: Build deb package
-        run: python3 scripts/build_package.py deb --no-build
-
-      - name: Build rpm package
-        run: python3 scripts/build_package.py rpm --no-build
-
-      - name: Build AUR package
-        run: python3 scripts/build_package.py aur --no-build
-
-      - name: Get version
-        id: version
-        run: |
-          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          COMMIT_SHORT=$(git rev-parse --short HEAD)
-          echo "commit=$COMMIT_SHORT" >> $GITHUB_OUTPUT
-          DATE=$(date -u +%Y-%m-%d)
-          echo "date=$DATE" >> $GITHUB_OUTPUT
-
-      - name: Delete existing dev release and tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Use API to ensure clean delete (gh CLI can fail silently with accumulated assets)
-          REPO="${{ github.repository }}"
-          TAG="dev"
-          RELEASE_ID=$(curl -sS -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" | jq -r '.id // empty')
-          if [ -n "$RELEASE_ID" ]; then
-            curl -sS -X DELETE -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/${REPO}/releases/${RELEASE_ID}"
-          fi
-          # Delete the tag ref (release delete does not remove the tag)
-          curl -sS -X DELETE -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/${REPO}/git/refs/tags/${TAG}" || true
-
-      - name: Create dev release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dev
-          target_commitish: ${{ github.sha }}
-          name: "v${{ steps.version.outputs.version }}"
-          prerelease: true
-          body: |
-            **Development build from main branch**
-
-            Version: `${{ steps.version.outputs.version }}`
-            Commit: `${{ steps.version.outputs.commit }}`
-            Date: ${{ steps.version.outputs.date }}
-
-            These packages are built from the latest `main` branch and may be unstable.
-            For stable releases, see the [latest release](https://github.com/derekwisong/datui/releases/latest).
-
-            **Downloads:**
-            - `.deb` (Debian/Ubuntu)
-            - `.rpm` (Fedora/RHEL)
-            - `.tar.gz` + `PKGBUILD` (Arch Linux)
-            - Python wheel (`.whl`)
-            - Linux binary
-            - Manpage
-          files: |
-            target/debian/*.deb
-            target/generate-rpm/*.rpm
-            target/cargo-aur/*.tar.gz
-            target/cargo-aur/PKGBUILD
-            python-wheels/*.whl
-            target/release/datui
-            target/release/datui.1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

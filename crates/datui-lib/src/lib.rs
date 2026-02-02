@@ -45,10 +45,12 @@ pub use config::{
 
 use analysis_modal::{AnalysisModal, AnalysisProgress};
 use chart_export::{
-    write_chart_eps, write_chart_png, ChartExportBounds, ChartExportFormat, ChartExportSeries,
+    write_box_plot_eps, write_box_plot_png, write_chart_eps, write_chart_png, write_heatmap_eps,
+    write_heatmap_png, BoxPlotExportBounds, ChartExportBounds, ChartExportFormat,
+    ChartExportSeries,
 };
 use chart_export_modal::{ChartExportFocus, ChartExportModal};
-use chart_modal::{ChartFocus, ChartModal, ChartType};
+use chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 use filter_modal::{FilterFocus, FilterOperator, FilterStatement, LogicalOperator};
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
@@ -2571,18 +2573,12 @@ impl App {
 
             match event.code {
                 KeyCode::Char('e')
-                    if event.is_press()
-                        && self.chart_modal.focus != ChartFocus::XInput
-                        && self.chart_modal.focus != ChartFocus::YInput =>
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
                 {
-                    // Open chart export modal when there is something visible to export (effective x + y)
-                    if let Some(ref _state) = self.data_table_state {
-                        let x_ok = self.chart_modal.effective_x_column().is_some();
-                        let y_ok = !self.chart_modal.effective_y_columns().is_empty();
-                        if x_ok && y_ok {
-                            self.chart_export_modal
-                                .open(&self.theme, self.history_limit);
-                        }
+                    // Open chart export modal when there is something visible to export
+                    if self.data_table_state.is_some() && self.chart_modal.can_export() {
+                        self.chart_export_modal
+                            .open(&self.theme, self.history_limit);
                     }
                 }
                 // q/Q do nothing in chart view (no exit)
@@ -2609,58 +2605,113 @@ impl App {
                         ChartFocus::XList => self.chart_modal.x_list_toggle(),
                         ChartFocus::YList => self.chart_modal.y_list_toggle(),
                         ChartFocus::ChartType => self.chart_modal.next_chart_type(),
+                        ChartFocus::HistList => self.chart_modal.hist_list_toggle(),
+                        ChartFocus::BoxList => self.chart_modal.box_list_toggle(),
+                        ChartFocus::KdeList => self.chart_modal.kde_list_toggle(),
+                        ChartFocus::HeatmapXList => self.chart_modal.heatmap_x_list_toggle(),
+                        ChartFocus::HeatmapYList => self.chart_modal.heatmap_y_list_toggle(),
+                        _ => {}
+                    }
+                }
+                KeyCode::Char('+') | KeyCode::Char('=')
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
+                {
+                    match self.chart_modal.focus {
+                        ChartFocus::HistBins => self.chart_modal.adjust_hist_bins(1),
+                        ChartFocus::HeatmapBins => self.chart_modal.adjust_heatmap_bins(1),
+                        ChartFocus::KdeBandwidth => self
+                            .chart_modal
+                            .adjust_kde_bandwidth_factor(chart_modal::KDE_BANDWIDTH_STEP),
+                        _ => {}
+                    }
+                }
+                KeyCode::Char('-')
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
+                {
+                    match self.chart_modal.focus {
+                        ChartFocus::HistBins => self.chart_modal.adjust_hist_bins(-1),
+                        ChartFocus::HeatmapBins => self.chart_modal.adjust_heatmap_bins(-1),
+                        ChartFocus::KdeBandwidth => self
+                            .chart_modal
+                            .adjust_kde_bandwidth_factor(-chart_modal::KDE_BANDWIDTH_STEP),
                         _ => {}
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h')
-                    if event.is_press()
-                        && self.chart_modal.focus != ChartFocus::XInput
-                        && self.chart_modal.focus != ChartFocus::YInput =>
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
                 {
-                    if self.chart_modal.focus == ChartFocus::ChartType {
-                        self.chart_modal.prev_chart_type();
+                    match self.chart_modal.focus {
+                        ChartFocus::TabBar => self.chart_modal.prev_chart_kind(),
+                        ChartFocus::ChartType => self.chart_modal.prev_chart_type(),
+                        ChartFocus::HistBins => self.chart_modal.adjust_hist_bins(-1),
+                        ChartFocus::HeatmapBins => self.chart_modal.adjust_heatmap_bins(-1),
+                        ChartFocus::KdeBandwidth => self
+                            .chart_modal
+                            .adjust_kde_bandwidth_factor(-chart_modal::KDE_BANDWIDTH_STEP),
+                        _ => {}
                     }
                 }
                 KeyCode::Right | KeyCode::Char('l')
-                    if event.is_press()
-                        && self.chart_modal.focus != ChartFocus::XInput
-                        && self.chart_modal.focus != ChartFocus::YInput =>
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
                 {
-                    if self.chart_modal.focus == ChartFocus::ChartType {
-                        self.chart_modal.next_chart_type();
+                    match self.chart_modal.focus {
+                        ChartFocus::TabBar => self.chart_modal.next_chart_kind(),
+                        ChartFocus::ChartType => self.chart_modal.next_chart_type(),
+                        ChartFocus::HistBins => self.chart_modal.adjust_hist_bins(1),
+                        ChartFocus::HeatmapBins => self.chart_modal.adjust_heatmap_bins(1),
+                        ChartFocus::KdeBandwidth => self
+                            .chart_modal
+                            .adjust_kde_bandwidth_factor(chart_modal::KDE_BANDWIDTH_STEP),
+                        _ => {}
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k')
-                    if event.is_press()
-                        && self.chart_modal.focus != ChartFocus::XInput
-                        && self.chart_modal.focus != ChartFocus::YInput =>
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
                 {
                     match self.chart_modal.focus {
                         ChartFocus::ChartType => self.chart_modal.prev_chart_type(),
                         ChartFocus::XList => self.chart_modal.x_list_up(),
                         ChartFocus::YList => self.chart_modal.y_list_up(),
+                        ChartFocus::HistList => self.chart_modal.hist_list_up(),
+                        ChartFocus::BoxList => self.chart_modal.box_list_up(),
+                        ChartFocus::KdeList => self.chart_modal.kde_list_up(),
+                        ChartFocus::HeatmapXList => self.chart_modal.heatmap_x_list_up(),
+                        ChartFocus::HeatmapYList => self.chart_modal.heatmap_y_list_up(),
                         _ => {}
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j')
-                    if event.is_press()
-                        && self.chart_modal.focus != ChartFocus::XInput
-                        && self.chart_modal.focus != ChartFocus::YInput =>
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
                 {
                     match self.chart_modal.focus {
                         ChartFocus::ChartType => self.chart_modal.next_chart_type(),
                         ChartFocus::XList => self.chart_modal.x_list_down(),
                         ChartFocus::YList => self.chart_modal.y_list_down(),
+                        ChartFocus::HistList => self.chart_modal.hist_list_down(),
+                        ChartFocus::BoxList => self.chart_modal.box_list_down(),
+                        ChartFocus::KdeList => self.chart_modal.kde_list_down(),
+                        ChartFocus::HeatmapXList => self.chart_modal.heatmap_x_list_down(),
+                        ChartFocus::HeatmapYList => self.chart_modal.heatmap_y_list_down(),
                         _ => {}
                     }
                 }
                 _ => {
-                    // Pass key to text inputs when X or Y input is focused (including h/j/k/l for typing)
+                    // Pass key to text inputs when focused (including h/j/k/l for typing)
                     if event.is_press() {
                         if self.chart_modal.focus == ChartFocus::XInput {
                             let _ = self.chart_modal.x_input.handle_key(event, None);
                         } else if self.chart_modal.focus == ChartFocus::YInput {
                             let _ = self.chart_modal.y_input.handle_key(event, None);
+                        } else if self.chart_modal.focus == ChartFocus::HistInput {
+                            let _ = self.chart_modal.hist_input.handle_key(event, None);
+                        } else if self.chart_modal.focus == ChartFocus::BoxInput {
+                            let _ = self.chart_modal.box_input.handle_key(event, None);
+                        } else if self.chart_modal.focus == ChartFocus::KdeInput {
+                            let _ = self.chart_modal.kde_input.handle_key(event, None);
+                        } else if self.chart_modal.focus == ChartFocus::HeatmapXInput {
+                            let _ = self.chart_modal.heatmap_x_input.handle_key(event, None);
+                        } else if self.chart_modal.focus == ChartFocus::HeatmapYInput {
+                            let _ = self.chart_modal.heatmap_y_input.handle_key(event, None);
                         }
                     }
                 }
@@ -4484,6 +4535,19 @@ impl App {
                             std::mem::take(&mut self.chart_modal.x_input).with_theme(&self.theme);
                         self.chart_modal.y_input =
                             std::mem::take(&mut self.chart_modal.y_input).with_theme(&self.theme);
+                        self.chart_modal.hist_input =
+                            std::mem::take(&mut self.chart_modal.hist_input)
+                                .with_theme(&self.theme);
+                        self.chart_modal.box_input =
+                            std::mem::take(&mut self.chart_modal.box_input).with_theme(&self.theme);
+                        self.chart_modal.kde_input =
+                            std::mem::take(&mut self.chart_modal.kde_input).with_theme(&self.theme);
+                        self.chart_modal.heatmap_x_input =
+                            std::mem::take(&mut self.chart_modal.heatmap_x_input)
+                                .with_theme(&self.theme);
+                        self.chart_modal.heatmap_y_input =
+                            std::mem::take(&mut self.chart_modal.heatmap_y_input)
+                                .with_theme(&self.theme);
                         self.input_mode = InputMode::Chart;
                     }
                 }
@@ -5159,105 +5223,257 @@ impl App {
             .data_table_state
             .as_ref()
             .ok_or_else(|| color_eyre::eyre::eyre!("No data loaded"))?;
-        let x_column = self
-            .chart_modal
-            .effective_x_column()
-            .ok_or_else(|| color_eyre::eyre::eyre!("No X axis column selected"))?;
-        let y_columns = self.chart_modal.effective_y_columns();
-        if y_columns.is_empty() {
-            return Err(color_eyre::eyre::eyre!("No Y axis columns selected"));
-        }
-
-        let chart_data_result =
-            chart_data::prepare_chart_data(&state.lf, &state.schema, x_column, &y_columns)?;
-
-        let log_scale = self.chart_modal.log_scale;
-        let series: Vec<ChartExportSeries> = chart_data_result
-            .series
-            .iter()
-            .zip(y_columns.iter())
-            .map(|(points, name)| {
-                let pts = if log_scale {
-                    points
-                        .iter()
-                        .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
-                        .collect()
-                } else {
-                    points.clone()
-                };
-                ChartExportSeries {
-                    name: name.clone(),
-                    points: pts,
-                }
-            })
-            .filter(|s| !s.points.is_empty())
-            .collect();
-
-        if series.is_empty() {
-            return Err(color_eyre::eyre::eyre!("No valid data points to export"));
-        }
-
-        let mut all_x_min = f64::INFINITY;
-        let mut all_x_max = f64::NEG_INFINITY;
-        let mut all_y_min = f64::INFINITY;
-        let mut all_y_max = f64::NEG_INFINITY;
-        for s in &series {
-            for &(x, y) in &s.points {
-                all_x_min = all_x_min.min(x);
-                all_x_max = all_x_max.max(x);
-                all_y_min = all_y_min.min(y);
-                all_y_max = all_y_max.max(y);
-            }
-        }
-
-        let chart_type = self.chart_modal.chart_type;
-        let y_starts_at_zero = self.chart_modal.y_starts_at_zero;
-        let y_min_bounds = if chart_type == ChartType::Bar {
-            0.0_f64.min(all_y_min)
-        } else if y_starts_at_zero {
-            0.0
-        } else {
-            all_y_min
-        };
-        let y_max_bounds = if all_y_max > y_min_bounds {
-            all_y_max
-        } else {
-            y_min_bounds + 1.0
-        };
-        let x_min_bounds = if all_x_max > all_x_min {
-            all_x_min
-        } else {
-            all_x_min - 0.5
-        };
-        let x_max_bounds = if all_x_max > all_x_min {
-            all_x_max
-        } else {
-            all_x_min + 0.5
-        };
-
-        let x_label = x_column.to_string();
-        let y_label = y_columns.join(", ");
         let chart_title = title.trim();
         let chart_title = if chart_title.is_empty() {
             None
         } else {
             Some(chart_title.to_string())
         };
-        let bounds = ChartExportBounds {
-            x_min: x_min_bounds,
-            x_max: x_max_bounds,
-            y_min: y_min_bounds,
-            y_max: y_max_bounds,
-            x_label: x_label.clone(),
-            y_label: y_label.clone(),
-            x_axis_kind: chart_data_result.x_axis_kind,
-            log_scale: self.chart_modal.log_scale,
-            chart_title,
-        };
 
-        match format {
-            ChartExportFormat::Png => write_chart_png(path, &series, chart_type, &bounds),
-            ChartExportFormat::Eps => write_chart_eps(path, &series, chart_type, &bounds),
+        match self.chart_modal.chart_kind {
+            ChartKind::XY => {
+                let x_column = self
+                    .chart_modal
+                    .effective_x_column()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("No X axis column selected"))?;
+                let y_columns = self.chart_modal.effective_y_columns();
+                if y_columns.is_empty() {
+                    return Err(color_eyre::eyre::eyre!("No Y axis columns selected"));
+                }
+
+                let chart_data_result =
+                    chart_data::prepare_chart_data(&state.lf, &state.schema, x_column, &y_columns)?;
+
+                let log_scale = self.chart_modal.log_scale;
+                let series: Vec<ChartExportSeries> = chart_data_result
+                    .series
+                    .iter()
+                    .zip(y_columns.iter())
+                    .map(|(points, name)| {
+                        let pts = if log_scale {
+                            points
+                                .iter()
+                                .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
+                                .collect()
+                        } else {
+                            points.clone()
+                        };
+                        ChartExportSeries {
+                            name: name.clone(),
+                            points: pts,
+                        }
+                    })
+                    .filter(|s| !s.points.is_empty())
+                    .collect();
+
+                if series.is_empty() {
+                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                }
+
+                let mut all_x_min = f64::INFINITY;
+                let mut all_x_max = f64::NEG_INFINITY;
+                let mut all_y_min = f64::INFINITY;
+                let mut all_y_max = f64::NEG_INFINITY;
+                for s in &series {
+                    for &(x, y) in &s.points {
+                        all_x_min = all_x_min.min(x);
+                        all_x_max = all_x_max.max(x);
+                        all_y_min = all_y_min.min(y);
+                        all_y_max = all_y_max.max(y);
+                    }
+                }
+
+                let chart_type = self.chart_modal.chart_type;
+                let y_starts_at_zero = self.chart_modal.y_starts_at_zero;
+                let y_min_bounds = if chart_type == ChartType::Bar {
+                    0.0_f64.min(all_y_min)
+                } else if y_starts_at_zero {
+                    0.0
+                } else {
+                    all_y_min
+                };
+                let y_max_bounds = if all_y_max > y_min_bounds {
+                    all_y_max
+                } else {
+                    y_min_bounds + 1.0
+                };
+                let x_min_bounds = if all_x_max > all_x_min {
+                    all_x_min
+                } else {
+                    all_x_min - 0.5
+                };
+                let x_max_bounds = if all_x_max > all_x_min {
+                    all_x_max
+                } else {
+                    all_x_min + 0.5
+                };
+
+                let x_label = x_column.to_string();
+                let y_label = y_columns.join(", ");
+                let bounds = ChartExportBounds {
+                    x_min: x_min_bounds,
+                    x_max: x_max_bounds,
+                    y_min: y_min_bounds,
+                    y_max: y_max_bounds,
+                    x_label: x_label.clone(),
+                    y_label: y_label.clone(),
+                    x_axis_kind: chart_data_result.x_axis_kind,
+                    log_scale: self.chart_modal.log_scale,
+                    chart_title,
+                };
+
+                match format {
+                    ChartExportFormat::Png => write_chart_png(path, &series, chart_type, &bounds),
+                    ChartExportFormat::Eps => write_chart_eps(path, &series, chart_type, &bounds),
+                }
+            }
+            ChartKind::Histogram => {
+                let column = self
+                    .chart_modal
+                    .effective_hist_column()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("No histogram column selected"))?;
+                let data = chart_data::prepare_histogram_data(
+                    &state.lf,
+                    &column,
+                    self.chart_modal.hist_bins,
+                )?;
+                if data.bins.is_empty() {
+                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                }
+                let points: Vec<(f64, f64)> =
+                    data.bins.iter().map(|b| (b.center, b.count)).collect();
+                let series = vec![ChartExportSeries {
+                    name: column.clone(),
+                    points,
+                }];
+                let x_max = if data.x_max > data.x_min {
+                    data.x_max
+                } else {
+                    data.x_min + 1.0
+                };
+                let y_max = if data.max_count > 0.0 {
+                    data.max_count
+                } else {
+                    1.0
+                };
+                let bounds = ChartExportBounds {
+                    x_min: data.x_min,
+                    x_max,
+                    y_min: 0.0,
+                    y_max,
+                    x_label: column.clone(),
+                    y_label: "Count".to_string(),
+                    x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
+                    log_scale: false,
+                    chart_title,
+                };
+                match format {
+                    ChartExportFormat::Png => {
+                        write_chart_png(path, &series, ChartType::Bar, &bounds)
+                    }
+                    ChartExportFormat::Eps => {
+                        write_chart_eps(path, &series, ChartType::Bar, &bounds)
+                    }
+                }
+            }
+            ChartKind::BoxPlot => {
+                let column = self
+                    .chart_modal
+                    .effective_box_column()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("No box plot column selected"))?;
+                let data =
+                    chart_data::prepare_box_plot_data(&state.lf, std::slice::from_ref(&column))?;
+                if data.stats.is_empty() {
+                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                }
+                let bounds = BoxPlotExportBounds {
+                    y_min: data.y_min,
+                    y_max: data.y_max,
+                    x_labels: vec![column.clone()],
+                    x_label: "Columns".to_string(),
+                    y_label: "Value".to_string(),
+                    chart_title,
+                };
+                match format {
+                    ChartExportFormat::Png => write_box_plot_png(path, &data, &bounds),
+                    ChartExportFormat::Eps => write_box_plot_eps(path, &data, &bounds),
+                }
+            }
+            ChartKind::Kde => {
+                let column = self
+                    .chart_modal
+                    .effective_kde_column()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("No KDE column selected"))?;
+                let data = chart_data::prepare_kde_data(
+                    &state.lf,
+                    std::slice::from_ref(&column),
+                    self.chart_modal.kde_bandwidth_factor,
+                )?;
+                if data.series.is_empty() {
+                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                }
+                let series: Vec<ChartExportSeries> = data
+                    .series
+                    .iter()
+                    .map(|s| ChartExportSeries {
+                        name: s.name.clone(),
+                        points: s.points.clone(),
+                    })
+                    .collect();
+                let bounds = ChartExportBounds {
+                    x_min: data.x_min,
+                    x_max: data.x_max,
+                    y_min: 0.0,
+                    y_max: data.y_max,
+                    x_label: column.clone(),
+                    y_label: "Density".to_string(),
+                    x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
+                    log_scale: false,
+                    chart_title,
+                };
+                match format {
+                    ChartExportFormat::Png => {
+                        write_chart_png(path, &series, ChartType::Line, &bounds)
+                    }
+                    ChartExportFormat::Eps => {
+                        write_chart_eps(path, &series, ChartType::Line, &bounds)
+                    }
+                }
+            }
+            ChartKind::Heatmap => {
+                let x_column = self
+                    .chart_modal
+                    .effective_heatmap_x_column()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("No heatmap X column selected"))?;
+                let y_column = self
+                    .chart_modal
+                    .effective_heatmap_y_column()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("No heatmap Y column selected"))?;
+                let data = chart_data::prepare_heatmap_data(
+                    &state.lf,
+                    &x_column,
+                    &y_column,
+                    self.chart_modal.heatmap_bins,
+                )?;
+                if data.counts.is_empty() || data.max_count <= 0.0 {
+                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                }
+                let bounds = ChartExportBounds {
+                    x_min: data.x_min,
+                    x_max: data.x_max,
+                    y_min: data.y_min,
+                    y_max: data.y_max,
+                    x_label: x_column.clone(),
+                    y_label: y_column.clone(),
+                    x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
+                    log_scale: false,
+                    chart_title,
+                };
+                match format {
+                    ChartExportFormat::Png => write_heatmap_png(path, &data, &bounds),
+                    ChartExportFormat::Eps => write_heatmap_eps(path, &data, &bounds),
+                }
+            }
         }
     }
 
@@ -5848,12 +6064,15 @@ Dataset technical info (Schema and Resources tabs).
             InputMode::Chart => (
                 "Chart Help",
                 "\
-Chart view: visualize data as line, scatter, or bar.
+Chart view: tabs for XY, Histogram, Box Plot, KDE, Heatmap.
 
-  Tab / BackTab:    Move focus (chart type → X input → X list → Y input → Y list → checkboxes)
-  ← / →:            Change chart type (Line / Scatter / Bar) when chart type focused
-  ↑ / ↓:            Move selection in X or Y column list when list focused
-  Enter / Space:    Select from list, or toggle checkboxes (Start y at 0, Log scale, Legend)
+  Tab / BackTab:    Move focus (tab bar → sidebar fields)
+  ← / →:            On tab bar: switch chart type
+                    On plot style: switch Line / Scatter / Bar
+                    On bins/bandwidth: adjust values
+  ↑ / ↓:            Move selection in focused column list
+  Enter / Space:    Select column or toggle options
+  + / -:            Adjust bins or bandwidth when focused
   Esc:              Back to main view",
             ),
         };
@@ -7401,55 +7620,136 @@ impl Widget for &mut App {
         if self.input_mode == InputMode::Chart {
             let chart_area = main_area;
             Clear.render(chart_area, buf);
-            let (chart_data, x_axis_kind) = self
-                .chart_modal
-                .effective_x_column()
-                .and_then(|x| {
-                    let state = self.data_table_state.as_ref()?;
-                    let y = self.chart_modal.effective_y_columns();
-                    if y.is_empty() {
-                        return None;
-                    }
-                    chart_data::prepare_chart_data(&state.lf, &state.schema, x, &y)
-                        .ok()
-                        .map(|r| (r.series, r.x_axis_kind))
-                })
-                .unwrap_or_else(|| {
-                    let x_kind = self
+            let mut xy_series: Option<Vec<Vec<(f64, f64)>>> = None;
+            let mut x_axis_kind = chart_data::XAxisTemporalKind::Numeric;
+            let mut x_bounds: Option<(f64, f64)> = None;
+            let mut hist_data: Option<chart_data::HistogramData> = None;
+            let mut box_data: Option<chart_data::BoxPlotData> = None;
+            let mut kde_data: Option<chart_data::KdeData> = None;
+            let mut heatmap_data: Option<chart_data::HeatmapData> = None;
+
+            match self.chart_modal.chart_kind {
+                ChartKind::XY => {
+                    let (chart_data, kind) = self
                         .chart_modal
                         .effective_x_column()
                         .and_then(|x| {
-                            self.data_table_state.as_ref().map(|state| {
-                                chart_data::x_axis_temporal_kind_for_column(&state.schema, x)
-                            })
+                            let state = self.data_table_state.as_ref()?;
+                            let y = self.chart_modal.effective_y_columns();
+                            if y.is_empty() {
+                                return None;
+                            }
+                            chart_data::prepare_chart_data(&state.lf, &state.schema, x, &y)
+                                .ok()
+                                .map(|r| (r.series, r.x_axis_kind))
                         })
-                        .unwrap_or(crate::chart_data::XAxisTemporalKind::Numeric);
-                    (Vec::new(), x_kind)
-                });
-            let chart_data_opt = if chart_data.iter().any(|s| !s.is_empty()) {
-                Some(&chart_data)
-            } else {
-                None
+                        .unwrap_or_else(|| {
+                            let x_kind = self
+                                .chart_modal
+                                .effective_x_column()
+                                .and_then(|x| {
+                                    self.data_table_state.as_ref().map(|state| {
+                                        chart_data::x_axis_temporal_kind_for_column(
+                                            &state.schema,
+                                            x,
+                                        )
+                                    })
+                                })
+                                .unwrap_or(chart_data::XAxisTemporalKind::Numeric);
+                            (Vec::new(), x_kind)
+                        });
+                    x_axis_kind = kind;
+                    if chart_data.iter().any(|s| !s.is_empty()) {
+                        xy_series = Some(chart_data);
+                    }
+                    x_bounds = (xy_series.is_none()
+                        && self.chart_modal.effective_x_column().is_some()
+                        && self.data_table_state.is_some())
+                    .then(|| {
+                        let x = self.chart_modal.effective_x_column().unwrap();
+                        let state = self.data_table_state.as_ref().unwrap();
+                        chart_data::prepare_chart_x_range(&state.lf, &state.schema, x).ok()
+                    })
+                    .flatten()
+                    .map(|r| (r.x_min, r.x_max));
+                }
+                ChartKind::Histogram => {
+                    if let (Some(state), Some(column)) = (
+                        self.data_table_state.as_ref(),
+                        self.chart_modal.effective_hist_column(),
+                    ) {
+                        hist_data = chart_data::prepare_histogram_data(
+                            &state.lf,
+                            &column,
+                            self.chart_modal.hist_bins,
+                        )
+                        .ok();
+                    }
+                }
+                ChartKind::BoxPlot => {
+                    if let (Some(state), Some(column)) = (
+                        self.data_table_state.as_ref(),
+                        self.chart_modal.effective_box_column(),
+                    ) {
+                        box_data = chart_data::prepare_box_plot_data(&state.lf, &[column]).ok();
+                    }
+                }
+                ChartKind::Kde => {
+                    if let (Some(state), Some(column)) = (
+                        self.data_table_state.as_ref(),
+                        self.chart_modal.effective_kde_column(),
+                    ) {
+                        kde_data = chart_data::prepare_kde_data(
+                            &state.lf,
+                            &[column],
+                            self.chart_modal.kde_bandwidth_factor,
+                        )
+                        .ok();
+                    }
+                }
+                ChartKind::Heatmap => {
+                    if let (Some(state), Some(x_column), Some(y_column)) = (
+                        self.data_table_state.as_ref(),
+                        self.chart_modal.effective_heatmap_x_column(),
+                        self.chart_modal.effective_heatmap_y_column(),
+                    ) {
+                        heatmap_data = chart_data::prepare_heatmap_data(
+                            &state.lf,
+                            &x_column,
+                            &y_column,
+                            self.chart_modal.heatmap_bins,
+                        )
+                        .ok();
+                    }
+                }
+            }
+
+            let render_data = match self.chart_modal.chart_kind {
+                ChartKind::XY => widgets::chart::ChartRenderData::XY {
+                    series: xy_series.as_ref(),
+                    x_axis_kind,
+                    x_bounds,
+                },
+                ChartKind::Histogram => widgets::chart::ChartRenderData::Histogram {
+                    data: hist_data.as_ref(),
+                },
+                ChartKind::BoxPlot => widgets::chart::ChartRenderData::BoxPlot {
+                    data: box_data.as_ref(),
+                },
+                ChartKind::Kde => widgets::chart::ChartRenderData::Kde {
+                    data: kde_data.as_ref(),
+                },
+                ChartKind::Heatmap => widgets::chart::ChartRenderData::Heatmap {
+                    data: heatmap_data.as_ref(),
+                },
             };
-            // When only x is selected (no data), load x column range for proper axis labels
-            let x_bounds = (chart_data_opt.is_none()
-                && self.chart_modal.effective_x_column().is_some()
-                && self.data_table_state.is_some())
-            .then(|| {
-                let x = self.chart_modal.effective_x_column().unwrap();
-                let state = self.data_table_state.as_ref().unwrap();
-                chart_data::prepare_chart_x_range(&state.lf, &state.schema, x).ok()
-            })
-            .flatten()
-            .map(|r| (r.x_min, r.x_max));
+
             widgets::chart::render_chart_view(
                 chart_area,
                 buf,
                 &mut self.chart_modal,
                 &self.theme,
-                chart_data_opt,
-                x_axis_kind,
-                x_bounds,
+                render_data,
             );
 
             if self.chart_export_modal.active {

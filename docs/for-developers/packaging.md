@@ -102,7 +102,7 @@ Use **stable** release tags only (e.g. `v0.2.11`); the AUR package fetches the t
 
 ### Automated AUR updates (GitHub Actions)
 
-The release workflow can push PKGBUILD and .SRCINFO to the AUR automatically when you push a version tag. It uses [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur): the action clones the AUR repo, copies our PKGBUILD and tarball, runs `makepkg --printsrcinfo > .SRCINFO`, then commits and pushes via SSH.
+The release workflow can push PKGBUILD and .SRCINFO to the AUR automatically when you push a version tag. It publishes to the **datui-bin** AUR package (per AUR convention for pre-built binaries). It uses [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur): the action clones the AUR repo, copies our PKGBUILD and tarball, runs `makepkg --printsrcinfo > .SRCINFO`, then commits and pushes via SSH.
 
 **Required repository secrets** (Settings → Secrets and variables → Actions):
 

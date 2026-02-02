@@ -4,7 +4,38 @@ use ratatui::widgets::ListState;
 
 use crate::widgets::text_input::TextInput;
 
-/// Chart type: Line, Scatter, or Bar (maps to ratatui GraphType).
+/// Chart kind: full chart category shown as tabs.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ChartKind {
+    #[default]
+    XY,
+    Histogram,
+    BoxPlot,
+    Kde,
+    Heatmap,
+}
+
+impl ChartKind {
+    pub const ALL: [Self; 5] = [
+        Self::XY,
+        Self::Histogram,
+        Self::BoxPlot,
+        Self::Kde,
+        Self::Heatmap,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::XY => "XY",
+            Self::Histogram => "Histogram",
+            Self::BoxPlot => "Box Plot",
+            Self::Kde => "KDE",
+            Self::Heatmap => "Heatmap",
+        }
+    }
+}
+
+/// XY chart type: Line, Scatter, or Bar (maps to ratatui GraphType).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ChartType {
     #[default]
@@ -29,6 +60,7 @@ impl ChartType {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ChartFocus {
     #[default]
+    TabBar,
     ChartType,
     XInput,
     XList,
@@ -37,15 +69,44 @@ pub enum ChartFocus {
     YStartsAtZero,
     LogScale,
     ShowLegend,
+    HistInput,
+    HistList,
+    HistBins,
+    BoxInput,
+    BoxList,
+    KdeInput,
+    KdeList,
+    KdeBandwidth,
+    HeatmapXInput,
+    HeatmapXList,
+    HeatmapYInput,
+    HeatmapYList,
+    HeatmapBins,
 }
 
 /// Maximum number of y-axis series that can be selected (remembered).
 pub const Y_SERIES_MAX: usize = 7;
 
-/// Chart modal state: type, x/y column selection, and options.
+/// Default histogram bin count.
+pub const HISTOGRAM_DEFAULT_BINS: usize = 20;
+pub const HISTOGRAM_MIN_BINS: usize = 5;
+pub const HISTOGRAM_MAX_BINS: usize = 80;
+
+/// Default heatmap bin count (applies to both axes).
+pub const HEATMAP_DEFAULT_BINS: usize = 20;
+pub const HEATMAP_MIN_BINS: usize = 5;
+pub const HEATMAP_MAX_BINS: usize = 60;
+
+/// KDE bandwidth multiplier bounds and step.
+pub const KDE_BANDWIDTH_MIN: f64 = 0.2;
+pub const KDE_BANDWIDTH_MAX: f64 = 5.0;
+pub const KDE_BANDWIDTH_STEP: f64 = 0.1;
+
+/// Chart modal state: chart kind, axes/columns, and options.
 #[derive(Default)]
 pub struct ChartModal {
     pub active: bool,
+    pub chart_kind: ChartKind,
     pub chart_type: ChartType,
     /// Remembered x-axis column (single; set with spacebar).
     pub x_column: Option<String>,
@@ -67,6 +128,33 @@ pub struct ChartModal {
     pub x_candidates: Vec<String>,
     /// Available numeric columns for y-axis.
     pub y_candidates: Vec<String>,
+    /// Histogram: remembered column (single selection).
+    pub hist_column: Option<String>,
+    pub hist_bins: usize,
+    pub hist_input: TextInput,
+    pub hist_list_state: ListState,
+    pub hist_candidates: Vec<String>,
+    /// Box plot: remembered column (single selection).
+    pub box_column: Option<String>,
+    pub box_input: TextInput,
+    pub box_list_state: ListState,
+    pub box_candidates: Vec<String>,
+    /// KDE: remembered column (single selection).
+    pub kde_column: Option<String>,
+    pub kde_bandwidth_factor: f64,
+    pub kde_input: TextInput,
+    pub kde_list_state: ListState,
+    pub kde_candidates: Vec<String>,
+    /// Heatmap: remembered x/y columns (single selection each).
+    pub heatmap_x_column: Option<String>,
+    pub heatmap_y_column: Option<String>,
+    pub heatmap_bins: usize,
+    pub heatmap_x_input: TextInput,
+    pub heatmap_y_input: TextInput,
+    pub heatmap_x_list_state: ListState,
+    pub heatmap_y_list_state: ListState,
+    pub heatmap_x_candidates: Vec<String>,
+    pub heatmap_y_candidates: Vec<String>,
 }
 
 impl ChartModal {
@@ -77,11 +165,12 @@ impl ChartModal {
     /// Open the chart modal. No default x or y columns; user selects with spacebar.
     pub fn open(&mut self, numeric_columns: &[String], datetime_columns: &[String]) {
         self.active = true;
+        self.chart_kind = ChartKind::XY;
         self.chart_type = ChartType::Line;
         self.y_starts_at_zero = false;
         self.log_scale = false;
         self.show_legend = true;
-        self.focus = ChartFocus::ChartType;
+        self.focus = ChartFocus::TabBar;
 
         // x_candidates: datetime first, then numeric (for list order).
         self.x_candidates = datetime_columns.to_vec();
@@ -91,13 +180,31 @@ impl ChartModal {
             }
         }
         self.y_candidates = numeric_columns.to_vec();
+        self.hist_candidates = numeric_columns.to_vec();
+        self.box_candidates = numeric_columns.to_vec();
+        self.kde_candidates = numeric_columns.to_vec();
+        self.heatmap_x_candidates = numeric_columns.to_vec();
+        self.heatmap_y_candidates = numeric_columns.to_vec();
 
         // No default x or y; user selects with spacebar.
         self.x_column = None;
         self.y_columns.clear();
+        self.hist_column = None;
+        self.hist_bins = HISTOGRAM_DEFAULT_BINS;
+        self.box_column = None;
+        self.kde_column = None;
+        self.kde_bandwidth_factor = 1.0;
+        self.heatmap_x_column = None;
+        self.heatmap_y_column = None;
+        self.heatmap_bins = HEATMAP_DEFAULT_BINS;
 
         self.x_input.set_value(String::new());
         self.y_input.set_value(String::new());
+        self.hist_input.set_value(String::new());
+        self.box_input.set_value(String::new());
+        self.kde_input.set_value(String::new());
+        self.heatmap_x_input.set_value(String::new());
+        self.heatmap_y_input.set_value(String::new());
 
         let x_display = self.x_display_list();
         let y_display = self.y_display_list();
@@ -105,6 +212,21 @@ impl ChartModal {
             .select(if x_display.is_empty() { None } else { Some(0) });
         self.y_list_state
             .select(if y_display.is_empty() { None } else { Some(0) });
+        let hist_display = self.hist_display_list();
+        let box_display = self.box_display_list();
+        let kde_display = self.kde_display_list();
+        let heatmap_x_display = self.heatmap_x_display_list();
+        let heatmap_y_display = self.heatmap_y_display_list();
+        self.hist_list_state
+            .select(if hist_display.is_empty() { None } else { Some(0) });
+        self.box_list_state
+            .select(if box_display.is_empty() { None } else { Some(0) });
+        self.kde_list_state
+            .select(if kde_display.is_empty() { None } else { Some(0) });
+        self.heatmap_x_list_state
+            .select(if heatmap_x_display.is_empty() { None } else { Some(0) });
+        self.heatmap_y_list_state
+            .select(if heatmap_y_display.is_empty() { None } else { Some(0) });
     }
 
     /// X-axis candidates filtered by current x search string (case-insensitive substring).
@@ -135,19 +257,7 @@ impl ChartModal {
 
     /// X display list: remembered x first (if in filtered), then rest of filtered. Used for list rendering and index.
     pub fn x_display_list(&self) -> Vec<String> {
-        let filtered = self.x_filtered();
-        if let Some(ref x) = self.x_column {
-            if let Some(pos) = filtered.iter().position(|c| c == x) {
-                let mut out = vec![filtered[pos].clone()];
-                for (i, c) in filtered.iter().enumerate() {
-                    if i != pos {
-                        out.push(c.clone());
-                    }
-                }
-                return out;
-            }
-        }
-        filtered
+        Self::display_list_with_selected(self.x_filtered(), &self.x_column)
     }
 
     /// Y display list: remembered y columns first (in order, that are in filtered), then rest of filtered.
@@ -165,6 +275,101 @@ impl ChartModal {
             }
         }
         out
+    }
+
+    fn display_list_with_selected(filtered: Vec<String>, selected: &Option<String>) -> Vec<String> {
+        if let Some(ref selected) = selected {
+            if let Some(pos) = filtered.iter().position(|c| c == selected) {
+                let mut out = vec![filtered[pos].clone()];
+                for (i, c) in filtered.iter().enumerate() {
+                    if i != pos {
+                        out.push(c.clone());
+                    }
+                }
+                return out;
+            }
+        }
+        filtered
+    }
+
+    pub fn hist_filtered(&self) -> Vec<String> {
+        let q = self.hist_input.value().trim().to_lowercase();
+        if q.is_empty() {
+            return self.hist_candidates.clone();
+        }
+        self.hist_candidates
+            .iter()
+            .filter(|c| c.to_lowercase().contains(&q))
+            .cloned()
+            .collect()
+    }
+
+    pub fn hist_display_list(&self) -> Vec<String> {
+        Self::display_list_with_selected(self.hist_filtered(), &self.hist_column)
+    }
+
+    pub fn box_filtered(&self) -> Vec<String> {
+        let q = self.box_input.value().trim().to_lowercase();
+        if q.is_empty() {
+            return self.box_candidates.clone();
+        }
+        self.box_candidates
+            .iter()
+            .filter(|c| c.to_lowercase().contains(&q))
+            .cloned()
+            .collect()
+    }
+
+    pub fn box_display_list(&self) -> Vec<String> {
+        Self::display_list_with_selected(self.box_filtered(), &self.box_column)
+    }
+
+    pub fn kde_filtered(&self) -> Vec<String> {
+        let q = self.kde_input.value().trim().to_lowercase();
+        if q.is_empty() {
+            return self.kde_candidates.clone();
+        }
+        self.kde_candidates
+            .iter()
+            .filter(|c| c.to_lowercase().contains(&q))
+            .cloned()
+            .collect()
+    }
+
+    pub fn kde_display_list(&self) -> Vec<String> {
+        Self::display_list_with_selected(self.kde_filtered(), &self.kde_column)
+    }
+
+    pub fn heatmap_x_filtered(&self) -> Vec<String> {
+        let q = self.heatmap_x_input.value().trim().to_lowercase();
+        if q.is_empty() {
+            return self.heatmap_x_candidates.clone();
+        }
+        self.heatmap_x_candidates
+            .iter()
+            .filter(|c| c.to_lowercase().contains(&q))
+            .cloned()
+            .collect()
+    }
+
+    pub fn heatmap_y_filtered(&self) -> Vec<String> {
+        let q = self.heatmap_y_input.value().trim().to_lowercase();
+        if q.is_empty() {
+            return self.heatmap_y_candidates.clone();
+        }
+        self.heatmap_y_candidates
+            .iter()
+            .filter(|c| c.to_lowercase().contains(&q))
+            .cloned()
+            .collect()
+    }
+
+    pub fn heatmap_x_display_list(&self) -> Vec<String> {
+        Self::display_list_with_selected(self.heatmap_x_filtered(), &self.heatmap_x_column)
+    }
+
+    pub fn heatmap_y_display_list(&self) -> Vec<String> {
+        Self::display_list_with_selected(self.heatmap_y_filtered(), &self.heatmap_y_column)
     }
 
     /// Effective x column for chart/export: the remembered x (no preview on scroll).
@@ -189,6 +394,66 @@ impl ChartModal {
         out
     }
 
+    pub fn effective_hist_column(&self) -> Option<String> {
+        if self.focus == ChartFocus::HistList {
+            let display = self.hist_display_list();
+            if let Some(i) = self.hist_list_state.selected() {
+                if i < display.len() {
+                    return Some(display[i].clone());
+                }
+            }
+        }
+        self.hist_column.clone()
+    }
+
+    pub fn effective_box_column(&self) -> Option<String> {
+        if self.focus == ChartFocus::BoxList {
+            let display = self.box_display_list();
+            if let Some(i) = self.box_list_state.selected() {
+                if i < display.len() {
+                    return Some(display[i].clone());
+                }
+            }
+        }
+        self.box_column.clone()
+    }
+
+    pub fn effective_kde_column(&self) -> Option<String> {
+        if self.focus == ChartFocus::KdeList {
+            let display = self.kde_display_list();
+            if let Some(i) = self.kde_list_state.selected() {
+                if i < display.len() {
+                    return Some(display[i].clone());
+                }
+            }
+        }
+        self.kde_column.clone()
+    }
+
+    pub fn effective_heatmap_x_column(&self) -> Option<String> {
+        if self.focus == ChartFocus::HeatmapXList {
+            let display = self.heatmap_x_display_list();
+            if let Some(i) = self.heatmap_x_list_state.selected() {
+                if i < display.len() {
+                    return Some(display[i].clone());
+                }
+            }
+        }
+        self.heatmap_x_column.clone()
+    }
+
+    pub fn effective_heatmap_y_column(&self) -> Option<String> {
+        if self.focus == ChartFocus::HeatmapYList {
+            let display = self.heatmap_y_display_list();
+            if let Some(i) = self.heatmap_y_list_state.selected() {
+                if i < display.len() {
+                    return Some(display[i].clone());
+                }
+            }
+        }
+        self.heatmap_y_column.clone()
+    }
+
     /// Called when Y list loses focus: if no series remembered and we had a highlighted row, remember it.
     pub fn y_list_blur(&mut self) {
         if !self.y_columns.is_empty() {
@@ -206,6 +471,11 @@ impl ChartModal {
     pub fn clamp_list_selections_to_filtered(&mut self) {
         let x_display = self.x_display_list();
         let y_display = self.y_display_list();
+        let hist_display = self.hist_display_list();
+        let box_display = self.box_display_list();
+        let kde_display = self.kde_display_list();
+        let heatmap_x_display = self.heatmap_x_display_list();
+        let heatmap_y_display = self.heatmap_y_display_list();
         if let Some(s) = self.x_list_state.selected() {
             if s >= x_display.len() {
                 self.x_list_state.select(if x_display.is_empty() {
@@ -224,48 +494,101 @@ impl ChartModal {
                 });
             }
         }
+        if let Some(s) = self.hist_list_state.selected() {
+            if s >= hist_display.len() {
+                self.hist_list_state.select(if hist_display.is_empty() {
+                    None
+                } else {
+                    Some(hist_display.len().saturating_sub(1))
+                });
+            }
+        }
+        if let Some(s) = self.box_list_state.selected() {
+            if s >= box_display.len() {
+                self.box_list_state.select(if box_display.is_empty() {
+                    None
+                } else {
+                    Some(box_display.len().saturating_sub(1))
+                });
+            }
+        }
+        if let Some(s) = self.kde_list_state.selected() {
+            if s >= kde_display.len() {
+                self.kde_list_state.select(if kde_display.is_empty() {
+                    None
+                } else {
+                    Some(kde_display.len().saturating_sub(1))
+                });
+            }
+        }
+        if let Some(s) = self.heatmap_x_list_state.selected() {
+            if s >= heatmap_x_display.len() {
+                self.heatmap_x_list_state
+                    .select(if heatmap_x_display.is_empty() {
+                        None
+                    } else {
+                        Some(heatmap_x_display.len().saturating_sub(1))
+                    });
+            }
+        }
+        if let Some(s) = self.heatmap_y_list_state.selected() {
+            if s >= heatmap_y_display.len() {
+                self.heatmap_y_list_state
+                    .select(if heatmap_y_display.is_empty() {
+                        None
+                    } else {
+                        Some(heatmap_y_display.len().saturating_sub(1))
+                    });
+            }
+        }
     }
 
     pub fn close(&mut self) {
         self.active = false;
+        self.chart_kind = ChartKind::XY;
         self.x_column = None;
         self.y_columns.clear();
         self.x_candidates.clear();
         self.y_candidates.clear();
-        self.focus = ChartFocus::ChartType;
+        self.hist_column = None;
+        self.box_column = None;
+        self.kde_column = None;
+        self.heatmap_x_column = None;
+        self.heatmap_y_column = None;
+        self.hist_candidates.clear();
+        self.box_candidates.clear();
+        self.kde_candidates.clear();
+        self.heatmap_x_candidates.clear();
+        self.heatmap_y_candidates.clear();
+        self.focus = ChartFocus::TabBar;
     }
 
     /// Move focus to next/previous in sidebar. When leaving Y list, apply blur (remember highlight if only one).
     pub fn next_focus(&mut self) {
-        if self.focus == ChartFocus::YList {
+        let prev = self.focus;
+        if prev == ChartFocus::YList {
             self.y_list_blur();
         }
-        self.focus = match self.focus {
-            ChartFocus::ChartType => ChartFocus::XInput,
-            ChartFocus::XInput => ChartFocus::XList,
-            ChartFocus::XList => ChartFocus::YInput,
-            ChartFocus::YInput => ChartFocus::YList,
-            ChartFocus::YList => ChartFocus::YStartsAtZero,
-            ChartFocus::YStartsAtZero => ChartFocus::LogScale,
-            ChartFocus::LogScale => ChartFocus::ShowLegend,
-            ChartFocus::ShowLegend => ChartFocus::ChartType,
-        };
+        let order = self.focus_order();
+        if let Some(pos) = order.iter().position(|f| *f == prev) {
+            self.focus = order[(pos + 1) % order.len()];
+        } else {
+            self.focus = order[0];
+        }
     }
 
     pub fn prev_focus(&mut self) {
-        if self.focus == ChartFocus::YList {
+        let prev = self.focus;
+        if prev == ChartFocus::YList {
             self.y_list_blur();
         }
-        self.focus = match self.focus {
-            ChartFocus::ChartType => ChartFocus::ShowLegend,
-            ChartFocus::XInput => ChartFocus::ChartType,
-            ChartFocus::XList => ChartFocus::XInput,
-            ChartFocus::YInput => ChartFocus::XList,
-            ChartFocus::YList => ChartFocus::YInput,
-            ChartFocus::YStartsAtZero => ChartFocus::YList,
-            ChartFocus::LogScale => ChartFocus::YStartsAtZero,
-            ChartFocus::ShowLegend => ChartFocus::LogScale,
-        };
+        let order = self.focus_order();
+        if let Some(pos) = order.iter().position(|f| *f == prev) {
+            let next = if pos == 0 { order.len() - 1 } else { pos - 1 };
+            self.focus = order[next];
+        } else {
+            self.focus = order[0];
+        }
     }
 
     /// Toggle Y starts at 0 (when focus is YStartsAtZero).
@@ -298,6 +621,46 @@ impl ChartModal {
             ChartType::Scatter => ChartType::Line,
             ChartType::Bar => ChartType::Scatter,
         };
+    }
+
+    pub fn next_chart_kind(&mut self) {
+        let idx = ChartKind::ALL
+            .iter()
+            .position(|&k| k == self.chart_kind)
+            .unwrap_or(0);
+        self.chart_kind = ChartKind::ALL[(idx + 1) % ChartKind::ALL.len()];
+        self.focus = ChartFocus::TabBar;
+    }
+
+    pub fn prev_chart_kind(&mut self) {
+        let idx = ChartKind::ALL
+            .iter()
+            .position(|&k| k == self.chart_kind)
+            .unwrap_or(0);
+        let prev = if idx == 0 {
+            ChartKind::ALL.len() - 1
+        } else {
+            idx - 1
+        };
+        self.chart_kind = ChartKind::ALL[prev];
+        self.focus = ChartFocus::TabBar;
+    }
+
+    pub fn adjust_hist_bins(&mut self, delta: i32) {
+        let next = (self.hist_bins as i32 + delta)
+            .clamp(HISTOGRAM_MIN_BINS as i32, HISTOGRAM_MAX_BINS as i32);
+        self.hist_bins = next as usize;
+    }
+
+    pub fn adjust_heatmap_bins(&mut self, delta: i32) {
+        let next = (self.heatmap_bins as i32 + delta)
+            .clamp(HEATMAP_MIN_BINS as i32, HEATMAP_MAX_BINS as i32);
+        self.heatmap_bins = next as usize;
+    }
+
+    pub fn adjust_kde_bandwidth_factor(&mut self, delta: f64) {
+        let next = (self.kde_bandwidth_factor + delta).clamp(KDE_BANDWIDTH_MIN, KDE_BANDWIDTH_MAX);
+        self.kde_bandwidth_factor = (next * 10.0).round() / 10.0;
     }
 
     /// Move x-axis list highlight down (does not change remembered x; use spacebar to remember).
@@ -380,11 +743,261 @@ impl ChartModal {
             self.y_columns.push(name);
         }
     }
+
+    pub fn hist_list_down(&mut self) {
+        let display = self.hist_display_list();
+        let len = display.len();
+        if len == 0 {
+            return;
+        }
+        let i = self
+            .hist_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(len.saturating_sub(1));
+        self.hist_list_state.select(Some(i));
+    }
+
+    pub fn hist_list_up(&mut self) {
+        let display = self.hist_display_list();
+        if display.is_empty() {
+            return;
+        }
+        let i = self
+            .hist_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        self.hist_list_state.select(Some(i));
+    }
+
+    pub fn hist_list_toggle(&mut self) {
+        let display = self.hist_display_list();
+        if let Some(i) = self.hist_list_state.selected() {
+            if i < display.len() {
+                self.hist_column = Some(display[i].clone());
+            }
+        }
+    }
+
+    pub fn box_list_down(&mut self) {
+        let display = self.box_display_list();
+        let len = display.len();
+        if len == 0 {
+            return;
+        }
+        let i = self
+            .box_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(len.saturating_sub(1));
+        self.box_list_state.select(Some(i));
+    }
+
+    pub fn box_list_up(&mut self) {
+        let display = self.box_display_list();
+        if display.is_empty() {
+            return;
+        }
+        let i = self
+            .box_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        self.box_list_state.select(Some(i));
+    }
+
+    pub fn box_list_toggle(&mut self) {
+        let display = self.box_display_list();
+        if let Some(i) = self.box_list_state.selected() {
+            if i < display.len() {
+                self.box_column = Some(display[i].clone());
+            }
+        }
+    }
+
+    pub fn kde_list_down(&mut self) {
+        let display = self.kde_display_list();
+        let len = display.len();
+        if len == 0 {
+            return;
+        }
+        let i = self
+            .kde_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(len.saturating_sub(1));
+        self.kde_list_state.select(Some(i));
+    }
+
+    pub fn kde_list_up(&mut self) {
+        let display = self.kde_display_list();
+        if display.is_empty() {
+            return;
+        }
+        let i = self.kde_list_state.selected().unwrap_or(0).saturating_sub(1);
+        self.kde_list_state.select(Some(i));
+    }
+
+    pub fn kde_list_toggle(&mut self) {
+        let display = self.kde_display_list();
+        if let Some(i) = self.kde_list_state.selected() {
+            if i < display.len() {
+                self.kde_column = Some(display[i].clone());
+            }
+        }
+    }
+
+    pub fn heatmap_x_list_down(&mut self) {
+        let display = self.heatmap_x_display_list();
+        let len = display.len();
+        if len == 0 {
+            return;
+        }
+        let i = self
+            .heatmap_x_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(len.saturating_sub(1));
+        self.heatmap_x_list_state.select(Some(i));
+    }
+
+    pub fn heatmap_x_list_up(&mut self) {
+        let display = self.heatmap_x_display_list();
+        if display.is_empty() {
+            return;
+        }
+        let i = self
+            .heatmap_x_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        self.heatmap_x_list_state.select(Some(i));
+    }
+
+    pub fn heatmap_x_list_toggle(&mut self) {
+        let display = self.heatmap_x_display_list();
+        if let Some(i) = self.heatmap_x_list_state.selected() {
+            if i < display.len() {
+                self.heatmap_x_column = Some(display[i].clone());
+            }
+        }
+    }
+
+    pub fn heatmap_y_list_down(&mut self) {
+        let display = self.heatmap_y_display_list();
+        let len = display.len();
+        if len == 0 {
+            return;
+        }
+        let i = self
+            .heatmap_y_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .min(len.saturating_sub(1));
+        self.heatmap_y_list_state.select(Some(i));
+    }
+
+    pub fn heatmap_y_list_up(&mut self) {
+        let display = self.heatmap_y_display_list();
+        if display.is_empty() {
+            return;
+        }
+        let i = self
+            .heatmap_y_list_state
+            .selected()
+            .unwrap_or(0)
+            .saturating_sub(1);
+        self.heatmap_y_list_state.select(Some(i));
+    }
+
+    pub fn heatmap_y_list_toggle(&mut self) {
+        let display = self.heatmap_y_display_list();
+        if let Some(i) = self.heatmap_y_list_state.selected() {
+            if i < display.len() {
+                self.heatmap_y_column = Some(display[i].clone());
+            }
+        }
+    }
+
+    pub fn is_text_input_focused(&self) -> bool {
+        matches!(
+            self.focus,
+            ChartFocus::XInput
+                | ChartFocus::YInput
+                | ChartFocus::HistInput
+                | ChartFocus::BoxInput
+                | ChartFocus::KdeInput
+                | ChartFocus::HeatmapXInput
+                | ChartFocus::HeatmapYInput
+        )
+    }
+
+    pub fn can_export(&self) -> bool {
+        match self.chart_kind {
+            ChartKind::XY => {
+                self.effective_x_column().is_some() && !self.effective_y_columns().is_empty()
+            }
+            ChartKind::Histogram => self.effective_hist_column().is_some(),
+            ChartKind::BoxPlot => self.effective_box_column().is_some(),
+            ChartKind::Kde => self.effective_kde_column().is_some(),
+            ChartKind::Heatmap => {
+                self.effective_heatmap_x_column().is_some()
+                    && self.effective_heatmap_y_column().is_some()
+            }
+        }
+    }
+
+    fn focus_order(&self) -> &'static [ChartFocus] {
+        match self.chart_kind {
+            ChartKind::XY => &[
+                ChartFocus::TabBar,
+                ChartFocus::ChartType,
+                ChartFocus::XInput,
+                ChartFocus::XList,
+                ChartFocus::YInput,
+                ChartFocus::YList,
+                ChartFocus::YStartsAtZero,
+                ChartFocus::LogScale,
+                ChartFocus::ShowLegend,
+            ],
+            ChartKind::Histogram => &[
+                ChartFocus::TabBar,
+                ChartFocus::HistInput,
+                ChartFocus::HistList,
+                ChartFocus::HistBins,
+            ],
+            ChartKind::BoxPlot => &[
+                ChartFocus::TabBar,
+                ChartFocus::BoxInput,
+                ChartFocus::BoxList,
+            ],
+            ChartKind::Kde => &[
+                ChartFocus::TabBar,
+                ChartFocus::KdeInput,
+                ChartFocus::KdeList,
+                ChartFocus::KdeBandwidth,
+            ],
+            ChartKind::Heatmap => &[
+                ChartFocus::TabBar,
+                ChartFocus::HeatmapXInput,
+                ChartFocus::HeatmapXList,
+                ChartFocus::HeatmapYInput,
+                ChartFocus::HeatmapYList,
+                ChartFocus::HeatmapBins,
+            ],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ChartFocus, ChartModal, ChartType, Y_SERIES_MAX};
+    use super::{ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
 
     #[test]
     fn open_no_default_columns() {
@@ -393,13 +1006,14 @@ mod tests {
         let mut modal = ChartModal::new();
         modal.open(&numeric, &datetime);
         assert!(modal.active);
+        assert_eq!(modal.chart_kind, ChartKind::XY);
         assert_eq!(modal.chart_type, ChartType::Line);
         assert!(modal.x_column.is_none());
         assert!(modal.y_columns.is_empty());
         assert!(!modal.y_starts_at_zero);
         assert!(!modal.log_scale);
         assert!(modal.show_legend);
-        assert_eq!(modal.focus, ChartFocus::ChartType);
+        assert_eq!(modal.focus, ChartFocus::TabBar);
     }
 
     #[test]

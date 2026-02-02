@@ -4,6 +4,7 @@ use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use color_eyre::Result;
 use polars::datatypes::{DataType, TimeUnit};
 use polars::prelude::*;
+use std::f64::consts::PI;
 
 const CHART_ROW_LIMIT: usize = 10_000;
 
@@ -163,6 +164,64 @@ pub struct ChartDataResult {
     pub x_axis_kind: XAxisTemporalKind,
 }
 
+/// Histogram bin (center and count).
+pub struct HistogramBin {
+    pub center: f64,
+    pub count: f64,
+}
+
+/// Histogram data for a single column.
+pub struct HistogramData {
+    pub column: String,
+    pub bins: Vec<HistogramBin>,
+    pub x_min: f64,
+    pub x_max: f64,
+    pub max_count: f64,
+}
+
+/// KDE series and bounds.
+pub struct KdeSeries {
+    pub name: String,
+    pub points: Vec<(f64, f64)>,
+}
+
+pub struct KdeData {
+    pub series: Vec<KdeSeries>,
+    pub x_min: f64,
+    pub x_max: f64,
+    pub y_max: f64,
+}
+
+/// Box plot stats for a column.
+pub struct BoxPlotStats {
+    pub name: String,
+    pub min: f64,
+    pub q1: f64,
+    pub median: f64,
+    pub q3: f64,
+    pub max: f64,
+}
+
+pub struct BoxPlotData {
+    pub stats: Vec<BoxPlotStats>,
+    pub y_min: f64,
+    pub y_max: f64,
+}
+
+/// Heatmap data for two numeric columns.
+pub struct HeatmapData {
+    pub x_column: String,
+    pub y_column: String,
+    pub x_min: f64,
+    pub x_max: f64,
+    pub y_min: f64,
+    pub y_max: f64,
+    pub x_bins: usize,
+    pub y_bins: usize,
+    pub counts: Vec<Vec<f64>>,
+    pub max_count: f64,
+}
+
 /// Prepares chart data from the current LazyFrame.
 /// Returns series data and x-axis kind. X is cast to f64 (temporal types as ordinal).
 /// Drops nulls and limits to `CHART_ROW_LIMIT` rows.
@@ -236,6 +295,334 @@ pub fn prepare_chart_data(
     Ok(ChartDataResult {
         series: series_per_y,
         x_axis_kind,
+    })
+}
+
+fn collect_numeric_values(lf: &LazyFrame, column: &str) -> Result<Vec<f64>> {
+    let df = lf
+        .clone()
+        .select([col(column).cast(DataType::Float64)])
+        .drop_nulls(None)
+        .slice(0, CHART_ROW_LIMIT as u32)
+        .collect()?;
+    let series = df.column(column)?.f64()?;
+    let mut values = Vec::with_capacity(series.len());
+    for i in 0..series.len() {
+        if let Some(v) = series.get(i) {
+            if v.is_finite() {
+                values.push(v);
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn collect_numeric_pairs(lf: &LazyFrame, x_column: &str, y_column: &str) -> Result<Vec<(f64, f64)>> {
+    let df = lf
+        .clone()
+        .select([
+            col(x_column).cast(DataType::Float64),
+            col(y_column).cast(DataType::Float64),
+        ])
+        .drop_nulls(None)
+        .slice(0, CHART_ROW_LIMIT as u32)
+        .collect()?;
+    let x_series = df.column(x_column)?.f64()?;
+    let y_series = df.column(y_column)?.f64()?;
+    let mut values = Vec::with_capacity(df.height());
+    for i in 0..df.height() {
+        let x_val = x_series.get(i).unwrap_or(0.0);
+        let y_val = y_series.get(i).unwrap_or(0.0);
+        if x_val.is_finite() && y_val.is_finite() {
+            values.push((x_val, y_val));
+        }
+    }
+    Ok(values)
+}
+
+/// Prepare histogram data for a numeric column.
+pub fn prepare_histogram_data(
+    lf: &LazyFrame,
+    column: &str,
+    bins: usize,
+) -> Result<HistogramData> {
+    let mut values = collect_numeric_values(lf, column)?;
+    if values.is_empty() {
+        return Ok(HistogramData {
+            column: column.to_string(),
+            bins: Vec::new(),
+            x_min: 0.0,
+            x_max: 1.0,
+            max_count: 0.0,
+        });
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let x_min = *values.first().unwrap();
+    let x_max = *values.last().unwrap();
+    let range = (x_max - x_min).abs();
+    let bin_count = bins.max(1);
+    if range <= f64::EPSILON {
+        return Ok(HistogramData {
+            column: column.to_string(),
+            bins: vec![HistogramBin {
+                center: x_min,
+                count: values.len() as f64,
+            }],
+            x_min: x_min - 0.5,
+            x_max: x_max + 0.5,
+            max_count: values.len() as f64,
+        });
+    }
+    let bin_width = range / bin_count as f64;
+    let mut counts = vec![0.0_f64; bin_count];
+    for v in values {
+        let mut idx = ((v - x_min) / bin_width).floor() as isize;
+        if idx < 0 {
+            idx = 0;
+        }
+        if idx as usize >= bin_count {
+            idx = bin_count.saturating_sub(1) as isize;
+        }
+        counts[idx as usize] += 1.0;
+    }
+    let bins: Vec<HistogramBin> = counts
+        .iter()
+        .enumerate()
+        .map(|(i, count)| HistogramBin {
+            center: x_min + (i as f64 + 0.5) * bin_width,
+            count: *count,
+        })
+        .collect();
+    let max_count = counts
+        .iter()
+        .cloned()
+        .fold(0.0_f64, |a, b| a.max(b));
+    Ok(HistogramData {
+        column: column.to_string(),
+        bins,
+        x_min,
+        x_max,
+        max_count,
+    })
+}
+
+fn quantile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let n = sorted.len();
+    if n == 1 {
+        return sorted[0];
+    }
+    let pos = q.clamp(0.0, 1.0) * (n as f64 - 1.0);
+    let idx = pos.floor() as usize;
+    let next = pos.ceil() as usize;
+    if idx == next {
+        sorted[idx]
+    } else {
+        let lower = sorted[idx];
+        let upper = sorted[next];
+        let weight = pos - idx as f64;
+        lower + (upper - lower) * weight
+    }
+}
+
+/// Prepare box plot stats for one or more numeric columns.
+pub fn prepare_box_plot_data(lf: &LazyFrame, columns: &[String]) -> Result<BoxPlotData> {
+    let mut stats = Vec::new();
+    let mut y_min = f64::INFINITY;
+    let mut y_max = f64::NEG_INFINITY;
+    for column in columns {
+        let mut values = collect_numeric_values(lf, column)?;
+        if values.is_empty() {
+            continue;
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let min = *values.first().unwrap();
+        let max = *values.last().unwrap();
+        let q1 = quantile(&values, 0.25);
+        let median = quantile(&values, 0.5);
+        let q3 = quantile(&values, 0.75);
+        y_min = y_min.min(min);
+        y_max = y_max.max(max);
+        stats.push(BoxPlotStats {
+            name: column.to_string(),
+            min,
+            q1,
+            median,
+            q3,
+            max,
+        });
+    }
+    if stats.is_empty() {
+        return Ok(BoxPlotData {
+            stats,
+            y_min: 0.0,
+            y_max: 1.0,
+        });
+    }
+    if y_max <= y_min {
+        y_max = y_min + 1.0;
+    }
+    Ok(BoxPlotData { stats, y_min, y_max })
+}
+
+fn kde_bandwidth(values: &[f64]) -> f64 {
+    if values.len() <= 1 {
+        return 1.0;
+    }
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+    let std = var.sqrt();
+    if std <= f64::EPSILON {
+        return 1.0;
+    }
+    1.06 * std * n.powf(-0.2)
+}
+
+/// Prepare KDE data for one or more numeric columns.
+pub fn prepare_kde_data(
+    lf: &LazyFrame,
+    columns: &[String],
+    bandwidth_factor: f64,
+) -> Result<KdeData> {
+    let mut series = Vec::new();
+    let mut all_x_min = f64::INFINITY;
+    let mut all_x_max = f64::NEG_INFINITY;
+    let mut all_y_max = f64::NEG_INFINITY;
+    for column in columns {
+        let mut values = collect_numeric_values(lf, column)?;
+        if values.is_empty() {
+            continue;
+        }
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let min = *values.first().unwrap();
+        let max = *values.last().unwrap();
+        let base_bw = kde_bandwidth(&values);
+        let bandwidth = (base_bw * bandwidth_factor).max(f64::EPSILON);
+        let x_start = min - 3.0 * bandwidth;
+        let x_end = max + 3.0 * bandwidth;
+        let samples = 200_usize;
+        let step = (x_end - x_start) / (samples.saturating_sub(1).max(1) as f64);
+        let inv = 1.0 / ((values.len() as f64) * bandwidth * (2.0 * PI).sqrt());
+        let mut points = Vec::with_capacity(samples);
+        for i in 0..samples {
+            let x = x_start + i as f64 * step;
+            let mut sum = 0.0;
+            for &v in &values {
+                let u = (x - v) / bandwidth;
+                sum += (-0.5 * u * u).exp();
+            }
+            let y = inv * sum;
+            all_y_max = all_y_max.max(y);
+            points.push((x, y));
+        }
+        all_x_min = all_x_min.min(x_start);
+        all_x_max = all_x_max.max(x_end);
+        series.push(KdeSeries {
+            name: column.to_string(),
+            points,
+        });
+    }
+    if series.is_empty() {
+        return Ok(KdeData {
+            series,
+            x_min: 0.0,
+            x_max: 1.0,
+            y_max: 1.0,
+        });
+    }
+    if all_x_max <= all_x_min {
+        all_x_max = all_x_min + 1.0;
+    }
+    if all_y_max <= 0.0 {
+        all_y_max = 1.0;
+    }
+    Ok(KdeData {
+        series,
+        x_min: all_x_min,
+        x_max: all_x_max,
+        y_max: all_y_max,
+    })
+}
+
+/// Prepare heatmap data for two numeric columns.
+pub fn prepare_heatmap_data(
+    lf: &LazyFrame,
+    x_column: &str,
+    y_column: &str,
+    bins: usize,
+) -> Result<HeatmapData> {
+    let pairs = collect_numeric_pairs(lf, x_column, y_column)?;
+    if pairs.is_empty() {
+        return Ok(HeatmapData {
+            x_column: x_column.to_string(),
+            y_column: y_column.to_string(),
+            x_min: 0.0,
+            x_max: 1.0,
+            y_min: 0.0,
+            y_max: 1.0,
+            x_bins: bins,
+            y_bins: bins,
+            counts: vec![vec![0.0; bins.max(1)]; bins.max(1)],
+            max_count: 0.0,
+        });
+    }
+    let mut x_min = f64::INFINITY;
+    let mut x_max = f64::NEG_INFINITY;
+    let mut y_min = f64::INFINITY;
+    let mut y_max = f64::NEG_INFINITY;
+    for (x, y) in &pairs {
+        x_min = x_min.min(*x);
+        x_max = x_max.max(*x);
+        y_min = y_min.min(*y);
+        y_max = y_max.max(*y);
+    }
+    if x_max <= x_min {
+        x_max = x_min + 1.0;
+    }
+    if y_max <= y_min {
+        y_max = y_min + 1.0;
+    }
+    let x_bins = bins.max(1);
+    let y_bins = bins.max(1);
+    let mut counts = vec![vec![0.0_f64; x_bins]; y_bins];
+    let x_range = x_max - x_min;
+    let y_range = y_max - y_min;
+    for (x, y) in pairs {
+        let mut xi = ((x - x_min) / x_range * x_bins as f64).floor() as isize;
+        let mut yi = ((y - y_min) / y_range * y_bins as f64).floor() as isize;
+        if xi < 0 {
+            xi = 0;
+        }
+        if yi < 0 {
+            yi = 0;
+        }
+        if xi as usize >= x_bins {
+            xi = x_bins.saturating_sub(1) as isize;
+        }
+        if yi as usize >= y_bins {
+            yi = y_bins.saturating_sub(1) as isize;
+        }
+        counts[yi as usize][xi as usize] += 1.0;
+    }
+    let max_count = counts
+        .iter()
+        .flat_map(|row| row.iter())
+        .cloned()
+        .fold(0.0_f64, |a, b| a.max(b));
+    Ok(HeatmapData {
+        x_column: x_column.to_string(),
+        y_column: y_column.to_string(),
+        x_min,
+        x_max,
+        y_min,
+        y_max,
+        x_bins,
+        y_bins,
+        counts,
+        max_count,
     })
 }
 

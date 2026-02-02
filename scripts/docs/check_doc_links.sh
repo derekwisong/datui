@@ -2,7 +2,7 @@
 # Check built documentation for broken links using lychee.
 #
 # Usage: check_doc_links.sh [--build] [--online] [PATH]
-#   --build   Build docs for main first (build_single_version_docs.sh main).
+#   --build   Build docs for main first (build_single_version_docs.py main).
 #   --online  Also check external URLs (default: --offline, internal links only).
 #   PATH      Directory to check (default: book/main relative to repo root).
 #
@@ -53,7 +53,7 @@ fi
 
 if [ "$USE_BUILD" = true ]; then
     echo "Building documentation for main..."
-    ./scripts/docs/build_single_version_docs.sh main
+    python3 scripts/docs/build_single_version_docs.py main
     echo ""
 fi
 

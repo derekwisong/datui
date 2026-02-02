@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Rebuild the index page for the documentation.
-Scans the book directory for all version directories and generates index.html
-using a Jinja2 template.
+Scans the book directory for version directories (tagged releases only, e.g. v0.2.22)
+and generates index.html using a Jinja2 template.
+Docs are only built on release; there is no "main" development version.
 """
 
 import os
@@ -98,95 +99,23 @@ def sort_version_dirs(version_dirs: List[Path]) -> List[Path]:
     return sorted(version_dirs, key=key, reverse=True)
 
 
-def get_dev_version(repo_root: Path) -> Optional[str]:
-    """Get the version from Cargo.toml for 'main' branch docs display.
-
-    Reads from origin/main explicitly so we get main's actual version regardless
-    of the current checkout (e.g. when release workflow has tag checked out).
-    Falls back to local Cargo.toml if origin/main is unavailable.
-    """
-    for ref in ("origin/main", "main"):
-        try:
-            result = subprocess.run(
-                ["git", "show", f"{ref}:Cargo.toml"],
-                capture_output=True,
-                text=True,
-                cwd=repo_root,
-                timeout=5,
-            )
-            if result.returncode != 0 or not result.stdout:
-                continue
-            content = result.stdout
-            match = re.search(r'^\[package\]', content, re.MULTILINE)
-            if not match:
-                continue
-            start = match.end()
-            rest = content[start:]
-            next_section = re.search(r'^\[', rest, re.MULTILINE)
-            section = rest[:next_section.start()] if next_section else rest
-            version_match = re.search(r'version\s*=\s*"([^"]+)"', section)
-            if version_match:
-                return version_match.group(1)
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-            continue
-    # Fallback: read from filesystem (current checkout)
-    try:
-        cargo_toml = repo_root / "Cargo.toml"
-        if not cargo_toml.exists():
-            return None
-        content = cargo_toml.read_text()
-        match = re.search(r'^\[package\]', content, re.MULTILINE)
-        if not match:
-            return None
-        start = match.end()
-        rest = content[start:]
-        next_section = re.search(r'^\[', rest, re.MULTILINE)
-        section = rest[:next_section.start()] if next_section else rest
-        version_match = re.search(r'version\s*=\s*"([^"]+)"', section)
-        return version_match.group(1) if version_match else None
-    except Exception:
-        return None
-
-
-def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict]]:
-    """Collect version directories and return (recent_versions, older_versions).
-    recent_versions: main (if present) + 5 most recent tags.
+def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict], Optional[str]]:
+    """Collect version directories (tagged releases only) and return (recent_versions, older_versions, latest_stable_path).
+    recent_versions: 5 most recent tags.
     older_versions: remaining tags, sorted newest first.
+    latest_stable_path: path of the newest tag (for demo image etc.), or None if no tags.
     """
     recent: List[Dict] = []
     older: List[Dict] = []
-
-    # Add main/latest version first if it exists
-    main_dir = output_dir / "main"
-    if main_dir.exists() and main_dir.is_dir():
-        date_str = "Development version - most current features"
-        # Try origin/main first (release workflow may not have local main)
-        for ref in ("origin/main", "main"):
-            if check_git_ref_exists(ref):
-                main_date = get_git_date(ref)
-                if main_date:
-                    date_str = main_date
-                    break
-        
-        # Get dev version from Cargo.toml if available
-        repo_root = get_repo_root()
-        dev_version = get_dev_version(repo_root)
-        # Add "v" prefix to match release version format
-        display_name = f"v{dev_version}" if dev_version else "main"
-        
-        recent.append({
-            "name": display_name,
-            "path": "main",
-            "is_development": True,
-            "is_latest_stable": False,
-            "date_str": date_str,
-        })
+    latest_stable_path: Optional[str] = None
 
     if not output_dir.exists():
-        return (recent, older)
+        return (recent, older, latest_stable_path)
 
     version_dirs = [d for d in output_dir.iterdir() if d.is_dir() and d.name.startswith("v")]
     sorted_dirs = sort_version_dirs(version_dirs)
+    if sorted_dirs:
+        latest_stable_path = sorted_dirs[0].name
 
     RECENT_TAG_COUNT = 5
     tag_entries: List[Dict] = []
@@ -205,9 +134,9 @@ def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict]]:
             "date_str": date_str,
         })
 
-    recent.extend(tag_entries[:RECENT_TAG_COUNT])
-    older.extend(tag_entries[RECENT_TAG_COUNT:])
-    return (recent, older)
+    recent = tag_entries[:RECENT_TAG_COUNT]
+    older = tag_entries[RECENT_TAG_COUNT:]
+    return (recent, older, latest_stable_path)
 
 
 def main():
@@ -238,14 +167,15 @@ def main():
         print(f"Error: Could not load template: {template_file}", file=sys.stderr)
         sys.exit(1)
     
-    # Collect version information
+    # Collect version information (tagged releases only)
     print("Rebuilding index page...")
-    recent_versions, older_versions = collect_versions(output_dir)
+    recent_versions, older_versions, latest_stable_path = collect_versions(output_dir)
 
     # Render the template
     output_html = template.render(
         recent_versions=recent_versions,
         older_versions=older_versions,
+        latest_stable_path=latest_stable_path,
     )
     
     # Write the output file

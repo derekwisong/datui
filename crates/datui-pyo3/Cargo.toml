@@ -13,5 +13,5 @@ bincode = { version = "2", features = ["serde"] }
 datui = { path = "../datui-lib", package = "datui-lib" }
 polars = { version = "0.52", features = ["lazy", "serde-lazy"] }
 polars-plan = { version = "0.52", features = ["serde"] }
-pyo3 = { version = "0.26", features = ["extension-module", "auto-initialize"] }
+pyo3 = { version = "0.26", features = ["extension-module", "auto-initialize", "abi3-py38"] }
 serde_json = "1.0"

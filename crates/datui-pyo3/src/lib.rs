@@ -13,13 +13,10 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde_json;
 
-fn run_tui(plan: DslPlan, debug: bool, row_numbers: bool) -> PyResult<()> {
+fn run_tui(plan: DslPlan, debug: bool) -> PyResult<()> {
     let lf = LazyFrame::from(plan);
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        let opts = OpenOptions {
-            row_numbers,
-            ..OpenOptions::default()
-        };
+        let opts = OpenOptions::default();
         let input = RunInput::LazyFrame(Box::new(lf), opts);
         run(input, None, debug)
     }));
@@ -51,17 +48,15 @@ fn run_tui(plan: DslPlan, debug: bool, row_numbers: bool) -> PyResult<()> {
 /// Args:
 ///     data: Bytes from LazyFrame.serialize() or df.lazy().serialize() (binary).
 ///     debug: If True, enable debug overlay (default False).
-///     row_numbers: If True, show row numbers (default False).
 ///
 /// Raises:
 ///     RuntimeError: If the bytes are invalid or the TUI fails/panics.
 #[pyfunction]
-#[pyo3(signature = (data, *, debug=false, row_numbers=false))]
+#[pyo3(signature = (data, *, debug=false))]
 fn view_from_bytes(
     _py: Python<'_>,
     data: &[u8],
     debug: bool,
-    row_numbers: bool,
 ) -> PyResult<()> {
     let (plan, _): (DslPlan, usize) = bincode::serde::decode_from_slice(data, legacy())
         .map_err(|e| {
@@ -70,7 +65,7 @@ fn view_from_bytes(
                 e
             ))
         })?;
-    run_tui(plan, debug, row_numbers)
+    run_tui(plan, debug)
 }
 
 /// Launch the datui TUI with a LazyFrame logical plan given as JSON.
@@ -83,17 +78,15 @@ fn view_from_bytes(
 /// Args:
 ///     json_str: JSON string from LazyFrame.serialize(format="json").
 ///     debug: If True, enable debug overlay (default False).
-///     row_numbers: If True, show row numbers (default False).
 ///
 /// Raises:
 ///     RuntimeError: If the JSON is invalid or the TUI fails/panics.
 #[pyfunction]
-#[pyo3(signature = (json_str, *, debug=false, row_numbers=false))]
+#[pyo3(signature = (json_str, *, debug=false))]
 fn view_from_json(
     _py: Python<'_>,
     json_str: &str,
     debug: bool,
-    row_numbers: bool,
 ) -> PyResult<()> {
     let plan: DslPlan = serde_json::from_str(json_str).map_err(|e| {
         PyRuntimeError::new_err(format!(
@@ -101,7 +94,7 @@ fn view_from_json(
             e
         ))
     })?;
-    run_tui(plan, debug, row_numbers)
+    run_tui(plan, debug)
 }
 
 /// Run the datui CLI with the current process arguments (e.g. from `datui file.csv`).

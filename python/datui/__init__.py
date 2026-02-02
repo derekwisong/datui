@@ -1,38 +1,31 @@
 """
-datui: View Polars LazyFrames and DataFrames in the terminal TUI.
+View Polars LazyFrames and DataFrames in the terminal.
 
-Use view(lf) or view(df) to open the datui TUI. Data is passed via
-LazyFrame.serialize(format="json") for compatibility across Polars versions.
-DataFrames are converted with .lazy() first.
+Use view(lf) or view(df) to open Datui.
 """
 
 from __future__ import annotations
 
 import polars as pl
 
-from datui._datui import run_cli, view_from_bytes, view_from_json  # noqa: F401
+import datui._datui  # noqa: F401  # pyright: ignore[reportMissingImports]
 
 
 def view(
     data: pl.LazyFrame | pl.DataFrame,
     *,
     debug: bool = False,
-    row_numbers: bool = False,
 ) -> None:
     """
-    Open the datui TUI with a Polars LazyFrame or DataFrame.
-
-    DataFrames are converted to a LazyFrame via .lazy(); the LazyFrame
-    is serialized as JSON and passed to the Rust extension.
+    View a Polars LazyFrame or DataFrame in the terminal.
 
     Args:
         data: A Polars LazyFrame or DataFrame (e.g. pl.scan_csv(...) or pl.DataFrame(...)).
         debug: If True, enable debug overlay (default False).
-        row_numbers: If True, show row numbers (default False).
 
     Raises:
         TypeError: If data is not a LazyFrame or DataFrame.
-        RuntimeError: If serialization fails or the TUI fails.
+        RuntimeError: The application crashed.
     """
     # Normalize to a LazyFrame only (never serialize a DataFrame).
     if hasattr(data, "lazy") and callable(getattr(data, "lazy", None)):
@@ -56,17 +49,16 @@ def view(
         raise TypeError("expected polars.LazyFrame or polars.DataFrame") from e
 
     if isinstance(serialized, str):
-        return view_from_json(serialized, debug=debug, row_numbers=row_numbers)
+        return datui._datui.view_from_json(serialized, debug=debug)
     if isinstance(serialized, bytes):
         try:
-            return view_from_bytes(serialized, debug=debug, row_numbers=row_numbers)
+            return datui._datui.view_from_bytes(serialized, debug=debug)
         except Exception as e:
             raise RuntimeError(
-                "Binary LazyFrame format is not compatible with this extension. "
-                "Use LazyFrame.serialize(format='json') if your Polars supports it, "
-                "or pass the result to view_from_json()."
+                "Unable to communicate serialized LazyFrame plan to Datui. "
+                "Possible incompatibility between the polars version and the Datui extension."
             ) from e
     raise RuntimeError("LazyFrame.serialize() returned an unsupported type")
 
 
-__all__ = ["view", "view_from_bytes", "view_from_json", "run_cli"]
+__all__ = ["view"]

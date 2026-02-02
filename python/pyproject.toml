@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=2.0"]
+requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -37,7 +37,7 @@ dev = [
 ]
 
 [project.scripts]
-datui = "datui:run_cli"
+datui = "datui._datui:run_cli"
 
 [tool.maturin]
 manifest-path = "../crates/datui-pyo3/Cargo.toml"

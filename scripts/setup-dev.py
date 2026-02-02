@@ -369,7 +369,7 @@ def main():
     print("  cargo run -- <args>   # run the CLI (from repo root)")
     print()
     print("Python bindings (optional; requires maturin and compatible polars versions):")
-    print("  maturin develop --manifest-path crates/datui-pyo3/Cargo.toml")
+    print("  cd python && maturin develop")
     print("  pytest python/tests/ -v")
     print()
     print("You can run this script again at any time to update dependencies.")

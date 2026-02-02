@@ -37,7 +37,7 @@ polars = { version = "0.52", features = ["lazy"] }
 tempfile = "3.8"
 toml = "0.8"
 
-# Packaging: deb, rpm, AUR. See plans/packaging-deb-rpm-aur-plan.md.
+# Packaging: deb, rpm, AUR.
 [package.metadata.deb]
 maintainer = "Derek Wisong"
 license-file = ["LICENSE", "0"]

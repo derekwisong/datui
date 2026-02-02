@@ -13,5 +13,5 @@ pre-commit
 
 # for building the Python bindings
 patchelf
-maturin
+maturin>=1.0,<2.0
 pytest

@@ -171,11 +171,16 @@ def main():
     print("Rebuilding index page...")
     recent_versions, older_versions, latest_stable_path = collect_versions(output_dir)
 
+    # Permanent URL path for "latest" (e.g. "latest") so links like /latest/... always point to current release.
+    # CI copies the current release to book/latest so this link works on GitHub Pages.
+    latest_permanent_path = "latest"
+
     # Render the template
     output_html = template.render(
         recent_versions=recent_versions,
         older_versions=older_versions,
         latest_stable_path=latest_stable_path,
+        latest_permanent_path=latest_permanent_path,
     )
     
     # Write the output file

@@ -162,6 +162,11 @@ jobs:
           rm -rf "$SCRIPT_DIR"
           python3 scripts/docs/rebuild_index.py
 
+      - name: Copy latest release to latest
+        run: |
+          rm -rf book/latest
+          cp -r book/${{ github.ref_name }} book/latest
+
       - name: Prepare Pages artifact
         run: |
           cp -r book book-deploy

@@ -126,6 +126,14 @@ def main() -> int:
         print("Rebuilding index page...")
         run([sys.executable, str(rebuild_index)], cwd=repo_root)
 
+        # Copy newest version to latest (stable URL for "current release")
+        latest_tag = version_tags[-1]
+        latest_dir = book_dir / "latest"
+        if latest_dir.exists():
+            shutil.rmtree(latest_dir)
+        shutil.copytree(book_dir / latest_tag, latest_dir)
+        print(f"  Updated latest -> {latest_tag}")
+
         demos_global = book_dir / "demos"
         if demos_global.exists():
             shutil.rmtree(demos_global)

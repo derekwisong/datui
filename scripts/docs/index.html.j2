@@ -444,7 +444,7 @@
         <main id="main-content">
             <div class="demo-showcase">
                 {% if latest_stable_path %}
-                <img src="{{ latest_stable_path }}/demos/01-basic-navigation.gif" 
+                <img src="{{ (latest_permanent_path if latest_permanent_path is defined and latest_permanent_path else latest_stable_path) }}/demos/01-basic-navigation.gif" 
                      alt="Datui demo showing basic navigation" 
                      class="demo-gif"
                      loading="lazy">
@@ -454,7 +454,7 @@
             <h2 class="versions-heading">Documentation:</h2>
             <div class="version-list" role="list">
                 {% for version in recent_versions %}
-                <a href="{{ version.path }}/index.html" 
+                <a href="{{ (latest_permanent_path if version.is_latest_stable and (latest_permanent_path is defined and latest_permanent_path) else version.path) }}/index.html" 
                    class="version-card" 
                    role="listitem"
                    data-version="{{ version.name }}"

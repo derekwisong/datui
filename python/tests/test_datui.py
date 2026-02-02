@@ -40,39 +40,39 @@ def test_view_invalid_input_raises():
 
 def test_view_from_json_exists():
     """view_from_json should be available (low-level API that accepts JSON from LazyFrame.serialize())."""
-    import datui
+    import datui._datui
 
-    assert hasattr(datui, "view_from_json")
-    assert callable(datui.view_from_json)
+    assert hasattr(datui._datui, "view_from_json")
+    assert callable(datui._datui.view_from_json)
 
 
 def test_view_from_json_invalid_raises():
     """Passing invalid JSON to view_from_json should raise RuntimeError with a clear message."""
-    import datui
+    import datui._datui
 
     with pytest.raises(RuntimeError, match="invalid LazyFrame JSON"):
-        datui.view_from_json("not valid json")
+        datui._datui.view_from_json("not valid json")
 
 
 def test_view_from_bytes_exists():
     """view_from_bytes should be available (low-level API that accepts binary from LazyFrame.serialize())."""
-    import datui
+    import datui._datui
 
-    assert hasattr(datui, "view_from_bytes")
-    assert callable(datui.view_from_bytes)
+    assert hasattr(datui._datui, "view_from_bytes")
+    assert callable(datui._datui.view_from_bytes)
 
 
 def test_view_from_bytes_invalid_raises():
     """Passing invalid bytes to view_from_bytes should raise RuntimeError with a clear message."""
-    import datui
+    import datui._datui
 
     with pytest.raises(RuntimeError, match="invalid LazyFrame binary"):
-        datui.view_from_bytes(b"not valid binary")
+        datui._datui.view_from_bytes(b"not valid binary")
 
 
 def test_run_cli_exists():
     """run_cli should be available (used by the datui console script)."""
-    import datui
+    import datui._datui
 
-    assert hasattr(datui, "run_cli")
-    assert callable(datui.run_cli)
+    assert hasattr(datui._datui, "run_cli")
+    assert callable(datui._datui.run_cli)

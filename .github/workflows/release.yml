@@ -14,8 +14,10 @@ env:
   MDBOOK_VERSION: "0.5.2"
 
 jobs:
-  build-release-and-docs:
+  build-release:
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,28 +35,10 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r scripts/requirements.txt
-
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
         with:
-          key: "release"
-
-      - name: Cache mdbook
-        id: cache-mdbook
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/mdbook
-          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-mdbook-
-
-      - name: Install mdbook
-        if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
+          shared-key: release
 
       - name: Build release binary
         run: cargo build --release --locked --workspace -p datui
@@ -63,6 +47,12 @@ jobs:
         run: |
           test -f target/release/datui || (echo "Release binary not found" && exit 1)
           test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
+
+      - name: Upload datui binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: datui-cli-linux
+          path: target/release/datui
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
@@ -112,6 +102,40 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: Update to ${{ github.ref_name }}
           ssh_keyscan_types: rsa,ecdsa,ed25519
+
+  build-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r scripts/requirements.txt
+
+      - name: Cache mdbook
+        id: cache-mdbook
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-mdbook-
+
+      - name: Install mdbook
+        if: steps.cache-mdbook.outputs.cache-hit != 'true'
+        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
 
       - name: Compute docs cache key
         id: compute-docs-key
@@ -182,7 +206,9 @@ jobs:
 
   pypi:
     runs-on: ubuntu-latest
-    needs: build-release-and-docs
+    needs: build-release
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -205,10 +231,13 @@ jobs:
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
         with:
-          key: "release"
+          shared-key: release
 
-      - name: Build release binary
-        run: cargo build --release --locked -p datui
+      - name: Download datui binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: datui-cli-linux
+          path: target/release
 
       - name: Bundle CLI for wheel
         run: |
@@ -237,7 +266,7 @@ jobs:
           twine upload --skip-existing python/dist/*.whl
 
   deploy-docs:
-    needs: build-release-and-docs
+    needs: build-docs
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

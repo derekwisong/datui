@@ -44,5 +44,7 @@ manifest-path = "../crates/datui-pyo3/Cargo.toml"
 python-source = "."
 # Install extension as datui._datui so datui/__init__.py can import it.
 module-name = "datui._datui"
+# Build a CPython stable-ABI wheel (cp38-abi3) compatible with 3.8+.
+features = ["pyo3/abi3-py38"]
 # Include pre-built CLI binary when present (release: copy target/release/datui to python/datui_bin/ first).
 include = ["datui_bin/*"]

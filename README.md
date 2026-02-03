@@ -45,7 +45,7 @@ Get a pre-built binary for your platform from the [releases](https://github.com/
 
 ### From Source
 
-> See [Compiling][compiling] for more information.
+> See [Compiling][compiling]
 
 ```bash
 git clone https://github.com/derekwisong/datui.git

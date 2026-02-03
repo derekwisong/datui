@@ -9,4 +9,4 @@ vhs scripts/demos/01-basic-navigation.tape  # single demo
 
 For prerequisites, options, and detailed instructions, see the [Demos documentation][demos-docs].
 
-[demos-docs]: https://derekwisong.github.io/datui/main/for-developers/demos.html
+[demos-docs]: https://derekwisong.github.io/datui/latest/for-developers/demos.html

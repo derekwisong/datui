@@ -7,9 +7,9 @@ Install using **pip**:
 pip install datui
 ```
 
-## Viewing a LazyFrame
+## Viewing a LazyFrame or DataFrame
 
-View your `LazyFrame` in the terminal:
+View your `LazyFrame` (or `DataFrame`) in the terminal:
 
 ```
 import polars as pl
@@ -21,11 +21,3 @@ datui.view(lf)
 ```
 
 Press `q` to exit Datui.
-
-## Viewing a DataFrame
-
-Datui also works with `DataFrame` instances.
-
-```
-datui.view(df)
-```

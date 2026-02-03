@@ -23,7 +23,7 @@ Datui is an interactive terminal user interface (TUI) for exploring and analyzin
 - **Transformations**: Sort, filter, reorder, and more
 - **Keyboard-Driven**: Arrow keys and Vim-style navigation (`h`/`j`/`k`/`l`)
 - **Configurable**: Configure Datui to suit your environment and needs
-- **Templates**: Save and restore data view configurations (queries, filters, sorts, column orders)
+- **Templates**: Save and restore your work as a template (queries, filters, sorts, column orders)
 
 ## Installation
 
@@ -35,14 +35,17 @@ Get a pre-built binary for your platform from the [releases](https://github.com/
 
 ### From Package Managers
 
+> See [Package Managers][pkg-managers]
+
 - **Pip**: `pip install datui`
 - **Arch Linux (AUR)**:
   - `paru -S datui`
   - `yay -S datui`
 
-> See [Package Managers][pkg-managers] for more information
 
 ### From Source
+
+> See [Compiling][compiling] for more information.
 
 ```bash
 git clone https://github.com/derekwisong/datui.git
@@ -52,9 +55,10 @@ cargo build --release
 
 The binary will be available at `target/release/datui`.
 
-> See [Compiling][compiling] for more information.
 
 ## Quick Start
+
+> See the [Quick Start Guide][quickstart-guide]
 
 Load a data file and start exploring:
 
@@ -74,34 +78,15 @@ Press `q` to exit.
 
 ## Configuration
 
-Datui supports extensive customization through a configuration file. Generate a default config:
+> See the [Configuration Guide][config-guide]
 
+Datui supports extensive customization through a configuration file.
+
+Generate a default config:
 ```bash
 datui --generate-config
 ```
 
-This creates `~/.config/datui/config.toml` where you can customize:
-
-- **Colors**: Complete theme customization with hex, named, or indexed colors
-- **Display**: Row numbers, page buffering, starting index
-- **Performance**: Sampling thresholds, event polling
-- **File Loading**: Default delimiters, headers, compression
-- **Query History**: History limits and caching
-- **Templates**: Auto-apply behavior
-
-**Example config:**
-```toml
-[display]
-row_numbers = true
-row_start_index = 0
-
-[theme.colors]
-primary = "#00bfff"        # Bright blue keybinds
-error = "bright_red"       # Red errors
-controls_bg = "dark_gray" # Dark gray bar
-```
-
-See the [Configuration Guide][config-guide] for complete documentation.
 
 ## License
 
@@ -122,7 +107,7 @@ for more information about what it does.
 
 ### Contributing
 
-Contributions are welcome! Please see the [full documentation][docs] for more information.
+Contributions are welcome! Please see [Contributing][contributing] for more.
 
 ---
 
@@ -131,5 +116,7 @@ Contributions are welcome! Please see the [full documentation][docs] for more in
 [docs]: https://derekwisong.github.io/datui/
 [config-guide]: https://derekwisong.github.io/datui/latest/user-guide/configuration.html
 [install-guide]: https://derekwisong.github.io/datui/latest/getting-started/installation.html
+[quickstart-guide]: https://derekwisong.github.io/datui/latest/getting-started/quick-start.html
 [pkg-managers]: https://derekwisong.github.io/datui/latest/getting-started/installation.html#package-managers
 [compiling]: https://derekwisong.github.io/datui/latest/getting-started/installation.html#compiling-from-source
+[contributing]: https://derekwisong.github.io/datui/latest/for-developers/contributing.html

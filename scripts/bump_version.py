@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """
-Bump version number in Cargo.toml, README.md, Python bindings (datui-pyo3, python/pyproject.toml).
+Bump version number in all Cargo.toml packages, README.md, and Python bindings.
+
+Updated files:
+  - Cargo.toml (root / main package)
+  - crates/datui-cli/Cargo.toml
+  - crates/datui-lib/Cargo.toml
+  - crates/datui-pyo3/Cargo.toml
+  - python/pyproject.toml
+  - README.md (version badge; release only)
 
 With -dev suffix workflow:
   1. During development: version is "X.Y.Z-dev"
@@ -368,28 +376,26 @@ Examples:
     print(f"New version: {new_version}")
     print()
 
-    datui_cli_cargo = project_root / "crates" / "datui-cli" / "Cargo.toml"
-    datui_lib_cargo = project_root / "crates" / "datui-lib" / "Cargo.toml"
-    datui_pyo3_cargo = project_root / "crates" / "datui-pyo3" / "Cargo.toml"
+    # All Cargo.toml package versions to keep in sync (main is source of truth; others set to new_version)
+    cargo_toml_files = [
+        ("Cargo.toml", None),  # root: use update_cargo_toml with old -> new
+        ("crates/datui-cli/Cargo.toml", "datui-cli"),
+        ("crates/datui-lib/Cargo.toml", "datui-lib"),
+        ("crates/datui-pyo3/Cargo.toml", "datui-pyo3"),
+    ]
     pyproject_path = project_root / "python" / "pyproject.toml"
 
     # Update files
     try:
         # Update main Cargo.toml (source of truth)
         update_cargo_toml(cargo_toml_path, current_version, new_version, project_root)
-        
-        # Update datui-cli Cargo.toml to match the new version (regardless of its current version)
-        if datui_cli_cargo.exists():
-            update_cargo_toml_to_version(datui_cli_cargo, new_version, project_root)
-        
-        # Update crates/datui-lib Cargo.toml to match the new version
-        if datui_lib_cargo.exists():
-            update_cargo_toml_to_version(datui_lib_cargo, new_version, project_root)
-        
-        # Update datui-pyo3 Cargo.toml to match the new version
-        if datui_pyo3_cargo.exists():
-            update_cargo_toml_to_version(datui_pyo3_cargo, new_version, project_root)
-        
+
+        # Update datui-cli, datui-lib, datui-pyo3 to new_version (keep all crates in sync)
+        for rel_path, _ in cargo_toml_files[1:]:
+            crate_cargo = project_root / rel_path
+            if crate_cargo.exists():
+                update_cargo_toml_to_version(crate_cargo, new_version, project_root)
+
         # Update python/pyproject.toml: release -> X.Y.Z, bump -> X.Y.Z.dev0 (PEP 440)
         if pyproject_path.exists():
             update_pyproject_toml(pyproject_path, new_version, project_root, is_release)

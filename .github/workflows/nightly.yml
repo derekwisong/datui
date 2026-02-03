@@ -81,3 +81,42 @@ jobs:
             python/dist/*.whl
             target/release/datui
             target/release/datui.1
+
+  build-packages-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          key: "nightly-windows"
+
+      - name: Build release binary
+        run: cargo build --release --locked -p datui
+
+      - name: Bundle CLI for wheel
+        run: |
+          New-Item -ItemType Directory -Force -Path python/datui_bin
+          Copy-Item target/release/datui.exe python/datui_bin/
+
+      - name: Build Python wheel
+        run: |
+          pip install maturin
+          cd python; maturin build --release --out dist
+
+      - name: Upload Windows wheel and binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-packages-windows
+          path: |
+            python/dist/*.whl
+            target/release/datui.exe

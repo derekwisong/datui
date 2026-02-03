@@ -375,15 +375,16 @@ cargo test --test integration_test  # Integration tests
 **Pre-commit Hooks**:
 - Using the [pre-commit](https://pre-commit.com/) framework
 - For details see config file `.pre-commit-config.yaml`
-- Runs checks for formatting (`cargo fmt`) and linter (`cargo clippy`) warnings before commit
+- Runs checks for formatting (`cargo fmt`) and linter 
+  (`cargo clippy --workspace --all-targets --locked -- -D warnings`) warnings before commit
   - Prevents the need for spurious format commits since all code is formatted before commit
   - CI builds run these checks, using the pre-commit hooks will prevent their failure
 
 ```bash
 cargo fmt --check       # Check formatting (without modifying files)
 cargo fmt               # Format code
-cargo clippy            # Run linter (should produce zero warnings)
-cargo clippy --fix      # Auto-fix clippy suggestions where possible
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked --fix      # Auto-fix clippy suggestions where possible
 ```
 
 **Test Structure**:
@@ -492,12 +493,17 @@ See `plans/` directory for detailed implementation plans:
 
 - **Rust Conventions**: Follow standard Rust formatting (`rustfmt`)
 - **Code Formatting**: All code should be formatted with `cargo fmt` before committing
-- **Linting**: Code should compile with zero clippy warnings (`cargo clippy` should be clean)
+- **Linting**: Code should compile with zero clippy warnings (`clippy` should be clean)
+  - Use: `cargo clippy --workspace --all-targets --locked -- -D warnings`
   - Fix clippy warnings as they are introduced
   - Prefer clean clippy runs for all code changes
+  - Avoid linter suppression flags
 - **Error Handling**: Use `Result<T>` for fallible operations
 - **Naming**: Use descriptive names, avoid abbreviations where unclear
-- **Comments**: Document complex logic, especially Polars operations
+- **Comments**: 
+  - Comment complex logic, especially Polars operations
+  - Be brief, no redundant comments, do not comment obvious code
+  - Do not add comments when the code is self describing 
 
 ### Testing Strategy
 

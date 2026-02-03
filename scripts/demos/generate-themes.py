@@ -198,22 +198,22 @@ def generate_gif_for_theme(tape_path: Path, theme: str, output_dir: Path, repo_r
         if result.returncode == 0:
             # Check if output file was created
             if output_gif.exists():
-                print(f"✅ ({output_gif.stat().st_size / 1024:.1f} KB)")
+                print(f"({output_gif.stat().st_size / 1024:.1f} KB)")
                 return True
             else:
-                print(f"❌ (GIF not created)")
+                print(f"Error: (GIF not created)")
                 return False
         else:
-            print(f"❌ (vhs error)")
+            print(f"Error: (vhs error)")
             if result.stderr:
                 print(f"    Error: {result.stderr[:100]}")
             return False
     except subprocess.TimeoutExpired:
-        print(f"❌ (timeout)")
+        print(f"Error: (timeout)")
         tmp_tape_path.unlink(missing_ok=True)
         return False
     except Exception as e:
-        print(f"❌ ({str(e)})")
+        print(f"Error: ({str(e)})")
         tmp_tape_path.unlink(missing_ok=True)
         return False
 
@@ -306,7 +306,7 @@ Examples:
             failed += 1
     
     print()
-    print(f"✅ Complete: {successful} successful, {failed} failed, {skipped} skipped")
+    print(f"Complete: {successful} successful, {failed} failed, {skipped} skipped")
     print(f"GIFs saved to: {args.output_dir}")
 
 

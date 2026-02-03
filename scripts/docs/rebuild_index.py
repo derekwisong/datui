@@ -187,7 +187,7 @@ def main():
     output_file = output_dir / "index.html"
     output_file.write_text(output_html, encoding="utf-8")
     
-    print("✓ Index page regenerated")
+    print("Index page regenerated")
 
 
 if __name__ == "__main__":

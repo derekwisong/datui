@@ -71,12 +71,12 @@ def run_command(cmd, check=True, cwd=None, env=None, stdin=None):
 def create_venv():
     """Create the virtual environment if it doesn't exist."""
     if VENV_DIR.exists():
-        print(f"✓ Virtual environment already exists at {VENV_DIR}")
+        print(f"Virtual environment already exists at {VENV_DIR}")
         return False
     else:
         print(f"Creating virtual environment at {VENV_DIR}...")
         run_command([sys.executable, "-m", "venv", str(VENV_DIR)])
-        print(f"✓ Virtual environment created")
+        print(f"Virtual environment created")
         return True
 
 
@@ -114,7 +114,7 @@ def install_requirements():
     print(f"Installing requirements from {REQUIREMENTS_FILE}...")
     venv_pip = get_venv_pip()
     run_command([str(venv_pip), "install", "-r", str(REQUIREMENTS_FILE)])
-    print("✓ Requirements installed")
+    print("Requirements installed")
 
     # Wheel build deps: Linux/macOS use patchelf + maturin + pytest; Windows uses maturin + pytest only
     if sys.platform == "win32":
@@ -124,7 +124,7 @@ def install_requirements():
     if wheel_file.exists():
         print(f"Installing wheel build deps from {wheel_file.name}...")
         run_command([str(venv_pip), "install", "-r", str(wheel_file)])
-        print("✓ Wheel build requirements installed")
+        print("Wheel build requirements installed")
 
 
 def get_venv_pre_commit():
@@ -167,7 +167,7 @@ def install_pre_commit_hooks():
     )
     
     if result.returncode == 0:
-        print("✓ Pre-commit hooks installed/updated")
+        print("Pre-commit hooks installed/updated")
     else:
         print("Warning: Failed to install pre-commit hooks.")
         print("  You can manually run: pre-commit install")
@@ -216,7 +216,7 @@ def install_mdbook():
     installed_version = check_mdbook_installed()
     
     if installed_version == MDBOOK_VERSION:
-        print(f"✓ mdbook {MDBOOK_VERSION} is already installed")
+        print(f"mdbook {MDBOOK_VERSION} is already installed")
         return
     
     if installed_version:
@@ -246,7 +246,7 @@ def install_mdbook():
     # Verify installation
     installed_version = check_mdbook_installed()
     if installed_version == MDBOOK_VERSION:
-        print(f"✓ mdbook {MDBOOK_VERSION} installed successfully")
+        print(f"mdbook {MDBOOK_VERSION} installed successfully")
     else:
         print(f"Warning: mdbook was installed but version check failed.")
         print(f"  Expected: {MDBOOK_VERSION}, Got: {installed_version}")
@@ -263,7 +263,7 @@ def regenerate_test_data():
         return
     
     run_command([str(venv_python), str(script_path)])
-    print("✓ Test data regenerated")
+    print("Test data regenerated")
 
 
 def build_local_documentation():
@@ -299,7 +299,7 @@ def build_local_documentation():
     )
     
     if result.returncode == 0:
-        print("✓ Local documentation built successfully")
+        print("Local documentation built successfully")
         print(f"  Documentation is available in: {REPO_ROOT / 'book'}")
     else:
         print("Warning: Documentation build had errors. Check output above.")
@@ -349,7 +349,7 @@ def main():
     
     print()
     print("=" * 60)
-    print("✓ Setup complete!")
+    print("Setup complete!")
     print("=" * 60)
     print()
     print("To activate the virtual environment:")

@@ -108,7 +108,7 @@ def update_cargo_toml(
         rel = file_path.relative_to(project_root)
     except ValueError:
         rel = file_path
-    print(f"✓ Updated {rel}: {old_version} -> {new_version}")
+    print(f"Updated {rel}: {old_version} -> {new_version}")
 
 
 def update_cargo_toml_to_version(
@@ -130,7 +130,7 @@ def update_cargo_toml_to_version(
             rel = file_path.relative_to(project_root)
         except ValueError:
             rel = file_path
-        print(f"✓ {rel} already at version {target_version} (no change needed)")
+        print(f"{rel} already at version {target_version} (no change needed)")
         return
     pattern = r'version\s*=\s*"[^"]+"'
     new_section = re.sub(pattern, f'version = "{target_version}"', section, count=1)
@@ -139,7 +139,7 @@ def update_cargo_toml_to_version(
         rel = file_path.relative_to(project_root)
     except ValueError:
         rel = file_path
-    print(f"✓ Updated {rel}: {old_version} -> {target_version}")
+    print(f"Updated {rel}: {old_version} -> {target_version}")
 
 
 def _project_section_bounds(content: str) -> tuple[int, int] | None:
@@ -180,7 +180,7 @@ def update_pyproject_toml(
             rel = file_path.relative_to(project_root)
         except ValueError:
             rel = file_path
-        print(f"✓ {rel} already at version {py_version} (no change needed)")
+        print(f"{rel} already at version {py_version} (no change needed)")
         return
     pattern = r'version\s*=\s*"[^"]+"'
     new_section = re.sub(pattern, f'version = "{py_version}"', section, count=1)
@@ -189,7 +189,7 @@ def update_pyproject_toml(
         rel = file_path.relative_to(project_root)
     except ValueError:
         rel = file_path
-    print(f"✓ Updated {rel}: {old_version} -> {py_version}")
+    print(f"Updated {rel}: {old_version} -> {py_version}")
 
 
 def update_readme(file_path: Path, new_version: str) -> None:
@@ -210,7 +210,7 @@ def update_readme(file_path: Path, new_version: str) -> None:
         )
 
     file_path.write_text(new_content)
-    print(f"✓ Updated README.md badge -> {new_version}")
+    print(f"Updated README.md badge -> {new_version}")
 
 
 def get_current_version(cargo_toml_path: Path) -> str:
@@ -264,7 +264,7 @@ def commit_version_changes(project_root: Path, version: str, script_name: str, i
             cwd=project_root,
             check=True,
         )
-        print(f"✓ Committed changes: {commit_message}")
+        print(f"Committed changes: {commit_message}")
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Git commit failed: {e}")
 
@@ -279,7 +279,7 @@ def create_version_tag(project_root: Path, version: str) -> None:
             cwd=project_root,
             check=True,
         )
-        print(f"✓ Created tag: {tag_name} - {tag_message}")
+        print(f"Created tag: {tag_name} - {tag_message}")
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Git tag creation failed: {e}")
 
@@ -398,10 +398,10 @@ Examples:
         if is_release:
             update_readme(readme_path, new_version)
         else:
-            print("✓ README.md badge unchanged (only updated for releases)")
+            print("README.md badge unchanged (only updated for releases)")
         
         print()
-        print(f"✓ Version updated successfully: {current_version} -> {new_version}")
+        print(f"Version updated successfully: {current_version} -> {new_version}")
         
         # Update Cargo.lock by running cargo build/check
         print()
@@ -413,7 +413,7 @@ Examples:
                 check=True,
                 capture_output=True,
             )
-            print("✓ Cargo.lock updated")
+            print("Cargo.lock updated")
         except subprocess.CalledProcessError as e:
             print(f"Warning: Failed to update Cargo.lock: {e}", file=sys.stderr)
             # Continue anyway - Cargo.lock might not exist or might be in .gitignore
@@ -425,14 +425,14 @@ Examples:
             if args.tag:
                 create_version_tag(project_root, new_version)
                 print()
-                print(f"✓ Release complete: {current_version} -> {new_version} (committed and tagged)")
+                print(f"Release complete: {current_version} -> {new_version} (committed and tagged)")
                 print()
                 print("Next steps:")
                 print("  1. git push && git push --tags")
                 print("  2. python scripts/bump_version.py patch --commit  # Start next dev cycle")
             else:
                 print()
-                print(f"✓ Version update complete: {current_version} -> {new_version} (committed)")
+                print(f"Version update complete: {current_version} -> {new_version} (committed)")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

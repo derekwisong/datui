@@ -29,6 +29,7 @@
   - [Performance Tips](advanced/performance-tips.md)
 
 - [For Developers](for-developers.md)
+  - [Setup Script](for-developers/setup-script.md)
   - [Tests](for-developers/tests.md)
   - [Adding Configuration Options](for-developers/adding-configuration-options.md)
   - [Documentation](for-developers/documentation.md)

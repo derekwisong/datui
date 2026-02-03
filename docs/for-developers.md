@@ -57,7 +57,7 @@ cargo build --release
 ## More Resources
 
 - [Python Bindings](for-developers/python-bindings.md) — build, test, and run the Python extension (maturin, venv, pytest)
-- There is a [Setup Script](for-developers/contributing.md#setup-script) that will help you get your environment ready
+- There is a [Setup Script](for-developers/setup-script.md) that will help you get your environment ready
 - Learn how to [run the tests](for-developers/tests.md)
 - Build OS packages (deb, rpm, AUR) with [Building Packages](for-developers/packaging.md)
 - See the [Contributing Guide](for-developers/contributing.md) for more

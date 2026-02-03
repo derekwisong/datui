@@ -102,7 +102,7 @@ The following script can be used to set up your local repo for development:
 python scripts/setup-dev.py
 ```
 
-See the [Setup Script Guide](https://derekwisong.github.io/datui/latest/for-developers/contributing.html#setup-script)
+See the [Setup Script Guide](https://derekwisong.github.io/datui/latest/for-developers/setup-script.html)
 for more information about what it does.
 
 ### Contributing

@@ -18,7 +18,7 @@ Use a **virtual environment** so the extension and package are installed into th
 
 Use a venv so the datui package and its dependencies (e.g. polars) are isolated.
 
-The [Setup Script](contributing.md#setup-script) (`scripts/setup-dev.py`) creates `.venv` and installs `scripts/requirements.txt`
+The [Setup Script](setup-script.md) (`scripts/setup-dev.py`) creates `.venv` and installs `scripts/requirements.txt`
 which contain all the requirements here.
 
 **Create and activate (from repo root):**

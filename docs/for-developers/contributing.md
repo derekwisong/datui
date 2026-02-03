@@ -6,22 +6,7 @@ After cloning [the repo](https://www.github.com/derekwisong/datui), follow the [
 
 ## Setup
 
-### Setup Script
-
-**TLDR:** The entire setup process can be automated by running
-```
-python scripts/setup-dev.py
-```
-
-The script will:
-
-- Set up the [Python Virtual Environment](#python-virtual-environment)
-- Set up [pre-commit hooks](#pre-commit-hooks)
-- Generate sample data needed to run the tests
-- Configure and build the [documentation](documentation.md)
-
-Run the script again at any time to update
-everything.
+The entire setup process can be automated with the [Setup Script](setup-script.md). The sections below describe the manual steps.
 
 ### Python Virtual Environment
 
@@ -65,7 +50,7 @@ are made.
 
 #### Installing Pre-commit and Hooks
 
-> If you used the [Setup Script](#setup-script), the pre-commit hooks are already
+> If you used the [Setup Script](setup-script.md), the pre-commit hooks are already
 > installed.
 
 1. **Install pre-commit**:

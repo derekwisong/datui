@@ -15,7 +15,7 @@ the data must be generated before the tests can be run.
 
 ## Generating Sample Data
 
-> If you used the [Setup Script](contributing.md#setup-script), the sample data has already
+> If you used the [Setup Script](setup-script.md), the sample data has already
 > been generated. To regenerate the data, see the [instructions](tests.md#regenerating-or-updating-the-sample-data)
 
 The tests will automatically run a Python script to generate the sample files if

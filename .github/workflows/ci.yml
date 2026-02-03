@@ -102,6 +102,7 @@ jobs:
         run: |
           mkdir -p python/datui_bin
           cp target/debug/datui python/datui_bin/
+          chmod +x python/datui_bin/datui
 
       - name: Build and install Python package
         run: . .venv/bin/activate && cd python && maturin develop

@@ -35,8 +35,10 @@ Get a pre-built binary for your platform from the [releases](https://github.com/
 
 ### From Package Managers
 
-**Pip**: `pip install datui`
-**Arch Linux (AUR)**: `paru -S datui` or `yay -S datui`
+- **Pip**: `pip install datui`
+- **Arch Linux (AUR)**:
+  - `paru -S datui`
+  - `yay -S datui`
 
 > See [Package Managers][pkg-managers] for more information
 

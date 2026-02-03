@@ -351,7 +351,7 @@ Each modal:
 ### Python Utilities
 
 - Make a local virtual env `python -m venv .venv` in the repo directory
-- Use it to install the `requirements.txt` in the `scripts/` directory
+- Use it to install the `requirements.txt` in the `scripts/` directory (and `requirements-wheel.txt` / `requirements-wheel-windows.txt` for wheel builds on Linux/macOS and Windows respectively)
 - Use it to run the python scripts in the `scripts/` directory
 - Use it to install the `pre-commit` hooks
 

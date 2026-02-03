@@ -85,10 +85,11 @@ jobs:
       - name: Create virtual environment
         run: python -m venv .venv
 
-      - name: Install maturin and test dependencies into venv
+      - name: Install dependencies into venv
         run: |
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/pip install -r scripts/requirements.txt
+          .venv/bin/pip install -r scripts/requirements-wheel.txt
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2

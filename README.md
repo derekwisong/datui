@@ -16,18 +16,29 @@ Datui is an interactive terminal user interface (TUI) for exploring and analyzin
 
 ## Features
 
-- **File Format Support**: Load CSV, Parquet, JSON, and NDJSON files
+- **File Format Support**: Load CSV, Parquet, JSON, Avro, Excel, Arrow, and more
 - **Query Engine**: SQL-like query syntax for selecting columns, filtering, grouping, and aggregation
+- **Charts**: Create charts right from the terminal and export them for distribution
 - **Analysis**: See statistics about various aspects of your data
 - **Transformations**: Sort, filter, reorder, and more
-- **Keyboard-Driven**: Arrow keys and Vim-style navigation (`h`/`j`/`k`/`l` for movement) and intuitive shortcuts
+- **Keyboard-Driven**: Arrow keys and Vim-style navigation (`h`/`j`/`k`/`l`)
+- **Configurable**: Configure Datui to suit your environment and needs
 - **Templates**: Save and restore data view configurations (queries, filters, sorts, column orders)
 
 ## Installation
 
-### From Releases
+See the [Install Guide][install-guide] for full instructions.
 
-Download a pre-built binary for your platform from the [releases](https://github.com/derekwisong/datui/releases) page.
+### Pre-built Releases
+
+Get a pre-built binary for your platform from the [releases](https://github.com/derekwisong/datui/releases) page.
+
+### From Package Managers
+
+**Pip**: `pip install datui`
+**Arch Linux (AUR)**: `paru -S datui` or `yay -S datui`
+
+> See [Package Managers][pkg-managers] for more information
 
 ### From Source
 
@@ -38,6 +49,8 @@ cargo build --release
 ```
 
 The binary will be available at `target/release/datui`.
+
+> See [Compiling][compiling] for more information.
 
 ## Quick Start
 
@@ -115,3 +128,6 @@ Contributions are welcome! Please see the [full documentation][docs] for more in
 
 [docs]: https://derekwisong.github.io/datui/
 [config-guide]: https://derekwisong.github.io/datui/latest/user-guide/configuration.html
+[install-guide]: https://derekwisong.github.io/datui/latest/getting-started/installation.html
+[pkg-managers]: https://derekwisong.github.io/datui/latest/getting-started/installation.html#package-managers
+[compiling]: https://derekwisong.github.io/datui/latest/getting-started/installation.html#compiling-from-source

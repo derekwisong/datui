@@ -64,7 +64,10 @@ mode = "0644"
 doc = true
 
 [package.metadata.aur]
-files = [["target/release/datui.1.gz", "/usr/share/man/man1/datui.1.gz"]]
+files = [
+    ["target/release/datui.1.gz", "/usr/share/man/man1/datui.1.gz"],
+    ["LICENSE", "/usr/share/licenses/datui/LICENSE"],
+]
 
 # improve the performance of color-eyre for debug builds
 [profile.dev.package.backtrace]

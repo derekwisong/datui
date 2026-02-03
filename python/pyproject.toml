@@ -8,11 +8,16 @@ version = "0.2.27.dev0"
 description = "Data Exploration in the Terminal"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = { file = "../LICENSE" }
 authors = [{ name = "Derek Wisong" }]
 repository = "https://github.com/derekwisong/datui"
 homepage = "https://derekwisong.github.io/datui/"
 keywords = ["datui", "data", "polars", "tui", "dataframe", "eda", "tables"]
+
+[project.urls]
+Documentation = "https://derekwisong.github.io/datui/"
+Repository = "https://github.com/derekwisong/datui"
+Changelog = "https://github.com/derekwisong/datui/releases"
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -40,6 +45,8 @@ datui = "datui._datui:run_cli"
 [tool.maturin]
 manifest-path = "../crates/datui-pyo3/Cargo.toml"
 python-source = "."
+# Include LICENSE in sdist (path relative to python/).
+sdist-include = ["../LICENSE"]
 # Install extension as datui._datui so datui/__init__.py can import it.
 module-name = "datui._datui"
 # Build a CPython stable-ABI wheel (cp38-abi3) compatible with 3.8+.

@@ -1,0 +1,4 @@
+# For building the Python wheel (Linux/macOS only; patchelf is not available on Windows)
+patchelf
+maturin>=1.0,<2.0
+pytest

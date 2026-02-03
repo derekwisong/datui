@@ -4,7 +4,7 @@ Development environment setup script for datui.
 
 This script:
 - Creates and manages a Python virtual environment (.venv)
-- Installs Python dependencies from scripts/requirements.txt
+- Installs Python dependencies from scripts/requirements.txt (and requirements-wheel.txt on Linux/macOS)
 - Installs/updates pre-commit hooks
 - Ensures mdbook is installed at the correct version (matching CI)
 - Regenerates test data
@@ -29,6 +29,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 VENV_DIR = REPO_ROOT / ".venv"
 REQUIREMENTS_FILE = Path(__file__).parent / "requirements.txt"
+REQUIREMENTS_WHEEL_FILE = Path(__file__).parent / "requirements-wheel.txt"
+REQUIREMENTS_WHEEL_WINDOWS_FILE = Path(__file__).parent / "requirements-wheel-windows.txt"
 MDBOOK_VERSION = "0.5.2"  # Must match .github/workflows/ci.yml and release.yml
 
 
@@ -113,6 +115,16 @@ def install_requirements():
     venv_pip = get_venv_pip()
     run_command([str(venv_pip), "install", "-r", str(REQUIREMENTS_FILE)])
     print("✓ Requirements installed")
+
+    # Wheel build deps: Linux/macOS use patchelf + maturin + pytest; Windows uses maturin + pytest only
+    if sys.platform == "win32":
+        wheel_file = REQUIREMENTS_WHEEL_WINDOWS_FILE
+    else:
+        wheel_file = REQUIREMENTS_WHEEL_FILE
+    if wheel_file.exists():
+        print(f"Installing wheel build deps from {wheel_file.name}...")
+        run_command([str(venv_pip), "install", "-r", str(wheel_file)])
+        print("✓ Wheel build requirements installed")
 
 
 def get_venv_pre_commit():

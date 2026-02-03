@@ -1,0 +1,3 @@
+# Wheel build deps for Windows (no patchelf; patchelf is Linux-only for ELF binaries)
+maturin>=1.0,<2.0
+pytest

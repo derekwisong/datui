@@ -45,6 +45,15 @@ The script automatically:
 python3 scripts/build_package.py deb --no-build
 ```
 
+## License and metadata
+
+All packages include the MIT license as required:
+
+- **deb**: `[package.metadata.deb]` sets `license-file = ["LICENSE", "0"]`; cargo-deb installs it in the package.
+- **rpm**: `[[package.metadata.generate-rpm.assets]]` includes `LICENSE` at `/usr/share/licenses/datui/LICENSE`.
+- **aur**: `[package.metadata.aur]` `files` includes `["LICENSE", "/usr/share/licenses/datui/LICENSE"]`.
+- **Python wheel**: `python/pyproject.toml` uses `license = { file = "../LICENSE" }` and `sdist-include`; maturin puts the license in wheel metadata and sdist.
+
 ## Output Locations
 
 | Package | Output Directory | Example Filename |
@@ -68,6 +77,7 @@ Arch users can install from the release tarball:
 tar xf datui-X.Y.Z-x86_64.tar.gz
 sudo install -Dm755 datui /usr/bin/datui
 sudo install -Dm644 target/release/datui.1.gz /usr/share/man/man1/datui.1.gz
+sudo install -Dm644 LICENSE /usr/share/licenses/datui/LICENSE
 ```
 
 Or use the included `PKGBUILD` with `makepkg`.

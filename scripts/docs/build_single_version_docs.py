@@ -141,7 +141,7 @@ def main() -> int:
                 cwd=build_dir,
             )
             if proc.returncode == 0:
-                print("✓ Generated command-line-options.md (temp)")
+                print("Generated command-line-options.md (temp)")
             else:
                 print("  Warning: generate_command_line_options.py failed; using existing docs if present")
         elif is_tag:
@@ -155,7 +155,7 @@ def main() -> int:
         if proc.returncode != 0:
             print(f"Error: mdbook build failed for {version_name}", file=sys.stderr)
             return 1
-        print(f"✓ Built docs for {version_name}")
+        print(f"Built docs for {version_name}")
 
     # Copy demos into this version's output
     demos_src = build_dir / "demos"
@@ -164,7 +164,7 @@ def main() -> int:
         if demos_dest.exists():
             shutil.rmtree(demos_dest)
         shutil.copytree(demos_src, demos_dest)
-        print(f"✓ Copied demos directory to {version_name}/demos")
+        print(f"Copied demos directory to {version_name}/demos")
     else:
         print(f"  Warning: demos directory not found for {version_name} - skipping")
 
@@ -185,7 +185,7 @@ def main() -> int:
             print("Error: Scripts missing after returning from tag checkout", file=sys.stderr)
             return 1
 
-    print(f"✓ Single version build complete: {version_name}")
+    print(f"Single version build complete: {version_name}")
     return 0
 
 

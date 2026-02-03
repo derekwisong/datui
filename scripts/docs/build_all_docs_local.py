@@ -150,7 +150,7 @@ def main() -> int:
             shutil.rmtree(worktree_dir, ignore_errors=True)
 
     print()
-    print(f"✓ Documentation build complete: {book_dir}")
+    print(f"Documentation build complete: {book_dir}")
     print()
     print("View locally:")
     print("  open book/index.html")

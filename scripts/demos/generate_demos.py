@@ -352,11 +352,11 @@ def main() -> None:
     print()  # newline after progress bar
 
     if failed:
-        print("\n⚠️  Failed:", file=sys.stderr)
+        print("\nWarning:  Failed:", file=sys.stderr)
         for name, err in failed:
             print(f"  - {name}: {err}", file=sys.stderr)
 
-    print(f"\n✅ Generated {total - len(failed)}/{total} demo(s) in {demos_dir}/")
+    print(f"\nGenerated {total - len(failed)}/{total} demo(s) in {demos_dir}/")
 
     if demo_list and not failed:
         print("\nGenerated GIF(s):")

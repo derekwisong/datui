@@ -841,7 +841,7 @@ def main():
     corr_df = generate_correlation_matrix_data()
     save_parquet(corr_df, "correlation_matrix_demo.parquet")
 
-    print("\n✅ Sample data generation complete!")
+    print("\nSample data generation complete!")
 
 if __name__ == "__main__":
     main()

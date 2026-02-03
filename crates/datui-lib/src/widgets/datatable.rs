@@ -172,6 +172,67 @@ impl DataTableState {
         Ok(state)
     }
 
+    /// Create state from a pre-collected schema and LazyFrame (for phased loading). Does not call collect_schema();
+    /// df is None so the UI can render headers while the first collect() runs.
+    /// When `partition_columns` is Some (e.g. hive), column order is partition cols first.
+    pub fn from_schema_and_lazyframe(
+        schema: Arc<Schema>,
+        lf: LazyFrame,
+        options: &crate::OpenOptions,
+        partition_columns: Option<Vec<String>>,
+    ) -> Result<Self> {
+        let column_order: Vec<String> = if let Some(ref part) = partition_columns {
+            let part_set: HashSet<&str> = part.iter().map(String::as_str).collect();
+            let rest: Vec<String> = schema
+                .iter_names()
+                .map(|s| s.to_string())
+                .filter(|c| !part_set.contains(c.as_str()))
+                .collect();
+            part.iter().cloned().chain(rest).collect()
+        } else {
+            schema.iter_names().map(|s| s.to_string()).collect()
+        };
+        Ok(Self {
+            original_lf: lf.clone(),
+            lf,
+            df: None,
+            locked_df: None,
+            table_state: TableState::default(),
+            start_row: 0,
+            visible_rows: 0,
+            termcol_index: 0,
+            visible_termcols: 0,
+            error: None,
+            suppress_error_display: false,
+            schema,
+            num_rows: 0,
+            num_rows_valid: false,
+            filters: Vec::new(),
+            sort_columns: Vec::new(),
+            sort_ascending: true,
+            active_query: String::new(),
+            column_order,
+            locked_columns_count: 0,
+            grouped_lf: None,
+            drilled_down_group_index: None,
+            drilled_down_group_key: None,
+            drilled_down_group_key_columns: None,
+            pages_lookahead: options.pages_lookahead.unwrap_or(3),
+            pages_lookback: options.pages_lookback.unwrap_or(3),
+            max_buffered_rows: options.max_buffered_rows.unwrap_or(100_000),
+            max_buffered_mb: options.max_buffered_mb.unwrap_or(512),
+            buffered_start_row: 0,
+            buffered_end_row: 0,
+            proximity_threshold: 0,
+            row_numbers: options.row_numbers,
+            row_start_index: options.row_start_index,
+            last_pivot_spec: None,
+            last_melt_spec: None,
+            partition_columns,
+            decompress_temp_file: None,
+        })
+    }
+
     pub fn reset(&mut self) {
         self.invalidate_num_rows();
         self.lf = self.original_lf.clone();
@@ -957,6 +1018,110 @@ impl DataTableState {
                 other,
                 name
             )),
+        }
+    }
+
+    /// Build a LazyFrame for hive-partitioned Parquet only (no schema collection, no partition discovery).
+    /// Use this for phased loading so "Scanning input" is instant; schema and partition handling happen in DoLoadSchema.
+    pub fn scan_parquet_hive(path: &Path) -> Result<LazyFrame> {
+        let path_str = path.as_os_str().to_string_lossy();
+        let is_glob = path_str.contains('*');
+        let pl_path = PlPath::Local(Arc::from(path));
+        let args = ScanArgsParquet {
+            hive_options: HiveOptions::new_enabled(),
+            glob: is_glob,
+            ..Default::default()
+        };
+        LazyFrame::scan_parquet(pl_path, args).map_err(Into::into)
+    }
+
+    /// Build a LazyFrame for hive-partitioned Parquet with a pre-computed schema (avoids slow collect_schema across all files).
+    pub fn scan_parquet_hive_with_schema(path: &Path, schema: Arc<Schema>) -> Result<LazyFrame> {
+        let path_str = path.as_os_str().to_string_lossy();
+        let is_glob = path_str.contains('*');
+        let pl_path = PlPath::Local(Arc::from(path));
+        let args = ScanArgsParquet {
+            schema: Some(schema),
+            hive_options: HiveOptions::new_enabled(),
+            glob: is_glob,
+            ..Default::default()
+        };
+        LazyFrame::scan_parquet(pl_path, args).map_err(Into::into)
+    }
+
+    /// Find the first parquet file along a single spine of a hive-partitioned directory (same walk as partition discovery).
+    /// Returns `None` if the directory is empty or has no parquet files along that spine.
+    fn first_parquet_file_in_hive_dir(path: &Path) -> Option<std::path::PathBuf> {
+        const MAX_DEPTH: usize = 64;
+        Self::first_parquet_file_spine(path, 0, MAX_DEPTH)
+    }
+
+    fn first_parquet_file_spine(
+        path: &Path,
+        depth: usize,
+        max_depth: usize,
+    ) -> Option<std::path::PathBuf> {
+        if depth >= max_depth {
+            return None;
+        }
+        let entries = fs::read_dir(path).ok()?;
+        let mut first_partition_child: Option<std::path::PathBuf> = None;
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_file() {
+                if child
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
+                {
+                    return Some(child);
+                }
+            } else if child.is_dir() {
+                if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
+                    if name.contains('=') && first_partition_child.is_none() {
+                        first_partition_child = Some(child);
+                    }
+                }
+            }
+        }
+        first_partition_child.and_then(|p| Self::first_parquet_file_spine(&p, depth + 1, max_depth))
+    }
+
+    /// Read schema from a single parquet file (metadata only, no data scan). Used to avoid collect_schema() over many files.
+    fn read_schema_from_single_parquet(path: &Path) -> Result<Arc<Schema>> {
+        let file = File::open(path)?;
+        let mut reader = ParquetReader::new(file);
+        let arrow_schema = reader.schema()?;
+        let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
+        Ok(Arc::new(schema))
+    }
+
+    /// Infer schema from one parquet file in a hive directory and merge with partition columns (Utf8).
+    /// Returns (merged_schema, partition_columns). Use with scan_parquet_hive_with_schema to avoid slow collect_schema().
+    /// Only supported when path is a directory (not a glob). Returns Err if no parquet file found or read fails.
+    pub fn schema_from_one_hive_parquet(path: &Path) -> Result<(Arc<Schema>, Vec<String>)> {
+        let partition_columns = Self::discover_hive_partition_columns(path);
+        let one_file = Self::first_parquet_file_in_hive_dir(path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("No parquet file found in hive directory"))?;
+        let file_schema = Self::read_schema_from_single_parquet(&one_file)?;
+        let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
+        let mut merged = Schema::with_capacity(partition_columns.len() + file_schema.len());
+        for name in &partition_columns {
+            merged.with_column(name.clone().into(), DataType::String);
+        }
+        for (name, dtype) in file_schema.iter() {
+            if !part_set.contains(name.as_str()) {
+                merged.with_column(name.clone(), dtype.clone());
+            }
+        }
+        Ok((Arc::new(merged), partition_columns))
+    }
+
+    /// Discover hive partition column names (public for phased loading). Directory: single-spine walk; glob: parse pattern.
+    pub fn discover_hive_partition_columns(path: &Path) -> Vec<String> {
+        if path.is_dir() {
+            Self::discover_partition_columns_from_path(path)
+        } else {
+            Self::discover_partition_columns_from_glob_pattern(path)
         }
     }
 

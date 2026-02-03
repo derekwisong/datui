@@ -204,9 +204,60 @@ jobs:
         with:
           path: ./book-deploy
 
+  build-windows-wheel:
+    runs-on: windows-latest
+    needs: build-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
+      - name: Build release binary
+        run: cargo build --release --locked -p datui
+
+      - name: Bundle CLI for wheel
+        run: |
+          New-Item -ItemType Directory -Force -Path python/datui_bin
+          Copy-Item target/release/datui.exe python/datui_bin/
+
+      - name: Build Python wheel
+        run: |
+          cd python
+          maturin build --release --out dist
+
+      - name: Upload Windows wheel to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: python/dist/*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-wheel
+          path: python/dist/*.whl
+
   pypi:
     runs-on: ubuntu-latest
-    needs: build-release
+    needs: [build-release, build-windows-wheel]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
@@ -250,6 +301,12 @@ jobs:
           cd python
           maturin build --release --out dist
 
+      - name: Download Windows wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-wheel
+          path: windows-wheel
+
       - name: Upload wheels to GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -264,7 +321,7 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           pip install twine
-          twine upload --skip-existing python/dist/*.whl
+          twine upload --skip-existing python/dist/*.whl windows-wheel/*.whl
 
   deploy-docs:
     needs: build-docs

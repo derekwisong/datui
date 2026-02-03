@@ -2,7 +2,7 @@ use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::datatypes::AnyValue;
 use polars::datatypes::DataType;
-use polars::prelude::{len, DataFrame, LazyFrame, Schema};
+use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
 use widgets::info::{
@@ -339,6 +339,14 @@ pub enum AppEvent {
     /// Open with an existing LazyFrame (e.g. from Python binding); no file load.
     OpenLazyFrame(Box<LazyFrame>, OpenOptions),
     DoLoad(Vec<PathBuf>, OpenOptions), // Internal event to actually perform loading after UI update
+    /// Scan paths and build LazyFrame; then emit DoLoadSchema (phased loading).
+    DoLoadScanPaths(Vec<PathBuf>, OpenOptions),
+    /// Update phase to "Caching schema" and emit DoLoadSchemaBlocking so UI can draw before blocking.
+    DoLoadSchema(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
+    /// Actually run collect_schema() and create state; then emit DoLoadBuffer (phased loading).
+    DoLoadSchemaBlocking(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
+    /// First collect() on state; then emit Collect (phased loading).
+    DoLoadBuffer,
     DoDecompress(Vec<PathBuf>, OpenOptions), // Internal event to perform decompression after UI shows "Decompressing"
     DoExport(PathBuf, ExportFormat, ExportOptions), // Internal event to perform export after UI shows progress
     DoExportCollect(PathBuf, ExportFormat, ExportOptions), // Collect data for export; then emit DoExportWrite
@@ -485,9 +493,10 @@ pub enum LoadingState {
     #[default]
     Idle,
     Loading {
-        file_path: PathBuf,
-        file_size: u64,        // Size of compressed file in bytes
-        current_phase: String, // e.g., "Opening file", "Decompressing", "Building lazyframe", "Rendering data"
+        /// None when loading from LazyFrame (e.g. Python binding); Some for file paths.
+        file_path: Option<PathBuf>,
+        file_size: u64,        // Size of compressed file in bytes (0 when no path)
+        current_phase: String, // e.g., "Scanning input", "Caching schema", "Loading buffer"
         progress_percent: u16, // 0-100
     },
     Exporting {
@@ -644,6 +653,18 @@ impl App {
         Ok(())
     }
 
+    /// Set loading state and phase so the progress dialog is visible. Used by run() to show
+    /// loading UI immediately when launching from LazyFrame (e.g. Python) before sending the open event.
+    pub fn set_loading_phase(&mut self, phase: impl Into<String>, progress_percent: u16) {
+        self.busy = true;
+        self.loading_state = LoadingState::Loading {
+            file_path: None,
+            file_size: 0,
+            current_phase: phase.into(),
+            progress_percent,
+        };
+    }
+
     /// Ensures file path has an extension when user did not provide one; only adds
     /// compression suffix (e.g. .gz) when compression is selected. If the user
     /// provided a path with an extension (e.g. foo.feather), that extension is kept.
@@ -708,10 +729,14 @@ impl App {
         new_path
     }
 
-    fn render_loading_gauge(loading_state: &LoadingState, area: Rect, buf: &mut Buffer) {
-        // Clear the area first to ensure opaque background
-        Clear.render(area, buf);
-
+    /// Render loading/export progress as a popover: box with frame, gauge (25% width when area is full frame).
+    /// Uses theme colors for border and gauge. For loading, call with centered_rect_loading(area).
+    fn render_loading_gauge(
+        loading_state: &LoadingState,
+        area: Rect,
+        buf: &mut Buffer,
+        theme: &Theme,
+    ) {
         let (title, label_text, progress_percent) = match loading_state {
             LoadingState::Loading {
                 current_phase,
@@ -723,44 +748,31 @@ impl App {
                 current_phase,
                 progress_percent,
             } => {
-                // Include file path in the label
                 let label = format!("{}: {}", current_phase, file_path.display());
                 ("Exporting", label, progress_percent)
             }
             LoadingState::Idle => return,
         };
 
-        // Center the gauge in the area
-        let gauge_width = (area.width as f64 * 0.33) as u16; // 1/3 of available width
-        let gauge_height = 5u16; // Height for title, subtitle, and gauge
+        Clear.render(area, buf);
 
-        let center_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Fill(1),
-                Constraint::Length(gauge_height),
-                Constraint::Fill(1),
-            ])
-            .split(area);
+        let border_color = theme.get("modal_border");
+        let gauge_fill_color = theme.get("keybind_hints");
 
-        let gauge_area_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Fill(1),
-                Constraint::Length(gauge_width),
-                Constraint::Fill(1),
-            ])
-            .split(center_layout[1]);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(border_color));
 
-        let gauge_area = gauge_area_layout[1];
+        let inner = block.inner(area);
+        block.render(area, buf);
 
-        // Create gauge with progress percentage
         let gauge = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .gauge_style(Style::default().fg(gauge_fill_color))
             .percent(*progress_percent)
             .label(label_text);
 
-        gauge.render(gauge_area, buf);
+        gauge.render(inner, buf);
     }
 
     pub fn new(events: Sender<AppEvent>) -> App {
@@ -881,9 +893,23 @@ impl App {
         // For compressed files, decompression phase is already set in DoLoad handler
         // Now actually perform decompression and CSV reading (this is the slow part)
         if is_compressed_csv {
+            // Phase: Reading data (decompressing + parsing CSV; user may see "Decompressing" until we return)
+            if let LoadingState::Loading {
+                file_path,
+                file_size,
+                ..
+            } = &self.loading_state
+            {
+                self.loading_state = LoadingState::Loading {
+                    file_path: file_path.clone(),
+                    file_size: *file_size,
+                    current_phase: "Reading data".to_string(),
+                    progress_percent: 50,
+                };
+            }
             let lf = DataTableState::from_csv(path, options)?; // Already passes pages_lookahead/lookback via options
 
-            // Phase 2: Building lazyframe (after decompression, before rendering)
+            // Phase: Building lazyframe (after decompression, before rendering)
             if let LoadingState::Loading {
                 file_path,
                 file_size,
@@ -898,7 +924,7 @@ impl App {
                 };
             }
 
-            // Phase 3: Rendering data
+            // Phased loading: set "Loading buffer" so UI can show progress; caller (DoDecompress) will send DoLoadBuffer
             if let LoadingState::Loading {
                 file_path,
                 file_size,
@@ -908,16 +934,13 @@ impl App {
                 self.loading_state = LoadingState::Loading {
                     file_path: file_path.clone(),
                     file_size: *file_size,
-                    current_phase: "Rendering data".to_string(),
-                    progress_percent: 90,
+                    current_phase: "Loading buffer".to_string(),
+                    progress_percent: 70,
                 };
             }
 
-            // Clear loading state after successful load
-            self.loading_state = LoadingState::Idle;
             self.data_table_state = Some(lf);
             self.path = Some(path.clone());
-            // For compressed CSV, determine format from the base file name
             let original_format =
                 path.file_stem()
                     .and_then(|stem| stem.to_str())
@@ -929,7 +952,6 @@ impl App {
                         }
                     });
             self.original_file_format = original_format;
-            // Store delimiter for CSV export default (use comma if not specified)
             self.original_file_delimiter = Some(options.delimiter.unwrap_or(b','));
             self.sort_filter_modal = SortFilterModal::new();
             self.pivot_melt_modal = PivotMeltModal::new();
@@ -1292,6 +1314,252 @@ impl App {
         self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
         Ok(())
+    }
+
+    /// Build LazyFrame from paths for phased loading (non-compressed only). Caller must not use for compressed CSV.
+    fn build_lazyframe_from_paths(
+        &mut self,
+        paths: &[PathBuf],
+        options: &OpenOptions,
+    ) -> Result<LazyFrame> {
+        let path = &paths[0];
+        if paths.len() == 1 && options.hive {
+            let path_str = path.as_os_str().to_string_lossy();
+            let is_single_file = path.exists()
+                && path.is_file()
+                && !path_str.contains('*')
+                && !path_str.contains("**");
+            if !is_single_file {
+                let use_parquet_hive = path.is_dir()
+                    || path_str.contains(".parquet")
+                    || path_str.contains("*.parquet");
+                if use_parquet_hive {
+                    // Only build LazyFrame here; schema + partition discovery happen in DoLoadSchema ("Caching schema")
+                    return DataTableState::scan_parquet_hive(path);
+                }
+                return Err(color_eyre::eyre::eyre!(
+                    "With --hive use a directory or a glob pattern for Parquet (e.g. path/to/dir or path/**/*.parquet)"
+                ));
+            }
+        }
+
+        let lf = if paths.len() > 1 {
+            match path.extension() {
+                Some(ext) if ext.eq_ignore_ascii_case("parquet") => {
+                    DataTableState::from_parquet_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("csv") => {
+                    DataTableState::from_csv_paths(paths, options)?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("jsonl") => {
+                    DataTableState::from_json_lines_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("ndjson") => {
+                    DataTableState::from_ndjson_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext)
+                    if ext.eq_ignore_ascii_case("arrow")
+                        || ext.eq_ignore_ascii_case("ipc")
+                        || ext.eq_ignore_ascii_case("feather") =>
+                {
+                    DataTableState::from_ipc_paths(
+                        paths,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("avro") => DataTableState::from_avro_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("orc") => DataTableState::from_orc_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                _ => {
+                    if !paths.is_empty() && !path.exists() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("File not found: {}", path.display()),
+                        )
+                        .into());
+                    }
+                    return Err(color_eyre::eyre::eyre!(
+                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only)"
+                    ));
+                }
+            }
+        } else {
+            match path.extension() {
+                Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("csv") => {
+                    DataTableState::from_csv(path, options)?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("tsv") => DataTableState::from_delimited(
+                    path,
+                    b'\t',
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("psv") => DataTableState::from_delimited(
+                    path,
+                    b'|',
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("jsonl") => DataTableState::from_json_lines(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext)
+                    if ext.eq_ignore_ascii_case("arrow")
+                        || ext.eq_ignore_ascii_case("ipc")
+                        || ext.eq_ignore_ascii_case("feather") =>
+                {
+                    DataTableState::from_ipc(
+                        path,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("avro") => DataTableState::from_avro(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(ext)
+                    if ext.eq_ignore_ascii_case("xls")
+                        || ext.eq_ignore_ascii_case("xlsx")
+                        || ext.eq_ignore_ascii_case("xlsm")
+                        || ext.eq_ignore_ascii_case("xlsb") =>
+                {
+                    DataTableState::from_excel(
+                        path,
+                        options.pages_lookahead,
+                        options.pages_lookback,
+                        options.max_buffered_rows,
+                        options.max_buffered_mb,
+                        options.row_numbers,
+                        options.row_start_index,
+                        options.excel_sheet.as_deref(),
+                    )?
+                }
+                Some(ext) if ext.eq_ignore_ascii_case("orc") => DataTableState::from_orc(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                _ => {
+                    if paths.len() == 1 && !path.exists() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("File not found: {}", path.display()),
+                        )
+                        .into());
+                    }
+                    return Err(color_eyre::eyre::eyre!("Unsupported file type"));
+                }
+            }
+        };
+        Ok(lf.lf)
     }
 
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
@@ -4664,55 +4932,335 @@ impl App {
             }
             AppEvent::Open(paths, options) => {
                 self.busy = true;
-                // Set loading state first, then trigger a render before actually loading
                 let first = &paths[0];
                 let file_size = std::fs::metadata(first).map(|m| m.len()).unwrap_or(0);
                 let path_str = first.as_os_str().to_string_lossy();
-                let is_partitioned_path = paths.len() == 1
+                let _is_partitioned_path = paths.len() == 1
                     && options.hive
                     && (first.is_dir() || path_str.contains('*') || path_str.contains("**"));
-                let phase = if is_partitioned_path {
-                    "Opening partitioned path"
-                } else if paths.len() > 1 {
-                    "Opening files"
-                } else {
-                    "Opening file"
-                };
+                let phase = "Scanning input";
 
                 self.loading_state = LoadingState::Loading {
-                    file_path: first.clone(),
+                    file_path: Some(first.clone()),
                     file_size,
                     current_phase: phase.to_string(),
                     progress_percent: 10,
                 };
 
-                // Return DoLoad event to perform actual loading after UI renders
-                Some(AppEvent::DoLoad(paths.clone(), options.clone()))
+                Some(AppEvent::DoLoadScanPaths(paths.clone(), options.clone()))
             }
             AppEvent::OpenLazyFrame(lf, options) => {
-                match DataTableState::from_lazyframe((**lf).clone(), options) {
-                    Ok(state) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.parquet_metadata_cache = None;
-                        self.export_df = None;
-                        self.data_table_state = Some(state);
-                        self.path = None;
-                        self.original_file_format = None;
-                        self.original_file_delimiter = None;
-                        self.sort_filter_modal = SortFilterModal::new();
-                        self.pivot_melt_modal = PivotMeltModal::new();
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        Some(AppEvent::Collect)
+                self.busy = true;
+                self.loading_state = LoadingState::Loading {
+                    file_path: None,
+                    file_size: 0,
+                    current_phase: "Scanning input".to_string(),
+                    progress_percent: 10,
+                };
+                Some(AppEvent::DoLoadSchema(lf.clone(), None, options.clone()))
+            }
+            AppEvent::DoLoadScanPaths(paths, options) => {
+                let first = &paths[0];
+                let compression = options
+                    .compression
+                    .or_else(|| CompressionFormat::from_extension(first));
+                let is_csv = first
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(|stem| {
+                        stem.ends_with(".csv")
+                            || first
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|e| e.eq_ignore_ascii_case("csv"))
+                                .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                let is_compressed_csv = paths.len() == 1 && compression.is_some() && is_csv;
+                if is_compressed_csv {
+                    if let LoadingState::Loading {
+                        file_path,
+                        file_size,
+                        ..
+                    } = &self.loading_state
+                    {
+                        self.loading_state = LoadingState::Loading {
+                            file_path: file_path.clone(),
+                            file_size: *file_size,
+                            current_phase: "Decompressing".to_string(),
+                            progress_percent: 30,
+                        };
+                    }
+                    Some(AppEvent::DoLoad(paths.clone(), options.clone()))
+                } else {
+                    let first = paths[0].clone();
+                    #[allow(clippy::needless_borrow)]
+                    match self.build_lazyframe_from_paths(&paths, options) {
+                        Ok(lf) => {
+                            if let LoadingState::Loading {
+                                file_path,
+                                file_size,
+                                ..
+                            } = &self.loading_state
+                            {
+                                self.loading_state = LoadingState::Loading {
+                                    file_path: file_path.clone(),
+                                    file_size: *file_size,
+                                    current_phase: "Caching schema".to_string(),
+                                    progress_percent: 40,
+                                };
+                            }
+                            Some(AppEvent::DoLoadSchema(
+                                Box::new(lf),
+                                Some(first),
+                                options.clone(),
+                            ))
+                        }
+                        Err(e) => {
+                            self.loading_state = LoadingState::Idle;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            let msg = crate::error_display::user_message_from_report(
+                                &e,
+                                paths.first().map(|p| p.as_path()),
+                            );
+                            Some(AppEvent::Crash(msg))
+                        }
+                    }
+                }
+            }
+            AppEvent::DoLoadSchema(lf, path, options) => {
+                // Set "Caching schema" and return so the UI draws this phase before we block in DoLoadSchemaBlocking
+                if let LoadingState::Loading {
+                    file_path,
+                    file_size,
+                    ..
+                } = &self.loading_state
+                {
+                    self.loading_state = LoadingState::Loading {
+                        file_path: file_path.clone(),
+                        file_size: *file_size,
+                        current_phase: "Caching schema".to_string(),
+                        progress_percent: 40,
+                    };
+                }
+                Some(AppEvent::DoLoadSchemaBlocking(
+                    lf.clone(),
+                    path.clone(),
+                    options.clone(),
+                ))
+            }
+            AppEvent::DoLoadSchemaBlocking(lf, path, options) => {
+                // Fast path for hive directory: infer schema from one parquet file instead of collect_schema() over all files.
+                if path.as_ref().is_some_and(|p| p.is_dir() && options.hive) {
+                    let p = path.as_ref().unwrap();
+                    if let Ok((merged_schema, partition_columns)) =
+                        DataTableState::schema_from_one_hive_parquet(p)
+                    {
+                        if let Ok(lf_owned) =
+                            DataTableState::scan_parquet_hive_with_schema(p, merged_schema.clone())
+                        {
+                            match DataTableState::from_schema_and_lazyframe(
+                                merged_schema,
+                                lf_owned,
+                                options,
+                                Some(partition_columns),
+                            ) {
+                                Ok(state) => {
+                                    self.parquet_metadata_cache = None;
+                                    self.export_df = None;
+                                    self.data_table_state = Some(state);
+                                    self.path = path.clone();
+                                    if let Some(ref path_p) = path {
+                                        self.original_file_format = path_p
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .and_then(|ext| {
+                                                if ext.eq_ignore_ascii_case("parquet") {
+                                                    Some(ExportFormat::Parquet)
+                                                } else if ext.eq_ignore_ascii_case("csv") {
+                                                    Some(ExportFormat::Csv)
+                                                } else if ext.eq_ignore_ascii_case("json") {
+                                                    Some(ExportFormat::Json)
+                                                } else if ext.eq_ignore_ascii_case("jsonl")
+                                                    || ext.eq_ignore_ascii_case("ndjson")
+                                                {
+                                                    Some(ExportFormat::Ndjson)
+                                                } else if ext.eq_ignore_ascii_case("arrow")
+                                                    || ext.eq_ignore_ascii_case("ipc")
+                                                    || ext.eq_ignore_ascii_case("feather")
+                                                {
+                                                    Some(ExportFormat::Ipc)
+                                                } else if ext.eq_ignore_ascii_case("avro") {
+                                                    Some(ExportFormat::Avro)
+                                                } else {
+                                                    None
+                                                }
+                                            });
+                                        self.original_file_delimiter =
+                                            Some(options.delimiter.unwrap_or(b','));
+                                    } else {
+                                        self.original_file_format = None;
+                                        self.original_file_delimiter = None;
+                                    }
+                                    self.sort_filter_modal = SortFilterModal::new();
+                                    self.pivot_melt_modal = PivotMeltModal::new();
+                                    if let LoadingState::Loading {
+                                        file_path,
+                                        file_size,
+                                        ..
+                                    } = &self.loading_state
+                                    {
+                                        self.loading_state = LoadingState::Loading {
+                                            file_path: file_path.clone(),
+                                            file_size: *file_size,
+                                            current_phase: "Loading buffer".to_string(),
+                                            progress_percent: 70,
+                                        };
+                                    }
+                                    return Some(AppEvent::DoLoadBuffer);
+                                }
+                                Err(e) => {
+                                    self.loading_state = LoadingState::Idle;
+                                    self.busy = false;
+                                    self.drain_keys_on_next_loop = true;
+                                    let msg =
+                                        crate::error_display::user_message_from_report(&e, None);
+                                    return Some(AppEvent::Crash(msg));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let mut lf_owned = (**lf).clone();
+                match lf_owned.collect_schema() {
+                    Ok(schema) => {
+                        let partition_columns = if path.as_ref().is_some_and(|p| {
+                            options.hive
+                                && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
+                        }) {
+                            let discovered = DataTableState::discover_hive_partition_columns(
+                                path.as_ref().unwrap(),
+                            );
+                            discovered
+                                .into_iter()
+                                .filter(|c| schema.contains(c.as_str()))
+                                .collect::<Vec<_>>()
+                        } else {
+                            Vec::new()
+                        };
+                        if !partition_columns.is_empty() {
+                            let exprs: Vec<_> = partition_columns
+                                .iter()
+                                .map(|s| col(s.as_str()))
+                                .chain(
+                                    schema
+                                        .iter_names()
+                                        .map(|s| s.to_string())
+                                        .filter(|c| !partition_columns.contains(c))
+                                        .map(|s| col(s.as_str())),
+                                )
+                                .collect();
+                            lf_owned = lf_owned.select(exprs);
+                        }
+                        let part_cols_opt = if partition_columns.is_empty() {
+                            None
+                        } else {
+                            Some(partition_columns)
+                        };
+                        match DataTableState::from_schema_and_lazyframe(
+                            schema,
+                            lf_owned,
+                            options,
+                            part_cols_opt,
+                        ) {
+                            Ok(state) => {
+                                self.parquet_metadata_cache = None;
+                                self.export_df = None;
+                                self.data_table_state = Some(state);
+                                self.path = path.clone();
+                                if let Some(ref p) = path {
+                                    self.original_file_format =
+                                        p.extension().and_then(|e| e.to_str()).and_then(|ext| {
+                                            if ext.eq_ignore_ascii_case("parquet") {
+                                                Some(ExportFormat::Parquet)
+                                            } else if ext.eq_ignore_ascii_case("csv") {
+                                                Some(ExportFormat::Csv)
+                                            } else if ext.eq_ignore_ascii_case("json") {
+                                                Some(ExportFormat::Json)
+                                            } else if ext.eq_ignore_ascii_case("jsonl")
+                                                || ext.eq_ignore_ascii_case("ndjson")
+                                            {
+                                                Some(ExportFormat::Ndjson)
+                                            } else if ext.eq_ignore_ascii_case("arrow")
+                                                || ext.eq_ignore_ascii_case("ipc")
+                                                || ext.eq_ignore_ascii_case("feather")
+                                            {
+                                                Some(ExportFormat::Ipc)
+                                            } else if ext.eq_ignore_ascii_case("avro") {
+                                                Some(ExportFormat::Avro)
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                    self.original_file_delimiter =
+                                        Some(options.delimiter.unwrap_or(b','));
+                                } else {
+                                    self.original_file_format = None;
+                                    self.original_file_delimiter = None;
+                                }
+                                self.sort_filter_modal = SortFilterModal::new();
+                                self.pivot_melt_modal = PivotMeltModal::new();
+                                if let LoadingState::Loading {
+                                    file_path,
+                                    file_size,
+                                    ..
+                                } = &self.loading_state
+                                {
+                                    self.loading_state = LoadingState::Loading {
+                                        file_path: file_path.clone(),
+                                        file_size: *file_size,
+                                        current_phase: "Loading buffer".to_string(),
+                                        progress_percent: 70,
+                                    };
+                                }
+                                Some(AppEvent::DoLoadBuffer)
+                            }
+                            Err(e) => {
+                                self.loading_state = LoadingState::Idle;
+                                self.busy = false;
+                                self.drain_keys_on_next_loop = true;
+                                let msg = crate::error_display::user_message_from_report(&e, None);
+                                Some(AppEvent::Crash(msg))
+                            }
+                        }
                     }
                     Err(e) => {
                         self.loading_state = LoadingState::Idle;
                         self.busy = false;
                         self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(&e, None);
+                        let report = color_eyre::eyre::Report::from(e);
+                        let msg = crate::error_display::user_message_from_report(&report, None);
                         Some(AppEvent::Crash(msg))
                     }
                 }
+            }
+            AppEvent::DoLoadBuffer => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.collect();
+                    if let Some(e) = state.error.take() {
+                        self.loading_state = LoadingState::Idle;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        let msg = crate::error_display::user_message_from_polars(&e);
+                        return Some(AppEvent::Crash(msg));
+                    }
+                }
+                self.loading_state = LoadingState::Idle;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                Some(AppEvent::Collect)
             }
             AppEvent::DoLoad(paths, options) => {
                 let first = &paths[0];
@@ -4775,11 +5323,7 @@ impl App {
             AppEvent::DoDecompress(paths, options) => {
                 // Actually perform decompression now (after UI has rendered "Decompressing")
                 match self.load(paths, options) {
-                    Ok(_) => {
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        Some(AppEvent::Collect)
-                    }
+                    Ok(_) => Some(AppEvent::DoLoadBuffer),
                     Err(e) => {
                         self.loading_state = LoadingState::Idle;
                         self.busy = false;
@@ -6316,12 +6860,7 @@ impl Widget for &mut App {
                 }
             }
             None => {
-                // Show loading indicator if loading, otherwise show "No data loaded"
-                if self.loading_state.is_loading() {
-                    App::render_loading_gauge(&self.loading_state, layout[0], buf);
-                } else {
-                    Paragraph::new("No data loaded").render(layout[0], buf);
-                }
+                Paragraph::new("No data loaded").render(layout[0], buf);
             }
         }
 
@@ -7935,9 +8474,14 @@ impl Widget for &mut App {
             }
         }
 
+        // Render loading progress popover (min 25 chars wide, max 25% of area; throbber spins via busy in controls)
+        if matches!(self.loading_state, LoadingState::Loading { .. }) {
+            let popover_rect = centered_rect_loading(area);
+            App::render_loading_gauge(&self.loading_state, popover_rect, buf, &self.theme);
+        }
         // Render export progress bar (overlay when exporting)
         if matches!(self.loading_state, LoadingState::Exporting { .. }) {
-            App::render_loading_gauge(&self.loading_state, area, buf);
+            App::render_loading_gauge(&self.loading_state, area, buf, &self.theme);
         }
 
         // Render confirmation modal (highest priority)
@@ -8491,8 +9035,29 @@ fn centered_rect_with_min(
     Rect::new(x, y, width, height)
 }
 
+/// Rect for the loading progress popover: at least 25 characters wide, at most 25% of area width.
+/// Height is at least 5 lines, at most 20% of area height.
+fn centered_rect_loading(r: Rect) -> Rect {
+    const MIN_WIDTH: u16 = 25;
+    const MAX_WIDTH_PERCENT: u16 = 25;
+    const MIN_HEIGHT: u16 = 5;
+    const MAX_HEIGHT_PERCENT: u16 = 20;
+
+    let width = (r.width * MAX_WIDTH_PERCENT / 100)
+        .max(MIN_WIDTH)
+        .min(r.width);
+    let height = (r.height * MAX_HEIGHT_PERCENT / 100)
+        .max(MIN_HEIGHT)
+        .min(r.height);
+
+    let x = r.x + r.width.saturating_sub(width) / 2;
+    let y = r.y + r.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width, height)
+}
+
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.
 pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()> {
+    use std::io::Write;
     use std::sync::{mpsc, Mutex, Once};
 
     let config = config.unwrap_or_else(|| {
@@ -8535,8 +9100,48 @@ pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()
     terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
 
     match input {
-        RunInput::Paths(paths, opts) => tx.send(AppEvent::Open(paths, opts))?,
-        RunInput::LazyFrame(lf, opts) => tx.send(AppEvent::OpenLazyFrame(lf, opts))?,
+        RunInput::Paths(paths, opts) => {
+            tx.send(AppEvent::Open(paths, opts))?;
+        }
+        RunInput::LazyFrame(lf, opts) => {
+            // Show loading dialog immediately so it is visible when launch is from Python/LazyFrame
+            // (before sending the event and before any blocking work in the event handler).
+            app.set_loading_phase("Scanning input", 10);
+            terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+            let _ = std::io::stdout().flush();
+            // Brief pause so the terminal can display the frame when run from Python (e.g. maturin).
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            tx.send(AppEvent::OpenLazyFrame(lf, opts))?;
+        }
+    }
+
+    // Process load events and draw so the loading progress dialog updates (e.g. "Caching schema")
+    // before any blocking work. Keeps processing until no event is received (timeout).
+    loop {
+        let event = match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(ev) => ev,
+            Err(mpsc::RecvTimeoutError::Timeout) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        match event {
+            AppEvent::Exit => break,
+            AppEvent::Crash(msg) => {
+                ratatui::restore();
+                return Err(color_eyre::eyre::eyre!(msg));
+            }
+            ev => {
+                if let Some(next) = app.event(&ev) {
+                    let _ = tx.send(next);
+                }
+                terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+                let _ = std::io::stdout().flush();
+                // After processing DoLoadSchema we've drawn "Caching schema"; next event is DoLoadSchemaBlocking (blocking).
+                // Leave it for the main loop so we don't block here.
+                if matches!(ev, AppEvent::DoLoadSchema(..)) {
+                    break;
+                }
+            }
+        }
     }
 
     loop {

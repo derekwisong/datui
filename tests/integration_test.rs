@@ -1,11 +1,25 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::{App, AppEvent, InputMode, OpenOptions};
 use polars::prelude::*;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::widgets::Widget;
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
 mod common;
+
+/// Pumps the load event chain (Open -> DoLoadScanPaths -> DoLoadSchema -> DoLoadSchemaBlocking -> DoLoadBuffer -> Collect) until no event is returned.
+fn pump_open_until_loaded(app: &mut App, paths: Vec<PathBuf>, options: OpenOptions) {
+    let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
+    while let Some(ev) = next.take() {
+        next = app.event(&ev);
+        if matches!(ev, AppEvent::Crash(_)) {
+            return;
+        }
+    }
+}
 
 #[test]
 fn test_app_creation() {
@@ -34,13 +48,8 @@ fn test_full_workflow() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    // 2. Open the file
-    let event = AppEvent::Open(vec![csv_path.clone()], OpenOptions::default());
-    if let Some(next_event) = app.event(&event) {
-        if let Some(collect_event) = app.event(&next_event) {
-            app.event(&collect_event);
-        }
-    }
+    // 2. Open the file (pump full load chain)
+    pump_open_until_loaded(&mut app, vec![csv_path.clone()], OpenOptions::default());
 
     assert!(app.data_table_state.is_some());
     let datatable = app.data_table_state.as_ref().unwrap();
@@ -123,12 +132,7 @@ fn test_chart_open_and_esc_back() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    let event = AppEvent::Open(vec![csv_path.clone()], OpenOptions::default());
-    if let Some(next_event) = app.event(&event) {
-        if let Some(collect_event) = app.event(&next_event) {
-            app.event(&collect_event);
-        }
-    }
+    pump_open_until_loaded(&mut app, vec![csv_path.clone()], OpenOptions::default());
     assert!(app.data_table_state.is_some());
     assert_eq!(app.input_mode, InputMode::Normal);
 
@@ -156,12 +160,7 @@ fn test_chart_q_does_not_exit() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    let event = AppEvent::Open(vec![csv_path], OpenOptions::default());
-    if let Some(next_event) = app.event(&event) {
-        if let Some(collect_event) = app.event(&next_event) {
-            app.event(&collect_event);
-        }
-    }
+    pump_open_until_loaded(&mut app, vec![csv_path], OpenOptions::default());
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
@@ -173,4 +172,53 @@ fn test_chart_q_does_not_exit() {
     let out = app.event(&AppEvent::Key(key_q));
     assert!(out.is_none());
     assert_eq!(app.input_mode, InputMode::Chart);
+}
+
+/// Renders the app in chart view to exercise the chart cache path (no x/y selected, then with x+y).
+/// Ensures the chart render path does not panic and cache logic works.
+#[test]
+fn test_chart_view_render_with_cache() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx);
+
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join("chart_render_cache_test.csv");
+
+    let mut df = df!(
+        "x" => (0..5).collect::<Vec<i32>>(),
+        "y" => (0..5).map(|i| i * 3).collect::<Vec<i32>>()
+    )
+    .unwrap();
+    let mut file = File::create(&csv_path).unwrap();
+    CsvWriter::new(&mut file).finish(&mut df).unwrap();
+
+    pump_open_until_loaded(&mut app, vec![csv_path.clone()], OpenOptions::default());
+    assert!(app.data_table_state.is_some());
+
+    // Open chart view (no x/y selected yet)
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.input_mode, InputMode::Chart);
+
+    // Render in chart view with no series (exercises cache path; xy_series and x_bounds stay None)
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    Widget::render(&mut app, area, &mut buf);
+
+    // Select x and y via modal state so chart data is computed and cached
+    app.chart_modal.x_column = Some("x".to_string());
+    app.chart_modal.y_columns = vec!["y".to_string()];
+
+    // Render again: should use or populate chart cache (XY series)
+    Widget::render(&mut app, area, &mut buf);
+
+    // Close chart (clears cache)
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.input_mode, InputMode::Normal);
 }

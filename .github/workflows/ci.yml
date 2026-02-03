@@ -108,3 +108,46 @@ jobs:
 
       - name: Run Python tests
         run: . .venv/bin/activate && pytest python/tests/ -v
+
+  build-and-test-windows:
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/heads/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          key: "ci-windows"
+
+      - name: Set up Python and install dependencies
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Create virtual environment and install requirements
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\pip.exe install -r scripts/requirements.txt
+
+      - name: Generate sample data
+        run: .venv\Scripts\python.exe scripts/generate_sample_data.py
+
+      - name: Build
+        run: cargo build --workspace --tests --locked
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build release binary
+        run: cargo build --release -p datui --locked
+
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: datui-windows
+          path: target/release/datui.exe

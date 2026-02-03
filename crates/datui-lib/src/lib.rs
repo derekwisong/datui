@@ -530,6 +530,60 @@ struct TemplateApplicationState {
     locked_columns_count: usize,
 }
 
+#[derive(Default)]
+struct ChartCache {
+    xy: Option<ChartCacheXY>,
+    x_range: Option<ChartCacheXRange>,
+    histogram: Option<ChartCacheHistogram>,
+    box_plot: Option<ChartCacheBoxPlot>,
+    kde: Option<ChartCacheKde>,
+    heatmap: Option<ChartCacheHeatmap>,
+}
+
+impl ChartCache {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+struct ChartCacheXY {
+    x_column: String,
+    y_columns: Vec<String>,
+    series: Vec<Vec<(f64, f64)>>,
+    x_axis_kind: chart_data::XAxisTemporalKind,
+}
+
+struct ChartCacheXRange {
+    x_column: String,
+    x_min: f64,
+    x_max: f64,
+    x_axis_kind: chart_data::XAxisTemporalKind,
+}
+
+struct ChartCacheHistogram {
+    column: String,
+    bins: usize,
+    data: chart_data::HistogramData,
+}
+
+struct ChartCacheBoxPlot {
+    column: String,
+    data: chart_data::BoxPlotData,
+}
+
+struct ChartCacheKde {
+    column: String,
+    bandwidth_factor: f64,
+    data: chart_data::KdeData,
+}
+
+struct ChartCacheHeatmap {
+    x_column: String,
+    y_column: String,
+    bins: usize,
+    data: chart_data::HeatmapData,
+}
+
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     path: Option<PathBuf>,
@@ -550,6 +604,7 @@ pub struct App {
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
+    chart_cache: ChartCache,
     error_modal: ErrorModal,
     success_modal: SuccessModal,
     confirmation_modal: ConfirmationModal,
@@ -768,6 +823,7 @@ impl App {
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
+            chart_cache: ChartCache::default(),
             error_modal: ErrorModal::new(),
             success_modal: SuccessModal::new(),
             confirmation_modal: ConfirmationModal::new(),
@@ -2589,6 +2645,7 @@ impl App {
                 }
                 KeyCode::Esc if event.is_press() => {
                     self.chart_modal.close();
+                    self.chart_cache.clear();
                     self.input_mode = InputMode::Normal;
                 }
                 KeyCode::Tab if event.is_press() => {
@@ -4548,6 +4605,7 @@ impl App {
                         self.chart_modal.heatmap_y_input =
                             std::mem::take(&mut self.chart_modal.heatmap_y_input)
                                 .with_theme(&self.theme);
+                        self.chart_cache.clear();
                         self.input_mode = InputMode::Chart;
                     }
                 }
@@ -7620,70 +7678,115 @@ impl Widget for &mut App {
         if self.input_mode == InputMode::Chart {
             let chart_area = main_area;
             Clear.render(chart_area, buf);
-            let mut xy_series: Option<Vec<Vec<(f64, f64)>>> = None;
+            let mut xy_series: Option<&Vec<Vec<(f64, f64)>>> = None;
             let mut x_axis_kind = chart_data::XAxisTemporalKind::Numeric;
             let mut x_bounds: Option<(f64, f64)> = None;
-            let mut hist_data: Option<chart_data::HistogramData> = None;
-            let mut box_data: Option<chart_data::BoxPlotData> = None;
-            let mut kde_data: Option<chart_data::KdeData> = None;
-            let mut heatmap_data: Option<chart_data::HeatmapData> = None;
+            let mut hist_data: Option<&chart_data::HistogramData> = None;
+            let mut box_data: Option<&chart_data::BoxPlotData> = None;
+            let mut kde_data: Option<&chart_data::KdeData> = None;
+            let mut heatmap_data: Option<&chart_data::HeatmapData> = None;
 
             match self.chart_modal.chart_kind {
                 ChartKind::XY => {
-                    let (chart_data, kind) = self
-                        .chart_modal
-                        .effective_x_column()
-                        .and_then(|x| {
-                            let state = self.data_table_state.as_ref()?;
-                            let y = self.chart_modal.effective_y_columns();
-                            if y.is_empty() {
-                                return None;
+                    if let Some(x_column) = self.chart_modal.effective_x_column() {
+                        let x_key = x_column.to_string();
+                        let y_columns = self.chart_modal.effective_y_columns();
+                        if !y_columns.is_empty() {
+                            let use_cache = self
+                                .chart_cache
+                                .xy
+                                .as_ref()
+                                .filter(|c| c.x_column == x_key && c.y_columns == y_columns);
+                            if use_cache.is_none() {
+                                if let Some(state) = self.data_table_state.as_ref() {
+                                    if let Ok(result) = chart_data::prepare_chart_data(
+                                        &state.lf,
+                                        &state.schema,
+                                        x_column,
+                                        &y_columns,
+                                    ) {
+                                        self.chart_cache.xy = Some(ChartCacheXY {
+                                            x_column: x_key.clone(),
+                                            y_columns: y_columns.clone(),
+                                            series: result.series,
+                                            x_axis_kind: result.x_axis_kind,
+                                        });
+                                    }
+                                }
                             }
-                            chart_data::prepare_chart_data(&state.lf, &state.schema, x, &y)
-                                .ok()
-                                .map(|r| (r.series, r.x_axis_kind))
-                        })
-                        .unwrap_or_else(|| {
-                            let x_kind = self
-                                .chart_modal
-                                .effective_x_column()
-                                .and_then(|x| {
-                                    self.data_table_state.as_ref().map(|state| {
-                                        chart_data::x_axis_temporal_kind_for_column(
-                                            &state.schema,
-                                            x,
-                                        )
-                                    })
-                                })
-                                .unwrap_or(chart_data::XAxisTemporalKind::Numeric);
-                            (Vec::new(), x_kind)
-                        });
-                    x_axis_kind = kind;
-                    if chart_data.iter().any(|s| !s.is_empty()) {
-                        xy_series = Some(chart_data);
+                            if let Some(cache) = self.chart_cache.xy.as_ref() {
+                                if cache.x_column == x_key && cache.y_columns == y_columns {
+                                    x_axis_kind = cache.x_axis_kind;
+                                    if cache.series.iter().any(|s| !s.is_empty()) {
+                                        xy_series = Some(&cache.series);
+                                    }
+                                }
+                            }
+                        } else {
+                            // Only X selected: cache x range for axis bounds
+                            let use_cache = self
+                                .chart_cache
+                                .x_range
+                                .as_ref()
+                                .filter(|c| c.x_column == x_key);
+                            if use_cache.is_none() {
+                                if let Some(state) = self.data_table_state.as_ref() {
+                                    if let Ok(result) = chart_data::prepare_chart_x_range(
+                                        &state.lf,
+                                        &state.schema,
+                                        x_column,
+                                    ) {
+                                        self.chart_cache.x_range = Some(ChartCacheXRange {
+                                            x_column: x_key.clone(),
+                                            x_min: result.x_min,
+                                            x_max: result.x_max,
+                                            x_axis_kind: result.x_axis_kind,
+                                        });
+                                    }
+                                }
+                            }
+                            if let Some(cache) = self.chart_cache.x_range.as_ref() {
+                                if cache.x_column == x_key {
+                                    x_axis_kind = cache.x_axis_kind;
+                                    x_bounds = Some((cache.x_min, cache.x_max));
+                                }
+                            } else if let Some(state) = self.data_table_state.as_ref() {
+                                x_axis_kind = chart_data::x_axis_temporal_kind_for_column(
+                                    &state.schema,
+                                    x_column,
+                                );
+                            }
+                        }
                     }
-                    x_bounds = (xy_series.is_none()
-                        && self.chart_modal.effective_x_column().is_some()
-                        && self.data_table_state.is_some())
-                    .then(|| {
-                        let x = self.chart_modal.effective_x_column().unwrap();
-                        let state = self.data_table_state.as_ref().unwrap();
-                        chart_data::prepare_chart_x_range(&state.lf, &state.schema, x).ok()
-                    })
-                    .flatten()
-                    .map(|r| (r.x_min, r.x_max));
                 }
                 ChartKind::Histogram => {
                     if let (Some(state), Some(column)) = (
                         self.data_table_state.as_ref(),
                         self.chart_modal.effective_hist_column(),
                     ) {
-                        hist_data = chart_data::prepare_histogram_data(
-                            &state.lf,
-                            &column,
-                            self.chart_modal.hist_bins,
-                        )
-                        .ok();
+                        let bins = self.chart_modal.hist_bins;
+                        let use_cache = self
+                            .chart_cache
+                            .histogram
+                            .as_ref()
+                            .filter(|c| c.column == column && c.bins == bins);
+                        if use_cache.is_none() {
+                            if let Ok(data) =
+                                chart_data::prepare_histogram_data(&state.lf, &column, bins)
+                            {
+                                self.chart_cache.histogram = Some(ChartCacheHistogram {
+                                    column: column.clone(),
+                                    bins,
+                                    data,
+                                });
+                            }
+                        }
+                        hist_data = self
+                            .chart_cache
+                            .histogram
+                            .as_ref()
+                            .filter(|c| c.column == column && c.bins == bins)
+                            .map(|c| &c.data);
                     }
                 }
                 ChartKind::BoxPlot => {
@@ -7691,7 +7794,28 @@ impl Widget for &mut App {
                         self.data_table_state.as_ref(),
                         self.chart_modal.effective_box_column(),
                     ) {
-                        box_data = chart_data::prepare_box_plot_data(&state.lf, &[column]).ok();
+                        let use_cache = self
+                            .chart_cache
+                            .box_plot
+                            .as_ref()
+                            .filter(|c| c.column == column);
+                        if use_cache.is_none() {
+                            if let Ok(data) = chart_data::prepare_box_plot_data(
+                                &state.lf,
+                                std::slice::from_ref(&column),
+                            ) {
+                                self.chart_cache.box_plot = Some(ChartCacheBoxPlot {
+                                    column: column.clone(),
+                                    data,
+                                });
+                            }
+                        }
+                        box_data = self
+                            .chart_cache
+                            .box_plot
+                            .as_ref()
+                            .filter(|c| c.column == column)
+                            .map(|c| &c.data);
                     }
                 }
                 ChartKind::Kde => {
@@ -7699,12 +7823,31 @@ impl Widget for &mut App {
                         self.data_table_state.as_ref(),
                         self.chart_modal.effective_kde_column(),
                     ) {
-                        kde_data = chart_data::prepare_kde_data(
-                            &state.lf,
-                            &[column],
-                            self.chart_modal.kde_bandwidth_factor,
-                        )
-                        .ok();
+                        let bandwidth = self.chart_modal.kde_bandwidth_factor;
+                        let use_cache = self
+                            .chart_cache
+                            .kde
+                            .as_ref()
+                            .filter(|c| c.column == column && c.bandwidth_factor == bandwidth);
+                        if use_cache.is_none() {
+                            if let Ok(data) = chart_data::prepare_kde_data(
+                                &state.lf,
+                                std::slice::from_ref(&column),
+                                bandwidth,
+                            ) {
+                                self.chart_cache.kde = Some(ChartCacheKde {
+                                    column: column.clone(),
+                                    bandwidth_factor: bandwidth,
+                                    data,
+                                });
+                            }
+                        }
+                        kde_data = self
+                            .chart_cache
+                            .kde
+                            .as_ref()
+                            .filter(|c| c.column == column && c.bandwidth_factor == bandwidth)
+                            .map(|c| &c.data);
                     }
                 }
                 ChartKind::Heatmap => {
@@ -7713,35 +7856,48 @@ impl Widget for &mut App {
                         self.chart_modal.effective_heatmap_x_column(),
                         self.chart_modal.effective_heatmap_y_column(),
                     ) {
-                        heatmap_data = chart_data::prepare_heatmap_data(
-                            &state.lf,
-                            &x_column,
-                            &y_column,
-                            self.chart_modal.heatmap_bins,
-                        )
-                        .ok();
+                        let bins = self.chart_modal.heatmap_bins;
+                        let use_cache = self.chart_cache.heatmap.as_ref().filter(|c| {
+                            c.x_column == x_column && c.y_column == y_column && c.bins == bins
+                        });
+                        if use_cache.is_none() {
+                            if let Ok(data) = chart_data::prepare_heatmap_data(
+                                &state.lf, &x_column, &y_column, bins,
+                            ) {
+                                self.chart_cache.heatmap = Some(ChartCacheHeatmap {
+                                    x_column: x_column.clone(),
+                                    y_column: y_column.clone(),
+                                    bins,
+                                    data,
+                                });
+                            }
+                        }
+                        heatmap_data = self
+                            .chart_cache
+                            .heatmap
+                            .as_ref()
+                            .filter(|c| {
+                                c.x_column == x_column && c.y_column == y_column && c.bins == bins
+                            })
+                            .map(|c| &c.data);
                     }
                 }
             }
 
             let render_data = match self.chart_modal.chart_kind {
                 ChartKind::XY => widgets::chart::ChartRenderData::XY {
-                    series: xy_series.as_ref(),
+                    series: xy_series,
                     x_axis_kind,
                     x_bounds,
                 },
-                ChartKind::Histogram => widgets::chart::ChartRenderData::Histogram {
-                    data: hist_data.as_ref(),
-                },
-                ChartKind::BoxPlot => widgets::chart::ChartRenderData::BoxPlot {
-                    data: box_data.as_ref(),
-                },
-                ChartKind::Kde => widgets::chart::ChartRenderData::Kde {
-                    data: kde_data.as_ref(),
-                },
-                ChartKind::Heatmap => widgets::chart::ChartRenderData::Heatmap {
-                    data: heatmap_data.as_ref(),
-                },
+                ChartKind::Histogram => {
+                    widgets::chart::ChartRenderData::Histogram { data: hist_data }
+                }
+                ChartKind::BoxPlot => widgets::chart::ChartRenderData::BoxPlot { data: box_data },
+                ChartKind::Kde => widgets::chart::ChartRenderData::Kde { data: kde_data },
+                ChartKind::Heatmap => {
+                    widgets::chart::ChartRenderData::Heatmap { data: heatmap_data }
+                }
             };
 
             widgets::chart::render_chart_view(

@@ -21,5 +21,6 @@ python/dist/
 python/datui_bin/
 # Maturin-built extension and generated stubs (maturin develop/build output)
 python/datui/*.so
+python/datui/*.pyd
 python/datui/*.pyi
 python/datui/datui_bin/

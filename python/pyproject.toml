@@ -46,3 +46,6 @@ module-name = "datui._datui"
 features = ["pyo3/abi3-py38"]
 # Include pre-built CLI binary when present (release: copy target/release/datui to python/datui_bin/ first).
 include = ["datui_bin/*"]
+# Exclude native extension from source copy; maturin adds the built extension. Avoids "overwrote an existing tracked file"
+# when a leftover _datui.pyd/.so from a previous "maturin develop" exists in datui/.
+exclude = ["datui/_datui.*"]

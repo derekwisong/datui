@@ -10,7 +10,7 @@ Datui uses [mdBook][mdbook] to build static documentation web pages from markdow
   ```bash
   cargo install mdbook
   ```
-  If you used the [Setup Script](contributing.md#setup-script), mdbook may already be installed. The build scripts look for it in `PATH` or `~/.cargo/bin/`.
+  If you used the [Setup Script](setup-script.md), mdbook may already be installed. The build scripts look for it in `PATH` or `~/.cargo/bin/`.
 
 - **Python 3 + scripts/requirements.txt** — required only when building docs for the current branch (e.g. `main`) or when generating command-line options. Tag builds use the committed `command-line-options.md` for that tag.
 

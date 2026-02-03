@@ -12,6 +12,20 @@ To acquire a pre-built copy of Datui, download one from the
 
 ## Package Managers
 
+### Pip
+
+Datui can be installed on Linux and Windows
+using pip.
+
+```
+pip install datui
+```
+
+> Datui can be used as a python module to view
+> Polars DataFrame and LazyFrame in the terminal.
+>
+> See [Python Module](../user-guide/python-module.md).
+
 ### Arch Linux (AUR)
 
 Datui is available in the [Arch User Repository](https://aur.archlinux.org/) as `datui-bin`.

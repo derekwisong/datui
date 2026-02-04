@@ -235,6 +235,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path python/datui_bin
           Copy-Item target/release/datui.exe python/datui_bin/
+          Copy-Item LICENSE python/LICENSE
 
       - name: Build Python wheel
         run: |
@@ -295,6 +296,7 @@ jobs:
           mkdir -p python/datui_bin
           cp target/release/datui python/datui_bin/
           chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
 
       - name: Build Python wheels
         run: |

@@ -52,7 +52,7 @@ All packages include the MIT license as required:
 - **deb**: `[package.metadata.deb]` sets `license-file = ["LICENSE", "0"]`; cargo-deb installs it in the package.
 - **rpm**: `[[package.metadata.generate-rpm.assets]]` includes `LICENSE` at `/usr/share/licenses/datui/LICENSE`.
 - **aur**: `[package.metadata.aur]` `files` includes `["LICENSE", "/usr/share/licenses/datui/LICENSE"]`.
-- **Python wheel**: `python/pyproject.toml` uses `license = { file = "../LICENSE" }` and `sdist-include`; maturin puts the license in wheel metadata and sdist.
+- **Python wheel**: `python/pyproject.toml` uses `license = { file = "LICENSE" }` and `sdist-include = ["LICENSE"]`. CI and release workflows copy the root `LICENSE` into `python/LICENSE`.
 
 ## Output Locations
 

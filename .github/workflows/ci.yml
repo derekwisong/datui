@@ -10,37 +10,25 @@ permissions:
   contents: read
 
 jobs:
-  is-release-commit:
-    runs-on: ubuntu-latest
-    outputs:
-      skip_ci: ${{ steps.set.outputs.skip_ci }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Set skip_ci if this commit is tagged with v*
-        id: set
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            if git tag --points-at HEAD | grep -q '^v'; then
-              echo "skip_ci=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "skip_ci=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "skip_ci=false" >> "$GITHUB_OUTPUT"
-          fi
-
   check:
     runs-on: ubuntu-latest
-    needs: [is-release-commit]
-    if: startsWith(github.ref, 'refs/heads/') && needs.is-release-commit.outputs.skip_ci != 'true'
+    if: startsWith(github.ref, 'refs/heads/')
+    outputs:
+      is_dev_version: ${{ steps.version.outputs.is_dev_version }}
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set dev version output
+        id: version
+        run: |
+          VERSION=$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -E '^\s*version\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          if [[ "$VERSION" == *-dev ]]; then
+            echo "is_dev_version=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_dev_version=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -64,8 +52,8 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
-    needs: [is-release-commit, check]
-    if: startsWith(github.ref, 'refs/heads/') && needs.is-release-commit.outputs.skip_ci != 'true'
+    needs: [check]
+    if: startsWith(github.ref, 'refs/heads/')
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
@@ -133,8 +121,8 @@ jobs:
 
   windows:
     runs-on: windows-latest
-    needs: [is-release-commit, check]
-    if: startsWith(github.ref, 'refs/heads/') && needs.is-release-commit.outputs.skip_ci != 'true'
+    needs: [check]
+    if: startsWith(github.ref, 'refs/heads/') && needs.check.outputs.is_dev_version != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:

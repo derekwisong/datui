@@ -1,0 +1,43 @@
+Templates allow you to save and automatically apply customizations for specific files.
+
+Template List:
+  - Templates are displayed in a table sorted by relevance (descending)
+  - Score column shows colored circles indicating match quality:
+    * Green circles: high scores (80%+ of max)
+    * Yellow circles: medium scores (40-80% of max)
+    * Gray/white circles: low scores (<40% of max)
+  - Active template is indicated by a checkmark (✓) in the active column
+
+Actions:
+  Enter:        Apply the selected template
+  s:            Create a new template from current state
+  e:            Edit the selected template
+  d:            Delete the selected template (with confirmation)
+  ? / F1:       Show this help (F1 works in text fields)
+  Esc:          Close template menu
+
+Template Creation/Editing:
+  - Name:       Required identifier for the template
+  - Description: Optional description
+  - Exact Path: Match files by absolute path
+  - Relative Path: Match files by path relative to current directory
+  - Path Pattern: Match files by glob-like path pattern
+  - Filename Pattern: Match files by glob-like filename pattern
+  - Schema Match: Match files with matching column names
+
+Template Matching:
+  Templates are scored based on:
+  1. Exact path match (highest priority)
+  2. Relative path match
+  3. Path/filename pattern matches
+  4. Schema column matches
+  5. Generic templates (lowest priority)
+
+  The most relevant template can be applied with 'T' from the main view.
+
+Delete Confirmation:
+  - Cancel is selected by default
+  - Enter:      Cancel (if Cancel selected) or Delete (if Delete selected)
+  - Tab:        Switch between Cancel and Delete buttons
+  - D:          Delete immediately
+  - Esc:        Cancel and close dialog

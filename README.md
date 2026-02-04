@@ -4,43 +4,53 @@
 ![Version](https://img.shields.io/badge/version-0.2.30-orange.svg)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
 
-Datui is an interactive terminal user interface (TUI) for exploring and analyzing data files.
+**Datui** is a high-performance terminal UI for exploring and analyzing datasets. Powered
+by the **Polars** engine and written in **Rust**, it brings SQL-like power and Excel-like
+visibility to your CLI.
 
-> Datui is currently in rapid development—features and interfaces are evolving.
+> Datui is in rapid development; features and interfaces are evolving.
 
-📖 **Documentation**: For comprehensive documentation including user guides, reference, and examples, see the [full documentation][docs].
+📖 **Documentation**: [Full User Guide][docs].
 
 ## Demo
 
 ![Basic Navigation Demo](demos/01-basic-navigation.gif)
 
-## Features
+## Why Datui?
 
-- **File Format Support**: Load CSV, Parquet, JSON, Avro, Excel, Arrow, and more
-- **Query Engine**: SQL-like query syntax for selecting columns, filtering, grouping, and aggregation
-- **Charts**: Create charts right from the terminal and export them for distribution
-- **Analysis**: See statistics about various aspects of your data
-- **Transformations**: Sort, filter, reorder, and more
-- **Keyboard-Driven**: Arrow keys and Vim-style navigation (`h`/`j`/`k`/`l`)
-- **Configurable**: Configure Datui to suit your environment and needs
-- **Templates**: Save and restore your work as a template (queries, filters, sorts, column orders)
+- 🚀 **Fast**: Powered by Polars for optimized data processing
+- 📁 **Universal**: Supports Parquet, CSV, JSON, Avro, Arrow, ORC, and Excel
+- 🔍 **Query Engine**: SQL-like query syntax for selecting, filtering, grouping, and aggregation
+- 📊 **Charts**: Render terminal-based charts and export them as images
+- 🔬 **Analysis**: Use analytical tools to understand correlations, distributions, and more
+- ⚒️ **Transformations**: Sort, filter, pivot, melt, and more
+- ⌨️ **Keyboard-Driven**: Arrow keys and Vim-style navigation (`h`/`j`/`k`/`l`)
+
 
 ## Installation
 
 See the [Install Guide][install-guide] for full instructions.
 
+### Quick Install for Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install.sh | sh
+```
+
+*Don't like piping to shell? See the alternative methods below.*
+
 ### Pre-built Releases
 
-Get a pre-built binary for your platform from the [releases](https://github.com/derekwisong/datui/releases) page.
+Get the pre-built binary for your platform from the [Latest Release](https://github.com/derekwisong/datui/releases/latest).
 
 ### From Package Managers
 
 > See [Package Managers][pkg-managers]
 
-- **Pip**: `pip install datui`
 - **Arch Linux (AUR)**:
-  - `paru -S datui`
-  - `yay -S datui`
+  - `paru -S datui-bin`
+  - `yay -S datui-bin`
+- **Pip**: `pip install datui`
 
 
 ### From Source
@@ -66,27 +76,21 @@ Load a data file and start exploring:
 datui path/to/data.csv
 ```
 
-Use keyboard shortcuts to navigate:
-- Arrow keys (`↑`/`↓`/`←`/`→`) or `h`/`j`/`k`/`l` - Navigate the table
-- `/` - Open query input
-- `s` - Open Sort & Filter modal (tabs: Sort, Filter)
-- `a` - Open analysis tools
-- `Esc` - Go back a screen
-- `Ctrl+h` - Show help
+> 💡 Use `?` or `F1` to show help; `F1` works in text fields too (e.g. query input).
 
-Press `q` to exit.
+- Use arrow keys or vim-style keybinds (`h`/`j`/`k`/`l`) to navigate
+- Press `q` to exit
 
 ## Configuration
 
 > See the [Configuration Guide][config-guide]
 
-Datui supports extensive customization through a configuration file.
+Datui has sensible defaults, but supports extensive configuration.
 
-Generate a default config:
+Generate a default config file, its path will be displayed in the output:
 ```bash
 datui --generate-config
 ```
-
 
 ## License
 

@@ -45,7 +45,7 @@ Both operations run on the **current** table—i.e. the result of any filters, s
 - **Space**: Toggle selection in index and explicit value lists; toggle “Sort new columns” in Pivot.
 - **Enter**: Activate focused control (Apply, Cancel, Clear).
 - **Esc**: Close dialog without applying.
-- **Ctrl+h**: Show help.
+- **?** / **F1**: Show help (F1 works in text fields).
 
 ## Templates
 

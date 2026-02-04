@@ -103,3 +103,7 @@ See [Analysis Features](user-guide/analysis-features.md) for details.
 - Exporting the chart to a PNG file
 
 See [Charting](user-guide/charting.md) for more details.
+
+---
+
+To install and run Datui, see the [Getting Started Guide](getting-started.md).

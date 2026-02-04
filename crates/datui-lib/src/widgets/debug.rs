@@ -14,6 +14,8 @@ pub struct DebugState {
     /// Last action taken (e.g. "scroll_left") for debugging key handling.
     pub last_action: String,
     pub enabled: bool,
+    /// Snapshot of main help flag at render time (set by App when enabled). Used by --debug to verify help state.
+    pub show_help_at_render: bool,
 }
 
 impl DebugState {
@@ -27,12 +29,13 @@ impl DebugState {
 impl Widget for &DebugState {
     fn render(self, area: Rect, buf: &mut Buffer) {
         Paragraph::new(format!(
-            "events={} keys={} last_key={} kind={} last_action={} frames={}",
+            "events={} keys={} last_key={} kind={} last_action={} help={} frames={}",
             self.num_events,
             self.num_key_events,
             self.last_key_event_name,
             self.last_type_name,
             self.last_action,
+            self.show_help_at_render,
             self.num_frames
         ))
         .render(area, buf);

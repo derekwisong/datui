@@ -23,10 +23,7 @@ and a path to open.
 
 ## Compression
 
-Compressed files will be identified by extension and decompressed before loading.
-
-> Command line options may be used to set the compression used when there is no extension
-> or it is incorrect
+Compressed files are identified by extension and decompressed before loading. Use the `--compression` option to specify the format when the file has no extension or the extension is wrong.
 
 ### Supported Compression Formats
 

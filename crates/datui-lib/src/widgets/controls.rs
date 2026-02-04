@@ -130,7 +130,7 @@ impl Widget for &Controls {
                 .render(area, buf);
         }
 
-        const DEFAULT_CONTROLS: [(&str, &str); 9] = [
+        const DEFAULT_CONTROLS: [(&str, &str); 10] = [
             ("/", "Query"),
             ("i", "Info"),
             ("a", "Analysis"),
@@ -138,6 +138,7 @@ impl Widget for &Controls {
             ("s", "Sort & Filter"),
             ("p", "Pivot & Melt"),
             ("e", "Export"),
+            ("?", "Help"),
             ("R", "Reset"),
             ("q", "Quit"),
         ];

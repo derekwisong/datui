@@ -1,0 +1,38 @@
+Navigation:
+  Arrows (h/j/k/l): Scroll table
+  PgUp/PgDown:     Scroll pages (Ctrl+F / Ctrl+B)
+  Home/End:        Go to first/last row (G = End)
+  Ctrl+D/Ctrl+U:   Half page down/up
+  ::               Go to line number (e.g. :0 Enter for top)
+
+Data Operations:
+  /:                Open Query input
+  c:                Open charts
+  s:                Open Sort & Filter modal (tabs: Sort, Filter)
+  a:                Open Statistical Analysis
+  e:                Export data to file
+  r:                Reverse sort order
+  R:                Reset table (clear queries, filters, sorts, locks)
+  T:                Apply most relevant template
+  t:                Open Template menu
+
+Display:
+  i:                Open Info panel (modal: Schema & Resources)
+  Tab / Shift+Tab:  In Info: move focus (tab bar ↔ schema table)
+  Left / Right:     In Info, on tab bar: switch Schema | Resources
+  N:                Toggle row numbers
+  ? / F1:           Open this help (F1 works in text fields). Esc or ? to close.
+
+Help Navigation:
+  Arrow keys (↑↓):  Scroll help content
+  PageUp/PageDown:  Scroll help pages
+  Home/End:         Jump to top/bottom
+
+Analysis View:
+  a:                Open statistical analysis
+  r:                Resample data (if sampled)
+  Arrow keys:       Scroll statistics table
+  Esc:              Return to main view
+
+Exit:
+  q / Esc:          Quit

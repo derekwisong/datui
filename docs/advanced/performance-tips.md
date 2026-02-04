@@ -17,3 +17,9 @@ In order to determine all column names, pivot operations materialize all affecte
 RAM usage significantly for large tables.
 
 Do as much filtering on the data as possible before pivoting to keep things manageable.
+
+## Prefer Directories with `--hive`
+
+Using a directory with `--hive` is faster than a glob.
+
+e.g. `/path/to/partitioned/` would be faster than `/path/to/partitioned/**/*.parquet`.

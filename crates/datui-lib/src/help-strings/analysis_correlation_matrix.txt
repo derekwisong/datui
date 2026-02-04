@@ -1,0 +1,13 @@
+The Correlation Matrix tool displays pairwise correlations between numeric columns.
+
+Navigation:
+  Tab:            Switch focus between main area and sidebar
+  ↑↓ / j/k:      Navigate matrix rows (or sidebar tools if sidebar focused)
+  ←→ / h/l:      Navigate matrix columns
+  Home/End:      Jump to first/last row
+  PageUp/PageDown: Navigate by page
+  Enter:         Open pair detail view (on a cell) or select tool (sidebar)
+
+Actions:
+  r:             Resample data (only shown if data was sampled)
+  Esc:           Close analysis view or help dialog

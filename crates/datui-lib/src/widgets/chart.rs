@@ -6,8 +6,8 @@ use ratatui::{
     symbols,
     text::{Line, Span},
     widgets::{
-        Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, Paragraph, StatefulWidget,
-        Tabs, Widget,
+        Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, List, ListItem, Paragraph,
+        StatefulWidget, Tabs, Widget,
     },
 };
 
@@ -101,6 +101,7 @@ fn render_filter_group(
     };
     let group_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(group_border))
         .title(title);
     let group_inner = group_block.inner(area);
@@ -120,6 +121,7 @@ fn render_filter_group(
 
     let divider = Block::default()
         .borders(Borders::TOP)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(group_border));
     divider.render(inner[1], buf);
 
@@ -188,6 +190,7 @@ pub fn render_chart_view(
         .unwrap_or(0);
     let tab_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(" Chart ");
     let tab_highlight = if modal.focus == ChartFocus::TabBar {
@@ -212,6 +215,7 @@ pub fn render_chart_view(
     // Sidebar (border, title "Options")
     let sidebar_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(" Options ");
     let sidebar_inner = sidebar_block.inner(main_layout[0]);

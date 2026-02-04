@@ -16,7 +16,7 @@ use ratatui::prelude::Stylize;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Gauge, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
+    Block, BorderType, Borders, Gauge, Padding, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
 };
 
 use super::datatable::DataTableState;
@@ -723,7 +723,10 @@ fn columns_by_type(schema: &Schema) -> String {
 impl<'a> Widget for &mut DataTableInfo<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let tab_bar_focused = self.modal.focus == InfoFocus::TabBar;
-        let block = Block::default().borders(Borders::ALL).title("Info");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Info");
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -766,6 +769,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         };
         Block::default()
             .borders(Borders::BOTTOM)
+            .border_type(BorderType::Rounded)
             .border_style(line_style)
             .render(tab_chunks[1], buf);
 

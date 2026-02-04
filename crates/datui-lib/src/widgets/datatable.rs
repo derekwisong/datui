@@ -83,6 +83,9 @@ pub struct DataTableState {
     max_buffered_mb: usize,   // 0 = no limit
     buffered_start_row: usize,
     buffered_end_row: usize,
+    /// Full buffered DataFrame (all columns in column_order) for the current buffer range.
+    /// When set, column scroll (scroll_left/scroll_right) only re-slices columns without re-collecting from LazyFrame.
+    buffered_df: Option<DataFrame>,
     proximity_threshold: usize,
     row_numbers: bool,
     row_start_index: usize,
@@ -148,6 +151,7 @@ impl DataTableState {
             max_buffered_mb: max_buffered_mb.unwrap_or(512),
             buffered_start_row: 0,
             buffered_end_row: 0,
+            buffered_df: None,
             proximity_threshold: 0, // Will be set when visible_rows is known
             row_numbers: false,     // Will be set from options
             row_start_index: 1,     // Will be set from options
@@ -223,6 +227,7 @@ impl DataTableState {
             max_buffered_mb: options.max_buffered_mb.unwrap_or(512),
             buffered_start_row: 0,
             buffered_end_row: 0,
+            buffered_df: None,
             proximity_threshold: 0,
             row_numbers: options.row_numbers,
             row_start_index: options.row_start_index,
@@ -264,6 +269,7 @@ impl DataTableState {
         // Invalidate buffer on reset
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
+        self.buffered_df = None;
 
         self.table_state.select(Some(0));
 
@@ -1910,6 +1916,7 @@ impl DataTableState {
             self.start_row = 0;
             self.buffered_start_row = 0;
             self.buffered_end_row = 0;
+            self.buffered_df = None;
             self.df = None;
             self.locked_df = None;
             return;
@@ -1938,7 +1945,21 @@ impl DataTableState {
                 dist_to_end <= self.proximity_threshold && self.buffered_end_row < self.num_rows;
 
             if !needs_expansion_back && !needs_expansion_forward {
-                // Rebuild displayed columns from current buffer (termcol_index may have changed via scroll_left/scroll_right)
+                // Column scroll only: reuse cached full buffer and re-slice into locked/scroll columns.
+                let expected_len = self
+                    .buffered_end_row
+                    .saturating_sub(self.buffered_start_row);
+                if self
+                    .buffered_df
+                    .as_ref()
+                    .is_some_and(|b| b.height() == expected_len)
+                {
+                    self.slice_buffer_into_display();
+                    if self.table_state.selected().is_none() {
+                        self.table_state.select(Some(0));
+                    }
+                    return;
+                }
                 self.load_buffer(self.buffered_start_row, self.buffered_end_row);
                 if self.table_state.selected().is_none() {
                     self.table_state.select(Some(0));
@@ -2194,6 +2215,49 @@ impl DataTableState {
         }
         self.buffered_start_row = buffer_start;
         self.buffered_end_row = effective_buffer_end;
+        self.buffered_df = Some(full_df);
+    }
+
+    /// Recompute locked_df and df from the cached full buffer. Used when only termcol_index (or locked columns) changed.
+    fn slice_buffer_into_display(&mut self) {
+        let full_df = match self.buffered_df.as_ref() {
+            Some(df) => df,
+            None => return,
+        };
+
+        if self.locked_columns_count > 0 {
+            let locked_names: Vec<&str> = self
+                .column_order
+                .iter()
+                .take(self.locked_columns_count)
+                .map(|s| s.as_str())
+                .collect();
+            if let Ok(locked_df) = full_df.select(locked_names) {
+                self.locked_df = if self.is_grouped() {
+                    self.format_grouped_dataframe(locked_df).ok()
+                } else {
+                    Some(locked_df)
+                };
+            }
+        } else {
+            self.locked_df = None;
+        }
+
+        let scroll_names: Vec<&str> = self
+            .column_order
+            .iter()
+            .skip(self.locked_columns_count + self.termcol_index)
+            .map(|s| s.as_str())
+            .collect();
+        if scroll_names.is_empty() {
+            self.df = None;
+        } else if let Ok(scroll_df) = full_df.select(scroll_names) {
+            self.df = if self.is_grouped() {
+                self.format_grouped_dataframe(scroll_df).ok()
+            } else {
+                Some(scroll_df)
+            };
+        }
     }
 
     fn slice_from_buffer(&mut self) {
@@ -2404,6 +2468,7 @@ impl DataTableState {
         self.column_order = order;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
+        self.buffered_df = None;
         self.collect();
     }
 
@@ -2411,6 +2476,7 @@ impl DataTableState {
         self.locked_columns_count = count.min(self.column_order.len());
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
+        self.buffered_df = None;
         self.collect();
     }
 
@@ -2709,6 +2775,7 @@ impl DataTableState {
         self.locked_columns_count = 0;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
+        self.buffered_df = None;
         self.table_state.select(Some(0));
         self.collect();
         Ok(())
@@ -2812,6 +2879,7 @@ impl DataTableState {
         self.sort_ascending = ascending;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
+        self.buffered_df = None;
         self.apply_transformations();
     }
 
@@ -2820,6 +2888,7 @@ impl DataTableState {
 
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
+        self.buffered_df = None;
 
         if !self.sort_columns.is_empty() {
             let options = SortMultipleOptions {
@@ -2847,6 +2916,7 @@ impl DataTableState {
         self.filters = filters;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
+        self.buffered_df = None;
         self.apply_transformations();
     }
 
@@ -2876,6 +2946,7 @@ impl DataTableState {
             self.grouped_lf = None;
             self.buffered_start_row = 0;
             self.buffered_end_row = 0;
+            self.buffered_df = None;
             self.table_state.select(Some(0));
             self.collect();
             return;
@@ -2963,6 +3034,7 @@ impl DataTableState {
                 self.active_query = query;
                 self.buffered_start_row = 0;
                 self.buffered_end_row = 0;
+                self.buffered_df = None;
                 // Reset drill-down state when applying new query
                 self.drilled_down_group_index = None;
                 self.drilled_down_group_key = None;
@@ -2994,6 +3066,13 @@ pub struct DataTable {
     pub separator_fg: Color,
     pub table_cell_padding: u16,
     pub alternate_row_bg: Option<Color>,
+    /// When true, colorize cells by column type using the optional colors below.
+    pub column_colors: bool,
+    pub str_col: Option<Color>,
+    pub int_col: Option<Color>,
+    pub float_col: Option<Color>,
+    pub bool_col: Option<Color>,
+    pub temporal_col: Option<Color>,
 }
 
 impl Default for DataTable {
@@ -3005,6 +3084,12 @@ impl Default for DataTable {
             separator_fg: Color::White,
             table_cell_padding: 1,
             alternate_row_bg: None,
+            column_colors: false,
+            str_col: None,
+            int_col: None,
+            float_col: None,
+            bool_col: None,
+            temporal_col: None,
         }
     }
 }
@@ -3047,6 +3132,48 @@ impl DataTable {
         self
     }
 
+    /// Enable column-type coloring and set colors for string, int, float, bool, and temporal columns.
+    pub fn with_column_type_colors(
+        mut self,
+        str_col: Color,
+        int_col: Color,
+        float_col: Color,
+        bool_col: Color,
+        temporal_col: Color,
+    ) -> Self {
+        self.column_colors = true;
+        self.str_col = Some(str_col);
+        self.int_col = Some(int_col);
+        self.float_col = Some(float_col);
+        self.bool_col = Some(bool_col);
+        self.temporal_col = Some(temporal_col);
+        self
+    }
+
+    /// Return the color for a column dtype when column_colors is enabled.
+    fn column_type_color(&self, dtype: &DataType) -> Option<Color> {
+        if !self.column_colors {
+            return None;
+        }
+        match dtype {
+            DataType::String => self.str_col,
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => self.int_col,
+            DataType::Float32 | DataType::Float64 => self.float_col,
+            DataType::Boolean => self.bool_col,
+            DataType::Date | DataType::Datetime(_, _) | DataType::Time | DataType::Duration(_) => {
+                self.temporal_col
+            }
+            _ => None,
+        }
+    }
+
     fn render_dataframe(
         &self,
         df: &DataFrame,
@@ -3072,19 +3199,18 @@ impl DataTable {
         let mut rows: Vec<Vec<Cell>> = vec![vec![]; height];
         let mut visible_columns = 0;
 
+        let max_rows = height.min(if area.height > 1 {
+            area.height as usize - 1
+        } else {
+            0
+        });
+
         for col_index in 0..cols {
             let mut max_len = widths[col_index];
             let col_data = &df[col_index];
+            let col_color = self.column_type_color(col_data.dtype());
 
-            for (row_index, row) in rows
-                .iter_mut()
-                .take(height.min(if area.height > 1 {
-                    area.height as usize - 1
-                } else {
-                    0
-                }))
-                .enumerate()
-            {
+            for (row_index, row) in rows.iter_mut().take(max_rows).enumerate() {
                 let value = col_data.get(row_index).unwrap();
                 let val_str: Cow<str> = if matches!(value, AnyValue::Null) {
                     Cow::Borrowed("")
@@ -3093,7 +3219,14 @@ impl DataTable {
                 };
                 let len = val_str.chars().count() as u16;
                 max_len = max_len.max(len);
-                row.push(Cell::from(Line::from(val_str)));
+                let cell = match col_color {
+                    Some(c) => Cell::from(Line::from(Span::styled(
+                        val_str.into_owned(),
+                        Style::default().fg(c),
+                    ))),
+                    None => Cell::from(Line::from(val_str)),
+                };
+                row.push(cell);
             }
 
             // Use > not >= so the last column is shown when it fits exactly (no padding needed after it)

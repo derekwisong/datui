@@ -1,0 +1,13 @@
+The Describe tool behaves like Polars' describe() function and displays similar descriptive statistics.
+
+Navigation:
+  Tab:            Switch focus between main area and sidebar
+  ↑↓ / j/k:      Navigate rows (or sidebar tools if sidebar focused)
+  ←→ / h/l:      Scroll statistics columns horizontally
+  Home/End:      Jump to first/last row
+  PageUp/PageDown: Navigate by page
+  Enter:         Select tool from sidebar (when sidebar focused)
+
+Actions:
+  r:             Resample data (only shown if data was sampled)
+  Esc:           Close analysis view or help dialog

@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
+    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, StatefulWidget, Table, Tabs, Widget,
 };
 
 /// Render the Pivot and Melt modal: tab bar, tab-specific body, footer.
@@ -25,6 +25,7 @@ pub fn render_shell(
     Clear.render(area, buf);
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color));
     let inner = block.inner(area);
     block.render(area, buf);
@@ -63,6 +64,7 @@ pub fn render_shell(
     };
     Block::default()
         .borders(Borders::BOTTOM)
+        .border_type(BorderType::Rounded)
         .border_style(line_style)
         .render(tab_line_chunks[1], buf);
 
@@ -118,6 +120,7 @@ pub fn render_shell(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(apply_style),
         )
         .centered()
@@ -126,6 +129,7 @@ pub fn render_shell(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(cancel_style),
         )
         .centered()
@@ -134,6 +138,7 @@ pub fn render_shell(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(clear_style),
         )
         .centered()
@@ -169,6 +174,7 @@ fn render_pivot_body(
     };
     let filter_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Filter Index Columns")
         .border_style(filter_style);
     let filter_inner = filter_block.inner(chunks[0]);
@@ -187,6 +193,7 @@ fn render_pivot_body(
     };
     let list_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Index Columns")
         .border_style(list_style);
     let list_inner = list_block.inner(chunks[1]);
@@ -250,6 +257,7 @@ fn render_pivot_body(
         .collect();
     let pivot_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Pivot Column")
         .border_style(pivot_style);
     let pivot_inner = pivot_block.inner(row_chunks[0]);
@@ -278,6 +286,7 @@ fn render_pivot_body(
         .collect();
     let value_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Value Column")
         .border_style(value_style);
     let value_inner = value_block.inner(row_chunks[1]);
@@ -303,6 +312,7 @@ fn render_pivot_body(
         .unwrap_or("last");
     let agg_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Aggregation")
         .border_style(agg_style);
     let agg_inner = agg_block.inner(chunks[3]);
@@ -318,6 +328,7 @@ fn render_pivot_body(
     let sort_check = if modal.sort_new_columns { "[x]" } else { "[ ]" };
     let sort_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Sort New Columns")
         .border_style(sort_style);
     let sort_inner = sort_block.inner(chunks[4]);
@@ -355,6 +366,7 @@ fn render_melt_body(
     };
     let filter_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Filter Index Columns")
         .border_style(filter_style);
     let filter_inner = filter_block.inner(chunks[0]);
@@ -373,6 +385,7 @@ fn render_melt_body(
     };
     let list_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Index Columns")
         .border_style(list_style);
     let list_inner = list_block.inner(chunks[1]);
@@ -412,6 +425,7 @@ fn render_melt_body(
     };
     let strat_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Strategy")
         .border_style(strat_style);
     let strat_inner = strat_block.inner(chunks[2]);
@@ -433,6 +447,7 @@ fn render_melt_body(
             };
             let pat_block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title("Pattern (Regex)")
                 .border_style(pat_style);
             let pat_inner = pat_block.inner(opt_chunks[0]);
@@ -469,6 +484,7 @@ fn render_melt_body(
             };
             let ty_block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title("Type")
                 .border_style(ty_style);
             let ty_inner = ty_block.inner(opt_chunks[0]);
@@ -483,6 +499,7 @@ fn render_melt_body(
             };
             let ex_block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title("Value Columns")
                 .border_style(ex_style);
             let ex_inner = ex_block.inner(chunks[3]);
@@ -533,6 +550,7 @@ fn render_melt_body(
         .split(chunks[4]);
     let var_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Variable Name")
         .border_style(var_style);
     let var_inner = var_block.inner(vchunks[0]);
@@ -563,6 +581,7 @@ fn render_melt_body(
 
     let val_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title("Value Name")
         .border_style(val_style);
     let val_inner = val_block.inner(vchunks[1]);

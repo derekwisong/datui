@@ -20,7 +20,7 @@ The repo is a **Cargo workspace**. The **root package** is the CLI binary; the c
 | **datui**      | (root)               | The **datui** CLI binary (the one you run). `cargo build` and `cargo run` from the root build/run it. |
 | **datui-lib**  | `crates/datui-lib`   | Core library (TUI, data handling, config, etc.). |
 | **datui-cli**  | `crates/datui-cli`   | Shared CLI definitions (Args, etc.) and the **gen_docs** binary used by the docs build. |
-| **datui-pyo3** | `crates/datui-pyo3`  | Python bindings; **not** in the workspace (requires Python at link time). Build with `maturin develop --manifest-path crates/datui-pyo3/Cargo.toml`. |
+| **datui-pyo3** | `crates/datui-pyo3`  | Python bindings. See [Python Bindings](for-developers/python-bindings.md) |
 
 **From the repo root:**
 
@@ -56,8 +56,8 @@ cargo build --release
 
 ## More Resources
 
-- [Python Bindings](for-developers/python-bindings.md) — build, test, and run the Python extension (maturin, venv, pytest)
-- There is a [Setup Script](for-developers/setup-script.md) that will help you get your environment ready
+- The [Setup Script](for-developers/setup-script.md) will help you get your environment ready
 - Learn how to [run the tests](for-developers/tests.md)
+- [Python Bindings](for-developers/python-bindings.md) — build, test, and run the Python extension
 - Build OS packages (deb, rpm, AUR) with [Building Packages](for-developers/packaging.md)
-- See the [Contributing Guide](for-developers/contributing.md) for more
+- See the [Contributing Guide](for-developers/contributing.md)

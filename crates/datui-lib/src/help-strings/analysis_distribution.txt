@@ -1,0 +1,28 @@
+Distribution Analysis identifies the distribution type for each numeric column and provides key statistical measures.
+
+Columns:
+  Column:        Name of the numeric column
+  Distribution:  Inferred distribution type (Normal, LogNormal, Uniform, PowerLaw, Exponential)
+  Shapiro-Wilk:  W statistic from Shapiro-Wilk normality test (0-1, higher = more normal)
+  SW p-value:    P-value from Shapiro-Wilk test (probability of observing W under normality)
+  CV:            Coefficient of variation (std/mean, relative variability independent of scale)
+  Outliers:      Count and percentage of outliers (IQR method)
+  Skewness:      Asymmetry measure (positive = right-tailed, negative = left-tailed)
+  Kurtosis:      Tail heaviness compared to normal distribution (3.0 = normal)
+
+Color Coding:
+  Distribution types are color-coded:
+    - Green/Cyan: Good fit quality (>0.75)
+    - Yellow:     Moderate fit quality (≤0.75)
+    - Red:        Very high outlier percentage (>20%) or extreme skewness/kurtosis
+
+Navigation:
+  ↑↓ / j/k:      Navigate rows
+  ←→ / h/l:      Scroll columns horizontally
+  Tab:           Switch focus between main area and sidebar
+  Enter:         Open detail view for selected column (shows Q-Q plot and histogram)
+  Esc:           Close analysis view
+  r:             Resample data (only shown if data was sampled)
+
+Detail View:
+  Press Enter on a row to see detailed analysis with Q-Q plots and histograms comparing your data to theoretical distributions.

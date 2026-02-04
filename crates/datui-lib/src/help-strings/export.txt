@@ -1,0 +1,20 @@
+Export current data to a file.
+
+  Tab / Shift+Tab:  Move focus between fields
+  ↑ / ↓:            In format selector: Change format
+                    In other fields: Move focus
+  Left / Right:     Move cursor in text fields
+  Enter:            Export (on Export button) or Cancel (on Cancel button)
+                    Toggle checkbox (on Include Header)
+  ? / F1:           Show this help (F1 works in text fields)
+  Esc:              Close without exporting
+
+Formats:
+  CSV:     Comma-separated values (configurable delimiter, header)
+  Parquet: Columnar format (efficient, compressed)
+  JSON:    JSON array format
+  NDJSON:  Newline-delimited JSON (one object per line)
+
+CSV Options:
+  Delimiter:        Character to separate columns (default: comma)
+  Include Header:   Whether to write column names as first row

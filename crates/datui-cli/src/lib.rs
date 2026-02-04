@@ -55,7 +55,8 @@ impl CompressionFormat {
     long_about = include_str!("../long_about.txt")
 )]
 pub struct Args {
-    /// Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table (not required with --generate-config, --clear-cache, or --remove-templates)
+    /// Path(s) to the data file(s) to open.
+    /// Multiple files of the same format are concatenated into one table (not required with --generate-config, --clear-cache, or --remove-templates)
     #[arg(required_unless_present_any = ["generate_config", "clear_cache", "remove_templates"], num_args = 1.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
@@ -71,13 +72,12 @@ pub struct Args {
     #[arg(long = "no-header")]
     pub no_header: Option<bool>,
 
-    /// Specify the delimiter to use when reading a file
+    /// Specify the delimiter to use when reading a delimited text file
     #[arg(long = "delimiter")]
     pub delimiter: Option<u8>,
 
     /// Specify the compression format explicitly (gzip, zstd, bzip2, xz)
     /// If not specified, compression is auto-detected from file extension.
-    /// Supported formats: gzip (.gz), zstd (.zst), bzip2 (.bz2), xz (.xz)
     #[arg(long = "compression", value_enum)]
     pub compression: Option<CompressionFormat>,
 
@@ -93,7 +93,7 @@ pub struct Args {
     #[arg(long = "parse-dates", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
     pub parse_dates: Option<bool>,
 
-    /// Decompress compressed CSV into memory (eager read). Default: decompress to temp file and use lazy scan
+    /// Decompress into memory. Default: decompress to temp file and use lazy scan
     #[arg(long = "decompress-in-memory", default_missing_value = "true", num_args = 0..=1, value_parser = clap::value_parser!(bool))]
     pub decompress_in_memory: Option<bool>,
 
@@ -134,6 +134,10 @@ pub struct Args {
     /// Starting index for row numbers (default: 1)
     #[arg(long = "row-start-index")]
     pub row_start_index: Option<usize>,
+
+    /// Colorize main table cells by column type (default: true). Set to false to disable.
+    #[arg(long = "column-colors", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    pub column_colors: Option<bool>,
 
     /// Generate default configuration file at ~/.config/datui/config.toml
     #[arg(long = "generate-config", action)]

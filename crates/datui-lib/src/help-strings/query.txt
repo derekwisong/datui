@@ -1,0 +1,82 @@
+Query Syntax:
+  select [columns] [by group_cols] [where conditions]
+
+Basic Examples:
+  select a, b where a > 10, b < 5
+  select a, b by category where a > 10
+  select by city, state
+  select avg[price], count[a] by category, region
+  select a, b:"foo" where name="george", age > 7
+  select col["first name"], col[last_name]:"derek"
+
+Column Selection:
+  - List columns: a, b, c
+  - Use aliases: total:a + b
+  - Empty select: select (selects all columns)
+  - With grouping: select by city (all columns grouped by city)
+  - String literals: b:"foo" (creates column b with value "foo")
+  - Column names with spaces: col["first name"] or col[first name]
+  - col[] syntax works for any column: col[name] or col["name"]
+
+Column Assignment (by clause):
+  - Create computed columns: by new_col:city+state
+  - Use expressions: by area:width*height
+  - Supports same operations as select clause
+
+Aggregation Functions (square brackets optional):
+  avg[expr] or avg expr    - Average value (also: mean)
+  min[expr] or min expr    - Minimum value
+  max[expr] or max expr    - Maximum value
+  count[expr] or count expr - Count of non-null values
+  std[expr] or std expr    - Standard deviation (also: stddev)
+  med[expr] or med expr    - Median value (also: median)
+  sum[expr] or sum expr    - Sum of values
+
+Aggregation Examples:
+  select avg[price], min[quantity], max[date] by category
+  select avg price, min quantity, max date by category
+  select total:sum[price*qty], count[id] by region
+  select avg[price], std[price] by category, region
+
+Functions (square brackets optional):
+  not[expr] or not expr    - Logical negation
+  Examples:
+    not[a=b] or not a=b    - Equivalent to a!=b
+    not[a>10] or not a>10  - Equivalent to a<=10
+
+Grouping:
+  - Group by columns: select a, b by category, region
+  - Group with aliases: by region_name:region, total:sales+tax
+  - Empty select with grouping: select by city, state
+  - All non-group columns collected as lists
+
+Where Conditions:
+  - Multiple conditions: a > 10, b < 5 (AND)
+  - OR within condition: a > 10 | a < 5
+  - Expressions: (a + b) * 2 > 100
+  - String comparisons: name="george", city="New York"
+  - Use not function: not[a=b]
+  - Note: Where clause does NOT support column assignment
+
+Operators:
+  Math:        +, -, *, %
+  Comparison:  =, <, >, <=, >=
+  Logic:       , (AND), | (OR)
+  Note: Use not[expr] or not expr instead of !=
+
+Expression Evaluation:
+  - Operators evaluated right-to-left
+  - Example: 1%c+a evaluates as 1%(c+a)
+  - Use parentheses () for grouping: (a+b)*2
+  - Square brackets [] are for function calls only
+
+Function Syntax:
+  - Aggregation: avg[expr], sum[expr], etc.
+  - Logic: not[expr]
+  - Brackets optional: avg 5+a (same as avg[5+a])
+  - Brackets optional: not a=b (same as not[a=b])
+  - Use parentheses for grouping: (a+b)*2
+  - Example: b:avg[(1%c)+a] or b:avg (1%c)+a
+
+Press Enter to apply query.
+? / F1:  Show this help (F1 works from query input).

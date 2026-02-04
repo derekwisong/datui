@@ -209,7 +209,6 @@ impl ConfigManager {
             "file_loading.has_header",
             "file_loading.skip_lines",
             "file_loading.skip_rows",
-            "file_loading.compression",
             "ui.controls.custom_controls",
         ];
 
@@ -385,7 +384,6 @@ pub struct FileLoadingConfig {
     pub has_header: Option<bool>,
     pub skip_lines: Option<usize>,
     pub skip_rows: Option<usize>,
-    pub compression: Option<String>,
     /// When true, CSV reader tries to parse string columns as dates (YYYY-MM-DD, ISO datetime). Default: true.
     pub parse_dates: Option<bool>,
     /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
@@ -407,10 +405,6 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     ),
     ("skip_lines", "Number of lines to skip at the start of files"),
     ("skip_rows", "Number of rows to skip when reading files"),
-    (
-        "compression",
-        "Default compression format (auto-detected from extension if not specified)\nOptions: \"gzip\", \"zstd\", \"bzip2\", \"xz\"",
-    ),
     (
         "parse_dates",
         "When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)",
@@ -437,6 +431,8 @@ pub struct DisplayConfig {
     pub row_numbers: bool,
     pub row_start_index: usize,
     pub table_cell_padding: usize,
+    /// When true, colorize main table cells by column type (string, int, float, bool, temporal).
+    pub column_colors: bool,
 }
 
 // Field comments for DisplayConfig
@@ -462,6 +458,10 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
     (
         "table_cell_padding",
         "Number of spaces between columns in the main data table (>= 0)\nDefault 2",
+    ),
+    (
+        "column_colors",
+        "Colorize main table cells by column type (string, int, float, bool, date/datetime)\nSet to false to use default text color for all cells",
     ),
 ];
 
@@ -580,6 +580,12 @@ pub struct ColorConfig {
     pub cursor_dimmed: String,
     /// "default" = no alternate row color; any other value is parsed as a color (e.g. "dark_gray")
     pub alternate_row_color: String,
+    /// Column type colors (main data table): string, integer, float, boolean, temporal
+    pub str_col: String,
+    pub int_col: String,
+    pub float_col: String,
+    pub bool_col: String,
+    pub temporal_col: String,
     /// Chart view: series colors 1–7 (line/scatter/bar series)
     pub chart_series_color_1: String,
     pub chart_series_color_2: String,
@@ -640,6 +646,11 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
         "alternate_row_color",
         "Background color for every other row in the main data table\nSet to \"default\" to disable alternate row coloring",
     ),
+    ("str_col", "Main table: string column text color"),
+    ("int_col", "Main table: integer column text color"),
+    ("float_col", "Main table: float column text color"),
+    ("bool_col", "Main table: boolean column text color"),
+    ("temporal_col", "Main table: date/datetime/time column text color"),
     ("chart_series_color_1", "Chart view: first series color"),
     ("chart_series_color_2", "Chart view: second series color"),
     ("chart_series_color_3", "Chart view: third series color"),
@@ -749,6 +760,7 @@ impl Default for DisplayConfig {
             row_numbers: false,
             row_start_index: 1,
             table_cell_padding: 2,
+            column_colors: true,
         }
     }
 }
@@ -766,10 +778,10 @@ impl Default for ColorConfig {
     fn default() -> Self {
         Self {
             keybind_hints: "cyan".to_string(),
-            keybind_labels: "light_gray".to_string(),
+            keybind_labels: "indexed(252)".to_string(),
             throbber: "cyan".to_string(),
             primary_chart_series_color: "cyan".to_string(),
-            secondary_chart_series_color: "dark_gray".to_string(),
+            secondary_chart_series_color: "indexed(235)".to_string(),
             success: "green".to_string(),
             error: "red".to_string(),
             warning: "yellow".to_string(),
@@ -778,14 +790,14 @@ impl Default for ColorConfig {
             surface: "default".to_string(),
             controls_bg: "indexed(235)".to_string(),
             text_primary: "default".to_string(),
-            text_secondary: "dark_gray".to_string(),
+            text_secondary: "indexed(240)".to_string(),
             text_inverse: "black".to_string(),
             table_header: "white".to_string(),
             table_header_bg: "indexed(235)".to_string(),
             row_numbers: "dark_gray".to_string(),
             column_separator: "cyan".to_string(),
             table_selected: "reversed".to_string(),
-            sidebar_border: "dark_gray".to_string(),
+            sidebar_border: "indexed(235)".to_string(),
             modal_border_active: "yellow".to_string(),
             modal_border_error: "red".to_string(),
             distribution_normal: "green".to_string(),
@@ -795,6 +807,11 @@ impl Default for ColorConfig {
             cursor_focused: "default".to_string(),
             cursor_dimmed: "default".to_string(),
             alternate_row_color: "indexed(234)".to_string(),
+            str_col: "green".to_string(),
+            int_col: "cyan".to_string(),
+            float_col: "blue".to_string(),
+            bool_col: "yellow".to_string(),
+            temporal_col: "magenta".to_string(),
             chart_series_color_1: "cyan".to_string(),
             chart_series_color_2: "magenta".to_string(),
             chart_series_color_3: "green".to_string(),
@@ -938,9 +955,6 @@ impl FileLoadingConfig {
         if other.skip_rows.is_some() {
             self.skip_rows = other.skip_rows;
         }
-        if other.compression.is_some() {
-            self.compression = other.compression;
-        }
         if other.parse_dates.is_some() {
             self.parse_dates = other.parse_dates;
         }
@@ -976,6 +990,9 @@ impl DisplayConfig {
         }
         if other.table_cell_padding != default.table_cell_padding {
             self.table_cell_padding = other.table_cell_padding;
+        }
+        if other.column_colors != default.column_colors {
+            self.column_colors = other.column_colors;
         }
     }
 }
@@ -1048,6 +1065,11 @@ impl ColorConfig {
         if self.alternate_row_color != "default" {
             validate_color!(&self.alternate_row_color, "alternate_row_color");
         }
+        validate_color!(&self.str_col, "str_col");
+        validate_color!(&self.int_col, "int_col");
+        validate_color!(&self.float_col, "float_col");
+        validate_color!(&self.bool_col, "bool_col");
+        validate_color!(&self.temporal_col, "temporal_col");
         validate_color!(&self.chart_series_color_1, "chart_series_color_1");
         validate_color!(&self.chart_series_color_2, "chart_series_color_2");
         validate_color!(&self.chart_series_color_3, "chart_series_color_3");
@@ -1152,6 +1174,21 @@ impl ColorConfig {
         }
         if other.alternate_row_color != default.alternate_row_color {
             self.alternate_row_color = other.alternate_row_color;
+        }
+        if other.str_col != default.str_col {
+            self.str_col = other.str_col;
+        }
+        if other.int_col != default.int_col {
+            self.int_col = other.int_col;
+        }
+        if other.float_col != default.float_col {
+            self.float_col = other.float_col;
+        }
+        if other.bool_col != default.bool_col {
+            self.bool_col = other.bool_col;
+        }
+        if other.temporal_col != default.temporal_col {
+            self.temporal_col = other.temporal_col;
         }
         if other.chart_series_color_1 != default.chart_series_color_1 {
             self.chart_series_color_1 = other.chart_series_color_1;
@@ -1528,6 +1565,20 @@ impl Theme {
                 parser.parse(&config.colors.alternate_row_color)?,
             );
         }
+        colors.insert("str_col".to_string(), parser.parse(&config.colors.str_col)?);
+        colors.insert("int_col".to_string(), parser.parse(&config.colors.int_col)?);
+        colors.insert(
+            "float_col".to_string(),
+            parser.parse(&config.colors.float_col)?,
+        );
+        colors.insert(
+            "bool_col".to_string(),
+            parser.parse(&config.colors.bool_col)?,
+        );
+        colors.insert(
+            "temporal_col".to_string(),
+            parser.parse(&config.colors.temporal_col)?,
+        );
         colors.insert(
             "chart_series_color_1".to_string(),
             parser.parse(&config.colors.chart_series_color_1)?,

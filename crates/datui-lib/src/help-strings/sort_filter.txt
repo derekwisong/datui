@@ -1,0 +1,13 @@
+Tabbed modal: Sort (column order, sorting) and Filter (row filters).
+
+  Tab / BackTab:    Move focus (tab bar → form → Apply → Cancel → Clear → tab bar)
+  Left / Right:     On tab bar: switch Sort/Filter. In form: move cursor or change selection.
+  ? / F1:           Show this help (F1 works in text fields)
+  Esc:              Cancel and close modal
+
+Sort tab:
+  Filter, column list, order (asc/desc). Space: toggle sort. Enter (on Apply): apply and close.
+  [: ]: 1-9: sort order. + -: display order. L: lock. v: visibility.
+
+Filter tab:
+  Column, Operator, Value, Logic. Enter: add filter or Apply. Clear: remove all filters.

@@ -15,7 +15,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, StatefulWidget, Table, Tabs,
+    Block, BorderType, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, StatefulWidget,
+    Table, Tabs,
 };
 
 pub mod analysis_modal;
@@ -29,6 +30,7 @@ pub mod config;
 pub mod error_display;
 pub mod export_modal;
 pub mod filter_modal;
+mod help_strings;
 pub mod pivot_melt_modal;
 mod query;
 pub mod sort_filter_modal;
@@ -263,20 +265,8 @@ impl OpenOptions {
             config.file_loading.has_header
         };
 
-        // Handle compression: CLI arg overrides config
-        opts.compression = args.compression.or_else(|| {
-            config
-                .file_loading
-                .compression
-                .as_ref()
-                .and_then(|s| match s.as_str() {
-                    "gzip" => Some(CompressionFormat::Gzip),
-                    "zstd" => Some(CompressionFormat::Zstd),
-                    "bzip2" => Some(CompressionFormat::Bzip2),
-                    "xz" => Some(CompressionFormat::Xz),
-                    _ => None,
-                })
-        });
+        // Compression: CLI only (auto-detect from extension when not specified)
+        opts.compression = args.compression;
 
         // Display options: CLI args override config
         opts.pages_lookahead = args
@@ -631,8 +621,9 @@ pub struct App {
     sampling_threshold: usize,          // Threshold for sampling large datasets
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
-    busy: bool,           // When true, show throbber and ignore keys
-    throbber_frame: u8,   // Spinner frame index (0..3) for control bar
+    column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
+    busy: bool,          // When true, show throbber and ignore keys
+    throbber_frame: u8,  // Spinner frame index (0..3) for control bar
     drain_keys_on_next_loop: bool, // Main loop drains crossterm key buffer when true
     analysis_computation: Option<AnalysisComputationState>,
 }
@@ -757,10 +748,11 @@ impl App {
         Clear.render(area, buf);
 
         let border_color = theme.get("modal_border");
-        let gauge_fill_color = theme.get("keybind_hints");
+        let gauge_fill_color = theme.get("primary_chart_series_color");
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .title(title)
             .border_style(Style::default().fg(border_color));
 
@@ -852,6 +844,7 @@ impl App {
             sampling_threshold: app_config.performance.sampling_threshold,
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
+            column_colors: app_config.display.column_colors,
             busy: false,
             throbber_frame: 0,
             drain_keys_on_next_loop: false,
@@ -1562,8 +1555,31 @@ impl App {
         Ok(lf.lf)
     }
 
+    /// Set the appropriate help overlay visible (main, template, or analysis). No-op if already visible.
+    fn open_help_overlay(&mut self) {
+        let already = self.show_help
+            || (self.template_modal.active && self.template_modal.show_help)
+            || (self.analysis_modal.active && self.analysis_modal.show_help);
+        if already {
+            return;
+        }
+        if self.analysis_modal.active {
+            self.analysis_modal.show_help = true;
+        } else if self.template_modal.active {
+            self.template_modal.show_help = true;
+        } else {
+            self.show_help = true;
+        }
+    }
+
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
+
+        // F1 opens help first so no other branch (e.g. Editing) can consume it.
+        if event.code == KeyCode::F(1) {
+            self.open_help_overlay();
+            return None;
+        }
 
         // Handle modals first - they have highest priority
         // Confirmation modal (for overwrite)
@@ -1685,7 +1701,7 @@ impl App {
                     }
                     self.help_scroll = 0;
                 }
-                KeyCode::Char('h') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char('?') => {
                     if self.analysis_modal.active && self.analysis_modal.show_help {
                         self.analysis_modal.show_help = false;
                     } else if self.template_modal.active && self.template_modal.show_help {
@@ -1718,16 +1734,53 @@ impl App {
             return None;
         }
 
-        if event.code == KeyCode::Char('h') && event.modifiers.contains(KeyModifiers::CONTROL) {
-            // If analysis modal is active, show analysis help
-            if self.analysis_modal.active {
-                self.analysis_modal.show_help = true;
-            } else if self.template_modal.active {
-                self.template_modal.show_help = true;
-            } else {
-                self.show_help = true;
+        if event.code == KeyCode::Char('?') {
+            let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
+            let in_text_input = match self.input_mode {
+                InputMode::Editing => true,
+                InputMode::Export => matches!(
+                    self.export_modal.focus,
+                    ExportFocus::PathInput | ExportFocus::CsvDelimiter
+                ),
+                InputMode::SortFilter => {
+                    let on_body = self.sort_filter_modal.focus == SortFilterFocus::Body;
+                    let filter_tab = self.sort_filter_modal.active_tab == SortFilterTab::Filter;
+                    on_body
+                        && filter_tab
+                        && self.sort_filter_modal.filter.focus == FilterFocus::Value
+                }
+                InputMode::PivotMelt => matches!(
+                    self.pivot_melt_modal.focus,
+                    PivotMeltFocus::PivotFilter
+                        | PivotMeltFocus::MeltFilter
+                        | PivotMeltFocus::MeltPattern
+                        | PivotMeltFocus::MeltVarName
+                        | PivotMeltFocus::MeltValName
+                ),
+                InputMode::Info | InputMode::Chart => false,
+                InputMode::Normal => {
+                    if self.template_modal.active
+                        && self.template_modal.mode != TemplateModalMode::List
+                    {
+                        matches!(
+                            self.template_modal.create_focus,
+                            CreateFocus::Name
+                                | CreateFocus::Description
+                                | CreateFocus::ExactPath
+                                | CreateFocus::RelativePath
+                                | CreateFocus::PathPattern
+                                | CreateFocus::FilenamePattern
+                        )
+                    } else {
+                        false
+                    }
+                }
+            };
+            // Ctrl-? always opens help; bare ? only when not in a text field
+            if ctrl_help || !in_text_input {
+                self.open_help_overlay();
+                return None;
             }
-            return None;
         }
 
         if self.input_mode == InputMode::SortFilter {
@@ -2386,7 +2439,16 @@ impl App {
         }
 
         if self.input_mode == InputMode::PivotMelt {
-            if event.code == KeyCode::Char('h') && event.modifiers.contains(KeyModifiers::CONTROL) {
+            let pivot_melt_text_focus = matches!(
+                self.pivot_melt_modal.focus,
+                PivotMeltFocus::PivotFilter
+                    | PivotMeltFocus::MeltFilter
+                    | PivotMeltFocus::MeltPattern
+                    | PivotMeltFocus::MeltVarName
+                    | PivotMeltFocus::MeltValName
+            );
+            let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
+            if event.code == KeyCode::Char('?') && (ctrl_help || !pivot_melt_text_focus) {
                 self.show_help = true;
                 return None;
             }
@@ -2906,9 +2968,7 @@ impl App {
                     }
                 }
                 // q/Q do nothing in chart view (no exit)
-                KeyCode::Char('h')
-                    if event.is_press() && event.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
+                KeyCode::Char('?') if event.is_press() => {
                     self.show_help = true;
                 }
                 KeyCode::Esc if event.is_press() => {
@@ -3056,7 +3116,7 @@ impl App {
                         self.analysis_modal.close();
                     }
                 }
-                KeyCode::Char('h') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                KeyCode::Char('?') => {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
                 KeyCode::Char('r') => {
@@ -4920,12 +4980,13 @@ impl App {
         self.debug.num_events += 1;
         match event {
             AppEvent::Key(key) => {
-                // Allow Left/Right/h/l for column scroll even when busy (e.g. throbber showing)
                 let is_column_scroll = matches!(
                     key.code,
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
                 );
-                if self.busy && !is_column_scroll {
+                let is_help_key = key.code == KeyCode::F(1);
+                // When busy (e.g. loading), still process column scroll and F1 so the user can navigate or open help.
+                if self.busy && !is_column_scroll && !is_help_key {
                     return None;
                 }
                 self.key(key)
@@ -6467,216 +6528,16 @@ impl App {
 
     fn get_help_info(&self) -> (String, String) {
         let (title, content) = match self.input_mode {
-            InputMode::Normal => (
-                "Main View Help",
-                "\
-Navigation:
-  Arrows (h/j/k/l): Scroll table
-  PgUp/PgDown:     Scroll pages (Ctrl+F / Ctrl+B)
-  Home/End:        Go to first/last row (G = End)
-  Ctrl+D/Ctrl+U:   Half page down/up
-  ::               Go to line number (e.g. :0 Enter for top)
-
-Data Operations:
-  /:                Open Query input
-  s:                Open Sort & Filter modal (tabs: Sort, Filter)
-  a:                Open Statistical Analysis
-  e:                Export data to file
-  r:                Reverse sort order
-  R:                Reset table (clear queries, filters, sorts, locks)
-  T:                Apply most relevant template
-  t:                Open Template menu
-
-Display:
-  i:                Open Info panel (modal: Schema & Resources)
-  Tab / Shift+Tab:  In Info: move focus (tab bar ↔ schema table)
-  Left / Right:     In Info, on tab bar: switch Schema | Resources
-  N:                Toggle row numbers
-  Ctrl+h:           Toggle this help
-
-Help Navigation:
-  Arrow keys (↑↓):  Scroll help content
-  PageUp/PageDown:  Scroll help pages
-  Home/End:         Jump to top/bottom
-
-Analysis View:
-  a:                Open statistical analysis
-  r:                Resample data (if sampled)
-  Arrow keys:       Scroll statistics table
-  Esc:              Return to main view
-
-Exit:
-  q / Esc:          Quit",
-            ),
+            InputMode::Normal => ("Main View Help", help_strings::main_view()),
             InputMode::Editing => match self.input_type {
-                Some(InputType::Search) => (
-                    "Query Help",
-                    "\
-Query Syntax:
-  select [columns] [by group_cols] [where conditions]
-
-Basic Examples:
-  select a, b where a > 10, b < 5
-  select a, b by category where a > 10
-  select by city, state
-  select avg[price], count[a] by category, region
-  select a, b:\"foo\" where name=\"george\", age > 7
-  select col[\"first name\"], col[last_name]:\"derek\"
-
-Column Selection:
-  - List columns: a, b, c
-  - Use aliases: total:a + b
-  - Empty select: select (selects all columns)
-  - With grouping: select by city (all columns grouped by city)
-  - String literals: b:\"foo\" (creates column b with value \"foo\")
-  - Column names with spaces: col[\"first name\"] or col[first name]
-  - col[] syntax works for any column: col[name] or col[\"name\"]
-
-Column Assignment (by clause):
-  - Create computed columns: by new_col:city+state
-  - Use expressions: by area:width*height
-  - Supports same operations as select clause
-
-Aggregation Functions (square brackets optional):
-  avg[expr] or avg expr    - Average value (also: mean)
-  min[expr] or min expr    - Minimum value
-  max[expr] or max expr    - Maximum value
-  count[expr] or count expr - Count of non-null values
-  std[expr] or std expr    - Standard deviation (also: stddev)
-  med[expr] or med expr    - Median value (also: median)
-  sum[expr] or sum expr    - Sum of values
-
-Aggregation Examples:
-  select avg[price], min[quantity], max[date] by category
-  select avg price, min quantity, max date by category
-  select total:sum[price*qty], count[id] by region
-  select avg[price], std[price] by category, region
-
-Functions (square brackets optional):
-  not[expr] or not expr    - Logical negation
-  Examples:
-    not[a=b] or not a=b    - Equivalent to a!=b
-    not[a>10] or not a>10  - Equivalent to a<=10
-
-Grouping:
-  - Group by columns: select a, b by category, region
-  - Group with aliases: by region_name:region, total:sales+tax
-  - Empty select with grouping: select by city, state
-  - All non-group columns collected as lists
-
-Where Conditions:
-  - Multiple conditions: a > 10, b < 5 (AND)
-  - OR within condition: a > 10 | a < 5
-  - Expressions: (a + b) * 2 > 100
-  - String comparisons: name=\"george\", city=\"New York\"
-  - Use not function: not[a=b]
-  - Note: Where clause does NOT support column assignment
-
-Operators:
-  Math:        +, -, *, %
-  Comparison:  =, <, >, <=, >=
-  Logic:       , (AND), | (OR)
-  Note: Use not[expr] or not expr instead of !=
-
-Expression Evaluation:
-  - Operators evaluated right-to-left
-  - Example: 1%c+a evaluates as 1%(c+a)
-  - Use parentheses () for grouping: (a+b)*2
-  - Square brackets [] are for function calls only
-
-Function Syntax:
-  - Aggregation: avg[expr], sum[expr], etc.
-  - Logic: not[expr]
-  - Brackets optional: avg 5+a (same as avg[5+a])
-  - Brackets optional: not a=b (same as not[a=b])
-  - Use parentheses for grouping: (a+b)*2
-  - Example: b:avg[(1%c)+a] or b:avg (1%c)+a
-
-Press Enter to apply query.",
-                ),
-                _ => ("Editing Help", "Editing..."),
+                Some(InputType::Search) => ("Query Help", help_strings::query()),
+                _ => ("Editing Help", help_strings::editing()),
             },
-            InputMode::SortFilter => (
-                "Sort & Filter Help",
-                "\
-Tabbed modal: Sort (column order, sorting) and Filter (row filters).
-
-  Tab / BackTab:    Move focus (tab bar → form → Apply → Cancel → Clear → tab bar)
-  Left / Right:     On tab bar: switch Sort/Filter. In form: move cursor or change selection.
-  Esc:              Cancel and close modal
-
-Sort tab:
-  Filter, column list, order (asc/desc). Space: toggle sort. Enter (on Apply): apply and close.
-  [: ]: 1-9: sort order. + -: display order. L: lock. v: visibility.
-
-Filter tab:
-  Column, Operator, Value, Logic. Enter: add filter or Apply. Clear: remove all filters.",
-            ),
-            InputMode::PivotMelt => (
-                "Pivot / Melt Help",
-                "\
-Reshape data between long and wide formats.
-
-  Tab / Shift+Tab:  Move focus
-  Left / Right:     In tab bar:     Switch Pivot and Melt.
-                    In text fields: Move cursor
-  ↑ / ↓:            Change selection (index, pivot, value, aggregation, strategy, etc.)
-  Space:            Toggle index/explicit list; toggle Sort new columns (Pivot)
-  Enter:            Apply, or Cancel/Clear when focused
-  Esc:              Close without applying
-  Ctrl+h:           Show this help
-
-Pivot: long → wide (index, pivot col, value col, aggregation).
-Melt:  wide → long (index, strategy, variable/value names).",
-            ),
-            InputMode::Export => (
-                "Export Help",
-                "\
-Export current data to a file.
-
-  Tab / Shift+Tab:  Move focus between fields
-  ↑ / ↓:            In format selector: Change format
-                    In other fields: Move focus
-  Left / Right:     Move cursor in text fields
-  Enter:            Export (on Export button) or Cancel (on Cancel button)
-                    Toggle checkbox (on Include Header)
-  Esc:              Close without exporting
-
-Formats:
-  CSV:     Comma-separated values (configurable delimiter, header)
-  Parquet: Columnar format (efficient, compressed)
-  JSON:    JSON array format
-  NDJSON:  Newline-delimited JSON (one object per line)
-
-CSV Options:
-  Delimiter:        Character to separate columns (default: comma)
-  Include Header:   Whether to write column names as first row",
-            ),
-            InputMode::Info => (
-                "Info Panel Help",
-                "\
-Dataset technical info (Schema and Resources tabs).
-
-  Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
-                    On Resources: focus stays on tab bar.
-  Left / Right:     On tab bar: switch Schema | Resources tabs
-  ↑ / ↓:            When schema table focused: scroll and move selection
-  Esc / i:          Close info panel",
-            ),
-            InputMode::Chart => (
-                "Chart Help",
-                "\
-Chart view: tabs for XY, Histogram, Box Plot, KDE, Heatmap.
-
-  Tab / BackTab:    Move focus (tab bar → sidebar fields)
-  ← / →:            On tab bar: switch chart type
-                    On plot style: switch Line / Scatter / Bar
-                    On bins/bandwidth: adjust values
-  ↑ / ↓:            Move selection in focused column list
-  Enter / Space:    Select column or toggle options
-  + / -:            Adjust bins or bandwidth when focused
-  Esc:              Back to main view",
-            ),
+            InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
+            InputMode::PivotMelt => ("Pivot / Melt Help", help_strings::pivot_melt()),
+            InputMode::Export => ("Export Help", help_strings::export()),
+            InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
+            InputMode::Chart => ("Chart Help", help_strings::chart()),
         };
         (title.to_string(), content.to_string())
     }
@@ -6685,6 +6546,9 @@ Chart view: tabs for XY, Histogram, Box Plot, KDE, Heatmap.
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.debug.num_frames += 1;
+        if self.debug.enabled {
+            self.debug.show_help_at_render = self.show_help;
+        }
 
         // Clear entire area first so no ghost text from any widget (loading gauge label,
         // modals, controls, etc.) can persist when layout or visibility changes (e.g. after pivot).
@@ -6760,7 +6624,7 @@ impl Widget for &mut App {
             sort_area = chunks[1];
         }
 
-        // Extract colors before mutable borrow to avoid borrow checker issues
+        // Extract colors and table config before mutable borrow to avoid borrow checker issues
         let primary_color = self.color("keybind_hints");
         let _controls_bg_color = self.color("controls_bg");
         let table_header_color = self.color("table_header");
@@ -6770,6 +6634,26 @@ impl Widget for &mut App {
         let modal_border_color = self.color("modal_border");
         let info_active_color = self.color("modal_border_active");
         let info_primary_color = self.color("text_primary");
+        let table_cell_padding = self.table_cell_padding;
+        let alternate_row_bg = self.theme.get_optional("alternate_row_color");
+        let column_colors = self.column_colors;
+        let (str_col, int_col, float_col, bool_col, temporal_col) = if column_colors {
+            (
+                self.theme.get("str_col"),
+                self.theme.get("int_col"),
+                self.theme.get("float_col"),
+                self.theme.get("bool_col"),
+                self.theme.get("temporal_col"),
+            )
+        } else {
+            (
+                Color::Reset,
+                Color::Reset,
+                Color::Reset,
+                Color::Reset,
+                Color::Reset,
+            )
+        };
 
         // Parquet metadata is loaded via DoLoadParquetMetadata when info panel is opened (not in render)
 
@@ -6802,6 +6686,7 @@ impl Widget for &mut App {
 
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .border_style(Style::default().fg(primary_color))
                             .title("Breadcrumb")
                             .render(breadcrumb_layout[0], buf);
@@ -6821,17 +6706,26 @@ impl Widget for &mut App {
                 }
 
                 Clear.render(table_area, buf);
+                let mut dt = DataTable::new()
+                    .with_colors(
+                        table_header_bg_color,
+                        table_header_color,
+                        row_numbers_color,
+                        column_separator_color,
+                    )
+                    .with_cell_padding(table_cell_padding)
+                    .with_alternate_row_bg(alternate_row_bg);
+                if column_colors {
+                    dt = dt.with_column_type_colors(
+                        str_col,
+                        int_col,
+                        float_col,
+                        bool_col,
+                        temporal_col,
+                    );
+                }
+                dt.render(table_area, buf, state);
                 if self.info_modal.active {
-                    DataTable::new()
-                        .with_colors(
-                            table_header_bg_color,
-                            table_header_color,
-                            row_numbers_color,
-                            column_separator_color,
-                        )
-                        .with_cell_padding(self.table_cell_padding)
-                        .with_alternate_row_bg(self.theme.get_optional("alternate_row_color"))
-                        .render(table_area, buf, state);
                     let ctx = InfoContext {
                         path: self.path.as_deref(),
                         format: self.original_file_format,
@@ -6846,17 +6740,6 @@ impl Widget for &mut App {
                         info_primary_color,
                     );
                     info_widget.render(sort_area, buf);
-                } else {
-                    DataTable::new()
-                        .with_colors(
-                            table_header_bg_color,
-                            table_header_color,
-                            row_numbers_color,
-                            column_separator_color,
-                        )
-                        .with_cell_padding(self.table_cell_padding)
-                        .with_alternate_row_bg(self.theme.get_optional("alternate_row_color"))
-                        .render(table_area, buf, state);
                 }
             }
             None => {
@@ -6889,6 +6772,7 @@ impl Widget for &mut App {
 
             let block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title(title)
                 .border_style(border_style);
             let inner_area = block.inner(input_area);
@@ -6920,6 +6804,7 @@ impl Widget for &mut App {
             Clear.render(sort_area, buf);
             let block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title("Sort & Filter");
             let inner_area = block.inner(sort_area);
             block.render(sort_area, buf);
@@ -6960,6 +6845,7 @@ impl Widget for &mut App {
             };
             Block::default()
                 .borders(Borders::BOTTOM)
+                .border_type(BorderType::Rounded)
                 .border_style(line_style)
                 .render(tab_line_chunks[1], buf);
 
@@ -6998,6 +6884,7 @@ impl Widget for &mut App {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .title("Col")
                             .border_style(col_style),
                     )
@@ -7016,6 +6903,7 @@ impl Widget for &mut App {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .title("Op")
                             .border_style(op_style),
                     )
@@ -7030,6 +6918,7 @@ impl Widget for &mut App {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .title("Val")
                             .border_style(val_style),
                     )
@@ -7048,6 +6937,7 @@ impl Widget for &mut App {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .title("Logic")
                             .border_style(log_style),
                     )
@@ -7062,6 +6952,7 @@ impl Widget for &mut App {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .border_style(add_style),
                     )
                     .centered()
@@ -7097,6 +6988,7 @@ impl Widget for &mut App {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .title("Current Filters")
                             .border_style(list_style),
                     )
@@ -7126,6 +7018,7 @@ impl Widget for &mut App {
                 }
                 let filter_block = Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .title(filter_block_title)
                     .border_style(filter_block_border_style);
                 let filter_inner_area = filter_block.inner(schunks[0]);
@@ -7212,6 +7105,7 @@ impl Widget for &mut App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .title("Columns")
                         .border_style(table_border_style),
                 )
@@ -7277,6 +7171,7 @@ impl Widget for &mut App {
 
                 let order_block = Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .title("Order")
                     .border_style(order_border_style);
                 let order_inner = order_block.inner(schunks[3]);
@@ -7352,6 +7247,7 @@ impl Widget for &mut App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(apply_border_style),
                 )
                 .centered()
@@ -7366,6 +7262,7 @@ impl Widget for &mut App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(cancel_style),
                 )
                 .centered()
@@ -7380,6 +7277,7 @@ impl Widget for &mut App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(clear_style),
                 )
                 .centered()
@@ -7393,7 +7291,10 @@ impl Widget for &mut App {
                 TemplateModalMode::Create => "Create Template",
                 TemplateModalMode::Edit => "Edit Template",
             };
-            let block = Block::default().borders(Borders::ALL).title(modal_title);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(modal_title);
             let inner_area = block.inner(sort_area);
             block.render(sort_area, buf);
 
@@ -7523,6 +7424,7 @@ impl Widget for &mut App {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
                             .title("Templates")
                             .border_style(table_border_style),
                     )
@@ -7605,6 +7507,7 @@ impl Widget for &mut App {
                     };
                     let name_block = Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .title(name_title)
                         .title_style(if self.template_modal.name_error.is_some() {
                             Style::default().fg(self.color("error"))
@@ -7630,6 +7533,7 @@ impl Widget for &mut App {
                     };
                     let desc_block = Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .title("Description")
                         .border_style(desc_style);
                     let desc_inner = desc_block.inner(chunks[1]);
@@ -7655,6 +7559,7 @@ impl Widget for &mut App {
                         };
                     let exact_path_block = Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .title("Exact Path")
                         .border_style(exact_path_style);
                     let exact_path_inner = exact_path_block.inner(chunks[2]);
@@ -7675,6 +7580,7 @@ impl Widget for &mut App {
                         };
                     let relative_path_block = Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .title("Relative Path")
                         .border_style(relative_path_style);
                     let relative_path_inner = relative_path_block.inner(chunks[3]);
@@ -7696,6 +7602,7 @@ impl Widget for &mut App {
                         };
                     let path_pattern_block = Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .title("Path Pattern")
                         .border_style(path_pattern_style);
                     let path_pattern_inner = path_pattern_block.inner(chunks[4]);
@@ -7717,6 +7624,7 @@ impl Widget for &mut App {
                         };
                     let filename_pattern_block = Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .title("Filename Pattern")
                         .border_style(filename_pattern_style);
                     let filename_pattern_inner = filename_pattern_block.inner(chunks[5]);
@@ -7746,6 +7654,7 @@ impl Widget for &mut App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
                                 .title("Schema Match")
                                 .border_style(schema_style),
                         )
@@ -7767,6 +7676,7 @@ impl Widget for &mut App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
                                 .border_style(save_style),
                         )
                         .centered()
@@ -7782,6 +7692,7 @@ impl Widget for &mut App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
                                 .border_style(cancel_create_style),
                         )
                         .centered()
@@ -7796,6 +7707,7 @@ impl Widget for &mut App {
                     Clear.render(confirm_area, buf);
                     let block = Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .title("Delete Template");
                     let inner_area = block.inner(confirm_area);
                     block.render(confirm_area, buf);
@@ -7841,6 +7753,7 @@ impl Widget for &mut App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
                                 .border_style(delete_style),
                         )
                         .centered()
@@ -7856,6 +7769,7 @@ impl Widget for &mut App {
                         .block(
                             Block::default()
                                 .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
                                 .border_style(cancel_style),
                         )
                         .centered()
@@ -7877,6 +7791,7 @@ impl Widget for &mut App {
                             Clear.render(details_area, buf);
                             let block = Block::default()
                                 .borders(Borders::ALL)
+                                .border_type(BorderType::Rounded)
                                 .title(format!("Score Details: {}", template.name));
                             let inner_area = block.inner(details_area);
                             block.render(details_area, buf);
@@ -8073,6 +7988,7 @@ impl Widget for &mut App {
                 Clear.render(analysis_area, buf);
                 let block = Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(border))
                     .title(" Analysis ");
                 let inner = block.inner(analysis_area);
@@ -8497,6 +8413,7 @@ impl Widget for &mut App {
 
             let block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title("Confirm")
                 .border_style(Style::default().fg(self.color("modal_border_active")))
                 .style(Style::default().bg(bg_color));
@@ -8546,6 +8463,7 @@ impl Widget for &mut App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(yes_style),
                 )
                 .render(button_chunks[1], buf);
@@ -8555,6 +8473,7 @@ impl Widget for &mut App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(no_style),
                 )
                 .render(button_chunks[3], buf);
@@ -8564,7 +8483,10 @@ impl Widget for &mut App {
         if self.success_modal.active {
             let popup_area = centered_rect(area, 70, 40);
             Clear.render(popup_area, buf);
-            let block = Block::default().borders(Borders::ALL).title("Success");
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title("Success");
             let inner_area = block.inner(popup_area);
             block.render(popup_area, buf);
 
@@ -8590,6 +8512,7 @@ impl Widget for &mut App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(ok_style),
                 )
                 .render(chunks[1], buf);
@@ -8601,6 +8524,7 @@ impl Widget for &mut App {
             Clear.render(popup_area, buf);
             let block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title("Error")
                 .border_style(Style::default().fg(self.color("modal_border_error")));
             let inner_area = block.inner(popup_area);
@@ -8628,6 +8552,7 @@ impl Widget for &mut App {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
                         .border_style(ok_style),
                 )
                 .render(chunks[1], buf);
@@ -8637,195 +8562,39 @@ impl Widget for &mut App {
             || (self.template_modal.active && self.template_modal.show_help)
             || (self.analysis_modal.active && self.analysis_modal.show_help)
         {
-            let popup_area = centered_rect(area, 60, 50);
+            let popup_area = centered_rect(area, 80, 80);
             Clear.render(popup_area, buf);
             let (title, text): (String, String) = if self.analysis_modal.active
                 && self.analysis_modal.show_help
             {
-                // Context-aware help based on current view and tool
                 match self.analysis_modal.view {
                     analysis_modal::AnalysisView::DistributionDetail => (
                         "Distribution Detail Help".to_string(),
-                        "\
-SW: The W statistic of a Shapiro-Wilk test ranges from 0 to 1, where 1 indicates perfect normality. The p-value reflects the probability of observing such a W value under the hypothesis of normality.
-Skew: Measures asymmetry of the data distribution (positive = right-tailed, negative = left-tailed).
-Kurtosis: Tail heaviness compared to normal distribution (high = heavy tails, low = light tails).
-Median: Middle value when data is sorted.
-Mean: Average value of all data points.
-Std: Standard deviation (spread of data around the mean).
-CV: Coefficient of variation (std/mean, relative variability independent of scale).
-
-Q-Q Plot:
-
-Compares your data against a theoretical distribution. Points following the diagonal reference line indicate a good match. Deviations show where your data differs from the theoretical model.
-
-Histogram:
-
-Shows the frequency distribution of your data as bars, with a theoretical distribution overlaid as a gray line. The height of bars represents how many data points fall in each bin range. Compare bar heights to the theoretical line to see how well your data matches the expected distribution.
-
-
-Distributions:
-
-Select different theoretical distributions from the list to overlay them for comparison with your data. This helps identify which distribution type best fits your data.
-
-Navigation:
-
-↑↓ / j/k:    Scroll through distributions to compare different overlays
-s:           Toggle histogram scale (Linear ↔ Log)
-Esc:         Return to distribution table
-
-Settings:
-
-Scale:       Toggle between Linear and Log scale for histogram
-             (Log scale requires positive values only)
-             Warning color indicates scale fallback (e.g., Log selected but Linear used due to negative values)"
-                            .to_string(),
+                        help_strings::analysis_distribution_detail().to_string(),
                     ),
                     analysis_modal::AnalysisView::CorrelationDetail => (
                         "Correlation Detail Help".to_string(),
-                        "\
-Correlation Pair Detail View shows detailed information about a selected pair.
-
-Sections:
-  1. Relationship Summary:
-     - Correlation coefficient with interpretation
-     - Statistical significance (p-value)
-     - Sample size
-     - Plain-language interpretation
-
-  2. Scatter Plot Approximation:
-     - Text-based scatter plot showing relationship
-     - Trend indicators
-
-  3. Key Statistics:
-     - Summary statistics for both variables
-     - Covariance and R-squared
-
-Navigation:
-  ↑↓:            Scroll if content is long
-  Esc:           Return to correlation matrix"
-                            .to_string(),
+                        help_strings::analysis_correlation_detail().to_string(),
                     ),
                     analysis_modal::AnalysisView::Main => match self.analysis_modal.selected_tool {
                         analysis_modal::AnalysisTool::DistributionAnalysis => (
                             "Distribution Analysis Help".to_string(),
-                            "\
-Distribution Analysis identifies the distribution type for each numeric column and provides key statistical measures.
-
-Columns:
-  Column:        Name of the numeric column
-  Distribution:  Inferred distribution type (Normal, LogNormal, Uniform, PowerLaw, Exponential)
-  Shapiro-Wilk:  W statistic from Shapiro-Wilk normality test (0-1, higher = more normal)
-  SW p-value:    P-value from Shapiro-Wilk test (probability of observing W under normality)
-  CV:            Coefficient of variation (std/mean, relative variability independent of scale)
-  Outliers:      Count and percentage of outliers (IQR method)
-  Skewness:      Asymmetry measure (positive = right-tailed, negative = left-tailed)
-  Kurtosis:      Tail heaviness compared to normal distribution (3.0 = normal)
-
-Color Coding:
-  Distribution types are color-coded:
-    - Green/Cyan: Good fit quality (>0.75)
-    - Yellow:     Moderate fit quality (≤0.75)
-    - Red:        Very high outlier percentage (>20%) or extreme skewness/kurtosis
-
-Navigation:
-  ↑↓ / j/k:      Navigate rows
-  ←→ / h/l:      Scroll columns horizontally
-  Tab:           Switch focus between main area and sidebar
-  Enter:         Open detail view for selected column (shows Q-Q plot and histogram)
-  Esc:           Close analysis view
-  r:             Resample data (only shown if data was sampled)
-
-Detail View:
-  Press Enter on a row to see detailed analysis with Q-Q plots and histograms comparing your data to theoretical distributions."
-                                .to_string(),
+                            help_strings::analysis_distribution().to_string(),
                         ),
                         analysis_modal::AnalysisTool::Describe => (
                             "Describe Tool Help".to_string(),
-                            "\
-The Describe tool behaves like Polars' describe() function and displays similar descriptive statistics.
-
-Navigation:
-  Tab:            Switch focus between main area and sidebar
-  ↑↓ / j/k:      Navigate rows (or sidebar tools if sidebar focused)
-  ←→ / h/l:      Scroll statistics columns horizontally
-  Home/End:      Jump to first/last row
-  PageUp/PageDown: Navigate by page
-  Enter:         Select tool from sidebar (when sidebar focused)
-
-Actions:
-  r:             Resample data (only shown if data was sampled)
-  Esc:           Close analysis view or help dialog"
-                                .to_string(),
+                            help_strings::analysis_describe().to_string(),
                         ),
                         analysis_modal::AnalysisTool::CorrelationMatrix => (
                             "Correlation Matrix Help".to_string(),
-                            "\
-The Correlation Matrix tool displays pairwise correlations between numeric columns.
-
-Navigation:
-  Tab:            Switch focus between main area and sidebar
-  ↑↓ / j/k:      Navigate matrix rows (or sidebar tools if sidebar focused)
-  ←→ / h/l:      Navigate matrix columns
-  Home/End:      Jump to first/last row
-  PageUp/PageDown: Navigate by page
-  Enter:         Open pair detail view (on a cell) or select tool (sidebar)
-
-Actions:
-  r:             Resample data (only shown if data was sampled)
-  Esc:           Close analysis view or help dialog"
-                                .to_string(),
+                            help_strings::analysis_correlation_matrix().to_string(),
                         ),
                     },
                 }
             } else if self.template_modal.active {
                 (
                     "Template Help".to_string(),
-                    "\
-Templates allow you to save and automatically apply customizations for specific files.
-
-Template List:
-  - Templates are displayed in a table sorted by relevance (descending)
-  - Score column shows colored circles indicating match quality:
-    * Green circles: high scores (80%+ of max)
-    * Yellow circles: medium scores (40-80% of max)
-    * Gray/white circles: low scores (<40% of max)
-  - Active template is indicated by a checkmark (✓) in the active column
-
-Actions:
-  Enter:        Apply the selected template
-  s:            Create a new template from current state
-  e:            Edit the selected template
-  d:            Delete the selected template (with confirmation)
-  Ctrl+h:       Show this help
-  Esc:          Close template menu
-
-Template Creation/Editing:
-  - Name:       Required identifier for the template
-  - Description: Optional description
-  - Exact Path: Match files by absolute path
-  - Relative Path: Match files by path relative to current directory
-  - Path Pattern: Match files by glob-like path pattern
-  - Filename Pattern: Match files by glob-like filename pattern
-  - Schema Match: Match files with matching column names
-
-Template Matching:
-  Templates are scored based on:
-  1. Exact path match (highest priority)
-  2. Relative path match
-  3. Path/filename pattern matches
-  4. Schema column matches
-  5. Generic templates (lowest priority)
-
-  The most relevant template can be applied with 'T' from the main view.
-
-Delete Confirmation:
-  - Cancel is selected by default
-  - Enter:      Cancel (if Cancel selected) or Delete (if Delete selected)
-  - Tab:        Switch between Cancel and Delete buttons
-  - D:          Delete immediately
-  - Esc:        Cancel and close dialog"
-                        .to_string(),
+                    help_strings::template().to_string(),
                 )
             } else {
                 let (t, txt) = self.get_help_info();
@@ -8842,7 +8611,10 @@ Delete Confirmation:
             let scrollbar_area = help_layout[1];
 
             // Render text with scroll offset
-            let block = Block::default().title(title).borders(Borders::ALL);
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded);
             let inner_area = block.inner(text_area);
             block.render(text_area, buf);
 
@@ -8857,11 +8629,20 @@ Delete Confirmation:
                 if line.len() <= available_width {
                     wrapped_lines.push(*line);
                 } else {
-                    // Split long lines into wrapped segments
+                    // Split long lines into wrapped segments (at char boundaries so UTF-8 is safe)
                     let mut remaining = *line;
                     while !remaining.is_empty() {
-                        let take = remaining.len().min(available_width);
-                        let (chunk, rest) = remaining.split_at(take);
+                        let mut take = remaining.len().min(available_width);
+                        while take > 0 && !remaining.is_char_boundary(take) {
+                            take -= 1;
+                        }
+                        // If take is 0 (e.g. first char is multi-byte and width is 1), advance by one char
+                        let take_len = if take == 0 {
+                            remaining.chars().next().map_or(0, |c| c.len_utf8())
+                        } else {
+                            take
+                        };
+                        let (chunk, rest) = remaining.split_at(take_len);
                         wrapped_lines.push(chunk);
                         remaining = rest;
                     }

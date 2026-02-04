@@ -1,0 +1,8 @@
+Dataset technical info (Schema and Resources tabs).
+
+  Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
+                    On Resources: focus stays on tab bar.
+  Left / Right:     On tab bar: switch Schema | Resources tabs
+  ↑ / ↓:            When schema table focused: scroll and move selection
+  ? / F1:           Show this help
+  Esc / i:          Close info panel

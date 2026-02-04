@@ -32,4 +32,6 @@ In the main view, the following keyboard shortcuts are available.
 | `i` | Open **Info** panel (modal); `Tab` / `Shift+Tab` move focus (tab bar ↔ schema table); `Left` / `Right` switch tabs (See [Dataset Info](../user-guide/dataset-info.md)) |
 | `r` | Reset (clear query, filters, sort) |
 | `q` | Quit |
-| `Ctrl-h` | Help |
+| `?` / `F1` | Help (F1 works in text fields, e.g. query input) |
+
+**Note for Alacritty users:** If F1 does nothing, ensure F1 is not bound in `~/.config/alacritty/alacritty.toml`. You can still use `?` for help when not in a text field.

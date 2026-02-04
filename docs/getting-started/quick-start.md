@@ -24,6 +24,16 @@ up/down, `h`/`l` for left/right).
 
 You may also jump pages with the `Page Up` and `Page Down` keys.
 
+## Getting Help
+
+See command line arguments:
+```bash
+datui --help
+```
+
+Activate the built-in help display at any time by pressing `?` or `F1` (`F1` works
+in text fields too, e.g. query input). Press `Esc` or `?` to close it.
+
 ## Understanding the UI
 
 - The main Datui view window shows your data in full screen, with a header row at the top and a
@@ -33,10 +43,21 @@ You may also jump pages with the `Page Up` and `Page Down` keys.
 - Certain features will open pop-over menus, or change the full screen view. Press `Esc` to go
   back to the prior page.
 
-## Getting Help
+## More Examples
 
-Datui has a built-in help display. Activate it at any time by pressing `Ctrl-h`. To close it,
-press `Esc`.
+Open a hive-partitioned directory:
+```bash
+datui --hive /path/to/directory
+```
+
+> **Note:** The directory should contain files all of the same type
+
+Or, a glob pattern to hive-partitioned parquet:
+```bash
+datui --hive "/path/to/directory/**/*.parquet"
+```
+
+> **Note:** It is usually necessary to quote the glob pattern to prevent shell expansion.
 
 ## Learning More
 

@@ -5,7 +5,7 @@ use crate::CompressionFormat;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Widget};
 
 /// Render the export modal with format selector on left, options on right.
 pub fn render_export_modal(
@@ -20,6 +20,7 @@ pub fn render_export_modal(
     Clear.render(area, buf);
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title("Export Data");
     let inner = block.inner(area);
@@ -89,6 +90,7 @@ fn render_format_list(
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title("Format");
     let inner = block.inner(area);
@@ -140,6 +142,7 @@ fn render_path_input(
 
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title("File Path");
     let inner = block.inner(area);
@@ -161,6 +164,7 @@ fn render_format_options(
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title("Options");
     let inner = block.inner(area);
@@ -523,6 +527,7 @@ fn render_footer(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(border_style),
         )
         .centered()
@@ -546,6 +551,7 @@ fn render_footer(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(border_style),
         )
         .centered()

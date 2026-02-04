@@ -1,0 +1,13 @@
+Reshape data between long and wide formats.
+
+  Tab / Shift+Tab:  Move focus
+  Left / Right:     In tab bar:     Switch Pivot and Melt.
+                    In text fields: Move cursor
+  ↑ / ↓:            Change selection (index, pivot, value, aggregation, strategy, etc.)
+  Space:            Toggle index/explicit list; toggle Sort new columns (Pivot)
+  Enter:            Apply, or Cancel/Clear when focused
+  Esc:              Close without applying
+  ? / F1:           Show this help (F1 works in text fields)
+
+Pivot: long → wide (index, pivot col, value col, aggregation).
+Melt:  wide → long (index, strategy, variable/value names).

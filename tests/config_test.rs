@@ -248,7 +248,6 @@ delimiter = 44
 has_header = true
 skip_lines = 1
 skip_rows = 0
-compression = "gzip"
 
 [display]
 pages_lookahead = 5
@@ -352,6 +351,7 @@ fn test_merge_does_not_override_with_defaults() {
         row_numbers: true,
         row_start_index: 0,
         table_cell_padding: 1,
+        column_colors: true,
     };
 
     let override_config = DisplayConfig::default();
@@ -381,7 +381,7 @@ fn test_color_config_merge() {
     assert_eq!(base.keybind_hints, "blue");
     assert_eq!(base.error, "bright_red");
     // Other colors should remain default
-    assert_eq!(base.keybind_labels, "light_gray");
+    assert_eq!(base.keybind_labels, "indexed(252)");
     assert_eq!(base.success, "green");
 }
 
@@ -398,7 +398,7 @@ fn test_new_color_fields() {
     assert_eq!(config.theme.colors.primary_chart_series_color, "cyan");
     assert_eq!(
         config.theme.colors.secondary_chart_series_color,
-        "dark_gray"
+        "indexed(235)"
     );
     // Chart view series colors
     assert_eq!(config.theme.colors.chart_series_color_1, "cyan");
@@ -411,7 +411,7 @@ fn test_new_color_fields() {
     assert_eq!(config.theme.colors.controls_bg, "indexed(235)");
     assert_eq!(config.theme.colors.table_header_bg, "indexed(235)");
     assert_eq!(config.theme.colors.column_separator, "cyan");
-    assert_eq!(config.theme.colors.sidebar_border, "dark_gray");
+    assert_eq!(config.theme.colors.sidebar_border, "indexed(235)");
 
     // Test that new colors can be parsed and retrieved from theme
     let theme = Theme::from_config(&config.theme).unwrap();

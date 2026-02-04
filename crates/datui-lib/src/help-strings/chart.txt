@@ -1,0 +1,11 @@
+Chart view: tabs for XY, Histogram, Box Plot, KDE, Heatmap.
+
+  Tab / BackTab:    Move focus (tab bar → sidebar fields)
+  ← / →:            On tab bar: switch chart type
+                    On plot style: switch Line / Scatter / Bar
+                    On bins/bandwidth: adjust values
+  ↑ / ↓:            Move selection in focused column list
+  Enter / Space:    Select column or toggle options
+  + / -:            Adjust bins or bandwidth when focused
+  ? / F1:           Show this help
+  Esc:              Back to main view

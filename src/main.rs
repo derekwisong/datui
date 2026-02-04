@@ -91,10 +91,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let config = AppConfig::load(APP_NAME).unwrap_or_else(|e| {
+    let mut config = AppConfig::load(APP_NAME).unwrap_or_else(|e| {
         eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
         AppConfig::default()
     });
+
+    if let Some(cc) = args.column_colors {
+        config.display.column_colors = cc;
+    }
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
     let input = RunInput::Paths(args.paths.clone(), opts);
@@ -132,6 +136,7 @@ mod tests {
             generate_config: false,
             force: false,
             hive: false,
+            column_colors: None,
             parse_dates: None,
             decompress_in_memory: None,
             temp_dir: None,

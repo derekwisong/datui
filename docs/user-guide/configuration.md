@@ -38,7 +38,6 @@ delimiter = 44        # CSV delimiter (44 = comma). null = auto-detect
 has_header = true     # Whether files have headers. null = auto-detect
 skip_lines = 0        # Lines to skip at file start
 skip_rows = 0         # Rows to skip when reading
-compression = "gzip"  # Default compression: "gzip", "zstd", "bzip2", "xz". null = auto-detect from extension
 parse_dates = true    # When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)
 decompress_in_memory = false  # When true, decompress compressed CSV into memory; when false (default), decompress to a temp file so scan can be used
 temp_dir = null       # Directory for temp files when decompressing compressed CSV. null = system default (e.g. /tmp)
@@ -47,7 +46,6 @@ temp_dir = null       # Directory for temp files when decompressing compressed C
 - **delimiter** — ASCII value of the CSV column separator (e.g. 44 for comma). Omit or set to `null` to use auto-detection.
 - **has_header** — Whether the first row is a header. Omit or `null` for auto-detect; `true` or `false` to force.
 - **skip_lines** / **skip_rows** — Number of lines (or rows) to skip before reading the header and data.
-- **compression** — Default compression format when the file extension does not indicate one. Omit or `null` for auto-detect from extension.
 - **parse_dates** — When `true` (default), the CSV reader attempts to parse string columns that look like dates (e.g. `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`) into Polars Date or Datetime. Set to `false` to keep such columns as strings. Overridden by the `--parse-dates` CLI flag (e.g. `--parse-dates false` to disable; see [command-line options](../reference/command-line-options.md)).
 - **decompress_in_memory** — When `false` (default), compressed CSV is decompressed to a temporary file so the lazy CSV reader can scan it. When `true`, compressed data is decompressed into memory (eager load). Use `true` if you have no temp filesystem. Overridden by `--decompress-in-memory` / `--decompress-in-memory false`.
 - **temp_dir** — Directory used for temporary files when decompressing compressed CSV. Omit or set to `null` to use the system default (e.g. `/tmp` on Unix). Overridden by the `--temp-dir` CLI option.

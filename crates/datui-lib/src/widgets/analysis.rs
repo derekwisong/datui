@@ -5,8 +5,8 @@ use ratatui::{
     symbols,
     text::{Line, Span},
     widgets::{
-        Axis, Bar, BarChart, BarGroup, Block, Borders, Cell, Chart, Dataset, GraphType, List,
-        ListItem, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
+        Axis, Bar, BarChart, BarGroup, Block, BorderType, Borders, Cell, Chart, Dataset, GraphType,
+        List, ListItem, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
     },
 };
 
@@ -1309,6 +1309,7 @@ fn render_distribution_selector(
         Block::default()
             .title("Distribution")
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.get("sidebar_border"))),
     )
     .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -1336,6 +1337,7 @@ fn render_distribution_settings(
     let block = Block::default()
         .title("Settings")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.get("sidebar_border")));
 
     // Settings content: Scale option
@@ -1422,6 +1424,7 @@ fn render_sidebar(
     let block = Block::default()
         .title("Analysis Tools")
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.get("modal_border")));
 
     let list = List::new(items).block(block);

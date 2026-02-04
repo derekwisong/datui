@@ -5,7 +5,7 @@ use crate::chart_export_modal::{ChartExportFocus, ChartExportModal};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget};
 
 const FORMAT_COLS: u16 = 3;
 
@@ -19,6 +19,7 @@ pub fn render_chart_export_modal(
     Clear.render(area, buf);
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
         .title(" Export Chart ");
     let inner = block.inner(area);
@@ -39,6 +40,7 @@ pub fn render_chart_export_modal(
     let is_format_focused = modal.focus == ChartExportFocus::FormatSelector;
     let format_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if is_format_focused {
             active_color
         } else {
@@ -85,6 +87,7 @@ pub fn render_chart_export_modal(
     let is_title_focused = modal.focus == ChartExportFocus::TitleInput;
     let title_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if is_title_focused {
             active_color
         } else {
@@ -101,6 +104,7 @@ pub fn render_chart_export_modal(
     let is_path_focused = modal.focus == ChartExportFocus::PathInput;
     let path_block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(if is_path_focused {
             active_color
         } else {
@@ -129,6 +133,7 @@ pub fn render_chart_export_modal(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(if is_export_focused {
                     Style::default().fg(active_color)
                 } else {
@@ -148,6 +153,7 @@ pub fn render_chart_export_modal(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(if is_cancel_focused {
                     Style::default().fg(active_color)
                 } else {

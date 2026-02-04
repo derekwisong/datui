@@ -23,6 +23,7 @@ fn test_config_used_for_row_numbers() {
         pages_lookback: None,
         row_numbers: false, // Not set via CLI
         row_start_index: None,
+        column_colors: None,
         generate_config: false,
         force: false,
         hive: false,
@@ -61,6 +62,7 @@ fn test_cli_args_override_config() {
         pages_lookback: None,
         row_numbers: false,
         row_start_index: Some(1), // Override config
+        column_colors: None,
         generate_config: false,
         force: false,
         hive: false,
@@ -99,6 +101,7 @@ fn test_config_display_settings() {
         pages_lookback: None,
         row_numbers: false,
         row_start_index: None,
+        column_colors: None,
         generate_config: false,
         force: false,
         hive: false,
@@ -137,6 +140,7 @@ fn test_config_file_loading_settings() {
         pages_lookback: None,
         row_numbers: false,
         row_start_index: None,
+        column_colors: None,
         generate_config: false,
         force: false,
         hive: false,

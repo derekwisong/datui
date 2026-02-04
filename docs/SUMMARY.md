@@ -19,6 +19,7 @@
   - [Analysis Mode](user-guide/analysis-features.md)
   - [Reshaping: Pivot and Melt](user-guide/reshaping.md)
   - [Templates](user-guide/templates.md)
+  - [Python Module](user-guide/python-module.md)
 
 - [Reference](reference.md)
   - [Command Line Options](reference/command-line-options.md)

@@ -10,9 +10,11 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  check:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/heads/')
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +27,7 @@ jobs:
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
         with:
-          key: "ci"
+          shared-key: ci
 
       - name: Make scripts executable
         run: chmod +x scripts/check_format.sh scripts/check_clippy.sh
@@ -33,41 +35,15 @@ jobs:
       - name: Check formatting
         run: ./scripts/check_format.sh
 
-      - name: Build
-        run: cargo build --workspace --tests --locked
-
       - name: Run clippy
         run: ./scripts/check_clippy.sh
 
-      - name: Set up Python and install dependencies
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Create virtual environment and install requirements
-        run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r scripts/requirements.txt
-
-      - name: Generate sample data
-        run: .venv/bin/python scripts/generate_sample_data.py
-
-      - name: Run tests
-        run: cargo test --workspace --locked
-
-      - name: Verify binary exists
-        run: test -f target/debug/datui || (echo "Binary not found" && exit 1)
-
-      - name: Verify manpage was generated
-        run: |
-          if ! find target/debug/build -name "datui.1" -type f | head -1 >/dev/null; then
-            echo "Manpage not found" && exit 1
-          fi
-
-  python-package:
+  linux:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/heads/')
+    needs: [check]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
 
@@ -81,23 +57,42 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-
-      - name: Create virtual environment
-        run: python -m venv .venv
-
-      - name: Install dependencies into venv
-        run: |
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r scripts/requirements.txt
-          .venv/bin/pip install -r scripts/requirements-wheel.txt
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
         with:
-          key: "ci-python"
+          shared-key: ci
 
-      - name: Build binary
-        run: cargo build --locked -p datui
+      - name: Create virtual environment and install requirements
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r scripts/requirements.txt
+          .venv/bin/pip install -r scripts/requirements-wheel.txt
+
+      - name: Generate sample data
+        run: .venv/bin/python scripts/generate_sample_data.py
+
+      - name: Build
+        run: cargo build --workspace --tests --locked
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Verify binary exists
+        run: test -f target/debug/datui || (echo "Binary not found" && exit 1)
+
+      - name: Verify manpage was generated
+        run: |
+          if ! find target/debug/build -name "datui.1" -type f | head -1 >/dev/null; then
+            echo "Manpage not found" && exit 1
+          fi
 
       - name: Bundle CLI for wheel
         run: |
@@ -112,30 +107,40 @@ jobs:
       - name: Run Python tests
         run: . .venv/bin/activate && pytest python/tests/ -v
 
-  build-and-test-windows:
+  windows:
     runs-on: windows-latest
     if: startsWith(github.ref, 'refs/heads/')
+    needs: [check]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          key: "ci-windows"
-
-      - name: Set up Python and install dependencies
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: ci
 
       - name: Create virtual environment and install requirements
         run: |
           python -m venv .venv
           .venv\Scripts\python.exe -m pip install --upgrade pip
           .venv\Scripts\pip.exe install -r scripts/requirements.txt
+          .venv\Scripts\pip.exe install -r scripts/requirements-wheel-windows.txt
 
       - name: Generate sample data
         run: .venv\Scripts\python.exe scripts/generate_sample_data.py
@@ -146,3 +151,23 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      - name: Verify binary exists
+        run: |
+          if (!(Test-Path target\debug\datui.exe)) { Write-Error "Binary not found"; exit 1 }
+
+      - name: Bundle CLI for wheel
+        run: |
+          New-Item -ItemType Directory -Force -Path python/datui_bin
+          Copy-Item target/debug/datui.exe python/datui_bin/
+          Copy-Item LICENSE python/LICENSE
+
+      - name: Build and install Python package
+        run: |
+          .\.venv\Scripts\Activate.ps1
+          cd python
+          maturin develop
+
+      - name: Run Python tests
+        run: |
+          .\.venv\Scripts\Activate.ps1
+          pytest python/tests/ -v

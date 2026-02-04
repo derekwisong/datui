@@ -14,7 +14,7 @@ env:
   MDBOOK_VERSION: "0.5.2"
 
 jobs:
-  build-release:
+  linux:
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -28,12 +28,18 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
@@ -47,12 +53,6 @@ jobs:
         run: |
           test -f target/release/datui || (echo "Release binary not found" && exit 1)
           test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
-
-      - name: Upload datui binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: datui-cli-linux
-          path: target/release/datui
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
@@ -78,46 +78,17 @@ jobs:
       - name: Build AUR package
         run: python3 scripts/build_package.py aur --no-build
 
-      - name: Create GitHub release
-        id: gh-release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            target/release/datui
-            target/release/datui.1
-            target/debian/*.deb
-            target/generate-rpm/*.rpm
-            target/cargo-aur/*.tar.gz
-            target/cargo-aur/PKGBUILD
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Bundle CLI for wheel
+        run: |
+          mkdir -p python/datui_bin
+          cp target/release/datui python/datui_bin/
+          chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
 
-      - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.1
-        with:
-          pkgname: datui-bin
-          pkgbuild: target/cargo-aur/PKGBUILD
-          commit_username: ${{ secrets.AUR_USERNAME }}
-          commit_email: ${{ secrets.AUR_EMAIL }}
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: Update to ${{ github.ref_name }}
-          ssh_keyscan_types: rsa,ecdsa,ed25519
-
-  build-docs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+      - name: Build Python wheel
+        run: |
+          pip install maturin
+          cd python && maturin build --release --out dist
 
       - name: Install Python dependencies
         run: |
@@ -140,7 +111,6 @@ jobs:
       - name: Compute docs cache key
         id: compute-docs-key
         run: |
-          # Cache key = hash of (tag:sha) for all v* tags; cache miss when tag set or any SHA changes (e.g. force-move)
           VERSION_SHA=$(git tag -l "v*" | sort -V | while read t; do echo "$t:$(git rev-parse "$t")"; done | sha256sum | cut -c1-16)
           echo "version_sha=$VERSION_SHA" >> "$GITHUB_OUTPUT"
 
@@ -159,17 +129,14 @@ jobs:
           [ -f scripts/docs/build_single_version_docs.py ] || (echo "Error: scripts/docs/build_single_version_docs.py not found" && exit 1)
           [ -f scripts/docs/rebuild_index.py ] || (echo "Error: scripts/docs/rebuild_index.py not found" && exit 1)
           [ -f scripts/docs/index.html.j2 ] || (echo "Error: scripts/docs/index.html.j2 not found" && exit 1)
-          
           SCRIPT_DIR="/tmp/datui-build-scripts-$$"
           mkdir -p "$SCRIPT_DIR"
           cp scripts/docs/build_single_version_docs.py "$SCRIPT_DIR/"
           cp scripts/docs/rebuild_index.py "$SCRIPT_DIR/"
           cp scripts/docs/index.html.j2 "$SCRIPT_DIR/"
-          
           mkdir -p book
           rm -rf book/demos
           VERSION_TAGS=$(git tag -l "v*" | sort -V)
-          
           for tag in $VERSION_TAGS; do
             TAG_SHA=$(git rev-parse "$tag")
             if [ -f "book/$tag/.built_sha" ] && [ "$(cat "book/$tag/.built_sha")" = "$TAG_SHA" ]; then
@@ -180,7 +147,6 @@ jobs:
             fi
             git checkout "$ORIGINAL_COMMIT" 2>/dev/null || git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout main 2>/dev/null
           done
-          
           CURRENT_COMMIT=$(git rev-parse HEAD)
           [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
           rm -rf "$SCRIPT_DIR"
@@ -204,9 +170,23 @@ jobs:
         with:
           path: ./book-deploy
 
-  build-windows-wheel:
+      - name: Upload linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: datui-linux-artifacts
+          path: |
+            target/release/datui
+            target/release/datui.1
+            target/debian/*.deb
+            target/generate-rpm/*.rpm
+            target/cargo-aur/*.tar.gz
+            target/cargo-aur/PKGBUILD
+            python/dist/*.whl
+
+  windows:
     runs-on: windows-latest
-    needs: build-release
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -219,6 +199,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
 
       - name: Install maturin
         run: pip install maturin
@@ -242,78 +228,60 @@ jobs:
           cd python
           maturin build --release --out dist
 
-      - name: Upload Windows wheel to GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: python/dist/*.whl
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Windows wheel artifact
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-wheel
-          path: python/dist/*.whl
+          name: datui-windows-artifacts
+          path: |
+            target/release/datui.exe
+            python/dist/*.whl
 
-  pypi:
+  publish:
     runs-on: ubuntu-latest
-    needs: [build-release, build-windows-wheel]
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    needs: [linux, windows]
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+          cache: 'pip'
 
-      - name: Install maturin
-        run: pip install maturin
-
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          shared-key: release
-
-      - name: Download datui binary artifact
+      - name: Download linux artifacts
         uses: actions/download-artifact@v4
         with:
-          name: datui-cli-linux
-          path: target/release
+          name: datui-linux-artifacts
 
-      - name: Bundle CLI for wheel
-        run: |
-          mkdir -p python/datui_bin
-          cp target/release/datui python/datui_bin/
-          chmod +x python/datui_bin/datui
-          cp LICENSE python/LICENSE
-
-      - name: Build Python wheels
-        run: |
-          cd python
-          maturin build --release --out dist
-
-      - name: Download Windows wheel
+      - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
-          name: windows-wheel
-          path: windows-wheel
+          name: datui-windows-artifacts
+          path: windows-artifacts
 
-      - name: Upload wheels to GitHub release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: python/dist/*.whl
+          files: |
+            target/release/datui
+            target/release/datui.1
+            target/debian/*.deb
+            target/generate-rpm/*.rpm
+            target/cargo-aur/*.tar.gz
+            target/cargo-aur/PKGBUILD
+            python/dist/*.whl
+            windows-artifacts/target/release/datui.exe
+            windows-artifacts/python/dist/*.whl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -323,18 +291,22 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           pip install twine
-          twine upload --skip-existing python/dist/*.whl windows-wheel/*.whl
+          twine upload --skip-existing python/dist/*.whl windows-artifacts/python/dist/*.whl
 
-  deploy-docs:
-    needs: build-docs
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    steps:
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.1
+        with:
+          pkgname: datui-bin
+          pkgbuild: target/cargo-aur/PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to ${{ github.ref_name }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

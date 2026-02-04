@@ -10,8 +10,10 @@ permissions:
   contents: read
 
 jobs:
-  build-packages:
+  linux:
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
 
@@ -25,11 +27,25 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
         with:
-          key: "nightly"
+          shared-key: nightly
+
+      - name: Build release binary
+        run: cargo build --release --locked --workspace -p datui
+
+      - name: Verify release artifacts
+        run: |
+          test -f target/release/datui || (echo "Release binary not found" && exit 1)
+          test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
@@ -45,9 +61,6 @@ jobs:
           command -v cargo-deb || cargo install cargo-deb
           command -v cargo-generate-rpm || cargo install cargo-generate-rpm
           command -v cargo-aur || cargo install cargo-aur
-
-      - name: Build release binary
-        run: cargo build --release --locked
 
       - name: Build deb package
         run: python3 scripts/build_package.py deb --no-build
@@ -65,7 +78,7 @@ jobs:
           chmod +x python/datui_bin/datui
           cp LICENSE python/LICENSE
 
-      - name: Build Python wheels
+      - name: Build Python wheel
         run: |
           pip install maturin
           cd python && maturin build --release --out dist
@@ -73,7 +86,7 @@ jobs:
       - name: Upload packaging artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-packages
+          name: nightly-linux
           path: |
             target/debian/*.deb
             target/generate-rpm/*.rpm
@@ -83,8 +96,10 @@ jobs:
             target/release/datui
             target/release/datui.1
 
-  build-packages-windows:
+  windows:
     runs-on: windows-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
 
@@ -95,11 +110,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@v2
         with:
-          key: "nightly-windows"
+          shared-key: nightly
 
       - name: Build release binary
         run: cargo build --release --locked -p datui
@@ -113,12 +134,13 @@ jobs:
       - name: Build Python wheel
         run: |
           pip install maturin
-          cd python; maturin build --release --out dist
+          cd python
+          maturin build --release --out dist
 
       - name: Upload Windows wheel and binary
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-packages-windows
+          name: nightly-windows
           path: |
             python/dist/*.whl
             target/release/datui.exe

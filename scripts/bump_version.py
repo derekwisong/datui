@@ -15,6 +15,19 @@ With -dev suffix workflow:
   2. Prepare release: "X.Y.Z-dev" -> "X.Y.Z" (remove -dev, commit, tag)
   3. Start next cycle: "X.Y.Z" -> "X.Y.Z+1-dev" (bump + add -dev, commit)
 
+Best practice (release): CI must pass for the release commit before the Release
+workflow will build. The script walks you through; use --tag-only to create and
+push the tag (no manual git tag commands). Recommended flow:
+  1. bump_version.py release --commit   (commits release version, no tag yet)
+  2. git push                           (push to main only)
+  3. Wait for CI to pass on that commit
+  4. bump_version.py release --tag-only (creates vX.Y.Z from Cargo.toml, pushes tag)
+  5. bump_version.py patch --commit     (start next dev cycle)
+  6. git push
+
+If you use --tag and push main + tag together, Release may start before CI
+finishes; re-run the Release workflow after CI passes, or use the flow above.
+
 Usage:
     python scripts/bump_version.py release [--commit] [--tag]
     python scripts/bump_version.py [major|minor|patch] [--commit]
@@ -28,11 +41,14 @@ Commands:
 Options:
     --commit        Commit the version changes
     --tag           Create a git tag (only for 'release' command, implies --commit)
+    --tag-only      Create and push tag for current commit only (release; run after CI passes)
 
 Examples:
-    # Prepare for release (remove -dev)
-    python scripts/bump_version.py release --commit --tag
-    git push && git push --tags
+    # Prepare for release (commit only, then push, wait CI, then run --tag-only)
+    python scripts/bump_version.py release --commit
+    git push
+    # After CI passes:
+    python scripts/bump_version.py release --tag-only
 
     # Start next development cycle (bump + add -dev)
     python scripts/bump_version.py patch --commit
@@ -292,6 +308,20 @@ def create_version_tag(project_root: Path, version: str) -> None:
         raise RuntimeError(f"Git tag creation failed: {e}")
 
 
+def push_tag(project_root: Path, version: str) -> None:
+    """Push the version tag to origin."""
+    tag_name = f"v{version}"
+    try:
+        subprocess.run(
+            ["git", "push", "origin", tag_name],
+            cwd=project_root,
+            check=True,
+        )
+        print(f"Pushed tag: {tag_name}")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Git push tag failed: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Bump version number in Cargo.toml and README.md",
@@ -303,12 +333,13 @@ Commands:
   minor           Bump minor version and add -dev (0.2.11 -> 0.3.0-dev)
   patch           Bump patch version and add -dev (0.2.11 -> 0.2.12-dev)
 
-Examples:
-  # Prepare for release (remove -dev)
-  python scripts/bump_version.py release --commit --tag
-  git push && git push --tags
+Best practice (release): Push main first, wait for CI, then run --tag-only.
+  python scripts/bump_version.py release --commit
+  git push
+  # After CI passes:
+  python scripts/bump_version.py release --tag-only
 
-  # Start next development cycle (bump + add -dev)
+Start next dev cycle:
   python scripts/bump_version.py patch --commit
   git push
         """,
@@ -328,12 +359,23 @@ Examples:
         action="store_true",
         help="Create a git tag (only for 'release' command, implies --commit)",
     )
+    parser.add_argument(
+        "--tag-only",
+        action="store_true",
+        dest="tag_only",
+        help="Create and push tag for current commit only (release command; run after CI passes)",
+    )
     
     args = parser.parse_args()
     
-    # --tag only valid for release
-    if args.tag and args.command != "release":
-        print("Error: --tag can only be used with 'release' command", file=sys.stderr)
+    # --tag and --tag-only only valid for release
+    if (args.tag or args.tag_only) and args.command != "release":
+        print("Error: --tag and --tag-only can only be used with 'release' command", file=sys.stderr)
+        sys.exit(1)
+    
+    # --tag-only and --commit/--tag are mutually exclusive
+    if args.tag_only and (args.commit or args.tag):
+        print("Error: --tag-only cannot be used with --commit or --tag", file=sys.stderr)
         sys.exit(1)
     
     # --tag implies --commit
@@ -362,6 +404,30 @@ Examples:
     # Get current version from main Cargo.toml (source of truth)
     current_version = get_current_version(cargo_toml_path)
     print(f"Current version (from main Cargo.toml): {current_version}")
+
+    # --tag-only: create and push tag for current commit (run after CI passes)
+    if is_release and args.tag_only:
+        _, _, _, suffix = parse_version(current_version)
+        if suffix == "-dev":
+            print(
+                "Error: Current version has -dev suffix. Run 'release --commit' first, push, wait for CI, then run --tag-only.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        tag_name = f"v{current_version}"
+        try:
+            create_version_tag(project_root, current_version)
+            push_tag(project_root, current_version)
+        except RuntimeError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        print()
+        print(f"Tag {tag_name} created and pushed. Release workflow will run.")
+        print()
+        print("Next step: start the next dev cycle")
+        print("  python scripts/bump_version.py patch --commit")
+        print("  git push")
+        return
 
     # Calculate new version
     try:
@@ -433,12 +499,32 @@ Examples:
                 print()
                 print(f"Release complete: {current_version} -> {new_version} (committed and tagged)")
                 print()
-                print("Next steps:")
-                print("  1. git push && git push --tags")
-                print("  2. python scripts/bump_version.py patch --commit  # Start next dev cycle")
+                print("Next steps (best practice: push main first, wait for CI, then push tag):")
+                print("  1. git push")
+                print("  2. Wait for CI to pass on that commit")
+                print("  3. python scripts/bump_version.py release --tag-only   # Creates and pushes v"
+                      + new_version + " (triggers Release workflow)")
+                print("  4. python scripts/bump_version.py patch --commit       # Start next dev cycle")
+                print("  5. git push")
+                print()
+                print("If you push main and tag together (git push && git push --tags), Release may")
+                print("run before CI finishes; re-run the Release workflow after CI passes.")
             else:
                 print()
-                print(f"Version update complete: {current_version} -> {new_version} (committed)")
+                if is_release:
+                    print(f"Release version committed: {current_version} -> {new_version}")
+                    print()
+                    print("Next steps (best practice):")
+                    print("  1. git push")
+                    print("  2. Wait for CI to pass on this commit")
+                    print("  3. python scripts/bump_version.py release --tag-only   # Creates and pushes v"
+                          + new_version + " (triggers Release workflow)")
+                    print("  4. python scripts/bump_version.py patch --commit       # Start next dev cycle")
+                    print("  5. git push")
+                else:
+                    print(f"Version update complete: {current_version} -> {new_version} (committed)")
+                    print()
+                    print("Next step: git push")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

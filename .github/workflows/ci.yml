@@ -10,9 +10,33 @@ permissions:
   contents: read
 
 jobs:
+  is-release-commit:
+    runs-on: ubuntu-latest
+    outputs:
+      skip_ci: ${{ steps.set.outputs.skip_ci }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set skip_ci if this commit is tagged with v*
+        id: set
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if git tag --points-at HEAD | grep -q '^v'; then
+              echo "skip_ci=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "skip_ci=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "skip_ci=false" >> "$GITHUB_OUTPUT"
+          fi
+
   check:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/heads/')
+    needs: [is-release-commit]
+    if: startsWith(github.ref, 'refs/heads/') && needs.is-release-commit.outputs.skip_ci != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
@@ -40,8 +64,8 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/heads/')
-    needs: [check]
+    needs: [is-release-commit, check]
+    if: startsWith(github.ref, 'refs/heads/') && needs.is-release-commit.outputs.skip_ci != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
@@ -109,8 +133,8 @@ jobs:
 
   windows:
     runs-on: windows-latest
-    if: startsWith(github.ref, 'refs/heads/')
-    needs: [check]
+    needs: [is-release-commit, check]
+    if: startsWith(github.ref, 'refs/heads/') && needs.is-release-commit.outputs.skip_ci != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:

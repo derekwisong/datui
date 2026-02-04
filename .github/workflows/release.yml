@@ -14,8 +14,27 @@ env:
   MDBOOK_VERSION: "0.5.2"
 
 jobs:
+  check-ci-passed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful CI for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Only allow release if the CI workflow has a successful run for this commit SHA.
+          # Recommended flow: push release commit to main → wait for CI to pass → then tag and push tag.
+          RUNS=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=${{ github.sha }}&per_page=20")
+          CI_SUCCESS=$(echo "$RUNS" | jq -r '.workflow_runs[] | select(.name == "CI" and .conclusion == "success") | .id' | head -1)
+          if [ -z "$CI_SUCCESS" ] || [ "$CI_SUCCESS" = "null" ]; then
+            echo "::error::No successful CI run found for commit ${{ github.sha }}. Push this commit to main, wait for CI to pass, then push the tag."
+            exit 1
+          fi
+          echo "CI run $CI_SUCCESS passed for this commit."
+
   linux:
     runs-on: ubuntu-latest
+    needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
@@ -185,6 +204,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:

@@ -144,3 +144,80 @@ jobs:
           path: |
             python/dist/*.whl
             target/release/datui.exe
+
+  macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: nightly
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked -p datui --target ${{ matrix.target }}
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -E '^\s*version\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Stage and pack tarball
+        run: |
+          TARGET="${{ matrix.target }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          STAGING="datui-${VERSION}-${TARGET}"
+          mkdir -p "$STAGING"
+          cp LICENSE "$STAGING/"
+          cp "target/${TARGET}/release/datui" "$STAGING/"
+          cp "target/${TARGET}/release/datui.1" "$STAGING/"
+          chmod +x "$STAGING/datui"
+          tar czvf "datui-${VERSION}-${TARGET}.tar.gz" -C "$STAGING" .
+
+      - name: Bundle CLI for wheel
+        run: |
+          mkdir -p python/datui_bin
+          cp "target/${{ matrix.target }}/release/datui" python/datui_bin/
+          chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
+
+      - name: Build Python wheel
+        run: |
+          pip install maturin
+          cd python && maturin build --release --out dist
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macos-${{ matrix.target }}
+          path: |
+            datui-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz
+            python/dist/*.whl
+            target/${{ matrix.target }}/release/datui
+            target/${{ matrix.target }}/release/datui.1

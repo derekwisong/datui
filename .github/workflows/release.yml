@@ -256,9 +256,91 @@ jobs:
             target/release/datui.exe
             python/dist/*.whl
 
+  macos:
+    runs-on: macos-latest
+    needs: [check-ci-passed]
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked -p datui --target ${{ matrix.target }}
+
+      - name: Verify release artifacts
+        run: |
+          test -f target/${{ matrix.target }}/release/datui || (echo "Release binary not found" && exit 1)
+          test -f target/${{ matrix.target }}/release/datui.1 || (echo "Manpage not found" && exit 1)
+
+      - name: Stage and pack tarball
+        run: |
+          TARGET="${{ matrix.target }}"
+          VERSION="${{ github.ref_name }}"
+          STAGING="datui-${VERSION}-${TARGET}"
+          mkdir -p "$STAGING"
+          cp LICENSE "$STAGING/"
+          cp "target/${TARGET}/release/datui" "$STAGING/"
+          cp "target/${TARGET}/release/datui.1" "$STAGING/"
+          chmod +x "$STAGING/datui"
+          tar czvf "datui-${VERSION}-${TARGET}.tar.gz" -C "$STAGING" .
+
+      - name: Bundle CLI for wheel
+        run: |
+          mkdir -p python/datui_bin
+          cp "target/${{ matrix.target }}/release/datui" python/datui_bin/
+          chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
+
+      - name: Build Python wheel
+        run: |
+          cd python
+          maturin build --release --out dist
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: datui-macos-${{ matrix.target }}-artifacts
+          path: |
+            datui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+            python/dist/*.whl
+            target/${{ matrix.target }}/release/datui
+            target/${{ matrix.target }}/release/datui.1
+
   publish:
     runs-on: ubuntu-latest
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -288,6 +370,18 @@ jobs:
           name: datui-windows-artifacts
           path: windows-artifacts
 
+      - name: Download macOS aarch64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: datui-macos-aarch64-apple-darwin-artifacts
+          path: macos-aarch64
+
+      - name: Download macOS x86_64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: datui-macos-x86_64-apple-darwin-artifacts
+          path: macos-x86_64
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -302,6 +396,10 @@ jobs:
             python/dist/*.whl
             windows-artifacts/target/release/datui.exe
             windows-artifacts/python/dist/*.whl
+            macos-aarch64/datui-*.tar.gz
+            macos-aarch64/python/dist/*.whl
+            macos-x86_64/datui-*.tar.gz
+            macos-x86_64/python/dist/*.whl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -311,7 +409,7 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           pip install twine
-          twine upload --skip-existing python/dist/*.whl windows-artifacts/python/dist/*.whl
+          twine upload --skip-existing python/dist/*.whl windows-artifacts/python/dist/*.whl macos-aarch64/python/dist/*.whl macos-x86_64/python/dist/*.whl
 
       - name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v2.7.1

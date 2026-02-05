@@ -187,7 +187,7 @@ jobs:
   macos:
     runs-on: macos-latest
     needs: [check]
-    if: startsWith(github.ref, 'refs/heads/')
+    if: startsWith(github.ref, 'refs/heads/') && needs.check.outputs.is_dev_version != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:

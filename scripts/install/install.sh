@@ -4,7 +4,8 @@ set -e
 # Configuration
 REPO="derekwisong/datui"
 BINARY_NAME="datui"
-MANPAGE_NAME="datui.1.gz"
+MANPAGE_NAME="${BINARY_NAME}.1"
+MANPAGE_GZ_NAME="${MANPAGE_NAME}.gz"
 GITHUB_URL="https://github.com/$REPO/releases/latest/download"
 
 # Does the user want to assume yes?
@@ -115,21 +116,19 @@ case "$FORMAT" in
     tar.gz)
         echo "Extracting binary to /usr/local/bin..."
         tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
-        sudo install -d /usr/local/bin
-        # macOS tarball has datui/datui.1 at root; Linux (AUR) tarball has target/release/
-        if [ -f "$TMP_DIR/$BINARY_NAME" ]; then
-            sudo install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
-            echo "Installing manpage to /usr/local/share/man/man1..."
-            sudo install -d /usr/local/share/man/man1
-            if [ -f "$TMP_DIR/datui.1" ]; then
-                sudo install -m 644 "$TMP_DIR/datui.1" "/usr/local/share/man/man1/datui.1"
-            fi
+
+        if [ -f "$TMP_DIR/$MANPAGE_NAME" ]; then
+            # macOS tarball has datui/datui.1 at root
+            MANPAGE_PATH="$TMP_DIR/$MANPAGE_NAME"
         else
-            sudo install -m 755 "$TMP_DIR/target/release/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
-            echo "Installing manpage to /usr/local/share/man/man1..."
-            sudo install -d /usr/local/share/man/man1
-            sudo install -m 644 "$TMP_DIR/target/release/$MANPAGE_NAME" "/usr/local/share/man/man1/$MANPAGE_NAME"
+            # Linux tarball has target/release/datui.1.gz
+            MANPAGE_PATH="$TMP_DIR/target/release/$MANPAGE_GZ_NAME"
         fi
+
+        sudo install -d /usr/local/bin
+        sudo install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
+        sudo install -d /usr/local/share/man/man1
+        sudo install -m 644 "$MANPAGE_PATH" "/usr/local/share/man/man1/"
         ;;
 esac
 

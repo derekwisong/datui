@@ -205,8 +205,6 @@ jobs:
         with:
           name: datui-linux-artifacts
           path: |
-            target/release/datui
-            target/release/datui.1
             target/debian/*.deb
             target/generate-rpm/*.rpm
             target/cargo-aur/*.tar.gz
@@ -259,12 +257,21 @@ jobs:
           cd python
           maturin build --release --out dist
 
+      - name: Create Windows zip
+        run: |
+          $version = "${{ github.ref_name }}"
+          $staging = "datui-${version}-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $staging
+          Copy-Item target/release/datui.exe $staging/
+          Copy-Item LICENSE $staging/
+          Compress-Archive -Path "$staging/*" -DestinationPath "datui-${version}-windows-x86_64.zip"
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: datui-windows-artifacts
           path: |
-            target/release/datui.exe
+            datui-${{ github.ref_name }}-windows-x86_64.zip
             python/dist/*.whl
 
   macos:
@@ -337,7 +344,7 @@ jobs:
       - name: Build Python wheel
         run: |
           cd python
-          maturin build --release --out dist
+          maturin build --release --out dist --target ${{ matrix.target }}
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -398,14 +405,12 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           files: |
-            target/release/datui
-            target/release/datui.1
             target/debian/*.deb
             target/generate-rpm/*.rpm
             target/cargo-aur/*.tar.gz
             target/cargo-aur/PKGBUILD
             python/dist/*.whl
-            windows-artifacts/target/release/datui.exe
+            windows-artifacts/datui-${{ github.ref_name }}-windows-x86_64.zip
             windows-artifacts/python/dist/*.whl
             macos-aarch64/datui-*.tar.gz
             macos-aarch64/python/dist/*.whl

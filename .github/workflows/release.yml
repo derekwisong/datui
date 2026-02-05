@@ -43,6 +43,17 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Free disk space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 

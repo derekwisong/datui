@@ -34,7 +34,7 @@ See the [Install Guide][install-guide] for full instructions.
 ### Quick Install for Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 ```
 
 *Don't like piping to shell? See the alternative methods below.*

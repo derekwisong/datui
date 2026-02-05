@@ -15,6 +15,14 @@ for arg in "$@"; do
   fi
 done
 
+# When piped (e.g. curl ... | sh), stdin is not a terminal; use -y to avoid
+# apt/dnf prompting and aborting the installation.
+if [ ! -t 0 ] || [ "$ASSUME_YES" = true ]; then
+    NONINTERACTIVE="-y"
+else
+    NONINTERACTIVE=""
+fi
+
 # Identify System
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
@@ -89,28 +97,20 @@ case "$OS" in
         ;;
 esac
 
-# 4. Download
+# Download
 TMP_DIR=$(mktemp -d)
 echo "Downloading $FILENAME... ($TMP_DIR)"
 curl -sSL "$GITHUB_URL/$FILENAME" -o "$TMP_DIR/$FILENAME"
 
-# 5. Install based on format
+# Install based on format
 case "$FORMAT" in
     deb)
         echo "Installing via apt..."
-        if [ "$ASSUME_YES" = true ]; then
-            sudo apt-get update -qq && sudo apt-get install -y "$TMP_DIR/$FILENAME"
-        else
-            sudo apt-get update -qq && sudo apt-get install "$TMP_DIR/$FILENAME"
-        fi
+        sudo apt-get update -qq && sudo apt-get install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
         ;;
     rpm)
         echo "Installing via dnf..."
-        if [ "$ASSUME_YES" = true ]; then
-            sudo dnf install -y "$TMP_DIR/$FILENAME"
-        else
-            sudo dnf install "$TMP_DIR/$FILENAME"
-        fi
+        sudo dnf install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
         ;;
     tar.gz)
         echo "Extracting binary to /usr/local/bin..."
@@ -133,7 +133,7 @@ case "$FORMAT" in
         ;;
 esac
 
-# 6. Cleanup
+# Cleanup
 rm -rf "$TMP_DIR"
 echo "--- $BINARY_NAME installed successfully! ---"
 $BINARY_NAME --version

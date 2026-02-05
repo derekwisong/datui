@@ -8,4 +8,5 @@ Data Exploration in the Terminal
     - Understand how data are distributed
 
 Documentation: https://derekwisong.github.io/datui/
+
 Repository:  https://github.com/derekwisong/datui/

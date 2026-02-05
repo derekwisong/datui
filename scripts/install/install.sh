@@ -35,8 +35,9 @@ case "$ARCH" in
     *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
+# if -y was passed, skip the Arch Linux prompt
 # If Arch user, prompt to install via an AUR helper instead
-if [ -f /etc/arch-release ]; then
+if [ -f /etc/arch-release ] && [ "$ASSUME_YES" != true ]; then
     echo "-------------------------------------------------------"
     echo " ARCH LINUX DETECTED"
     echo "-------------------------------------------------------"

@@ -37,6 +37,8 @@ jobs:
     needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,6 +59,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
 
@@ -75,6 +80,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           shared-key: release
+          cache-workspace-crates: true
 
       - name: Build release binary
         run: cargo build --release --locked --workspace -p datui
@@ -216,6 +222,8 @@ jobs:
     needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -223,6 +231,9 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -242,6 +253,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           shared-key: release
+          cache-workspace-crates: true
 
       - name: Build release binary
         run: cargo build --release --locked -p datui
@@ -283,6 +295,8 @@ jobs:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -290,6 +304,9 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
@@ -313,6 +330,7 @@ jobs:
         with:
           shared-key: release
           targets: ${{ matrix.target }}
+          cache-workspace-crates: true
 
       - name: Build release binary
         run: cargo build --release --locked -p datui --target ${{ matrix.target }}

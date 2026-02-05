@@ -40,6 +40,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           shared-key: ci
+          cache-workspace-crates: true
 
       - name: Make scripts executable
         run: chmod +x scripts/check_format.sh scripts/check_clippy.sh
@@ -96,6 +97,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           shared-key: ci
+          cache-workspace-crates: true
 
       - name: Create virtual environment and install requirements
         run: |
@@ -169,6 +171,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           shared-key: ci
+          cache-workspace-crates: true
 
       - name: Create virtual environment and install requirements
         run: |
@@ -241,6 +244,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           shared-key: ci
+          cache-workspace-crates: true
 
       - name: Create virtual environment and install requirements
         run: |

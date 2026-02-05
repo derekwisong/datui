@@ -125,6 +125,8 @@ jobs:
           cp LICENSE python/LICENSE
 
       - name: Build and install Python package
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: . .venv/bin/activate && cd python && maturin develop
 
       - name: Run Python tests
@@ -185,6 +187,8 @@ jobs:
           Copy-Item LICENSE python/LICENSE
 
       - name: Build and install Python package
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
           .\.venv\Scripts\Activate.ps1
           cd python
@@ -256,6 +260,8 @@ jobs:
           cp LICENSE python/LICENSE
 
       - name: Build and install Python package
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: . .venv/bin/activate && cd python && maturin develop
 
       - name: Run Python tests

@@ -371,8 +371,6 @@ jobs:
           path: |
             datui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
             python/dist/*.whl
-            target/${{ matrix.target }}/release/datui
-            target/${{ matrix.target }}/release/datui.1
 
   publish:
     runs-on: ubuntu-latest

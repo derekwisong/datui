@@ -73,6 +73,16 @@ case "$OS" in
             FILENAME="${BINARY_NAME}-${VERSION}-${ARCH}.tar.gz"
         fi
         ;;
+    darwin*)
+        # macOS: release tarballs use target triple (datui-v0.2.32-aarch64-apple-darwin.tar.gz)
+        FORMAT="tar.gz"
+        case "$ARCH" in
+            arm64|aarch64) MACOS_TARGET="aarch64-apple-darwin" ;;
+            x86_64)        MACOS_TARGET="x86_64-apple-darwin" ;;
+            *) echo "Unsupported macOS architecture: $ARCH"; exit 1 ;;
+        esac
+        FILENAME="${BINARY_NAME}-${TAG}-${MACOS_TARGET}.tar.gz"
+        ;;
     *)
         echo "Unsupported OS: $OS"
         exit 1
@@ -105,12 +115,21 @@ case "$FORMAT" in
     tar.gz)
         echo "Extracting binary to /usr/local/bin..."
         tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
-        sudo install -d /usr/local bin
-        sudo install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
-        # Install manpage
-        echo "Installing manpage to /usr/local/share/man/man1..."
-        sudo install -d /usr/local/share/man/man1
-        sudo install -m 644 "$TMP_DIR/target/release/$MANPAGE_NAME" "/usr/local/share/man/man1/$MANPAGE_NAME"
+        sudo install -d /usr/local/bin
+        # macOS tarball has datui/datui.1 at root; Linux (AUR) tarball has target/release/
+        if [ -f "$TMP_DIR/$BINARY_NAME" ]; then
+            sudo install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
+            echo "Installing manpage to /usr/local/share/man/man1..."
+            sudo install -d /usr/local/share/man/man1
+            if [ -f "$TMP_DIR/datui.1" ]; then
+                sudo install -m 644 "$TMP_DIR/datui.1" "/usr/local/share/man/man1/datui.1"
+            fi
+        else
+            sudo install -m 755 "$TMP_DIR/target/release/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
+            echo "Installing manpage to /usr/local/share/man/man1..."
+            sudo install -d /usr/local/share/man/man1
+            sudo install -m 644 "$TMP_DIR/target/release/$MANPAGE_NAME" "/usr/local/share/man/man1/$MANPAGE_NAME"
+        fi
         ;;
 esac
 

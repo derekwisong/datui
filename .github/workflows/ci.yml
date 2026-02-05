@@ -183,3 +183,69 @@ jobs:
         run: |
           .\.venv\Scripts\Activate.ps1
           pytest python/tests/ -v
+
+  macos:
+    runs-on: macos-latest
+    needs: [check]
+    if: startsWith(github.ref, 'refs/heads/')
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - name: Create virtual environment and install requirements
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r scripts/requirements.txt
+          .venv/bin/pip install -r scripts/requirements-wheel.txt
+
+      - name: Generate sample data
+        run: .venv/bin/python scripts/generate_sample_data.py
+
+      - name: Build
+        run: cargo build --workspace --tests --locked
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Verify binary exists
+        run: test -f target/debug/datui || (echo "Binary not found" && exit 1)
+
+      - name: Verify manpage was generated
+        run: |
+          if ! find target/debug/build -name "datui.1" -type f | head -1 >/dev/null; then
+            echo "Manpage not found" && exit 1
+          fi
+
+      - name: Bundle CLI for wheel
+        run: |
+          mkdir -p python/datui_bin
+          cp target/debug/datui python/datui_bin/
+          chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
+
+      - name: Build and install Python package
+        run: . .venv/bin/activate && cd python && maturin develop
+
+      - name: Run Python tests
+        run: . .venv/bin/activate && pytest python/tests/ -v

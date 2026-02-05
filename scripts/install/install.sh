@@ -45,7 +45,7 @@ if [ -f /etc/arch-release ]; then
     
     # Prompt for confirmation
     printf "Would you like to continue with the direct binary install anyway? [y/N]: "
-    read -r response
+    read -r response < /dev/tty
     case "$response" in
         [yY][eE][sS]|[yY]) 
             echo "Proceeding with binary installation..."

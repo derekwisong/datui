@@ -140,6 +140,10 @@ mod tests {
             parse_dates: None,
             decompress_in_memory: None,
             temp_dir: None,
+            s3_endpoint_url: None,
+            s3_access_key_id: None,
+            s3_secret_access_key: None,
+            s3_region: None,
         };
         let opts: OpenOptions = (&args).into();
         assert_eq!(opts.skip_lines, Some(1));

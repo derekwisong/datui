@@ -20,6 +20,7 @@ visibility to your CLI.
 
 - 🚀 **Fast**: Powered by Polars for optimized data handling
 - 📁 **Universal**: Supports Parquet, CSV, JSON, Avro, Arrow, ORC, and Excel
+- 🧰 **Flexible**: View data stored locally, on S3, or over HTTP/HTTPS
 - 🔍 **Query Engine**: SQL-like query syntax for selecting, filtering, grouping, and aggregation
 - 📊 **Charts**: Render terminal-based charts and export them as images
 - 🔬 **Analysis**: Use analytical tools to understand correlations, distributions, and more

@@ -222,3 +222,122 @@ fn test_chart_view_render_with_cache() {
     )));
     assert_eq!(app.input_mode, InputMode::Normal);
 }
+
+#[test]
+fn test_open_s3_url_returns_crash_or_loads() {
+    let (tx, _) = mpsc::channel();
+    let mut app = App::new(tx);
+    let path = PathBuf::from("s3://my-bucket/path/to/file.parquet");
+    let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
+    let ev = next.expect("Open should emit DoLoadScanPaths");
+    assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
+    let next = app.event(&ev);
+    match next.as_ref() {
+        Some(AppEvent::Crash(m)) => {
+            assert!(m.contains("S3"), "error should mention S3: {}", m);
+        }
+        Some(AppEvent::DoLoadSchema(..)) => {
+            // With cloud feature and valid credentials/bucket, load can succeed.
+        }
+        _ => panic!("expected Crash or DoLoadSchema when opening S3 URL"),
+    }
+}
+
+#[test]
+fn test_open_http_url_attempts_load_or_returns_friendly_error() {
+    let (tx, _) = mpsc::channel();
+    let mut app = App::new(tx);
+    let path = PathBuf::from("https://example.com/data.csv");
+    let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
+    let ev = next.expect("Open should emit DoLoadScanPaths");
+    assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
+    let mut next = app.event(&ev);
+    while let Some(ref e) = next {
+        if matches!(
+            e,
+            AppEvent::Crash(_) | AppEvent::DoLoadSchema(..) | AppEvent::DoLoadSchemaBlocking(..)
+        ) {
+            break;
+        }
+        next = app.event(e);
+    }
+    match next.as_ref() {
+        Some(AppEvent::Crash(m)) => {
+            assert!(
+                m.contains("HTTP")
+                    || m.contains("HTTPS")
+                    || m.contains("download")
+                    || m.contains("Failed")
+                    || m.contains("failed")
+                    || m.contains("not yet supported"),
+                "error should mention HTTP/download/failure: {}",
+                m
+            );
+        }
+        Some(AppEvent::DoLoadSchema(..)) | Some(AppEvent::DoLoadSchemaBlocking(..)) => {
+            // With http feature: download can succeed; schema load is the next phase.
+        }
+        _ => panic!("expected Crash or DoLoadSchema when opening HTTP URL"),
+    }
+}
+
+#[test]
+fn test_multiple_remote_paths_returns_error() {
+    let (tx, _) = mpsc::channel();
+    let mut app = App::new(tx);
+    let paths = vec![
+        PathBuf::from("s3://bucket/a.parquet"),
+        PathBuf::from("s3://bucket/b.parquet"),
+    ];
+    let next = app.event(&AppEvent::Open(paths, OpenOptions::default()));
+    let ev = next.expect("Open should emit DoLoadScanPaths");
+    assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
+    let next = app.event(&ev);
+    match next.as_ref() {
+        Some(AppEvent::Crash(m)) => assert!(
+            m.contains("one S3") || m.contains("one at a time"),
+            "error should mention single S3 path: {}",
+            m
+        ),
+        _ => panic!("expected Crash when opening multiple S3 URLs"),
+    }
+    let (tx2, _) = mpsc::channel();
+    let mut app = App::new(tx2);
+    let paths = vec![
+        PathBuf::from("https://example.com/a.csv"),
+        PathBuf::from("https://example.com/b.csv"),
+    ];
+    let next = app.event(&AppEvent::Open(paths, OpenOptions::default()));
+    let ev = next.expect("Open should emit DoLoadScanPaths");
+    let next = app.event(&ev);
+    match next.as_ref() {
+        Some(AppEvent::Crash(m)) => assert!(
+            m.contains("one") && (m.contains("HTTP") || m.contains("URL")),
+            "error should mention single URL: {}",
+            m
+        ),
+        _ => panic!("expected Crash when opening multiple HTTP URLs"),
+    }
+}
+
+#[test]
+fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
+    let (tx, _) = mpsc::channel();
+    let mut app = App::new(tx);
+    let path = PathBuf::from("gs://my-bucket/path/file.parquet");
+    let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
+    let ev = next.expect("Open should emit DoLoadScanPaths");
+    assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
+    let next = app.event(&ev);
+    match next.as_ref() {
+        Some(AppEvent::Crash(m)) => {
+            assert!(
+                m.contains("GCS") || m.contains("gs://") || m.contains("not enabled"),
+                "error should mention GCS or gs:// or not enabled: {}",
+                m
+            );
+        }
+        Some(AppEvent::DoLoadSchema(..)) => {}
+        _ => panic!("expected Crash or DoLoadSchema when opening gs:// URL"),
+    }
+}

@@ -31,11 +31,19 @@ def test_view_accepts_dataframe():
 
 
 def test_view_invalid_input_raises():
-    """Passing a non-LazyFrame/DataFrame to view() should raise TypeError."""
+    """Passing a non-existent path string to view() should raise FileNotFoundError (no TTY needed)."""
     import datui
 
-    with pytest.raises(TypeError, match="expected polars.LazyFrame or polars.DataFrame"):
+    with pytest.raises(FileNotFoundError, match="File not found"):
         datui.view("not a lazyframe")
+
+
+def test_view_list_of_paths_missing_raises():
+    """Passing a list of paths where one does not exist should raise FileNotFoundError (no TTY)."""
+    import datui
+
+    with pytest.raises(FileNotFoundError, match="File not found"):
+        datui.view(["also not a file", "neither is this"])
 
 
 def test_view_from_json_exists():
@@ -47,10 +55,10 @@ def test_view_from_json_exists():
 
 
 def test_view_from_json_invalid_raises():
-    """Passing invalid JSON to view_from_json should raise RuntimeError with a clear message."""
+    """Passing invalid JSON to view_from_json should raise ValueError with a clear message."""
     import datui._datui
 
-    with pytest.raises(RuntimeError, match="invalid LazyFrame JSON"):
+    with pytest.raises(ValueError, match="invalid LazyFrame JSON"):
         datui._datui.view_from_json("not valid json")
 
 
@@ -63,11 +71,19 @@ def test_view_from_bytes_exists():
 
 
 def test_view_from_bytes_invalid_raises():
-    """Passing invalid bytes to view_from_bytes should raise RuntimeError with a clear message."""
+    """Passing invalid bytes to view_from_bytes should raise ValueError with a clear message."""
     import datui._datui
 
-    with pytest.raises(RuntimeError, match="invalid LazyFrame binary"):
+    with pytest.raises(ValueError, match="invalid LazyFrame binary"):
         datui._datui.view_from_bytes(b"not valid binary")
+
+
+def test_view_paths_empty_raises():
+    """Passing an empty list to view_paths should raise ValueError."""
+    import datui._datui
+
+    with pytest.raises(ValueError, match="paths must not be empty"):
+        datui._datui.view_paths([], debug=False)
 
 
 def test_run_cli_exists():

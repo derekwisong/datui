@@ -10,6 +10,11 @@ license = "MIT"
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = ["cloud", "http"]
+cloud = ["polars/aws", "polars/gcp", "dep:object_store", "dep:tokio"]
+http = ["dep:ureq"]
+
 [dependencies]
 datui-cli = { path = "../datui-cli" }
 clap = { version = "4.5.54", features = ["derive"] }
@@ -34,6 +39,9 @@ calamine = { version = "0.32", features = ["chrono"] }
 orc-rust = "0.7"
 arrow = "57"
 tempfile = "3.14"
+ureq = { version = "2.11", optional = true }
+object_store = { version = "0.12", optional = true, default-features = false, features = ["aws", "gcp"] }
+tokio = { version = "1", optional = true, features = ["rt", "io-util"] }
 
 [dependencies.polars]
 version = "0.52"

@@ -1,64 +1,83 @@
-"""
-View Polars LazyFrames and DataFrames in the terminal.
-
-Use view(lf) or view(df) to open Datui.
-"""
+"""View Polars data or open files/URLs by path in the terminal."""
 
 from __future__ import annotations
+
+import os
+import warnings
+from pathlib import Path
 
 import polars as pl
 
 import datui._datui  # noqa: F401  # pyright: ignore[reportMissingImports]
 
+PathLike = str | Path
+
+
+def _to_path_strings(data: str | Path | list[PathLike] | tuple[PathLike, ...]) -> list[str]:
+    """Return a non-empty list of path strings. Raises ValueError if data is an empty sequence."""
+    if isinstance(data, (str, Path)):
+        return [os.fspath(data)]
+    paths = [os.fspath(p) for p in data]
+    if not paths:
+        raise ValueError("paths must not be empty")
+    return paths
+
+
+def _view_frame(lf: pl.LazyFrame, *, debug: bool) -> None:
+    """Serialize LazyFrame Plan and launch TUI. Prefers JSON for cross-version stability."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*json.*deprecated", category=UserWarning)
+        try:
+            payload = lf.serialize(format="json")
+        except TypeError:
+            payload = lf.serialize()
+    if isinstance(payload, str):
+        datui._datui.view_from_json(payload, debug=debug)
+    elif isinstance(payload, bytes):
+        try:
+            datui._datui.view_from_bytes(payload, debug=debug)
+        except Exception as e:
+            raise RuntimeError(
+                "LazyFrame could not be sent to Datui; Polars version may be incompatible."
+            ) from e
+    else:
+        raise RuntimeError("LazyFrame.serialize() returned an unsupported type")
+
 
 def view(
-    data: pl.LazyFrame | pl.DataFrame,
+    data: pl.LazyFrame | pl.DataFrame | PathLike | list[PathLike] | tuple[PathLike, ...],
     *,
     debug: bool = False,
 ) -> None:
     """
-    View a Polars LazyFrame or DataFrame in the terminal.
+    View data in the terminal.
 
-    Args:
-        data: A Polars LazyFrame or DataFrame (e.g. pl.scan_csv(...) or pl.DataFrame(...)).
-        debug: If True, enable debug overlay (default False).
+    Accepts path(s), a LazyFrame, or a DataFrame. Paths may be local or remote
+    (s3://, gs://, http(s)://). Remote non-Parquet files are downloaded to a temp
+    file. With multiple paths, at most one may be remote.
 
     Raises:
-        TypeError: If data is not a LazyFrame or DataFrame.
-        RuntimeError: The application crashed.
+        TypeError: Unsupported type for data.
+        ValueError: Empty path list or invalid LazyFrame serialization.
+        FileNotFoundError: A given path does not exist.
+        PermissionError: Read access denied for a path.
+        RuntimeError: Error serializing LazyFrame plan or launching the TUI (last resort).
     """
-    # Normalize to a LazyFrame only (never serialize a DataFrame).
+    if isinstance(data, str) or isinstance(data, Path) or isinstance(data, (list, tuple)):
+        datui._datui.view_paths(_to_path_strings(data), debug=debug)
+        return
+
     if hasattr(data, "lazy") and callable(getattr(data, "lazy", None)):
         lf = data.lazy()
     elif hasattr(data, "serialize") and callable(getattr(data, "serialize", None)):
         lf = data
     else:
-        raise TypeError("expected polars.LazyFrame or polars.DataFrame")
+        raise TypeError(
+            "data must be path(s) (str or Path), a URL (s3://, gs://, http(s)://), "
+            "or a polars.LazyFrame or polars.DataFrame"
+        )
 
     try:
-        # Prefer JSON: stable across Polars versions; binary format is not.
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*json.*deprecated", category=UserWarning)
-            serialized = lf.serialize(format="json")
-    except TypeError:
-        # Older Polars: serialize() has no format=, may return JSON string or bytes.
-        serialized = lf.serialize()
+        _view_frame(lf, debug=debug)
     except AttributeError as e:
-        raise TypeError("expected polars.LazyFrame or polars.DataFrame") from e
-
-    if isinstance(serialized, str):
-        return datui._datui.view_from_json(serialized, debug=debug)
-    if isinstance(serialized, bytes):
-        try:
-            return datui._datui.view_from_bytes(serialized, debug=debug)
-        except Exception as e:
-            raise RuntimeError(
-                "Unable to communicate serialized LazyFrame plan to Datui. "
-                "Possible incompatibility between the polars version and the Datui extension."
-            ) from e
-    raise RuntimeError("LazyFrame.serialize() returned an unsupported type")
-
-
-__all__ = ["view"]
+        raise TypeError("data must be a LazyFrame or DataFrame") from e

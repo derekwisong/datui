@@ -442,6 +442,7 @@ datui --clear-cache     # Clear all cache data
 ### Data Operations
 
 - **File Loading**: CSV, Parquet, JSON, NDJSON with customizable options
+- **Remote loading**: S3 (`s3://`), GCS (`gs://`), HTTP/HTTPS (download to temp). Single remote path per run. Config/env/CLI overrides for S3 (e.g. MinIO). See `plans/remote-url-loading-plan.md`.
 - **Queries**: Select, filter, group, aggregate
 - **Filtering**: Column-based filtering with logical operators
 - **Sorting**: Multi-column sorting with ascending/descending

@@ -188,12 +188,17 @@ pub fn render_chart_view(
         .iter()
         .position(|&k| k == modal.chart_kind)
         .unwrap_or(0);
+    let tab_bar_focused = modal.focus == ChartFocus::TabBar;
     let tab_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
+        .border_style(Style::default().fg(if tab_bar_focused {
+            active_color
+        } else {
+            border_color
+        }))
         .title(" Chart ");
-    let tab_highlight = if modal.focus == ChartFocus::TabBar {
+    let tab_highlight = if tab_bar_focused {
         Style::default()
             .fg(active_color)
             .add_modifier(Modifier::BOLD)

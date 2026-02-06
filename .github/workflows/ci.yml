@@ -62,16 +62,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # - name: Free disk space (Ubuntu)
-      #   uses: jlumbroso/free-disk-space@main
-      #   with:
-      #     tool-cache: false
-      #     android: true
-      #     dotnet: true
-      #     haskell: false  # often 0 B on current images, skip to save a few seconds
-      #     large-packages: true  # ~5 GiB but slow (many apt calls); set false for faster CI
-      #     docker-images: true
-      #     swap-storage: true
+      - name: Free disk space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - name: Show disk space before build
         run: df -h

@@ -553,6 +553,7 @@ impl LoadingState {
 }
 
 /// In-progress analysis computation state (orchestration in App; modal only displays progress).
+#[allow(dead_code)]
 struct AnalysisComputationState {
     df: Option<DataFrame>,
     schema: Option<Arc<Schema>>,
@@ -665,7 +666,7 @@ pub struct App {
     active_template_id: Option<String>, // ID of currently applied template
     loading_state: LoadingState,        // Current loading state for progress indication
     theme: Theme,                       // Color theme for UI rendering
-    sampling_threshold: usize,          // Threshold for sampling large datasets
+    sampling_threshold: Option<usize>, // None = no sampling (full data); Some(n) = sample when rows >= n
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
@@ -3487,9 +3488,10 @@ impl App {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
                 KeyCode::Char('r') => {
-                    self.analysis_modal.recalculate();
-                    // Clear cached results to trigger recomputation
-                    self.analysis_modal.analysis_results = None;
+                    if self.sampling_threshold.is_some() {
+                        self.analysis_modal.recalculate();
+                        self.analysis_modal.analysis_results = None;
+                    }
                 }
                 KeyCode::Tab => {
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
@@ -3510,48 +3512,75 @@ impl App {
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
                             // Select tool from sidebar
                             self.analysis_modal.select_tool();
-                            // Defer Distribution/Correlation compute so progress overlay and throbber show first
-                            if let Some(ref results) = self.analysis_modal.analysis_results {
-                                match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::DistributionAnalysis
-                                        if results.distribution_analyses.is_empty() =>
+                            // Trigger computation for the selected tool if needed
+                            match self.analysis_modal.selected_tool {
+                                Some(analysis_modal::AnalysisTool::Describe)
+                                    if self.analysis_modal.analysis_results.is_none() =>
+                                {
+                                    self.analysis_modal.computing = Some(AnalysisProgress {
+                                        phase: "Describing data".to_string(),
+                                        current: 0,
+                                        total: 1,
+                                    });
+                                    self.analysis_computation = Some(AnalysisComputationState {
+                                        df: None,
+                                        schema: None,
+                                        partial_stats: Vec::new(),
+                                        current: 0,
+                                        total: 0,
+                                        total_rows: 0,
+                                        sample_seed: self.analysis_modal.random_seed,
+                                        sample_size: None,
+                                    });
+                                    self.busy = true;
+                                    return Some(AppEvent::AnalysisChunk);
+                                }
+                                _ => {
+                                    if let Some(ref results) = self.analysis_modal.analysis_results
                                     {
-                                        self.analysis_modal.computing = Some(AnalysisProgress {
-                                            phase: "Distribution".to_string(),
-                                            current: 0,
-                                            total: 1,
-                                        });
-                                        self.busy = true;
-                                        return Some(AppEvent::AnalysisDistributionCompute);
+                                        match self.analysis_modal.selected_tool {
+                                            Some(
+                                                analysis_modal::AnalysisTool::DistributionAnalysis,
+                                            ) if results.distribution_analyses.is_empty() => {
+                                                self.analysis_modal.computing =
+                                                    Some(AnalysisProgress {
+                                                        phase: "Distribution".to_string(),
+                                                        current: 0,
+                                                        total: 1,
+                                                    });
+                                                self.busy = true;
+                                                return Some(AppEvent::AnalysisDistributionCompute);
+                                            }
+                                            Some(
+                                                analysis_modal::AnalysisTool::CorrelationMatrix,
+                                            ) if results.correlation_matrix.is_none() => {
+                                                self.analysis_modal.computing =
+                                                    Some(AnalysisProgress {
+                                                        phase: "Correlation".to_string(),
+                                                        current: 0,
+                                                        total: 1,
+                                                    });
+                                                self.busy = true;
+                                                return Some(AppEvent::AnalysisCorrelationCompute);
+                                            }
+                                            _ => {}
+                                        }
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix
-                                        if results.correlation_matrix.is_none() =>
-                                    {
-                                        self.analysis_modal.computing = Some(AnalysisProgress {
-                                            phase: "Correlation".to_string(),
-                                            current: 0,
-                                            total: 1,
-                                        });
-                                        self.busy = true;
-                                        return Some(AppEvent::AnalysisCorrelationCompute);
-                                    }
-                                    _ => {}
                                 }
                             }
                         } else {
                             // Enter in main area opens detail view if applicable
                             match self.analysis_modal.selected_tool {
-                                analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                     self.analysis_modal.open_distribution_detail();
                                 }
-                                analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                     self.analysis_modal.open_correlation_detail();
                                 }
-                                _ => {} // Describe tool doesn't have detail view
+                                _ => {}
                             }
                         }
                     }
-                    // Enter key no longer needed for distribution selection - charts update on navigation
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     match self.analysis_modal.view {
@@ -3564,13 +3593,15 @@ impl App {
                                 analysis_modal::AnalysisFocus::Main => {
                                     // Navigate in main area based on selected tool
                                     match self.analysis_modal.selected_tool {
-                                        analysis_modal::AnalysisTool::Describe => {
+                                        Some(analysis_modal::AnalysisTool::Describe) => {
                                             if let Some(state) = &self.data_table_state {
                                                 let max_rows = state.schema.len();
                                                 self.analysis_modal.next_row(max_rows);
                                             }
                                         }
-                                        analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                        Some(
+                                            analysis_modal::AnalysisTool::DistributionAnalysis,
+                                        ) => {
                                             if let Some(results) =
                                                 &self.analysis_modal.analysis_results
                                             {
@@ -3578,7 +3609,7 @@ impl App {
                                                 self.analysis_modal.next_row(max_rows);
                                             }
                                         }
-                                        analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                             if let Some(results) =
                                                 &self.analysis_modal.analysis_results
                                             {
@@ -3620,6 +3651,7 @@ impl App {
                                                 }
                                             }
                                         }
+                                        None => {}
                                     }
                                 }
                                 _ => {}
@@ -3674,13 +3706,13 @@ impl App {
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::Describe => {
+                                    Some(analysis_modal::AnalysisTool::Describe) => {
                                         self.analysis_modal.scroll_left();
                                     }
-                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                         self.analysis_modal.scroll_left();
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
@@ -3725,6 +3757,7 @@ impl App {
                                             }
                                         }
                                     }
+                                    None => {}
                                 }
                             }
                         }
@@ -3741,21 +3774,21 @@ impl App {
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::Describe => {
+                                    Some(analysis_modal::AnalysisTool::Describe) => {
                                         // Number of statistics: count, null_count, mean, std, min, 25%, 50%, 75%, max, skewness, kurtosis, distribution
                                         let max_stats = 12;
                                         // Estimate visible stats based on terminal width (rough estimate)
                                         let visible_stats = 8; // Will be calculated more accurately in widget
                                         self.analysis_modal.scroll_right(max_stats, visible_stats);
                                     }
-                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                         // Number of statistics: Distribution, P-value, Shapiro-Wilk, SW p-value, CV, Outliers, Skewness, Kurtosis
                                         let max_stats = 8;
                                         // Estimate visible stats based on terminal width (rough estimate)
                                         let visible_stats = 6; // Will be calculated more accurately in widget
                                         self.analysis_modal.scroll_right(max_stats, visible_stats);
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
@@ -3795,6 +3828,7 @@ impl App {
                                             }
                                         }
                                     }
+                                    None => {}
                                 }
                             }
                         }
@@ -3805,21 +3839,21 @@ impl App {
                         && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
                     {
                         match self.analysis_modal.selected_tool {
-                            analysis_modal::AnalysisTool::Describe => {
+                            Some(analysis_modal::AnalysisTool::Describe) => {
                                 if let Some(state) = &self.data_table_state {
                                     let max_rows = state.schema.len();
                                     let page_size = 10;
                                     self.analysis_modal.page_down(max_rows, page_size);
                                 }
                             }
-                            analysis_modal::AnalysisTool::DistributionAnalysis => {
+                            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                 if let Some(results) = &self.analysis_modal.analysis_results {
                                     let max_rows = results.distribution_analyses.len();
                                     let page_size = 10;
                                     self.analysis_modal.page_down(max_rows, page_size);
                                 }
                             }
-                            analysis_modal::AnalysisTool::CorrelationMatrix => {
+                            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                 if let Some(results) = &self.analysis_modal.analysis_results {
                                     if let Some(corr) = &results.correlation_matrix {
                                         let max_rows = corr.columns.len();
@@ -3828,6 +3862,7 @@ impl App {
                                     }
                                 }
                             }
+                            None => {}
                         }
                     }
                 }
@@ -3852,18 +3887,19 @@ impl App {
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::Describe => {
+                                    Some(analysis_modal::AnalysisTool::Describe) => {
                                         self.analysis_modal.table_state.select(Some(0));
                                     }
-                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                         self.analysis_modal
                                             .distribution_table_state
                                             .select(Some(0));
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                         self.analysis_modal.correlation_table_state.select(Some(0));
                                         self.analysis_modal.selected_correlation = Some((0, 0));
                                     }
+                                    None => {}
                                 }
                             }
                         }
@@ -3883,7 +3919,7 @@ impl App {
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::Describe => {
+                                    Some(analysis_modal::AnalysisTool::Describe) => {
                                         if let Some(state) = &self.data_table_state {
                                             let max_rows = state.schema.len();
                                             if max_rows > 0 {
@@ -3893,7 +3929,7 @@ impl App {
                                             }
                                         }
                                     }
-                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             let max_rows = results.distribution_analyses.len();
@@ -3904,7 +3940,7 @@ impl App {
                                             }
                                         }
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
@@ -3919,6 +3955,7 @@ impl App {
                                             }
                                         }
                                     }
+                                    None => {}
                                 }
                             }
                         }
@@ -5224,27 +5261,10 @@ impl App {
                 None
             }
             KeyCode::Char('a') => {
-                // Open analysis modal if data is available; start chunked describe so progress overlay can show
+                // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
                     self.analysis_modal.open();
                     self.analysis_modal.analysis_results = None;
-                    self.analysis_modal.computing = Some(AnalysisProgress {
-                        phase: "Describe".to_string(),
-                        current: 0,
-                        total: 0,
-                    });
-                    self.analysis_computation = Some(AnalysisComputationState {
-                        df: None,
-                        schema: None,
-                        partial_stats: Vec::new(),
-                        current: 0,
-                        total: 0,
-                        total_rows: 0,
-                        sample_seed: self.analysis_modal.random_seed,
-                        sample_size: None,
-                    });
-                    self.busy = true;
-                    return Some(AppEvent::AnalysisChunk);
                 }
                 None
             }
@@ -6107,114 +6127,57 @@ impl App {
                         return None;
                     }
                 };
-                let mut comp = self.analysis_computation.take()?;
+                let comp = self.analysis_computation.take()?;
                 if comp.df.is_none() {
-                    // First chunk: collect schema, count rows, collect or sample df
-                    let schema = match lf.clone().collect_schema() {
-                        Ok(s) => s,
-                        Err(_e) => {
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            return None;
-                        }
-                    };
-                    let total_rows = match lf.clone().select([len()]).collect() {
-                        Ok(count_df) => {
-                            if let Some(col) = count_df.get(0) {
-                                match col.first() {
-                                    Some(AnyValue::UInt32(n)) => *n as usize,
-                                    _ => 0,
+                    // First chunk: get row count then run describe (lazy aggregation, no full collect)
+                    // Reuse cached row count from control bar when valid to avoid extra full scan.
+                    let total_rows = match self
+                        .data_table_state
+                        .as_ref()
+                        .and_then(|s| s.num_rows_if_valid())
+                    {
+                        Some(n) => n,
+                        None => match lf.clone().select([len()]).collect() {
+                            Ok(count_df) => {
+                                if let Some(col) = count_df.get(0) {
+                                    match col.first() {
+                                        Some(AnyValue::UInt32(n)) => *n as usize,
+                                        _ => 0,
+                                    }
+                                } else {
+                                    0
                                 }
-                            } else {
-                                0
                             }
-                        }
-                        Err(_e) => {
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            return None;
-                        }
+                            Err(_e) => {
+                                self.analysis_modal.computing = None;
+                                self.busy = false;
+                                self.drain_keys_on_next_loop = true;
+                                return None;
+                            }
+                        },
                     };
-                    let threshold = self.sampling_threshold;
-                    let should_sample = total_rows >= threshold;
-                    let actual_sample_size = if should_sample { Some(threshold) } else { None };
-                    let df = match if should_sample {
-                        crate::statistics::sample_dataframe(&lf, threshold, comp.sample_seed)
-                    } else {
-                        lf.collect().map_err(|e| color_eyre::eyre::eyre!("{}", e))
-                    } {
-                        Ok(d) => d,
-                        Err(_e) => {
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            return None;
-                        }
-                    };
-                    comp.df = Some(df);
-                    let total_len = schema.len();
-                    comp.schema = Some(schema);
-                    comp.total = total_len;
-                    comp.total_rows = total_rows;
-                    comp.sample_size = actual_sample_size;
-                    self.analysis_modal.computing = Some(AnalysisProgress {
-                        phase: "Describe".to_string(),
-                        current: 0,
-                        total: total_len,
-                    });
-                    self.analysis_computation = Some(comp);
-                    return Some(AppEvent::AnalysisChunk);
-                }
-                let df = comp.df.as_ref().unwrap();
-                let schema = comp.schema.as_ref().unwrap();
-                // Describe-only: no distribution/correlation work; those run only when user selects those tools.
-                let options = crate::statistics::ComputeOptions {
-                    include_distribution_info: false,
-                    include_distribution_analyses: false,
-                    include_correlation_matrix: false,
-                    include_skewness_kurtosis_outliers: false,
-                };
-                match crate::statistics::compute_describe_column(
-                    df,
-                    schema,
-                    comp.current,
-                    &options,
-                    comp.sample_size,
-                    comp.sample_size.is_some(),
-                ) {
-                    Ok(col_stat) => {
-                        comp.partial_stats.push(col_stat);
-                        comp.current += 1;
-                        self.analysis_modal.computing = Some(AnalysisProgress {
-                            phase: "Describe".to_string(),
-                            current: comp.current,
-                            total: comp.total,
-                        });
-                        if comp.current >= comp.total {
-                            let results = crate::statistics::analysis_results_from_describe(
-                                comp.partial_stats,
-                                comp.total_rows,
-                                comp.sample_size,
-                                comp.sample_seed,
-                            );
+                    match crate::statistics::compute_describe_from_lazy(
+                        &lf,
+                        total_rows,
+                        self.sampling_threshold,
+                        comp.sample_seed,
+                    ) {
+                        Ok(results) => {
                             self.analysis_modal.analysis_results = Some(results);
                             self.analysis_modal.computing = None;
                             self.busy = false;
                             self.drain_keys_on_next_loop = true;
                             None
-                        } else {
-                            self.analysis_computation = Some(comp);
-                            Some(AppEvent::AnalysisChunk)
+                        }
+                        Err(_e) => {
+                            self.analysis_modal.computing = None;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            None
                         }
                     }
-                    Err(_e) => {
-                        self.analysis_modal.computing = None;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        None
-                    }
+                } else {
+                    None
                 }
             }
             AppEvent::AnalysisDistributionCompute => {
@@ -6223,7 +6186,7 @@ impl App {
                         if crate::statistics::compute_distribution_statistics(
                             results,
                             &state.lf,
-                            Some(self.sampling_threshold),
+                            self.sampling_threshold,
                             self.analysis_modal.random_seed,
                         )
                         .is_err()
@@ -8638,14 +8601,17 @@ impl Widget for &mut App {
                         buf,
                     );
             } else if let Some(state) = &self.data_table_state {
-                // Compute statistics if not already computed or if seed changed (sync fallback when not chunking)
-                let needs_recompute = self.analysis_modal.analysis_results.is_none()
-                    || self
-                        .analysis_modal
-                        .analysis_results
-                        .as_ref()
-                        .map(|r| r.sample_seed != self.analysis_modal.random_seed)
-                        .unwrap_or(true);
+                // Only run sync recompute when user has selected a tool (Describe triggers chunked path on Enter;
+                // this is fallback for seed change or when we have no results after selecting a tool).
+                let selected_tool = self.analysis_modal.selected_tool;
+                let needs_recompute = selected_tool.is_some()
+                    && (self.analysis_modal.analysis_results.is_none()
+                        || self
+                            .analysis_modal
+                            .analysis_results
+                            .as_ref()
+                            .map(|r| r.sample_seed != self.analysis_modal.random_seed)
+                            .unwrap_or(true));
 
                 if needs_recompute {
                     self.busy = true;
@@ -8660,7 +8626,7 @@ impl Widget for &mut App {
                     };
                     match crate::statistics::compute_statistics_with_options(
                         &lf,
-                        Some(self.sampling_threshold),
+                        self.sampling_threshold,
                         self.analysis_modal.random_seed,
                         options,
                     ) {
@@ -8688,53 +8654,48 @@ impl Widget for &mut App {
                 // Distribution and Correlation are computed via deferred events (AnalysisDistributionCompute
                 // / AnalysisCorrelationCompute) when the user selects that tool, so progress overlay and throbber show first.
 
-                if let Some(ref results) = self.analysis_modal.analysis_results {
-                    let context = state.get_analysis_context();
-                    Clear.render(analysis_area, buf);
-                    // Use tool-specific column_offset
-                    let column_offset = match self.analysis_modal.selected_tool {
-                        analysis_modal::AnalysisTool::Describe => {
-                            self.analysis_modal.describe_column_offset
-                        }
-                        analysis_modal::AnalysisTool::DistributionAnalysis => {
-                            self.analysis_modal.distribution_column_offset
-                        }
-                        analysis_modal::AnalysisTool::CorrelationMatrix => {
-                            self.analysis_modal.correlation_column_offset
-                        }
-                    };
+                // Always render the analysis widget when we have data (with or without results: widget shows
+                // "Select an analysis tool", "Computing...", or the selected tool content).
+                let context = state.get_analysis_context();
+                Clear.render(analysis_area, buf);
+                let column_offset = match self.analysis_modal.selected_tool {
+                    Some(analysis_modal::AnalysisTool::Describe) => {
+                        self.analysis_modal.describe_column_offset
+                    }
+                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                        self.analysis_modal.distribution_column_offset
+                    }
+                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                        self.analysis_modal.correlation_column_offset
+                    }
+                    None => 0,
+                };
 
-                    let config = widgets::analysis::AnalysisWidgetConfig {
-                        state,
-                        results: Some(results),
-                        context: &context,
-                        view: self.analysis_modal.view,
-                        selected_tool: self.analysis_modal.selected_tool,
-                        column_offset,
-                        selected_correlation: self.analysis_modal.selected_correlation,
-                        focus: self.analysis_modal.focus,
-                        selected_theoretical_distribution: self
-                            .analysis_modal
-                            .selected_theoretical_distribution,
-                        histogram_scale: self.analysis_modal.histogram_scale,
-                        theme: &self.theme,
-                    };
-                    let widget = widgets::analysis::AnalysisWidget::new(
-                        config,
-                        &mut self.analysis_modal.table_state,
-                        &mut self.analysis_modal.distribution_table_state,
-                        &mut self.analysis_modal.correlation_table_state,
-                        &mut self.analysis_modal.sidebar_state,
-                        &mut self.analysis_modal.distribution_selector_state,
-                    );
-                    widget.render(analysis_area, buf);
-                } else {
-                    // Still computing
-                    Clear.render(analysis_area, buf);
-                    Paragraph::new("Computing statistics...")
-                        .centered()
-                        .render(analysis_area, buf);
-                }
+                let config = widgets::analysis::AnalysisWidgetConfig {
+                    state,
+                    results: self.analysis_modal.analysis_results.as_ref(),
+                    context: &context,
+                    view: self.analysis_modal.view,
+                    selected_tool: self.analysis_modal.selected_tool,
+                    column_offset,
+                    selected_correlation: self.analysis_modal.selected_correlation,
+                    focus: self.analysis_modal.focus,
+                    selected_theoretical_distribution: self
+                        .analysis_modal
+                        .selected_theoretical_distribution,
+                    histogram_scale: self.analysis_modal.histogram_scale,
+                    theme: &self.theme,
+                    table_cell_padding: self.table_cell_padding,
+                };
+                let widget = widgets::analysis::AnalysisWidget::new(
+                    config,
+                    &mut self.analysis_modal.table_state,
+                    &mut self.analysis_modal.distribution_table_state,
+                    &mut self.analysis_modal.correlation_table_state,
+                    &mut self.analysis_modal.sidebar_state,
+                    &mut self.analysis_modal.distribution_selector_state,
+                );
+                widget.render(analysis_area, buf);
             } else {
                 // No data available
                 Clear.render(analysis_area, buf);
@@ -9194,17 +9155,21 @@ impl Widget for &mut App {
                         help_strings::analysis_correlation_detail().to_string(),
                     ),
                     analysis_modal::AnalysisView::Main => match self.analysis_modal.selected_tool {
-                        analysis_modal::AnalysisTool::DistributionAnalysis => (
+                        Some(analysis_modal::AnalysisTool::DistributionAnalysis) => (
                             "Distribution Analysis Help".to_string(),
                             help_strings::analysis_distribution().to_string(),
                         ),
-                        analysis_modal::AnalysisTool::Describe => (
+                        Some(analysis_modal::AnalysisTool::Describe) => (
                             "Describe Tool Help".to_string(),
                             help_strings::analysis_describe().to_string(),
                         ),
-                        analysis_modal::AnalysisTool::CorrelationMatrix => (
+                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => (
                             "Correlation Matrix Help".to_string(),
                             help_strings::analysis_correlation_matrix().to_string(),
+                        ),
+                        None => (
+                            "Analysis Help".to_string(),
+                            "Select an analysis tool from the sidebar.".to_string(),
                         ),
                     },
                 }
@@ -9368,10 +9333,12 @@ impl Widget for &mut App {
                 ("Enter", "Select"),
             ];
 
-            // Add r Resample if data is sampled
-            if let Some(results) = &self.analysis_modal.analysis_results {
-                if results.sample_size.is_some() {
-                    analysis_controls.push(("r", "Resample"));
+            // Show r Resample only when sampling is enabled and data was sampled
+            if self.sampling_threshold.is_some() {
+                if let Some(results) = &self.analysis_modal.analysis_results {
+                    if results.sample_size.is_some() {
+                        analysis_controls.push(("r", "Resample"));
+                    }
                 }
             }
 

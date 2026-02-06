@@ -1,5 +1,4 @@
 use datui::config::{AppConfig, ConfigManager};
-use datui::statistics::SAMPLING_THRESHOLD;
 use std::fs;
 use tempfile::TempDir;
 
@@ -25,7 +24,7 @@ fn test_default_config() {
     assert_eq!(config.display.table_cell_padding, 2);
 
     // Check performance defaults
-    assert_eq!(config.performance.sampling_threshold, 10000);
+    assert_eq!(config.performance.sampling_threshold, None);
     assert_eq!(config.performance.event_poll_interval_ms, 25);
 
     // Check theme defaults
@@ -160,7 +159,7 @@ row_start_index = 0
 
     // Check that defaults are still present for unspecified values
     assert_eq!(config.display.pages_lookahead, 3); // Default
-    assert_eq!(config.performance.sampling_threshold, 10000); // Default
+    assert_eq!(config.performance.sampling_threshold, None); // Default: no sampling
 }
 
 #[test]
@@ -171,7 +170,7 @@ fn test_merge_configs() {
     // Modify override config
     override_config.display.row_numbers = true;
     override_config.display.pages_lookahead = 5;
-    override_config.performance.sampling_threshold = 50000;
+    override_config.performance.sampling_threshold = Some(50000);
     override_config.theme.colors.keybind_hints = "blue".to_string();
 
     // Merge
@@ -180,7 +179,7 @@ fn test_merge_configs() {
     // Check that values were merged
     assert!(base.display.row_numbers);
     assert_eq!(base.display.pages_lookahead, 5);
-    assert_eq!(base.performance.sampling_threshold, 50000);
+    assert_eq!(base.performance.sampling_threshold, Some(50000));
     assert_eq!(base.theme.colors.keybind_hints, "blue");
 
     // Check that unmodified values remain default
@@ -212,14 +211,14 @@ fn test_validate_config_invalid_version() {
 #[test]
 fn test_validate_config_zero_sampling_threshold() {
     let mut config = AppConfig::default();
-    config.performance.sampling_threshold = 0;
+    config.performance.sampling_threshold = Some(0);
 
     let result = config.validate();
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("sampling_threshold must be greater than 0"));
+        .contains("sampling_threshold must be greater than 0 when set"));
 }
 
 #[test]
@@ -309,7 +308,7 @@ show_transformations = true
     assert_eq!(config.file_loading.has_header, Some(true));
     assert_eq!(config.display.pages_lookahead, 5);
     assert!(config.display.row_numbers);
-    assert_eq!(config.performance.sampling_threshold, 50000);
+    assert_eq!(config.performance.sampling_threshold, Some(50000));
     assert_eq!(config.theme.colors.keybind_hints, "blue");
     assert_eq!(config.ui.controls.row_count_width, 25);
     assert_eq!(config.query.history_limit, 500);
@@ -501,27 +500,22 @@ fn test_validate_config_with_mixed_colors() {
 }
 
 #[test]
-fn test_template_sampling_threshold_matches_constant() {
-    // Verify that the generated config's sampling_threshold matches the Rust constant
-    // This test ensures generated config always matches code defaults
+fn test_template_sampling_threshold_default_none() {
+    // Default is None (no sampling); template and Rust default must match
     let (_temp_dir, config_manager) = setup_test_config_dir();
     let template_str = config_manager.generate_default_config();
 
-    // Parse the template to extract the sampling_threshold value
     let template_config: AppConfig =
         toml::from_str(&template_str).expect("Template should be valid TOML");
 
-    // The template value should match the constant (Rust code is authoritative)
     assert_eq!(
-        template_config.performance.sampling_threshold, SAMPLING_THRESHOLD,
-        "Template sampling_threshold ({}) should match SAMPLING_THRESHOLD constant ({})",
-        template_config.performance.sampling_threshold, SAMPLING_THRESHOLD
+        template_config.performance.sampling_threshold, None,
+        "Template sampling_threshold should default to None (no sampling)"
     );
 
-    // Also verify the Rust default matches the constant
     let rust_default = AppConfig::default();
     assert_eq!(
-        rust_default.performance.sampling_threshold, SAMPLING_THRESHOLD,
-        "Rust default sampling_threshold should match SAMPLING_THRESHOLD constant"
+        rust_default.performance.sampling_threshold, None,
+        "Rust default sampling_threshold should be None"
     );
 }

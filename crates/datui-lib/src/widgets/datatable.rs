@@ -2075,6 +2075,16 @@ impl DataTableState {
         self.num_rows_valid = false;
     }
 
+    /// Returns the cached row count when valid (same value shown in the control bar). Use this to
+    /// avoid an extra full scan for analysis/describe when the table has already been collected.
+    pub fn num_rows_if_valid(&self) -> Option<usize> {
+        if self.num_rows_valid {
+            Some(self.num_rows)
+        } else {
+            None
+        }
+    }
+
     /// Clamp buffer to max_buffered_rows; when at cap, slide window to keep view inside.
     fn clamp_buffer_to_max_size(
         &self,

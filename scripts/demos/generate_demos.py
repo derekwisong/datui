@@ -12,6 +12,7 @@ Usage:
     python scripts/demos/generate_demos.py              # Generate all demos
     python scripts/demos/generate_demos.py --number 2  # Generate only demo 2
     python scripts/demos/generate_demos.py -n 4        # Use 4 worker processes
+    python scripts/demos/generate_demos.py --release   # Use release build of datui
 """
 
 import argparse
@@ -231,6 +232,11 @@ def main() -> None:
         metavar="N",
         help="Number of parallel workers (default: all available cores).",
     )
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="Use release build of datui (cargo build --release).",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent.resolve()
@@ -247,11 +253,15 @@ def main() -> None:
         print(f"Error: Header file not found: {header_file}", file=sys.stderr)
         sys.exit(1)
 
-    # Build debug binary
-    print("Building debug binary...")
+    # Build binary (debug or release)
+    build_type = "release" if args.release else "debug"
+    print(f"Building {build_type} binary...")
+    cargo_args = ["cargo", "build", "--bin", "datui"]
+    if args.release:
+        cargo_args.append("--release")
     try:
         subprocess.run(
-            ["cargo", "build", "--bin", "datui"],
+            cargo_args,
             cwd=repo_root,
             check=True,
             capture_output=True,
@@ -260,7 +270,7 @@ def main() -> None:
         print(f"Error: Failed to build binary: {e}", file=sys.stderr)
         sys.exit(1)
 
-    binary_path = repo_root / "target" / "debug" / "datui"
+    binary_path = repo_root / "target" / build_type / "datui"
     if not binary_path.exists():
         print("Error: datui binary not found. Please build it first.", file=sys.stderr)
         sys.exit(1)

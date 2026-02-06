@@ -18,6 +18,10 @@ Sleep 2s
 Type "c"
 Sleep 3s
 
+# Tab to the plot style selector
+Tab
+Sleep 0.5s
+
 # Tab to X axis filter
 Tab
 Sleep 0.5s

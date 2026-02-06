@@ -2,12 +2,10 @@
 
 Use Datui to get insights about your data.
 
-> For large datasets, analysis tools operate on sampled data. This means that
-> a subset of the data will be drawn. You can resample the data with the `r` key.
->
-> You may adjust the size threshold at which the full dataset will not be used
-> and instead be sampled. See [Configuration](configuration.md) for details about
-> adjusting the threshold.
+> If you configure a sampling threshold (see [Configuration](configuration.md)),
+> analysis uses a subset of the data when the dataset is large. In that case the
+> tool shows "(sampled)" and you can press `r` to resample. By default, analysis
+> uses the full dataset (no sampling).
 
 ## Starting Analysis Mode
 

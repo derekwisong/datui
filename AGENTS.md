@@ -146,7 +146,7 @@ Settings applied throughout app
 - Templates: Auto-apply behavior
 - Debug: Overlay settings
 
-**Important**: The hardcoded `SAMPLING_THRESHOLD` constant in `statistics.rs` is now a fallback. The app uses `app.sampling_threshold` from config.
+**Important**: Sampling for analysis is controlled by `performance.sampling_threshold` (optional). When unset (default), the full dataset is used; when set (e.g. `10000`), datasets with ≥ that many rows are sampled. The "r" resample keybind and "(sampled)" label only appear when sampling is enabled.
 
 ## Key Design Patterns
 
@@ -159,7 +159,7 @@ Settings applied throughout app
   - Table needs to be displayed
   - Statistics need to be computed
   - Scrolling/slicing requires materialized data
-- Large datasets are sampled when needed (threshold: 10,000 rows)
+- Analysis can optionally sample large datasets when `performance.sampling_threshold` is set
 
 **Example**:
 ```rust
@@ -209,16 +209,15 @@ Each modal:
 - Type-aware expression building
 - Error reporting with position information
 
-### 5. Sampling Strategy
+### 5. Sampling Strategy (Analysis)
 
-**Threshold**: `SAMPLING_THRESHOLD = 10,000` rows (defined in `statistics.rs`)
+**Config**: `performance.sampling_threshold: Option<usize>` (default `None`).
 
 **Behavior**:
-- Datasets < 10,000 rows: Use full data
-- Datasets >= 10,000 rows: Sample deterministically (respects `random_seed`)
-- Sampling used for: Statistics computation, Q-Q plots, histograms, correlation matrices
+- **None** (default): No sampling; analysis uses full dataset. No "r" resample keybind or "(sampled)" label.
+- **Some(threshold)**: When row count ≥ threshold, analysis is run on a deterministic sample (respects `random_seed`). "r" resample and "(sampled)" label are shown.
 
-**Unified Approach**: All analysis tools use the same sampling decision to ensure consistency
+**Unified Approach**: All analysis tools use the same sampling decision (from config) for consistency.
 
 ## Module Details
 
@@ -252,7 +251,7 @@ Each modal:
 - `OutlierAnalysis`: Outlier detection with context data
 
 **Computation Flow**:
-1. Sample data if needed (based on `SAMPLING_THRESHOLD`)
+1. Sample data if configured (when `sample_size: Some(threshold)` and rows ≥ threshold)
 2. Compute basic statistics (mean, std, percentiles, etc.)
 3. Infer distribution type (Normal, LogNormal, Uniform, PowerLaw, Exponential)
 4. Calculate fit quality and confidence scores
@@ -570,7 +569,7 @@ let df: DataFrame = lf.collect()?; // Materialize here
 ## Key Constants
 
 - `APP_NAME`: `"datui"` - Used for cache/config directories
-- `SAMPLING_THRESHOLD`: `10_000` - Rows threshold for sampling
+- `SAMPLING_THRESHOLD`: `10_000` in `statistics.rs` - Legacy fallback; app uses config `performance.sampling_threshold` (optional, default None)
 
 ## Resources
 
@@ -584,7 +583,7 @@ When working on this codebase:
 
 1. **Always prefer lazy evaluation**: Work with `LazyFrame` until display is needed
 2. **Check existing patterns**: Look for similar features before implementing
-3. **Respect sampling threshold**: Use `SAMPLING_THRESHOLD` for large datasets
+3. **Sampling**: When adding analysis features, pass through the app's `sampling_threshold` (Option<usize>); None means use full data
 4. **Follow modal pattern**: Use existing modal infrastructure for new dialogs
 5. **Update help text**: When adding features, update help system
 6. **Test edge cases**: Empty data, single rows, large datasets

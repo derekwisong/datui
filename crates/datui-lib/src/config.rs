@@ -1,4 +1,3 @@
-use crate::statistics::SAMPLING_THRESHOLD;
 use color_eyre::eyre::eyre;
 use color_eyre::Result;
 use ratatui::style::Color;
@@ -531,7 +530,8 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerformanceConfig {
-    pub sampling_threshold: usize,
+    /// When None, analysis uses full dataset (no sampling). When Some(n), datasets with >= n rows are sampled.
+    pub sampling_threshold: Option<usize>,
     pub event_poll_interval_ms: u64,
 }
 
@@ -539,7 +539,7 @@ pub struct PerformanceConfig {
 const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
     (
         "sampling_threshold",
-        "Sampling threshold: datasets >= this size will be sampled for statistics\nSet to higher value to avoid sampling, or lower to sample more aggressively",
+        "Optional: when set, datasets with >= this many rows are sampled for analysis (faster, less memory).\nWhen unset or omitted, full dataset is used. Example: sampling_threshold = 10000",
     ),
     (
         "event_poll_interval_ms",
@@ -832,7 +832,7 @@ impl Default for DisplayConfig {
 impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
-            sampling_threshold: SAMPLING_THRESHOLD,
+            sampling_threshold: None,
             event_poll_interval_ms: 25,
         }
     }
@@ -989,8 +989,10 @@ impl AppConfig {
         }
 
         // Validate performance settings
-        if self.performance.sampling_threshold == 0 {
-            return Err(eyre!("sampling_threshold must be greater than 0"));
+        if let Some(t) = self.performance.sampling_threshold {
+            if t == 0 {
+                return Err(eyre!("sampling_threshold must be greater than 0 when set"));
+            }
         }
 
         if self.performance.event_poll_interval_ms == 0 {

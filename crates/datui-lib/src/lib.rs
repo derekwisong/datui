@@ -596,12 +596,16 @@ impl ChartCache {
 struct ChartCacheXY {
     x_column: String,
     y_columns: Vec<String>,
+    row_limit: Option<usize>,
     series: Vec<Vec<(f64, f64)>>,
+    /// Log-scaled series when log_scale was requested; filled on first use to avoid per-frame clone.
+    series_log: Option<Vec<Vec<(f64, f64)>>>,
     x_axis_kind: chart_data::XAxisTemporalKind,
 }
 
 struct ChartCacheXRange {
     x_column: String,
+    row_limit: Option<usize>,
     x_min: f64,
     x_max: f64,
     x_axis_kind: chart_data::XAxisTemporalKind,
@@ -610,17 +614,20 @@ struct ChartCacheXRange {
 struct ChartCacheHistogram {
     column: String,
     bins: usize,
+    row_limit: Option<usize>,
     data: chart_data::HistogramData,
 }
 
 struct ChartCacheBoxPlot {
     column: String,
+    row_limit: Option<usize>,
     data: chart_data::BoxPlotData,
 }
 
 struct ChartCacheKde {
     column: String,
     bandwidth_factor: f64,
+    row_limit: Option<usize>,
     data: chart_data::KdeData,
 }
 
@@ -628,6 +635,7 @@ struct ChartCacheHeatmap {
     x_column: String,
     y_column: String,
     bins: usize,
+    row_limit: Option<usize>,
     data: chart_data::HeatmapData,
 }
 
@@ -3375,6 +3383,7 @@ impl App {
                         ChartFocus::KdeBandwidth => self
                             .chart_modal
                             .adjust_kde_bandwidth_factor(chart_modal::KDE_BANDWIDTH_STEP),
+                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(1),
                         _ => {}
                     }
                 }
@@ -3387,6 +3396,7 @@ impl App {
                         ChartFocus::KdeBandwidth => self
                             .chart_modal
                             .adjust_kde_bandwidth_factor(-chart_modal::KDE_BANDWIDTH_STEP),
+                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(-1),
                         _ => {}
                     }
                 }
@@ -3401,6 +3411,7 @@ impl App {
                         ChartFocus::KdeBandwidth => self
                             .chart_modal
                             .adjust_kde_bandwidth_factor(-chart_modal::KDE_BANDWIDTH_STEP),
+                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(-1),
                         _ => {}
                     }
                 }
@@ -3415,7 +3426,22 @@ impl App {
                         ChartFocus::KdeBandwidth => self
                             .chart_modal
                             .adjust_kde_bandwidth_factor(chart_modal::KDE_BANDWIDTH_STEP),
+                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(1),
                         _ => {}
+                    }
+                }
+                KeyCode::PageUp
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
+                {
+                    if self.chart_modal.focus == ChartFocus::LimitRows {
+                        self.chart_modal.adjust_row_limit_page(1);
+                    }
+                }
+                KeyCode::PageDown
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
+                {
+                    if self.chart_modal.focus == ChartFocus::LimitRows {
+                        self.chart_modal.adjust_row_limit_page(-1);
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k')
@@ -5302,7 +5328,11 @@ impl App {
                             })
                             .map(|(name, _)| name.to_string())
                             .collect();
-                        self.chart_modal.open(&numeric_columns, &datetime_columns);
+                        self.chart_modal.open(
+                            &numeric_columns,
+                            &datetime_columns,
+                            self.app_config.chart.row_limit,
+                        );
                         self.chart_modal.x_input =
                             std::mem::take(&mut self.chart_modal.x_input).with_theme(&self.theme);
                         self.chart_modal.y_input =
@@ -6484,16 +6514,46 @@ impl App {
                     return Err(color_eyre::eyre::eyre!("No Y axis columns selected"));
                 }
 
-                let chart_data_result =
-                    chart_data::prepare_chart_data(&state.lf, &state.schema, x_column, &y_columns)?;
+                let row_limit_opt = self.chart_modal.row_limit;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let cache_matches = self.chart_cache.xy.as_ref().is_some_and(|c| {
+                    c.x_column == *x_column
+                        && c.y_columns == y_columns
+                        && c.row_limit == row_limit_opt
+                });
+
+                let (series_vec, x_axis_kind_export, from_cache) = if cache_matches {
+                    let cache = self.chart_cache.xy.as_ref().unwrap();
+                    let pts = if self.chart_modal.log_scale {
+                        cache.series_log.as_ref().cloned().unwrap_or_else(|| {
+                            cache
+                                .series
+                                .iter()
+                                .map(|s| s.iter().map(|&(x, y)| (x, y.max(0.0).ln_1p())).collect())
+                                .collect()
+                        })
+                    } else {
+                        cache.series.clone()
+                    };
+                    (pts, cache.x_axis_kind, true)
+                } else {
+                    let r = chart_data::prepare_chart_data(
+                        &state.lf,
+                        &state.schema,
+                        x_column,
+                        &y_columns,
+                        row_limit,
+                    )?;
+                    (r.series, r.x_axis_kind, false)
+                };
 
                 let log_scale = self.chart_modal.log_scale;
-                let series: Vec<ChartExportSeries> = chart_data_result
-                    .series
+                let series: Vec<ChartExportSeries> = series_vec
                     .iter()
                     .zip(y_columns.iter())
+                    .filter(|(points, _)| !points.is_empty())
                     .map(|(points, name)| {
-                        let pts = if log_scale {
+                        let pts = if log_scale && !from_cache {
                             points
                                 .iter()
                                 .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
@@ -6506,7 +6566,6 @@ impl App {
                             points: pts,
                         }
                     })
-                    .filter(|s| !s.points.is_empty())
                     .collect();
 
                 if series.is_empty() {
@@ -6560,7 +6619,7 @@ impl App {
                     y_max: y_max_bounds,
                     x_label: x_label.clone(),
                     y_label: y_label.clone(),
-                    x_axis_kind: chart_data_result.x_axis_kind,
+                    x_axis_kind: x_axis_kind_export,
                     log_scale: self.chart_modal.log_scale,
                     chart_title,
                 };
@@ -6575,11 +6634,21 @@ impl App {
                     .chart_modal
                     .effective_hist_column()
                     .ok_or_else(|| color_eyre::eyre::eyre!("No histogram column selected"))?;
-                let data = chart_data::prepare_histogram_data(
-                    &state.lf,
-                    &column,
-                    self.chart_modal.hist_bins,
-                )?;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let data = if let Some(c) = self.chart_cache.histogram.as_ref().filter(|c| {
+                    c.column == column
+                        && c.bins == self.chart_modal.hist_bins
+                        && c.row_limit == self.chart_modal.row_limit
+                }) {
+                    c.data.clone()
+                } else {
+                    chart_data::prepare_histogram_data(
+                        &state.lf,
+                        &column,
+                        self.chart_modal.hist_bins,
+                        row_limit,
+                    )?
+                };
                 if data.bins.is_empty() {
                     return Err(color_eyre::eyre::eyre!("No valid data points to export"));
                 }
@@ -6624,8 +6693,21 @@ impl App {
                     .chart_modal
                     .effective_box_column()
                     .ok_or_else(|| color_eyre::eyre::eyre!("No box plot column selected"))?;
-                let data =
-                    chart_data::prepare_box_plot_data(&state.lf, std::slice::from_ref(&column))?;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let data = if let Some(c) = self
+                    .chart_cache
+                    .box_plot
+                    .as_ref()
+                    .filter(|c| c.column == column && c.row_limit == self.chart_modal.row_limit)
+                {
+                    c.data.clone()
+                } else {
+                    chart_data::prepare_box_plot_data(
+                        &state.lf,
+                        std::slice::from_ref(&column),
+                        row_limit,
+                    )?
+                };
                 if data.stats.is_empty() {
                     return Err(color_eyre::eyre::eyre!("No valid data points to export"));
                 }
@@ -6647,11 +6729,21 @@ impl App {
                     .chart_modal
                     .effective_kde_column()
                     .ok_or_else(|| color_eyre::eyre::eyre!("No KDE column selected"))?;
-                let data = chart_data::prepare_kde_data(
-                    &state.lf,
-                    std::slice::from_ref(&column),
-                    self.chart_modal.kde_bandwidth_factor,
-                )?;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let data = if let Some(c) = self.chart_cache.kde.as_ref().filter(|c| {
+                    c.column == column
+                        && c.bandwidth_factor == self.chart_modal.kde_bandwidth_factor
+                        && c.row_limit == self.chart_modal.row_limit
+                }) {
+                    c.data.clone()
+                } else {
+                    chart_data::prepare_kde_data(
+                        &state.lf,
+                        std::slice::from_ref(&column),
+                        self.chart_modal.kde_bandwidth_factor,
+                        row_limit,
+                    )?
+                };
                 if data.series.is_empty() {
                     return Err(color_eyre::eyre::eyre!("No valid data points to export"));
                 }
@@ -6692,12 +6784,23 @@ impl App {
                     .chart_modal
                     .effective_heatmap_y_column()
                     .ok_or_else(|| color_eyre::eyre::eyre!("No heatmap Y column selected"))?;
-                let data = chart_data::prepare_heatmap_data(
-                    &state.lf,
-                    &x_column,
-                    &y_column,
-                    self.chart_modal.heatmap_bins,
-                )?;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let data = if let Some(c) = self.chart_cache.heatmap.as_ref().filter(|c| {
+                    c.x_column == *x_column
+                        && c.y_column == *y_column
+                        && c.bins == self.chart_modal.heatmap_bins
+                        && c.row_limit == self.chart_modal.row_limit
+                }) {
+                    c.data.clone()
+                } else {
+                    chart_data::prepare_heatmap_data(
+                        &state.lf,
+                        &x_column,
+                        &y_column,
+                        self.chart_modal.heatmap_bins,
+                        row_limit,
+                    )?
+                };
                 if data.counts.is_empty() || data.max_count <= 0.0 {
                     return Err(color_eyre::eyre::eyre!("No valid data points to export"));
                 }
@@ -8719,17 +8822,19 @@ impl Widget for &mut App {
             let mut kde_data: Option<&chart_data::KdeData> = None;
             let mut heatmap_data: Option<&chart_data::HeatmapData> = None;
 
+            let row_limit_opt = self.chart_modal.row_limit;
+            let row_limit = self.chart_modal.effective_row_limit();
             match self.chart_modal.chart_kind {
                 ChartKind::XY => {
                     if let Some(x_column) = self.chart_modal.effective_x_column() {
                         let x_key = x_column.to_string();
                         let y_columns = self.chart_modal.effective_y_columns();
                         if !y_columns.is_empty() {
-                            let use_cache = self
-                                .chart_cache
-                                .xy
-                                .as_ref()
-                                .filter(|c| c.x_column == x_key && c.y_columns == y_columns);
+                            let use_cache = self.chart_cache.xy.as_ref().filter(|c| {
+                                c.x_column == x_key
+                                    && c.y_columns == y_columns
+                                    && c.row_limit == row_limit_opt
+                            });
                             if use_cache.is_none() {
                                 if let Some(state) = self.data_table_state.as_ref() {
                                     if let Ok(result) = chart_data::prepare_chart_data(
@@ -8737,40 +8842,75 @@ impl Widget for &mut App {
                                         &state.schema,
                                         x_column,
                                         &y_columns,
+                                        row_limit,
                                     ) {
                                         self.chart_cache.xy = Some(ChartCacheXY {
                                             x_column: x_key.clone(),
                                             y_columns: y_columns.clone(),
+                                            row_limit: row_limit_opt,
                                             series: result.series,
+                                            series_log: None,
                                             x_axis_kind: result.x_axis_kind,
                                         });
                                     }
                                 }
                             }
+                            if self.chart_modal.log_scale {
+                                if let Some(cache) = self.chart_cache.xy.as_mut() {
+                                    if cache.x_column == x_key
+                                        && cache.y_columns == y_columns
+                                        && cache.row_limit == row_limit_opt
+                                        && cache.series_log.is_none()
+                                        && cache.series.iter().any(|s| !s.is_empty())
+                                    {
+                                        cache.series_log = Some(
+                                            cache
+                                                .series
+                                                .iter()
+                                                .map(|pts| {
+                                                    pts.iter()
+                                                        .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
+                                                        .collect()
+                                                })
+                                                .collect(),
+                                        );
+                                    }
+                                }
+                            }
                             if let Some(cache) = self.chart_cache.xy.as_ref() {
-                                if cache.x_column == x_key && cache.y_columns == y_columns {
+                                if cache.x_column == x_key
+                                    && cache.y_columns == y_columns
+                                    && cache.row_limit == row_limit_opt
+                                {
                                     x_axis_kind = cache.x_axis_kind;
-                                    if cache.series.iter().any(|s| !s.is_empty()) {
+                                    if self.chart_modal.log_scale {
+                                        if let Some(ref log) = cache.series_log {
+                                            if log.iter().any(|v| !v.is_empty()) {
+                                                xy_series = Some(log);
+                                            }
+                                        }
+                                    } else if cache.series.iter().any(|s| !s.is_empty()) {
                                         xy_series = Some(&cache.series);
                                     }
                                 }
                             }
                         } else {
                             // Only X selected: cache x range for axis bounds
-                            let use_cache = self
-                                .chart_cache
-                                .x_range
-                                .as_ref()
-                                .filter(|c| c.x_column == x_key);
+                            let use_cache =
+                                self.chart_cache.x_range.as_ref().filter(|c| {
+                                    c.x_column == x_key && c.row_limit == row_limit_opt
+                                });
                             if use_cache.is_none() {
                                 if let Some(state) = self.data_table_state.as_ref() {
                                     if let Ok(result) = chart_data::prepare_chart_x_range(
                                         &state.lf,
                                         &state.schema,
                                         x_column,
+                                        row_limit,
                                     ) {
                                         self.chart_cache.x_range = Some(ChartCacheXRange {
                                             x_column: x_key.clone(),
+                                            row_limit: row_limit_opt,
                                             x_min: result.x_min,
                                             x_max: result.x_max,
                                             x_axis_kind: result.x_axis_kind,
@@ -8779,7 +8919,7 @@ impl Widget for &mut App {
                                 }
                             }
                             if let Some(cache) = self.chart_cache.x_range.as_ref() {
-                                if cache.x_column == x_key {
+                                if cache.x_column == x_key && cache.row_limit == row_limit_opt {
                                     x_axis_kind = cache.x_axis_kind;
                                     x_bounds = Some((cache.x_min, cache.x_max));
                                 }
@@ -8798,18 +8938,17 @@ impl Widget for &mut App {
                         self.chart_modal.effective_hist_column(),
                     ) {
                         let bins = self.chart_modal.hist_bins;
-                        let use_cache = self
-                            .chart_cache
-                            .histogram
-                            .as_ref()
-                            .filter(|c| c.column == column && c.bins == bins);
+                        let use_cache = self.chart_cache.histogram.as_ref().filter(|c| {
+                            c.column == column && c.bins == bins && c.row_limit == row_limit_opt
+                        });
                         if use_cache.is_none() {
-                            if let Ok(data) =
-                                chart_data::prepare_histogram_data(&state.lf, &column, bins)
-                            {
+                            if let Ok(data) = chart_data::prepare_histogram_data(
+                                &state.lf, &column, bins, row_limit,
+                            ) {
                                 self.chart_cache.histogram = Some(ChartCacheHistogram {
                                     column: column.clone(),
                                     bins,
+                                    row_limit: row_limit_opt,
                                     data,
                                 });
                             }
@@ -8818,7 +8957,9 @@ impl Widget for &mut App {
                             .chart_cache
                             .histogram
                             .as_ref()
-                            .filter(|c| c.column == column && c.bins == bins)
+                            .filter(|c| {
+                                c.column == column && c.bins == bins && c.row_limit == row_limit_opt
+                            })
                             .map(|c| &c.data);
                     }
                 }
@@ -8831,14 +8972,16 @@ impl Widget for &mut App {
                             .chart_cache
                             .box_plot
                             .as_ref()
-                            .filter(|c| c.column == column);
+                            .filter(|c| c.column == column && c.row_limit == row_limit_opt);
                         if use_cache.is_none() {
                             if let Ok(data) = chart_data::prepare_box_plot_data(
                                 &state.lf,
                                 std::slice::from_ref(&column),
+                                row_limit,
                             ) {
                                 self.chart_cache.box_plot = Some(ChartCacheBoxPlot {
                                     column: column.clone(),
+                                    row_limit: row_limit_opt,
                                     data,
                                 });
                             }
@@ -8847,7 +8990,7 @@ impl Widget for &mut App {
                             .chart_cache
                             .box_plot
                             .as_ref()
-                            .filter(|c| c.column == column)
+                            .filter(|c| c.column == column && c.row_limit == row_limit_opt)
                             .map(|c| &c.data);
                     }
                 }
@@ -8857,20 +9000,22 @@ impl Widget for &mut App {
                         self.chart_modal.effective_kde_column(),
                     ) {
                         let bandwidth = self.chart_modal.kde_bandwidth_factor;
-                        let use_cache = self
-                            .chart_cache
-                            .kde
-                            .as_ref()
-                            .filter(|c| c.column == column && c.bandwidth_factor == bandwidth);
+                        let use_cache = self.chart_cache.kde.as_ref().filter(|c| {
+                            c.column == column
+                                && c.bandwidth_factor == bandwidth
+                                && c.row_limit == row_limit_opt
+                        });
                         if use_cache.is_none() {
                             if let Ok(data) = chart_data::prepare_kde_data(
                                 &state.lf,
                                 std::slice::from_ref(&column),
                                 bandwidth,
+                                row_limit,
                             ) {
                                 self.chart_cache.kde = Some(ChartCacheKde {
                                     column: column.clone(),
                                     bandwidth_factor: bandwidth,
+                                    row_limit: row_limit_opt,
                                     data,
                                 });
                             }
@@ -8879,7 +9024,11 @@ impl Widget for &mut App {
                             .chart_cache
                             .kde
                             .as_ref()
-                            .filter(|c| c.column == column && c.bandwidth_factor == bandwidth)
+                            .filter(|c| {
+                                c.column == column
+                                    && c.bandwidth_factor == bandwidth
+                                    && c.row_limit == row_limit_opt
+                            })
                             .map(|c| &c.data);
                     }
                 }
@@ -8891,16 +9040,20 @@ impl Widget for &mut App {
                     ) {
                         let bins = self.chart_modal.heatmap_bins;
                         let use_cache = self.chart_cache.heatmap.as_ref().filter(|c| {
-                            c.x_column == x_column && c.y_column == y_column && c.bins == bins
+                            c.x_column == x_column
+                                && c.y_column == y_column
+                                && c.bins == bins
+                                && c.row_limit == row_limit_opt
                         });
                         if use_cache.is_none() {
                             if let Ok(data) = chart_data::prepare_heatmap_data(
-                                &state.lf, &x_column, &y_column, bins,
+                                &state.lf, &x_column, &y_column, bins, row_limit,
                             ) {
                                 self.chart_cache.heatmap = Some(ChartCacheHeatmap {
                                     x_column: x_column.clone(),
                                     y_column: y_column.clone(),
                                     bins,
+                                    row_limit: row_limit_opt,
                                     data,
                                 });
                             }
@@ -8910,7 +9063,10 @@ impl Widget for &mut App {
                             .heatmap
                             .as_ref()
                             .filter(|c| {
-                                c.x_column == x_column && c.y_column == y_column && c.bins == bins
+                                c.x_column == x_column
+                                    && c.y_column == y_column
+                                    && c.bins == bins
+                                    && c.row_limit == row_limit_opt
                             })
                             .map(|c| &c.data);
                     }

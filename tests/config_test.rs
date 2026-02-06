@@ -1,4 +1,4 @@
-use datui::config::{AppConfig, ConfigManager};
+use datui::config::{AppConfig, ConfigManager, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT};
 use std::fs;
 use tempfile::TempDir;
 
@@ -219,6 +219,22 @@ fn test_validate_config_zero_sampling_threshold() {
         .unwrap_err()
         .to_string()
         .contains("sampling_threshold must be greater than 0 when set"));
+}
+
+#[test]
+fn test_chart_config_default_and_validation() {
+    let config = AppConfig::default();
+    assert_eq!(config.chart.row_limit, Some(DEFAULT_CHART_ROW_LIMIT));
+
+    let mut invalid = AppConfig::default();
+    invalid.chart.row_limit = Some(0);
+    assert!(invalid.validate().is_err());
+    invalid.chart.row_limit = Some(MAX_CHART_ROW_LIMIT + 1);
+    assert!(invalid.validate().is_err());
+
+    let mut unlimited = AppConfig::default();
+    unlimited.chart.row_limit = None;
+    assert!(unlimited.validate().is_ok());
 }
 
 #[test]

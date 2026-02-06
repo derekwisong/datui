@@ -1,12 +1,11 @@
 //! Prepare chart data from LazyFrame: select x/y columns, collect, and convert to (f64, f64) points.
+//! All prepare_* and collect_* functions take a `row_limit` to cap materialized rows (default from config).
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use color_eyre::Result;
 use polars::datatypes::{DataType, TimeUnit};
 use polars::prelude::*;
 use std::f64::consts::PI;
-
-const CHART_ROW_LIMIT: usize = 10_000;
 
 /// Describes how x-axis numeric values map to temporal types for label formatting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,11 +92,12 @@ pub struct ChartXRangeResult {
 }
 
 /// Loads only the x column and returns its min/max (for axis display when no y is selected).
-/// Drops nulls and limits to `CHART_ROW_LIMIT` rows. If no valid values, returns (0.0, 1.0).
+/// Limits to `row_limit` rows then scans for min/max (single column materialized).
 pub fn prepare_chart_x_range(
     lf: &LazyFrame,
     schema: &Schema,
     x_column: &str,
+    row_limit: usize,
 ) -> Result<ChartXRangeResult> {
     let x_dtype = schema
         .get(x_column)
@@ -115,7 +115,7 @@ pub fn prepare_chart_x_range(
         .clone()
         .select([x_expr])
         .drop_nulls(None)
-        .slice(0, CHART_ROW_LIMIT as u32)
+        .slice(0, row_limit as u32)
         .collect()?;
 
     let n_rows = df.height();
@@ -165,12 +165,14 @@ pub struct ChartDataResult {
 }
 
 /// Histogram bin (center and count).
+#[derive(Clone)]
 pub struct HistogramBin {
     pub center: f64,
     pub count: f64,
 }
 
 /// Histogram data for a single column.
+#[derive(Clone)]
 pub struct HistogramData {
     pub column: String,
     pub bins: Vec<HistogramBin>,
@@ -180,11 +182,13 @@ pub struct HistogramData {
 }
 
 /// KDE series and bounds.
+#[derive(Clone)]
 pub struct KdeSeries {
     pub name: String,
     pub points: Vec<(f64, f64)>,
 }
 
+#[derive(Clone)]
 pub struct KdeData {
     pub series: Vec<KdeSeries>,
     pub x_min: f64,
@@ -193,6 +197,7 @@ pub struct KdeData {
 }
 
 /// Box plot stats for a column.
+#[derive(Clone)]
 pub struct BoxPlotStats {
     pub name: String,
     pub min: f64,
@@ -202,6 +207,7 @@ pub struct BoxPlotStats {
     pub max: f64,
 }
 
+#[derive(Clone)]
 pub struct BoxPlotData {
     pub stats: Vec<BoxPlotStats>,
     pub y_min: f64,
@@ -209,6 +215,7 @@ pub struct BoxPlotData {
 }
 
 /// Heatmap data for two numeric columns.
+#[derive(Clone)]
 pub struct HeatmapData {
     pub x_column: String,
     pub y_column: String,
@@ -224,12 +231,13 @@ pub struct HeatmapData {
 
 /// Prepares chart data from the current LazyFrame.
 /// Returns series data and x-axis kind. X is cast to f64 (temporal types as ordinal).
-/// Drops nulls and limits to `CHART_ROW_LIMIT` rows.
+/// Drops nulls and limits to `row_limit` rows.
 pub fn prepare_chart_data(
     lf: &LazyFrame,
     schema: &Schema,
     x_column: &str,
     y_columns: &[String],
+    row_limit: usize,
 ) -> Result<ChartDataResult> {
     if y_columns.is_empty() {
         return Ok(ChartDataResult {
@@ -261,7 +269,7 @@ pub fn prepare_chart_data(
         .clone()
         .select(select_exprs)
         .drop_nulls(None)
-        .slice(0, CHART_ROW_LIMIT as u32)
+        .slice(0, row_limit as u32)
         .collect()?;
 
     let n_rows = df.height();
@@ -298,12 +306,12 @@ pub fn prepare_chart_data(
     })
 }
 
-fn collect_numeric_values(lf: &LazyFrame, column: &str) -> Result<Vec<f64>> {
+fn collect_numeric_values(lf: &LazyFrame, column: &str, row_limit: usize) -> Result<Vec<f64>> {
     let df = lf
         .clone()
         .select([col(column).cast(DataType::Float64)])
         .drop_nulls(None)
-        .slice(0, CHART_ROW_LIMIT as u32)
+        .slice(0, row_limit as u32)
         .collect()?;
     let series = df.column(column)?.f64()?;
     let mut values = Vec::with_capacity(series.len());
@@ -317,10 +325,46 @@ fn collect_numeric_values(lf: &LazyFrame, column: &str) -> Result<Vec<f64>> {
     Ok(values)
 }
 
+/// Collect multiple numeric columns in a single scan. Returns one Vec<f64> per column (finite values only).
+fn collect_numeric_columns(
+    lf: &LazyFrame,
+    columns: &[&str],
+    row_limit: usize,
+) -> Result<Vec<Vec<f64>>> {
+    if columns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let select_exprs: Vec<Expr> = columns
+        .iter()
+        .map(|c| col(*c).cast(DataType::Float64))
+        .collect();
+    let df = lf
+        .clone()
+        .select(select_exprs)
+        .drop_nulls(None)
+        .slice(0, row_limit as u32)
+        .collect()?;
+    let mut out = Vec::with_capacity(columns.len());
+    for col_name in columns {
+        let series = df.column(col_name)?.f64()?;
+        let mut values = Vec::with_capacity(series.len());
+        for i in 0..series.len() {
+            if let Some(v) = series.get(i) {
+                if v.is_finite() {
+                    values.push(v);
+                }
+            }
+        }
+        out.push(values);
+    }
+    Ok(out)
+}
+
 fn collect_numeric_pairs(
     lf: &LazyFrame,
     x_column: &str,
     y_column: &str,
+    row_limit: usize,
 ) -> Result<Vec<(f64, f64)>> {
     let df = lf
         .clone()
@@ -329,7 +373,7 @@ fn collect_numeric_pairs(
             col(y_column).cast(DataType::Float64),
         ])
         .drop_nulls(None)
-        .slice(0, CHART_ROW_LIMIT as u32)
+        .slice(0, row_limit as u32)
         .collect()?;
     let x_series = df.column(x_column)?.f64()?;
     let y_series = df.column(y_column)?.f64()?;
@@ -345,8 +389,13 @@ fn collect_numeric_pairs(
 }
 
 /// Prepare histogram data for a numeric column.
-pub fn prepare_histogram_data(lf: &LazyFrame, column: &str, bins: usize) -> Result<HistogramData> {
-    let mut values = collect_numeric_values(lf, column)?;
+pub fn prepare_histogram_data(
+    lf: &LazyFrame,
+    column: &str,
+    bins: usize,
+    row_limit: usize,
+) -> Result<HistogramData> {
+    let mut values = collect_numeric_values(lf, column, row_limit)?;
     if values.is_empty() {
         return Ok(HistogramData {
             column: column.to_string(),
@@ -424,14 +473,25 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     }
 }
 
-/// Prepare box plot stats for one or more numeric columns.
-pub fn prepare_box_plot_data<T: AsRef<str>>(lf: &LazyFrame, columns: &[T]) -> Result<BoxPlotData> {
+/// Prepare box plot stats for one or more numeric columns. Uses a single collect for all columns.
+pub fn prepare_box_plot_data<T: AsRef<str>>(
+    lf: &LazyFrame,
+    columns: &[T],
+    row_limit: usize,
+) -> Result<BoxPlotData> {
+    if columns.is_empty() {
+        return Ok(BoxPlotData {
+            stats: Vec::new(),
+            y_min: 0.0,
+            y_max: 1.0,
+        });
+    }
+    let col_refs: Vec<&str> = columns.iter().map(|c| c.as_ref()).collect();
+    let columns_values = collect_numeric_columns(lf, &col_refs, row_limit)?;
     let mut stats = Vec::new();
     let mut y_min = f64::INFINITY;
     let mut y_max = f64::NEG_INFINITY;
-    for column in columns {
-        let column = column.as_ref();
-        let mut values = collect_numeric_values(lf, column)?;
+    for (column, mut values) in col_refs.iter().zip(columns_values) {
         if values.is_empty() {
             continue;
         }
@@ -444,7 +504,7 @@ pub fn prepare_box_plot_data<T: AsRef<str>>(lf: &LazyFrame, columns: &[T]) -> Re
         y_min = y_min.min(min);
         y_max = y_max.max(max);
         stats.push(BoxPlotStats {
-            name: column.to_owned(),
+            name: (*column).to_string(),
             min,
             q1,
             median,
@@ -483,19 +543,28 @@ fn kde_bandwidth(values: &[f64]) -> f64 {
     1.06 * std * n.powf(-0.2)
 }
 
-/// Prepare KDE data for one or more numeric columns.
+/// Prepare KDE data for one or more numeric columns. Uses a single collect for all columns.
 pub fn prepare_kde_data<T: AsRef<str>>(
     lf: &LazyFrame,
     columns: &[T],
     bandwidth_factor: f64,
+    row_limit: usize,
 ) -> Result<KdeData> {
+    if columns.is_empty() {
+        return Ok(KdeData {
+            series: Vec::new(),
+            x_min: 0.0,
+            x_max: 1.0,
+            y_max: 1.0,
+        });
+    }
+    let col_refs: Vec<&str> = columns.iter().map(|c| c.as_ref()).collect();
+    let columns_values = collect_numeric_columns(lf, &col_refs, row_limit)?;
     let mut series = Vec::new();
     let mut all_x_min = f64::INFINITY;
     let mut all_x_max = f64::NEG_INFINITY;
     let mut all_y_max = f64::NEG_INFINITY;
-    for column in columns {
-        let column = column.as_ref();
-        let mut values = collect_numeric_values(lf, column)?;
+    for (column, mut values) in col_refs.iter().zip(columns_values) {
         if values.is_empty() {
             continue;
         }
@@ -524,7 +593,7 @@ pub fn prepare_kde_data<T: AsRef<str>>(
         all_x_min = all_x_min.min(x_start);
         all_x_max = all_x_max.max(x_end);
         series.push(KdeSeries {
-            name: column.to_owned(),
+            name: (*column).to_string(),
             points,
         });
     }
@@ -556,8 +625,9 @@ pub fn prepare_heatmap_data(
     x_column: &str,
     y_column: &str,
     bins: usize,
+    row_limit: usize,
 ) -> Result<HeatmapData> {
-    let pairs = collect_numeric_pairs(lf, x_column, y_column)?;
+    let pairs = collect_numeric_pairs(lf, x_column, y_column, row_limit)?;
     if pairs.is_empty() {
         return Ok(HeatmapData {
             x_column: x_column.to_string(),
@@ -640,7 +710,7 @@ mod tests {
             .unwrap()
             .lazy();
         let schema = lf.clone().collect_schema().unwrap();
-        let result = prepare_chart_data(&lf, schema.as_ref(), "x", &[]).unwrap();
+        let result = prepare_chart_data(&lf, schema.as_ref(), "x", &[], 10_000).unwrap();
         assert!(result.series.is_empty());
         assert_eq!(result.x_axis_kind, XAxisTemporalKind::Numeric);
     }
@@ -656,7 +726,8 @@ mod tests {
         .lazy();
         let schema = lf.clone().collect_schema().unwrap();
         let result =
-            prepare_chart_data(&lf, schema.as_ref(), "x", &["a".into(), "b".into()]).unwrap();
+            prepare_chart_data(&lf, schema.as_ref(), "x", &["a".into(), "b".into()], 10_000)
+                .unwrap();
         assert_eq!(result.series.len(), 2);
         assert_eq!(
             result.series[0],
@@ -678,7 +749,7 @@ mod tests {
         .unwrap()
         .lazy();
         let schema = lf.clone().collect_schema().unwrap();
-        let result = prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()]).unwrap();
+        let result = prepare_chart_data(&lf, schema.as_ref(), "x", &["y".into()], 10_000).unwrap();
         assert_eq!(result.series[0].len(), 2);
         assert_eq!(result.series[0], vec![(1.0, 10.0), (3.0, 30.0)]);
     }
@@ -687,7 +758,7 @@ mod tests {
     fn prepare_missing_x_column_errors() {
         let lf = df!("x" => &[1.0_f64], "y" => &[2.0_f64]).unwrap().lazy();
         let schema = lf.clone().collect_schema().unwrap();
-        let result = prepare_chart_data(&lf, schema.as_ref(), "missing", &["y".into()]);
+        let result = prepare_chart_data(&lf, schema.as_ref(), "missing", &["y".into()], 10_000);
         assert!(result.is_err());
     }
 }
@@ -701,7 +772,7 @@ mod x_range_tests {
     fn prepare_x_range_numeric() {
         let lf = df!("x" => &[10.0_f64, 20.0, 5.0, 30.0]).unwrap().lazy();
         let schema = lf.clone().collect_schema().unwrap();
-        let r = prepare_chart_x_range(&lf, schema.as_ref(), "x").unwrap();
+        let r = prepare_chart_x_range(&lf, schema.as_ref(), "x", 10_000).unwrap();
         assert_eq!(r.x_min, 5.0);
         assert_eq!(r.x_max, 30.0);
         assert_eq!(r.x_axis_kind, XAxisTemporalKind::Numeric);
@@ -711,7 +782,7 @@ mod x_range_tests {
     fn prepare_x_range_empty_returns_placeholder() {
         let lf = df!("x" => &[1.0_f64]).unwrap().lazy().slice(0, 0);
         let schema = lf.clone().collect_schema().unwrap();
-        let r = prepare_chart_x_range(&lf, schema.as_ref(), "x").unwrap();
+        let r = prepare_chart_x_range(&lf, schema.as_ref(), "x", 10_000).unwrap();
         assert_eq!(r.x_min, 0.0);
         assert_eq!(r.x_max, 1.0);
     }

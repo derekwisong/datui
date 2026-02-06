@@ -249,6 +249,7 @@ pub fn render_chart_view(
                     Constraint::Length(1), // Start y axis at 0
                     Constraint::Length(1), // Log Scale
                     Constraint::Length(1), // Legend
+                    Constraint::Length(1), // Limit Rows
                 ])
                 .split(sidebar_inner);
 
@@ -397,6 +398,15 @@ pub fn render_chart_view(
             };
             Paragraph::new(Line::from(Span::styled(legend_marker, legend_check_style)))
                 .render(legend_row[1], buf);
+
+            render_number_option(
+                sidebar_content[11],
+                buf,
+                "Limit Rows:",
+                &modal.row_limit_display(),
+                focus == ChartFocus::LimitRows,
+                theme,
+            );
         }
         ChartKind::Histogram => {
             let hist_display = modal.hist_display_list();
@@ -407,6 +417,7 @@ pub fn render_chart_view(
                     Constraint::Length(1), // Column label
                     Constraint::Min(4),    // Column selector
                     Constraint::Length(1), // Bins
+                    Constraint::Length(1), // Limit Rows
                 ])
                 .split(sidebar_inner);
             Paragraph::new("Value column:")
@@ -432,13 +443,25 @@ pub fn render_chart_view(
                 focus == ChartFocus::HistBins,
                 theme,
             );
+            render_number_option(
+                sidebar_content[3],
+                buf,
+                "Limit Rows:",
+                &modal.row_limit_display(),
+                focus == ChartFocus::LimitRows,
+                theme,
+            );
         }
         ChartKind::BoxPlot => {
             let box_display = modal.box_display_list();
             let box_selected_set: HashSet<String> = modal.box_column.iter().cloned().collect();
             let sidebar_content = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(4)])
+                .constraints([
+                    Constraint::Length(1), // Column label
+                    Constraint::Min(4),    // Column selector
+                    Constraint::Length(1), // Limit Rows
+                ])
                 .split(sidebar_inner);
             Paragraph::new("Value column:")
                 .style(Style::default().fg(text_primary))
@@ -455,6 +478,14 @@ pub fn render_chart_view(
                 theme,
                 " Filter Columns ",
             );
+            render_number_option(
+                sidebar_content[2],
+                buf,
+                "Limit Rows:",
+                &modal.row_limit_display(),
+                focus == ChartFocus::LimitRows,
+                theme,
+            );
         }
         ChartKind::Kde => {
             let kde_display = modal.kde_display_list();
@@ -465,6 +496,7 @@ pub fn render_chart_view(
                     Constraint::Length(1), // Column label
                     Constraint::Min(4),    // Column selector
                     Constraint::Length(1), // Bandwidth
+                    Constraint::Length(1), // Limit Rows
                 ])
                 .split(sidebar_inner);
             Paragraph::new("Value column:")
@@ -490,6 +522,14 @@ pub fn render_chart_view(
                 focus == ChartFocus::KdeBandwidth,
                 theme,
             );
+            render_number_option(
+                sidebar_content[3],
+                buf,
+                "Limit Rows:",
+                &modal.row_limit_display(),
+                focus == ChartFocus::LimitRows,
+                theme,
+            );
         }
         ChartKind::Heatmap => {
             let x_display = modal.heatmap_x_display_list();
@@ -505,6 +545,7 @@ pub fn render_chart_view(
                     Constraint::Length(1), // Y label
                     Constraint::Min(4),    // Y selector
                     Constraint::Length(1), // Bins
+                    Constraint::Length(1), // Limit Rows
                 ])
                 .split(sidebar_inner);
             Paragraph::new("X axis:")
@@ -543,6 +584,14 @@ pub fn render_chart_view(
                 "Bins:",
                 &format!("{}", modal.heatmap_bins),
                 focus == ChartFocus::HeatmapBins,
+                theme,
+            );
+            render_number_option(
+                sidebar_content[6],
+                buf,
+                "Limit Rows:",
+                &modal.row_limit_display(),
+                focus == ChartFocus::LimitRows,
                 theme,
             );
         }
@@ -683,28 +732,16 @@ fn render_xy_chart(
         let mut all_y_min = f64::INFINITY;
         let mut all_y_max = f64::NEG_INFINITY;
 
-        let plot_points_with_names: Vec<(String, Vec<(f64, f64)>)> = data
+        // Data is already in display form (log-scaled when log_scale) from cache; use as-is.
+        let names_and_points: Vec<(&str, &[(f64, f64)])> = data
             .iter()
             .zip(y_columns.iter())
             .filter_map(|(points, name)| {
                 if points.is_empty() {
                     return None;
                 }
-                let pts = if log_scale {
-                    points
-                        .iter()
-                        .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
-                        .collect()
-                } else {
-                    points.clone()
-                };
-                Some((name.clone(), pts))
+                Some((name.as_str(), points.as_slice()))
             })
-            .collect();
-
-        let names_and_points: Vec<(&str, &[(f64, f64)])> = plot_points_with_names
-            .iter()
-            .map(|(name, pts)| (name.as_str(), pts.as_slice()))
             .collect();
 
         for (_, points) in &names_and_points {

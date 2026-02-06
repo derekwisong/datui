@@ -6,6 +6,7 @@ Chart view: tabs for XY, Histogram, Box Plot, KDE, Heatmap.
                     On bins/bandwidth: adjust values
   ↑ / ↓:            Move selection in focused column list
   Enter / Space:    Select column or toggle options
-  + / -:            Adjust bins or bandwidth when focused
+  + / -:            Adjust bins, bandwidth, or Limit Rows when focused
+  Limit Rows:       Caps how many rows from the dataset are used to build the chart (sidebar, bottom).
   ? / F1:           Show this help
   Esc:              Back to main view

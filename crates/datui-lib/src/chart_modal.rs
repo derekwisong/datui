@@ -82,6 +82,8 @@ pub enum ChartFocus {
     HeatmapYInput,
     HeatmapYList,
     HeatmapBins,
+    /// Limit Rows (shared across all chart types; at bottom of options).
+    LimitRows,
 }
 
 /// Maximum number of y-axis series that can be selected (remembered).
@@ -101,6 +103,35 @@ pub const HEATMAP_MAX_BINS: usize = 60;
 pub const KDE_BANDWIDTH_MIN: f64 = 0.2;
 pub const KDE_BANDWIDTH_MAX: f64 = 5.0;
 pub const KDE_BANDWIDTH_STEP: f64 = 0.1;
+
+/// Chart row limit bounds (for Limit Rows option). User can go down to 0; 0 becomes unlimited (None).
+pub const CHART_ROW_LIMIT_MIN: usize = 0;
+/// Maximum applicable limit (Polars slice takes u32).
+pub const CHART_ROW_LIMIT_MAX: usize = u32::MAX as usize;
+/// PgUp/PgDown step for Limit Rows.
+pub const CHART_ROW_LIMIT_PAGE_STEP: usize = 100_000;
+/// Default numeric limit when switching from Unlimited with + or PgUp.
+pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
+/// Below this limit, +/- step is CHART_ROW_LIMIT_STEP_SMALL; at or above, CHART_ROW_LIMIT_STEP_LARGE.
+pub const CHART_ROW_LIMIT_STEP_THRESHOLD: usize = 20_000;
+pub const CHART_ROW_LIMIT_STEP_SMALL: i32 = 1_000;
+pub const CHART_ROW_LIMIT_STEP_LARGE: i32 = 5_000;
+
+fn format_usize_with_commas(n: usize) -> String {
+    let s = n.to_string();
+    let len = s.len();
+    if len <= 3 {
+        return s;
+    }
+    let first_len = len % 3;
+    let first_len = if first_len == 0 { 3 } else { first_len };
+    let mut out = s[..first_len].to_string();
+    for i in (first_len..len).step_by(3) {
+        out.push(',');
+        out.push_str(&s[i..i + 3]);
+    }
+    out
+}
 
 /// Chart modal state: chart kind, axes/columns, and options.
 #[derive(Default)]
@@ -155,6 +186,8 @@ pub struct ChartModal {
     pub heatmap_y_list_state: ListState,
     pub heatmap_x_candidates: Vec<String>,
     pub heatmap_y_candidates: Vec<String>,
+    /// Maximum rows for chart data. None = unlimited (display "Unlimited"); Some(n) = cap at n.
+    pub row_limit: Option<usize>,
 }
 
 impl ChartModal {
@@ -163,7 +196,13 @@ impl ChartModal {
     }
 
     /// Open the chart modal. No default x or y columns; user selects with spacebar.
-    pub fn open(&mut self, numeric_columns: &[String], datetime_columns: &[String]) {
+    /// `default_row_limit` is the initial value for Limit Rows (e.g. from config); None = unlimited.
+    pub fn open(
+        &mut self,
+        numeric_columns: &[String],
+        datetime_columns: &[String],
+        default_row_limit: Option<usize>,
+    ) {
         self.active = true;
         self.chart_kind = ChartKind::XY;
         self.chart_type = ChartType::Line;
@@ -171,6 +210,13 @@ impl ChartModal {
         self.log_scale = false;
         self.show_legend = true;
         self.focus = ChartFocus::TabBar;
+        self.row_limit = default_row_limit.and_then(|n| {
+            if n == 0 {
+                None
+            } else {
+                Some(n.clamp(1, CHART_ROW_LIMIT_MAX))
+            }
+        });
 
         // x_candidates: datetime first, then numeric (for list order).
         self.x_candidates = datetime_columns.to_vec();
@@ -663,6 +709,19 @@ impl ChartModal {
         self.focus = ChartFocus::TabBar;
     }
 
+    /// Effective row limit to pass to prepare_* (unlimited = CHART_ROW_LIMIT_MAX).
+    pub fn effective_row_limit(&self) -> usize {
+        self.row_limit.unwrap_or(CHART_ROW_LIMIT_MAX)
+    }
+
+    /// Display string for Limit Rows: "Unlimited" or number with commas.
+    pub fn row_limit_display(&self) -> String {
+        match self.row_limit {
+            None => "Unlimited".to_string(),
+            Some(n) => format_usize_with_commas(n),
+        }
+    }
+
     pub fn adjust_hist_bins(&mut self, delta: i32) {
         let next = (self.hist_bins as i32 + delta)
             .clamp(HISTOGRAM_MIN_BINS as i32, HISTOGRAM_MAX_BINS as i32);
@@ -678,6 +737,48 @@ impl ChartModal {
     pub fn adjust_kde_bandwidth_factor(&mut self, delta: f64) {
         let next = (self.kde_bandwidth_factor + delta).clamp(KDE_BANDWIDTH_MIN, KDE_BANDWIDTH_MAX);
         self.kde_bandwidth_factor = (next * 10.0).round() / 10.0;
+    }
+
+    /// Adjust row limit by delta (+/-). Step size depends on current value. None = unlimited.
+    pub fn adjust_row_limit(&mut self, delta: i32) {
+        let current = match self.row_limit {
+            None if delta > 0 => {
+                self.row_limit = Some(DEFAULT_CHART_ROW_LIMIT);
+                return;
+            }
+            None => return,
+            Some(n) => n,
+        };
+        let step = if current < CHART_ROW_LIMIT_STEP_THRESHOLD {
+            CHART_ROW_LIMIT_STEP_SMALL as usize
+        } else {
+            CHART_ROW_LIMIT_STEP_LARGE as usize
+        };
+        let next = match delta.cmp(&0) {
+            std::cmp::Ordering::Greater => current.saturating_add(step).min(CHART_ROW_LIMIT_MAX),
+            std::cmp::Ordering::Less => current.saturating_sub(step).max(CHART_ROW_LIMIT_MIN),
+            std::cmp::Ordering::Equal => current,
+        };
+        self.row_limit = if next == 0 { None } else { Some(next) };
+    }
+
+    /// Adjust row limit by 10,000 (PgUp / PgDown). None = unlimited.
+    pub fn adjust_row_limit_page(&mut self, delta: i32) {
+        let current = match self.row_limit {
+            None if delta > 0 => {
+                self.row_limit = Some(DEFAULT_CHART_ROW_LIMIT);
+                return;
+            }
+            None => return,
+            Some(n) => n,
+        };
+        let step = CHART_ROW_LIMIT_PAGE_STEP;
+        let next = match delta.cmp(&0) {
+            std::cmp::Ordering::Greater => current.saturating_add(step).min(CHART_ROW_LIMIT_MAX),
+            std::cmp::Ordering::Less => current.saturating_sub(step).max(CHART_ROW_LIMIT_MIN),
+            std::cmp::Ordering::Equal => current,
+        };
+        self.row_limit = if next == 0 { None } else { Some(next) };
     }
 
     /// Move x-axis list highlight down (does not change remembered x; use spacebar to remember).
@@ -986,23 +1087,27 @@ impl ChartModal {
                 ChartFocus::YStartsAtZero,
                 ChartFocus::LogScale,
                 ChartFocus::ShowLegend,
+                ChartFocus::LimitRows,
             ],
             ChartKind::Histogram => &[
                 ChartFocus::TabBar,
                 ChartFocus::HistInput,
                 ChartFocus::HistList,
                 ChartFocus::HistBins,
+                ChartFocus::LimitRows,
             ],
             ChartKind::BoxPlot => &[
                 ChartFocus::TabBar,
                 ChartFocus::BoxInput,
                 ChartFocus::BoxList,
+                ChartFocus::LimitRows,
             ],
             ChartKind::Kde => &[
                 ChartFocus::TabBar,
                 ChartFocus::KdeInput,
                 ChartFocus::KdeList,
                 ChartFocus::KdeBandwidth,
+                ChartFocus::LimitRows,
             ],
             ChartKind::Heatmap => &[
                 ChartFocus::TabBar,
@@ -1011,6 +1116,7 @@ impl ChartModal {
                 ChartFocus::HeatmapYInput,
                 ChartFocus::HeatmapYList,
                 ChartFocus::HeatmapBins,
+                ChartFocus::LimitRows,
             ],
         }
     }
@@ -1025,7 +1131,7 @@ mod tests {
         let numeric = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let datetime = vec!["date".to_string()];
         let mut modal = ChartModal::new();
-        modal.open(&numeric, &datetime);
+        modal.open(&numeric, &datetime, Some(10_000));
         assert!(modal.active);
         assert_eq!(modal.chart_kind, ChartKind::XY);
         assert_eq!(modal.chart_type, ChartType::Line);
@@ -1035,13 +1141,14 @@ mod tests {
         assert!(!modal.log_scale);
         assert!(modal.show_legend);
         assert_eq!(modal.focus, ChartFocus::TabBar);
+        assert_eq!(modal.row_limit, Some(10_000));
     }
 
     #[test]
     fn open_numeric_only_no_defaults() {
         let numeric = vec!["x".to_string(), "y".to_string()];
         let mut modal = ChartModal::new();
-        modal.open(&numeric, &[]);
+        modal.open(&numeric, &[], Some(10_000));
         assert!(modal.x_column.is_none());
         assert!(modal.y_columns.is_empty());
     }
@@ -1049,7 +1156,7 @@ mod tests {
     #[test]
     fn toggles_persist() {
         let mut modal = ChartModal::new();
-        modal.open(&["a".into(), "b".into()], &[]);
+        modal.open(&["a".into(), "b".into()], &[], Some(10_000));
         assert!(!modal.y_starts_at_zero);
         modal.toggle_y_starts_at_zero();
         assert!(modal.y_starts_at_zero);
@@ -1062,7 +1169,7 @@ mod tests {
     #[test]
     fn x_display_list_puts_remembered_first() {
         let mut modal = ChartModal::new();
-        modal.open(&["a".into(), "b".into(), "c".into()], &[]);
+        modal.open(&["a".into(), "b".into(), "c".into()], &[], Some(10_000));
         assert_eq!(modal.x_display_list(), vec!["a", "b", "c"]);
         modal.x_column = Some("c".to_string());
         assert_eq!(modal.x_display_list(), vec!["c", "a", "b"]);
@@ -1071,7 +1178,7 @@ mod tests {
     #[test]
     fn y_list_toggle_add_remove() {
         let mut modal = ChartModal::new();
-        modal.open(&["a".into(), "b".into(), "c".into()], &[]);
+        modal.open(&["a".into(), "b".into(), "c".into()], &[], Some(10_000));
         modal.y_list_state.select(Some(0)); // highlight "a"
         modal.y_list_toggle();
         assert_eq!(modal.y_columns, vec!["a"]);
@@ -1088,7 +1195,7 @@ mod tests {
     fn y_series_max_cap() {
         let mut modal = ChartModal::new();
         let cols: Vec<String> = (0..10).map(|i| format!("col_{}", i)).collect();
-        modal.open(&cols, &[]);
+        modal.open(&cols, &[], Some(10_000));
         for i in 0..Y_SERIES_MAX {
             modal.y_list_state.select(Some(i));
             modal.y_list_toggle();

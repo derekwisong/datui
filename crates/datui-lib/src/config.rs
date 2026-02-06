@@ -97,6 +97,11 @@ impl ConfigManager {
             comments.insert(format!("performance.{}", field), comment.to_string());
         }
 
+        // Chart fields
+        for (field, comment) in CHART_COMMENTS {
+            comments.insert(format!("chart.{}", field), comment.to_string());
+        }
+
         // Theme fields
         for (field, comment) in THEME_COMMENTS {
             comments.insert(format!("theme.{}", field), comment.to_string());
@@ -217,6 +222,7 @@ impl ConfigManager {
             "file_loading.has_header",
             "file_loading.skip_lines",
             "file_loading.skip_rows",
+            "chart.row_limit",
             "ui.controls.custom_controls",
         ];
 
@@ -332,6 +338,7 @@ pub struct AppConfig {
     pub file_loading: FileLoadingConfig,
     pub display: DisplayConfig,
     pub performance: PerformanceConfig,
+    pub chart: ChartConfig,
     pub theme: ThemeConfig,
     pub ui: UiConfig,
     pub query: QueryConfig,
@@ -362,6 +369,10 @@ const SECTION_HEADERS: &[(&str, &str)] = &[
     (
         "performance",
         "# ============================================================================\n# Performance Settings\n# ============================================================================",
+    ),
+    (
+        "chart",
+        "# ============================================================================\n# Chart View\n# ============================================================================",
     ),
     (
         "theme",
@@ -546,6 +557,42 @@ const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
         "Event polling interval in milliseconds\nLower values = more responsive but higher CPU usage",
     ),
 ];
+
+/// Default maximum rows used for chart data when not overridden by config or UI.
+pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
+/// Maximum chart row limit (Polars slice takes u32).
+pub const MAX_CHART_ROW_LIMIT: usize = u32::MAX as usize;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChartConfig {
+    /// Maximum rows for chart data. None (null in TOML) = unlimited; Some(n) = cap at n. Default 10000.
+    pub row_limit: Option<usize>,
+}
+
+// Field comments for ChartConfig
+const CHART_COMMENTS: &[(&str, &str)] = &[
+    (
+        "row_limit",
+        "Maximum rows used when building charts (display and export).\nSet to null for unlimited (uses full dataset). Set to a number (e.g. 10000) to cap. Can also be changed in chart view (Limit Rows). Example: row_limit = 10000",
+    ),
+];
+
+impl Default for ChartConfig {
+    fn default() -> Self {
+        Self {
+            row_limit: Some(DEFAULT_CHART_ROW_LIMIT),
+        }
+    }
+}
+
+impl ChartConfig {
+    pub fn merge(&mut self, other: Self) {
+        if other.row_limit.is_some() {
+            self.row_limit = other.row_limit;
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -805,6 +852,7 @@ impl Default for AppConfig {
             file_loading: FileLoadingConfig::default(),
             display: DisplayConfig::default(),
             performance: PerformanceConfig::default(),
+            chart: ChartConfig::default(),
             theme: ThemeConfig::default(),
             ui: UiConfig::default(),
             query: QueryConfig::default(),
@@ -971,6 +1019,7 @@ impl AppConfig {
         self.file_loading.merge(other.file_loading);
         self.display.merge(other.display);
         self.performance.merge(other.performance);
+        self.chart.merge(other.chart);
         self.theme.merge(other.theme);
         self.ui.merge(other.ui);
         self.query.merge(other.query);
@@ -997,6 +1046,16 @@ impl AppConfig {
 
         if self.performance.event_poll_interval_ms == 0 {
             return Err(eyre!("event_poll_interval_ms must be greater than 0"));
+        }
+
+        if let Some(n) = self.chart.row_limit {
+            if n == 0 || n > MAX_CHART_ROW_LIMIT {
+                return Err(eyre!(
+                    "chart.row_limit must be between 1 and {} when set, got {}",
+                    MAX_CHART_ROW_LIMIT,
+                    n
+                ));
+            }
         }
 
         // Validate all colors can be parsed

@@ -29,6 +29,7 @@ Press **`c`** from the main view to open the chart.
 - **Heatmap**:
   - **X axis / Y axis**: Select numeric columns.
   - **Bins**: Adjust with `+`/`-` or ←/→ when focused.
+- **Limit Rows** (all chart types, at bottom of options): Maximum rows used to build the chart. Adjust with `+`/`-` or ←/→ when focused. Default comes from config (`chart.row_limit`, typically 10,000).
 - `Tab` / `Shift+Tab` move focus
 - `Esc` returns to the main view
 
@@ -46,4 +47,5 @@ Press **`e`** to open the chart export dialog.
 
 ## Configuration
 
-Series colors can be configured in `theme.colors` as `chart_series_color_1` through `chart_series_color_7`. See [Configuration](configuration.md).
+- **Series colors**: In `theme.colors`, set `chart_series_color_1` through `chart_series_color_7`. See [Configuration](configuration.md).
+- **Default row limit**: In `[chart]`, set `row_limit` (e.g. `10000`) to change the default maximum rows used for chart data. You can override it in the UI with **Limit Rows**.

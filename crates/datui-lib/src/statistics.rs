@@ -1,4 +1,5 @@
 use color_eyre::Result;
+use polars::polars_compute::rolling::QuantileMethod;
 use polars::prelude::*;
 use std::collections::HashMap;
 
@@ -261,13 +262,13 @@ pub fn compute_statistics_with_options(
         }
     };
 
-    // sample_size parameter is the threshold, not the actual row count
-    let sampling_threshold = sample_size.unwrap_or(SAMPLING_THRESHOLD);
-    let should_sample = total_rows >= sampling_threshold;
-    let actual_sample_size = if should_sample {
-        Some(sampling_threshold)
+    // sample_size: None = never sample (full data); Some(threshold) = sample when total_rows >= threshold
+    let should_sample = sample_size.is_some_and(|t| total_rows >= t);
+    let (sampling_threshold, actual_sample_size) = if should_sample {
+        let t = sample_size.unwrap();
+        (t, Some(t))
     } else {
-        None
+        (0, None)
     };
 
     let df = if should_sample {
@@ -446,6 +447,203 @@ pub fn analysis_results_from_describe(
     }
 }
 
+/// Builds aggregation expressions for describe (count, null_count, mean, std, percentiles, min, max).
+/// Used so we can run a single collect on a LazyFrame without materializing all rows.
+fn build_describe_aggregation_exprs(schema: &Schema) -> Vec<Expr> {
+    let mut exprs = Vec::new();
+    for (name, dtype) in schema.iter() {
+        let name = name.as_str();
+        let prefix = format!("{}::", name);
+        exprs.push(col(name).count().alias(format!("{}count", prefix)));
+        exprs.push(
+            col(name)
+                .null_count()
+                .alias(format!("{}null_count", prefix)),
+        );
+        if is_numeric_type(dtype) {
+            let c = col(name).cast(DataType::Float64);
+            exprs.push(c.clone().mean().alias(format!("{}mean", prefix)));
+            exprs.push(c.clone().std(1).alias(format!("{}std", prefix)));
+            exprs.push(c.clone().min().alias(format!("{}min", prefix)));
+            exprs.push(
+                c.clone()
+                    .quantile(lit(0.25), QuantileMethod::Nearest)
+                    .alias(format!("{}q25", prefix)),
+            );
+            exprs.push(
+                c.clone()
+                    .quantile(lit(0.5), QuantileMethod::Nearest)
+                    .alias(format!("{}median", prefix)),
+            );
+            exprs.push(
+                c.clone()
+                    .quantile(lit(0.75), QuantileMethod::Nearest)
+                    .alias(format!("{}q75", prefix)),
+            );
+            exprs.push(c.max().alias(format!("{}max", prefix)));
+        } else if is_categorical_type(dtype) {
+            exprs.push(col(name).min().alias(format!("{}min", prefix)));
+            exprs.push(col(name).max().alias(format!("{}max", prefix)));
+        }
+    }
+    exprs
+}
+
+/// Parses the single-row aggregation result from describe into column statistics.
+fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStatistics> {
+    let row = 0usize;
+    let mut column_statistics = Vec::with_capacity(schema.len());
+    for (name, dtype) in schema.iter() {
+        let name_str = name.as_str();
+        let prefix = format!("{}::", name_str);
+        let count: usize = agg_df
+            .column(&format!("{}count", prefix))
+            .ok()
+            .map(|s| match s.get(row) {
+                Ok(AnyValue::UInt32(x)) => x as usize,
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let null_count: usize = agg_df
+            .column(&format!("{}null_count", prefix))
+            .ok()
+            .map(|s| match s.get(row) {
+                Ok(AnyValue::UInt32(x)) => x as usize,
+                _ => 0,
+            })
+            .unwrap_or(0);
+        let numeric_stats = if is_numeric_type(dtype) {
+            let mean = get_f64(agg_df, &format!("{}mean", prefix), row);
+            let std = get_f64(agg_df, &format!("{}std", prefix), row);
+            let min = get_f64(agg_df, &format!("{}min", prefix), row);
+            let q25 = get_f64(agg_df, &format!("{}q25", prefix), row);
+            let median = get_f64(agg_df, &format!("{}median", prefix), row);
+            let q75 = get_f64(agg_df, &format!("{}q75", prefix), row);
+            let max = get_f64(agg_df, &format!("{}max", prefix), row);
+            let mut percentiles = HashMap::new();
+            percentiles.insert(25u8, q25);
+            percentiles.insert(50u8, median);
+            percentiles.insert(75u8, q75);
+            Some(NumericStatistics {
+                mean,
+                std,
+                min,
+                max,
+                median,
+                q25,
+                q75,
+                percentiles,
+                skewness: 0.0,
+                kurtosis: 3.0,
+                outliers_iqr: 0,
+                outliers_zscore: 0,
+            })
+        } else {
+            None
+        };
+        let categorical_stats = if is_categorical_type(dtype) {
+            let min = get_str(agg_df, &format!("{}min", prefix), row);
+            let max = get_str(agg_df, &format!("{}max", prefix), row);
+            Some(CategoricalStatistics {
+                unique_count: 0,
+                mode: None,
+                top_values: Vec::new(),
+                min,
+                max,
+            })
+        } else {
+            None
+        };
+        column_statistics.push(ColumnStatistics {
+            name: name_str.to_string(),
+            dtype: dtype.clone(),
+            count,
+            null_count,
+            numeric_stats,
+            categorical_stats,
+            distribution_info: None,
+        });
+    }
+    column_statistics
+}
+
+/// Computes describe statistics from a LazyFrame without materializing all rows.
+/// When sampling is disabled, runs a single aggregation collect (like Polars describe) for similar performance.
+/// When sampling is enabled, samples then runs describe on the sample.
+pub fn compute_describe_from_lazy(
+    lf: &LazyFrame,
+    total_rows: usize,
+    sample_size: Option<usize>,
+    seed: u64,
+) -> Result<AnalysisResults> {
+    let schema = lf.clone().collect_schema()?;
+    let should_sample = sample_size.is_some_and(|t| total_rows >= t);
+    if should_sample {
+        let threshold = sample_size.unwrap();
+        let df = sample_dataframe(lf, threshold, seed)?;
+        return compute_describe_single_aggregation(
+            &df,
+            &schema,
+            total_rows,
+            Some(threshold),
+            seed,
+        );
+    }
+    let exprs = build_describe_aggregation_exprs(&schema);
+    let agg_df = lf.clone().select(exprs).collect()?;
+    let column_statistics = parse_describe_agg_row(&agg_df, &schema);
+    Ok(analysis_results_from_describe(
+        column_statistics,
+        total_rows,
+        None,
+        seed,
+    ))
+}
+
+/// Computes describe statistics in a single aggregation pass over the DataFrame.
+/// Uses one collect() with aggregated expressions for all columns (count, null_count, mean, std, min, percentiles, max).
+pub fn compute_describe_single_aggregation(
+    df: &DataFrame,
+    schema: &Schema,
+    total_rows: usize,
+    sample_size: Option<usize>,
+    sample_seed: u64,
+) -> Result<AnalysisResults> {
+    let exprs = build_describe_aggregation_exprs(schema);
+    let agg_df = df.clone().lazy().select(exprs).collect()?;
+    let column_statistics = parse_describe_agg_row(&agg_df, schema);
+    Ok(analysis_results_from_describe(
+        column_statistics,
+        total_rows,
+        sample_size,
+        sample_seed,
+    ))
+}
+
+fn get_f64(df: &DataFrame, col_name: &str, row: usize) -> f64 {
+    df.column(col_name)
+        .ok()
+        .and_then(|s| {
+            let v = s.get(row).ok()?;
+            match v {
+                AnyValue::Float64(x) => Some(x),
+                AnyValue::Float32(x) => Some(x as f64),
+                AnyValue::Int32(x) => Some(x as f64),
+                AnyValue::Int64(x) => Some(x as f64),
+                AnyValue::UInt32(x) => Some(x as f64),
+                AnyValue::Null => Some(f64::NAN),
+                _ => None,
+            }
+        })
+        .unwrap_or(f64::NAN)
+}
+
+fn get_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
+    df.column(col_name)
+        .ok()
+        .and_then(|s| s.get(row).ok().map(|v| v.str_value().to_string()))
+}
+
 /// Computes distribution statistics for numeric columns.
 ///
 /// - Infers distribution types for numeric columns missing distribution_info
@@ -457,8 +655,9 @@ pub fn compute_distribution_statistics(
     sample_size: Option<usize>,
     seed: u64,
 ) -> Result<()> {
-    let sampling_threshold = sample_size.unwrap_or(SAMPLING_THRESHOLD);
-    let should_sample = results.total_rows >= sampling_threshold;
+    // sample_size: None = never sample; Some(threshold) = sample when total_rows >= threshold
+    let should_sample = sample_size.is_some_and(|t| results.total_rows >= t);
+    let sampling_threshold = sample_size.unwrap_or(0);
     let actual_sample_size = if should_sample {
         Some(sampling_threshold)
     } else {

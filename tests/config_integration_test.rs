@@ -178,7 +178,7 @@ fn test_config_sampling_threshold() {
     use std::sync::mpsc::channel;
 
     let mut config = AppConfig::default();
-    config.performance.sampling_threshold = 50000;
+    config.performance.sampling_threshold = Some(50000);
 
     let theme = Theme::from_config(&config.theme).expect("Failed to create theme");
     let (tx, _rx) = channel::<AppEvent>();
@@ -187,7 +187,7 @@ fn test_config_sampling_threshold() {
     // Verify the app uses the config's sampling threshold
     // Note: We can't directly access app.sampling_threshold as it's private,
     // but we can verify the config value is correct
-    assert_eq!(config.performance.sampling_threshold, 50000);
+    assert_eq!(config.performance.sampling_threshold, Some(50000));
 }
 
 #[test]
@@ -206,11 +206,11 @@ fn test_config_performance_validation() {
     let mut config = AppConfig::default();
 
     // Zero sampling threshold should fail validation
-    config.performance.sampling_threshold = 0;
+    config.performance.sampling_threshold = Some(0);
     assert!(config.validate().is_err());
 
     // Reset and test event poll interval
-    config.performance.sampling_threshold = 10000;
+    config.performance.sampling_threshold = Some(10000);
     config.performance.event_poll_interval_ms = 0;
     assert!(config.validate().is_err());
 

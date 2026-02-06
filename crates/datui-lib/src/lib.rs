@@ -392,6 +392,7 @@ pub enum AppEvent {
     Exit,
     Crash(String),
     Search(String),
+    SqlSearch(String),
     Filter(Vec<FilterStatement>),
     Sort(Vec<String>, bool),         // Columns, Ascending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
@@ -454,6 +455,47 @@ pub enum InputType {
     Search,
     Filter,
     GoToLine,
+}
+
+/// Query dialog tab: SQL-Like (current parser), Fuzzy, or SQL (future).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryTab {
+    #[default]
+    SqlLike,
+    Fuzzy,
+    Sql,
+}
+
+impl QueryTab {
+    fn next(self) -> Self {
+        match self {
+            QueryTab::SqlLike => QueryTab::Fuzzy,
+            QueryTab::Fuzzy => QueryTab::Sql,
+            QueryTab::Sql => QueryTab::SqlLike,
+        }
+    }
+    fn prev(self) -> Self {
+        match self {
+            QueryTab::SqlLike => QueryTab::Sql,
+            QueryTab::Fuzzy => QueryTab::SqlLike,
+            QueryTab::Sql => QueryTab::Fuzzy,
+        }
+    }
+    fn index(self) -> usize {
+        match self {
+            QueryTab::SqlLike => 0,
+            QueryTab::Fuzzy => 1,
+            QueryTab::Sql => 2,
+        }
+    }
+}
+
+/// Focus within the query dialog: tab bar or input (SQL-Like only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryFocus {
+    TabBar,
+    #[default]
+    Input,
 }
 
 #[derive(Default)]
@@ -553,6 +595,7 @@ impl LoadingState {
 }
 
 /// In-progress analysis computation state (orchestration in App; modal only displays progress).
+#[allow(dead_code)]
 struct AnalysisComputationState {
     df: Option<DataFrame>,
     schema: Option<Arc<Schema>>,
@@ -569,6 +612,7 @@ struct TemplateApplicationState {
     lf: LazyFrame,
     schema: Arc<Schema>,
     active_query: String,
+    active_sql_query: String,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
@@ -595,12 +639,16 @@ impl ChartCache {
 struct ChartCacheXY {
     x_column: String,
     y_columns: Vec<String>,
+    row_limit: Option<usize>,
     series: Vec<Vec<(f64, f64)>>,
+    /// Log-scaled series when log_scale was requested; filled on first use to avoid per-frame clone.
+    series_log: Option<Vec<Vec<(f64, f64)>>>,
     x_axis_kind: chart_data::XAxisTemporalKind,
 }
 
 struct ChartCacheXRange {
     x_column: String,
+    row_limit: Option<usize>,
     x_min: f64,
     x_max: f64,
     x_axis_kind: chart_data::XAxisTemporalKind,
@@ -609,17 +657,20 @@ struct ChartCacheXRange {
 struct ChartCacheHistogram {
     column: String,
     bins: usize,
+    row_limit: Option<usize>,
     data: chart_data::HistogramData,
 }
 
 struct ChartCacheBoxPlot {
     column: String,
+    row_limit: Option<usize>,
     data: chart_data::BoxPlotData,
 }
 
 struct ChartCacheKde {
     column: String,
     bandwidth_factor: f64,
+    row_limit: Option<usize>,
     data: chart_data::KdeData,
 }
 
@@ -627,6 +678,7 @@ struct ChartCacheHeatmap {
     x_column: String,
     y_column: String,
     bins: usize,
+    row_limit: Option<usize>,
     data: chart_data::HeatmapData,
 }
 
@@ -641,8 +693,11 @@ pub struct App {
     info_modal: InfoModal,
     parquet_metadata_cache: Option<ParquetMetadataCache>,
     query_input: TextInput, // Query input widget with history support
+    sql_input: TextInput,   // SQL tab input with its own history (id "sql")
     pub input_mode: InputMode,
     input_type: Option<InputType>,
+    query_tab: QueryTab,
+    query_focus: QueryFocus,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
@@ -665,7 +720,7 @@ pub struct App {
     active_template_id: Option<String>, // ID of currently applied template
     loading_state: LoadingState,        // Current loading state for progress indication
     theme: Theme,                       // Color theme for UI rendering
-    sampling_threshold: usize,          // Threshold for sampling large datasets
+    sampling_threshold: Option<usize>, // None = no sampling (full data); Some(n) = sample when rows >= n
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
@@ -869,8 +924,14 @@ impl App {
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
                 .with_history("query".to_string()),
+            sql_input: TextInput::new()
+                .with_history_limit(app_config.query.history_limit)
+                .with_theme(&theme)
+                .with_history("sql".to_string()),
             input_mode: InputMode::Normal,
             input_type: None,
+            query_tab: QueryTab::SqlLike,
+            query_focus: QueryFocus::Input,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
@@ -3374,6 +3435,7 @@ impl App {
                         ChartFocus::KdeBandwidth => self
                             .chart_modal
                             .adjust_kde_bandwidth_factor(chart_modal::KDE_BANDWIDTH_STEP),
+                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(1),
                         _ => {}
                     }
                 }
@@ -3386,6 +3448,7 @@ impl App {
                         ChartFocus::KdeBandwidth => self
                             .chart_modal
                             .adjust_kde_bandwidth_factor(-chart_modal::KDE_BANDWIDTH_STEP),
+                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(-1),
                         _ => {}
                     }
                 }
@@ -3400,6 +3463,7 @@ impl App {
                         ChartFocus::KdeBandwidth => self
                             .chart_modal
                             .adjust_kde_bandwidth_factor(-chart_modal::KDE_BANDWIDTH_STEP),
+                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(-1),
                         _ => {}
                     }
                 }
@@ -3414,7 +3478,22 @@ impl App {
                         ChartFocus::KdeBandwidth => self
                             .chart_modal
                             .adjust_kde_bandwidth_factor(chart_modal::KDE_BANDWIDTH_STEP),
+                        ChartFocus::LimitRows => self.chart_modal.adjust_row_limit(1),
                         _ => {}
+                    }
+                }
+                KeyCode::PageUp
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
+                {
+                    if self.chart_modal.focus == ChartFocus::LimitRows {
+                        self.chart_modal.adjust_row_limit_page(1);
+                    }
+                }
+                KeyCode::PageDown
+                    if event.is_press() && !self.chart_modal.is_text_input_focused() =>
+                {
+                    if self.chart_modal.focus == ChartFocus::LimitRows {
+                        self.chart_modal.adjust_row_limit_page(-1);
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k')
@@ -3487,9 +3566,10 @@ impl App {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
                 KeyCode::Char('r') => {
-                    self.analysis_modal.recalculate();
-                    // Clear cached results to trigger recomputation
-                    self.analysis_modal.analysis_results = None;
+                    if self.sampling_threshold.is_some() {
+                        self.analysis_modal.recalculate();
+                        self.analysis_modal.analysis_results = None;
+                    }
                 }
                 KeyCode::Tab => {
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
@@ -3510,48 +3590,75 @@ impl App {
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
                             // Select tool from sidebar
                             self.analysis_modal.select_tool();
-                            // Defer Distribution/Correlation compute so progress overlay and throbber show first
-                            if let Some(ref results) = self.analysis_modal.analysis_results {
-                                match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::DistributionAnalysis
-                                        if results.distribution_analyses.is_empty() =>
+                            // Trigger computation for the selected tool if needed
+                            match self.analysis_modal.selected_tool {
+                                Some(analysis_modal::AnalysisTool::Describe)
+                                    if self.analysis_modal.analysis_results.is_none() =>
+                                {
+                                    self.analysis_modal.computing = Some(AnalysisProgress {
+                                        phase: "Describing data".to_string(),
+                                        current: 0,
+                                        total: 1,
+                                    });
+                                    self.analysis_computation = Some(AnalysisComputationState {
+                                        df: None,
+                                        schema: None,
+                                        partial_stats: Vec::new(),
+                                        current: 0,
+                                        total: 0,
+                                        total_rows: 0,
+                                        sample_seed: self.analysis_modal.random_seed,
+                                        sample_size: None,
+                                    });
+                                    self.busy = true;
+                                    return Some(AppEvent::AnalysisChunk);
+                                }
+                                _ => {
+                                    if let Some(ref results) = self.analysis_modal.analysis_results
                                     {
-                                        self.analysis_modal.computing = Some(AnalysisProgress {
-                                            phase: "Distribution".to_string(),
-                                            current: 0,
-                                            total: 1,
-                                        });
-                                        self.busy = true;
-                                        return Some(AppEvent::AnalysisDistributionCompute);
+                                        match self.analysis_modal.selected_tool {
+                                            Some(
+                                                analysis_modal::AnalysisTool::DistributionAnalysis,
+                                            ) if results.distribution_analyses.is_empty() => {
+                                                self.analysis_modal.computing =
+                                                    Some(AnalysisProgress {
+                                                        phase: "Distribution".to_string(),
+                                                        current: 0,
+                                                        total: 1,
+                                                    });
+                                                self.busy = true;
+                                                return Some(AppEvent::AnalysisDistributionCompute);
+                                            }
+                                            Some(
+                                                analysis_modal::AnalysisTool::CorrelationMatrix,
+                                            ) if results.correlation_matrix.is_none() => {
+                                                self.analysis_modal.computing =
+                                                    Some(AnalysisProgress {
+                                                        phase: "Correlation".to_string(),
+                                                        current: 0,
+                                                        total: 1,
+                                                    });
+                                                self.busy = true;
+                                                return Some(AppEvent::AnalysisCorrelationCompute);
+                                            }
+                                            _ => {}
+                                        }
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix
-                                        if results.correlation_matrix.is_none() =>
-                                    {
-                                        self.analysis_modal.computing = Some(AnalysisProgress {
-                                            phase: "Correlation".to_string(),
-                                            current: 0,
-                                            total: 1,
-                                        });
-                                        self.busy = true;
-                                        return Some(AppEvent::AnalysisCorrelationCompute);
-                                    }
-                                    _ => {}
                                 }
                             }
                         } else {
                             // Enter in main area opens detail view if applicable
                             match self.analysis_modal.selected_tool {
-                                analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                     self.analysis_modal.open_distribution_detail();
                                 }
-                                analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                     self.analysis_modal.open_correlation_detail();
                                 }
-                                _ => {} // Describe tool doesn't have detail view
+                                _ => {}
                             }
                         }
                     }
-                    // Enter key no longer needed for distribution selection - charts update on navigation
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     match self.analysis_modal.view {
@@ -3564,13 +3671,15 @@ impl App {
                                 analysis_modal::AnalysisFocus::Main => {
                                     // Navigate in main area based on selected tool
                                     match self.analysis_modal.selected_tool {
-                                        analysis_modal::AnalysisTool::Describe => {
+                                        Some(analysis_modal::AnalysisTool::Describe) => {
                                             if let Some(state) = &self.data_table_state {
                                                 let max_rows = state.schema.len();
                                                 self.analysis_modal.next_row(max_rows);
                                             }
                                         }
-                                        analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                        Some(
+                                            analysis_modal::AnalysisTool::DistributionAnalysis,
+                                        ) => {
                                             if let Some(results) =
                                                 &self.analysis_modal.analysis_results
                                             {
@@ -3578,7 +3687,7 @@ impl App {
                                                 self.analysis_modal.next_row(max_rows);
                                             }
                                         }
-                                        analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                             if let Some(results) =
                                                 &self.analysis_modal.analysis_results
                                             {
@@ -3620,6 +3729,7 @@ impl App {
                                                 }
                                             }
                                         }
+                                        None => {}
                                     }
                                 }
                                 _ => {}
@@ -3674,13 +3784,13 @@ impl App {
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::Describe => {
+                                    Some(analysis_modal::AnalysisTool::Describe) => {
                                         self.analysis_modal.scroll_left();
                                     }
-                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                         self.analysis_modal.scroll_left();
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
@@ -3725,6 +3835,7 @@ impl App {
                                             }
                                         }
                                     }
+                                    None => {}
                                 }
                             }
                         }
@@ -3741,21 +3852,21 @@ impl App {
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::Describe => {
+                                    Some(analysis_modal::AnalysisTool::Describe) => {
                                         // Number of statistics: count, null_count, mean, std, min, 25%, 50%, 75%, max, skewness, kurtosis, distribution
                                         let max_stats = 12;
                                         // Estimate visible stats based on terminal width (rough estimate)
                                         let visible_stats = 8; // Will be calculated more accurately in widget
                                         self.analysis_modal.scroll_right(max_stats, visible_stats);
                                     }
-                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                         // Number of statistics: Distribution, P-value, Shapiro-Wilk, SW p-value, CV, Outliers, Skewness, Kurtosis
                                         let max_stats = 8;
                                         // Estimate visible stats based on terminal width (rough estimate)
                                         let visible_stats = 6; // Will be calculated more accurately in widget
                                         self.analysis_modal.scroll_right(max_stats, visible_stats);
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
@@ -3795,6 +3906,7 @@ impl App {
                                             }
                                         }
                                     }
+                                    None => {}
                                 }
                             }
                         }
@@ -3805,21 +3917,21 @@ impl App {
                         && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
                     {
                         match self.analysis_modal.selected_tool {
-                            analysis_modal::AnalysisTool::Describe => {
+                            Some(analysis_modal::AnalysisTool::Describe) => {
                                 if let Some(state) = &self.data_table_state {
                                     let max_rows = state.schema.len();
                                     let page_size = 10;
                                     self.analysis_modal.page_down(max_rows, page_size);
                                 }
                             }
-                            analysis_modal::AnalysisTool::DistributionAnalysis => {
+                            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                 if let Some(results) = &self.analysis_modal.analysis_results {
                                     let max_rows = results.distribution_analyses.len();
                                     let page_size = 10;
                                     self.analysis_modal.page_down(max_rows, page_size);
                                 }
                             }
-                            analysis_modal::AnalysisTool::CorrelationMatrix => {
+                            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                 if let Some(results) = &self.analysis_modal.analysis_results {
                                     if let Some(corr) = &results.correlation_matrix {
                                         let max_rows = corr.columns.len();
@@ -3828,6 +3940,7 @@ impl App {
                                     }
                                 }
                             }
+                            None => {}
                         }
                     }
                 }
@@ -3852,18 +3965,19 @@ impl App {
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::Describe => {
+                                    Some(analysis_modal::AnalysisTool::Describe) => {
                                         self.analysis_modal.table_state.select(Some(0));
                                     }
-                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                         self.analysis_modal
                                             .distribution_table_state
                                             .select(Some(0));
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                         self.analysis_modal.correlation_table_state.select(Some(0));
                                         self.analysis_modal.selected_correlation = Some((0, 0));
                                     }
+                                    None => {}
                                 }
                             }
                         }
@@ -3883,7 +3997,7 @@ impl App {
                             }
                             analysis_modal::AnalysisFocus::Main => {
                                 match self.analysis_modal.selected_tool {
-                                    analysis_modal::AnalysisTool::Describe => {
+                                    Some(analysis_modal::AnalysisTool::Describe) => {
                                         if let Some(state) = &self.data_table_state {
                                             let max_rows = state.schema.len();
                                             if max_rows > 0 {
@@ -3893,7 +4007,7 @@ impl App {
                                             }
                                         }
                                     }
-                                    analysis_modal::AnalysisTool::DistributionAnalysis => {
+                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             let max_rows = results.distribution_analyses.len();
@@ -3904,7 +4018,7 @@ impl App {
                                             }
                                         }
                                     }
-                                    analysis_modal::AnalysisTool::CorrelationMatrix => {
+                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                         if let Some(results) = &self.analysis_modal.analysis_results
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
@@ -3919,6 +4033,7 @@ impl App {
                                             }
                                         }
                                     }
+                                    None => {}
                                 }
                             }
                         }
@@ -4760,8 +4875,122 @@ impl App {
         }
 
         if self.input_mode == InputMode::Editing {
-            // Use TextInput widget for query input (Search type)
             if self.input_type == Some(InputType::Search) {
+                const RIGHT_KEYS: [KeyCode; 2] = [KeyCode::Right, KeyCode::Char('l')];
+                const LEFT_KEYS: [KeyCode; 2] = [KeyCode::Left, KeyCode::Char('h')];
+
+                if self.query_focus == QueryFocus::TabBar && event.is_press() {
+                    if event.code == KeyCode::BackTab
+                        || (event.code == KeyCode::Tab
+                            && !event.modifiers.contains(KeyModifiers::SHIFT))
+                    {
+                        self.query_focus = QueryFocus::Input;
+                        if let Some(state) = &self.data_table_state {
+                            if self.query_tab == QueryTab::SqlLike {
+                                self.query_input.value = state.get_active_query().to_string();
+                                self.query_input.cursor = self.query_input.value.chars().count();
+                                self.sql_input.set_focused(false);
+                                self.query_input.set_focused(true);
+                            } else if self.query_tab == QueryTab::Sql {
+                                self.sql_input.value = state.get_active_sql_query().to_string();
+                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                                self.query_input.set_focused(false);
+                                self.sql_input.set_focused(true);
+                            }
+                        }
+                        return None;
+                    }
+                    if RIGHT_KEYS.contains(&event.code) {
+                        self.query_tab = self.query_tab.next();
+                        if let Some(state) = &self.data_table_state {
+                            if self.query_tab == QueryTab::SqlLike {
+                                self.query_input.value = state.get_active_query().to_string();
+                                self.query_input.cursor = self.query_input.value.chars().count();
+                            } else if self.query_tab == QueryTab::Sql {
+                                self.sql_input.value = state.get_active_sql_query().to_string();
+                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                            }
+                        }
+                        self.query_input.set_focused(false);
+                        self.sql_input.set_focused(false);
+                        return None;
+                    }
+                    if LEFT_KEYS.contains(&event.code) {
+                        self.query_tab = self.query_tab.prev();
+                        if let Some(state) = &self.data_table_state {
+                            if self.query_tab == QueryTab::SqlLike {
+                                self.query_input.value = state.get_active_query().to_string();
+                                self.query_input.cursor = self.query_input.value.chars().count();
+                            } else if self.query_tab == QueryTab::Sql {
+                                self.sql_input.value = state.get_active_sql_query().to_string();
+                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                            }
+                        }
+                        self.query_input.set_focused(false);
+                        self.sql_input.set_focused(false);
+                        return None;
+                    }
+                    if event.code == KeyCode::Esc {
+                        self.query_input.clear();
+                        self.sql_input.clear();
+                        self.query_input.set_focused(false);
+                        self.sql_input.set_focused(false);
+                        self.input_mode = InputMode::Normal;
+                        self.input_type = None;
+                        if let Some(state) = &mut self.data_table_state {
+                            state.error = None;
+                            state.suppress_error_display = false;
+                        }
+                        return None;
+                    }
+                    return None;
+                }
+
+                if event.is_press()
+                    && event.code == KeyCode::Tab
+                    && !event.modifiers.contains(KeyModifiers::SHIFT)
+                {
+                    self.query_focus = QueryFocus::TabBar;
+                    self.query_input.set_focused(false);
+                    self.sql_input.set_focused(false);
+                    return None;
+                }
+
+                if self.query_focus != QueryFocus::Input {
+                    return None;
+                }
+
+                if self.query_tab == QueryTab::Sql {
+                    self.query_input.set_focused(false);
+                    self.sql_input.set_focused(true);
+                    let result = self.sql_input.handle_key(event, Some(&self.cache));
+                    match result {
+                        TextInputEvent::Submit => {
+                            let _ = self.sql_input.save_to_history(&self.cache);
+                            let sql = self.sql_input.value.clone();
+                            self.sql_input.set_focused(false);
+                            return Some(AppEvent::SqlSearch(sql));
+                        }
+                        TextInputEvent::Cancel => {
+                            self.sql_input.clear();
+                            self.sql_input.set_focused(false);
+                            self.input_mode = InputMode::Normal;
+                            self.input_type = None;
+                            if let Some(state) = &mut self.data_table_state {
+                                state.error = None;
+                                state.suppress_error_display = false;
+                            }
+                        }
+                        TextInputEvent::HistoryChanged | TextInputEvent::None => {}
+                    }
+                    return None;
+                }
+
+                if self.query_tab != QueryTab::SqlLike {
+                    return None;
+                }
+
+                self.sql_input.set_focused(false);
                 self.query_input.set_focused(true);
                 let result = self.query_input.handle_key(event, Some(&self.cache));
 
@@ -5097,15 +5326,19 @@ impl App {
             KeyCode::Char('/') => {
                 self.input_mode = InputMode::Editing;
                 self.input_type = Some(InputType::Search);
-                // Initialize query input with current query if available
+                self.query_tab = QueryTab::SqlLike;
+                self.query_focus = QueryFocus::Input;
                 if let Some(state) = &mut self.data_table_state {
                     self.query_input.value = state.active_query.clone();
                     self.query_input.cursor = self.query_input.value.chars().count();
-                    // Suppress error display in main view when query input is active
+                    self.sql_input.value = state.get_active_sql_query().to_string();
+                    self.sql_input.cursor = self.sql_input.value.chars().count();
                     state.suppress_error_display = true;
                 } else {
                     self.query_input.clear();
+                    self.sql_input.clear();
                 }
+                self.sql_input.set_focused(false);
                 self.query_input.set_focused(true);
                 None
             }
@@ -5224,27 +5457,10 @@ impl App {
                 None
             }
             KeyCode::Char('a') => {
-                // Open analysis modal if data is available; start chunked describe so progress overlay can show
+                // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
                     self.analysis_modal.open();
                     self.analysis_modal.analysis_results = None;
-                    self.analysis_modal.computing = Some(AnalysisProgress {
-                        phase: "Describe".to_string(),
-                        current: 0,
-                        total: 0,
-                    });
-                    self.analysis_computation = Some(AnalysisComputationState {
-                        df: None,
-                        schema: None,
-                        partial_stats: Vec::new(),
-                        current: 0,
-                        total: 0,
-                        total_rows: 0,
-                        sample_seed: self.analysis_modal.random_seed,
-                        sample_size: None,
-                    });
-                    self.busy = true;
-                    return Some(AppEvent::AnalysisChunk);
                 }
                 None
             }
@@ -5282,7 +5498,11 @@ impl App {
                             })
                             .map(|(name, _)| name.to_string())
                             .collect();
-                        self.chart_modal.open(&numeric_columns, &datetime_columns);
+                        self.chart_modal.open(
+                            &numeric_columns,
+                            &datetime_columns,
+                            self.app_config.chart.row_limit,
+                        );
                         self.chart_modal.x_input =
                             std::mem::take(&mut self.chart_modal.x_input).with_theme(&self.theme);
                         self.chart_modal.y_input =
@@ -6107,114 +6327,57 @@ impl App {
                         return None;
                     }
                 };
-                let mut comp = self.analysis_computation.take()?;
+                let comp = self.analysis_computation.take()?;
                 if comp.df.is_none() {
-                    // First chunk: collect schema, count rows, collect or sample df
-                    let schema = match lf.clone().collect_schema() {
-                        Ok(s) => s,
-                        Err(_e) => {
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            return None;
-                        }
-                    };
-                    let total_rows = match lf.clone().select([len()]).collect() {
-                        Ok(count_df) => {
-                            if let Some(col) = count_df.get(0) {
-                                match col.first() {
-                                    Some(AnyValue::UInt32(n)) => *n as usize,
-                                    _ => 0,
+                    // First chunk: get row count then run describe (lazy aggregation, no full collect)
+                    // Reuse cached row count from control bar when valid to avoid extra full scan.
+                    let total_rows = match self
+                        .data_table_state
+                        .as_ref()
+                        .and_then(|s| s.num_rows_if_valid())
+                    {
+                        Some(n) => n,
+                        None => match lf.clone().select([len()]).collect() {
+                            Ok(count_df) => {
+                                if let Some(col) = count_df.get(0) {
+                                    match col.first() {
+                                        Some(AnyValue::UInt32(n)) => *n as usize,
+                                        _ => 0,
+                                    }
+                                } else {
+                                    0
                                 }
-                            } else {
-                                0
                             }
-                        }
-                        Err(_e) => {
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            return None;
-                        }
+                            Err(_e) => {
+                                self.analysis_modal.computing = None;
+                                self.busy = false;
+                                self.drain_keys_on_next_loop = true;
+                                return None;
+                            }
+                        },
                     };
-                    let threshold = self.sampling_threshold;
-                    let should_sample = total_rows >= threshold;
-                    let actual_sample_size = if should_sample { Some(threshold) } else { None };
-                    let df = match if should_sample {
-                        crate::statistics::sample_dataframe(&lf, threshold, comp.sample_seed)
-                    } else {
-                        lf.collect().map_err(|e| color_eyre::eyre::eyre!("{}", e))
-                    } {
-                        Ok(d) => d,
-                        Err(_e) => {
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            return None;
-                        }
-                    };
-                    comp.df = Some(df);
-                    let total_len = schema.len();
-                    comp.schema = Some(schema);
-                    comp.total = total_len;
-                    comp.total_rows = total_rows;
-                    comp.sample_size = actual_sample_size;
-                    self.analysis_modal.computing = Some(AnalysisProgress {
-                        phase: "Describe".to_string(),
-                        current: 0,
-                        total: total_len,
-                    });
-                    self.analysis_computation = Some(comp);
-                    return Some(AppEvent::AnalysisChunk);
-                }
-                let df = comp.df.as_ref().unwrap();
-                let schema = comp.schema.as_ref().unwrap();
-                // Describe-only: no distribution/correlation work; those run only when user selects those tools.
-                let options = crate::statistics::ComputeOptions {
-                    include_distribution_info: false,
-                    include_distribution_analyses: false,
-                    include_correlation_matrix: false,
-                    include_skewness_kurtosis_outliers: false,
-                };
-                match crate::statistics::compute_describe_column(
-                    df,
-                    schema,
-                    comp.current,
-                    &options,
-                    comp.sample_size,
-                    comp.sample_size.is_some(),
-                ) {
-                    Ok(col_stat) => {
-                        comp.partial_stats.push(col_stat);
-                        comp.current += 1;
-                        self.analysis_modal.computing = Some(AnalysisProgress {
-                            phase: "Describe".to_string(),
-                            current: comp.current,
-                            total: comp.total,
-                        });
-                        if comp.current >= comp.total {
-                            let results = crate::statistics::analysis_results_from_describe(
-                                comp.partial_stats,
-                                comp.total_rows,
-                                comp.sample_size,
-                                comp.sample_seed,
-                            );
+                    match crate::statistics::compute_describe_from_lazy(
+                        &lf,
+                        total_rows,
+                        self.sampling_threshold,
+                        comp.sample_seed,
+                    ) {
+                        Ok(results) => {
                             self.analysis_modal.analysis_results = Some(results);
                             self.analysis_modal.computing = None;
                             self.busy = false;
                             self.drain_keys_on_next_loop = true;
                             None
-                        } else {
-                            self.analysis_computation = Some(comp);
-                            Some(AppEvent::AnalysisChunk)
+                        }
+                        Err(_e) => {
+                            self.analysis_modal.computing = None;
+                            self.busy = false;
+                            self.drain_keys_on_next_loop = true;
+                            None
                         }
                     }
-                    Err(_e) => {
-                        self.analysis_modal.computing = None;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        None
-                    }
+                } else {
+                    None
                 }
             }
             AppEvent::AnalysisDistributionCompute => {
@@ -6223,7 +6386,7 @@ impl App {
                         if crate::statistics::compute_distribution_statistics(
                             results,
                             &state.lf,
-                            Some(self.sampling_threshold),
+                            self.sampling_threshold,
                             self.analysis_modal.random_seed,
                         )
                         .is_err()
@@ -6270,6 +6433,24 @@ impl App {
                 // If there's an error, keep input mode open so user can fix the query
                 // suppress_error_display remains true to keep main view clean
                 None
+            }
+            AppEvent::SqlSearch(sql) => {
+                let sql_succeeded = if let Some(state) = &mut self.data_table_state {
+                    state.sql_query(sql.clone());
+                    state.error.is_none()
+                } else {
+                    false
+                };
+                if sql_succeeded {
+                    self.input_mode = InputMode::Normal;
+                    self.sql_input.set_focused(false);
+                    if let Some(state) = &mut self.data_table_state {
+                        state.suppress_error_display = false;
+                    }
+                    Some(AppEvent::Collect)
+                } else {
+                    None
+                }
             }
             AppEvent::Filter(statements) => {
                 if let Some(state) = &mut self.data_table_state {
@@ -6521,16 +6702,46 @@ impl App {
                     return Err(color_eyre::eyre::eyre!("No Y axis columns selected"));
                 }
 
-                let chart_data_result =
-                    chart_data::prepare_chart_data(&state.lf, &state.schema, x_column, &y_columns)?;
+                let row_limit_opt = self.chart_modal.row_limit;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let cache_matches = self.chart_cache.xy.as_ref().is_some_and(|c| {
+                    c.x_column == *x_column
+                        && c.y_columns == y_columns
+                        && c.row_limit == row_limit_opt
+                });
+
+                let (series_vec, x_axis_kind_export, from_cache) = if cache_matches {
+                    let cache = self.chart_cache.xy.as_ref().unwrap();
+                    let pts = if self.chart_modal.log_scale {
+                        cache.series_log.as_ref().cloned().unwrap_or_else(|| {
+                            cache
+                                .series
+                                .iter()
+                                .map(|s| s.iter().map(|&(x, y)| (x, y.max(0.0).ln_1p())).collect())
+                                .collect()
+                        })
+                    } else {
+                        cache.series.clone()
+                    };
+                    (pts, cache.x_axis_kind, true)
+                } else {
+                    let r = chart_data::prepare_chart_data(
+                        &state.lf,
+                        &state.schema,
+                        x_column,
+                        &y_columns,
+                        row_limit,
+                    )?;
+                    (r.series, r.x_axis_kind, false)
+                };
 
                 let log_scale = self.chart_modal.log_scale;
-                let series: Vec<ChartExportSeries> = chart_data_result
-                    .series
+                let series: Vec<ChartExportSeries> = series_vec
                     .iter()
                     .zip(y_columns.iter())
+                    .filter(|(points, _)| !points.is_empty())
                     .map(|(points, name)| {
-                        let pts = if log_scale {
+                        let pts = if log_scale && !from_cache {
                             points
                                 .iter()
                                 .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
@@ -6543,7 +6754,6 @@ impl App {
                             points: pts,
                         }
                     })
-                    .filter(|s| !s.points.is_empty())
                     .collect();
 
                 if series.is_empty() {
@@ -6597,7 +6807,7 @@ impl App {
                     y_max: y_max_bounds,
                     x_label: x_label.clone(),
                     y_label: y_label.clone(),
-                    x_axis_kind: chart_data_result.x_axis_kind,
+                    x_axis_kind: x_axis_kind_export,
                     log_scale: self.chart_modal.log_scale,
                     chart_title,
                 };
@@ -6612,11 +6822,21 @@ impl App {
                     .chart_modal
                     .effective_hist_column()
                     .ok_or_else(|| color_eyre::eyre::eyre!("No histogram column selected"))?;
-                let data = chart_data::prepare_histogram_data(
-                    &state.lf,
-                    &column,
-                    self.chart_modal.hist_bins,
-                )?;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let data = if let Some(c) = self.chart_cache.histogram.as_ref().filter(|c| {
+                    c.column == column
+                        && c.bins == self.chart_modal.hist_bins
+                        && c.row_limit == self.chart_modal.row_limit
+                }) {
+                    c.data.clone()
+                } else {
+                    chart_data::prepare_histogram_data(
+                        &state.lf,
+                        &column,
+                        self.chart_modal.hist_bins,
+                        row_limit,
+                    )?
+                };
                 if data.bins.is_empty() {
                     return Err(color_eyre::eyre::eyre!("No valid data points to export"));
                 }
@@ -6661,8 +6881,21 @@ impl App {
                     .chart_modal
                     .effective_box_column()
                     .ok_or_else(|| color_eyre::eyre::eyre!("No box plot column selected"))?;
-                let data =
-                    chart_data::prepare_box_plot_data(&state.lf, std::slice::from_ref(&column))?;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let data = if let Some(c) = self
+                    .chart_cache
+                    .box_plot
+                    .as_ref()
+                    .filter(|c| c.column == column && c.row_limit == self.chart_modal.row_limit)
+                {
+                    c.data.clone()
+                } else {
+                    chart_data::prepare_box_plot_data(
+                        &state.lf,
+                        std::slice::from_ref(&column),
+                        row_limit,
+                    )?
+                };
                 if data.stats.is_empty() {
                     return Err(color_eyre::eyre::eyre!("No valid data points to export"));
                 }
@@ -6684,11 +6917,21 @@ impl App {
                     .chart_modal
                     .effective_kde_column()
                     .ok_or_else(|| color_eyre::eyre::eyre!("No KDE column selected"))?;
-                let data = chart_data::prepare_kde_data(
-                    &state.lf,
-                    std::slice::from_ref(&column),
-                    self.chart_modal.kde_bandwidth_factor,
-                )?;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let data = if let Some(c) = self.chart_cache.kde.as_ref().filter(|c| {
+                    c.column == column
+                        && c.bandwidth_factor == self.chart_modal.kde_bandwidth_factor
+                        && c.row_limit == self.chart_modal.row_limit
+                }) {
+                    c.data.clone()
+                } else {
+                    chart_data::prepare_kde_data(
+                        &state.lf,
+                        std::slice::from_ref(&column),
+                        self.chart_modal.kde_bandwidth_factor,
+                        row_limit,
+                    )?
+                };
                 if data.series.is_empty() {
                     return Err(color_eyre::eyre::eyre!("No valid data points to export"));
                 }
@@ -6729,12 +6972,23 @@ impl App {
                     .chart_modal
                     .effective_heatmap_y_column()
                     .ok_or_else(|| color_eyre::eyre::eyre!("No heatmap Y column selected"))?;
-                let data = chart_data::prepare_heatmap_data(
-                    &state.lf,
-                    &x_column,
-                    &y_column,
-                    self.chart_modal.heatmap_bins,
-                )?;
+                let row_limit = self.chart_modal.effective_row_limit();
+                let data = if let Some(c) = self.chart_cache.heatmap.as_ref().filter(|c| {
+                    c.x_column == *x_column
+                        && c.y_column == *y_column
+                        && c.bins == self.chart_modal.heatmap_bins
+                        && c.row_limit == self.chart_modal.row_limit
+                }) {
+                    c.data.clone()
+                } else {
+                    chart_data::prepare_heatmap_data(
+                        &state.lf,
+                        &x_column,
+                        &y_column,
+                        self.chart_modal.heatmap_bins,
+                        row_limit,
+                    )?
+                };
                 if data.counts.is_empty() || data.max_count <= 0.0 {
                     return Err(color_eyre::eyre::eyre!("No valid data points to export"));
                 }
@@ -6766,6 +7020,7 @@ impl App {
                 lf: state.lf.clone(),
                 schema: state.schema.clone(),
                 active_query: state.active_query.clone(),
+                active_sql_query: state.get_active_sql_query().to_string(),
                 filters: state.get_filters().to_vec(),
                 sort_columns: state.get_sort_columns().to_vec(),
                 sort_ascending: state.get_sort_ascending(),
@@ -7083,6 +7338,7 @@ impl App {
             state.lf = saved.lf;
             state.schema = saved.schema;
             state.active_query = saved.active_query;
+            state.active_sql_query = saved.active_sql_query;
             // Clear error
             state.error = None;
             // Restore private fields using public methods
@@ -7190,7 +7446,17 @@ impl Widget for &mut App {
         }
 
         if self.input_mode == InputMode::Editing {
-            let height = if has_error { 6 } else { 3 };
+            let height = if self.input_type == Some(InputType::Search) {
+                if has_error {
+                    9
+                } else {
+                    5
+                }
+            } else if has_error {
+                6
+            } else {
+                3
+            };
             constraints.insert(1, Constraint::Length(height));
         }
         constraints.push(Constraint::Length(1)); // Controls
@@ -7395,7 +7661,120 @@ impl Widget for &mut App {
             let inner_area = block.inner(input_area);
             block.render(input_area, buf);
 
-            if has_error {
+            if self.input_type == Some(InputType::Search) {
+                let border_c = self.color("modal_border");
+                let active_c = self.color("modal_border_active");
+                let tab_bar_focused = self.query_focus == QueryFocus::TabBar;
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(2), Constraint::Min(1)])
+                    .split(inner_area);
+
+                let tab_line_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Length(1)])
+                    .split(chunks[0]);
+                let tab_titles = vec!["SQL-Like", "Fuzzy", "SQL"];
+                let tabs = Tabs::new(tab_titles)
+                    .style(Style::default().fg(border_c))
+                    .highlight_style(
+                        Style::default()
+                            .fg(active_c)
+                            .add_modifier(Modifier::REVERSED),
+                    )
+                    .select(self.query_tab.index());
+                tabs.render(tab_line_chunks[0], buf);
+                let line_style = if tab_bar_focused {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+                Block::default()
+                    .borders(Borders::BOTTOM)
+                    .border_type(BorderType::Rounded)
+                    .border_style(line_style)
+                    .render(tab_line_chunks[1], buf);
+
+                match self.query_tab {
+                    QueryTab::SqlLike => {
+                        if has_error {
+                            let body_chunks = Layout::default()
+                                .direction(Direction::Vertical)
+                                .constraints([
+                                    Constraint::Length(1),
+                                    Constraint::Length(1),
+                                    Constraint::Min(1),
+                                ])
+                                .split(chunks[1]);
+                            self.query_input
+                                .set_focused(self.query_focus == QueryFocus::Input);
+                            (&self.query_input).render(body_chunks[0], buf);
+                            Paragraph::new(err_msg)
+                                .style(Style::default().fg(self.color("error")))
+                                .wrap(ratatui::widgets::Wrap { trim: true })
+                                .render(body_chunks[2], buf);
+                        } else {
+                            self.query_input
+                                .set_focused(self.query_focus == QueryFocus::Input);
+                            (&self.query_input).render(chunks[1], buf);
+                        }
+                    }
+                    QueryTab::Fuzzy => {
+                        self.query_input.set_focused(false);
+                        self.sql_input.set_focused(false);
+                        Paragraph::new("Not yet implemented")
+                            .style(Style::default().fg(self.color("text_secondary")))
+                            .render(chunks[1], buf);
+                    }
+                    QueryTab::Sql => {
+                        self.query_input.set_focused(false);
+                        #[cfg(feature = "sql")]
+                        {
+                            if has_error {
+                                let body_chunks = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints([
+                                        Constraint::Length(1),
+                                        Constraint::Length(1),
+                                        Constraint::Min(1),
+                                    ])
+                                    .split(chunks[1]);
+                                self.sql_input
+                                    .set_focused(self.query_focus == QueryFocus::Input);
+                                (&self.sql_input).render(body_chunks[0], buf);
+                                Paragraph::new("Table: df")
+                                    .style(Style::default().fg(self.color("text_secondary")))
+                                    .render(body_chunks[1], buf);
+                                Paragraph::new(err_msg)
+                                    .style(Style::default().fg(self.color("error")))
+                                    .wrap(ratatui::widgets::Wrap { trim: true })
+                                    .render(body_chunks[2], buf);
+                            } else {
+                                let body_chunks = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints([Constraint::Length(1), Constraint::Length(1)])
+                                    .split(chunks[1]);
+                                self.sql_input
+                                    .set_focused(self.query_focus == QueryFocus::Input);
+                                (&self.sql_input).render(body_chunks[0], buf);
+                                Paragraph::new("Table: df (Up/Down: history)")
+                                    .style(Style::default().fg(self.color("text_secondary")))
+                                    .render(body_chunks[1], buf);
+                            }
+                        }
+                        #[cfg(not(feature = "sql"))]
+                        {
+                            self.sql_input.set_focused(false);
+                            Paragraph::new(
+                                "SQL support not compiled in (build with --features sql)",
+                            )
+                            .style(Style::default().fg(self.color("text_secondary")))
+                            .render(chunks[1], buf);
+                        }
+                    }
+                }
+            } else if has_error {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -7405,14 +7784,12 @@ impl Widget for &mut App {
                     ])
                     .split(inner_area);
 
-                // Render input using TextInput widget
                 (&self.query_input).render(chunks[0], buf);
                 Paragraph::new(err_msg)
                     .style(Style::default().fg(self.color("error")))
                     .wrap(ratatui::widgets::Wrap { trim: true })
                     .render(chunks[2], buf);
             } else {
-                // Render input using TextInput widget
                 (&self.query_input).render(inner_area, buf);
             }
         }
@@ -8638,14 +9015,17 @@ impl Widget for &mut App {
                         buf,
                     );
             } else if let Some(state) = &self.data_table_state {
-                // Compute statistics if not already computed or if seed changed (sync fallback when not chunking)
-                let needs_recompute = self.analysis_modal.analysis_results.is_none()
-                    || self
-                        .analysis_modal
-                        .analysis_results
-                        .as_ref()
-                        .map(|r| r.sample_seed != self.analysis_modal.random_seed)
-                        .unwrap_or(true);
+                // Only run sync recompute when user has selected a tool (Describe triggers chunked path on Enter;
+                // this is fallback for seed change or when we have no results after selecting a tool).
+                let selected_tool = self.analysis_modal.selected_tool;
+                let needs_recompute = selected_tool.is_some()
+                    && (self.analysis_modal.analysis_results.is_none()
+                        || self
+                            .analysis_modal
+                            .analysis_results
+                            .as_ref()
+                            .map(|r| r.sample_seed != self.analysis_modal.random_seed)
+                            .unwrap_or(true));
 
                 if needs_recompute {
                     self.busy = true;
@@ -8660,7 +9040,7 @@ impl Widget for &mut App {
                     };
                     match crate::statistics::compute_statistics_with_options(
                         &lf,
-                        Some(self.sampling_threshold),
+                        self.sampling_threshold,
                         self.analysis_modal.random_seed,
                         options,
                     ) {
@@ -8688,53 +9068,48 @@ impl Widget for &mut App {
                 // Distribution and Correlation are computed via deferred events (AnalysisDistributionCompute
                 // / AnalysisCorrelationCompute) when the user selects that tool, so progress overlay and throbber show first.
 
-                if let Some(ref results) = self.analysis_modal.analysis_results {
-                    let context = state.get_analysis_context();
-                    Clear.render(analysis_area, buf);
-                    // Use tool-specific column_offset
-                    let column_offset = match self.analysis_modal.selected_tool {
-                        analysis_modal::AnalysisTool::Describe => {
-                            self.analysis_modal.describe_column_offset
-                        }
-                        analysis_modal::AnalysisTool::DistributionAnalysis => {
-                            self.analysis_modal.distribution_column_offset
-                        }
-                        analysis_modal::AnalysisTool::CorrelationMatrix => {
-                            self.analysis_modal.correlation_column_offset
-                        }
-                    };
+                // Always render the analysis widget when we have data (with or without results: widget shows
+                // "Select an analysis tool", "Computing...", or the selected tool content).
+                let context = state.get_analysis_context();
+                Clear.render(analysis_area, buf);
+                let column_offset = match self.analysis_modal.selected_tool {
+                    Some(analysis_modal::AnalysisTool::Describe) => {
+                        self.analysis_modal.describe_column_offset
+                    }
+                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                        self.analysis_modal.distribution_column_offset
+                    }
+                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                        self.analysis_modal.correlation_column_offset
+                    }
+                    None => 0,
+                };
 
-                    let config = widgets::analysis::AnalysisWidgetConfig {
-                        state,
-                        results: Some(results),
-                        context: &context,
-                        view: self.analysis_modal.view,
-                        selected_tool: self.analysis_modal.selected_tool,
-                        column_offset,
-                        selected_correlation: self.analysis_modal.selected_correlation,
-                        focus: self.analysis_modal.focus,
-                        selected_theoretical_distribution: self
-                            .analysis_modal
-                            .selected_theoretical_distribution,
-                        histogram_scale: self.analysis_modal.histogram_scale,
-                        theme: &self.theme,
-                    };
-                    let widget = widgets::analysis::AnalysisWidget::new(
-                        config,
-                        &mut self.analysis_modal.table_state,
-                        &mut self.analysis_modal.distribution_table_state,
-                        &mut self.analysis_modal.correlation_table_state,
-                        &mut self.analysis_modal.sidebar_state,
-                        &mut self.analysis_modal.distribution_selector_state,
-                    );
-                    widget.render(analysis_area, buf);
-                } else {
-                    // Still computing
-                    Clear.render(analysis_area, buf);
-                    Paragraph::new("Computing statistics...")
-                        .centered()
-                        .render(analysis_area, buf);
-                }
+                let config = widgets::analysis::AnalysisWidgetConfig {
+                    state,
+                    results: self.analysis_modal.analysis_results.as_ref(),
+                    context: &context,
+                    view: self.analysis_modal.view,
+                    selected_tool: self.analysis_modal.selected_tool,
+                    column_offset,
+                    selected_correlation: self.analysis_modal.selected_correlation,
+                    focus: self.analysis_modal.focus,
+                    selected_theoretical_distribution: self
+                        .analysis_modal
+                        .selected_theoretical_distribution,
+                    histogram_scale: self.analysis_modal.histogram_scale,
+                    theme: &self.theme,
+                    table_cell_padding: self.table_cell_padding,
+                };
+                let widget = widgets::analysis::AnalysisWidget::new(
+                    config,
+                    &mut self.analysis_modal.table_state,
+                    &mut self.analysis_modal.distribution_table_state,
+                    &mut self.analysis_modal.correlation_table_state,
+                    &mut self.analysis_modal.sidebar_state,
+                    &mut self.analysis_modal.distribution_selector_state,
+                );
+                widget.render(analysis_area, buf);
             } else {
                 // No data available
                 Clear.render(analysis_area, buf);
@@ -8758,17 +9133,19 @@ impl Widget for &mut App {
             let mut kde_data: Option<&chart_data::KdeData> = None;
             let mut heatmap_data: Option<&chart_data::HeatmapData> = None;
 
+            let row_limit_opt = self.chart_modal.row_limit;
+            let row_limit = self.chart_modal.effective_row_limit();
             match self.chart_modal.chart_kind {
                 ChartKind::XY => {
                     if let Some(x_column) = self.chart_modal.effective_x_column() {
                         let x_key = x_column.to_string();
                         let y_columns = self.chart_modal.effective_y_columns();
                         if !y_columns.is_empty() {
-                            let use_cache = self
-                                .chart_cache
-                                .xy
-                                .as_ref()
-                                .filter(|c| c.x_column == x_key && c.y_columns == y_columns);
+                            let use_cache = self.chart_cache.xy.as_ref().filter(|c| {
+                                c.x_column == x_key
+                                    && c.y_columns == y_columns
+                                    && c.row_limit == row_limit_opt
+                            });
                             if use_cache.is_none() {
                                 if let Some(state) = self.data_table_state.as_ref() {
                                     if let Ok(result) = chart_data::prepare_chart_data(
@@ -8776,40 +9153,75 @@ impl Widget for &mut App {
                                         &state.schema,
                                         x_column,
                                         &y_columns,
+                                        row_limit,
                                     ) {
                                         self.chart_cache.xy = Some(ChartCacheXY {
                                             x_column: x_key.clone(),
                                             y_columns: y_columns.clone(),
+                                            row_limit: row_limit_opt,
                                             series: result.series,
+                                            series_log: None,
                                             x_axis_kind: result.x_axis_kind,
                                         });
                                     }
                                 }
                             }
+                            if self.chart_modal.log_scale {
+                                if let Some(cache) = self.chart_cache.xy.as_mut() {
+                                    if cache.x_column == x_key
+                                        && cache.y_columns == y_columns
+                                        && cache.row_limit == row_limit_opt
+                                        && cache.series_log.is_none()
+                                        && cache.series.iter().any(|s| !s.is_empty())
+                                    {
+                                        cache.series_log = Some(
+                                            cache
+                                                .series
+                                                .iter()
+                                                .map(|pts| {
+                                                    pts.iter()
+                                                        .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
+                                                        .collect()
+                                                })
+                                                .collect(),
+                                        );
+                                    }
+                                }
+                            }
                             if let Some(cache) = self.chart_cache.xy.as_ref() {
-                                if cache.x_column == x_key && cache.y_columns == y_columns {
+                                if cache.x_column == x_key
+                                    && cache.y_columns == y_columns
+                                    && cache.row_limit == row_limit_opt
+                                {
                                     x_axis_kind = cache.x_axis_kind;
-                                    if cache.series.iter().any(|s| !s.is_empty()) {
+                                    if self.chart_modal.log_scale {
+                                        if let Some(ref log) = cache.series_log {
+                                            if log.iter().any(|v| !v.is_empty()) {
+                                                xy_series = Some(log);
+                                            }
+                                        }
+                                    } else if cache.series.iter().any(|s| !s.is_empty()) {
                                         xy_series = Some(&cache.series);
                                     }
                                 }
                             }
                         } else {
                             // Only X selected: cache x range for axis bounds
-                            let use_cache = self
-                                .chart_cache
-                                .x_range
-                                .as_ref()
-                                .filter(|c| c.x_column == x_key);
+                            let use_cache =
+                                self.chart_cache.x_range.as_ref().filter(|c| {
+                                    c.x_column == x_key && c.row_limit == row_limit_opt
+                                });
                             if use_cache.is_none() {
                                 if let Some(state) = self.data_table_state.as_ref() {
                                     if let Ok(result) = chart_data::prepare_chart_x_range(
                                         &state.lf,
                                         &state.schema,
                                         x_column,
+                                        row_limit,
                                     ) {
                                         self.chart_cache.x_range = Some(ChartCacheXRange {
                                             x_column: x_key.clone(),
+                                            row_limit: row_limit_opt,
                                             x_min: result.x_min,
                                             x_max: result.x_max,
                                             x_axis_kind: result.x_axis_kind,
@@ -8818,7 +9230,7 @@ impl Widget for &mut App {
                                 }
                             }
                             if let Some(cache) = self.chart_cache.x_range.as_ref() {
-                                if cache.x_column == x_key {
+                                if cache.x_column == x_key && cache.row_limit == row_limit_opt {
                                     x_axis_kind = cache.x_axis_kind;
                                     x_bounds = Some((cache.x_min, cache.x_max));
                                 }
@@ -8837,18 +9249,17 @@ impl Widget for &mut App {
                         self.chart_modal.effective_hist_column(),
                     ) {
                         let bins = self.chart_modal.hist_bins;
-                        let use_cache = self
-                            .chart_cache
-                            .histogram
-                            .as_ref()
-                            .filter(|c| c.column == column && c.bins == bins);
+                        let use_cache = self.chart_cache.histogram.as_ref().filter(|c| {
+                            c.column == column && c.bins == bins && c.row_limit == row_limit_opt
+                        });
                         if use_cache.is_none() {
-                            if let Ok(data) =
-                                chart_data::prepare_histogram_data(&state.lf, &column, bins)
-                            {
+                            if let Ok(data) = chart_data::prepare_histogram_data(
+                                &state.lf, &column, bins, row_limit,
+                            ) {
                                 self.chart_cache.histogram = Some(ChartCacheHistogram {
                                     column: column.clone(),
                                     bins,
+                                    row_limit: row_limit_opt,
                                     data,
                                 });
                             }
@@ -8857,7 +9268,9 @@ impl Widget for &mut App {
                             .chart_cache
                             .histogram
                             .as_ref()
-                            .filter(|c| c.column == column && c.bins == bins)
+                            .filter(|c| {
+                                c.column == column && c.bins == bins && c.row_limit == row_limit_opt
+                            })
                             .map(|c| &c.data);
                     }
                 }
@@ -8870,14 +9283,16 @@ impl Widget for &mut App {
                             .chart_cache
                             .box_plot
                             .as_ref()
-                            .filter(|c| c.column == column);
+                            .filter(|c| c.column == column && c.row_limit == row_limit_opt);
                         if use_cache.is_none() {
                             if let Ok(data) = chart_data::prepare_box_plot_data(
                                 &state.lf,
                                 std::slice::from_ref(&column),
+                                row_limit,
                             ) {
                                 self.chart_cache.box_plot = Some(ChartCacheBoxPlot {
                                     column: column.clone(),
+                                    row_limit: row_limit_opt,
                                     data,
                                 });
                             }
@@ -8886,7 +9301,7 @@ impl Widget for &mut App {
                             .chart_cache
                             .box_plot
                             .as_ref()
-                            .filter(|c| c.column == column)
+                            .filter(|c| c.column == column && c.row_limit == row_limit_opt)
                             .map(|c| &c.data);
                     }
                 }
@@ -8896,20 +9311,22 @@ impl Widget for &mut App {
                         self.chart_modal.effective_kde_column(),
                     ) {
                         let bandwidth = self.chart_modal.kde_bandwidth_factor;
-                        let use_cache = self
-                            .chart_cache
-                            .kde
-                            .as_ref()
-                            .filter(|c| c.column == column && c.bandwidth_factor == bandwidth);
+                        let use_cache = self.chart_cache.kde.as_ref().filter(|c| {
+                            c.column == column
+                                && c.bandwidth_factor == bandwidth
+                                && c.row_limit == row_limit_opt
+                        });
                         if use_cache.is_none() {
                             if let Ok(data) = chart_data::prepare_kde_data(
                                 &state.lf,
                                 std::slice::from_ref(&column),
                                 bandwidth,
+                                row_limit,
                             ) {
                                 self.chart_cache.kde = Some(ChartCacheKde {
                                     column: column.clone(),
                                     bandwidth_factor: bandwidth,
+                                    row_limit: row_limit_opt,
                                     data,
                                 });
                             }
@@ -8918,7 +9335,11 @@ impl Widget for &mut App {
                             .chart_cache
                             .kde
                             .as_ref()
-                            .filter(|c| c.column == column && c.bandwidth_factor == bandwidth)
+                            .filter(|c| {
+                                c.column == column
+                                    && c.bandwidth_factor == bandwidth
+                                    && c.row_limit == row_limit_opt
+                            })
                             .map(|c| &c.data);
                     }
                 }
@@ -8930,16 +9351,20 @@ impl Widget for &mut App {
                     ) {
                         let bins = self.chart_modal.heatmap_bins;
                         let use_cache = self.chart_cache.heatmap.as_ref().filter(|c| {
-                            c.x_column == x_column && c.y_column == y_column && c.bins == bins
+                            c.x_column == x_column
+                                && c.y_column == y_column
+                                && c.bins == bins
+                                && c.row_limit == row_limit_opt
                         });
                         if use_cache.is_none() {
                             if let Ok(data) = chart_data::prepare_heatmap_data(
-                                &state.lf, &x_column, &y_column, bins,
+                                &state.lf, &x_column, &y_column, bins, row_limit,
                             ) {
                                 self.chart_cache.heatmap = Some(ChartCacheHeatmap {
                                     x_column: x_column.clone(),
                                     y_column: y_column.clone(),
                                     bins,
+                                    row_limit: row_limit_opt,
                                     data,
                                 });
                             }
@@ -8949,7 +9374,10 @@ impl Widget for &mut App {
                             .heatmap
                             .as_ref()
                             .filter(|c| {
-                                c.x_column == x_column && c.y_column == y_column && c.bins == bins
+                                c.x_column == x_column
+                                    && c.y_column == y_column
+                                    && c.bins == bins
+                                    && c.row_limit == row_limit_opt
                             })
                             .map(|c| &c.data);
                     }
@@ -9194,17 +9622,21 @@ impl Widget for &mut App {
                         help_strings::analysis_correlation_detail().to_string(),
                     ),
                     analysis_modal::AnalysisView::Main => match self.analysis_modal.selected_tool {
-                        analysis_modal::AnalysisTool::DistributionAnalysis => (
+                        Some(analysis_modal::AnalysisTool::DistributionAnalysis) => (
                             "Distribution Analysis Help".to_string(),
                             help_strings::analysis_distribution().to_string(),
                         ),
-                        analysis_modal::AnalysisTool::Describe => (
+                        Some(analysis_modal::AnalysisTool::Describe) => (
                             "Describe Tool Help".to_string(),
                             help_strings::analysis_describe().to_string(),
                         ),
-                        analysis_modal::AnalysisTool::CorrelationMatrix => (
+                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => (
                             "Correlation Matrix Help".to_string(),
                             help_strings::analysis_correlation_matrix().to_string(),
+                        ),
+                        None => (
+                            "Analysis Help".to_string(),
+                            "Select an analysis tool from the sidebar.".to_string(),
                         ),
                     },
                 }
@@ -9368,10 +9800,12 @@ impl Widget for &mut App {
                 ("Enter", "Select"),
             ];
 
-            // Add r Resample if data is sampled
-            if let Some(results) = &self.analysis_modal.analysis_results {
-                if results.sample_size.is_some() {
-                    analysis_controls.push(("r", "Resample"));
+            // Show r Resample only when sampling is enabled and data was sampled
+            if self.sampling_threshold.is_some() {
+                if let Some(results) = &self.analysis_modal.analysis_results {
+                    if results.sample_size.is_some() {
+                        analysis_controls.push(("r", "Resample"));
+                    }
                 }
             }
 

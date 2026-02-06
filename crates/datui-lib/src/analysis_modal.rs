@@ -52,7 +52,8 @@ pub struct AnalysisModal {
     pub show_help: bool,
     pub view: AnalysisView,
     pub focus: AnalysisFocus,
-    pub selected_tool: AnalysisTool,
+    /// None = no tool selected yet (show instructions); Some(tool) = user chose a tool (may be computing or showing results).
+    pub selected_tool: Option<AnalysisTool>,
     pub selected_distribution: Option<usize>, // Selected row in distribution table
     pub selected_correlation: Option<(usize, usize)>, // Selected cell in correlation matrix (row, col)
     pub detail_section: usize, // Current section in detail view (0=Characteristics, 1=Outliers, 2=Percentiles)
@@ -83,10 +84,10 @@ impl AnalysisModal {
         self.table_state.select(Some(0));
         self.distribution_table_state.select(Some(0));
         self.correlation_table_state.select(Some(0));
-        self.sidebar_state.select(Some(0)); // Select Describe tool
+        self.sidebar_state.select(Some(0)); // Highlight first tool; user must press Enter to select
         self.view = AnalysisView::Main;
-        self.focus = AnalysisFocus::Main;
-        self.selected_tool = AnalysisTool::Describe;
+        self.focus = AnalysisFocus::Sidebar; // Sidebar focused by default when no tool selected
+        self.selected_tool = None; // No tool until user selects from sidebar
         self.selected_distribution = Some(0);
         self.selected_correlation = Some((0, 0));
         self.detail_section = 0;
@@ -107,7 +108,7 @@ impl AnalysisModal {
         self.correlation_column_offset = 0;
         self.view = AnalysisView::Main;
         self.focus = AnalysisFocus::Main;
-        self.selected_tool = AnalysisTool::Describe;
+        self.selected_tool = None;
         self.selected_distribution = None;
         self.selected_correlation = None;
         self.detail_section = 0;
@@ -132,12 +133,12 @@ impl AnalysisModal {
 
     pub fn select_tool(&mut self) {
         if let Some(idx) = self.sidebar_state.selected() {
-            self.selected_tool = match idx {
+            self.selected_tool = Some(match idx {
                 0 => AnalysisTool::Describe,
                 1 => AnalysisTool::DistributionAnalysis,
                 2 => AnalysisTool::CorrelationMatrix,
                 _ => AnalysisTool::Describe,
-            };
+            });
             self.focus = AnalysisFocus::Main;
         }
     }
@@ -159,7 +160,7 @@ impl AnalysisModal {
 
     pub fn open_distribution_detail(&mut self) {
         if self.focus == AnalysisFocus::Main
-            && self.selected_tool == AnalysisTool::DistributionAnalysis
+            && self.selected_tool == Some(AnalysisTool::DistributionAnalysis)
         {
             if let Some(idx) = self.distribution_table_state.selected() {
                 if let Some(results) = &self.analysis_results {
@@ -180,7 +181,7 @@ impl AnalysisModal {
 
     pub fn open_correlation_detail(&mut self) {
         if self.focus == AnalysisFocus::Main
-            && self.selected_tool == AnalysisTool::CorrelationMatrix
+            && self.selected_tool == Some(AnalysisTool::CorrelationMatrix)
         {
             if let Some((row, col)) = self.selected_correlation {
                 if row != col {
@@ -210,23 +211,23 @@ impl AnalysisModal {
 
     pub fn scroll_left(&mut self) {
         match self.selected_tool {
-            AnalysisTool::Describe => {
+            Some(AnalysisTool::Describe) => {
                 if self.describe_column_offset > 0 {
                     self.describe_column_offset -= 1;
                 }
             }
-            AnalysisTool::DistributionAnalysis => {
+            Some(AnalysisTool::DistributionAnalysis) => {
                 if self.distribution_column_offset > 0 {
                     self.distribution_column_offset -= 1;
                 }
             }
-            AnalysisTool::CorrelationMatrix => {}
+            _ => {}
         }
     }
 
     pub fn scroll_right(&mut self, max_columns: usize, visible_columns: usize) {
         match self.selected_tool {
-            AnalysisTool::Describe => {
+            Some(AnalysisTool::Describe) => {
                 let offset = &mut self.describe_column_offset;
                 if *offset + visible_columns < max_columns
                     && *offset < max_columns.saturating_sub(1)
@@ -234,7 +235,7 @@ impl AnalysisModal {
                     *offset += 1;
                 }
             }
-            AnalysisTool::DistributionAnalysis => {
+            Some(AnalysisTool::DistributionAnalysis) => {
                 let offset = &mut self.distribution_column_offset;
                 if *offset + visible_columns < max_columns
                     && *offset < max_columns.saturating_sub(1)
@@ -242,7 +243,7 @@ impl AnalysisModal {
                     *offset += 1;
                 }
             }
-            AnalysisTool::CorrelationMatrix => {}
+            _ => {}
         }
     }
 
@@ -259,7 +260,7 @@ impl AnalysisModal {
             return;
         }
         match self.selected_tool {
-            AnalysisTool::Describe => {
+            Some(AnalysisTool::Describe) => {
                 if let Some(current) = self.table_state.selected() {
                     let next = (current + 1).min(max_rows.saturating_sub(1));
                     self.table_state.select(Some(next));
@@ -267,7 +268,7 @@ impl AnalysisModal {
                     self.table_state.select(Some(0));
                 }
             }
-            AnalysisTool::DistributionAnalysis => {
+            Some(AnalysisTool::DistributionAnalysis) => {
                 if let Some(current) = self.distribution_table_state.selected() {
                     let next = (current + 1).min(max_rows.saturating_sub(1));
                     self.distribution_table_state.select(Some(next));
@@ -277,13 +278,14 @@ impl AnalysisModal {
                     self.selected_distribution = Some(0);
                 }
             }
-            AnalysisTool::CorrelationMatrix => {
+            Some(AnalysisTool::CorrelationMatrix) => {
                 if let Some((row, col)) = self.selected_correlation {
                     let next_row = (row + 1).min(max_rows.saturating_sub(1));
                     self.selected_correlation = Some((next_row, col));
                     self.correlation_table_state.select(Some(next_row));
                 }
             }
+            None => {}
         }
     }
 
@@ -293,14 +295,14 @@ impl AnalysisModal {
             return;
         }
         match self.selected_tool {
-            AnalysisTool::Describe => {
+            Some(AnalysisTool::Describe) => {
                 if let Some(current) = self.table_state.selected() {
                     if current > 0 {
                         self.table_state.select(Some(current - 1));
                     }
                 }
             }
-            AnalysisTool::DistributionAnalysis => {
+            Some(AnalysisTool::DistributionAnalysis) => {
                 if let Some(current) = self.distribution_table_state.selected() {
                     if current > 0 {
                         let prev = current - 1;
@@ -309,7 +311,7 @@ impl AnalysisModal {
                     }
                 }
             }
-            AnalysisTool::CorrelationMatrix => {
+            Some(AnalysisTool::CorrelationMatrix) => {
                 if let Some((row, col)) = self.selected_correlation {
                     if row > 0 {
                         let prev_row = row - 1;
@@ -318,6 +320,7 @@ impl AnalysisModal {
                     }
                 }
             }
+            None => {}
         }
     }
 
@@ -327,26 +330,27 @@ impl AnalysisModal {
         }
 
         match self.selected_tool {
-            AnalysisTool::Describe => {
+            Some(AnalysisTool::Describe) => {
                 if let Some(current) = self.table_state.selected() {
                     let next = (current + page_size).min(max_rows.saturating_sub(1));
                     self.table_state.select(Some(next));
                 }
             }
-            AnalysisTool::DistributionAnalysis => {
+            Some(AnalysisTool::DistributionAnalysis) => {
                 if let Some(current) = self.distribution_table_state.selected() {
                     let next = (current + page_size).min(max_rows.saturating_sub(1));
                     self.distribution_table_state.select(Some(next));
                     self.selected_distribution = Some(next);
                 }
             }
-            AnalysisTool::CorrelationMatrix => {
+            Some(AnalysisTool::CorrelationMatrix) => {
                 if let Some((row, col)) = self.selected_correlation {
                     let next_row = (row + page_size).min(max_rows.saturating_sub(1));
                     self.selected_correlation = Some((next_row, col));
                     self.correlation_table_state.select(Some(next_row));
                 }
             }
+            None => {}
         }
     }
 
@@ -356,26 +360,27 @@ impl AnalysisModal {
         }
 
         match self.selected_tool {
-            AnalysisTool::Describe => {
+            Some(AnalysisTool::Describe) => {
                 if let Some(current) = self.table_state.selected() {
                     let next = current.saturating_sub(page_size);
                     self.table_state.select(Some(next));
                 }
             }
-            AnalysisTool::DistributionAnalysis => {
+            Some(AnalysisTool::DistributionAnalysis) => {
                 if let Some(current) = self.distribution_table_state.selected() {
                     let next = current.saturating_sub(page_size);
                     self.distribution_table_state.select(Some(next));
                     self.selected_distribution = Some(next);
                 }
             }
-            AnalysisTool::CorrelationMatrix => {
+            Some(AnalysisTool::CorrelationMatrix) => {
                 if let Some((row, col)) = self.selected_correlation {
                     let prev_row = row.saturating_sub(page_size);
                     self.selected_correlation = Some((prev_row, col));
                     self.correlation_table_state.select(Some(prev_row));
                 }
             }
+            None => {}
         }
     }
 

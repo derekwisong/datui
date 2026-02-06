@@ -2,10 +2,33 @@
 
 ![Querying Demo](../demos/02-querying.gif)
 
-See the [Query Syntax Reference][query-syntax-reference] for additional detail about the structure
-of Datui queries.
+Press **`/`** to open the query prompt. The prompt has three tabs:
 
-## Selecting Columns
+- **SQL-Like** — Datui’s built-in query language (described below).
+- **Fuzzy** — Coming soon.
+- **SQL** — Run standard SQL against the current table (see [Using the SQL tab](#using-the-sql-tab)).
+
+Use **Tab** or **Shift+Tab** (or **Left** / **Right**) to switch tabs. Focus stays on the tab bar when you change tabs; press **Tab** to move focus into the text input for the selected tab.
+
+See the [Query Syntax Reference][query-syntax-reference] for additional detail about the structure
+of SQL-Like queries.
+
+## Using the SQL tab
+
+When the **SQL** tab is selected and focus is in the input box, you can run SQL against the current data. The table is registered as **`df`**, so use `FROM df` in your queries.
+
+- **Up** / **Down** — Browse SQL history (stored separately from SQL-Like history).
+- **Enter** — Run the query (or submit an empty line to reset the view to the full table).
+- **Esc** — Cancel and close the prompt.
+
+Example:
+
+```sql
+SELECT * FROM df LIMIT 100
+SELECT category, COUNT(*) AS n FROM df GROUP BY category ORDER BY n DESC
+```
+
+## Selecting Columns (SQL-Like)
 
 The `select` clause can be used to select columns:
 ```

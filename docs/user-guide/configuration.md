@@ -76,13 +76,22 @@ Tune performance and responsiveness:
 
 ```toml
 [performance]
-sampling_threshold = 10000   # Sample datasets >= this size
+# sampling_threshold = 10000   # Optional: when set, sample datasets >= this size for analysis
 event_poll_interval_ms = 25  # UI polling interval (lower = more responsive)
 ```
 
-**Memory vs Speed:**
-- **Increase `sampling_threshold`** to avoid sampling (uses more memory, full accuracy)
-- **Decrease `sampling_threshold`** for faster analysis on large datasets (uses less memory)
+### Chart View
+
+Default limit for how many rows are used when building chart data (display and export). You can also change this in chart view with the **Limit Rows** option.
+
+```toml
+[chart]
+row_limit = 10000  # Max rows for chart data (1 to 10_000_000). Default 10000
+```
+
+**Sampling (optional):**
+- **Omit `sampling_threshold`** (default): Analysis uses the full dataset (no sampling). No "Resample" keybind or "(sampled)" label.
+- **Set `sampling_threshold = N`**: For datasets with ≥ N rows, analysis is run on a sample (faster, less memory). You can press **r** to resample; the tool shows "(sampled)".
 
 ### Color Themes
 
@@ -296,7 +305,7 @@ pages_lookahead = 5   # More buffering for smoother scrolling
 pages_lookback = 5
 
 [performance]
-sampling_threshold = 50000  # Sample only very large datasets
+sampling_threshold = 50000  # Optional: sample only datasets >= 50k rows (omit to use full data)
 event_poll_interval_ms = 16 # ~60 FPS polling (more responsive)
 ```
 
@@ -386,7 +395,7 @@ If your config isn't being used:
 1. **Check file location**: Ensure config is at `~/.config/datui/config.toml`
 2. **Check syntax**: TOML must be valid. Run `datui <file>` and check for warnings
 3. **Check version**: Config must start with `version = "0.2"`
-4. **Check validation**: Ensure values are in valid ranges (e.g., `sampling_threshold > 0`)
+4. **Check validation**: Ensure values are in valid ranges (e.g., if set, `sampling_threshold > 0`)
 
 ### Invalid Color
 

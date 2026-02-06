@@ -24,13 +24,14 @@ pub struct AnalysisWidgetConfig<'a> {
     pub results: Option<&'a AnalysisResults>,
     pub context: &'a AnalysisContext,
     pub view: AnalysisView,
-    pub selected_tool: AnalysisTool,
+    pub selected_tool: Option<AnalysisTool>,
     pub column_offset: usize,
     pub selected_correlation: Option<(usize, usize)>,
     pub focus: AnalysisFocus,
     pub selected_theoretical_distribution: DistributionType,
     pub histogram_scale: HistogramScale,
     pub theme: &'a Theme,
+    pub table_cell_padding: u16,
 }
 
 pub struct AnalysisWidget<'a> {
@@ -38,7 +39,7 @@ pub struct AnalysisWidget<'a> {
     results: Option<&'a AnalysisResults>,
     _context: &'a AnalysisContext,
     view: AnalysisView,
-    selected_tool: AnalysisTool,
+    selected_tool: Option<AnalysisTool>,
     table_state: &'a mut TableState,
     distribution_table_state: &'a mut TableState,
     correlation_table_state: &'a mut TableState,
@@ -50,6 +51,7 @@ pub struct AnalysisWidget<'a> {
     distribution_selector_state: &'a mut TableState,
     histogram_scale: HistogramScale,
     theme: &'a Theme,
+    table_cell_padding: u16,
 }
 
 impl<'a> AnalysisWidget<'a> {
@@ -78,6 +80,7 @@ impl<'a> AnalysisWidget<'a> {
             distribution_selector_state,
             histogram_scale: config.histogram_scale,
             theme: config.theme,
+            table_cell_padding: config.table_cell_padding,
         }
     }
 }
@@ -106,12 +109,12 @@ impl<'a> AnalysisWidget<'a> {
             ])
             .split(area);
 
-        // Breadcrumb with style matching main window column headers
-        // Show tool name for all analysis tools, with "(sampled)" if data is sampled
+        // Breadcrumb: tool name when a tool is selected, or "Analysis" when none selected
         let tool_name = match self.selected_tool {
-            AnalysisTool::Describe => "Describe",
-            AnalysisTool::DistributionAnalysis => "Distribution Analysis",
-            AnalysisTool::CorrelationMatrix => "Correlation Matrix",
+            Some(AnalysisTool::Describe) => "Describe",
+            Some(AnalysisTool::DistributionAnalysis) => "Distribution Analysis",
+            Some(AnalysisTool::CorrelationMatrix) => "Correlation Matrix",
+            None => "Analysis",
         };
 
         let breadcrumb_text = if let Some(results) = self.results {
@@ -138,45 +141,65 @@ impl<'a> AnalysisWidget<'a> {
             ])
             .split(layout[1]);
 
-        // Main content area: Show selected tool
-        if let Some(results) = self.results {
-            match self.selected_tool {
-                AnalysisTool::Describe => {
-                    render_statistics_table(
-                        results,
-                        self.table_state,
-                        self.column_offset,
-                        main_layout[0],
-                        buf,
-                        self.theme,
-                    );
-                }
-                AnalysisTool::DistributionAnalysis => {
-                    render_distribution_table(
-                        results,
-                        self.distribution_table_state,
-                        self.column_offset,
-                        main_layout[0],
-                        buf,
-                        self.theme,
-                    );
-                }
-                AnalysisTool::CorrelationMatrix => {
-                    render_correlation_matrix(
-                        results,
-                        self.correlation_table_state,
-                        &self.selected_correlation,
-                        self.column_offset,
-                        main_layout[0],
-                        buf,
-                        self.theme,
-                    );
+        // Main content area: instructions when no tool selected, else selected tool (or "Computing...")
+        match self.selected_tool {
+            None => {
+                const INSTRUCTION_LINES: u16 = 1;
+                let inner = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(0),
+                        Constraint::Length(INSTRUCTION_LINES),
+                        Constraint::Min(0),
+                    ])
+                    .split(main_layout[0]);
+                Paragraph::new("Select an analysis tool from the sidebar.")
+                    .centered()
+                    .style(Style::default().fg(self.theme.get("text_primary")))
+                    .render(inner[1], buf);
+            }
+            Some(tool) => {
+                if let Some(results) = self.results {
+                    match tool {
+                        AnalysisTool::Describe => {
+                            render_statistics_table(
+                                results,
+                                self.table_state,
+                                self.column_offset,
+                                main_layout[0],
+                                buf,
+                                self.theme,
+                                self.table_cell_padding,
+                            );
+                        }
+                        AnalysisTool::DistributionAnalysis => {
+                            render_distribution_table(
+                                results,
+                                self.distribution_table_state,
+                                self.column_offset,
+                                main_layout[0],
+                                buf,
+                                self.theme,
+                            );
+                        }
+                        AnalysisTool::CorrelationMatrix => {
+                            render_correlation_matrix(
+                                results,
+                                self.correlation_table_state,
+                                &self.selected_correlation,
+                                self.column_offset,
+                                main_layout[0],
+                                buf,
+                                self.theme,
+                            );
+                        }
+                    }
+                } else {
+                    Paragraph::new("Computing statistics...")
+                        .centered()
+                        .render(main_layout[0], buf);
                 }
             }
-        } else {
-            Paragraph::new("Computing statistics...")
-                .centered()
-                .render(main_layout[0], buf);
         }
 
         // Sidebar: Tool list
@@ -435,6 +458,7 @@ fn render_statistics_table(
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
+    table_cell_padding: u16,
 ) {
     let num_columns = results.column_statistics.len();
     if num_columns == 0 {
@@ -541,16 +565,14 @@ fn render_statistics_table(
         .unwrap_or(header_len);
     let locked_col_width = max_col_name_len.max(header_len).max(10); // min 10, must fit both header and data (no padding - table handles spacing)
 
-    // Calculate which columns can fit with minimal spacing
-    // Ratatui Table adds 1 space between columns by default
-    // Account for spacing: total_width = locked_col + 1 (space) + sum(stat_cols) + (num_stat_cols - 1) * 1 (spacing between stat cols)
-    let column_spacing = 1u16; // Default spacing between columns in ratatui Table
+    // Calculate which columns can fit using same cell padding as main datatable
+    let column_spacing = table_cell_padding;
 
     // Available width for stat columns = total width - locked column - spacing between locked and first stat
     let available_width = area
         .width
         .saturating_sub(locked_col_width)
-        .saturating_sub(column_spacing); // Space between locked column and first stat column
+        .saturating_sub(column_spacing);
 
     let mut used_width_from_zero = 0u16;
     let mut max_visible_from_zero = 0;
@@ -690,6 +712,7 @@ fn render_statistics_table(
 
     let table = Table::new(rows, constraints)
         .header(header_row)
+        .column_spacing(table_cell_padding)
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     // Use StatefulWidget for row selection
@@ -1389,7 +1412,7 @@ fn render_sidebar(
     area: Rect,
     buf: &mut Buffer,
     sidebar_state: &mut TableState,
-    selected_tool: AnalysisTool,
+    selected_tool: Option<AnalysisTool>,
     focus: AnalysisFocus,
     theme: &Theme,
 ) {
@@ -1408,7 +1431,7 @@ fn render_sidebar(
         .iter()
         .enumerate()
         .map(|(idx, (name, tool))| {
-            let is_selected = *tool == selected_tool;
+            let is_selected = selected_tool == Some(*tool);
             let is_focused =
                 focus == AnalysisFocus::Sidebar && sidebar_state.selected() == Some(idx);
             let prefix = if is_selected { "> " } else { "  " };
@@ -1421,11 +1444,16 @@ fn render_sidebar(
         })
         .collect();
 
+    let border_color = if focus == AnalysisFocus::Sidebar {
+        theme.get("modal_border_active")
+    } else {
+        theme.get("modal_border")
+    };
     let block = Block::default()
         .title("Analysis Tools")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.get("modal_border")));
+        .border_style(Style::default().fg(border_color));
 
     let list = List::new(items).block(block);
 

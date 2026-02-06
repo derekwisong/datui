@@ -1,4 +1,3 @@
-use crate::statistics::SAMPLING_THRESHOLD;
 use color_eyre::eyre::eyre;
 use color_eyre::Result;
 use ratatui::style::Color;
@@ -96,6 +95,11 @@ impl ConfigManager {
         // Performance fields
         for (field, comment) in PERFORMANCE_COMMENTS {
             comments.insert(format!("performance.{}", field), comment.to_string());
+        }
+
+        // Chart fields
+        for (field, comment) in CHART_COMMENTS {
+            comments.insert(format!("chart.{}", field), comment.to_string());
         }
 
         // Theme fields
@@ -218,6 +222,7 @@ impl ConfigManager {
             "file_loading.has_header",
             "file_loading.skip_lines",
             "file_loading.skip_rows",
+            "chart.row_limit",
             "ui.controls.custom_controls",
         ];
 
@@ -333,6 +338,7 @@ pub struct AppConfig {
     pub file_loading: FileLoadingConfig,
     pub display: DisplayConfig,
     pub performance: PerformanceConfig,
+    pub chart: ChartConfig,
     pub theme: ThemeConfig,
     pub ui: UiConfig,
     pub query: QueryConfig,
@@ -363,6 +369,10 @@ const SECTION_HEADERS: &[(&str, &str)] = &[
     (
         "performance",
         "# ============================================================================\n# Performance Settings\n# ============================================================================",
+    ),
+    (
+        "chart",
+        "# ============================================================================\n# Chart View\n# ============================================================================",
     ),
     (
         "theme",
@@ -531,7 +541,8 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PerformanceConfig {
-    pub sampling_threshold: usize,
+    /// When None, analysis uses full dataset (no sampling). When Some(n), datasets with >= n rows are sampled.
+    pub sampling_threshold: Option<usize>,
     pub event_poll_interval_ms: u64,
 }
 
@@ -539,13 +550,49 @@ pub struct PerformanceConfig {
 const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
     (
         "sampling_threshold",
-        "Sampling threshold: datasets >= this size will be sampled for statistics\nSet to higher value to avoid sampling, or lower to sample more aggressively",
+        "Optional: when set, datasets with >= this many rows are sampled for analysis (faster, less memory).\nWhen unset or omitted, full dataset is used. Example: sampling_threshold = 10000",
     ),
     (
         "event_poll_interval_ms",
         "Event polling interval in milliseconds\nLower values = more responsive but higher CPU usage",
     ),
 ];
+
+/// Default maximum rows used for chart data when not overridden by config or UI.
+pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
+/// Maximum chart row limit (Polars slice takes u32).
+pub const MAX_CHART_ROW_LIMIT: usize = u32::MAX as usize;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChartConfig {
+    /// Maximum rows for chart data. None (null in TOML) = unlimited; Some(n) = cap at n. Default 10000.
+    pub row_limit: Option<usize>,
+}
+
+// Field comments for ChartConfig
+const CHART_COMMENTS: &[(&str, &str)] = &[
+    (
+        "row_limit",
+        "Maximum rows used when building charts (display and export).\nSet to null for unlimited (uses full dataset). Set to a number (e.g. 10000) to cap. Can also be changed in chart view (Limit Rows). Example: row_limit = 10000",
+    ),
+];
+
+impl Default for ChartConfig {
+    fn default() -> Self {
+        Self {
+            row_limit: Some(DEFAULT_CHART_ROW_LIMIT),
+        }
+    }
+}
+
+impl ChartConfig {
+    pub fn merge(&mut self, other: Self) {
+        if other.row_limit.is_some() {
+            self.row_limit = other.row_limit;
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -805,6 +852,7 @@ impl Default for AppConfig {
             file_loading: FileLoadingConfig::default(),
             display: DisplayConfig::default(),
             performance: PerformanceConfig::default(),
+            chart: ChartConfig::default(),
             theme: ThemeConfig::default(),
             ui: UiConfig::default(),
             query: QueryConfig::default(),
@@ -832,7 +880,7 @@ impl Default for DisplayConfig {
 impl Default for PerformanceConfig {
     fn default() -> Self {
         Self {
-            sampling_threshold: SAMPLING_THRESHOLD,
+            sampling_threshold: None,
             event_poll_interval_ms: 25,
         }
     }
@@ -971,6 +1019,7 @@ impl AppConfig {
         self.file_loading.merge(other.file_loading);
         self.display.merge(other.display);
         self.performance.merge(other.performance);
+        self.chart.merge(other.chart);
         self.theme.merge(other.theme);
         self.ui.merge(other.ui);
         self.query.merge(other.query);
@@ -989,12 +1038,24 @@ impl AppConfig {
         }
 
         // Validate performance settings
-        if self.performance.sampling_threshold == 0 {
-            return Err(eyre!("sampling_threshold must be greater than 0"));
+        if let Some(t) = self.performance.sampling_threshold {
+            if t == 0 {
+                return Err(eyre!("sampling_threshold must be greater than 0 when set"));
+            }
         }
 
         if self.performance.event_poll_interval_ms == 0 {
             return Err(eyre!("event_poll_interval_ms must be greater than 0"));
+        }
+
+        if let Some(n) = self.chart.row_limit {
+            if n == 0 || n > MAX_CHART_ROW_LIMIT {
+                return Err(eyre!(
+                    "chart.row_limit must be between 1 and {} when set, got {}",
+                    MAX_CHART_ROW_LIMIT,
+                    n
+                ));
+            }
         }
 
         // Validate all colors can be parsed

@@ -18,9 +18,10 @@ name = "datui"
 path = "src/main.rs"
 
 [features]
-default = ["cloud", "http"]
+default = ["cloud", "http", "sql"]
 cloud = ["datui/cloud"]
 http = ["datui/http"]
+sql = ["datui/sql"]
 
 [dependencies]
 # Import as `datui` in Rust; package name is datui-lib

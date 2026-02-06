@@ -199,7 +199,7 @@ Comments in the comment constants should:
 const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
     (
         "sampling_threshold",
-        "Sampling threshold: datasets >= this size will be sampled for statistics\nSet to higher value to avoid sampling, or lower to sample more aggressively",
+        "Optional: when set, datasets with >= this many rows are sampled for analysis.\nWhen unset, full dataset is used. Example: sampling_threshold = 10000",
     ),
 ];
 ```
@@ -219,9 +219,11 @@ Add validation in `AppConfig::validate()` for constraints:
 fn validate(&self) -> Result<()> {
     // ... existing validation ...
     
-    // Validate new field
-    if self.performance.sampling_threshold == 0 {
-        return Err(eyre!("sampling_threshold must be greater than 0"));
+    // Validate new field (when Option, validate only when set)
+    if let Some(t) = self.performance.sampling_threshold {
+        if t == 0 {
+            return Err(eyre!("sampling_threshold must be greater than 0 when set"));
+        }
     }
     
     Ok(())

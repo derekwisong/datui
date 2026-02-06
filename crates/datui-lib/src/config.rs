@@ -78,6 +78,11 @@ impl ConfigManager {
             comments.insert(field.to_string(), comment.to_string());
         }
 
+        // Cloud fields
+        for (field, comment) in CLOUD_COMMENTS {
+            comments.insert(format!("cloud.{}", field), comment.to_string());
+        }
+
         // File loading fields
         for (field, comment) in FILE_LOADING_COMMENTS {
             comments.insert(format!("file_loading.{}", field), comment.to_string());
@@ -205,6 +210,10 @@ impl ConfigManager {
     ) -> String {
         // Option fields that should appear even when None
         let option_fields = [
+            "cloud.s3_endpoint_url",
+            "cloud.s3_access_key_id",
+            "cloud.s3_secret_access_key",
+            "cloud.s3_region",
             "file_loading.delimiter",
             "file_loading.has_header",
             "file_loading.skip_lines",
@@ -320,6 +329,7 @@ impl ConfigManager {
 pub struct AppConfig {
     /// Configuration format version (for future compatibility)
     pub version: String,
+    pub cloud: CloudConfig,
     pub file_loading: FileLoadingConfig,
     pub display: DisplayConfig,
     pub performance: PerformanceConfig,
@@ -338,6 +348,10 @@ const APP_COMMENTS: &[(&str, &str)] = &[(
 
 // Section header comments
 const SECTION_HEADERS: &[(&str, &str)] = &[
+    (
+        "cloud",
+        "# ============================================================================\n# Cloud / Object Storage (S3, MinIO)\n# ============================================================================\n# Optional overrides for s3:// URLs. Leave unset to use AWS defaults (env, ~/.aws/).\n# Set endpoint_url to use MinIO or other S3-compatible backends.",
+    ),
     (
         "file_loading",
         "# ============================================================================\n# File Loading Defaults\n# ============================================================================",
@@ -376,6 +390,55 @@ const SECTION_HEADERS: &[(&str, &str)] = &[
         "# ============================================================================\n# Debug Settings\n# ============================================================================",
     ),
 ];
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CloudConfig {
+    /// Custom endpoint for S3-compatible storage (e.g. MinIO). Example: "http://localhost:9000"
+    pub s3_endpoint_url: Option<String>,
+    /// Access key for S3-compatible backends when not using env / AWS config
+    pub s3_access_key_id: Option<String>,
+    /// Secret key for S3-compatible backends when not using env / AWS config
+    pub s3_secret_access_key: Option<String>,
+    /// Region (e.g. us-east-1). Often required when using a custom endpoint (MinIO uses us-east-1).
+    pub s3_region: Option<String>,
+}
+
+const CLOUD_COMMENTS: &[(&str, &str)] = &[
+    (
+        "s3_endpoint_url",
+        "Custom endpoint for S3-compatible storage (MinIO, etc.). Example: \"http://localhost:9000\". Unset = AWS.",
+    ),
+    (
+        "s3_access_key_id",
+        "Access key when using custom endpoint (or set AWS_ACCESS_KEY_ID).",
+    ),
+    (
+        "s3_secret_access_key",
+        "Secret key when using custom endpoint (or set AWS_SECRET_ACCESS_KEY).",
+    ),
+    (
+        "s3_region",
+        "Region (e.g. us-east-1). Required for custom endpoints; MinIO often uses us-east-1.",
+    ),
+];
+
+impl CloudConfig {
+    pub fn merge(&mut self, other: Self) {
+        if other.s3_endpoint_url.is_some() {
+            self.s3_endpoint_url = other.s3_endpoint_url;
+        }
+        if other.s3_access_key_id.is_some() {
+            self.s3_access_key_id = other.s3_access_key_id;
+        }
+        if other.s3_secret_access_key.is_some() {
+            self.s3_secret_access_key = other.s3_secret_access_key;
+        }
+        if other.s3_region.is_some() {
+            self.s3_region = other.s3_region;
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -738,6 +801,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             version: "0.2".to_string(),
+            cloud: CloudConfig::default(),
             file_loading: FileLoadingConfig::default(),
             display: DisplayConfig::default(),
             performance: PerformanceConfig::default(),
@@ -903,6 +967,7 @@ impl AppConfig {
         }
 
         // Merge each section
+        self.cloud.merge(other.cloud);
         self.file_loading.merge(other.file_loading);
         self.display.merge(other.display);
         self.performance.merge(other.performance);

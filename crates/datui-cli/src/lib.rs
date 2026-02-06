@@ -146,6 +146,22 @@ pub struct Args {
     /// Force overwrite existing config file when using --generate-config
     #[arg(long = "force", requires = "generate_config", action)]
     pub force: bool,
+
+    /// S3-compatible endpoint URL (overrides config and AWS_ENDPOINT_URL). Example: http://localhost:9000
+    #[arg(long = "s3-endpoint-url", value_name = "URL")]
+    pub s3_endpoint_url: Option<String>,
+
+    /// S3 access key (overrides config and AWS_ACCESS_KEY_ID)
+    #[arg(long = "s3-access-key-id", value_name = "KEY")]
+    pub s3_access_key_id: Option<String>,
+
+    /// S3 secret key (overrides config and AWS_SECRET_ACCESS_KEY)
+    #[arg(long = "s3-secret-access-key", value_name = "SECRET")]
+    pub s3_secret_access_key: Option<String>,
+
+    /// S3 region (overrides config and AWS_REGION). Example: us-east-1
+    #[arg(long = "s3-region", value_name = "REGION")]
+    pub s3_region: Option<String>,
 }
 
 /// Escape `|` and newlines for use in markdown table cells.

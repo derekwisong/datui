@@ -87,6 +87,40 @@ pub fn user_message_from_io(err: &io::Error, context: Option<&str>) -> String {
     }
 }
 
+/// Classification for consumers (e.g. Python binding) that map to native exception types.
+/// Keeps error-handling logic in one place instead of duplicating in each binding.
+#[derive(Debug, Clone, Copy)]
+pub enum ErrorKindForPython {
+    FileNotFound,
+    PermissionDenied,
+    Other,
+}
+
+/// Classify a report and return a kind plus user-facing message. Used by the Python binding
+/// to raise FileNotFoundError, PermissionDenied, or RuntimeError without duplicating chain-walk logic.
+pub fn error_for_python(report: &color_eyre::eyre::Report) -> (ErrorKindForPython, String) {
+    use std::io::ErrorKind;
+    for cause in report.chain() {
+        if let Some(io_err) = cause.downcast_ref::<io::Error>() {
+            let kind = match io_err.kind() {
+                ErrorKind::NotFound => ErrorKindForPython::FileNotFound,
+                ErrorKind::PermissionDenied => ErrorKindForPython::PermissionDenied,
+                _ => ErrorKindForPython::Other,
+            };
+            let msg = io_err.to_string();
+            return (kind, msg);
+        }
+    }
+    let display = report.to_string();
+    let msg = display
+        .lines()
+        .next()
+        .map(str::trim)
+        .unwrap_or("An error occurred")
+        .to_string();
+    (ErrorKindForPython::Other, msg)
+}
+
 /// Format a color_eyre Report by downcasting to known error types.
 /// Walks the cause chain to find PolarsError or io::Error.
 pub fn user_message_from_report(report: &color_eyre::eyre::Report, path: Option<&Path>) -> String {

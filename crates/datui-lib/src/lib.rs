@@ -2,7 +2,11 @@ use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::datatypes::AnyValue;
 use polars::datatypes::DataType;
+#[cfg(feature = "cloud")]
+use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
 use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
+#[cfg(feature = "cloud")]
+use polars::prelude::{PlPathRef, ScanArgsParquet};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
 use widgets::info::{
@@ -35,6 +39,7 @@ pub mod pivot_melt_modal;
 mod query;
 pub mod sort_filter_modal;
 pub mod sort_modal;
+mod source;
 pub mod statistics;
 pub mod template;
 pub mod widgets;
@@ -53,6 +58,7 @@ use chart_export::{
 };
 use chart_export_modal::{ChartExportFocus, ChartExportModal};
 use chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
+pub use error_display::{error_for_python, ErrorKindForPython};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 use filter_modal::{FilterFocus, FilterOperator, FilterStatement, LogicalOperator};
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
@@ -190,6 +196,11 @@ pub struct OpenOptions {
     pub temp_dir: Option<std::path::PathBuf>,
     /// Excel sheet: 0-based index or sheet name (CLI only).
     pub excel_sheet: Option<String>,
+    /// S3/compatible overrides (env + CLI). Take precedence over config when building CloudOptions.
+    pub s3_endpoint_url_override: Option<String>,
+    pub s3_access_key_id_override: Option<String>,
+    pub s3_secret_access_key_override: Option<String>,
+    pub s3_region_override: Option<String>,
 }
 
 impl OpenOptions {
@@ -211,6 +222,10 @@ impl OpenOptions {
             decompress_in_memory: false,
             temp_dir: None,
             excel_sheet: None,
+            s3_endpoint_url_override: None,
+            s3_access_key_id_override: None,
+            s3_secret_access_key_override: None,
+            s3_region_override: None,
         }
     }
 }
@@ -311,6 +326,26 @@ impl OpenOptions {
         // Excel sheet (CLI only)
         opts.excel_sheet = args.excel_sheet.clone();
 
+        // S3/compatible overrides: env then CLI (CLI wins). Env vars match AWS SDK (AWS_ENDPOINT_URL, etc.)
+        opts.s3_endpoint_url_override = args
+            .s3_endpoint_url
+            .clone()
+            .or_else(|| std::env::var("AWS_ENDPOINT_URL_S3").ok())
+            .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok());
+        opts.s3_access_key_id_override = args
+            .s3_access_key_id
+            .clone()
+            .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok());
+        opts.s3_secret_access_key_override = args
+            .s3_secret_access_key
+            .clone()
+            .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok());
+        opts.s3_region_override = args
+            .s3_region
+            .clone()
+            .or_else(|| std::env::var("AWS_REGION").ok())
+            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok());
+
         opts
     }
 }
@@ -331,6 +366,18 @@ pub enum AppEvent {
     DoLoad(Vec<PathBuf>, OpenOptions), // Internal event to actually perform loading after UI update
     /// Scan paths and build LazyFrame; then emit DoLoadSchema (phased loading).
     DoLoadScanPaths(Vec<PathBuf>, OpenOptions),
+    /// Perform HTTP download (next loop so "Downloading" can render first). Then emit DoLoadFromHttpTemp.
+    #[cfg(feature = "http")]
+    DoDownloadHttp(String, OpenOptions),
+    /// Perform S3 download to temp (next loop so "Downloading" can render first). Then emit DoLoadFromHttpTemp.
+    #[cfg(feature = "cloud")]
+    DoDownloadS3ToTemp(String, OpenOptions),
+    /// Perform GCS download to temp (next loop so "Downloading" can render first). Then emit DoLoadFromHttpTemp.
+    #[cfg(feature = "cloud")]
+    DoDownloadGcsToTemp(String, OpenOptions),
+    /// HTTP, S3, or GCS download finished; temp path is ready. Scan it and continue load.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    DoLoadFromHttpTemp(PathBuf, OpenOptions),
     /// Update phase to "Caching schema" and emit DoLoadSchemaBlocking so UI can draw before blocking.
     DoLoadSchema(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
     /// Actually run collect_schema() and create state; then emit DoLoadBuffer (phased loading).
@@ -626,6 +673,10 @@ pub struct App {
     throbber_frame: u8,  // Spinner frame index (0..3) for control bar
     drain_keys_on_next_loop: bool, // Main loop drains crossterm key buffer when true
     analysis_computation: Option<AnalysisComputationState>,
+    app_config: AppConfig,
+    /// Temp file path for HTTP-downloaded data; removed when user opens different data or exits.
+    #[cfg(feature = "http")]
+    http_temp_path: Option<PathBuf>,
 }
 
 impl App {
@@ -849,6 +900,9 @@ impl App {
             throbber_frame: 0,
             drain_keys_on_next_loop: false,
             analysis_computation: None,
+            app_config,
+            #[cfg(feature = "http")]
+            http_temp_path: None,
         }
     }
 
@@ -1309,6 +1363,214 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "cloud")]
+    fn build_s3_cloud_options(
+        cloud: &crate::config::CloudConfig,
+        options: &OpenOptions,
+    ) -> CloudOptions {
+        let mut opts = CloudOptions::default();
+        let mut configs: Vec<(AmazonS3ConfigKey, String)> = Vec::new();
+        let e = options
+            .s3_endpoint_url_override
+            .as_ref()
+            .or(cloud.s3_endpoint_url.as_ref());
+        let k = options
+            .s3_access_key_id_override
+            .as_ref()
+            .or(cloud.s3_access_key_id.as_ref());
+        let s = options
+            .s3_secret_access_key_override
+            .as_ref()
+            .or(cloud.s3_secret_access_key.as_ref());
+        let r = options
+            .s3_region_override
+            .as_ref()
+            .or(cloud.s3_region.as_ref());
+        if let Some(e) = e {
+            configs.push((AmazonS3ConfigKey::Endpoint, e.clone()));
+        }
+        if let Some(k) = k {
+            configs.push((AmazonS3ConfigKey::AccessKeyId, k.clone()));
+        }
+        if let Some(s) = s {
+            configs.push((AmazonS3ConfigKey::SecretAccessKey, s.clone()));
+        }
+        if let Some(r) = r {
+            configs.push((AmazonS3ConfigKey::Region, r.clone()));
+        }
+        if !configs.is_empty() {
+            opts = opts.with_aws(configs);
+        }
+        opts
+    }
+
+    #[cfg(feature = "http")]
+    fn download_http_to_temp(
+        url: &str,
+        temp_dir: Option<&Path>,
+        extension: Option<&str>,
+    ) -> Result<PathBuf> {
+        let dir = temp_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(std::env::temp_dir);
+        let suffix = extension
+            .map(|e| format!(".{e}"))
+            .unwrap_or_else(|| ".tmp".to_string());
+        let mut temp = tempfile::Builder::new()
+            .suffix(&suffix)
+            .tempfile_in(&dir)
+            .map_err(|_| color_eyre::eyre::eyre!("Could not create a temporary file."))?;
+        let response = ureq::get(url)
+            .timeout(std::time::Duration::from_secs(300))
+            .call()
+            .map_err(|e| {
+                color_eyre::eyre::eyre!("Download failed. Check the URL and your connection: {}", e)
+            })?;
+        let status = response.status();
+        if status >= 400 {
+            return Err(color_eyre::eyre::eyre!(
+                "Server returned {} {}. Check the URL.",
+                status,
+                response.status_text()
+            ));
+        }
+        std::io::copy(&mut response.into_reader(), &mut temp)
+            .map_err(|_| color_eyre::eyre::eyre!("Download failed while saving the file."))?;
+        let (_file, path) = temp
+            .keep()
+            .map_err(|_| color_eyre::eyre::eyre!("Could not save the downloaded file."))?;
+        Ok(path)
+    }
+
+    #[cfg(feature = "cloud")]
+    fn download_s3_to_temp(
+        s3_url: &str,
+        cloud: &crate::config::CloudConfig,
+        options: &OpenOptions,
+    ) -> Result<PathBuf> {
+        use object_store::path::Path as OsPath;
+        use object_store::ObjectStore;
+
+        let (path_part, ext) = source::url_path_extension(s3_url);
+        let (bucket, key) = path_part
+            .split_once('/')
+            .ok_or_else(|| color_eyre::eyre::eyre!("S3 URL must be s3://bucket/key"))?;
+        if key.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "S3 URL must point to an object (e.g. s3://bucket/path/file.csv)"
+            ));
+        }
+
+        let mut builder = object_store::aws::AmazonS3Builder::from_env()
+            .with_url(s3_url)
+            .with_bucket_name(bucket);
+        let e = options
+            .s3_endpoint_url_override
+            .as_ref()
+            .or(cloud.s3_endpoint_url.as_ref());
+        let k = options
+            .s3_access_key_id_override
+            .as_ref()
+            .or(cloud.s3_access_key_id.as_ref());
+        let s = options
+            .s3_secret_access_key_override
+            .as_ref()
+            .or(cloud.s3_secret_access_key.as_ref());
+        let r = options
+            .s3_region_override
+            .as_ref()
+            .or(cloud.s3_region.as_ref());
+        if let Some(e) = e {
+            builder = builder.with_endpoint(e);
+        }
+        if let Some(k) = k {
+            builder = builder.with_access_key_id(k);
+        }
+        if let Some(s) = s {
+            builder = builder.with_secret_access_key(s);
+        }
+        if let Some(r) = r {
+            builder = builder.with_region(r);
+        }
+        let store = builder
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
+
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
+        let path = OsPath::from(key);
+        let get_result = rt.block_on(store.get(&path)).map_err(|e| {
+            color_eyre::eyre::eyre!("Could not read from S3. Check credentials and URL: {}", e)
+        })?;
+        let bytes = rt
+            .block_on(get_result.bytes())
+            .map_err(|e| color_eyre::eyre::eyre!("Could not read S3 object body: {}", e))?;
+
+        let dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
+        let suffix = ext
+            .as_ref()
+            .map(|e| format!(".{e}"))
+            .unwrap_or_else(|| ".tmp".to_string());
+        let mut temp = tempfile::Builder::new()
+            .suffix(&suffix)
+            .tempfile_in(&dir)
+            .map_err(|_| color_eyre::eyre::eyre!("Could not create a temporary file."))?;
+        std::io::copy(&mut std::io::Cursor::new(bytes.as_ref()), &mut temp)
+            .map_err(|_| color_eyre::eyre::eyre!("Could not write downloaded file."))?;
+        let (_file, path_buf) = temp
+            .keep()
+            .map_err(|_| color_eyre::eyre::eyre!("Could not save the downloaded file."))?;
+        Ok(path_buf)
+    }
+
+    #[cfg(feature = "cloud")]
+    fn download_gcs_to_temp(gs_url: &str, options: &OpenOptions) -> Result<PathBuf> {
+        use object_store::path::Path as OsPath;
+        use object_store::ObjectStore;
+
+        let (path_part, ext) = source::url_path_extension(gs_url);
+        let (bucket, key) = path_part
+            .split_once('/')
+            .ok_or_else(|| color_eyre::eyre::eyre!("GCS URL must be gs://bucket/key"))?;
+        if key.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "GCS URL must point to an object (e.g. gs://bucket/path/file.csv)"
+            ));
+        }
+
+        let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+            .with_url(gs_url)
+            .with_bucket_name(bucket)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
+
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
+        let path = OsPath::from(key);
+        let get_result = rt.block_on(store.get(&path)).map_err(|e| {
+            color_eyre::eyre::eyre!("Could not read from GCS. Check credentials and URL: {}", e)
+        })?;
+        let bytes = rt
+            .block_on(get_result.bytes())
+            .map_err(|e| color_eyre::eyre::eyre!("Could not read GCS object body: {}", e))?;
+
+        let dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
+        let suffix = ext
+            .as_ref()
+            .map(|e| format!(".{e}"))
+            .unwrap_or_else(|| ".tmp".to_string());
+        let mut temp = tempfile::Builder::new()
+            .suffix(&suffix)
+            .tempfile_in(&dir)
+            .map_err(|_| color_eyre::eyre::eyre!("Could not create a temporary file."))?;
+        std::io::copy(&mut std::io::Cursor::new(bytes.as_ref()), &mut temp)
+            .map_err(|_| color_eyre::eyre::eyre!("Could not write downloaded file."))?;
+        let (_file, path_buf) = temp
+            .keep()
+            .map_err(|_| color_eyre::eyre::eyre!("Could not save the downloaded file."))?;
+        Ok(path_buf)
+    }
+
     /// Build LazyFrame from paths for phased loading (non-compressed only). Caller must not use for compressed CSV.
     fn build_lazyframe_from_paths(
         &mut self,
@@ -1316,6 +1578,111 @@ impl App {
         options: &OpenOptions,
     ) -> Result<LazyFrame> {
         let path = &paths[0];
+        match source::input_source(path) {
+            source::InputSource::Http(_url) => {
+                #[cfg(feature = "http")]
+                {
+                    return Err(color_eyre::eyre::eyre!(
+                        "HTTP/HTTPS load is handled in the event loop; this path should not be reached."
+                    ));
+                }
+                #[cfg(not(feature = "http"))]
+                {
+                    return Err(color_eyre::eyre::eyre!(
+                        "HTTP/HTTPS URLs are not supported in this build. Rebuild with default features."
+                    ));
+                }
+            }
+            source::InputSource::S3(url) => {
+                #[cfg(feature = "cloud")]
+                {
+                    let full = format!("s3://{url}");
+                    let (_, ext) = source::url_path_extension(&full);
+                    let is_parquet = ext
+                        .as_ref()
+                        .map(|e| e.eq_ignore_ascii_case("parquet"))
+                        .unwrap_or(false);
+                    if !is_parquet {
+                        return Err(color_eyre::eyre::eyre!(
+                            "S3 non-Parquet is handled in the event loop (download to temp); this path should not be reached."
+                        ));
+                    }
+                    let cloud_opts = Self::build_s3_cloud_options(&self.app_config.cloud, options);
+                    let pl_path = PlPathRef::new(&full).into_owned();
+                    let is_glob = full.contains('*') || full.ends_with('/');
+                    let hive_options = if is_glob {
+                        polars::io::HiveOptions::new_enabled()
+                    } else {
+                        polars::io::HiveOptions::default()
+                    };
+                    let args = ScanArgsParquet {
+                        cloud_options: Some(cloud_opts),
+                        hive_options,
+                        glob: is_glob,
+                        ..Default::default()
+                    };
+                    let lf = LazyFrame::scan_parquet(pl_path, args).map_err(|e| {
+                        color_eyre::eyre::eyre!(
+                            "Could not read from S3. Check credentials and URL: {}",
+                            e
+                        )
+                    })?;
+                    let state = DataTableState::from_lazyframe(lf, options)?;
+                    return Ok(state.lf);
+                }
+                #[cfg(not(feature = "cloud"))]
+                {
+                    return Err(color_eyre::eyre::eyre!(
+                        "S3 is not supported in this build. Rebuild with default features and set AWS credentials (e.g. AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)."
+                    ));
+                }
+            }
+            source::InputSource::Gcs(url) => {
+                #[cfg(feature = "cloud")]
+                {
+                    let full = format!("gs://{url}");
+                    let (_, ext) = source::url_path_extension(&full);
+                    let is_parquet = ext
+                        .as_ref()
+                        .map(|e| e.eq_ignore_ascii_case("parquet"))
+                        .unwrap_or(false);
+                    if !is_parquet {
+                        return Err(color_eyre::eyre::eyre!(
+                            "GCS non-Parquet is handled in the event loop (download to temp); this path should not be reached."
+                        ));
+                    }
+                    let pl_path = PlPathRef::new(&full).into_owned();
+                    let is_glob = full.contains('*') || full.ends_with('/');
+                    let hive_options = if is_glob {
+                        polars::io::HiveOptions::new_enabled()
+                    } else {
+                        polars::io::HiveOptions::default()
+                    };
+                    let args = ScanArgsParquet {
+                        cloud_options: Some(CloudOptions::default()),
+                        hive_options,
+                        glob: is_glob,
+                        ..Default::default()
+                    };
+                    let lf = LazyFrame::scan_parquet(pl_path, args).map_err(|e| {
+                        color_eyre::eyre::eyre!(
+                            "Could not read from GCS. Check credentials and URL: {}",
+                            e
+                        )
+                    })?;
+                    let state = DataTableState::from_lazyframe(lf, options)?;
+                    return Ok(state.lf);
+                }
+                #[cfg(not(feature = "cloud"))]
+                {
+                    return Err(color_eyre::eyre::eyre!(
+                        "GCS (gs://) is not supported in this build. Rebuild with default features."
+                    ));
+                }
+            }
+            source::InputSource::Local(_) => {}
+        }
+
         if paths.len() == 1 && options.hive {
             let path_str = path.as_os_str().to_string_lossy();
             let is_single_file = path.exists()
@@ -4992,9 +5359,20 @@ impl App {
                 self.key(key)
             }
             AppEvent::Open(paths, options) => {
+                #[cfg(feature = "http")]
+                if let Some(ref p) = self.http_temp_path.take() {
+                    let _ = std::fs::remove_file(p);
+                }
                 self.busy = true;
                 let first = &paths[0];
-                let file_size = std::fs::metadata(first).map(|m| m.len()).unwrap_or(0);
+                let file_size = match source::input_source(first) {
+                    source::InputSource::Local(_) => {
+                        std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
+                    }
+                    source::InputSource::S3(_)
+                    | source::InputSource::Gcs(_)
+                    | source::InputSource::Http(_) => 0,
+                };
                 let path_str = first.as_os_str().to_string_lossy();
                 let _is_partitioned_path = paths.len() == 1
                     && options.hive
@@ -5022,6 +5400,27 @@ impl App {
             }
             AppEvent::DoLoadScanPaths(paths, options) => {
                 let first = &paths[0];
+                let src = source::input_source(first);
+                if paths.len() > 1 {
+                    match &src {
+                        source::InputSource::S3(_) => {
+                            return Some(AppEvent::Crash(
+                                "Only one S3 URL at a time. Open a single s3:// path.".to_string(),
+                            ));
+                        }
+                        source::InputSource::Gcs(_) => {
+                            return Some(AppEvent::Crash(
+                                "Only one GCS URL at a time. Open a single gs:// path.".to_string(),
+                            ));
+                        }
+                        source::InputSource::Http(_) => {
+                            return Some(AppEvent::Crash(
+                                "Only one HTTP/HTTPS URL at a time. Open a single URL.".to_string(),
+                            ));
+                        }
+                        source::InputSource::Local(_) => {}
+                    }
+                }
                 let compression = options
                     .compression
                     .or_else(|| CompressionFormat::from_extension(first));
@@ -5037,7 +5436,10 @@ impl App {
                                 .unwrap_or(false)
                     })
                     .unwrap_or(false);
-                let is_compressed_csv = paths.len() == 1 && compression.is_some() && is_csv;
+                let is_compressed_csv = matches!(src, source::InputSource::Local(_))
+                    && paths.len() == 1
+                    && compression.is_some()
+                    && is_csv;
                 if is_compressed_csv {
                     if let LoadingState::Loading {
                         file_path,
@@ -5054,6 +5456,75 @@ impl App {
                     }
                     Some(AppEvent::DoLoad(paths.clone(), options.clone()))
                 } else {
+                    #[cfg(feature = "http")]
+                    if let source::InputSource::Http(ref url) = src {
+                        if let LoadingState::Loading {
+                            file_path,
+                            file_size,
+                            ..
+                        } = &self.loading_state
+                        {
+                            self.loading_state = LoadingState::Loading {
+                                file_path: file_path.clone(),
+                                file_size: *file_size,
+                                current_phase: "Downloading".to_string(),
+                                progress_percent: 20,
+                            };
+                        }
+                        return Some(AppEvent::DoDownloadHttp(url.clone(), options.clone()));
+                    }
+                    #[cfg(feature = "cloud")]
+                    if let source::InputSource::S3(ref url) = src {
+                        let full = format!("s3://{url}");
+                        let (_, ext) = source::url_path_extension(&full);
+                        let is_parquet = ext
+                            .as_ref()
+                            .map(|e| e.eq_ignore_ascii_case("parquet"))
+                            .unwrap_or(false);
+                        let is_glob = full.contains('*') || full.ends_with('/');
+                        if !is_parquet && !is_glob {
+                            if let LoadingState::Loading {
+                                file_path,
+                                file_size,
+                                ..
+                            } = &self.loading_state
+                            {
+                                self.loading_state = LoadingState::Loading {
+                                    file_path: file_path.clone(),
+                                    file_size: *file_size,
+                                    current_phase: "Downloading".to_string(),
+                                    progress_percent: 20,
+                                };
+                            }
+                            return Some(AppEvent::DoDownloadS3ToTemp(full, options.clone()));
+                        }
+                    }
+                    #[cfg(feature = "cloud")]
+                    if let source::InputSource::Gcs(ref url) = src {
+                        let full = format!("gs://{url}");
+                        let (_, ext) = source::url_path_extension(&full);
+                        let is_parquet = ext
+                            .as_ref()
+                            .map(|e| e.eq_ignore_ascii_case("parquet"))
+                            .unwrap_or(false);
+                        let is_glob = full.contains('*') || full.ends_with('/');
+                        if !is_parquet && !is_glob {
+                            if let LoadingState::Loading {
+                                file_path,
+                                file_size,
+                                ..
+                            } = &self.loading_state
+                            {
+                                self.loading_state = LoadingState::Loading {
+                                    file_path: file_path.clone(),
+                                    file_size: *file_size,
+                                    current_phase: "Downloading".to_string(),
+                                    progress_percent: 20,
+                                };
+                            }
+                            return Some(AppEvent::DoDownloadGcsToTemp(full, options.clone()));
+                        }
+                    }
                     let first = paths[0].clone();
                     #[allow(clippy::needless_borrow)]
                     match self.build_lazyframe_from_paths(&paths, options) {
@@ -5087,6 +5558,152 @@ impl App {
                             );
                             Some(AppEvent::Crash(msg))
                         }
+                    }
+                }
+            }
+            #[cfg(feature = "http")]
+            AppEvent::DoDownloadHttp(url, options) => {
+                let (_, ext) = source::url_path_extension(url.as_str());
+                match Self::download_http_to_temp(
+                    url.as_str(),
+                    options.temp_dir.as_deref(),
+                    ext.as_deref(),
+                ) {
+                    Ok(temp_path) => {
+                        self.http_temp_path = Some(temp_path.clone());
+                        if let LoadingState::Loading {
+                            file_path,
+                            file_size,
+                            ..
+                        } = &self.loading_state
+                        {
+                            self.loading_state = LoadingState::Loading {
+                                file_path: file_path.clone(),
+                                file_size: *file_size,
+                                current_phase: "Scanning".to_string(),
+                                progress_percent: 30,
+                            };
+                        }
+                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                    }
+                    Err(e) => {
+                        self.loading_state = LoadingState::Idle;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        let msg = crate::error_display::user_message_from_report(&e, None);
+                        Some(AppEvent::Crash(msg))
+                    }
+                }
+            }
+            #[cfg(feature = "cloud")]
+            AppEvent::DoDownloadS3ToTemp(s3_url, options) => {
+                match Self::download_s3_to_temp(s3_url, &self.app_config.cloud, options) {
+                    Ok(temp_path) => {
+                        self.http_temp_path = Some(temp_path.clone());
+                        if let LoadingState::Loading {
+                            file_path,
+                            file_size,
+                            ..
+                        } = &self.loading_state
+                        {
+                            self.loading_state = LoadingState::Loading {
+                                file_path: file_path.clone(),
+                                file_size: *file_size,
+                                current_phase: "Scanning".to_string(),
+                                progress_percent: 30,
+                            };
+                        }
+                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                    }
+                    Err(e) => {
+                        self.loading_state = LoadingState::Idle;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        let msg = crate::error_display::user_message_from_report(&e, None);
+                        Some(AppEvent::Crash(msg))
+                    }
+                }
+            }
+            #[cfg(feature = "cloud")]
+            AppEvent::DoDownloadGcsToTemp(gs_url, options) => {
+                match Self::download_gcs_to_temp(gs_url, options) {
+                    Ok(temp_path) => {
+                        self.http_temp_path = Some(temp_path.clone());
+                        if let LoadingState::Loading {
+                            file_path,
+                            file_size,
+                            ..
+                        } = &self.loading_state
+                        {
+                            self.loading_state = LoadingState::Loading {
+                                file_path: file_path.clone(),
+                                file_size: *file_size,
+                                current_phase: "Scanning".to_string(),
+                                progress_percent: 30,
+                            };
+                        }
+                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                    }
+                    Err(e) => {
+                        self.loading_state = LoadingState::Idle;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        let msg = crate::error_display::user_message_from_report(&e, None);
+                        Some(AppEvent::Crash(msg))
+                    }
+                }
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            AppEvent::DoLoadFromHttpTemp(temp_path, options) => {
+                self.http_temp_path = Some(temp_path.clone());
+                let display_path = match &self.loading_state {
+                    LoadingState::Loading { file_path, .. } => file_path.clone(),
+                    _ => None,
+                };
+                if let LoadingState::Loading {
+                    file_path,
+                    file_size,
+                    ..
+                } = &self.loading_state
+                {
+                    self.loading_state = LoadingState::Loading {
+                        file_path: file_path.clone(),
+                        file_size: *file_size,
+                        current_phase: "Scanning".to_string(),
+                        progress_percent: 30,
+                    };
+                }
+                #[allow(clippy::cloned_ref_to_slice_refs)]
+                match self.build_lazyframe_from_paths(&[temp_path.clone()], options) {
+                    Ok(lf) => {
+                        if let LoadingState::Loading {
+                            file_path,
+                            file_size,
+                            ..
+                        } = &self.loading_state
+                        {
+                            self.loading_state = LoadingState::Loading {
+                                file_path: file_path.clone(),
+                                file_size: *file_size,
+                                current_phase: "Caching schema".to_string(),
+                                progress_percent: 40,
+                            };
+                        }
+                        Some(AppEvent::DoLoadSchema(
+                            Box::new(lf),
+                            display_path,
+                            options.clone(),
+                        ))
+                    }
+                    Err(e) => {
+                        self.loading_state = LoadingState::Idle;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        let msg = crate::error_display::user_message_from_report(
+                            &e,
+                            Some(temp_path.as_path()),
+                        );
+                        Some(AppEvent::Crash(msg))
                     }
                 }
             }
@@ -8871,7 +9488,32 @@ pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()
     {
         return Err(color_eyre::eyre::eyre!(e.to_string()));
     }
-    let mut terminal = ratatui::init();
+    // Validate every local path before initing the terminal so the Python binding can raise
+    // FileNotFoundError (no TTY required). Otherwise multi-path load failures become
+    // AppEvent::Crash(msg) and return Err(eyre!(msg)) with no io::Error in the chain → RuntimeError.
+    if let RunInput::Paths(ref paths, _) = input {
+        for path in paths {
+            let s = path.to_string_lossy();
+            let is_remote = s.starts_with("s3://")
+                || s.starts_with("gs://")
+                || s.starts_with("http://")
+                || s.starts_with("https://");
+            if !is_remote && !path.exists() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {}", path.display()),
+                )
+                .into());
+            }
+        }
+    }
+    let mut terminal = ratatui::try_init().map_err(|e| {
+        color_eyre::eyre::eyre!(
+            "datui requires an interactive terminal (TTY). No terminal detected: {}. \
+             Run from a terminal or ensure stdout is connected to a TTY.",
+            e
+        )
+    })?;
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let mut app = App::new_with_config(tx.clone(), theme, config.clone());
     if debug {

@@ -17,6 +17,11 @@ license = "MIT"
 name = "datui"
 path = "src/main.rs"
 
+[features]
+default = ["cloud", "http"]
+cloud = ["datui/cloud"]
+http = ["datui/http"]
+
 [dependencies]
 # Import as `datui` in Rust; package name is datui-lib
 datui = { path = "crates/datui-lib", package = "datui-lib" }

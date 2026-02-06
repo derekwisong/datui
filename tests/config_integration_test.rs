@@ -30,6 +30,10 @@ fn test_config_used_for_row_numbers() {
         parse_dates: None,
         decompress_in_memory: None,
         temp_dir: None,
+        s3_endpoint_url: None,
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
+        s3_region: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -69,6 +73,10 @@ fn test_cli_args_override_config() {
         parse_dates: None,
         decompress_in_memory: None,
         temp_dir: None,
+        s3_endpoint_url: None,
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
+        s3_region: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -108,6 +116,10 @@ fn test_config_display_settings() {
         parse_dates: None,
         decompress_in_memory: None,
         temp_dir: None,
+        s3_endpoint_url: None,
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
+        s3_region: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -147,6 +159,10 @@ fn test_config_file_loading_settings() {
         parse_dates: None,
         decompress_in_memory: None,
         temp_dir: None,
+        s3_endpoint_url: None,
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
+        s3_region: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);

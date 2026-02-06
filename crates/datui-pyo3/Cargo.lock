@@ -1159,14 +1159,14 @@ dependencies = [
 
 [[package]]
 name = "datui-cli"
-version = "0.2.25-dev"
+version = "0.2.34-dev"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "datui-lib"
-version = "0.2.25-dev"
+version = "0.2.34-dev"
 dependencies = [
  "arrow",
  "bzip2",
@@ -1179,6 +1179,7 @@ dependencies = [
  "dirs 5.0.1",
  "flate2",
  "fs2",
+ "object_store",
  "orc-rust",
  "plotters",
  "polars",
@@ -1189,15 +1190,17 @@ dependencies = [
  "serde_json",
  "supports-color",
  "tempfile",
+ "tokio",
  "toml",
  "tui-textarea",
+ "ureq",
  "xz2",
  "zstd",
 ]
 
 [[package]]
 name = "datui-pyo3"
-version = "0.2.25-dev"
+version = "0.2.34-dev"
 dependencies = [
  "bincode",
  "datui-lib",
@@ -2450,6 +2453,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2619,12 +2632,14 @@ dependencies = [
  "humantime",
  "hyper",
  "itertools 0.14.0",
+ "md-5",
  "parking_lot",
  "percent-encoding",
  "quick-xml",
  "rand",
  "reqwest",
  "ring",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -3117,6 +3132,7 @@ dependencies = [
  "bitflags 2.10.0",
  "chrono",
  "either",
+ "futures",
  "memchr",
  "polars-arrow",
  "polars-compute",
@@ -3131,6 +3147,7 @@ dependencies = [
  "polars-time",
  "polars-utils",
  "rayon",
+ "tokio",
  "version_check",
 ]
 
@@ -3953,6 +3970,7 @@ version = "0.23.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c665f33d38cea657d9614f766881e4d510e0eda4239891eea56b4cadcf01801b"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -3971,6 +3989,15 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
@@ -4844,6 +4871,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
 
 [[package]]
+name = "ureq"
+version = "2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+dependencies = [
+ "base64",
+ "flate2",
+ "log",
+ "once_cell",
+ "rustls",
+ "rustls-pki-types",
+ "url",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5033,6 +5076,24 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.6",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

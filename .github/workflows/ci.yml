@@ -6,13 +6,17 @@ on:
   pull_request:
     branches: [ main ]
 
+# This kills redundant builds if you push multiple times to the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/heads/')
     outputs:
       is_dev_version: ${{ steps.version.outputs.is_dev_version }}
     env:
@@ -42,9 +46,6 @@ jobs:
           shared-key: ci
           cache-workspace-crates: true
 
-      - name: Make scripts executable
-        run: chmod +x scripts/check_format.sh scripts/check_clippy.sh
-
       - name: Check formatting
         run: ./scripts/check_format.sh
 
@@ -54,7 +55,6 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     needs: [check]
-    if: startsWith(github.ref, 'refs/heads/')
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       SCCACHE_GHA_ENABLED: "true"
@@ -62,16 +62,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Free disk space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+      # - name: Free disk space (Ubuntu)
+      #   uses: jlumbroso/free-disk-space@main
+      #   with:
+      #     tool-cache: false
+      #     android: true
+      #     dotnet: true
+      #     haskell: false  # often 0 B on current images, skip to save a few seconds
+      #     large-packages: true  # ~5 GiB but slow (many apt calls); set false for faster CI
+      #     docker-images: true
+      #     swap-storage: true
+
+      - name: Show disk space before build
+        run: df -h
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -138,11 +141,15 @@ jobs:
 
       - name: Run Python tests
         run: . .venv/bin/activate && pytest python/tests/ -v
+      
+      - name: Show disk space after build
+        run: df -h
 
   windows:
     runs-on: windows-latest
     needs: [check]
-    if: startsWith(github.ref, 'refs/heads/') && needs.check.outputs.is_dev_version != 'true'
+    environment: ci-gate
+    if: needs.check.outputs.is_dev_version != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       SCCACHE_GHA_ENABLED: "true"
@@ -215,7 +222,8 @@ jobs:
   macos:
     runs-on: macos-latest
     needs: [check]
-    if: startsWith(github.ref, 'refs/heads/') && needs.check.outputs.is_dev_version != 'true'
+    environment: ci-gate
+    if: needs.check.outputs.is_dev_version != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       SCCACHE_GHA_ENABLED: "true"

@@ -18,7 +18,7 @@ visibility to your CLI.
 
 ## Why Datui?
 
-- 🚀 **Fast**: Powered by Polars for optimized data processing
+- 🚀 **Fast**: Powered by Polars for optimized data handling
 - 📁 **Universal**: Supports Parquet, CSV, JSON, Avro, Arrow, ORC, and Excel
 - 🔍 **Query Engine**: SQL-like query syntax for selecting, filtering, grouping, and aggregation
 - 📊 **Charts**: Render terminal-based charts and export them as images
@@ -31,7 +31,7 @@ visibility to your CLI.
 
 See the [Install Guide][install-guide] for full instructions.
 
-### Quick Install for Linux
+### ✨ Quick Install for Linux and MacOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
@@ -70,48 +70,47 @@ The binary will be available at `target/release/datui`.
 
 > See the [Quick Start Guide][quickstart-guide]
 
-Load a data file and start exploring:
+- 💻 Load a file from the shell and start exploring:
+  ```bash
+  datui /path/to/data.parquet
+  ```
+- 🐍 View your data from Python:
+  ```python
+  import polars as pl
+  import datui
 
-```bash
-datui path/to/data.csv
-```
-
-> 💡 Use `?` or `F1` to show help; `F1` works in text fields too (e.g. query input).
-
-- Use arrow keys or vim-style keybinds (`h`/`j`/`k`/`l`) to navigate
+  lf = pl.scan_parquet("/path/to/data.parquet")
+  datui.view(lf)
+  ```
+- Use arrow keys or Vim-style keybinds (`h`/`j`/`k`/`l`) to navigate
 - Press `q` to exit
+
+> 💡 Use `?` or `F1` to show help
+
 
 ## Configuration
 
 > See the [Configuration Guide][config-guide]
 
-Datui has sensible defaults, but supports extensive configuration.
-
-Generate a default config file, its path will be displayed in the output:
+Generate a default [TOML](https://toml.io) config file:
 ```bash
 datui --generate-config
 ```
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 
 ## For Developers
 
 ### Environment Setup
 
-The following script can be used to set up your local repo for development:
-```bash
-python scripts/setup-dev.py
-```
-
-See the [Setup Script Guide](https://derekwisong.github.io/datui/latest/for-developers/setup-script.html)
-for more information about what it does.
+See the [Setup Script][setup-script] guide to quickly get configured to run the tests,
+build docs, demos, and create packages builds.
 
 ### Contributing
 
 Contributions are welcome! Please see [Contributing][contributing] for more.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
@@ -124,3 +123,4 @@ Contributions are welcome! Please see [Contributing][contributing] for more.
 [pkg-managers]: https://derekwisong.github.io/datui/latest/getting-started/installation.html#package-managers
 [compiling]: https://derekwisong.github.io/datui/latest/getting-started/installation.html#compiling-from-source
 [contributing]: https://derekwisong.github.io/datui/latest/for-developers/contributing.html
+[setup-script]: https://derekwisong.github.io/datui/latest/for-developers/setup-script.html

@@ -1,35 +1,38 @@
 # Installation
 
-You can obtain Datui from [pre-built releases](#installing-a-pre-built-release) or by
-[compiling from source](#compiling-from-source).
-
 Once installed, have a look at the [Quick Start Guide](quick-start.md).
 
-## Installing a Pre-built Release
+## ✨ Quick Install for Linux and MacOS
 
-To acquire a pre-built copy of Datui, download one from the
-[Datui Releases Page on GitHub][datui-releases].
+```bash
+curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+```
+
+> Don't like piping to shell? See the alternative methods below.
+
+## Releases
+
+Download a ready-to-use copy from the [Latest Release][latest-release] on GitHub.
+
+> Datui runs on Linux, MacOS, and Windows
 
 ## Package Managers
 
 ### Pip
 
-Datui can be installed on Linux and Windows
-using pip.
+Get the module from PyPI and launch Datui right from a Python console.
 
 ```
 pip install datui
 ```
 
-> Datui can be used as a python module to view
-> Polars DataFrame and LazyFrame in the terminal.
->
 > See [Python Module](../user-guide/python-module.md).
 
 ### Arch Linux (AUR)
 
-Datui is available in the [Arch User Repository](https://aur.archlinux.org/) as `datui-bin`.
-Install it with an AUR helper such as [paru](https://github.com/Morganamilo/paru) or [yay](https://github.com/Jguer/yay):
+Datui is available in the [Arch User Repository](https://aur.archlinux.org/packages/datui-bin)
+as `datui-bin`. Install it with an AUR helper such as
+[paru](https://github.com/Morganamilo/paru) or [yay](https://github.com/Jguer/yay):
 
 ```bash
 paru -S datui-bin
@@ -43,9 +46,7 @@ yay -S datui-bin
 
 ### RPM-based (Fedora, RedHat)
 
-> Datui is not yet available in the any of the offical repositores for RPM-based distributions.
-
-Get the link to the `.rpm` file for the release version you want from the [Releases Page][datui-releases].
+Get the link to the `.rpm` file for the release version you want from the [Latest Release][latest-release].
 
 Use `dnf` to install that link.
 ```bash
@@ -54,13 +55,11 @@ dnf install https://github.com/derekwisong/datui/releases/download/vX.Y.Z/datui-
 
 ### Deb-based (Debian, Ubuntu)
 
-> Datui is not yet available in the any of the offical repositores for Deb-based distributions.
-
-Download the `.deb` file for the release version you want from the [Releases Page][datui-releases].
+Download the `.deb` file for the release version you want from the [Latest Release][latest-release].
 
 Use `apt` to install that file:
 ```bash
-apt install ./datui-X.Y.Z-1.x86_64.deb
+apt install datui-X.Y.Z-1.x86_64.deb
 ```
 
 ## Compiling from Source
@@ -98,9 +97,6 @@ directory on Linux).
 cargo install --path .
 ```
 
-> To run the application you will need to add the Cargo bin directory to your `PATH`.
->
-> On Linux: `export PATH=$PATH:~/.cargo/bin`
 
 
-[datui-releases]: https://github.com/derekwisong/datui/releases
+[latest-release]: https://github.com/derekwisong/datui/releases/latest

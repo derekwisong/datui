@@ -1215,6 +1215,7 @@ dependencies = [
  "plotters",
  "polars",
  "polars-parquet",
+ "polars-sql",
  "ratatui",
  "regex",
  "serde",

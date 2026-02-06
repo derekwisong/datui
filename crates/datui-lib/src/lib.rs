@@ -392,6 +392,7 @@ pub enum AppEvent {
     Exit,
     Crash(String),
     Search(String),
+    SqlSearch(String),
     Filter(Vec<FilterStatement>),
     Sort(Vec<String>, bool),         // Columns, Ascending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
@@ -611,6 +612,7 @@ struct TemplateApplicationState {
     lf: LazyFrame,
     schema: Arc<Schema>,
     active_query: String,
+    active_sql_query: String,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
@@ -691,6 +693,7 @@ pub struct App {
     info_modal: InfoModal,
     parquet_metadata_cache: Option<ParquetMetadataCache>,
     query_input: TextInput, // Query input widget with history support
+    sql_input: TextInput,   // SQL tab input with its own history (id "sql")
     pub input_mode: InputMode,
     input_type: Option<InputType>,
     query_tab: QueryTab,
@@ -921,6 +924,10 @@ impl App {
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
                 .with_history("query".to_string()),
+            sql_input: TextInput::new()
+                .with_history_limit(app_config.query.history_limit)
+                .with_theme(&theme)
+                .with_history("sql".to_string()),
             input_mode: InputMode::Normal,
             input_type: None,
             query_tab: QueryTab::SqlLike,
@@ -4878,25 +4885,56 @@ impl App {
                             && !event.modifiers.contains(KeyModifiers::SHIFT))
                     {
                         self.query_focus = QueryFocus::Input;
+                        if let Some(state) = &self.data_table_state {
+                            if self.query_tab == QueryTab::SqlLike {
+                                self.query_input.value = state.get_active_query().to_string();
+                                self.query_input.cursor = self.query_input.value.chars().count();
+                                self.sql_input.set_focused(false);
+                                self.query_input.set_focused(true);
+                            } else if self.query_tab == QueryTab::Sql {
+                                self.sql_input.value = state.get_active_sql_query().to_string();
+                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                                self.query_input.set_focused(false);
+                                self.sql_input.set_focused(true);
+                            }
+                        }
                         return None;
                     }
                     if RIGHT_KEYS.contains(&event.code) {
                         self.query_tab = self.query_tab.next();
-                        if self.query_tab == QueryTab::SqlLike {
-                            self.query_focus = QueryFocus::Input;
+                        if let Some(state) = &self.data_table_state {
+                            if self.query_tab == QueryTab::SqlLike {
+                                self.query_input.value = state.get_active_query().to_string();
+                                self.query_input.cursor = self.query_input.value.chars().count();
+                            } else if self.query_tab == QueryTab::Sql {
+                                self.sql_input.value = state.get_active_sql_query().to_string();
+                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                            }
                         }
+                        self.query_input.set_focused(false);
+                        self.sql_input.set_focused(false);
                         return None;
                     }
                     if LEFT_KEYS.contains(&event.code) {
                         self.query_tab = self.query_tab.prev();
-                        if self.query_tab == QueryTab::SqlLike {
-                            self.query_focus = QueryFocus::Input;
+                        if let Some(state) = &self.data_table_state {
+                            if self.query_tab == QueryTab::SqlLike {
+                                self.query_input.value = state.get_active_query().to_string();
+                                self.query_input.cursor = self.query_input.value.chars().count();
+                            } else if self.query_tab == QueryTab::Sql {
+                                self.sql_input.value = state.get_active_sql_query().to_string();
+                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                            }
                         }
+                        self.query_input.set_focused(false);
+                        self.sql_input.set_focused(false);
                         return None;
                     }
                     if event.code == KeyCode::Esc {
                         self.query_input.clear();
+                        self.sql_input.clear();
                         self.query_input.set_focused(false);
+                        self.sql_input.set_focused(false);
                         self.input_mode = InputMode::Normal;
                         self.input_type = None;
                         if let Some(state) = &mut self.data_table_state {
@@ -4914,13 +4952,45 @@ impl App {
                 {
                     self.query_focus = QueryFocus::TabBar;
                     self.query_input.set_focused(false);
+                    self.sql_input.set_focused(false);
                     return None;
                 }
 
-                if self.query_focus != QueryFocus::Input || self.query_tab != QueryTab::SqlLike {
+                if self.query_focus != QueryFocus::Input {
                     return None;
                 }
 
+                if self.query_tab == QueryTab::Sql {
+                    self.query_input.set_focused(false);
+                    self.sql_input.set_focused(true);
+                    let result = self.sql_input.handle_key(event, Some(&self.cache));
+                    match result {
+                        TextInputEvent::Submit => {
+                            let _ = self.sql_input.save_to_history(&self.cache);
+                            let sql = self.sql_input.value.clone();
+                            self.sql_input.set_focused(false);
+                            return Some(AppEvent::SqlSearch(sql));
+                        }
+                        TextInputEvent::Cancel => {
+                            self.sql_input.clear();
+                            self.sql_input.set_focused(false);
+                            self.input_mode = InputMode::Normal;
+                            self.input_type = None;
+                            if let Some(state) = &mut self.data_table_state {
+                                state.error = None;
+                                state.suppress_error_display = false;
+                            }
+                        }
+                        TextInputEvent::HistoryChanged | TextInputEvent::None => {}
+                    }
+                    return None;
+                }
+
+                if self.query_tab != QueryTab::SqlLike {
+                    return None;
+                }
+
+                self.sql_input.set_focused(false);
                 self.query_input.set_focused(true);
                 let result = self.query_input.handle_key(event, Some(&self.cache));
 
@@ -5261,10 +5331,14 @@ impl App {
                 if let Some(state) = &mut self.data_table_state {
                     self.query_input.value = state.active_query.clone();
                     self.query_input.cursor = self.query_input.value.chars().count();
+                    self.sql_input.value = state.get_active_sql_query().to_string();
+                    self.sql_input.cursor = self.sql_input.value.chars().count();
                     state.suppress_error_display = true;
                 } else {
                     self.query_input.clear();
+                    self.sql_input.clear();
                 }
+                self.sql_input.set_focused(false);
                 self.query_input.set_focused(true);
                 None
             }
@@ -6360,6 +6434,24 @@ impl App {
                 // suppress_error_display remains true to keep main view clean
                 None
             }
+            AppEvent::SqlSearch(sql) => {
+                let sql_succeeded = if let Some(state) = &mut self.data_table_state {
+                    state.sql_query(sql.clone());
+                    state.error.is_none()
+                } else {
+                    false
+                };
+                if sql_succeeded {
+                    self.input_mode = InputMode::Normal;
+                    self.sql_input.set_focused(false);
+                    if let Some(state) = &mut self.data_table_state {
+                        state.suppress_error_display = false;
+                    }
+                    Some(AppEvent::Collect)
+                } else {
+                    None
+                }
+            }
             AppEvent::Filter(statements) => {
                 if let Some(state) = &mut self.data_table_state {
                     state.filter(statements.clone());
@@ -6928,6 +7020,7 @@ impl App {
                 lf: state.lf.clone(),
                 schema: state.schema.clone(),
                 active_query: state.active_query.clone(),
+                active_sql_query: state.get_active_sql_query().to_string(),
                 filters: state.get_filters().to_vec(),
                 sort_columns: state.get_sort_columns().to_vec(),
                 sort_ascending: state.get_sort_ascending(),
@@ -7245,6 +7338,7 @@ impl App {
             state.lf = saved.lf;
             state.schema = saved.schema;
             state.active_query = saved.active_query;
+            state.active_sql_query = saved.active_sql_query;
             // Clear error
             state.error = None;
             // Restore private fields using public methods
@@ -7626,11 +7720,58 @@ impl Widget for &mut App {
                             (&self.query_input).render(chunks[1], buf);
                         }
                     }
-                    QueryTab::Fuzzy | QueryTab::Sql => {
+                    QueryTab::Fuzzy => {
                         self.query_input.set_focused(false);
+                        self.sql_input.set_focused(false);
                         Paragraph::new("Not yet implemented")
                             .style(Style::default().fg(self.color("text_secondary")))
                             .render(chunks[1], buf);
+                    }
+                    QueryTab::Sql => {
+                        self.query_input.set_focused(false);
+                        #[cfg(feature = "sql")]
+                        {
+                            if has_error {
+                                let body_chunks = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints([
+                                        Constraint::Length(1),
+                                        Constraint::Length(1),
+                                        Constraint::Min(1),
+                                    ])
+                                    .split(chunks[1]);
+                                self.sql_input
+                                    .set_focused(self.query_focus == QueryFocus::Input);
+                                (&self.sql_input).render(body_chunks[0], buf);
+                                Paragraph::new("Table: df")
+                                    .style(Style::default().fg(self.color("text_secondary")))
+                                    .render(body_chunks[1], buf);
+                                Paragraph::new(err_msg)
+                                    .style(Style::default().fg(self.color("error")))
+                                    .wrap(ratatui::widgets::Wrap { trim: true })
+                                    .render(body_chunks[2], buf);
+                            } else {
+                                let body_chunks = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints([Constraint::Length(1), Constraint::Length(1)])
+                                    .split(chunks[1]);
+                                self.sql_input
+                                    .set_focused(self.query_focus == QueryFocus::Input);
+                                (&self.sql_input).render(body_chunks[0], buf);
+                                Paragraph::new("Table: df (Up/Down: history)")
+                                    .style(Style::default().fg(self.color("text_secondary")))
+                                    .render(body_chunks[1], buf);
+                            }
+                        }
+                        #[cfg(not(feature = "sql"))]
+                        {
+                            self.sql_input.set_focused(false);
+                            Paragraph::new(
+                                "SQL support not compiled in (build with --features sql)",
+                            )
+                            .style(Style::default().fg(self.color("text_secondary")))
+                            .render(chunks[1], buf);
+                        }
                     }
                 }
             } else if has_error {

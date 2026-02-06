@@ -71,6 +71,8 @@ pub struct DataTableState {
     sort_columns: Vec<String>,
     sort_ascending: bool,
     pub active_query: String,
+    /// Last executed SQL (Sql tab). Independent from active_query; only one applies to current view.
+    pub active_sql_query: String,
     column_order: Vec<String>,   // Order of columns for display
     locked_columns_count: usize, // Number of locked columns (from left)
     grouped_lf: Option<LazyFrame>,
@@ -139,6 +141,7 @@ impl DataTableState {
             sort_columns: Vec::new(),
             sort_ascending: true,
             active_query: String::new(),
+            active_sql_query: String::new(),
             column_order,
             locked_columns_count: 0,
             grouped_lf: None,
@@ -215,6 +218,7 @@ impl DataTableState {
             sort_columns: Vec::new(),
             sort_ascending: true,
             active_query: String::new(),
+            active_sql_query: String::new(),
             column_order,
             locked_columns_count: 0,
             grouped_lf: None,
@@ -255,6 +259,7 @@ impl DataTableState {
         self.start_row = 0;
         self.termcol_index = 0;
         self.active_query.clear();
+        self.active_sql_query.clear();
         self.error = None;
         self.suppress_error_display = false;
 
@@ -2515,6 +2520,10 @@ impl DataTableState {
         &self.active_query
     }
 
+    pub fn get_active_sql_query(&self) -> &str {
+        &self.active_sql_query
+    }
+
     pub fn last_pivot_spec(&self) -> Option<&PivotSpec> {
         self.last_pivot_spec.as_ref()
     }
@@ -2773,6 +2782,7 @@ impl DataTableState {
         self.filters.clear();
         self.sort_columns.clear();
         self.active_query.clear();
+        self.active_sql_query.clear();
         self.error = None;
         self.df = None;
         self.locked_df = None;
@@ -2958,6 +2968,7 @@ impl DataTableState {
             self.buffered_end_row = 0;
             self.buffered_df = None;
             self.table_state.select(Some(0));
+            self.active_sql_query.clear();
             self.collect();
             return;
         }
@@ -3065,6 +3076,87 @@ impl DataTableState {
                 // Parse errors are already user-facing strings; store as ComputeError
                 self.error = Some(PolarsError::ComputeError(e.into()));
             }
+        }
+    }
+
+    /// Execute a SQL query against the current LazyFrame (registered as table "df").
+    /// Empty SQL resets to original state. Does not call collect(); the event loop does that via AppEvent::Collect.
+    pub fn sql_query(&mut self, sql: String) {
+        self.error = None;
+        let trimmed = sql.trim();
+        if trimmed.is_empty() {
+            self.invalidate_num_rows();
+            self.lf = self.original_lf.clone();
+            self.schema = self
+                .original_lf
+                .clone()
+                .collect_schema()
+                .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
+            self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+            self.active_query.clear();
+            self.active_sql_query.clear();
+            self.locked_columns_count = 0;
+            self.filters.clear();
+            self.sort_columns.clear();
+            self.sort_ascending = true;
+            self.start_row = 0;
+            self.termcol_index = 0;
+            self.drilled_down_group_index = None;
+            self.drilled_down_group_key = None;
+            self.drilled_down_group_key_columns = None;
+            self.grouped_lf = None;
+            self.buffered_start_row = 0;
+            self.buffered_end_row = 0;
+            self.buffered_df = None;
+            self.table_state.select(Some(0));
+            return;
+        }
+
+        #[cfg(feature = "sql")]
+        {
+            use polars_sql::SQLContext;
+            let mut ctx = SQLContext::new();
+            ctx.register("df", self.lf.clone());
+            match ctx.execute(trimmed) {
+                Ok(result_lf) => {
+                    let schema = match result_lf.clone().collect_schema() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            self.error = Some(e);
+                            return;
+                        }
+                    };
+                    self.schema = schema;
+                    self.invalidate_num_rows();
+                    self.lf = result_lf;
+                    self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+                    self.active_sql_query = sql;
+                    self.locked_columns_count = 0;
+                    self.filters.clear();
+                    self.sort_columns.clear();
+                    self.sort_ascending = true;
+                    self.start_row = 0;
+                    self.termcol_index = 0;
+                    self.drilled_down_group_index = None;
+                    self.drilled_down_group_key = None;
+                    self.drilled_down_group_key_columns = None;
+                    self.grouped_lf = None;
+                    self.buffered_start_row = 0;
+                    self.buffered_end_row = 0;
+                    self.buffered_df = None;
+                    self.table_state.select(Some(0));
+                }
+                Err(e) => {
+                    self.error = Some(e);
+                }
+            }
+        }
+
+        #[cfg(not(feature = "sql"))]
+        {
+            self.error = Some(PolarsError::ComputeError(
+                format!("SQL support not compiled in (build with --features sql)").into(),
+            ));
         }
     }
 }

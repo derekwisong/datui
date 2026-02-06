@@ -456,6 +456,47 @@ pub enum InputType {
     GoToLine,
 }
 
+/// Query dialog tab: SQL-Like (current parser), Fuzzy, or SQL (future).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryTab {
+    #[default]
+    SqlLike,
+    Fuzzy,
+    Sql,
+}
+
+impl QueryTab {
+    fn next(self) -> Self {
+        match self {
+            QueryTab::SqlLike => QueryTab::Fuzzy,
+            QueryTab::Fuzzy => QueryTab::Sql,
+            QueryTab::Sql => QueryTab::SqlLike,
+        }
+    }
+    fn prev(self) -> Self {
+        match self {
+            QueryTab::SqlLike => QueryTab::Sql,
+            QueryTab::Fuzzy => QueryTab::SqlLike,
+            QueryTab::Sql => QueryTab::Fuzzy,
+        }
+    }
+    fn index(self) -> usize {
+        match self {
+            QueryTab::SqlLike => 0,
+            QueryTab::Fuzzy => 1,
+            QueryTab::Sql => 2,
+        }
+    }
+}
+
+/// Focus within the query dialog: tab bar or input (SQL-Like only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QueryFocus {
+    TabBar,
+    #[default]
+    Input,
+}
+
 #[derive(Default)]
 pub struct ErrorModal {
     pub active: bool,
@@ -652,6 +693,8 @@ pub struct App {
     query_input: TextInput, // Query input widget with history support
     pub input_mode: InputMode,
     input_type: Option<InputType>,
+    query_tab: QueryTab,
+    query_focus: QueryFocus,
     pub sort_filter_modal: SortFilterModal,
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
@@ -880,6 +923,8 @@ impl App {
                 .with_history("query".to_string()),
             input_mode: InputMode::Normal,
             input_type: None,
+            query_tab: QueryTab::SqlLike,
+            query_focus: QueryFocus::Input,
             sort_filter_modal: SortFilterModal::new(),
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
@@ -4823,8 +4868,59 @@ impl App {
         }
 
         if self.input_mode == InputMode::Editing {
-            // Use TextInput widget for query input (Search type)
             if self.input_type == Some(InputType::Search) {
+                const RIGHT_KEYS: [KeyCode; 2] = [KeyCode::Right, KeyCode::Char('l')];
+                const LEFT_KEYS: [KeyCode; 2] = [KeyCode::Left, KeyCode::Char('h')];
+
+                if self.query_focus == QueryFocus::TabBar && event.is_press() {
+                    if event.code == KeyCode::BackTab
+                        || (event.code == KeyCode::Tab
+                            && !event.modifiers.contains(KeyModifiers::SHIFT))
+                    {
+                        self.query_focus = QueryFocus::Input;
+                        return None;
+                    }
+                    if RIGHT_KEYS.contains(&event.code) {
+                        self.query_tab = self.query_tab.next();
+                        if self.query_tab == QueryTab::SqlLike {
+                            self.query_focus = QueryFocus::Input;
+                        }
+                        return None;
+                    }
+                    if LEFT_KEYS.contains(&event.code) {
+                        self.query_tab = self.query_tab.prev();
+                        if self.query_tab == QueryTab::SqlLike {
+                            self.query_focus = QueryFocus::Input;
+                        }
+                        return None;
+                    }
+                    if event.code == KeyCode::Esc {
+                        self.query_input.clear();
+                        self.query_input.set_focused(false);
+                        self.input_mode = InputMode::Normal;
+                        self.input_type = None;
+                        if let Some(state) = &mut self.data_table_state {
+                            state.error = None;
+                            state.suppress_error_display = false;
+                        }
+                        return None;
+                    }
+                    return None;
+                }
+
+                if event.is_press()
+                    && event.code == KeyCode::Tab
+                    && !event.modifiers.contains(KeyModifiers::SHIFT)
+                {
+                    self.query_focus = QueryFocus::TabBar;
+                    self.query_input.set_focused(false);
+                    return None;
+                }
+
+                if self.query_focus != QueryFocus::Input || self.query_tab != QueryTab::SqlLike {
+                    return None;
+                }
+
                 self.query_input.set_focused(true);
                 let result = self.query_input.handle_key(event, Some(&self.cache));
 
@@ -5160,11 +5256,11 @@ impl App {
             KeyCode::Char('/') => {
                 self.input_mode = InputMode::Editing;
                 self.input_type = Some(InputType::Search);
-                // Initialize query input with current query if available
+                self.query_tab = QueryTab::SqlLike;
+                self.query_focus = QueryFocus::Input;
                 if let Some(state) = &mut self.data_table_state {
                     self.query_input.value = state.active_query.clone();
                     self.query_input.cursor = self.query_input.value.chars().count();
-                    // Suppress error display in main view when query input is active
                     state.suppress_error_display = true;
                 } else {
                     self.query_input.clear();
@@ -7256,7 +7352,17 @@ impl Widget for &mut App {
         }
 
         if self.input_mode == InputMode::Editing {
-            let height = if has_error { 6 } else { 3 };
+            let height = if self.input_type == Some(InputType::Search) {
+                if has_error {
+                    9
+                } else {
+                    5
+                }
+            } else if has_error {
+                6
+            } else {
+                3
+            };
             constraints.insert(1, Constraint::Length(height));
         }
         constraints.push(Constraint::Length(1)); // Controls
@@ -7461,7 +7567,73 @@ impl Widget for &mut App {
             let inner_area = block.inner(input_area);
             block.render(input_area, buf);
 
-            if has_error {
+            if self.input_type == Some(InputType::Search) {
+                let border_c = self.color("modal_border");
+                let active_c = self.color("modal_border_active");
+                let tab_bar_focused = self.query_focus == QueryFocus::TabBar;
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(2), Constraint::Min(1)])
+                    .split(inner_area);
+
+                let tab_line_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Length(1)])
+                    .split(chunks[0]);
+                let tab_titles = vec!["SQL-Like", "Fuzzy", "SQL"];
+                let tabs = Tabs::new(tab_titles)
+                    .style(Style::default().fg(border_c))
+                    .highlight_style(
+                        Style::default()
+                            .fg(active_c)
+                            .add_modifier(Modifier::REVERSED),
+                    )
+                    .select(self.query_tab.index());
+                tabs.render(tab_line_chunks[0], buf);
+                let line_style = if tab_bar_focused {
+                    Style::default().fg(active_c)
+                } else {
+                    Style::default().fg(border_c)
+                };
+                Block::default()
+                    .borders(Borders::BOTTOM)
+                    .border_type(BorderType::Rounded)
+                    .border_style(line_style)
+                    .render(tab_line_chunks[1], buf);
+
+                match self.query_tab {
+                    QueryTab::SqlLike => {
+                        if has_error {
+                            let body_chunks = Layout::default()
+                                .direction(Direction::Vertical)
+                                .constraints([
+                                    Constraint::Length(1),
+                                    Constraint::Length(1),
+                                    Constraint::Min(1),
+                                ])
+                                .split(chunks[1]);
+                            self.query_input
+                                .set_focused(self.query_focus == QueryFocus::Input);
+                            (&self.query_input).render(body_chunks[0], buf);
+                            Paragraph::new(err_msg)
+                                .style(Style::default().fg(self.color("error")))
+                                .wrap(ratatui::widgets::Wrap { trim: true })
+                                .render(body_chunks[2], buf);
+                        } else {
+                            self.query_input
+                                .set_focused(self.query_focus == QueryFocus::Input);
+                            (&self.query_input).render(chunks[1], buf);
+                        }
+                    }
+                    QueryTab::Fuzzy | QueryTab::Sql => {
+                        self.query_input.set_focused(false);
+                        Paragraph::new("Not yet implemented")
+                            .style(Style::default().fg(self.color("text_secondary")))
+                            .render(chunks[1], buf);
+                    }
+                }
+            } else if has_error {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -7471,14 +7643,12 @@ impl Widget for &mut App {
                     ])
                     .split(inner_area);
 
-                // Render input using TextInput widget
                 (&self.query_input).render(chunks[0], buf);
                 Paragraph::new(err_msg)
                     .style(Style::default().fg(self.color("error")))
                     .wrap(ratatui::widgets::Wrap { trim: true })
                     .render(chunks[2], buf);
             } else {
-                // Render input using TextInput widget
                 (&self.query_input).render(inner_area, buf);
             }
         }

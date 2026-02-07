@@ -7,7 +7,7 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  install-macos:
+  install-macos-oneline-homebrew:
     name: macOS ${{ matrix.arch }} (one-line + Homebrew)
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -39,7 +39,7 @@ jobs:
       - name: Verify Homebrew install
         run: datui --version
 
-  install-ubuntu:
+  install-ubuntu-oneline:
     name: Debian-based Linux
     runs-on: ubuntu-latest
     steps:
@@ -50,7 +50,7 @@ jobs:
       - name: Verify install
         run: datui --version
 
-  install-fedora:
+  install-fedora-oneline:
     name: RPM-based Linux
     runs-on: ubuntu-latest
     container:
@@ -64,7 +64,7 @@ jobs:
       - name: Verify install
         run: datui --version
 
-  install-arch:
+  install-arch-oneline:
     name: Arch Linux
     runs-on: ubuntu-latest
     container:
@@ -78,4 +78,33 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 
       - name: Verify install
+        run: datui --version
+
+  install-arch-aur:
+    name: Arch Linux (AUR datui-bin)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --privileged --user 0
+    steps:
+      - name: Bootstrap Arch for AUR
+        run: |
+          pacman -Syu --noconfirm base-devel git sudo
+          useradd -m -s /bin/bash builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+      - name: Install paru (AUR helper)
+        run: |
+          sudo -u builder bash -c '
+            cd /tmp &&
+            git clone https://aur.archlinux.org/paru.git &&
+            cd paru &&
+            makepkg -si --noconfirm
+          '
+
+      - name: Install datui-bin from AUR
+        run: |
+          sudo -u builder paru -S datui-bin --noconfirm --removemake --cleanafter
+
+      - name: Verify AUR install
         run: datui --version

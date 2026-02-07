@@ -76,9 +76,11 @@ fontconfig = "*"
 
 [package.metadata.aur]
 depends = ["fontconfig"]
+# Do not add LICENSE to files: cargo-aur already includes it when license is MIT
+# (must_copy_license). Adding it here too made tar store it twice (second as hardlink),
+# which caused "Can't create 'LICENSE'" when bsdtar extracted on the AUR.
 files = [
     ["target/release/datui.1.gz", "/usr/share/man/man1/datui.1.gz"],
-    ["LICENSE", "/usr/share/licenses/datui/LICENSE"],
 ]
 
 # improve the performance of color-eyre for debug builds

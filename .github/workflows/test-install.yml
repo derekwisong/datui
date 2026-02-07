@@ -1,0 +1,79 @@
+# Manual workflow to test the one-line install (and on macOS, Homebrew tap install)
+# across supported platforms. Uses the install script and package managers as documented
+# in README.md.
+name: Test Install
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  install-macos:
+    name: macOS ${{ matrix.arch }} (one-line + Homebrew)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-13
+            arch: x86_64
+    steps:
+      - name: One-line install
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+
+      - name: Verify one-line install
+        run: datui --version
+
+      - name: Remove one-line install for Homebrew test
+        run: |
+          sudo rm -f /usr/local/bin/datui
+          sudo rm -f /usr/local/share/man/man1/datui.1*
+
+      - name: Homebrew tap install
+        run: |
+          brew tap derekwisong/datui
+          brew install datui
+
+      - name: Verify Homebrew install
+        run: datui --version
+
+  install-ubuntu:
+    name: Debian-based Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: One-line install
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+
+      - name: Verify install
+        run: datui --version
+
+  install-fedora:
+    name: RPM-based Linux
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:40
+      options: --privileged
+    steps:
+      - name: One-line install
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+
+      - name: Verify install
+        run: datui --version
+
+  install-arch:
+    name: Arch Linux
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --privileged
+    steps:
+      - name: One-line install
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+
+      - name: Verify install
+        run: datui --version

@@ -6,7 +6,7 @@ resolver = "2"
 
 [package]
 name = "datui"
-version = "0.2.35-dev"
+version = "0.2.36-dev"
 edition = "2021"
 authors = ["Derek Wisong"]
 description = "Data Exploration in the Terminal"

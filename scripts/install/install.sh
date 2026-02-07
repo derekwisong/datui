@@ -35,9 +35,9 @@ case "$ARCH" in
     *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-# if -y was passed, skip the Arch Linux prompt
-# If Arch user, prompt to install via an AUR helper instead
-if [ -f /etc/arch-release ] && [ "$ASSUME_YES" != true ]; then
+# If Arch user in an interactive terminal, prompt to install via AUR instead.
+# When stdin is not a TTY (e.g. piped or CI), skip the prompt and proceed with binary install.
+if [ -f /etc/arch-release ] && [ "$ASSUME_YES" != true ] && [ -t 0 ]; then
     echo "-------------------------------------------------------"
     echo " ARCH LINUX DETECTED"
     echo "-------------------------------------------------------"
@@ -45,9 +45,8 @@ if [ -f /etc/arch-release ] && [ "$ASSUME_YES" != true ]; then
     echo "  paru -S datui-bin  (or your preferred AUR helper)"
     echo ""
     
-    # Prompt for confirmation
     printf "Would you like to continue with the direct binary install anyway? [y/N]: "
-    read -r response < /dev/tty
+    read -r response
     case "$response" in
         [yY][eE][sS]|[yY]) 
             echo "Proceeding with binary installation..."

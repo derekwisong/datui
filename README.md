@@ -122,7 +122,7 @@ datui --generate-config
 ### Setup
 
 See the [Setup Script][setup-script] guide to quickly get configured to run the tests,
-build docs, demos, and create packages build.
+build docs, demos, and packages.
 
 ### Contributing
 

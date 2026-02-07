@@ -127,10 +127,15 @@ jobs:
             echo "Manpage not found" && exit 1
           fi
 
+      - name: Prune target to save disk space
+        run: |
+          rm -rf target/debug/deps target/debug/build target/debug/incremental target/debug/.fingerprint
+          df -h
+
       - name: Bundle CLI for wheel
         run: |
           mkdir -p python/datui_bin
-          cp target/debug/datui python/datui_bin/
+          mv target/debug/datui python/datui_bin/
           chmod +x python/datui_bin/datui
           cp LICENSE python/LICENSE
 
@@ -141,7 +146,7 @@ jobs:
 
       - name: Run Python tests
         run: . .venv/bin/activate && pytest python/tests/ -v
-      
+
       - name: Show disk space after build
         run: df -h
 
@@ -203,7 +208,7 @@ jobs:
       - name: Bundle CLI for wheel
         run: |
           New-Item -ItemType Directory -Force -Path python/datui_bin
-          Copy-Item target/debug/datui.exe python/datui_bin/
+          Move-Item target/debug/datui.exe python/datui_bin/
           Copy-Item LICENSE python/LICENSE
 
       - name: Build and install Python package
@@ -279,10 +284,15 @@ jobs:
             echo "Manpage not found" && exit 1
           fi
 
+      - name: Prune target to save disk space
+        run: |
+          rm -rf target/debug/deps target/debug/build target/debug/incremental target/debug/.fingerprint
+          df -h
+
       - name: Bundle CLI for wheel
         run: |
           mkdir -p python/datui_bin
-          cp target/debug/datui python/datui_bin/
+          mv target/debug/datui python/datui_bin/
           chmod +x python/datui_bin/datui
           cp LICENSE python/LICENSE
 

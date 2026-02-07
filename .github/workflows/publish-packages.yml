@@ -55,12 +55,6 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/contents/scripts/homebrew-formula.rb.template?ref=${{ steps.resolve-tag.outputs.tag_name }}" \
             -o scripts/homebrew-formula.rb.template
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-
       - name: Compute macOS tarball checksums for Homebrew
         id: brew-checksums
         run: |

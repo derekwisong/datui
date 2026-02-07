@@ -53,11 +53,11 @@ Get the pre-built binary for your platform from the [Latest Release](https://git
   brew tap derekwisong/datui
   brew install datui
   ```
-- **Windows (WinGet)**: `winget install derekwisong.datui`
 - **Arch Linux (AUR)**:
   - `paru -S datui-bin`
   - `yay -S datui-bin`
 - **Pip**: `pip install datui` (See [Python Module][python-module])
+- **Windows (WinGet)**: `winget install derekwisong.datui` *(Coming Soon)*
 
 
 ### From Source

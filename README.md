@@ -31,7 +31,8 @@ visibility to your CLI.
 
 ## Installation
 
-See the [Install Guide][install-guide] for full instructions.
+Datui can be installed easily on Linux, macOS, and Windows. See the summary of each
+option below. Visit the [Install Guide][install-guide] for additional details.
 
 ### ✨ Quick Install for Linux and macOS
 

@@ -24,6 +24,15 @@ else
     NONINTERACTIVE=""
 fi
 
+# Use sudo only when not root (e.g. containers often run as root and may not have sudo).
+run_priv() {
+    if [ "$(id -u)" = 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
 # Identify System
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
@@ -107,11 +116,11 @@ curl -sSL "$GITHUB_URL/$FILENAME" -o "$TMP_DIR/$FILENAME"
 case "$FORMAT" in
     deb)
         echo "Installing via apt..."
-        sudo apt-get update -qq && sudo apt-get install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
+        run_priv apt-get update -qq && run_priv apt-get install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
         ;;
     rpm)
         echo "Installing via dnf..."
-        sudo dnf install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
+        run_priv dnf install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
         ;;
     tar.gz)
         echo "Extracting binary to /usr/local/bin..."
@@ -125,10 +134,10 @@ case "$FORMAT" in
             MANPAGE_PATH="$TMP_DIR/target/release/$MANPAGE_GZ_NAME"
         fi
 
-        sudo install -d /usr/local/bin
-        sudo install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
-        sudo install -d /usr/local/share/man/man1
-        sudo install -m 644 "$MANPAGE_PATH" "/usr/local/share/man/man1/"
+        run_priv install -d /usr/local/bin
+        run_priv install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
+        run_priv install -d /usr/local/share/man/man1
+        run_priv install -m 644 "$MANPAGE_PATH" "/usr/local/share/man/man1/"
         ;;
 esac
 

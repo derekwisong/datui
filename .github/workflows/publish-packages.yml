@@ -1,0 +1,99 @@
+# Publish to AUR, PyPI, Homebrew, and WinGet when a release is published.
+# Runs after the Release workflow has created the GitHub release and uploaded assets.
+# Prerequisites: repository secrets for HOMEBREW_TAP_TOKEN, PYPI_API_TOKEN, AUR_*, WINGET_TOKEN.
+# WinGet: at least one version of derekwisong.datui must exist in winget-pkgs; fork microsoft/winget-pkgs; WINGET_TOKEN = classic PAT with public_repo scope.
+name: Publish packages
+
+on:
+  release:
+    types: [released]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ github.event.release.tag_name }}" --repo ${{ github.repository }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+
+      - name: Compute macOS tarball checksums for Homebrew
+        id: brew-checksums
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha_arm64=$(sha256sum *-aarch64-apple-darwin.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "sha_x64=$(sha256sum *-x86_64-apple-darwin.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew tap
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          TAG="${{ steps.brew-checksums.outputs.tag }}"
+          VERSION="${{ steps.brew-checksums.outputs.version }}"
+          SHA_ARM64="${{ steps.brew-checksums.outputs.sha_arm64 }}"
+          SHA_X64="${{ steps.brew-checksums.outputs.sha_x64 }}"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/derekwisong/homebrew-datui.git" tap
+          cd tap
+          mkdir -p Formula
+          sed -e "s/VERSION_PLACEHOLDER/$VERSION/" \
+              -e "s|URL_ARM64_PLACEHOLDER|https://github.com/$REPO/releases/download/$TAG/datui-$TAG-aarch64-apple-darwin.tar.gz|" \
+              -e "s/SHA_ARM64_PLACEHOLDER/$SHA_ARM64/" \
+              -e "s|URL_X64_PLACEHOLDER|https://github.com/$REPO/releases/download/$TAG/datui-$TAG-x86_64-apple-darwin.tar.gz|" \
+              -e "s/SHA_X64_PLACEHOLDER/$SHA_X64/" \
+              "$GITHUB_WORKSPACE/scripts/homebrew-formula.rb.template" > Formula/datui.rb
+          git add Formula/datui.rb
+          git diff --staged --quiet || (git commit -m "datui $VERSION" && git push)
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          pip install twine
+          twine upload --skip-existing *.whl
+
+      - name: Publish to AUR (datui-bin package)
+        uses: KSXGitHub/github-actions-deploy-aur@v2.7.1
+        with:
+          pkgname: datui-bin
+          pkgbuild: PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to ${{ github.event.release.tag_name }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+
+  # winget:
+  #   runs-on: windows-latest
+  #   steps:
+  #     - name: Open winget-pkgs PR
+  #       uses: vedantmgoyal9/winget-releaser@main
+  #       with:
+  #         identifier: derekwisong.datui
+  #         installers-regex: '-windows-x86_64\.zip$'
+  #         token: ${{ secrets.WINGET_TOKEN }}
+
+          # Optional: keep only the latest N versions in winget (0 = keep all)
+          # max-versions-to-keep: 5
+          # If your winget-pkgs fork is under a different user, set fork-user:
+          # fork-user: your-fork-username

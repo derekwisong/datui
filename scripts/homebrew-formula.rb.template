@@ -1,4 +1,4 @@
-# Homebrew formula for datui. Placeholders are substituted by .github/workflows/release.yml
+# Homebrew formula for datui. Placeholders are substituted by .github/workflows/publish-packages.yml
 # when updating the tap: VERSION_PLACEHOLDER, URL_ARM64_PLACEHOLDER, SHA_ARM64_PLACEHOLDER,
 # URL_X64_PLACEHOLDER, SHA_X64_PLACEHOLDER.
 class Datui < Formula

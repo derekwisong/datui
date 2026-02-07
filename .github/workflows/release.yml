@@ -387,12 +387,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-
       - name: Download linux artifacts
         uses: actions/download-artifact@v4
         with:
@@ -434,58 +428,6 @@ jobs:
             macos-x86_64/python/dist/*.whl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute macOS tarball checksums for Homebrew
-        id: brew-checksums
-        run: |
-          VERSION="${{ github.ref_name }}"
-          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
-          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "sha_arm64=$(sha256sum macos-aarch64/datui-*.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "sha_x64=$(sha256sum macos-x86_64/datui-*.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-
-      - name: Update Homebrew tap
-        if: env.HOMEBREW_TAP_TOKEN != ''
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          REPO="${{ github.repository }}"
-          TAG="${{ steps.brew-checksums.outputs.tag }}"
-          VERSION="${{ steps.brew-checksums.outputs.version }}"
-          SHA_ARM64="${{ steps.brew-checksums.outputs.sha_arm64 }}"
-          SHA_X64="${{ steps.brew-checksums.outputs.sha_x64 }}"
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/derekwisong/homebrew-datui.git" tap
-          cd tap
-          mkdir -p Formula
-          sed -e "s/VERSION_PLACEHOLDER/$VERSION/" \
-              -e "s|URL_ARM64_PLACEHOLDER|https://github.com/$REPO/releases/download/$TAG/datui-$TAG-aarch64-apple-darwin.tar.gz|" \
-              -e "s/SHA_ARM64_PLACEHOLDER/$SHA_ARM64/" \
-              -e "s|URL_X64_PLACEHOLDER|https://github.com/$REPO/releases/download/$TAG/datui-$TAG-x86_64-apple-darwin.tar.gz|" \
-              -e "s/SHA_X64_PLACEHOLDER/$SHA_X64/" \
-              "$GITHUB_WORKSPACE/scripts/homebrew-formula.rb.template" > Formula/datui.rb
-          git add Formula/datui.rb
-          git diff --staged --quiet || (git commit -m "datui $VERSION" && git push)
-
-      - name: Publish to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          pip install twine
-          twine upload --skip-existing python/dist/*.whl windows-artifacts/python/dist/*.whl macos-aarch64/python/dist/*.whl macos-x86_64/python/dist/*.whl
-
-      - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.1
-        with:
-          pkgname: datui-bin
-          pkgbuild: target/cargo-aur/PKGBUILD
-          commit_username: ${{ secrets.AUR_USERNAME }}
-          commit_email: ${{ secrets.AUR_EMAIL }}
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: Update to ${{ github.ref_name }}
-          ssh_keyscan_types: rsa,ecdsa,ed25519
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

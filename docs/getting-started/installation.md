@@ -27,6 +27,14 @@ brew tap derekwisong/datui
 brew install datui
 ```
 
+### Windows (WinGet)
+
+Install via [WinGet: The Windows Package Manager](https://learn.microsoft.com/en-us/windows/package-manager/):
+
+```powershell
+winget install derekwisong.datui
+```
+
 ### Arch Linux (AUR)
 
 Datui is available in the [Arch User Repository](https://aur.archlinux.org/packages/datui-bin)

@@ -25,3 +25,6 @@ python/datui/*.so
 python/datui/*.pyd
 python/datui/*.pyi
 python/datui/datui_bin/
+
+# Generated winget manifests (from scripts/winget/generate_manifests.sh)
+scripts/winget/out/

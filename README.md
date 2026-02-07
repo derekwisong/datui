@@ -48,11 +48,12 @@ Get the pre-built binary for your platform from the [Latest Release](https://git
 
 > See [Package Managers][pkg-managers]
 
-- **Homebrew (macOS)**:
+- **macOS (Homebrew)**:
   ```bash
   brew tap derekwisong/datui
   brew install datui
   ```
+- **Windows (WinGet)**: `winget install derekwisong.datui`
 - **Arch Linux (AUR)**:
   - `paru -S datui-bin`
   - `yay -S datui-bin`
@@ -76,11 +77,21 @@ The binary will be available at `target/release/datui`.
 
 > See the [Quick Start Guide][quickstart-guide]
 
-- 💻 Load a file from the shell and start exploring:
+- 💻 Load a file, or hive-partitioned dataset, from the shell:
   ```bash
   datui /path/to/data.parquet
+  datui --hive /path/to/directory
+  datui --hive "/path/to/directory/**/*.parquet"
   ```
-- 🐍 View your data from Python:
+  > See [Loading Data][loading-data]
+- ☁️ Load data from **S3** and **HTTP**:
+  ```bash
+  datui s3://some-bucket/file.parquet
+  datui gs://some-bucket/file.parquet
+  datui https://www.domain.com/file.csv
+  ```
+  > See [Loading Remote Data][loading-remote]
+- 🐍 View data from Python:
   ```python
   import polars as pl
   import datui
@@ -88,6 +99,7 @@ The binary will be available at `target/release/datui`.
   lf = pl.scan_parquet("/path/to/data.parquet")
   datui.view(lf)
   ```
+  > See [Python Module][python-module]
 - Use arrow keys or Vim-style keybinds (`h`/`j`/`k`/`l`) to navigate
 - Press `q` to exit
 
@@ -131,3 +143,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 [contributing]: https://derekwisong.github.io/datui/latest/for-developers/contributing.html
 [setup-script]: https://derekwisong.github.io/datui/latest/for-developers/setup-script.html
 [python-module]: https://derekwisong.github.io/datui/latest/user-guide/python-module.html
+[loading-remote]: https://derekwisong.github.io/datui/latest/user-guide/loading-data.html#remote-data-s3-gcs-and-http
+[loading-data]: https://derekwisong.github.io/datui/latest/user-guide/loading-data.html

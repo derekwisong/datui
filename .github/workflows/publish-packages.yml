@@ -1,12 +1,24 @@
-# Publish to AUR, PyPI, Homebrew, and WinGet when a release is published.
-# Runs after the Release workflow has created the GitHub release and uploaded assets.
+# Reusable workflow: publish to AUR, PyPI, Homebrew, and WinGet after a release is created.
+# Invoked by the Release workflow at the end of its publish step, or run manually (Actions → Publish packages → Run workflow).
+# Manual run with no tag uses the latest GitHub release.
 # Prerequisites: repository secrets for HOMEBREW_TAP_TOKEN, PYPI_API_TOKEN, AUR_*, WINGET_TOKEN.
 # WinGet: at least one version of derekwisong.datui must exist in winget-pkgs; fork microsoft/winget-pkgs; WINGET_TOKEN = classic PAT with public_repo scope.
 name: Publish packages
 
 on:
-  release:
-    types: [released]
+  workflow_call:
+    inputs:
+      tag_name:
+        description: 'Release tag name (e.g. v1.0.0)'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (blank = latest release)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -15,6 +27,19 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve release tag
+        id: resolve-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            echo "tag_name=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh release list --limit 1 --json tagName -q '.[0].tagName')
+            echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Publishing release ${{ steps.resolve-tag.outputs.tag_name }}"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -23,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download "${{ github.event.release.tag_name }}" --repo ${{ github.repository }}
+          gh release download "${{ steps.resolve-tag.outputs.tag_name }}" --repo ${{ github.repository }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -34,7 +59,7 @@ jobs:
       - name: Compute macOS tarball checksums for Homebrew
         id: brew-checksums
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${{ steps.resolve-tag.outputs.tag_name }}"
           echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
           echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha_arm64=$(sha256sum *-aarch64-apple-darwin.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
@@ -80,7 +105,7 @@ jobs:
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: Update to ${{ github.event.release.tag_name }}
+          commit_message: Update to ${{ steps.resolve-tag.outputs.tag_name }}
           ssh_keyscan_types: rsa,ecdsa,ed25519
 
   # winget:

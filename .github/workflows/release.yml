@@ -435,3 +435,10 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  publish-packages:
+    needs: publish
+    uses: ./.github/workflows/publish-packages.yml
+    with:
+      tag_name: ${{ github.ref_name }}
+    secrets: inherit

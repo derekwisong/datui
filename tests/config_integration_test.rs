@@ -19,6 +19,7 @@ fn test_config_used_for_row_numbers() {
         clear_cache: false,
         template: None,
         remove_templates: false,
+        sampling_threshold: None,
         pages_lookahead: None,
         pages_lookback: None,
         row_numbers: false, // Not set via CLI
@@ -34,6 +35,7 @@ fn test_config_used_for_row_numbers() {
         s3_access_key_id: None,
         s3_secret_access_key: None,
         s3_region: None,
+        polars_streaming: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -62,6 +64,7 @@ fn test_cli_args_override_config() {
         clear_cache: false,
         template: None,
         remove_templates: false,
+        sampling_threshold: None,
         pages_lookahead: Some(5), // Override config
         pages_lookback: None,
         row_numbers: false,
@@ -77,6 +80,7 @@ fn test_cli_args_override_config() {
         s3_access_key_id: None,
         s3_secret_access_key: None,
         s3_region: None,
+        polars_streaming: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -105,6 +109,7 @@ fn test_config_display_settings() {
         clear_cache: false,
         template: None,
         remove_templates: false,
+        sampling_threshold: None,
         pages_lookahead: None,
         pages_lookback: None,
         row_numbers: false,
@@ -120,6 +125,7 @@ fn test_config_display_settings() {
         s3_access_key_id: None,
         s3_secret_access_key: None,
         s3_region: None,
+        polars_streaming: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -148,6 +154,7 @@ fn test_config_file_loading_settings() {
         clear_cache: false,
         template: None,
         remove_templates: false,
+        sampling_threshold: None,
         pages_lookahead: None,
         pages_lookback: None,
         row_numbers: false,
@@ -163,6 +170,7 @@ fn test_config_file_loading_settings() {
         s3_access_key_id: None,
         s3_secret_access_key: None,
         s3_region: None,
+        polars_streaming: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);

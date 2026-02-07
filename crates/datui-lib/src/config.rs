@@ -544,6 +544,8 @@ pub struct PerformanceConfig {
     /// When None, analysis uses full dataset (no sampling). When Some(n), datasets with >= n rows are sampled.
     pub sampling_threshold: Option<usize>,
     pub event_poll_interval_ms: u64,
+    /// When true (default), use Polars streaming engine for LazyFrame collect when the streaming feature is enabled (lower memory, batch processing).
+    pub polars_streaming: bool,
 }
 
 // Field comments for PerformanceConfig
@@ -555,6 +557,10 @@ const PERFORMANCE_COMMENTS: &[(&str, &str)] = &[
     (
         "event_poll_interval_ms",
         "Event polling interval in milliseconds\nLower values = more responsive but higher CPU usage",
+    ),
+    (
+        "polars_streaming",
+        "Use Polars streaming engine for LazyFrame collect when available (default: true). Reduces memory and can improve performance on large or partitioned data.",
     ),
 ];
 
@@ -882,6 +888,7 @@ impl Default for PerformanceConfig {
         Self {
             sampling_threshold: None,
             event_poll_interval_ms: 25,
+            polars_streaming: true,
         }
     }
 }
@@ -893,7 +900,7 @@ impl Default for ColorConfig {
             keybind_labels: "indexed(252)".to_string(),
             throbber: "cyan".to_string(),
             primary_chart_series_color: "cyan".to_string(),
-            secondary_chart_series_color: "indexed(235)".to_string(),
+            secondary_chart_series_color: "indexed(245)".to_string(),
             success: "green".to_string(),
             error: "red".to_string(),
             warning: "yellow".to_string(),
@@ -918,7 +925,7 @@ impl Default for ColorConfig {
             outlier_marker: "red".to_string(),
             cursor_focused: "default".to_string(),
             cursor_dimmed: "default".to_string(),
-            alternate_row_color: "indexed(234)".to_string(),
+            alternate_row_color: "indexed(235)".to_string(),
             str_col: "green".to_string(),
             int_col: "cyan".to_string(),
             float_col: "blue".to_string(),
@@ -1131,6 +1138,9 @@ impl PerformanceConfig {
         }
         if other.event_poll_interval_ms != default.event_poll_interval_ms {
             self.event_poll_interval_ms = other.event_poll_interval_ms;
+        }
+        if other.polars_streaming != default.polars_streaming {
+            self.polars_streaming = other.polars_streaming;
         }
     }
 }

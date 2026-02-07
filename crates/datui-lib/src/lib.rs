@@ -219,6 +219,8 @@ pub struct OpenOptions {
     pub s3_access_key_id_override: Option<String>,
     pub s3_secret_access_key_override: Option<String>,
     pub s3_region_override: Option<String>,
+    /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
+    pub polars_streaming: bool,
 }
 
 impl OpenOptions {
@@ -244,6 +246,7 @@ impl OpenOptions {
             s3_access_key_id_override: None,
             s3_secret_access_key_override: None,
             s3_region_override: None,
+            polars_streaming: true,
         }
     }
 }
@@ -363,6 +366,8 @@ impl OpenOptions {
             .clone()
             .or_else(|| std::env::var("AWS_REGION").ok())
             .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok());
+
+        opts.polars_streaming = config.performance.polars_streaming;
 
         opts
     }
@@ -3614,7 +3619,19 @@ impl App {
                 KeyCode::Char('r') => {
                     if self.sampling_threshold.is_some() {
                         self.analysis_modal.recalculate();
-                        self.analysis_modal.analysis_results = None;
+                        // Invalidate current tool's cache so it recalculates with new seed
+                        match self.analysis_modal.selected_tool {
+                            Some(analysis_modal::AnalysisTool::Describe) => {
+                                self.analysis_modal.describe_results = None;
+                            }
+                            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                self.analysis_modal.distribution_results = None;
+                            }
+                            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                                self.analysis_modal.correlation_results = None;
+                            }
+                            None => {}
+                        }
                     }
                 }
                 KeyCode::Tab => {
@@ -3636,10 +3653,10 @@ impl App {
                         if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
                             // Select tool from sidebar
                             self.analysis_modal.select_tool();
-                            // Trigger computation for the selected tool if needed
+                            // Trigger computation for the selected tool when that tool has no cached results
                             match self.analysis_modal.selected_tool {
                                 Some(analysis_modal::AnalysisTool::Describe)
-                                    if self.analysis_modal.analysis_results.is_none() =>
+                                    if self.analysis_modal.describe_results.is_none() =>
                                 {
                                     self.analysis_modal.computing = Some(AnalysisProgress {
                                         phase: "Describing data".to_string(),
@@ -3659,38 +3676,29 @@ impl App {
                                     self.busy = true;
                                     return Some(AppEvent::AnalysisChunk);
                                 }
-                                _ => {
-                                    if let Some(ref results) = self.analysis_modal.analysis_results
-                                    {
-                                        match self.analysis_modal.selected_tool {
-                                            Some(
-                                                analysis_modal::AnalysisTool::DistributionAnalysis,
-                                            ) if results.distribution_analyses.is_empty() => {
-                                                self.analysis_modal.computing =
-                                                    Some(AnalysisProgress {
-                                                        phase: "Distribution".to_string(),
-                                                        current: 0,
-                                                        total: 1,
-                                                    });
-                                                self.busy = true;
-                                                return Some(AppEvent::AnalysisDistributionCompute);
-                                            }
-                                            Some(
-                                                analysis_modal::AnalysisTool::CorrelationMatrix,
-                                            ) if results.correlation_matrix.is_none() => {
-                                                self.analysis_modal.computing =
-                                                    Some(AnalysisProgress {
-                                                        phase: "Correlation".to_string(),
-                                                        current: 0,
-                                                        total: 1,
-                                                    });
-                                                self.busy = true;
-                                                return Some(AppEvent::AnalysisCorrelationCompute);
-                                            }
-                                            _ => {}
-                                        }
-                                    }
+                                Some(analysis_modal::AnalysisTool::DistributionAnalysis)
+                                    if self.analysis_modal.distribution_results.is_none() =>
+                                {
+                                    self.analysis_modal.computing = Some(AnalysisProgress {
+                                        phase: "Distribution".to_string(),
+                                        current: 0,
+                                        total: 1,
+                                    });
+                                    self.busy = true;
+                                    return Some(AppEvent::AnalysisDistributionCompute);
                                 }
+                                Some(analysis_modal::AnalysisTool::CorrelationMatrix)
+                                    if self.analysis_modal.correlation_results.is_none() =>
+                                {
+                                    self.analysis_modal.computing = Some(AnalysisProgress {
+                                        phase: "Correlation".to_string(),
+                                        current: 0,
+                                        total: 1,
+                                    });
+                                    self.busy = true;
+                                    return Some(AppEvent::AnalysisCorrelationCompute);
+                                }
+                                _ => {}
                             }
                         } else {
                             // Enter in main area opens detail view if applicable
@@ -3727,7 +3735,7 @@ impl App {
                                             analysis_modal::AnalysisTool::DistributionAnalysis,
                                         ) => {
                                             if let Some(results) =
-                                                &self.analysis_modal.analysis_results
+                                                self.analysis_modal.current_results()
                                             {
                                                 let max_rows = results.distribution_analyses.len();
                                                 self.analysis_modal.next_row(max_rows);
@@ -3735,7 +3743,7 @@ impl App {
                                         }
                                         Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                             if let Some(results) =
-                                                &self.analysis_modal.analysis_results
+                                                self.analysis_modal.current_results()
                                             {
                                                 if let Some(corr) = &results.correlation_matrix {
                                                     let max_rows = corr.columns.len();
@@ -3837,7 +3845,7 @@ impl App {
                                         self.analysis_modal.scroll_left();
                                     }
                                     Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                        if let Some(results) = &self.analysis_modal.analysis_results
+                                        if let Some(results) = self.analysis_modal.current_results()
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
                                                 let max_cols = corr.columns.len();
@@ -3913,7 +3921,7 @@ impl App {
                                         self.analysis_modal.scroll_right(max_stats, visible_stats);
                                     }
                                     Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                        if let Some(results) = &self.analysis_modal.analysis_results
+                                        if let Some(results) = self.analysis_modal.current_results()
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
                                                 let max_cols = corr.columns.len();
@@ -3971,14 +3979,14 @@ impl App {
                                 }
                             }
                             Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                if let Some(results) = &self.analysis_modal.analysis_results {
+                                if let Some(results) = self.analysis_modal.current_results() {
                                     let max_rows = results.distribution_analyses.len();
                                     let page_size = 10;
                                     self.analysis_modal.page_down(max_rows, page_size);
                                 }
                             }
                             Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                if let Some(results) = &self.analysis_modal.analysis_results {
+                                if let Some(results) = self.analysis_modal.current_results() {
                                     if let Some(corr) = &results.correlation_matrix {
                                         let max_rows = corr.columns.len();
                                         let page_size = 10;
@@ -4054,7 +4062,7 @@ impl App {
                                         }
                                     }
                                     Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                        if let Some(results) = &self.analysis_modal.analysis_results
+                                        if let Some(results) = self.analysis_modal.current_results()
                                         {
                                             let max_rows = results.distribution_analyses.len();
                                             if max_rows > 0 {
@@ -4065,7 +4073,7 @@ impl App {
                                         }
                                     }
                                     Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                        if let Some(results) = &self.analysis_modal.analysis_results
+                                        if let Some(results) = self.analysis_modal.current_results()
                                         {
                                             if let Some(corr) = &results.correlation_matrix {
                                                 let max_rows = corr.columns.len();
@@ -5562,7 +5570,6 @@ impl App {
                 // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
                     self.analysis_modal.open();
-                    self.analysis_modal.analysis_results = None;
                 }
                 None
             }
@@ -5572,21 +5579,7 @@ impl App {
                         let numeric_columns: Vec<String> = state
                             .schema
                             .iter()
-                            .filter(|(_, dtype)| {
-                                matches!(
-                                    dtype,
-                                    DataType::Int8
-                                        | DataType::Int16
-                                        | DataType::Int32
-                                        | DataType::Int64
-                                        | DataType::UInt8
-                                        | DataType::UInt16
-                                        | DataType::UInt32
-                                        | DataType::UInt64
-                                        | DataType::Float32
-                                        | DataType::Float64
-                                )
-                            })
+                            .filter(|(_, dtype)| dtype.is_numeric())
                             .map(|(name, _)| name.to_string())
                             .collect();
                         let datetime_columns: Vec<String> = state
@@ -6439,7 +6432,10 @@ impl App {
                         .and_then(|s| s.num_rows_if_valid())
                     {
                         Some(n) => n,
-                        None => match lf.clone().select([len()]).collect() {
+                        None => match crate::statistics::collect_lazy(
+                            lf.clone().select([len()]),
+                            self.app_config.performance.polars_streaming,
+                        ) {
                             Ok(count_df) => {
                                 if let Some(col) = count_df.get(0) {
                                     match col.first() {
@@ -6463,9 +6459,10 @@ impl App {
                         total_rows,
                         self.sampling_threshold,
                         comp.sample_seed,
+                        self.app_config.performance.polars_streaming,
                     ) {
                         Ok(results) => {
-                            self.analysis_modal.analysis_results = Some(results);
+                            self.analysis_modal.describe_results = Some(results);
                             self.analysis_modal.computing = None;
                             self.busy = false;
                             self.drain_keys_on_next_loop = true;
@@ -6484,17 +6481,20 @@ impl App {
             }
             AppEvent::AnalysisDistributionCompute => {
                 if let Some(state) = &self.data_table_state {
-                    if let Some(ref mut results) = self.analysis_modal.analysis_results {
-                        if crate::statistics::compute_distribution_statistics(
-                            results,
-                            &state.lf,
-                            self.sampling_threshold,
-                            self.analysis_modal.random_seed,
-                        )
-                        .is_err()
-                        {
-                            // Distribution computation failed; analysis view will show error state
-                        }
+                    let options = crate::statistics::ComputeOptions {
+                        include_distribution_info: true,
+                        include_distribution_analyses: true,
+                        include_correlation_matrix: false,
+                        include_skewness_kurtosis_outliers: true,
+                        polars_streaming: self.app_config.performance.polars_streaming,
+                    };
+                    if let Ok(results) = crate::statistics::compute_statistics_with_options(
+                        &state.lf,
+                        self.sampling_threshold,
+                        self.analysis_modal.random_seed,
+                        options,
+                    ) {
+                        self.analysis_modal.distribution_results = Some(results);
                     }
                 }
                 self.analysis_modal.computing = None;
@@ -6504,9 +6504,20 @@ impl App {
             }
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
-                    if let Some(ref mut results) = self.analysis_modal.analysis_results {
-                        let _ =
-                            crate::statistics::compute_correlation_statistics(results, &state.lf);
+                    if let Ok(df) =
+                        crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)
+                    {
+                        if let Ok(matrix) = crate::statistics::compute_correlation_matrix(&df) {
+                            self.analysis_modal.correlation_results =
+                                Some(crate::statistics::AnalysisResults {
+                                    column_statistics: vec![],
+                                    total_rows: df.height(),
+                                    sample_size: None,
+                                    sample_seed: self.analysis_modal.random_seed,
+                                    correlation_matrix: Some(matrix),
+                                    distribution_analyses: vec![],
+                                });
+                        }
                     }
                 }
                 self.analysis_modal.computing = None;
@@ -6713,7 +6724,8 @@ impl App {
             }
             AppEvent::DoExportCollect(path, format, options) => {
                 if let Some(state) = &self.data_table_state {
-                    match state.lf.clone().collect() {
+                    match crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)
+                    {
                         Ok(df) => {
                             self.export_df = Some(df);
                             let has_compression = match format {
@@ -7463,7 +7475,7 @@ impl App {
         format: ExportFormat,
         options: &ExportOptions,
     ) -> Result<()> {
-        let mut df = state.lf.clone().collect()?;
+        let mut df = crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)?;
         Self::export_data_from_df(&mut df, path, format, options)
     }
 
@@ -9168,40 +9180,53 @@ impl Widget for &mut App {
                         buf,
                     );
             } else if let Some(state) = &self.data_table_state {
-                // Only run sync recompute when user has selected a tool (Describe triggers chunked path on Enter;
-                // this is fallback for seed change or when we have no results after selecting a tool).
-                let selected_tool = self.analysis_modal.selected_tool;
-                let needs_recompute = selected_tool.is_some()
-                    && (self.analysis_modal.analysis_results.is_none()
+                // Per-tool sync fallback: when the selected tool has no cached results or seed changed, compute for that tool only.
+                let seed = self.analysis_modal.random_seed;
+                let needs_describe = self.analysis_modal.selected_tool
+                    == Some(analysis_modal::AnalysisTool::Describe)
+                    && (self.analysis_modal.describe_results.is_none()
                         || self
                             .analysis_modal
-                            .analysis_results
+                            .describe_results
                             .as_ref()
-                            .map(|r| r.sample_seed != self.analysis_modal.random_seed)
-                            .unwrap_or(true));
+                            .is_some_and(|r| r.sample_seed != seed));
+                let needs_distribution = self.analysis_modal.selected_tool
+                    == Some(analysis_modal::AnalysisTool::DistributionAnalysis)
+                    && (self.analysis_modal.distribution_results.is_none()
+                        || self
+                            .analysis_modal
+                            .distribution_results
+                            .as_ref()
+                            .is_some_and(|r| r.sample_seed != seed));
+                let needs_correlation = self.analysis_modal.selected_tool
+                    == Some(analysis_modal::AnalysisTool::CorrelationMatrix)
+                    && (self.analysis_modal.correlation_results.is_none()
+                        || self
+                            .analysis_modal
+                            .correlation_results
+                            .as_ref()
+                            .is_some_and(|r| r.sample_seed != seed));
 
-                if needs_recompute {
+                if needs_describe {
                     self.busy = true;
-                    // Use the LazyFrame directly from state (it already respects queries/filters)
                     let lf = state.lf.clone();
-                    // Only compute basic statistics by default (no distribution analysis, no correlation matrix)
                     let options = crate::statistics::ComputeOptions {
                         include_distribution_info: false,
                         include_distribution_analyses: false,
                         include_correlation_matrix: false,
                         include_skewness_kurtosis_outliers: false,
+                        polars_streaming: self.app_config.performance.polars_streaming,
                     };
                     match crate::statistics::compute_statistics_with_options(
                         &lf,
                         self.sampling_threshold,
-                        self.analysis_modal.random_seed,
+                        seed,
                         options,
                     ) {
                         Ok(results) => {
-                            self.analysis_modal.analysis_results = Some(results);
+                            self.analysis_modal.describe_results = Some(results);
                         }
                         Err(e) => {
-                            // Still render the modal with error message
                             Clear.render(analysis_area, buf);
                             let error_msg = format!(
                                 "Error computing statistics: {}",
@@ -9211,15 +9236,63 @@ impl Widget for &mut App {
                                 .centered()
                                 .style(Style::default().fg(self.color("error")))
                                 .render(analysis_area, buf);
-                            // Don't return - continue to render toolbar
+                        }
+                    }
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                } else if needs_distribution {
+                    self.busy = true;
+                    let lf = state.lf.clone();
+                    let options = crate::statistics::ComputeOptions {
+                        include_distribution_info: true,
+                        include_distribution_analyses: true,
+                        include_correlation_matrix: false,
+                        include_skewness_kurtosis_outliers: true,
+                        polars_streaming: self.app_config.performance.polars_streaming,
+                    };
+                    match crate::statistics::compute_statistics_with_options(
+                        &lf,
+                        self.sampling_threshold,
+                        seed,
+                        options,
+                    ) {
+                        Ok(results) => {
+                            self.analysis_modal.distribution_results = Some(results);
+                        }
+                        Err(e) => {
+                            Clear.render(analysis_area, buf);
+                            let error_msg = format!(
+                                "Error computing distribution: {}",
+                                crate::error_display::user_message_from_report(&e, None)
+                            );
+                            Paragraph::new(error_msg)
+                                .centered()
+                                .style(Style::default().fg(self.color("error")))
+                                .render(analysis_area, buf);
+                        }
+                    }
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                } else if needs_correlation {
+                    self.busy = true;
+                    if let Ok(df) =
+                        crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)
+                    {
+                        if let Ok(matrix) = crate::statistics::compute_correlation_matrix(&df) {
+                            self.analysis_modal.correlation_results =
+                                Some(crate::statistics::AnalysisResults {
+                                    column_statistics: vec![],
+                                    total_rows: df.height(),
+                                    sample_size: None,
+                                    sample_seed: seed,
+                                    correlation_matrix: Some(matrix),
+                                    distribution_analyses: vec![],
+                                });
                         }
                     }
                     self.busy = false;
                     self.drain_keys_on_next_loop = true;
                 }
-
-                // Distribution and Correlation are computed via deferred events (AnalysisDistributionCompute
-                // / AnalysisCorrelationCompute) when the user selects that tool, so progress overlay and throbber show first.
 
                 // Always render the analysis widget when we have data (with or without results: widget shows
                 // "Select an analysis tool", "Computing...", or the selected tool content).
@@ -9238,9 +9311,11 @@ impl Widget for &mut App {
                     None => 0,
                 };
 
+                // Clone current tool's results so we can pass a ref without holding a borrow on the modal (widget also needs &mut modal for table state).
+                let results_for_widget = self.analysis_modal.current_results().cloned();
                 let config = widgets::analysis::AnalysisWidgetConfig {
                     state,
-                    results: self.analysis_modal.analysis_results.as_ref(),
+                    results: results_for_widget.as_ref(),
                     context: &context,
                     view: self.analysis_modal.view,
                     selected_tool: self.analysis_modal.selected_tool,
@@ -9953,9 +10028,9 @@ impl Widget for &mut App {
                 ("Enter", "Select"),
             ];
 
-            // Show r Resample only when sampling is enabled and data was sampled
+            // Show r Resample only when sampling is enabled and current tool's data was sampled
             if self.sampling_threshold.is_some() {
-                if let Some(results) = &self.analysis_modal.analysis_results {
+                if let Some(results) = self.analysis_modal.current_results() {
                     if results.sample_size.is_some() {
                         analysis_controls.push(("r", "Resample"));
                     }
@@ -10085,7 +10160,8 @@ pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()
                 || s.starts_with("gs://")
                 || s.starts_with("http://")
                 || s.starts_with("https://");
-            if !is_remote && !path.exists() {
+            let is_glob = s.contains('*');
+            if !is_remote && !is_glob && !path.exists() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!("File not found: {}", path.display()),

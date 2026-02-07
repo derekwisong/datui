@@ -117,18 +117,19 @@ fn view_from_json(
 /// Launch the datui TUI with one or more paths (local files, S3, GCS, or HTTP/HTTPS URLs).
 ///
 /// Paths are passed to the same loading logic as the CLI: local files, `s3://`, `gs://`,
-/// and `http(s)://` are supported. Non-Parquet remote files are downloaded to a temp file
-/// then loaded. Multiple paths are allowed; the same rule as the CLI applies (e.g. only
-/// one remote URL when the first path is remote).
+/// and `http(s)://` are supported. Glob patterns (e.g. `"data/**/*.parquet"`) are supported
+/// for Parquet; the loader passes them to Polars for expansion. Non-Parquet remote files
+/// are downloaded to a temp file then loaded. Multiple paths are allowed; the same rule
+/// as the CLI applies (e.g. only one remote URL when the first path is remote).
 ///
 /// Args:
 ///     paths: A single path string or a list of path strings (e.g. `"file.csv"`,
-///            `"s3://bucket/file.csv"`, or `["a.csv", "b.csv"]`).
+///            `"s3://bucket/file.csv"`, `["a.csv", "b.csv"]`, or `"data/**/*.parquet"`).
 ///     debug: If True, enable debug overlay (default False).
 ///
 /// Raises:
 ///     ValueError: If paths is empty.
-///     FileNotFoundError: If a path does not exist.
+///     FileNotFoundError: If a path does not exist (globs are not checked for existence).
 ///     PermissionError: If read access to a path is denied.
 ///     RuntimeError: If the TUI fails or an uncategorized error occurs.
 #[pyfunction]

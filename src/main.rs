@@ -100,6 +100,14 @@ fn main() -> Result<()> {
         config.display.column_colors = cc;
     }
 
+    if let Some(st) = args.sampling_threshold {
+        config.performance.sampling_threshold = if st == 0 { None } else { Some(st) };
+    }
+
+    if let Some(ps) = args.polars_streaming {
+        config.performance.polars_streaming = ps;
+    }
+
     let opts = OpenOptions::from_args_and_config(&args, &config);
     let input = RunInput::Paths(args.paths.clone(), opts);
 
@@ -129,6 +137,7 @@ mod tests {
             clear_cache: false,
             template: None,
             remove_templates: false,
+            sampling_threshold: None,
             pages_lookahead: None,
             pages_lookback: None,
             row_numbers: false,
@@ -144,6 +153,7 @@ mod tests {
             s3_access_key_id: None,
             s3_secret_access_key: None,
             s3_region: None,
+            polars_streaming: None,
         };
         let opts: OpenOptions = (&args).into();
         assert_eq!(opts.skip_lines, Some(1));

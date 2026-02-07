@@ -4,20 +4,24 @@ Generate VHS demo GIFs for all available themes.
 
 This script takes a tape file and generates a GIF for each VHS theme,
 saving them to the specified output directory with theme names as filenames.
+Runs parallel workers (by default one per CPU core) and reports progress.
 
 Usage:
     python generate-themes.py <tape_file> <output_dir>
+    python generate-themes.py 01-basic-navigation.tape /tmp/theme-demos -n 4
 
 Example:
     python generate-themes.py 01-basic-navigation.tape /tmp/theme-demos
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-import urllib.request
+from typing import NamedTuple
 import re
 
 
@@ -157,65 +161,83 @@ def create_themed_tape(tape_content: str, theme: str, output_path: Path) -> str:
     return '\n'.join(modified_lines)
 
 
-def generate_gif_for_theme(tape_path: Path, theme: str, output_dir: Path, repo_root: Path, skip_existing: bool = True) -> bool:
-    """Generate a GIF for a specific theme.
-    
+def _generate_one_theme_impl(
+    tape_path: Path,
+    theme: str,
+    output_dir: Path,
+    repo_root: Path,
+    env: dict | None = None,
+) -> tuple[bool, float | None, str | None]:
+    """Generate a GIF for a specific theme. No printing (for use in workers).
+
     Returns:
-        True if successful, False if failed, None if skipped
+        (success, size_kb_or_none, error_message_or_none)
     """
     theme_filename = sanitize_filename(theme)
     output_gif = output_dir / f"{theme_filename}.gif"
-    
-    # Skip if file already exists (this check is also done in main, but kept here for safety)
-    if skip_existing and output_gif.exists():
-        return None  # Return None to indicate skipped
-    
-    print(f"  Generating {theme}...", end=' ', flush=True)
-    
-    # Read original tape file
+
     tape_content = read_tape_file(tape_path)
-    
-    # Create temporary tape file with theme
     with tempfile.NamedTemporaryFile(mode='w', suffix='.tape', delete=False) as tmp_tape:
         tmp_tape_path = Path(tmp_tape.name)
         themed_content = create_themed_tape(tape_content, theme, output_gif)
         tmp_tape.write(themed_content)
         tmp_tape.flush()
-    
+
     try:
-        # Run vhs from repo root
         result = subprocess.run(
             ['vhs', str(tmp_tape_path)],
             cwd=repo_root,
+            env=env,
             capture_output=True,
             text=True,
-            timeout=300  # 5 minute timeout per theme
+            timeout=300,
         )
-        
-        # Clean up temp file
-        tmp_tape_path.unlink()
-        
+        tmp_tape_path.unlink(missing_ok=True)
+
         if result.returncode == 0:
-            # Check if output file was created
             if output_gif.exists():
-                print(f"({output_gif.stat().st_size / 1024:.1f} KB)")
-                return True
-            else:
-                print(f"Error: (GIF not created)")
-                return False
-        else:
-            print(f"Error: (vhs error)")
-            if result.stderr:
-                print(f"    Error: {result.stderr[:100]}")
-            return False
+                return (True, output_gif.stat().st_size / 1024.0, None)
+            return (False, None, "GIF not created")
+        err = (result.stderr or result.stdout or "vhs error")[:200]
+        return (False, None, err.strip() or "vhs error")
     except subprocess.TimeoutExpired:
-        print(f"Error: (timeout)")
         tmp_tape_path.unlink(missing_ok=True)
-        return False
+        return (False, None, "timeout")
     except Exception as e:
-        print(f"Error: ({str(e)})")
         tmp_tape_path.unlink(missing_ok=True)
-        return False
+        return (False, None, str(e))
+
+
+class _ThemeArgs(NamedTuple):
+    tape_path: str
+    theme: str
+    output_dir: str
+    repo_root: str
+    env: dict
+
+
+def _run_one_theme(args: _ThemeArgs) -> tuple[str, bool, float | str]:
+    """Worker entry point for process pool. Returns (theme, success, size_kb or error_str)."""
+    tape_path = Path(args.tape_path)
+    output_dir = Path(args.output_dir)
+    repo_root = Path(args.repo_root)
+    success, size_kb, err = _generate_one_theme_impl(
+        tape_path, args.theme, output_dir, repo_root, args.env
+    )
+    if success:
+        return (args.theme, True, size_kb or 0.0)
+    return (args.theme, False, err or "unknown error")
+
+
+def _progress_bar(current: int, total: int, width: int = 30) -> str:
+    """Return a simple percentage progress bar string."""
+    if total <= 0:
+        pct = 100
+    else:
+        pct = min(100, int(100 * current / total))
+    filled = int(width * current / total) if total else width
+    bar = "=" * filled + "-" * (width - filled)
+    return f"\r  [{bar}] {pct}% ({current}/{total})"
 
 
 def main():
@@ -225,7 +247,8 @@ def main():
         epilog="""
 Examples:
   python generate-themes.py 01-basic-navigation.tape /tmp/theme-demos
-  python generate-themes.py demos/02-querying.tape ./theme-output
+  python generate-themes.py demos/02-querying.tape ./theme-output -n 4
+  python generate-themes.py 01-basic-navigation.tape /tmp/theme-demos --release
         """
     )
     parser.add_argument(
@@ -248,6 +271,19 @@ Examples:
         type=int,
         help='Limit number of themes to process (for testing)'
     )
+    parser.add_argument(
+        '--workers',
+        '-n',
+        type=int,
+        default=os.cpu_count() or 1,
+        metavar='N',
+        help='Number of parallel workers (default: all available cores).'
+    )
+    parser.add_argument(
+        '--release',
+        action='store_true',
+        help='Use release build of datui (cargo build --release).'
+    )
     
     args = parser.parse_args()
     
@@ -260,54 +296,107 @@ Examples:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     
     # Find repo root (assume script is in scripts/demos/)
-    script_dir = Path(__file__).parent
+    script_dir = Path(__file__).parent.resolve()
     repo_root = script_dir.parent.parent
+    
+    if not (repo_root / "Cargo.toml").exists():
+        print("Error: Could not find repository root. Please run from repository root.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Build binary (debug or release)
+    build_type = "release" if args.release else "debug"
+    print(f"Building {build_type} binary...")
+    cargo_args = ["cargo", "build", "--bin", "datui"]
+    if args.release:
+        cargo_args.append("--release")
+    try:
+        subprocess.run(
+            cargo_args,
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Failed to build binary: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    binary_path = repo_root / "target" / build_type / "datui"
+    if not binary_path.exists():
+        print("Error: datui binary not found. Please build it first.", file=sys.stderr)
+        sys.exit(1)
+    
+    binary_dir = str(binary_path.parent)
+    env = os.environ.copy()
+    env["PATH"] = f"{binary_dir}:{env.get('PATH', '')}"
+    if "PS1" in env:
+        del env["PS1"]
     
     # Check if vhs is installed
     try:
-        subprocess.run(['vhs', '--version'], capture_output=True, check=True)
+        subprocess.run(["vhs", "--version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("Error: vhs not found. Please install VHS and ensure it's in your PATH.", file=sys.stderr)
         sys.exit(1)
     
-    # Process themes
     themes_to_process = THEMES
     if args.limit:
         themes_to_process = themes_to_process[:args.limit]
     
-    print(f"Generating GIFs for {len(themes_to_process)} themes...")
-    print(f"Tape file: {args.tape_file}")
-    print(f"Output directory: {args.output_dir}")
-    print()
-    
-    successful = 0
-    failed = 0
-    skipped = 0
-    
-    # Skip existing files by default (unless --force is used)
     skip_existing = not args.force
-    
-    for i, theme in enumerate(themes_to_process, 1):
+    work_list = []
+    skipped = 0
+    for theme in themes_to_process:
         theme_filename = sanitize_filename(theme)
         output_gif = args.output_dir / f"{theme_filename}.gif"
-        
         if skip_existing and output_gif.exists():
-            print(f"  [{i}/{len(themes_to_process)}] Skipping {theme} (already exists)")
             skipped += 1
-            continue
-        
-        print(f"  [{i}/{len(themes_to_process)}] ", end='', flush=True)
-        result = generate_gif_for_theme(args.tape_file, theme, args.output_dir, repo_root, skip_existing)
-        if result is None:
-            skipped += 1
-        elif result:
-            successful += 1
         else:
-            failed += 1
+            work_list.append(_ThemeArgs(
+                tape_path=str(args.tape_file),
+                theme=theme,
+                output_dir=str(args.output_dir),
+                repo_root=str(repo_root),
+                env=env,
+            ))
+    
+    total = len(work_list)
+    workers = min(args.workers, total) if total else 1
+    
+    print(f"Generating GIFs for {len(themes_to_process)} themes ({total} to run, {skipped} skipped).")
+    print(f"Tape file: {args.tape_file}")
+    print(f"Output directory: {args.output_dir}")
+    print(f"Workers: {workers}")
+    print()
+    
+    if total == 0:
+        print("Nothing to do (all outputs already exist; use --force to regenerate).")
+        return
+    
+    successful = 0
+    failed_list = []
+    completed = 0
+    
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_run_one_theme, a): a for a in work_list}
+        for future in as_completed(futures):
+            theme, success, size_or_err = future.result()
+            completed += 1
+            sys.stdout.write(_progress_bar(completed, total))
+            sys.stdout.flush()
+            if success:
+                successful += 1
+            else:
+                failed_list.append((theme, size_or_err))
     
     print()
-    print(f"Complete: {successful} successful, {failed} failed, {skipped} skipped")
+    print(f"Complete: {successful} successful, {len(failed_list)} failed, {skipped} skipped")
     print(f"GIFs saved to: {args.output_dir}")
+    
+    if failed_list:
+        print("\nFailed themes:", file=sys.stderr)
+        for theme, err in failed_list:
+            print(f"  - {theme}: {err}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

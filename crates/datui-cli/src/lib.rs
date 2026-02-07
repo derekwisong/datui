@@ -117,6 +117,16 @@ pub struct Args {
     #[arg(long = "remove-templates", action)]
     pub remove_templates: bool,
 
+    /// When set, datasets with this many or more rows are sampled for analysis (faster, less memory).
+    /// Overrides config [performance] sampling_threshold. Use 0 to disable sampling (full dataset) for this run.
+    /// When omitted, config or full-dataset mode is used.
+    #[arg(long = "sampling-threshold", value_name = "N")]
+    pub sampling_threshold: Option<usize>,
+
+    /// Use Polars streaming engine for LazyFrame collect when available (default: true). Set to false to disable.
+    #[arg(long = "polars-streaming", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    pub polars_streaming: Option<bool>,
+
     /// Number of pages to buffer ahead of the visible area (default: 3)
     /// Larger values provide smoother scrolling but use more memory
     #[arg(long = "pages-lookahead")]

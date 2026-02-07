@@ -80,6 +80,20 @@ Tune performance and responsiveness:
 event_poll_interval_ms = 25  # UI polling interval (lower = more responsive)
 ```
 
+- **event_poll_interval_ms** — UI event polling interval in milliseconds. Lower values feel more responsive but use more CPU.
+
+#### sampling_threshold (optional)
+
+Controls whether [Analysis Mode](../user-guide/analysis-features.md) uses a sample of the data for large datasets. **Default: sampling is off** (full dataset is used).
+
+| Config / CLI | Behavior |
+|--------------|----------|
+| Omit `sampling_threshold` in config (default) | Full dataset is used. No "Resample" keybind or "(sampled)" label. |
+| `sampling_threshold = N` in config | For datasets with ≥ N rows, analysis runs on a sample (faster, less memory). **r** resamples; tool shows "(sampled)". |
+| `--sampling-threshold N` on the command line | Overrides config for that run. Use a positive N to enable sampling, or `0` to force full-dataset analysis. |
+
+Example: to sample only when a table has at least 50,000 rows, set `sampling_threshold = 50000` under `[performance]`, or run `datui --sampling-threshold 50000 …`. See [command-line options](../reference/command-line-options.md) for the CLI flag.
+
 ### Chart View
 
 Default limit for how many rows are used when building chart data (display and export). You can also change this in chart view with the **Limit Rows** option.
@@ -88,10 +102,6 @@ Default limit for how many rows are used when building chart data (display and e
 [chart]
 row_limit = 10000  # Max rows for chart data (1 to 10_000_000). Default 10000
 ```
-
-**Sampling (optional):**
-- **Omit `sampling_threshold`** (default): Analysis uses the full dataset (no sampling). No "Resample" keybind or "(sampled)" label.
-- **Set `sampling_threshold = N`**: For datasets with ≥ N rows, analysis is run on a sample (faster, less memory). You can press **r** to resample; the tool shows "(sampled)".
 
 ### Color Themes
 
@@ -255,42 +265,73 @@ keybind_hints = "blue"
 
 ### Dracula Theme
 
-Complete Dracula color scheme using hex colors:
+Complete Dracula color scheme using the [official palette](https://spec.draculatheme.com/) (hex colors):
 
 ```toml
 version = "0.2"
 
 [theme.colors]
+# Keybinds and UI chrome
 keybind_hints = "#bd93f9"              # Purple
 keybind_labels = "#ff79c6"             # Pink
+throbber = "#bd93f9"                   # Purple
+
+# Chart colors
 primary_chart_series_color = "#bd93f9" # Purple
-secondary_chart_series_color = "#6272a4" # Comment gray
+secondary_chart_series_color = "#6272a4" # Comment
+chart_series_color_1 = "#8be9fd"       # Cyan
+chart_series_color_2 = "#ff79c6"       # Pink
+chart_series_color_3 = "#50fa7b"       # Green
+chart_series_color_4 = "#f1fa8c"       # Yellow
+chart_series_color_5 = "#bd93f9"       # Purple
+chart_series_color_6 = "#ff5555"       # Red
+chart_series_color_7 = "#ffb86c"       # Orange
+
+# Status
 success = "#50fa7b"                    # Green
 error = "#ff5555"                      # Red
 warning = "#ffb86c"                    # Orange
-dimmed = "#6272a4"                     # Comment gray
+dimmed = "#6272a4"                     # Comment
 
-background = "#282a36"                 # Background (Dracula dark)
-surface = "#44475a"                    # Current line
+# Backgrounds
+background = "#282a36"                 # Background
+surface = "#44475a"                    # Selection / current line
 controls_bg = "#44475a"                # Controls bar
 
+# Text
 text_primary = "#f8f8f2"               # Foreground
 text_secondary = "#6272a4"             # Comment
 text_inverse = "#282a36"               # Background (for inverse)
 
+# Table
 table_header = "#f8f8f2"               # Foreground
-table_header_bg = "#44475a"            # Current line
-column_separator = "#bd93f9"            # Purple
+table_header_bg = "#44475a"            # Selection
+row_numbers = "#6272a4"                # Comment
+column_separator = "#bd93f9"           # Purple
 table_selected = "reversed"
+alternate_row_color = "default"        # No stripe (or use "#3d3f4a" for subtle stripe)
 
-sidebar_border = "#6272a4"             # Comment gray
+# Column type colors (when column_colors enabled)
+str_col = "#50fa7b"                    # Green
+int_col = "#8be9fd"                    # Cyan
+float_col = "#bd93f9"                  # Purple
+bool_col = "#f1fa8c"                  # Yellow
+temporal_col = "#ff79c6"               # Pink
+
+# Borders and modals
+sidebar_border = "#6272a4"             # Comment
 modal_border_active = "#ff79c6"        # Pink
 modal_border_error = "#ff5555"         # Red
 
-distribution_normal = "#50fa7b"         # Green
-distribution_skewed = "#ffb86c"         # Orange
-distribution_other = "#f8f8f2"          # Foreground
-outlier_marker = "#ff5555"              # Red
+# Cursor (query input, etc.)
+cursor_focused = "#f8f8f2"             # Foreground
+cursor_dimmed = "#6272a4"              # Comment
+
+# Analysis / distributions
+distribution_normal = "#50fa7b"        # Green
+distribution_skewed = "#ffb86c"        # Orange
+distribution_other = "#f8f8f2"         # Foreground
+outlier_marker = "#ff5555"             # Red
 ```
 
 ### Performance Tuned

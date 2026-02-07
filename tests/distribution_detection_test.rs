@@ -27,6 +27,7 @@ fn test_distribution_detection(column_name: &str, expected_type: DistributionTyp
         include_distribution_analyses: true,
         include_correlation_matrix: false,
         include_skewness_kurtosis_outliers: true,
+        polars_streaming: true,
     };
 
     let results = compute_statistics_with_options(&lf, Some(10000), 42, options)?;

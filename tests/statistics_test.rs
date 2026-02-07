@@ -27,6 +27,7 @@ fn test_distribution_detection_normal() -> Result<()> {
         include_distribution_analyses: true,
         include_correlation_matrix: false,
         include_skewness_kurtosis_outliers: true,
+        polars_streaming: true,
     };
     let results = compute_statistics_with_options(&lf, Some(1000), 42, options)?;
 
@@ -118,6 +119,7 @@ fn test_outlier_detection() -> Result<()> {
         include_distribution_analyses: true,
         include_correlation_matrix: false,
         include_skewness_kurtosis_outliers: true,
+        polars_streaming: true,
     };
     let results = compute_statistics_with_options(&lf, Some(102), 42, options)?;
 

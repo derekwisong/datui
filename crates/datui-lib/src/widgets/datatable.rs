@@ -20,6 +20,7 @@ use crate::error_display::user_message_from_polars;
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 use crate::query::parse_query;
+use crate::statistics::collect_lazy;
 use crate::{CompressionFormat, OpenOptions};
 use polars::lazy::frame::pivot::pivot_stable;
 use std::io::{BufReader, Read};
@@ -101,6 +102,8 @@ pub struct DataTableState {
     pub partition_columns: Option<Vec<String>>,
     /// When set, decompressed CSV was written to this temp file; kept alive so the file exists for lazy scan.
     decompress_temp_file: Option<NamedTempFile>,
+    /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
+    pub polars_streaming: bool,
 }
 
 /// Inferred type for an Excel column (preserves numbers, bools, dates; avoids stringifying).
@@ -121,6 +124,7 @@ impl DataTableState {
         pages_lookback: Option<usize>,
         max_buffered_rows: Option<usize>,
         max_buffered_mb: Option<usize>,
+        polars_streaming: bool,
     ) -> Result<Self> {
         let schema = lf.clone().collect_schema()?;
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
@@ -165,6 +169,7 @@ impl DataTableState {
             last_melt_spec: None,
             partition_columns: None,
             decompress_temp_file: None,
+            polars_streaming,
         })
     }
 
@@ -176,6 +181,7 @@ impl DataTableState {
             options.pages_lookback,
             options.max_buffered_rows,
             options.max_buffered_mb,
+            options.polars_streaming,
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
@@ -243,6 +249,7 @@ impl DataTableState {
             last_melt_spec: None,
             partition_columns,
             decompress_temp_file: None,
+            polars_streaming: options.polars_streaming,
         })
     }
 
@@ -299,14 +306,21 @@ impl DataTableState {
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
+        let path_str = path.as_os_str().to_string_lossy();
+        let is_glob = path_str.contains('*');
         let pl_path = PlPath::Local(Arc::from(path));
-        let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
+        let args = ScanArgsParquet {
+            glob: is_glob,
+            ..Default::default()
+        };
+        let lf = LazyFrame::scan_parquet(pl_path, args)?;
         let mut state = Self::new(
             lf,
             pages_lookahead,
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -350,6 +364,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -374,6 +389,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -417,6 +433,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -442,6 +459,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -485,6 +503,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -536,6 +555,7 @@ impl DataTableState {
                 pages_lookback,
                 max_buffered_rows,
                 max_buffered_mb,
+                true,
             )?;
             state.row_numbers = row_numbers;
             state.row_start_index = row_start_index;
@@ -566,6 +586,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -777,6 +798,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -826,6 +848,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -1293,6 +1316,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -1384,6 +1408,7 @@ impl DataTableState {
                             options.pages_lookback,
                             options.max_buffered_rows,
                             options.max_buffered_mb,
+                            options.polars_streaming,
                         )?;
                         state.row_numbers = options.row_numbers;
                         state.row_start_index = options.row_start_index;
@@ -1417,6 +1442,7 @@ impl DataTableState {
                             options.pages_lookback,
                             options.max_buffered_rows,
                             options.max_buffered_mb,
+                            options.polars_streaming,
                         )?;
                         state.row_numbers = options.row_numbers;
                         state.row_start_index = options.row_start_index;
@@ -1450,6 +1476,7 @@ impl DataTableState {
                             options.pages_lookback,
                             options.max_buffered_rows,
                             options.max_buffered_mb,
+                            options.polars_streaming,
                         )?;
                         state.row_numbers = options.row_numbers;
                         state.row_start_index = options.row_start_index;
@@ -1532,6 +1559,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )
     }
 
@@ -1567,6 +1595,7 @@ impl DataTableState {
             options.pages_lookback,
             options.max_buffered_rows,
             options.max_buffered_mb,
+            options.polars_streaming,
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
@@ -1590,6 +1619,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -1633,6 +1663,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -1703,6 +1734,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -1801,6 +1833,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -1827,6 +1860,7 @@ impl DataTableState {
             pages_lookback,
             max_buffered_rows,
             max_buffered_mb,
+            true,
         )?;
         state.row_numbers = row_numbers;
         state.row_start_index = row_start_index;
@@ -1901,20 +1935,21 @@ impl DataTableState {
 
         // Run len() only when lf has changed (query, filter, sort, pivot, melt, reset, drill).
         if !self.num_rows_valid {
-            self.num_rows = match self.lf.clone().select([len()]).collect() {
-                Ok(df) => {
-                    if let Some(col) = df.get(0) {
-                        if let Some(AnyValue::UInt32(len)) = col.first() {
-                            *len as usize
+            self.num_rows =
+                match collect_lazy(self.lf.clone().select([len()]), self.polars_streaming) {
+                    Ok(df) => {
+                        if let Some(col) = df.get(0) {
+                            if let Some(AnyValue::UInt32(len)) = col.first() {
+                                *len as usize
+                            } else {
+                                0
+                            }
                         } else {
                             0
                         }
-                    } else {
-                        0
                     }
-                }
-                Err(_) => 0,
-            };
+                    Err(_) => 0,
+                };
             self.num_rows_valid = true;
         }
 
@@ -2139,13 +2174,13 @@ impl DataTableState {
             .map(|name| col(name.as_str()))
             .collect();
 
-        let mut full_df = match self
-            .lf
-            .clone()
-            .select(all_columns)
-            .slice(buffer_start as i64, buffer_size as u32)
-            .collect()
-        {
+        let mut full_df = match collect_lazy(
+            self.lf
+                .clone()
+                .select(all_columns)
+                .slice(buffer_start as i64, buffer_size as u32),
+            self.polars_streaming,
+        ) {
             Ok(df) => df,
             Err(e) => {
                 self.error = Some(e);
@@ -2602,7 +2637,7 @@ impl DataTableState {
 
         self.grouped_lf = Some(self.lf.clone());
 
-        let grouped_df = self.lf.clone().collect()?;
+        let grouped_df = collect_lazy(self.lf.clone(), self.polars_streaming)?;
 
         if group_index >= grouped_df.height() {
             return Err(color_eyre::eyre::eyre!("Group index out of bounds"));
@@ -2724,7 +2759,7 @@ impl DataTableState {
     }
 
     pub fn get_analysis_dataframe(&self) -> Result<DataFrame> {
-        Ok(self.lf.clone().collect()?)
+        Ok(collect_lazy(self.lf.clone(), self.polars_streaming)?)
     }
 
     pub fn get_analysis_context(&self) -> crate::statistics::AnalysisContext {
@@ -2744,7 +2779,7 @@ impl DataTableState {
     /// We use pivot_stable for all aggregation types: Polars' non-stable pivot() prints
     /// "unstable pivot not yet supported, using stable pivot" to stdout, which corrupts the TUI.
     pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
-        let df = self.lf.clone().collect()?;
+        let df = collect_lazy(self.lf.clone(), self.polars_streaming)?;
         let agg_expr = pivot_agg_expr(spec.aggregation)?;
         let index_str: Vec<&str> = spec.index.iter().map(|s| s.as_str()).collect();
         let index_opt = if index_str.is_empty() {
@@ -3933,7 +3968,7 @@ mod tests {
     #[test]
     fn test_filter() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let filters = vec![FilterStatement {
             column: "a".to_string(),
             operator: FilterOperator::Gt,
@@ -3949,7 +3984,7 @@ mod tests {
     #[test]
     fn test_sort() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.sort(vec!["a".to_string()], false);
         let df = state.lf.clone().collect().unwrap();
         assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int32(3));
@@ -3958,7 +3993,7 @@ mod tests {
     #[test]
     fn test_query() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.query("select b where a = 2".to_string());
         let df = state.lf.clone().collect().unwrap();
         assert_eq!(df.shape(), (1, 1));
@@ -3981,7 +4016,7 @@ mod tests {
         )
         .unwrap();
         let lf = df.lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
 
         // Select with date accessors
         state.query("select name, year: event_date.year, month: event_date.month".to_string());
@@ -4066,7 +4101,7 @@ mod tests {
     #[test]
     fn test_select_next_previous() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.visible_rows = 10;
         state.table_state.select(Some(5));
 
@@ -4080,7 +4115,7 @@ mod tests {
     #[test]
     fn test_page_up_down() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.visible_rows = 20;
         state.collect();
 
@@ -4098,7 +4133,7 @@ mod tests {
     #[test]
     fn test_scroll_left_right() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         assert_eq!(state.termcol_index, 0);
         state.scroll_right();
         assert_eq!(state.termcol_index, 1);
@@ -4113,7 +4148,7 @@ mod tests {
     #[test]
     fn test_reverse() {
         let lf = create_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.sort(vec!["a".to_string()], true);
         assert_eq!(
             state
@@ -4145,7 +4180,7 @@ mod tests {
     #[test]
     fn test_filter_multiple() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let filters = vec![
             FilterStatement {
                 column: "c".to_string(),
@@ -4168,7 +4203,7 @@ mod tests {
     #[test]
     fn test_filter_and_sort() {
         let lf = create_large_test_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let filters = vec![FilterStatement {
             column: "c".to_string(),
             operator: FilterOperator::Eq,
@@ -4210,7 +4245,7 @@ mod tests {
     #[test]
     fn test_pivot_basic() {
         let lf = create_pivot_long_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let spec = PivotSpec {
             index: vec!["id".to_string(), "date".to_string()],
             pivot_column: "key".to_string(),
@@ -4232,7 +4267,7 @@ mod tests {
     #[test]
     fn test_pivot_aggregation_last() {
         let lf = create_pivot_long_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let spec = PivotSpec {
             index: vec!["id".to_string(), "date".to_string()],
             pivot_column: "key".to_string(),
@@ -4252,7 +4287,7 @@ mod tests {
     #[test]
     fn test_pivot_aggregation_first() {
         let lf = create_pivot_long_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let spec = PivotSpec {
             index: vec!["id".to_string(), "date".to_string()],
             pivot_column: "key".to_string(),
@@ -4270,7 +4305,7 @@ mod tests {
     #[test]
     fn test_pivot_aggregation_min_max() {
         let lf = create_pivot_long_lf();
-        let mut state_min = DataTableState::new(lf.clone(), None, None, None, None).unwrap();
+        let mut state_min = DataTableState::new(lf.clone(), None, None, None, None, true).unwrap();
         state_min
             .pivot(&PivotSpec {
                 index: vec!["id".to_string(), "date".to_string()],
@@ -4286,7 +4321,7 @@ mod tests {
             AnyValue::Float64(10.0)
         );
 
-        let mut state_max = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state_max = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state_max
             .pivot(&PivotSpec {
                 index: vec!["id".to_string(), "date".to_string()],
@@ -4306,7 +4341,7 @@ mod tests {
     #[test]
     fn test_pivot_aggregation_avg_count() {
         let lf = create_pivot_long_lf();
-        let mut state_avg = DataTableState::new(lf.clone(), None, None, None, None).unwrap();
+        let mut state_avg = DataTableState::new(lf.clone(), None, None, None, None, true).unwrap();
         state_avg
             .pivot(&PivotSpec {
                 index: vec!["id".to_string(), "date".to_string()],
@@ -4324,7 +4359,7 @@ mod tests {
             panic!("expected float");
         }
 
-        let mut state_count = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state_count = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state_count
             .pivot(&PivotSpec {
                 index: vec!["id".to_string(), "date".to_string()],
@@ -4348,7 +4383,7 @@ mod tests {
         )
         .unwrap();
         let lf = df.lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let spec = PivotSpec {
             index: vec!["id".to_string()],
             pivot_column: "key".to_string(),
@@ -4371,7 +4406,7 @@ mod tests {
     #[test]
     fn test_melt_basic() {
         let lf = create_melt_wide_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let spec = MeltSpec {
             index: vec!["id".to_string(), "date".to_string()],
             value_columns: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
@@ -4391,7 +4426,7 @@ mod tests {
     #[test]
     fn test_melt_all_except_index() {
         let lf = create_melt_wide_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let spec = MeltSpec {
             index: vec!["id".to_string(), "date".to_string()],
             value_columns: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
@@ -4407,7 +4442,7 @@ mod tests {
     #[test]
     fn test_pivot_on_current_view_after_filter() {
         let lf = create_pivot_long_lf();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.filter(vec![FilterStatement {
             column: "id".to_string(),
             operator: FilterOperator::Eq,
@@ -4513,7 +4548,7 @@ mod tests {
         let lf = df!("a" => &[1i32, 2, 3], "b" => &[10i64, 20, 30])
             .unwrap()
             .lazy();
-        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.fuzzy_search("x".to_string());
         assert!(state.error.is_some());
     }

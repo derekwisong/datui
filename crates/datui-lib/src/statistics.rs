@@ -1,12 +1,39 @@
+use color_eyre::eyre::Report;
 use color_eyre::Result;
 use polars::polars_compute::rolling::QuantileMethod;
 use polars::prelude::*;
 use std::collections::HashMap;
 
+/// Collects a LazyFrame into a DataFrame.
+///
+/// When the `streaming` feature is enabled and `use_streaming` is true, uses the Polars
+/// streaming engine (batch processing, lower memory). Otherwise collects normally.
+/// Returns `PolarsError` so callers that need to display or store the error (e.g.
+/// `DataTableState::error`) can do so without converting.
+pub fn collect_lazy(
+    lf: LazyFrame,
+    use_streaming: bool,
+) -> std::result::Result<DataFrame, PolarsError> {
+    #[cfg(feature = "streaming")]
+    {
+        if use_streaming {
+            lf.with_new_streaming(true).collect()
+        } else {
+            lf.collect()
+        }
+    }
+    #[cfg(not(feature = "streaming"))]
+    {
+        let _ = use_streaming; // ignored when streaming feature is disabled
+        lf.collect()
+    }
+}
+
 /// Default sampling threshold: datasets >= this size are sampled.
 /// Used as fallback when sample_size is None. App uses config value.
 pub const SAMPLING_THRESHOLD: usize = 10_000;
 
+#[derive(Clone)]
 pub struct ColumnStatistics {
     pub name: String,
     pub dtype: DataType,
@@ -17,6 +44,7 @@ pub struct ColumnStatistics {
     pub distribution_info: Option<DistributionInfo>,
 }
 
+#[derive(Clone)]
 pub struct NumericStatistics {
     pub mean: f64,
     pub std: f64,
@@ -32,6 +60,7 @@ pub struct NumericStatistics {
     pub outliers_zscore: usize,
 }
 
+#[derive(Clone)]
 pub struct CategoricalStatistics {
     pub unique_count: usize,
     pub mode: Option<String>,
@@ -40,6 +69,7 @@ pub struct CategoricalStatistics {
     pub max: Option<String>, // Lexicographically largest string
 }
 
+#[derive(Clone)]
 pub struct DistributionInfo {
     pub distribution_type: DistributionType,
     pub confidence: f64,
@@ -193,6 +223,7 @@ impl std::fmt::Display for DistributionType {
     }
 }
 
+#[derive(Clone)]
 pub struct AnalysisResults {
     pub column_statistics: Vec<ColumnStatistics>,
     pub total_rows: usize,
@@ -212,12 +243,26 @@ pub struct AnalysisContext {
     pub group_columns: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct ComputeOptions {
     pub include_distribution_info: bool,
     pub include_distribution_analyses: bool,
     pub include_correlation_matrix: bool,
     pub include_skewness_kurtosis_outliers: bool,
+    /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
+    pub polars_streaming: bool,
+}
+
+impl Default for ComputeOptions {
+    fn default() -> Self {
+        Self {
+            include_distribution_info: false,
+            include_distribution_analyses: false,
+            include_correlation_matrix: false,
+            include_skewness_kurtosis_outliers: false,
+            polars_streaming: true,
+        }
+    }
 }
 
 /// Computes statistics for a LazyFrame with default options.
@@ -248,9 +293,11 @@ pub fn compute_statistics_with_options(
     options: ComputeOptions,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
+    let use_streaming = options.polars_streaming;
     // Always count actual rows, regardless of sample_size parameter
     let total_rows = {
-        let count_df = lf.clone().select([len()]).collect()?;
+        let count_df =
+            collect_lazy(lf.clone().select([len()]), use_streaming).map_err(Report::from)?;
         if let Some(col) = count_df.get(0) {
             if let Some(AnyValue::UInt32(n)) = col.first() {
                 *n as usize
@@ -272,9 +319,9 @@ pub fn compute_statistics_with_options(
     };
 
     let df = if should_sample {
-        sample_dataframe(lf, sampling_threshold, seed)?
+        sample_dataframe(lf, sampling_threshold, seed, use_streaming)?
     } else {
-        lf.clone().collect()?
+        collect_lazy(lf.clone(), use_streaming).map_err(Report::from)?
     };
 
     let mut column_statistics = Vec::new();
@@ -575,22 +622,24 @@ pub fn compute_describe_from_lazy(
     total_rows: usize,
     sample_size: Option<usize>,
     seed: u64,
+    polars_streaming: bool,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
     let should_sample = sample_size.is_some_and(|t| total_rows >= t);
     if should_sample {
         let threshold = sample_size.unwrap();
-        let df = sample_dataframe(lf, threshold, seed)?;
+        let df = sample_dataframe(lf, threshold, seed, polars_streaming)?;
         return compute_describe_single_aggregation(
             &df,
             &schema,
             total_rows,
             Some(threshold),
             seed,
+            polars_streaming,
         );
     }
     let exprs = build_describe_aggregation_exprs(&schema);
-    let agg_df = lf.clone().select(exprs).collect()?;
+    let agg_df = collect_lazy(lf.clone().select(exprs), polars_streaming).map_err(Report::from)?;
     let column_statistics = parse_describe_agg_row(&agg_df, &schema);
     Ok(analysis_results_from_describe(
         column_statistics,
@@ -608,9 +657,11 @@ pub fn compute_describe_single_aggregation(
     total_rows: usize,
     sample_size: Option<usize>,
     sample_seed: u64,
+    polars_streaming: bool,
 ) -> Result<AnalysisResults> {
     let exprs = build_describe_aggregation_exprs(schema);
-    let agg_df = df.clone().lazy().select(exprs).collect()?;
+    let agg_df =
+        collect_lazy(df.clone().lazy().select(exprs), polars_streaming).map_err(Report::from)?;
     let column_statistics = parse_describe_agg_row(&agg_df, schema);
     Ok(analysis_results_from_describe(
         column_statistics,
@@ -654,6 +705,7 @@ pub fn compute_distribution_statistics(
     lf: &LazyFrame,
     sample_size: Option<usize>,
     seed: u64,
+    polars_streaming: bool,
 ) -> Result<()> {
     // sample_size: None = never sample; Some(threshold) = sample when total_rows >= threshold
     let should_sample = sample_size.is_some_and(|t| results.total_rows >= t);
@@ -665,9 +717,9 @@ pub fn compute_distribution_statistics(
     };
 
     let df = if should_sample {
-        sample_dataframe(lf, sampling_threshold, seed)?
+        sample_dataframe(lf, sampling_threshold, seed, polars_streaming)?
     } else {
-        lf.clone().collect()?
+        collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?
     };
 
     for col_stat in &mut results.column_statistics {
@@ -740,28 +792,21 @@ pub fn compute_distribution_statistics(
 }
 
 /// Computes correlation matrix if not already present in results.
-pub fn compute_correlation_statistics(results: &mut AnalysisResults, lf: &LazyFrame) -> Result<()> {
+pub fn compute_correlation_statistics(
+    results: &mut AnalysisResults,
+    lf: &LazyFrame,
+    polars_streaming: bool,
+) -> Result<()> {
     if results.correlation_matrix.is_none() {
-        let df = lf.clone().collect()?;
+        let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
         results.correlation_matrix = compute_correlation_matrix(&df).ok();
     }
     Ok(())
 }
 
+/// Uses Polars' definition so Int128, UInt128, Decimal, and future numeric types are included.
 fn is_numeric_type(dtype: &DataType) -> bool {
-    matches!(
-        dtype,
-        DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float32
-            | DataType::Float64
-    )
+    dtype.is_numeric()
 }
 
 fn is_categorical_type(dtype: &DataType) -> bool {
@@ -769,7 +814,12 @@ fn is_categorical_type(dtype: &DataType) -> bool {
 }
 
 /// Samples a LazyFrame for analysis when row count exceeds threshold. Used by chunked describe.
-pub fn sample_dataframe(lf: &LazyFrame, sample_size: usize, seed: u64) -> Result<DataFrame> {
+pub fn sample_dataframe(
+    lf: &LazyFrame,
+    sample_size: usize,
+    seed: u64,
+    polars_streaming: bool,
+) -> Result<DataFrame> {
     let collect_multiplier = if sample_size <= 1000 {
         5
     } else if sample_size <= 5000 {
@@ -779,7 +829,8 @@ pub fn sample_dataframe(lf: &LazyFrame, sample_size: usize, seed: u64) -> Result
     };
 
     let collect_limit = (sample_size * collect_multiplier).min(50_000);
-    let df = lf.clone().limit(collect_limit as u32).collect()?;
+    let df = collect_lazy(lf.clone().limit(collect_limit as u32), polars_streaming)
+        .map_err(Report::from)?;
     let total_collected = df.height();
 
     if total_collected <= sample_size {

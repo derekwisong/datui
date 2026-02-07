@@ -2,6 +2,10 @@
 
 This page showcases interactive demonstrations of Datui's features.
 
+## Overview
+
+![Overview Demo](demos/11-overview.gif)
+
 ## Navigation
 
 ![Basic Navigation Demo](demos/01-basic-navigation.gif)
@@ -103,6 +107,18 @@ See [Analysis Features](user-guide/analysis-features.md) for details.
 - Exporting the chart to a PNG file
 
 See [Charting](user-guide/charting.md) for more details.
+
+## Overview
+
+![Overview Demo](demos/11-overview.gif)
+
+**What it shows:**
+- Scrolling up and down on a Parquet file (`charting_demo.parquet`)
+- Opening the chart and plotting the stock_market series with date on the x-axis
+- Opening the Analysis page and the Describe tool (column statistics)
+- Returning to the main table and running a query (`select date, stock_market, high_temp where stock_market > 1200`)
+
+A single ~30–45 second tour of table navigation, charting, analysis, and querying.
 
 ---
 

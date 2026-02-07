@@ -16,9 +16,7 @@ Sleep 1s
 Type "a"
 Sleep 1.5s
 
-# Tab to sidebar, then Down twice to Correlation Matrix (Describe -> Distribution -> Correlation Matrix)
-Tab
-Sleep 0.5s
+# Down twice to Correlation Matrix (Describe -> Distribution -> Correlation Matrix), then Enter
 Down
 Sleep 0.5s
 Down

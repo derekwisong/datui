@@ -14,14 +14,15 @@ visibility to your CLI.
 
 ## Demo
 
-![Basic Navigation Demo](demos/01-basic-navigation.gif)
+![Overview Demo](demos/11-overview.gif)
 
 ## Why Datui?
 
-- 🚀 **Fast**: Powered by Polars for optimized data handling
+- 🚀 **Fast**: Powered by Polars streaming expressions for state-of-the-art performance on
+  massive datsets
 - 📁 **Universal**: Supports Parquet, CSV, JSON, Avro, Arrow, ORC, and Excel
 - 🧰 **Flexible**: View data stored locally, on S3, or over HTTP/HTTPS
-- 🔍 **Query Engine**: SQL-like query syntax for selecting, filtering, grouping, and aggregation
+- 🔍 **Queryable**: Fuzzy search or query with SQL or an SQL-like DSL
 - 📊 **Charts**: Render terminal-based charts and export them as images
 - 🔬 **Analysis**: Use analytical tools to understand correlations, distributions, and more
 - ⚒️ **Transformations**: Sort, filter, pivot, melt, and more

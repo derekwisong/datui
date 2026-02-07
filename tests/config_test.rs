@@ -30,7 +30,7 @@ fn test_default_config() {
     // Check theme defaults
     assert_eq!(config.theme.colors.keybind_hints, "cyan");
     assert_eq!(config.theme.colors.row_numbers, "dark_gray");
-    assert_eq!(config.theme.colors.alternate_row_color, "indexed(234)");
+    assert_eq!(config.theme.colors.alternate_row_color, "indexed(235)");
 
     // Check query defaults
     assert_eq!(config.query.history_limit, 1000);
@@ -413,7 +413,7 @@ fn test_new_color_fields() {
     assert_eq!(config.theme.colors.primary_chart_series_color, "cyan");
     assert_eq!(
         config.theme.colors.secondary_chart_series_color,
-        "indexed(235)"
+        "indexed(245)"
     );
     // Chart view series colors
     assert_eq!(config.theme.colors.chart_series_color_1, "cyan");

@@ -4,8 +4,9 @@ Use Datui to get insights about your data.
 
 > If you configure a sampling threshold (see [Configuration](configuration.md)),
 > analysis uses a subset of the data when the dataset is large. In that case the
-> tool shows "(sampled)" and you can press `r` to resample. By default, analysis
-> uses the full dataset (no sampling).
+> tool shows "(sampled)" and you can press `r` to resample.
+> 
+> **By default, analysis uses the full dataset (no sampling).**
 
 ## Starting Analysis Mode
 
@@ -36,3 +37,27 @@ Discover the relationships in your data with the correlation matrix tool. Colors
 the degree of correlation.
 
 ![Correlation Matrix Demo](../demos/09-correlation-matrix.gif)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

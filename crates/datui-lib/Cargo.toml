@@ -11,10 +11,11 @@ license = "MIT"
 path = "src/lib.rs"
 
 [features]
-default = ["cloud", "http", "sql"]
+default = ["cloud", "http", "sql", "streaming"]
 cloud = ["polars/aws", "polars/gcp", "dep:object_store", "dep:tokio"]
 http = ["dep:ureq"]
 sql = ["polars/sql", "dep:polars-sql"]
+streaming = ["polars/new_streaming"]
 
 [dependencies]
 datui-cli = { path = "../datui-cli" }

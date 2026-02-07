@@ -46,7 +46,10 @@ pub struct AnalysisModal {
     pub distribution_table_state: TableState, // For distribution table
     pub correlation_table_state: TableState,  // For correlation matrix
     pub sidebar_state: TableState,            // For sidebar tool list
-    pub analysis_results: Option<AnalysisResults>,
+    /// Cached results per tool; each tool computes and stores its own state independently.
+    pub describe_results: Option<AnalysisResults>,
+    pub distribution_results: Option<AnalysisResults>,
+    pub correlation_results: Option<AnalysisResults>,
     /// When Some, show progress overlay (phase, current/total); in-progress data lives in App.
     pub computing: Option<AnalysisProgress>,
     pub show_help: bool,
@@ -92,6 +95,9 @@ impl AnalysisModal {
         self.selected_correlation = Some((0, 0));
         self.detail_section = 0;
         self.computing = None;
+        self.describe_results = None;
+        self.distribution_results = None;
+        self.correlation_results = None;
         // Generate initial random seed
         self.random_seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -113,6 +119,19 @@ impl AnalysisModal {
         self.selected_correlation = None;
         self.detail_section = 0;
         self.computing = None;
+        self.describe_results = None;
+        self.distribution_results = None;
+        self.correlation_results = None;
+    }
+
+    /// Returns the cached results for the currently selected tool, if any.
+    pub fn current_results(&self) -> Option<&AnalysisResults> {
+        match self.selected_tool {
+            Some(AnalysisTool::Describe) => self.describe_results.as_ref(),
+            Some(AnalysisTool::DistributionAnalysis) => self.distribution_results.as_ref(),
+            Some(AnalysisTool::CorrelationMatrix) => self.correlation_results.as_ref(),
+            None => None,
+        }
     }
 
     pub fn switch_focus(&mut self) {
@@ -163,7 +182,7 @@ impl AnalysisModal {
             && self.selected_tool == Some(AnalysisTool::DistributionAnalysis)
         {
             if let Some(idx) = self.distribution_table_state.selected() {
-                if let Some(results) = &self.analysis_results {
+                if let Some(results) = &self.distribution_results {
                     if let Some(dist_analysis) = results.distribution_analyses.get(idx) {
                         self.selected_theoretical_distribution = dist_analysis.distribution_type;
                     }
@@ -441,7 +460,7 @@ impl AnalysisModal {
 
     pub fn select_distribution(&mut self) {
         if let Some(idx) = self.distribution_selector_state.selected() {
-            if let Some(results) = &self.analysis_results {
+            if let Some(results) = &self.distribution_results {
                 let dist_analysis_idx = self.distribution_table_state.selected().unwrap_or(0);
                 if let Some(dist_analysis) = results.distribution_analyses.get(dist_analysis_idx) {
                     // Use the same distribution list and p-value lookup as the widget

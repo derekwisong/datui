@@ -2,7 +2,7 @@
 
 Once installed, have a look at the [Quick Start Guide](quick-start.md).
 
-## ✨ Quick Install for Linux and MacOS
+## ✨ Quick Install for Linux and macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
@@ -14,19 +14,18 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 
 Download a ready-to-use copy from the [Latest Release][latest-release] on GitHub.
 
-> Datui runs on Linux, MacOS, and Windows
+> Datui runs on Linux, macOS, and Windows
 
 ## Package Managers
 
-### Pip
+### Homebrew (macOS)
 
-Get the module from PyPI and launch Datui right from a Python console.
+Install via the [derekwisong/datui](https://github.com/derekwisong/homebrew-datui) tap:
 
+```bash
+brew tap derekwisong/datui
+brew install datui
 ```
-pip install datui
-```
-
-> See [Python Module](../user-guide/python-module.md).
 
 ### Arch Linux (AUR)
 
@@ -43,6 +42,16 @@ or
 ```bash
 yay -S datui-bin
 ```
+
+### Pip
+
+Get the module from PyPI and launch Datui right from a Python console.
+
+```
+pip install datui
+```
+
+> See [Python Module](../user-guide/python-module.md).
 
 ### RPM-based (Fedora, RedHat)
 

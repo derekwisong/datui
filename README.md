@@ -32,7 +32,7 @@ visibility to your CLI.
 
 See the [Install Guide][install-guide] for full instructions.
 
-### ✨ Quick Install for Linux and MacOS
+### ✨ Quick Install for Linux and macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
@@ -48,10 +48,15 @@ Get the pre-built binary for your platform from the [Latest Release](https://git
 
 > See [Package Managers][pkg-managers]
 
+- **Homebrew (macOS)**:
+  ```bash
+  brew tap derekwisong/datui
+  brew install datui
+  ```
 - **Arch Linux (AUR)**:
   - `paru -S datui-bin`
   - `yay -S datui-bin`
-- **Pip**: `pip install datui`
+- **Pip**: `pip install datui` (See [Python Module][python-module])
 
 
 ### From Source
@@ -125,3 +130,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 [compiling]: https://derekwisong.github.io/datui/latest/getting-started/installation.html#compiling-from-source
 [contributing]: https://derekwisong.github.io/datui/latest/for-developers/contributing.html
 [setup-script]: https://derekwisong.github.io/datui/latest/for-developers/setup-script.html
+[python-module]: https://derekwisong.github.io/datui/latest/user-guide/python-module.html

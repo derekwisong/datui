@@ -93,7 +93,8 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          pip install twine
+          # Twine 6.2+ and packaging 24.2+ support PEP 639 License-File metadata.
+          pip install 'twine>=6.2' 'packaging>=24.2'
           twine upload --skip-existing *.whl
 
       - name: Publish to AUR (datui-bin package)

@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: fedora:40
-      options: --privileged
+      options: --privileged --user 0
     steps:
       - name: One-line install
         run: |
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
-      options: --privileged
+      options: --privileged --user 0
     steps:
       - name: One-line install
         run: |

@@ -1,6 +1,6 @@
 [package]
 name = "datui-pyo3"
-version = "0.2.37"
+version = "0.2.38-dev"
 edition = "2021"
 description = "Python bindings for datui (view LazyFrame in the TUI)"
 

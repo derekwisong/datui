@@ -1,0 +1,25 @@
+# Homebrew formula for datui. Placeholders are substituted by .github/workflows/release.yml
+# when updating the tap: VERSION_PLACEHOLDER, URL_ARM64_PLACEHOLDER, SHA_ARM64_PLACEHOLDER,
+# URL_X64_PLACEHOLDER, SHA_X64_PLACEHOLDER.
+class Datui < Formula
+  desc "Data Exploration in the Terminal"
+  homepage "https://github.com/derekwisong/datui"
+  version "VERSION_PLACEHOLDER"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "URL_ARM64_PLACEHOLDER"
+      sha256 "SHA_ARM64_PLACEHOLDER"
+    end
+    on_intel do
+      url "URL_X64_PLACEHOLDER"
+      sha256 "SHA_X64_PLACEHOLDER"
+    end
+  end
+
+  def install
+    bin.install "datui"
+    man1.install "datui.1"
+  end
+end

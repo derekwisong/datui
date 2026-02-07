@@ -14,7 +14,7 @@ use widgets::info::{
     ParquetMetadataCache,
 };
 
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
@@ -7833,6 +7833,10 @@ impl Widget for &mut App {
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Length(1), Constraint::Length(1)])
                     .split(chunks[0]);
+                let tab_row_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Min(0), Constraint::Max(40)])
+                    .split(tab_line_chunks[0]);
                 let tab_titles = vec!["SQL-Like", "Fuzzy", "SQL"];
                 let tabs = Tabs::new(tab_titles)
                     .style(Style::default().fg(border_c))
@@ -7842,7 +7846,27 @@ impl Widget for &mut App {
                             .add_modifier(Modifier::REVERSED),
                     )
                     .select(self.query_tab.index());
-                tabs.render(tab_line_chunks[0], buf);
+                tabs.render(tab_row_chunks[0], buf);
+                let desc_text = match self.query_tab {
+                    QueryTab::SqlLike => "select [cols] [by ...] [where ...]",
+                    QueryTab::Fuzzy => "Search text to find matching rows",
+                    QueryTab::Sql => {
+                        #[cfg(feature = "sql")]
+                        {
+                            "Table: df"
+                        }
+                        #[cfg(not(feature = "sql"))]
+                        {
+                            ""
+                        }
+                    }
+                };
+                if !desc_text.is_empty() {
+                    Paragraph::new(desc_text)
+                        .style(Style::default().fg(self.color("text_secondary")))
+                        .alignment(Alignment::Right)
+                        .render(tab_row_chunks[1], buf);
+                }
                 let line_style = if tab_bar_focused {
                     Style::default().fg(active_c)
                 } else {
@@ -7859,11 +7883,7 @@ impl Widget for &mut App {
                         if has_error {
                             let body_chunks = Layout::default()
                                 .direction(Direction::Vertical)
-                                .constraints([
-                                    Constraint::Length(1),
-                                    Constraint::Length(1),
-                                    Constraint::Min(1),
-                                ])
+                                .constraints([Constraint::Length(1), Constraint::Min(1)])
                                 .split(chunks[1]);
                             self.query_input
                                 .set_focused(self.query_focus == QueryFocus::Input);
@@ -7871,7 +7891,7 @@ impl Widget for &mut App {
                             Paragraph::new(err_msg)
                                 .style(Style::default().fg(self.color("error")))
                                 .wrap(ratatui::widgets::Wrap { trim: true })
-                                .render(body_chunks[2], buf);
+                                .render(body_chunks[1], buf);
                         } else {
                             self.query_input
                                 .set_focused(self.query_focus == QueryFocus::Input);
@@ -7881,16 +7901,9 @@ impl Widget for &mut App {
                     QueryTab::Fuzzy => {
                         self.query_input.set_focused(false);
                         self.sql_input.set_focused(false);
-                        let body_chunks = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([Constraint::Length(1), Constraint::Length(1)])
-                            .split(chunks[1]);
                         self.fuzzy_input
                             .set_focused(self.query_focus == QueryFocus::Input);
-                        (&self.fuzzy_input).render(body_chunks[0], buf);
-                        Paragraph::new("Tokens AND, case-insensitive (Up/Down: history)")
-                            .style(Style::default().fg(self.color("text_secondary")))
-                            .render(body_chunks[1], buf);
+                        (&self.fuzzy_input).render(chunks[1], buf);
                     }
                     QueryTab::Sql => {
                         self.query_input.set_focused(false);
@@ -7899,33 +7912,19 @@ impl Widget for &mut App {
                             if has_error {
                                 let body_chunks = Layout::default()
                                     .direction(Direction::Vertical)
-                                    .constraints([
-                                        Constraint::Length(1),
-                                        Constraint::Length(1),
-                                        Constraint::Min(1),
-                                    ])
+                                    .constraints([Constraint::Length(1), Constraint::Min(1)])
                                     .split(chunks[1]);
                                 self.sql_input
                                     .set_focused(self.query_focus == QueryFocus::Input);
                                 (&self.sql_input).render(body_chunks[0], buf);
-                                Paragraph::new("Table: df")
-                                    .style(Style::default().fg(self.color("text_secondary")))
-                                    .render(body_chunks[1], buf);
                                 Paragraph::new(err_msg)
                                     .style(Style::default().fg(self.color("error")))
                                     .wrap(ratatui::widgets::Wrap { trim: true })
-                                    .render(body_chunks[2], buf);
+                                    .render(body_chunks[1], buf);
                             } else {
-                                let body_chunks = Layout::default()
-                                    .direction(Direction::Vertical)
-                                    .constraints([Constraint::Length(1), Constraint::Length(1)])
-                                    .split(chunks[1]);
                                 self.sql_input
                                     .set_focused(self.query_focus == QueryFocus::Input);
-                                (&self.sql_input).render(body_chunks[0], buf);
-                                Paragraph::new("Table: df (Up/Down: history)")
-                                    .style(Style::default().fg(self.color("text_secondary")))
-                                    .render(body_chunks[1], buf);
+                                (&self.sql_input).render(chunks[1], buf);
                             }
                         }
                         #[cfg(not(feature = "sql"))]

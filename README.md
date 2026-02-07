@@ -117,10 +117,10 @@ datui --generate-config
 
 ## For Developers
 
-### Environment Setup
+### Setup
 
 See the [Setup Script][setup-script] guide to quickly get configured to run the tests,
-build docs, demos, and create packages builds.
+build docs, demos, and create packages build.
 
 ### Contributing
 

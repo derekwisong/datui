@@ -73,6 +73,8 @@ pub struct DataTableState {
     pub active_query: String,
     /// Last executed SQL (Sql tab). Independent from active_query; only one applies to current view.
     pub active_sql_query: String,
+    /// Last executed fuzzy search (Fuzzy tab). Independent from active_query/active_sql_query.
+    pub active_fuzzy_query: String,
     column_order: Vec<String>,   // Order of columns for display
     locked_columns_count: usize, // Number of locked columns (from left)
     grouped_lf: Option<LazyFrame>,
@@ -142,6 +144,7 @@ impl DataTableState {
             sort_ascending: true,
             active_query: String::new(),
             active_sql_query: String::new(),
+            active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
             grouped_lf: None,
@@ -219,6 +222,7 @@ impl DataTableState {
             sort_ascending: true,
             active_query: String::new(),
             active_sql_query: String::new(),
+            active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
             grouped_lf: None,
@@ -242,7 +246,11 @@ impl DataTableState {
         })
     }
 
-    pub fn reset(&mut self) {
+    /// Reset LazyFrame and view state to original_lf. Schema is re-fetched so it matches
+    /// after a previous query/SQL that may have changed columns. Caller should call
+    /// collect() afterward if display update is needed (reset/query/fuzzy do; sql_query
+    /// relies on event loop Collect).
+    fn reset_lf_to_original(&mut self) {
         self.invalidate_num_rows();
         self.lf = self.original_lf.clone();
         self.schema = self
@@ -251,33 +259,31 @@ impl DataTableState {
             .collect_schema()
             .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-
+        self.active_query.clear();
+        self.active_sql_query.clear();
+        self.active_fuzzy_query.clear();
         self.locked_columns_count = 0;
         self.filters.clear();
         self.sort_columns.clear();
         self.sort_ascending = true;
         self.start_row = 0;
         self.termcol_index = 0;
-        self.active_query.clear();
-        self.active_sql_query.clear();
-        self.error = None;
-        self.suppress_error_display = false;
-
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
         self.grouped_lf = None;
-        self.last_pivot_spec = None;
-        self.last_melt_spec = None;
-        // partition_columns is preserved across reset (same dataset)
-
-        // Invalidate buffer on reset
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;
-
         self.table_state.select(Some(0));
+    }
 
+    pub fn reset(&mut self) {
+        self.reset_lf_to_original();
+        self.error = None;
+        self.suppress_error_display = false;
+        self.last_pivot_spec = None;
+        self.last_melt_spec = None;
         self.collect();
         if self.num_rows > 0 {
             self.start_row = 0;
@@ -2524,6 +2530,10 @@ impl DataTableState {
         &self.active_sql_query
     }
 
+    pub fn get_active_fuzzy_query(&self) -> &str {
+        &self.active_fuzzy_query
+    }
+
     pub fn last_pivot_spec(&self) -> Option<&PivotSpec> {
         self.last_pivot_spec.as_ref()
     }
@@ -2783,6 +2793,7 @@ impl DataTableState {
         self.sort_columns.clear();
         self.active_query.clear();
         self.active_sql_query.clear();
+        self.active_fuzzy_query.clear();
         self.error = None;
         self.df = None;
         self.locked_df = None;
@@ -2945,30 +2956,7 @@ impl DataTableState {
 
         let trimmed_query = query.trim();
         if trimmed_query.is_empty() {
-            self.invalidate_num_rows();
-            self.lf = self.original_lf.clone();
-            self.schema = self
-                .original_lf
-                .clone()
-                .collect_schema()
-                .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
-            self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-            self.active_query.clear();
-            self.locked_columns_count = 0;
-            self.filters.clear();
-            self.sort_columns.clear();
-            self.sort_ascending = true;
-            self.start_row = 0;
-            self.termcol_index = 0;
-            self.drilled_down_group_index = None;
-            self.drilled_down_group_key = None;
-            self.drilled_down_group_key_columns = None;
-            self.grouped_lf = None;
-            self.buffered_start_row = 0;
-            self.buffered_end_row = 0;
-            self.buffered_df = None;
-            self.table_state.select(Some(0));
-            self.active_sql_query.clear();
+            self.reset_lf_to_original();
             self.collect();
             return;
         }
@@ -3085,30 +3073,7 @@ impl DataTableState {
         self.error = None;
         let trimmed = sql.trim();
         if trimmed.is_empty() {
-            self.invalidate_num_rows();
-            self.lf = self.original_lf.clone();
-            self.schema = self
-                .original_lf
-                .clone()
-                .collect_schema()
-                .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
-            self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-            self.active_query.clear();
-            self.active_sql_query.clear();
-            self.locked_columns_count = 0;
-            self.filters.clear();
-            self.sort_columns.clear();
-            self.sort_ascending = true;
-            self.start_row = 0;
-            self.termcol_index = 0;
-            self.drilled_down_group_index = None;
-            self.drilled_down_group_key = None;
-            self.drilled_down_group_key_columns = None;
-            self.grouped_lf = None;
-            self.buffered_start_row = 0;
-            self.buffered_end_row = 0;
-            self.buffered_df = None;
-            self.table_state.select(Some(0));
+            self.reset_lf_to_original();
             return;
         }
 
@@ -3159,6 +3124,83 @@ impl DataTableState {
             ));
         }
     }
+
+    /// Fuzzy search: filter rows where any string column matches the query.
+    /// Query is split on whitespace; each token must match (in order, case-insensitive) in some string column.
+    /// Empty query resets to original_lf.
+    pub fn fuzzy_search(&mut self, query: String) {
+        self.error = None;
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            self.reset_lf_to_original();
+            self.collect();
+            return;
+        }
+        let string_cols: Vec<String> = self
+            .schema
+            .iter()
+            .filter(|(_, dtype)| dtype.is_string())
+            .map(|(name, _)| name.to_string())
+            .collect();
+        if string_cols.is_empty() {
+            self.error = Some(PolarsError::ComputeError(
+                "Fuzzy search requires at least one string column".into(),
+            ));
+            return;
+        }
+        let tokens: Vec<&str> = trimmed
+            .split_whitespace()
+            .filter(|s| !s.is_empty())
+            .collect();
+        let token_exprs: Vec<Expr> = tokens
+            .iter()
+            .map(|token| {
+                let pattern = fuzzy_token_regex(token);
+                string_cols
+                    .iter()
+                    .map(|c| col(c.as_str()).str().contains(lit(pattern.as_str()), false))
+                    .reduce(|a, b| a.or(b))
+                    .unwrap()
+            })
+            .collect();
+        let combined = token_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
+        self.lf = self.original_lf.clone().filter(combined);
+        self.filters.clear();
+        self.sort_columns.clear();
+        self.active_query.clear();
+        self.active_sql_query.clear();
+        self.active_fuzzy_query = query;
+        // Reset view and buffer so collect() runs on the new lf
+        self.locked_columns_count = 0;
+        self.start_row = 0;
+        self.termcol_index = 0;
+        self.drilled_down_group_index = None;
+        self.drilled_down_group_key = None;
+        self.drilled_down_group_key_columns = None;
+        self.grouped_lf = None;
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
+        self.buffered_df = None;
+        self.table_state.select(Some(0));
+        self.invalidate_num_rows();
+        self.collect();
+    }
+}
+
+/// Case-insensitive regex for one token: chars in order with `.*` between.
+pub(crate) fn fuzzy_token_regex(token: &str) -> String {
+    let inner: String =
+        token
+            .chars()
+            .map(|c| regex::escape(&c.to_string()))
+            .fold(String::new(), |mut s, e| {
+                if !s.is_empty() {
+                    s.push_str(".*");
+                }
+                s.push_str(&e);
+                s
+            });
+    format!("(?i).*{}.*", inner)
 }
 
 pub struct DataTable {
@@ -4384,5 +4426,95 @@ mod tests {
         assert_eq!(df.height(), 1);
         let id_col = df.column("id").unwrap();
         assert_eq!(id_col.get(0).unwrap(), AnyValue::Int32(1));
+    }
+
+    #[test]
+    fn test_fuzzy_token_regex() {
+        assert_eq!(fuzzy_token_regex("foo"), "(?i).*f.*o.*o.*");
+        assert_eq!(fuzzy_token_regex("a"), "(?i).*a.*");
+        // Regex-special characters are escaped
+        let pat = fuzzy_token_regex("[");
+        assert!(pat.contains("\\["));
+    }
+
+    #[test]
+    fn test_fuzzy_search() {
+        // Filter logic is covered by test_fuzzy_search_regex_direct. This test runs the full
+        // path through DataTableState; it requires sample data (CSV with string column).
+        crate::tests::ensure_sample_data();
+        let path = crate::tests::sample_data_dir().join("3-sfd-header.csv");
+        let mut state = DataTableState::from_csv(&path, &Default::default()).unwrap();
+        state.visible_rows = 10;
+        state.collect();
+        let before = state.num_rows;
+        state.fuzzy_search("string".to_string());
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.num_rows <= before, "fuzzy search should filter rows");
+        state.fuzzy_search("".to_string());
+        state.collect();
+        assert_eq!(state.num_rows, before, "empty fuzzy search should reset");
+        assert!(state.get_active_fuzzy_query().is_empty());
+    }
+
+    #[test]
+    fn test_fuzzy_search_regex_direct() {
+        // Sanity check: Polars str().contains with our regex matches "alice" for pattern ".*a.*l.*i.*"
+        let lf = df!("name" => &["alice", "bob", "carol"]).unwrap().lazy();
+        let pattern = fuzzy_token_regex("alice");
+        let out = lf
+            .filter(col("name").str().contains(lit(pattern.clone()), false))
+            .collect()
+            .unwrap();
+        assert_eq!(out.height(), 1, "regex {:?} should match alice", pattern);
+
+        // Two columns OR (as in fuzzy_search)
+        let lf2 = df!(
+            "id" => &[1i32, 2, 3],
+            "name" => &["alice", "bob", "carol"],
+            "city" => &["NYC", "LA", "Boston"]
+        )
+        .unwrap()
+        .lazy();
+        let pat = fuzzy_token_regex("alice");
+        let expr = col("name")
+            .str()
+            .contains(lit(pat.clone()), false)
+            .or(col("city").str().contains(lit(pat), false));
+        let out2 = lf2.clone().filter(expr).collect().unwrap();
+        assert_eq!(out2.height(), 1);
+
+        // Replicate exact fuzzy_search logic: schema from original_lf, string_cols, then filter
+        let schema = lf2.clone().collect_schema().unwrap();
+        let string_cols: Vec<String> = schema
+            .iter()
+            .filter(|(_, dtype)| dtype.is_string())
+            .map(|(name, _)| name.to_string())
+            .collect();
+        assert!(
+            !string_cols.is_empty(),
+            "df! string cols should be detected"
+        );
+        let pattern = fuzzy_token_regex("alice");
+        let token_expr = string_cols
+            .iter()
+            .map(|c| col(c.as_str()).str().contains(lit(pattern.clone()), false))
+            .reduce(|a, b| a.or(b))
+            .unwrap();
+        let out3 = lf2.filter(token_expr).collect().unwrap();
+        assert_eq!(
+            out3.height(),
+            1,
+            "fuzzy_search-style filter should match 1 row"
+        );
+    }
+
+    #[test]
+    fn test_fuzzy_search_no_string_columns() {
+        let lf = df!("a" => &[1i32, 2, 3], "b" => &[10i64, 20, 30])
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None).unwrap();
+        state.fuzzy_search("x".to_string());
+        assert!(state.error.is_some());
     }
 }

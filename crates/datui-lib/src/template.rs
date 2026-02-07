@@ -99,6 +99,12 @@ pub struct MatchCriteria {
 pub struct TemplateSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub sql_query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub fuzzy_query: Option<String>,
     pub filters: Vec<FilterStatement>,
     pub sort_columns: Vec<String>,
     pub sort_ascending: bool,
@@ -548,6 +554,23 @@ fn matches_pattern(text: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Old template JSON without sql_query or fuzzy_query deserializes; those fields default to None.
+    #[test]
+    fn test_settings_deserialize_without_sql_fuzzy() {
+        let json = r#"{
+            "query": "select a",
+            "filters": [],
+            "sort_columns": [],
+            "sort_ascending": true,
+            "column_order": ["a", "b"],
+            "locked_columns_count": 0
+        }"#;
+        let settings: TemplateSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.query, Some("select a".to_string()));
+        assert_eq!(settings.sql_query, None);
+        assert_eq!(settings.fuzzy_query, None);
+    }
 
     #[test]
     fn test_matches_pattern() {

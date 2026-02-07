@@ -171,6 +171,24 @@ pub mod tests {
             .join("../..")
             .join("tests/sample-data")
     }
+
+    /// Only one query type is returned; SQL overrides fuzzy over DSL. Used when saving templates.
+    #[test]
+    fn test_active_query_settings_only_one_set() {
+        use super::active_query_settings;
+
+        let (q, sql, fuzzy) = active_query_settings("", "", "");
+        assert!(q.is_none() && sql.is_none() && fuzzy.is_none());
+
+        let (q, sql, fuzzy) = active_query_settings("select a", "SELECT 1", "foo");
+        assert!(q.is_none() && sql.as_deref() == Some("SELECT 1") && fuzzy.is_none());
+
+        let (q, sql, fuzzy) = active_query_settings("select a", "", "foo bar");
+        assert!(q.is_none() && sql.is_none() && fuzzy.as_deref() == Some("foo bar"));
+
+        let (q, sql, fuzzy) = active_query_settings("  select a  ", "", "");
+        assert!(q.as_deref() == Some("select a") && sql.is_none() && fuzzy.is_none());
+    }
 }
 
 #[derive(Clone)]
@@ -393,6 +411,7 @@ pub enum AppEvent {
     Crash(String),
     Search(String),
     SqlSearch(String),
+    FuzzySearch(String),
     Filter(Vec<FilterStatement>),
     Sort(Vec<String>, bool),         // Columns, Ascending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
@@ -607,12 +626,34 @@ struct AnalysisComputationState {
     sample_size: Option<usize>,
 }
 
+/// At most one query type can be active. Returns (query, sql_query, fuzzy_query) with only the
+/// active one set (SQL takes precedence over fuzzy over DSL query). Used when saving template settings.
+fn active_query_settings(
+    dsl_query: &str,
+    sql_query: &str,
+    fuzzy_query: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let sql_trimmed = sql_query.trim();
+    let fuzzy_trimmed = fuzzy_query.trim();
+    let dsl_trimmed = dsl_query.trim();
+    if !sql_trimmed.is_empty() {
+        (None, Some(sql_trimmed.to_string()), None)
+    } else if !fuzzy_trimmed.is_empty() {
+        (None, None, Some(fuzzy_trimmed.to_string()))
+    } else if !dsl_trimmed.is_empty() {
+        (Some(dsl_trimmed.to_string()), None, None)
+    } else {
+        (None, None, None)
+    }
+}
+
 // Helper struct to save state before template application
 struct TemplateApplicationState {
     lf: LazyFrame,
     schema: Arc<Schema>,
     active_query: String,
     active_sql_query: String,
+    active_fuzzy_query: String,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
@@ -694,6 +735,7 @@ pub struct App {
     parquet_metadata_cache: Option<ParquetMetadataCache>,
     query_input: TextInput, // Query input widget with history support
     sql_input: TextInput,   // SQL tab input with its own history (id "sql")
+    fuzzy_input: TextInput, // Fuzzy tab input with its own history (id "fuzzy")
     pub input_mode: InputMode,
     input_type: Option<InputType>,
     query_tab: QueryTab,
@@ -928,6 +970,10 @@ impl App {
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
                 .with_history("sql".to_string()),
+            fuzzy_input: TextInput::new()
+                .with_history_limit(app_config.query.history_limit)
+                .with_theme(&theme)
+                .with_history("fuzzy".to_string()),
             input_mode: InputMode::Normal,
             input_type: None,
             query_tab: QueryTab::SqlLike,
@@ -4502,12 +4548,16 @@ impl App {
                                             template.match_criteria = match_criteria;
                                             // Update settings from current state
                                             if let Some(state) = &self.data_table_state {
+                                                let (query, sql_query, fuzzy_query) =
+                                                    active_query_settings(
+                                                        state.get_active_query(),
+                                                        state.get_active_sql_query(),
+                                                        state.get_active_fuzzy_query(),
+                                                    );
                                                 template.settings = template::TemplateSettings {
-                                                    query: if state.get_active_query().is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(state.get_active_query().to_string())
-                                                    },
+                                                    query,
+                                                    sql_query,
+                                                    fuzzy_query,
                                                     filters: state.get_filters().to_vec(),
                                                     sort_columns: state.get_sort_columns().to_vec(),
                                                     sort_ascending: state.get_sort_ascending(),
@@ -4890,11 +4940,19 @@ impl App {
                                 self.query_input.value = state.get_active_query().to_string();
                                 self.query_input.cursor = self.query_input.value.chars().count();
                                 self.sql_input.set_focused(false);
+                                self.fuzzy_input.set_focused(false);
                                 self.query_input.set_focused(true);
+                            } else if self.query_tab == QueryTab::Fuzzy {
+                                self.fuzzy_input.value = state.get_active_fuzzy_query().to_string();
+                                self.fuzzy_input.cursor = self.fuzzy_input.value.chars().count();
+                                self.query_input.set_focused(false);
+                                self.sql_input.set_focused(false);
+                                self.fuzzy_input.set_focused(true);
                             } else if self.query_tab == QueryTab::Sql {
                                 self.sql_input.value = state.get_active_sql_query().to_string();
                                 self.sql_input.cursor = self.sql_input.value.chars().count();
                                 self.query_input.set_focused(false);
+                                self.fuzzy_input.set_focused(false);
                                 self.sql_input.set_focused(true);
                             }
                         }
@@ -4906,6 +4964,9 @@ impl App {
                             if self.query_tab == QueryTab::SqlLike {
                                 self.query_input.value = state.get_active_query().to_string();
                                 self.query_input.cursor = self.query_input.value.chars().count();
+                            } else if self.query_tab == QueryTab::Fuzzy {
+                                self.fuzzy_input.value = state.get_active_fuzzy_query().to_string();
+                                self.fuzzy_input.cursor = self.fuzzy_input.value.chars().count();
                             } else if self.query_tab == QueryTab::Sql {
                                 self.sql_input.value = state.get_active_sql_query().to_string();
                                 self.sql_input.cursor = self.sql_input.value.chars().count();
@@ -4913,6 +4974,7 @@ impl App {
                         }
                         self.query_input.set_focused(false);
                         self.sql_input.set_focused(false);
+                        self.fuzzy_input.set_focused(false);
                         return None;
                     }
                     if LEFT_KEYS.contains(&event.code) {
@@ -4921,6 +4983,9 @@ impl App {
                             if self.query_tab == QueryTab::SqlLike {
                                 self.query_input.value = state.get_active_query().to_string();
                                 self.query_input.cursor = self.query_input.value.chars().count();
+                            } else if self.query_tab == QueryTab::Fuzzy {
+                                self.fuzzy_input.value = state.get_active_fuzzy_query().to_string();
+                                self.fuzzy_input.cursor = self.fuzzy_input.value.chars().count();
                             } else if self.query_tab == QueryTab::Sql {
                                 self.sql_input.value = state.get_active_sql_query().to_string();
                                 self.sql_input.cursor = self.sql_input.value.chars().count();
@@ -4928,13 +4993,16 @@ impl App {
                         }
                         self.query_input.set_focused(false);
                         self.sql_input.set_focused(false);
+                        self.fuzzy_input.set_focused(false);
                         return None;
                     }
                     if event.code == KeyCode::Esc {
                         self.query_input.clear();
                         self.sql_input.clear();
+                        self.fuzzy_input.clear();
                         self.query_input.set_focused(false);
                         self.sql_input.set_focused(false);
+                        self.fuzzy_input.set_focused(false);
                         self.input_mode = InputMode::Normal;
                         self.input_type = None;
                         if let Some(state) = &mut self.data_table_state {
@@ -4953,6 +5021,7 @@ impl App {
                     self.query_focus = QueryFocus::TabBar;
                     self.query_input.set_focused(false);
                     self.sql_input.set_focused(false);
+                    self.fuzzy_input.set_focused(false);
                     return None;
                 }
 
@@ -4962,6 +5031,7 @@ impl App {
 
                 if self.query_tab == QueryTab::Sql {
                     self.query_input.set_focused(false);
+                    self.fuzzy_input.set_focused(false);
                     self.sql_input.set_focused(true);
                     let result = self.sql_input.handle_key(event, Some(&self.cache));
                     match result {
@@ -4986,11 +5056,39 @@ impl App {
                     return None;
                 }
 
+                if self.query_tab == QueryTab::Fuzzy {
+                    self.query_input.set_focused(false);
+                    self.sql_input.set_focused(false);
+                    self.fuzzy_input.set_focused(true);
+                    let result = self.fuzzy_input.handle_key(event, Some(&self.cache));
+                    match result {
+                        TextInputEvent::Submit => {
+                            let _ = self.fuzzy_input.save_to_history(&self.cache);
+                            let query = self.fuzzy_input.value.clone();
+                            self.fuzzy_input.set_focused(false);
+                            return Some(AppEvent::FuzzySearch(query));
+                        }
+                        TextInputEvent::Cancel => {
+                            self.fuzzy_input.clear();
+                            self.fuzzy_input.set_focused(false);
+                            self.input_mode = InputMode::Normal;
+                            self.input_type = None;
+                            if let Some(state) = &mut self.data_table_state {
+                                state.error = None;
+                                state.suppress_error_display = false;
+                            }
+                        }
+                        TextInputEvent::HistoryChanged | TextInputEvent::None => {}
+                    }
+                    return None;
+                }
+
                 if self.query_tab != QueryTab::SqlLike {
                     return None;
                 }
 
                 self.sql_input.set_focused(false);
+                self.fuzzy_input.set_focused(false);
                 self.query_input.set_focused(true);
                 let result = self.query_input.handle_key(event, Some(&self.cache));
 
@@ -5332,13 +5430,17 @@ impl App {
                     self.query_input.value = state.active_query.clone();
                     self.query_input.cursor = self.query_input.value.chars().count();
                     self.sql_input.value = state.get_active_sql_query().to_string();
+                    self.fuzzy_input.value = state.get_active_fuzzy_query().to_string();
+                    self.fuzzy_input.cursor = self.fuzzy_input.value.chars().count();
                     self.sql_input.cursor = self.sql_input.value.chars().count();
                     state.suppress_error_display = true;
                 } else {
                     self.query_input.clear();
                     self.sql_input.clear();
+                    self.fuzzy_input.clear();
                 }
                 self.sql_input.set_focused(false);
+                self.fuzzy_input.set_focused(false);
                 self.query_input.set_focused(true);
                 None
             }
@@ -6452,6 +6554,24 @@ impl App {
                     None
                 }
             }
+            AppEvent::FuzzySearch(query) => {
+                let fuzzy_succeeded = if let Some(state) = &mut self.data_table_state {
+                    state.fuzzy_search(query.clone());
+                    state.error.is_none()
+                } else {
+                    false
+                };
+                if fuzzy_succeeded {
+                    self.input_mode = InputMode::Normal;
+                    self.fuzzy_input.set_focused(false);
+                    if let Some(state) = &mut self.data_table_state {
+                        state.suppress_error_display = false;
+                    }
+                    Some(AppEvent::Collect)
+                } else {
+                    None
+                }
+            }
             AppEvent::Filter(statements) => {
                 if let Some(state) = &mut self.data_table_state {
                     state.filter(statements.clone());
@@ -7021,6 +7141,7 @@ impl App {
                 schema: state.schema.clone(),
                 active_query: state.active_query.clone(),
                 active_sql_query: state.get_active_sql_query().to_string(),
+                active_fuzzy_query: state.get_active_fuzzy_query().to_string(),
                 filters: state.get_filters().to_vec(),
                 sort_columns: state.get_sort_columns().to_vec(),
                 sort_ascending: state.get_sort_ascending(),
@@ -7030,26 +7151,45 @@ impl App {
         let saved_active_template_id = self.active_template_id.clone();
 
         if let Some(state) = &mut self.data_table_state {
-            // Clear any previous errors
             state.error = None;
 
-            // Apply query if present
-            if let Some(ref query) = template.settings.query {
-                if !query.is_empty() {
-                    state.query(query.clone());
-                    // Check for errors after query
-                    let error_opt = state.error.clone();
-                    if let Some(error) = error_opt {
-                        // End the if let block to drop the borrow
-                        if let Some(saved) = saved_state {
-                            self.restore_state(saved);
-                        }
-                        self.active_template_id = saved_active_template_id;
-                        return Err(color_eyre::eyre::eyre!(
-                            "{}",
-                            crate::error_display::user_message_from_polars(&error)
-                        ));
+            // At most one of SQL or DSL query is stored per template; then fuzzy. Apply in that order.
+            let sql_trimmed = template.settings.sql_query.as_deref().unwrap_or("").trim();
+            let query_opt = template.settings.query.as_deref().filter(|s| !s.is_empty());
+            let fuzzy_trimmed = template
+                .settings
+                .fuzzy_query
+                .as_deref()
+                .unwrap_or("")
+                .trim();
+
+            if !sql_trimmed.is_empty() {
+                state.sql_query(template.settings.sql_query.clone().unwrap_or_default());
+            } else if let Some(q) = query_opt {
+                state.query(q.to_string());
+            }
+            if let Some(error) = state.error.clone() {
+                if let Some(saved) = saved_state {
+                    self.restore_state(saved);
+                }
+                self.active_template_id = saved_active_template_id;
+                return Err(color_eyre::eyre::eyre!(
+                    "{}",
+                    crate::error_display::user_message_from_polars(&error)
+                ));
+            }
+
+            if !fuzzy_trimmed.is_empty() {
+                state.fuzzy_search(template.settings.fuzzy_query.clone().unwrap_or_default());
+                if let Some(error) = state.error.clone() {
+                    if let Some(saved) = saved_state {
+                        self.restore_state(saved);
                     }
+                    self.active_template_id = saved_active_template_id;
+                    return Err(color_eyre::eyre::eyre!(
+                        "{}",
+                        crate::error_display::user_message_from_polars(&error)
+                    ));
                 }
             }
 
@@ -7339,6 +7479,7 @@ impl App {
             state.schema = saved.schema;
             state.active_query = saved.active_query;
             state.active_sql_query = saved.active_sql_query;
+            state.active_fuzzy_query = saved.active_fuzzy_query;
             // Clear error
             state.error = None;
             // Restore private fields using public methods
@@ -7368,12 +7509,15 @@ impl App {
         match_criteria: template::MatchCriteria,
     ) -> Result<template::Template> {
         let settings = if let Some(state) = &self.data_table_state {
+            let (query, sql_query, fuzzy_query) = active_query_settings(
+                state.get_active_query(),
+                state.get_active_sql_query(),
+                state.get_active_fuzzy_query(),
+            );
             template::TemplateSettings {
-                query: if state.get_active_query().is_empty() {
-                    None
-                } else {
-                    Some(state.get_active_query().to_string())
-                },
+                query,
+                sql_query,
+                fuzzy_query,
                 filters: state.get_filters().to_vec(),
                 sort_columns: state.get_sort_columns().to_vec(),
                 sort_ascending: state.get_sort_ascending(),
@@ -7385,6 +7529,8 @@ impl App {
         } else {
             template::TemplateSettings {
                 query: None,
+                sql_query: None,
+                fuzzy_query: None,
                 filters: Vec::new(),
                 sort_columns: Vec::new(),
                 sort_ascending: true,
@@ -7723,9 +7869,16 @@ impl Widget for &mut App {
                     QueryTab::Fuzzy => {
                         self.query_input.set_focused(false);
                         self.sql_input.set_focused(false);
-                        Paragraph::new("Not yet implemented")
+                        let body_chunks = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([Constraint::Length(1), Constraint::Length(1)])
+                            .split(chunks[1]);
+                        self.fuzzy_input
+                            .set_focused(self.query_focus == QueryFocus::Input);
+                        (&self.fuzzy_input).render(body_chunks[0], buf);
+                        Paragraph::new("Tokens AND, case-insensitive (Up/Down: history)")
                             .style(Style::default().fg(self.color("text_secondary")))
-                            .render(chunks[1], buf);
+                            .render(body_chunks[1], buf);
                     }
                     QueryTab::Sql => {
                         self.query_input.set_focused(false);

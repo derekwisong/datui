@@ -5,13 +5,17 @@
 Press **`/`** to open the query prompt. The prompt has three tabs:
 
 - **SQL-Like** — Datui’s built-in query language (described below).
-- **Fuzzy** — Coming soon.
+- **Fuzzy** — Filter rows by typing text; matches any string column, tokens AND, case-insensitive (see [Fuzzy search](#fuzzy-search)).
 - **SQL** — Run standard SQL against the current table (see [Using the SQL tab](#using-the-sql-tab)).
 
 Use **Tab** or **Shift+Tab** (or **Left** / **Right**) to switch tabs. Focus stays on the tab bar when you change tabs; press **Tab** to move focus into the text input for the selected tab.
 
 See the [Query Syntax Reference][query-syntax-reference] for additional detail about the structure
 of SQL-Like queries.
+
+## Fuzzy search
+
+In the **Fuzzy** tab, type text and press **Enter** to filter rows. The search matches **any string column**: characters must appear in order (not necessarily adjacent). Space-separated words are ANDed (each must match). Matching is case-insensitive. **Up** / **Down** — browse fuzzy search history. **Esc** — cancel.
 
 ## Using the SQL tab
 

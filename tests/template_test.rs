@@ -39,6 +39,8 @@ fn test_template_creation() -> Result<()> {
 
     let settings = TemplateSettings {
         query: Some("select a, b".to_string()),
+        sql_query: None,
+        fuzzy_query: None,
         filters: vec![FilterStatement {
             column: "col1".to_string(),
             operator: FilterOperator::Gt,
@@ -95,6 +97,8 @@ fn test_template_serialization() -> Result<()> {
 
     let settings = TemplateSettings {
         query: Some("select a".to_string()),
+        sql_query: None,
+        fuzzy_query: None,
         filters: Vec::new(),
         sort_columns: Vec::new(),
         sort_ascending: true,
@@ -164,6 +168,8 @@ fn test_template_relevance_exact_path() -> Result<()> {
 
     let settings = TemplateSettings {
         query: None,
+        sql_query: None,
+        fuzzy_query: None,
         filters: Vec::new(),
         sort_columns: Vec::new(),
         sort_ascending: true,
@@ -191,5 +197,51 @@ fn test_template_relevance_exact_path() -> Result<()> {
     // Cleanup
     let _ = std::fs::remove_dir_all(&temp_dir);
 
+    Ok(())
+}
+
+/// Template with sql_query and fuzzy_query round-trips correctly.
+#[test]
+fn test_template_serialization_with_sql_and_fuzzy() -> Result<()> {
+    let temp_dir = create_test_temp_dir()?;
+    let config = ConfigManager::with_dir(temp_dir.clone());
+
+    let mut manager = TemplateManager::new(&config)?;
+    let match_criteria = MatchCriteria {
+        exact_path: Some(PathBuf::from("/test/file.csv")),
+        relative_path: None,
+        path_pattern: None,
+        filename_pattern: None,
+        schema_columns: None,
+        schema_types: None,
+    };
+
+    let settings = TemplateSettings {
+        query: None,
+        sql_query: Some("SELECT * FROM df WHERE x > 0".to_string()),
+        fuzzy_query: Some("foo bar".to_string()),
+        filters: Vec::new(),
+        sort_columns: Vec::new(),
+        sort_ascending: true,
+        column_order: vec!["a".to_string(), "b".to_string()],
+        locked_columns_count: 0,
+        pivot: None,
+        melt: None,
+    };
+
+    let template =
+        manager.create_template("sql_fuzzy_test".to_string(), None, match_criteria, settings)?;
+
+    manager.save_template(&template)?;
+    manager.load_templates()?;
+
+    let loaded = manager.get_template_by_name("sql_fuzzy_test").unwrap();
+    assert_eq!(
+        loaded.settings.sql_query,
+        Some("SELECT * FROM df WHERE x > 0".to_string())
+    );
+    assert_eq!(loaded.settings.fuzzy_query, Some("foo bar".to_string()));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
     Ok(())
 }

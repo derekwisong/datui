@@ -3,6 +3,7 @@
 Datui's templates allow you to store the queries, filters, and transformations you
 have applied. This way, you can re-use them with other datasets!
 
+
 ## Creating a Template
 
 1. To save a template, press the `t` key to load the template dialog
@@ -22,3 +23,10 @@ if they can be applied to your loaded dataset. The template dialog will indicate
 the fit with a symbol on the left-most column of the list.
 
 You may automatically load the best-fit template using the `T` (capital-T) keybind.
+
+## Notes
+
+- Templates save at most one *query type* at a time: the **Query** tab (DSL),
+  the **SQL** tab, or the **Fuzzy** tab. Whichever one is active when you save
+  is the one stored. Filters, sort, column order, pivot/melt, and other settings
+  are saved regardless.

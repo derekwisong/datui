@@ -71,6 +71,8 @@ jobs:
       image: archlinux:latest
       options: --privileged --user 0
     steps:
+      - name: Install runtime dependency (fontconfig)
+        run: pacman -Sy --noconfirm fontconfig
       - name: One-line install
         run: |
           curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh

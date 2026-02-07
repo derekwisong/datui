@@ -47,6 +47,7 @@ toml = "0.8"
 [package.metadata.deb]
 maintainer = "Derek Wisong"
 license-file = ["LICENSE", "0"]
+depends = ["libfontconfig1"]
 assets = [
     "$auto",
     ["target/release/datui.1.gz", "usr/share/man/man1/datui.1.gz", "0644"],
@@ -69,7 +70,11 @@ dest = "/usr/share/licenses/datui/LICENSE"
 mode = "0644"
 doc = true
 
+[package.metadata.generate-rpm.requires]
+fontconfig = "*"
+
 [package.metadata.aur]
+depends = ["fontconfig"]
 files = [
     ["target/release/datui.1.gz", "/usr/share/man/man1/datui.1.gz"],
     ["LICENSE", "/usr/share/licenses/datui/LICENSE"],

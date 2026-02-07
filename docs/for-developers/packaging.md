@@ -73,6 +73,8 @@ The same script is used in GitHub Actions:
 Arch users can install from the release tarball:
 
 ```bash
+# Install runtime dependency (required for terminal rendering)
+sudo pacman -S fontconfig
 # Download the tarball from a release, then extract and install
 tar xf datui-X.Y.Z-x86_64.tar.gz
 sudo install -Dm755 datui /usr/bin/datui
@@ -80,7 +82,7 @@ sudo install -Dm644 target/release/datui.1.gz /usr/share/man/man1/datui.1.gz
 sudo install -Dm644 LICENSE /usr/share/licenses/datui/LICENSE
 ```
 
-Or use the included `PKGBUILD` with `makepkg`.
+Or use the included `PKGBUILD` with `makepkg` (it declares `fontconfig` as a dependency).
 
 ### AUR Release Workflow
 

@@ -163,4 +163,6 @@ You can load a Hive-style partitioned dataset (e.g. a directory tree with `key=v
 
 Only Parquet is supported for hive-partitioned loading. If you pass a single file with `--hive`, it is loaded as usual and the flag is ignored.
 
+**Schema from one file (default):** For faster loading, datui infers the Parquet schema from a single file along one partition branch (single-spine) instead of scanning all files. This applies to both local Hive directories and S3/GCS prefixes (e.g. `s3://bucket/prefix/` or `gs://bucket/prefix/`). If your dataset has inconsistent schemas or other complications and you prefer Polars to discover the schema over all files, disable this with `--single-spine-schema=false` or set `single_spine_schema = false` under `[file_loading]` in [configuration](configuration.md).
+
 Partition columns (the keys from the path, e.g. `year`, `month`) are shown first in the table and listed in the Info panel under the **Partitioned data** tab.

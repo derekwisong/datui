@@ -16,6 +16,8 @@ pub struct DebugState {
     pub enabled: bool,
     /// Snapshot of main help flag at render time (set by App when enabled). Used by --debug to verify help state.
     pub show_help_at_render: bool,
+    /// Schema load path taken in DoLoadSchemaBlocking (one-file vs full scan); set when loading Parquet.
+    pub schema_load: Option<String>,
 }
 
 impl DebugState {
@@ -28,15 +30,17 @@ impl DebugState {
 
 impl Widget for &DebugState {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let schema = self.schema_load.as_deref().unwrap_or("-");
         Paragraph::new(format!(
-            "events={} keys={} last_key={} kind={} last_action={} help={} frames={}",
+            "events={} keys={} last_key={} kind={} last_action={} help={} frames={} schema={}",
             self.num_events,
             self.num_key_events,
             self.last_key_event_name,
             self.last_type_name,
             self.last_action,
             self.show_help_at_render,
-            self.num_frames
+            self.num_frames,
+            schema
         ))
         .render(area, buf);
     }

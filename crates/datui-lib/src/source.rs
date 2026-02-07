@@ -54,6 +54,20 @@ pub(crate) fn url_path_extension(url: &str) -> (String, Option<String>) {
     (path_part, ext)
 }
 
+/// For S3/GCS: Polars can only scan Parquet directly. So we pass through only when the path is
+/// Parquet or looks like a directory/glob (no extension, trailing slash, or *). All other paths
+/// (e.g. .csv, .json, .gz, .csv.gz) must be downloaded first.
+/// Returns true when the path should be downloaded to temp instead of passed to Polars.
+pub(crate) fn cloud_path_should_download(ext: Option<&str>, is_glob: bool) -> bool {
+    if is_glob {
+        return false;
+    }
+    match ext {
+        None => false,
+        Some(e) => !e.eq_ignore_ascii_case("parquet"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +147,16 @@ mod tests {
         assert_eq!(ext.as_deref(), Some("parquet"));
         let (_, ext) = url_path_extension("https://x.com/file.csv.gz");
         assert_eq!(ext.as_deref(), Some("gz"));
+    }
+
+    #[test]
+    fn cloud_path_should_download() {
+        assert!(super::cloud_path_should_download(Some("csv"), false));
+        assert!(super::cloud_path_should_download(Some("gz"), false));
+        assert!(super::cloud_path_should_download(Some("csv.gz"), false));
+        assert!(!super::cloud_path_should_download(Some("parquet"), false));
+        assert!(!super::cloud_path_should_download(None, false));
+        assert!(!super::cloud_path_should_download(Some("csv"), true));
+        assert!(!super::cloud_path_should_download(Some("parquet"), true));
     }
 }

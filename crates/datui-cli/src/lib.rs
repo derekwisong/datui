@@ -89,6 +89,10 @@ pub struct Args {
     #[arg(long = "hive", action)]
     pub hive: bool,
 
+    /// Infer Hive/partitioned Parquet schema from one file for faster load (default: true). Set to false to use full schema scan.
+    #[arg(long = "single-spine-schema", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    pub single_spine_schema: Option<bool>,
+
     /// Try to parse CSV string columns as dates (e.g. YYYY-MM-DD, ISO datetime). Default: true
     #[arg(long = "parse-dates", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
     pub parse_dates: Option<bool>,

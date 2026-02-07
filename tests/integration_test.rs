@@ -277,7 +277,10 @@ fn test_open_http_url_attempts_load_or_returns_friendly_error() {
         Some(AppEvent::DoLoadSchema(..)) | Some(AppEvent::DoLoadSchemaBlocking(..)) => {
             // With http feature: download can succeed; schema load is the next phase.
         }
-        _ => panic!("expected Crash or DoLoadSchema when opening HTTP URL"),
+        None => {
+            // DoLoadScanPaths shows download confirmation modal and returns None; app is waiting for user.
+        }
+        _ => panic!("expected Crash, DoLoadSchema, or None (confirmation) when opening HTTP URL"),
     }
 }
 

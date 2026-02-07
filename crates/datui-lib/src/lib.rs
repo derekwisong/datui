@@ -30,6 +30,8 @@ pub mod chart_export;
 pub mod chart_export_modal;
 pub mod chart_modal;
 pub mod cli;
+#[cfg(feature = "cloud")]
+mod cloud_hive;
 pub mod config;
 pub mod error_display;
 pub mod export_modal;
@@ -206,6 +208,8 @@ pub struct OpenOptions {
     pub row_start_index: usize,
     /// When true, use hive load path for directory/glob; single file uses normal load.
     pub hive: bool,
+    /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Caching schema". When false, use Polars collect_schema().
+    pub single_spine_schema: bool,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
     pub parse_dates: bool,
     /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
@@ -238,6 +242,7 @@ impl OpenOptions {
             row_numbers: false,
             row_start_index: 1,
             hive: false,
+            single_spine_schema: true,
             parse_dates: true,
             decompress_in_memory: false,
             temp_dir: None,
@@ -322,6 +327,12 @@ impl OpenOptions {
 
         // Hive partitioning: CLI only (no config option yet)
         opts.hive = args.hive;
+
+        // Single-spine schema: CLI overrides config; default true
+        opts.single_spine_schema = args
+            .single_spine_schema
+            .or(config.file_loading.single_spine_schema)
+            .unwrap_or(true);
 
         // CSV date inference: CLI overrides config; default true
         opts.parse_dates = args
@@ -591,6 +602,30 @@ impl ConfirmationModal {
     }
 }
 
+/// Pending remote download; shown in confirmation modal before starting download.
+#[cfg(any(feature = "http", feature = "cloud"))]
+#[derive(Clone)]
+pub enum PendingDownload {
+    #[cfg(feature = "http")]
+    Http {
+        url: String,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
+    #[cfg(feature = "cloud")]
+    S3 {
+        url: String,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
+    #[cfg(feature = "cloud")]
+    Gcs {
+        url: String,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
+}
+
 #[derive(Clone, Debug, Default)]
 pub enum LoadingState {
     #[default]
@@ -760,6 +795,9 @@ pub struct App {
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
     export_df: Option<DataFrame>,
     pending_chart_export: Option<(PathBuf, ChartExportFormat, String)>,
+    /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation. Size is from HEAD when available.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    pending_download: Option<PendingDownload>,
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
     cache: CacheManager,
@@ -997,6 +1035,8 @@ impl App {
             pending_export: None,
             export_df: None,
             pending_chart_export: None,
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            pending_download: None,
             show_help: false,
             help_scroll: 0,
             cache,
@@ -1516,6 +1556,184 @@ impl App {
         opts
     }
 
+    #[cfg(feature = "cloud")]
+    fn build_s3_object_store(
+        s3_url: &str,
+        cloud: &crate::config::CloudConfig,
+        options: &OpenOptions,
+    ) -> Result<Arc<dyn object_store::ObjectStore>> {
+        let (path_part, _ext) = source::url_path_extension(s3_url);
+        let (bucket, _key) = path_part
+            .split_once('/')
+            .ok_or_else(|| color_eyre::eyre::eyre!("S3 URL must be s3://bucket/key"))?;
+        let mut builder = object_store::aws::AmazonS3Builder::from_env()
+            .with_url(s3_url)
+            .with_bucket_name(bucket);
+        let e = options
+            .s3_endpoint_url_override
+            .as_ref()
+            .or(cloud.s3_endpoint_url.as_ref());
+        let k = options
+            .s3_access_key_id_override
+            .as_ref()
+            .or(cloud.s3_access_key_id.as_ref());
+        let s = options
+            .s3_secret_access_key_override
+            .as_ref()
+            .or(cloud.s3_secret_access_key.as_ref());
+        let r = options
+            .s3_region_override
+            .as_ref()
+            .or(cloud.s3_region.as_ref());
+        if let Some(e) = e {
+            builder = builder.with_endpoint(e);
+        }
+        if let Some(k) = k {
+            builder = builder.with_access_key_id(k);
+        }
+        if let Some(s) = s {
+            builder = builder.with_secret_access_key(s);
+        }
+        if let Some(r) = r {
+            builder = builder.with_region(r);
+        }
+        let store = builder
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
+        Ok(Arc::new(store))
+    }
+
+    #[cfg(feature = "cloud")]
+    fn build_gcs_object_store(gs_url: &str) -> Result<Arc<dyn object_store::ObjectStore>> {
+        let (path_part, _ext) = source::url_path_extension(gs_url);
+        let (bucket, _key) = path_part
+            .split_once('/')
+            .ok_or_else(|| color_eyre::eyre::eyre!("GCS URL must be gs://bucket/key"))?;
+        let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+            .with_url(gs_url)
+            .with_bucket_name(bucket)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
+        Ok(Arc::new(store))
+    }
+
+    /// Human-readable byte size for download confirmation modal.
+    fn format_bytes(n: u64) -> String {
+        const KB: u64 = 1024;
+        const MB: u64 = KB * 1024;
+        const GB: u64 = MB * 1024;
+        const TB: u64 = GB * 1024;
+        if n >= TB {
+            format!("{:.2} TB", n as f64 / TB as f64)
+        } else if n >= GB {
+            format!("{:.2} GB", n as f64 / GB as f64)
+        } else if n >= MB {
+            format!("{:.2} MB", n as f64 / MB as f64)
+        } else if n >= KB {
+            format!("{:.2} KB", n as f64 / KB as f64)
+        } else {
+            format!("{} bytes", n)
+        }
+    }
+
+    #[cfg(feature = "http")]
+    fn fetch_remote_size_http(url: &str) -> Result<Option<u64>> {
+        let response = ureq::request("HEAD", url)
+            .timeout(std::time::Duration::from_secs(15))
+            .call();
+        match response {
+            Ok(r) => Ok(r
+                .header("Content-Length")
+                .and_then(|s| s.parse::<u64>().ok())),
+            Err(_) => Ok(None),
+        }
+    }
+
+    #[cfg(feature = "cloud")]
+    fn fetch_remote_size_s3(
+        s3_url: &str,
+        cloud: &crate::config::CloudConfig,
+        options: &OpenOptions,
+    ) -> Result<Option<u64>> {
+        use object_store::path::Path as OsPath;
+        use object_store::ObjectStore;
+
+        let (path_part, _ext) = source::url_path_extension(s3_url);
+        let (bucket, key) = path_part
+            .split_once('/')
+            .ok_or_else(|| color_eyre::eyre::eyre!("S3 URL must be s3://bucket/key"))?;
+        if key.is_empty() {
+            return Ok(None);
+        }
+        let mut builder = object_store::aws::AmazonS3Builder::from_env()
+            .with_url(s3_url)
+            .with_bucket_name(bucket);
+        let e = options
+            .s3_endpoint_url_override
+            .as_ref()
+            .or(cloud.s3_endpoint_url.as_ref());
+        let k = options
+            .s3_access_key_id_override
+            .as_ref()
+            .or(cloud.s3_access_key_id.as_ref());
+        let s = options
+            .s3_secret_access_key_override
+            .as_ref()
+            .or(cloud.s3_secret_access_key.as_ref());
+        let r = options
+            .s3_region_override
+            .as_ref()
+            .or(cloud.s3_region.as_ref());
+        if let Some(e) = e {
+            builder = builder.with_endpoint(e);
+        }
+        if let Some(k) = k {
+            builder = builder.with_access_key_id(k);
+        }
+        if let Some(s) = s {
+            builder = builder.with_secret_access_key(s);
+        }
+        if let Some(r) = r {
+            builder = builder.with_region(r);
+        }
+        let store = builder
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
+        let path = OsPath::from(key);
+        match rt.block_on(store.head(&path)) {
+            Ok(meta) => Ok(Some(meta.size)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    #[cfg(feature = "cloud")]
+    fn fetch_remote_size_gcs(gs_url: &str, _options: &OpenOptions) -> Result<Option<u64>> {
+        use object_store::path::Path as OsPath;
+        use object_store::ObjectStore;
+
+        let (path_part, _ext) = source::url_path_extension(gs_url);
+        let (bucket, key) = path_part
+            .split_once('/')
+            .ok_or_else(|| color_eyre::eyre::eyre!("GCS URL must be gs://bucket/key"))?;
+        if key.is_empty() {
+            return Ok(None);
+        }
+        let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+            .with_url(gs_url)
+            .with_bucket_name(bucket)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
+        let path = OsPath::from(key);
+        match rt.block_on(store.head(&path)) {
+            Ok(meta) => Ok(Some(meta.size)),
+            Err(_) => Ok(None),
+        }
+    }
+
     #[cfg(feature = "http")]
     fn download_http_to_temp(
         url: &str,
@@ -1709,16 +1927,6 @@ impl App {
                 #[cfg(feature = "cloud")]
                 {
                     let full = format!("s3://{url}");
-                    let (_, ext) = source::url_path_extension(&full);
-                    let is_parquet = ext
-                        .as_ref()
-                        .map(|e| e.eq_ignore_ascii_case("parquet"))
-                        .unwrap_or(false);
-                    if !is_parquet {
-                        return Err(color_eyre::eyre::eyre!(
-                            "S3 non-Parquet is handled in the event loop (download to temp); this path should not be reached."
-                        ));
-                    }
                     let cloud_opts = Self::build_s3_cloud_options(&self.app_config.cloud, options);
                     let pl_path = PlPathRef::new(&full).into_owned();
                     let is_glob = full.contains('*') || full.ends_with('/');
@@ -1753,16 +1961,6 @@ impl App {
                 #[cfg(feature = "cloud")]
                 {
                     let full = format!("gs://{url}");
-                    let (_, ext) = source::url_path_extension(&full);
-                    let is_parquet = ext
-                        .as_ref()
-                        .map(|e| e.eq_ignore_ascii_case("parquet"))
-                        .unwrap_or(false);
-                    if !is_parquet {
-                        return Err(color_eyre::eyre::eyre!(
-                            "GCS non-Parquet is handled in the event loop (download to temp); this path should not be reached."
-                        ));
-                    }
                     let pl_path = PlPathRef::new(&full).into_owned();
                     let is_glob = full.contains('*') || full.ends_with('/');
                     let hive_options = if is_glob {
@@ -2085,12 +2283,48 @@ impl App {
                             self.confirmation_modal.hide();
                             return Some(AppEvent::Export(path, format, options));
                         }
+                        #[cfg(any(feature = "http", feature = "cloud"))]
+                        if let Some(pending) = self.pending_download.take() {
+                            self.confirmation_modal.hide();
+                            if let LoadingState::Loading {
+                                file_path,
+                                file_size,
+                                ..
+                            } = &self.loading_state
+                            {
+                                self.loading_state = LoadingState::Loading {
+                                    file_path: file_path.clone(),
+                                    file_size: *file_size,
+                                    current_phase: "Downloading".to_string(),
+                                    progress_percent: 20,
+                                };
+                            }
+                            return Some(match pending {
+                                #[cfg(feature = "http")]
+                                PendingDownload::Http { url, options, .. } => {
+                                    AppEvent::DoDownloadHttp(url, options)
+                                }
+                                #[cfg(feature = "cloud")]
+                                PendingDownload::S3 { url, options, .. } => {
+                                    AppEvent::DoDownloadS3ToTemp(url, options)
+                                }
+                                #[cfg(feature = "cloud")]
+                                PendingDownload::Gcs { url, options, .. } => {
+                                    AppEvent::DoDownloadGcsToTemp(url, options)
+                                }
+                            });
+                        }
                     } else {
                         // User cancelled: if chart export overwrite, reopen chart export modal with path pre-filled
                         if let Some((path, format, _)) = self.pending_chart_export.take() {
                             self.chart_export_modal.reopen_with_path(&path, format);
                         }
                         self.pending_export = None;
+                        #[cfg(any(feature = "http", feature = "cloud"))]
+                        if self.pending_download.take().is_some() {
+                            self.confirmation_modal.hide();
+                            return Some(AppEvent::Exit);
+                        }
                         self.confirmation_modal.hide();
                     }
                 }
@@ -2100,6 +2334,11 @@ impl App {
                         self.chart_export_modal.reopen_with_path(&path, format);
                     }
                     self.pending_export = None;
+                    #[cfg(any(feature = "http", feature = "cloud"))]
+                    if self.pending_download.take().is_some() {
+                        self.confirmation_modal.hide();
+                        return Some(AppEvent::Exit);
+                    }
                     self.confirmation_modal.hide();
                 }
                 _ => {}
@@ -5667,8 +5906,9 @@ impl App {
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
                 );
                 let is_help_key = key.code == KeyCode::F(1);
-                // When busy (e.g. loading), still process column scroll and F1 so the user can navigate or open help.
-                if self.busy && !is_column_scroll && !is_help_key {
+                // When busy (e.g. loading), still process column scroll, F1, and confirmation modal keys.
+                if self.busy && !is_column_scroll && !is_help_key && !self.confirmation_modal.active
+                {
                     return None;
                 }
                 self.key(key)
@@ -5773,71 +6013,83 @@ impl App {
                 } else {
                     #[cfg(feature = "http")]
                     if let source::InputSource::Http(ref url) = src {
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Downloading".to_string(),
-                                progress_percent: 20,
-                            };
-                        }
-                        return Some(AppEvent::DoDownloadHttp(url.clone(), options.clone()));
+                        let size = Self::fetch_remote_size_http(url).unwrap_or(None);
+                        let size_str = size
+                            .map(Self::format_bytes)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let dest_dir = options
+                            .temp_dir
+                            .as_deref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| std::env::temp_dir().display().to_string());
+                        let message = format!(
+                            "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
+                            url, size_str, dest_dir
+                        );
+                        self.pending_download = Some(PendingDownload::Http {
+                            url: url.clone(),
+                            size,
+                            options: options.clone(),
+                        });
+                        self.confirmation_modal.show(message);
+                        return None;
                     }
                     #[cfg(feature = "cloud")]
                     if let source::InputSource::S3(ref url) = src {
                         let full = format!("s3://{url}");
                         let (_, ext) = source::url_path_extension(&full);
-                        let is_parquet = ext
-                            .as_ref()
-                            .map(|e| e.eq_ignore_ascii_case("parquet"))
-                            .unwrap_or(false);
                         let is_glob = full.contains('*') || full.ends_with('/');
-                        if !is_parquet && !is_glob {
-                            if let LoadingState::Loading {
-                                file_path,
-                                file_size,
-                                ..
-                            } = &self.loading_state
-                            {
-                                self.loading_state = LoadingState::Loading {
-                                    file_path: file_path.clone(),
-                                    file_size: *file_size,
-                                    current_phase: "Downloading".to_string(),
-                                    progress_percent: 20,
-                                };
-                            }
-                            return Some(AppEvent::DoDownloadS3ToTemp(full, options.clone()));
+                        if source::cloud_path_should_download(ext.as_deref(), is_glob) {
+                            let size =
+                                Self::fetch_remote_size_s3(&full, &self.app_config.cloud, options)
+                                    .unwrap_or(None);
+                            let size_str = size
+                                .map(Self::format_bytes)
+                                .unwrap_or_else(|| "unknown".to_string());
+                            let dest_dir = options
+                                .temp_dir
+                                .as_deref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| std::env::temp_dir().display().to_string());
+                            let message = format!(
+                                "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
+                                full, size_str, dest_dir
+                            );
+                            self.pending_download = Some(PendingDownload::S3 {
+                                url: full,
+                                size,
+                                options: options.clone(),
+                            });
+                            self.confirmation_modal.show(message);
+                            return None;
                         }
                     }
                     #[cfg(feature = "cloud")]
                     if let source::InputSource::Gcs(ref url) = src {
                         let full = format!("gs://{url}");
                         let (_, ext) = source::url_path_extension(&full);
-                        let is_parquet = ext
-                            .as_ref()
-                            .map(|e| e.eq_ignore_ascii_case("parquet"))
-                            .unwrap_or(false);
                         let is_glob = full.contains('*') || full.ends_with('/');
-                        if !is_parquet && !is_glob {
-                            if let LoadingState::Loading {
-                                file_path,
-                                file_size,
-                                ..
-                            } = &self.loading_state
-                            {
-                                self.loading_state = LoadingState::Loading {
-                                    file_path: file_path.clone(),
-                                    file_size: *file_size,
-                                    current_phase: "Downloading".to_string(),
-                                    progress_percent: 20,
-                                };
-                            }
-                            return Some(AppEvent::DoDownloadGcsToTemp(full, options.clone()));
+                        if source::cloud_path_should_download(ext.as_deref(), is_glob) {
+                            let size = Self::fetch_remote_size_gcs(&full, options).unwrap_or(None);
+                            let size_str = size
+                                .map(Self::format_bytes)
+                                .unwrap_or_else(|| "unknown".to_string());
+                            let dest_dir = options
+                                .temp_dir
+                                .as_deref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| std::env::temp_dir().display().to_string());
+                            let message = format!(
+                                "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
+                                full, size_str, dest_dir
+                            );
+                            self.pending_download = Some(PendingDownload::Gcs {
+                                url: full,
+                                size,
+                                options: options.clone(),
+                            });
+                            self.confirmation_modal.show(message);
+                            return None;
                         }
                     }
                     let first = paths[0].clone();
@@ -6044,8 +6296,11 @@ impl App {
                 ))
             }
             AppEvent::DoLoadSchemaBlocking(lf, path, options) => {
+                self.debug.schema_load = None;
                 // Fast path for hive directory: infer schema from one parquet file instead of collect_schema() over all files.
-                if path.as_ref().is_some_and(|p| p.is_dir() && options.hive) {
+                if options.single_spine_schema
+                    && path.as_ref().is_some_and(|p| p.is_dir() && options.hive)
+                {
                     let p = path.as_ref().unwrap();
                     if let Ok((merged_schema, partition_columns)) =
                         DataTableState::schema_from_one_hive_parquet(p)
@@ -6060,6 +6315,7 @@ impl App {
                                 Some(partition_columns),
                             ) {
                                 Ok(state) => {
+                                    self.debug.schema_load = Some("one-file (local)".to_string());
                                     self.parquet_metadata_cache = None;
                                     self.export_df = None;
                                     self.data_table_state = Some(state);
@@ -6126,6 +6382,182 @@ impl App {
                     }
                 }
 
+                #[cfg(feature = "cloud")]
+                {
+                    // Use fast path for directory/glob cloud URLs (same as build_lazyframe_from_paths).
+                    // Don't require --hive: path shape already implies hive scan.
+                    if options.single_spine_schema
+                        && path.as_ref().is_some_and(|p| {
+                            let s = p.as_os_str().to_string_lossy();
+                            let is_cloud = s.starts_with("s3://") || s.starts_with("gs://");
+                            let looks_like_hive = s.ends_with('/') || s.contains('*');
+                            is_cloud && (options.hive || looks_like_hive)
+                        })
+                    {
+                        self.debug.schema_load = Some("trying one-file (cloud)".to_string());
+                        let src = source::input_source(path.as_ref().unwrap());
+                        let try_cloud = match &src {
+                            source::InputSource::S3(url) => {
+                                let full = format!("s3://{url}");
+                                let (path_part, _) = source::url_path_extension(&full);
+                                let key = path_part
+                                    .split_once('/')
+                                    .map(|(_, k)| k.trim_end_matches('/'))
+                                    .unwrap_or("");
+                                let cloud_opts =
+                                    Self::build_s3_cloud_options(&self.app_config.cloud, options);
+                                Self::build_s3_object_store(&full, &self.app_config.cloud, options)
+                                    .ok()
+                                    .and_then(|store| {
+                                        let rt = tokio::runtime::Runtime::new().ok()?;
+                                        let (merged_schema, partition_columns) = rt
+                                            .block_on(cloud_hive::schema_from_one_cloud_hive(
+                                                store, key,
+                                            ))
+                                            .ok()?;
+                                        let pl_path = PlPathRef::new(&full).into_owned();
+                                        let args = ScanArgsParquet {
+                                            schema: Some(merged_schema.clone()),
+                                            cloud_options: Some(cloud_opts),
+                                            hive_options: polars::io::HiveOptions::new_enabled(),
+                                            glob: true,
+                                            ..Default::default()
+                                        };
+                                        let mut lf_owned =
+                                            LazyFrame::scan_parquet(pl_path, args).ok()?;
+                                        if !partition_columns.is_empty() {
+                                            let exprs: Vec<_> = partition_columns
+                                                .iter()
+                                                .map(|s| col(s.as_str()))
+                                                .chain(
+                                                    merged_schema
+                                                        .iter_names()
+                                                        .map(|s| s.to_string())
+                                                        .filter(|c| !partition_columns.contains(c))
+                                                        .map(|s| col(s.as_str())),
+                                                )
+                                                .collect();
+                                            lf_owned = lf_owned.select(exprs);
+                                        }
+                                        DataTableState::from_schema_and_lazyframe(
+                                            merged_schema,
+                                            lf_owned,
+                                            options,
+                                            Some(partition_columns),
+                                        )
+                                        .ok()
+                                    })
+                            }
+                            source::InputSource::Gcs(url) => {
+                                let full = format!("gs://{url}");
+                                let (path_part, _) = source::url_path_extension(&full);
+                                let key = path_part
+                                    .split_once('/')
+                                    .map(|(_, k)| k.trim_end_matches('/'))
+                                    .unwrap_or("");
+                                Self::build_gcs_object_store(&full).ok().and_then(|store| {
+                                    let rt = tokio::runtime::Runtime::new().ok()?;
+                                    let (merged_schema, partition_columns) = rt
+                                        .block_on(cloud_hive::schema_from_one_cloud_hive(
+                                            store, key,
+                                        ))
+                                        .ok()?;
+                                    let pl_path = PlPathRef::new(&full).into_owned();
+                                    let args = ScanArgsParquet {
+                                        schema: Some(merged_schema.clone()),
+                                        cloud_options: Some(CloudOptions::default()),
+                                        hive_options: polars::io::HiveOptions::new_enabled(),
+                                        glob: true,
+                                        ..Default::default()
+                                    };
+                                    let mut lf_owned =
+                                        LazyFrame::scan_parquet(pl_path, args).ok()?;
+                                    if !partition_columns.is_empty() {
+                                        let exprs: Vec<_> = partition_columns
+                                            .iter()
+                                            .map(|s| col(s.as_str()))
+                                            .chain(
+                                                merged_schema
+                                                    .iter_names()
+                                                    .map(|s| s.to_string())
+                                                    .filter(|c| !partition_columns.contains(c))
+                                                    .map(|s| col(s.as_str())),
+                                            )
+                                            .collect();
+                                        lf_owned = lf_owned.select(exprs);
+                                    }
+                                    DataTableState::from_schema_and_lazyframe(
+                                        merged_schema,
+                                        lf_owned,
+                                        options,
+                                        Some(partition_columns),
+                                    )
+                                    .ok()
+                                })
+                            }
+                            _ => None,
+                        };
+                        if let Some(state) = try_cloud {
+                            self.debug.schema_load = Some("one-file (cloud)".to_string());
+                            self.parquet_metadata_cache = None;
+                            self.export_df = None;
+                            self.data_table_state = Some(state);
+                            self.path = path.clone();
+                            if let Some(ref path_p) = path {
+                                self.original_file_format =
+                                    path_p.extension().and_then(|e| e.to_str()).and_then(|ext| {
+                                        if ext.eq_ignore_ascii_case("parquet") {
+                                            Some(ExportFormat::Parquet)
+                                        } else if ext.eq_ignore_ascii_case("csv") {
+                                            Some(ExportFormat::Csv)
+                                        } else if ext.eq_ignore_ascii_case("json") {
+                                            Some(ExportFormat::Json)
+                                        } else if ext.eq_ignore_ascii_case("jsonl")
+                                            || ext.eq_ignore_ascii_case("ndjson")
+                                        {
+                                            Some(ExportFormat::Ndjson)
+                                        } else if ext.eq_ignore_ascii_case("arrow")
+                                            || ext.eq_ignore_ascii_case("ipc")
+                                            || ext.eq_ignore_ascii_case("feather")
+                                        {
+                                            Some(ExportFormat::Ipc)
+                                        } else if ext.eq_ignore_ascii_case("avro") {
+                                            Some(ExportFormat::Avro)
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                self.original_file_delimiter =
+                                    Some(options.delimiter.unwrap_or(b','));
+                            } else {
+                                self.original_file_format = None;
+                                self.original_file_delimiter = None;
+                            }
+                            self.sort_filter_modal = SortFilterModal::new();
+                            self.pivot_melt_modal = PivotMeltModal::new();
+                            if let LoadingState::Loading {
+                                file_path,
+                                file_size,
+                                ..
+                            } = &self.loading_state
+                            {
+                                self.loading_state = LoadingState::Loading {
+                                    file_path: file_path.clone(),
+                                    file_size: *file_size,
+                                    current_phase: "Loading buffer".to_string(),
+                                    progress_percent: 70,
+                                };
+                            }
+                            return Some(AppEvent::DoLoadBuffer);
+                        } else {
+                            self.debug.schema_load = Some("fallback (cloud)".to_string());
+                        }
+                    }
+                }
+
+                if self.debug.schema_load.is_none() {
+                    self.debug.schema_load = Some("full scan".to_string());
+                }
                 let mut lf_owned = (**lf).clone();
                 match lf_owned.collect_schema() {
                     Ok(schema) => {

@@ -145,6 +145,7 @@ mod tests {
             generate_config: false,
             force: false,
             hive: false,
+            single_spine_schema: None,
             column_colors: None,
             parse_dates: None,
             decompress_in_memory: None,

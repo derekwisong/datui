@@ -222,6 +222,7 @@ impl ConfigManager {
             "file_loading.has_header",
             "file_loading.skip_lines",
             "file_loading.skip_rows",
+            "file_loading.single_spine_schema",
             "chart.row_limit",
             "ui.controls.custom_controls",
         ];
@@ -463,6 +464,8 @@ pub struct FileLoadingConfig {
     pub decompress_in_memory: Option<bool>,
     /// Directory for decompression temp files. null = system default (e.g. TMPDIR).
     pub temp_dir: Option<String>,
+    /// When true (default), infer Hive/partitioned Parquet schema from one file (single-spine) for faster "Caching schema". When false, use Polars collect_schema() over all files.
+    pub single_spine_schema: Option<bool>,
 }
 
 // Field comments for FileLoadingConfig
@@ -489,6 +492,10 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "temp_dir",
         "Directory for decompression temp files. null = system default (e.g. TMPDIR)",
+    ),
+    (
+        "single_spine_schema",
+        "When true (default), infer Hive/partitioned Parquet schema from one file for faster load. When false, use full schema scan (Polars collect_schema).",
     ),
 ];
 
@@ -1096,6 +1103,9 @@ impl FileLoadingConfig {
         }
         if other.temp_dir.is_some() {
             self.temp_dir = other.temp_dir.clone();
+        }
+        if other.single_spine_schema.is_some() {
+            self.single_spine_schema = other.single_spine_schema;
         }
     }
 }

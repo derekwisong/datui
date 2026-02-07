@@ -1,6 +1,6 @@
 [package]
 name = "datui-cli"
-version = "0.2.38"
+version = "0.2.39-dev"
 edition = "2021"
 description = "Shared CLI definitions for datui (Args, CompressionFormat)"
 

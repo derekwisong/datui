@@ -20,8 +20,6 @@ import glob
 import os
 import subprocess
 import sys
-import tarfile
-import tempfile
 from pathlib import Path
 
 PKG_CHOICES = ("deb", "rpm", "aur")
@@ -112,38 +110,6 @@ def fix_aur_pkgbuild(repo_root: Path) -> bool:
     return True
 
 
-def repack_aur_tarball(tarball_path: Path) -> bool:
-    """Repack AUR tarball without hardlinks so bsdtar (makepkg) can extract it.
-
-    cargo-aur can produce a tarball with LICENSE both as a regular file and as a
-    hardlink. bsdtar fails when the hardlink target is not yet extracted.
-    Copy all members except hardlinks into a new tarball.
-    """
-    fd, tmp_name = tempfile.mkstemp(suffix=".tar.gz", dir=tarball_path.parent)
-    os.close(fd)
-    tmp_path = Path(tmp_name)
-    try:
-        with tarfile.open(tarball_path, "r:gz") as src, tarfile.open(
-            tmp_path, "w:gz"
-        ) as dst:
-            for member in src.getmembers():
-                if member.type == tarfile.LNKTYPE:
-                    continue
-                f = src.extractfile(member)
-                if f is not None:
-                    dst.addfile(member, f)
-                else:
-                    dst.addfile(member)
-        tmp_path.replace(tarball_path)
-        return True
-    except (OSError, tarfile.TarError) as e:
-        sys.stderr.write(f"warning: repack AUR tarball failed: {e}\n")
-        return False
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build OS packages (deb, rpm, aur) for datui.",
@@ -229,8 +195,6 @@ def main() -> int:
     if args.pkg == "aur":
         if not fix_aur_pkgbuild(repo_root):
             sys.stderr.write("warning: failed to fix PKGBUILD for Arch compatibility\n")
-        for tarball in (repo_root / "target" / "cargo-aur").glob("*.tar.gz"):
-            repack_aur_tarball(tarball)
 
     # 6. Verify outputs and print paths
     if out_dir_or_aur == "aur":

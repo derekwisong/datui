@@ -75,7 +75,7 @@ async fn read_schema_from_cloud_parquet(
         .head(path)
         .await
         .map_err(|e| color_eyre::eyre::eyre!("Cloud head failed: {}", e))?;
-    let size = meta.size as u64;
+    let size = meta.size;
     let start = size.saturating_sub(PARQUET_FOOTER_TAIL_BYTES as u64);
     let range = start..size;
     let ranges = store

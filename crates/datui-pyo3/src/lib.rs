@@ -16,24 +16,24 @@ use pyo3::exceptions::{PyFileNotFoundError, PyPermissionError, PyRuntimeError, P
 use pyo3::prelude::*;
 use serde_json::{self, Value};
 
-/// Rewrite path objects from newer Polars JSON format to Rust 0.52 format.
-/// Newer Polars emits `"path": {"inner": "/foo"}`; polars-plan 0.52 expects `"path": {"Local": "/foo"}`.
-/// We only rewrite when the value of key "path" is an object with single key "inner" and string value.
+/// Rewrite path-like objects from newer Polars JSON format to Rust 0.52 format.
+/// Newer Polars emits `{"inner": "/foo"}` (under "path" or other keys); polars-plan 0.52
+/// expects `{"Local": "/foo"}` or `{"Cloud": "..."}`. We recursively rewrite any object
+/// that is exactly `{"inner": "<string>"}` to `{"Local": "<string>"}`.
 fn normalize_lazyframe_json(value: Value) -> Value {
     match value {
         Value::Object(mut map) => {
             let keys: Vec<String> = map.keys().cloned().collect();
             for k in keys {
                 let v = map.get_mut(&k).expect("key exists");
-                if k == "path" {
-                    if let Some(normalized) = normalize_path_value(v.clone()) {
-                        *v = normalized;
-                    }
-                } else {
-                    *v = normalize_lazyframe_json(std::mem::take(v));
+                *v = normalize_lazyframe_json(std::mem::take(v));
+                if let Some(normalized) = normalize_path_value(v.clone()) {
+                    *v = normalized;
                 }
             }
-            Value::Object(map)
+            // Rewrite this object if it is itself {"inner": "<string>"} (e.g. nested path enum).
+            let as_value = Value::Object(map);
+            normalize_path_value(as_value.clone()).unwrap_or(as_value)
         }
         Value::Array(arr) => Value::Array(
             arr.into_iter()

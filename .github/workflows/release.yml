@@ -160,6 +160,9 @@ jobs:
 
       - name: Build tag documentation (skip if cached for same SHA)
         run: |
+          # Stash local changes from wheel build so we can checkout historical tags; pop when done
+          STASHED=0
+          git stash push -m "release wheel build" -- crates/datui-pyo3/Cargo.lock python/LICENSE && STASHED=1 || true
           ORIGINAL_COMMIT=$(git rev-parse HEAD)
           ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           [ -f scripts/docs/build_single_version_docs.py ] || (echo "Error: scripts/docs/build_single_version_docs.py not found" && exit 1)
@@ -185,6 +188,7 @@ jobs:
           done
           CURRENT_COMMIT=$(git rev-parse HEAD)
           [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
+          [ "$STASHED" = 1 ] && git stash pop || true
           rm -rf "$SCRIPT_DIR"
           python3 scripts/docs/rebuild_index.py
 

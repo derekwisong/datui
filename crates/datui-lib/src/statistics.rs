@@ -935,7 +935,7 @@ fn compute_numeric_stats(series: &Series, include_advanced: bool) -> Result<Nume
 
     if !values.is_empty() {
         let mut sorted = values.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let n = sorted.len();
 
         for p in &[1, 5, 25, 50, 75, 95, 99] {
@@ -1369,7 +1369,7 @@ fn approximate_shapiro_wilk(values: &[f64]) -> (Option<f64>, Option<f64>) {
     }
 
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut sum_expected_sq = 0.0;
     let mut sum_data_sq = 0.0;
@@ -1464,7 +1464,7 @@ where
     }
 
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let n = sorted.len();
     let mut max_distance: f64 = 0.0;
@@ -1494,7 +1494,7 @@ fn estimate_power_law_mle(values: &[f64]) -> Option<(f64, f64)> {
     }
 
     let mut sorted = positive_values.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let xmin = sorted[0];
     let sum_log_ratio: f64 = sorted.iter().map(|&x| (x / xmin).ln()).sum();
@@ -1517,7 +1517,7 @@ fn power_law_ks_test(values: &[f64], xmin: f64, alpha: f64) -> f64 {
     if filtered.is_empty() {
         return 1.0;
     }
-    filtered.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    filtered.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     let n = filtered.len();
     let mut max_distance: f64 = 0.0;
@@ -2367,7 +2367,7 @@ fn compute_advanced_distribution_analysis(
     };
 
     // Sort values for Q-Q plot (all data if not sampled, or sampled data if >= threshold)
-    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let sorted_sample_values = values.clone();
     let actual_sample_size = sorted_sample_values.len();
 

@@ -59,7 +59,8 @@ impl ConfigManager {
     pub fn generate_default_config(&self) -> String {
         // Serialize default config to TOML
         let config = AppConfig::default();
-        let toml_str = toml::to_string_pretty(&config).expect("Failed to serialize default config");
+        let toml_str = toml::to_string_pretty(&config)
+            .unwrap_or_else(|e| panic!("Failed to serialize default config: {}", e));
 
         // Build comment map from all struct comment constants
         let comments = Self::collect_all_comments();
@@ -985,12 +986,21 @@ impl AppConfig {
         let mut config = AppConfig::default();
 
         // Try to load user config (if exists)
+        let config_path = ConfigManager::new(app_name)
+            .ok()
+            .map(|m| m.config_path("config.toml"));
         if let Ok(user_config) = Self::load_user_config(app_name) {
             config.merge(user_config);
         }
 
-        // Validate configuration
-        config.validate()?;
+        // Validate configuration (e.g. color names); report config file path on error
+        config.validate().map_err(|e| {
+            let path_hint = config_path
+                .as_ref()
+                .map(|p| format!(" in {}", p.display()))
+                .unwrap_or_default();
+            eyre!("Invalid configuration{}: {}", path_hint, e)
+        })?;
 
         Ok(config)
     }
@@ -1164,12 +1174,17 @@ impl ThemeConfig {
 impl ColorConfig {
     /// Validate all color strings can be parsed
     fn validate(&self, parser: &ColorParser) -> Result<()> {
-        // Helper macro to validate a color field
+        // Helper macro to validate a color field (reports as theme.colors.<name> for config file context)
         macro_rules! validate_color {
             ($field:expr, $name:expr) => {
-                parser
-                    .parse($field)
-                    .map_err(|e| eyre!("Invalid color value for '{}': {}", $name, e))?;
+                parser.parse($field).map_err(|e| {
+                    eyre!(
+                        "theme.colors.{}: {}. Use a valid color name (e.g. red, cyan, bright_red), \
+                         hex (#rrggbb), or indexed(0-255)",
+                        $name,
+                        e
+                    )
+                })?;
             };
         }
 

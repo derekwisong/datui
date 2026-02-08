@@ -991,7 +991,8 @@ impl App {
                 let last_resort = ConfigManager {
                     config_dir: std::env::temp_dir().join("datui_config"),
                 };
-                TemplateManager::new(&last_resort).unwrap()
+                TemplateManager::new(&last_resort)
+                    .unwrap_or_else(|_| TemplateManager::empty(&last_resort))
             })
         });
 
@@ -3384,14 +3385,15 @@ impl App {
                             .take(self.pivot_melt_modal.melt_pattern_cursor - 1)
                             .map(|ch| ch.len_utf8())
                             .sum();
-                        let ch = self.pivot_melt_modal.melt_pattern[prev_byte..]
+                        if let Some(ch) = self.pivot_melt_modal.melt_pattern[prev_byte..]
                             .chars()
                             .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .melt_pattern
-                            .drain(prev_byte..prev_byte + ch.len_utf8());
-                        self.pivot_melt_modal.melt_pattern_cursor -= 1;
+                        {
+                            self.pivot_melt_modal
+                                .melt_pattern
+                                .drain(prev_byte..prev_byte + ch.len_utf8());
+                            self.pivot_melt_modal.melt_pattern_cursor -= 1;
+                        }
                     }
                 }
                 KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern => {
@@ -3404,13 +3406,14 @@ impl App {
                             .take(self.pivot_melt_modal.melt_pattern_cursor)
                             .map(|ch| ch.len_utf8())
                             .sum();
-                        let ch = self.pivot_melt_modal.melt_pattern[byte_pos..]
+                        if let Some(ch) = self.pivot_melt_modal.melt_pattern[byte_pos..]
                             .chars()
                             .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .melt_pattern
-                            .drain(byte_pos..byte_pos + ch.len_utf8());
+                        {
+                            self.pivot_melt_modal
+                                .melt_pattern
+                                .drain(byte_pos..byte_pos + ch.len_utf8());
+                        }
                     }
                 }
                 KeyCode::Home if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName => {
@@ -3442,14 +3445,15 @@ impl App {
                             .take(self.pivot_melt_modal.melt_variable_cursor - 1)
                             .map(|ch| ch.len_utf8())
                             .sum();
-                        let ch = self.pivot_melt_modal.melt_variable_name[prev_byte..]
+                        if let Some(ch) = self.pivot_melt_modal.melt_variable_name[prev_byte..]
                             .chars()
                             .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .melt_variable_name
-                            .drain(prev_byte..prev_byte + ch.len_utf8());
-                        self.pivot_melt_modal.melt_variable_cursor -= 1;
+                        {
+                            self.pivot_melt_modal
+                                .melt_variable_name
+                                .drain(prev_byte..prev_byte + ch.len_utf8());
+                            self.pivot_melt_modal.melt_variable_cursor -= 1;
+                        }
                     }
                 }
                 KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName => {
@@ -3462,13 +3466,14 @@ impl App {
                             .take(self.pivot_melt_modal.melt_variable_cursor)
                             .map(|ch| ch.len_utf8())
                             .sum();
-                        let ch = self.pivot_melt_modal.melt_variable_name[byte_pos..]
+                        if let Some(ch) = self.pivot_melt_modal.melt_variable_name[byte_pos..]
                             .chars()
                             .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .melt_variable_name
-                            .drain(byte_pos..byte_pos + ch.len_utf8());
+                        {
+                            self.pivot_melt_modal
+                                .melt_variable_name
+                                .drain(byte_pos..byte_pos + ch.len_utf8());
+                        }
                     }
                 }
                 KeyCode::Home if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName => {
@@ -3500,14 +3505,15 @@ impl App {
                             .take(self.pivot_melt_modal.melt_value_cursor - 1)
                             .map(|ch| ch.len_utf8())
                             .sum();
-                        let ch = self.pivot_melt_modal.melt_value_name[prev_byte..]
+                        if let Some(ch) = self.pivot_melt_modal.melt_value_name[prev_byte..]
                             .chars()
                             .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .melt_value_name
-                            .drain(prev_byte..prev_byte + ch.len_utf8());
-                        self.pivot_melt_modal.melt_value_cursor -= 1;
+                        {
+                            self.pivot_melt_modal
+                                .melt_value_name
+                                .drain(prev_byte..prev_byte + ch.len_utf8());
+                            self.pivot_melt_modal.melt_value_cursor -= 1;
+                        }
                     }
                 }
                 KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName => {
@@ -3520,13 +3526,14 @@ impl App {
                             .take(self.pivot_melt_modal.melt_value_cursor)
                             .map(|ch| ch.len_utf8())
                             .sum();
-                        let ch = self.pivot_melt_modal.melt_value_name[byte_pos..]
+                        if let Some(ch) = self.pivot_melt_modal.melt_value_name[byte_pos..]
                             .chars()
                             .next()
-                            .unwrap();
-                        self.pivot_melt_modal
-                            .melt_value_name
-                            .drain(byte_pos..byte_pos + ch.len_utf8());
+                        {
+                            self.pivot_melt_modal
+                                .melt_value_name
+                                .drain(byte_pos..byte_pos + ch.len_utf8());
+                        }
                     }
                 }
                 _ => {}
@@ -5914,6 +5921,9 @@ impl App {
                 self.key(key)
             }
             AppEvent::Open(paths, options) => {
+                if paths.is_empty() {
+                    return Some(AppEvent::Crash("No paths provided".to_string()));
+                }
                 #[cfg(feature = "http")]
                 if let Some(ref p) = self.http_temp_path.take() {
                     let _ = std::fs::remove_file(p);
@@ -6301,7 +6311,7 @@ impl App {
                 if options.single_spine_schema
                     && path.as_ref().is_some_and(|p| p.is_dir() && options.hive)
                 {
-                    let p = path.as_ref().unwrap();
+                    let p = path.as_ref().expect("path set by caller");
                     if let Ok((merged_schema, partition_columns)) =
                         DataTableState::schema_from_one_hive_parquet(p)
                     {
@@ -6395,7 +6405,7 @@ impl App {
                         })
                     {
                         self.debug.schema_load = Some("trying one-file (cloud)".to_string());
-                        let src = source::input_source(path.as_ref().unwrap());
+                        let src = source::input_source(path.as_ref().expect("path set by caller"));
                         let try_cloud = match &src {
                             source::InputSource::S3(url) => {
                                 let full = format!("s3://{url}");
@@ -6566,7 +6576,7 @@ impl App {
                                 && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
                         }) {
                             let discovered = DataTableState::discover_hive_partition_columns(
-                                path.as_ref().unwrap(),
+                                path.as_ref().expect("path set by caller"),
                             );
                             discovered
                                 .into_iter()
@@ -7275,19 +7285,31 @@ impl App {
                 });
 
                 let (series_vec, x_axis_kind_export, from_cache) = if cache_matches {
-                    let cache = self.chart_cache.xy.as_ref().unwrap();
-                    let pts = if self.chart_modal.log_scale {
-                        cache.series_log.as_ref().cloned().unwrap_or_else(|| {
-                            cache
-                                .series
-                                .iter()
-                                .map(|s| s.iter().map(|&(x, y)| (x, y.max(0.0).ln_1p())).collect())
-                                .collect()
-                        })
+                    if let Some(cache) = self.chart_cache.xy.as_ref() {
+                        let pts = if self.chart_modal.log_scale {
+                            cache.series_log.as_ref().cloned().unwrap_or_else(|| {
+                                cache
+                                    .series
+                                    .iter()
+                                    .map(|s| {
+                                        s.iter().map(|&(x, y)| (x, y.max(0.0).ln_1p())).collect()
+                                    })
+                                    .collect()
+                            })
+                        } else {
+                            cache.series.clone()
+                        };
+                        (pts, cache.x_axis_kind, true)
                     } else {
-                        cache.series.clone()
-                    };
-                    (pts, cache.x_axis_kind, true)
+                        let r = chart_data::prepare_chart_data(
+                            &state.lf,
+                            &state.schema,
+                            x_column,
+                            &y_columns,
+                            row_limit,
+                        )?;
+                        (r.series, r.x_axis_kind, false)
+                    }
                 } else {
                     let r = chart_data::prepare_chart_data(
                         &state.lf,
@@ -8482,7 +8504,7 @@ impl Widget for &mut App {
 
                 let op_name = FilterOperator::iterator()
                     .nth(self.sort_filter_modal.filter.new_operator_idx)
-                    .unwrap()
+                    .unwrap_or(FilterOperator::Eq)
                     .as_str();
                 let op_style = if self.sort_filter_modal.filter.focus == FilterFocus::Operator {
                     Style::default().fg(active_c)
@@ -8516,7 +8538,7 @@ impl Widget for &mut App {
 
                 let log_name = LogicalOperator::iterator()
                     .nth(self.sort_filter_modal.filter.new_logical_idx)
-                    .unwrap()
+                    .unwrap_or(LogicalOperator::And)
                     .as_str();
                 let log_style = if self.sort_filter_modal.filter.focus == FilterFocus::Logical {
                     Style::default().fg(active_c)
@@ -10551,40 +10573,33 @@ pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()
     use std::io::Write;
     use std::sync::{mpsc, Mutex, Once};
 
-    let config = config.unwrap_or_else(|| {
-        AppConfig::load(APP_NAME).unwrap_or_else(|e| {
-            eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
-            AppConfig::default()
-        })
-    });
+    let config = match config {
+        Some(c) => c,
+        None => AppConfig::load(APP_NAME)?,
+    };
 
-    let theme = Theme::from_config(&config.theme).unwrap_or_else(|e| {
-        eprintln!(
-            "Warning: Failed to create theme from config: {}. Using default theme.",
-            e
-        );
-        Theme::from_config(&AppConfig::default().theme)
-            .expect("Default theme should always be valid")
-    });
+    let theme = Theme::from_config(&config.theme)
+        .or_else(|e| Theme::from_config(&AppConfig::default().theme).map_err(|_| e))?;
 
     // Install color_eyre at most once per process (e.g. first datui.view() in Python).
     // Subsequent run() calls skip install and reuse the result; no error-message detection.
     static COLOR_EYRE_INIT: Once = Once::new();
     static INSTALL_RESULT: Mutex<Option<Result<(), color_eyre::Report>>> = Mutex::new(None);
     COLOR_EYRE_INIT.call_once(|| {
-        *INSTALL_RESULT.lock().expect("color_eyre install mutex") = Some(color_eyre::install());
+        *INSTALL_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some(color_eyre::install());
     });
     if let Some(Err(e)) = INSTALL_RESULT
         .lock()
-        .expect("color_eyre install mutex")
+        .unwrap_or_else(|e| e.into_inner())
         .as_ref()
     {
         return Err(color_eyre::eyre::eyre!(e.to_string()));
     }
-    // Validate every local path before initing the terminal so the Python binding can raise
-    // FileNotFoundError (no TTY required). Otherwise multi-path load failures become
-    // AppEvent::Crash(msg) and return Err(eyre!(msg)) with no io::Error in the chain → RuntimeError.
+    // Require at least one path so event handlers can safely use paths[0].
     if let RunInput::Paths(ref paths, _) = input {
+        if paths.is_empty() {
+            return Err(color_eyre::eyre::eyre!("At least one path is required"));
+        }
         for path in paths {
             let s = path.to_string_lossy();
             let is_remote = s.starts_with("s3://")

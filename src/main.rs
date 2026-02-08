@@ -91,10 +91,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut config = AppConfig::load(APP_NAME).unwrap_or_else(|e| {
-        eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
-        AppConfig::default()
-    });
+    let mut config = match AppConfig::load(APP_NAME) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "Error: {}",
+                error_display::user_message_from_report(&e, None)
+            );
+            eprintln!("Fix the configuration and try again, or remove/rename the config file to use defaults.");
+            std::process::exit(1);
+        }
+    };
 
     if let Some(cc) = args.column_colors {
         config.display.column_colors = cc;

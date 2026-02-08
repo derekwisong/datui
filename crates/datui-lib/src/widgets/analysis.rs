@@ -222,227 +222,224 @@ impl<'a> AnalysisWidget<'a> {
             selected_idx.and_then(|idx| results.distribution_analyses.get(idx))
         });
 
-        if dist_analysis.is_none() {
+        if let Some(dist) = dist_analysis {
+            // Layout: breadcrumb, main content (no keybind hints line)
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Breadcrumb
+                    Constraint::Fill(1),   // Main content
+                ])
+                .split(area);
+
+            // Breadcrumb with column name and Escape hint on top right
+            // Split breadcrumb area into left (title) and right (Escape hint)
+            let breadcrumb_layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Fill(1),   // Title on left
+                    Constraint::Length(8), // Escape hint on right ("Esc Back" = 8 chars)
+                ])
+                .split(layout[0]);
+
+            let title_text = format!("Distribution Analysis: {}", dist.column_name);
+            let header_row_style = header_style(self.theme, "controls_bg", "table_header");
+            Paragraph::new(title_text)
+                .style(header_row_style)
+                .render(breadcrumb_layout[0], buf);
+
+            Paragraph::new("Esc Back")
+                .style(header_row_style)
+                .right_aligned()
+                .render(breadcrumb_layout[1], buf);
+
+            // Main content area - optimized layout
+            // Split into: condensed stats header, charts and selector area
+            let main_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1), // Condensed stats header (single line)
+                    Constraint::Fill(1),   // Charts and selector
+                ])
+                .split(layout[1]);
+
+            // Condensed header: Key statistics in one or two lines
+            // Use selected theoretical distribution type (dynamic)
+            render_condensed_statistics(
+                dist,
+                self.selected_theoretical_distribution,
+                main_layout[0],
+                buf,
+                self.theme,
+            );
+
+            // Split charts and selector horizontally
+            let content_layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(75), // Q-Q plot and histogram
+                    Constraint::Percentage(25), // Distribution selector and settings
+                ])
+                .split(main_layout[1]);
+
+            // Right side: Split into distribution selector and settings
+            let right_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Fill(1),   // Distribution selector (takes remaining space)
+                    Constraint::Length(4), // Settings box (4 lines: border + 2 content + border)
+                ])
+                .split(content_layout[1]);
+
+            // Left side: Q-Q plot and histogram with spacing
+            let charts_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(52), // Q-Q plot (slightly reduced to make room for spacing)
+                    Constraint::Length(1),      // Vertical spacing between charts
+                    Constraint::Percentage(47), // Histogram (slightly reduced to make room for spacing)
+                ])
+                .split(content_layout[0]);
+
+            // Add padding around chart areas for better visual separation
+            let chart_padding = 1u16; // 1 character padding on all sides
+            let right_padding_extra = 1u16; // Extra padding on right side to separate from distribution box
+            let top_padding_extra = 1u16; // Extra padding at top to separate title from chart
+            let qq_plot_area = Rect::new(
+                charts_layout[0].left() + chart_padding,
+                charts_layout[0].top() + chart_padding + top_padding_extra, // Extra top padding
+                charts_layout[0]
+                    .width
+                    .saturating_sub(chart_padding) // Left padding
+                    .saturating_sub(right_padding_extra), // Extra right padding
+                charts_layout[0]
+                    .height
+                    .saturating_sub(chart_padding * 2)
+                    .saturating_sub(top_padding_extra), // Account for extra top padding
+            );
+            let histogram_area = Rect::new(
+                charts_layout[2].left() + chart_padding,
+                charts_layout[2].top() + chart_padding + top_padding_extra, // Extra top padding
+                charts_layout[2]
+                    .width
+                    .saturating_sub(chart_padding) // Left padding
+                    .saturating_sub(right_padding_extra), // Extra right padding
+                charts_layout[2]
+                    .height
+                    .saturating_sub(chart_padding * 2)
+                    .saturating_sub(top_padding_extra), // Account for extra top padding
+            );
+
+            // Calculate maximum label width for both charts to ensure alignment
+            // This needs to account for both Q-Q plot labels (data values) and histogram labels (counts)
+            let sorted_data = &dist.sorted_sample_values;
+            let max_label_width = if sorted_data.is_empty() {
+                1
+            } else {
+                let data_min = sorted_data[0];
+                let data_max = sorted_data[sorted_data.len() - 1];
+
+                // Q-Q plot labels: data_min, (data_min+data_max)/2, data_max formatted as {:.1}
+                let qq_label_bottom = format!("{:.1}", data_min);
+                let qq_label_mid = format!("{:.1}", (data_min + data_max) / 2.0);
+                let qq_label_top = format!("{:.1}", data_max);
+                let qq_max_width = qq_label_bottom
+                    .chars()
+                    .count()
+                    .max(qq_label_mid.chars().count())
+                    .max(qq_label_top.chars().count());
+
+                // Histogram labels: 0, global_max/2, global_max (formatted as integers)
+                // We need to estimate global_max - it's roughly the max of data bin counts and theory bin counts
+                // For estimation, use the data size as a proxy for maximum counts
+                let estimated_global_max = sorted_data.len();
+                let hist_label_0 = format!("{}", 0);
+                let hist_label_mid = format!("{}", estimated_global_max / 2);
+                let hist_label_max = format!("{}", estimated_global_max);
+                let hist_max_width = hist_label_0
+                    .chars()
+                    .count()
+                    .max(hist_label_mid.chars().count())
+                    .max(hist_label_max.chars().count());
+
+                // Use the maximum of both, adding 1 for padding
+                qq_max_width.max(hist_max_width)
+            };
+
+            let shared_y_axis_label_width = (max_label_width as u16).max(1) + 1; // Max label width + 1 char padding
+
+            // Calculate unified X-axis range for visual alignment between Q-Q plot and histogram
+            // This ensures both charts use the same X-axis scale for easy comparison
+            // Calculate unified X-axis range for both Q-Q plot and histogram
+            // Use ONLY actual data range (no padding, no theoretical extensions)
+            // This ensures log scale works correctly and both charts stay in sync
+            let unified_x_range = if !sorted_data.is_empty() {
+                let data_min = sorted_data[0];
+                let data_max = sorted_data[sorted_data.len() - 1];
+                // Use strict data range - no padding, no theoretical extensions
+                (data_min, data_max)
+            } else {
+                (0.0, 1.0) // Fallback for empty data
+            };
+
+            // Q-Q plot approximation (larger, better aspect ratio)
+            // Use selected theoretical distribution from selector
+            render_qq_plot(
+                dist,
+                self.selected_theoretical_distribution,
+                qq_plot_area,
+                buf,
+                shared_y_axis_label_width,
+                self.theme,
+                Some(unified_x_range),
+            );
+
+            // Histogram comparison (vertical bars)
+            // Use selected theoretical distribution from selector
+            // Check if log scale is requested but can't be used
+            // Use actual data values, not unified range (which may include theoretical bounds and padding)
+            let sorted_data = &dist.sorted_sample_values;
+            let can_use_log_scale = !sorted_data.is_empty() && sorted_data.iter().all(|&v| v > 0.0);
+            let log_scale_requested_but_unavailable =
+                matches!(self.histogram_scale, HistogramScale::Log) && !can_use_log_scale;
+
+            let histogram_config = HistogramRenderConfig {
+                dist,
+                dist_type: self.selected_theoretical_distribution,
+                area: histogram_area,
+                shared_y_axis_label_width,
+                theme: self.theme,
+                unified_x_range: Some(unified_x_range),
+                histogram_scale: self.histogram_scale,
+            };
+            render_distribution_histogram(histogram_config, buf);
+
+            // Right side: Distribution selector
+            render_distribution_selector(
+                dist,
+                self.selected_theoretical_distribution,
+                self.distribution_selector_state,
+                self.focus,
+                right_layout[0],
+                buf,
+                self.theme,
+            );
+
+            // Settings box below distribution selector
+            render_distribution_settings(
+                self.histogram_scale,
+                log_scale_requested_but_unavailable,
+                right_layout[1],
+                buf,
+                self.theme,
+            );
+
+        // No keybind hints line - removed
+        } else {
             Paragraph::new("No distribution selected")
                 .centered()
                 .render(area, buf);
-            return;
         }
-
-        let dist = dist_analysis.unwrap();
-
-        // Layout: breadcrumb, main content (no keybind hints line)
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // Breadcrumb
-                Constraint::Fill(1),   // Main content
-            ])
-            .split(area);
-
-        // Breadcrumb with column name and Escape hint on top right
-        // Split breadcrumb area into left (title) and right (Escape hint)
-        let breadcrumb_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Fill(1),   // Title on left
-                Constraint::Length(8), // Escape hint on right ("Esc Back" = 8 chars)
-            ])
-            .split(layout[0]);
-
-        let title_text = format!("Distribution Analysis: {}", dist.column_name);
-        let header_row_style = header_style(self.theme, "controls_bg", "table_header");
-        Paragraph::new(title_text)
-            .style(header_row_style)
-            .render(breadcrumb_layout[0], buf);
-
-        Paragraph::new("Esc Back")
-            .style(header_row_style)
-            .right_aligned()
-            .render(breadcrumb_layout[1], buf);
-
-        // Main content area - optimized layout
-        // Split into: condensed stats header, charts and selector area
-        let main_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // Condensed stats header (single line)
-                Constraint::Fill(1),   // Charts and selector
-            ])
-            .split(layout[1]);
-
-        // Condensed header: Key statistics in one or two lines
-        // Use selected theoretical distribution type (dynamic)
-        render_condensed_statistics(
-            dist,
-            self.selected_theoretical_distribution,
-            main_layout[0],
-            buf,
-            self.theme,
-        );
-
-        // Split charts and selector horizontally
-        let content_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(75), // Q-Q plot and histogram
-                Constraint::Percentage(25), // Distribution selector and settings
-            ])
-            .split(main_layout[1]);
-
-        // Right side: Split into distribution selector and settings
-        let right_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Fill(1),   // Distribution selector (takes remaining space)
-                Constraint::Length(4), // Settings box (4 lines: border + 2 content + border)
-            ])
-            .split(content_layout[1]);
-
-        // Left side: Q-Q plot and histogram with spacing
-        let charts_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(52), // Q-Q plot (slightly reduced to make room for spacing)
-                Constraint::Length(1),      // Vertical spacing between charts
-                Constraint::Percentage(47), // Histogram (slightly reduced to make room for spacing)
-            ])
-            .split(content_layout[0]);
-
-        // Add padding around chart areas for better visual separation
-        let chart_padding = 1u16; // 1 character padding on all sides
-        let right_padding_extra = 1u16; // Extra padding on right side to separate from distribution box
-        let top_padding_extra = 1u16; // Extra padding at top to separate title from chart
-        let qq_plot_area = Rect::new(
-            charts_layout[0].left() + chart_padding,
-            charts_layout[0].top() + chart_padding + top_padding_extra, // Extra top padding
-            charts_layout[0]
-                .width
-                .saturating_sub(chart_padding) // Left padding
-                .saturating_sub(right_padding_extra), // Extra right padding
-            charts_layout[0]
-                .height
-                .saturating_sub(chart_padding * 2)
-                .saturating_sub(top_padding_extra), // Account for extra top padding
-        );
-        let histogram_area = Rect::new(
-            charts_layout[2].left() + chart_padding,
-            charts_layout[2].top() + chart_padding + top_padding_extra, // Extra top padding
-            charts_layout[2]
-                .width
-                .saturating_sub(chart_padding) // Left padding
-                .saturating_sub(right_padding_extra), // Extra right padding
-            charts_layout[2]
-                .height
-                .saturating_sub(chart_padding * 2)
-                .saturating_sub(top_padding_extra), // Account for extra top padding
-        );
-
-        // Calculate maximum label width for both charts to ensure alignment
-        // This needs to account for both Q-Q plot labels (data values) and histogram labels (counts)
-        let sorted_data = &dist.sorted_sample_values;
-        let max_label_width = if sorted_data.is_empty() {
-            1
-        } else {
-            let data_min = sorted_data[0];
-            let data_max = sorted_data[sorted_data.len() - 1];
-
-            // Q-Q plot labels: data_min, (data_min+data_max)/2, data_max formatted as {:.1}
-            let qq_label_bottom = format!("{:.1}", data_min);
-            let qq_label_mid = format!("{:.1}", (data_min + data_max) / 2.0);
-            let qq_label_top = format!("{:.1}", data_max);
-            let qq_max_width = qq_label_bottom
-                .chars()
-                .count()
-                .max(qq_label_mid.chars().count())
-                .max(qq_label_top.chars().count());
-
-            // Histogram labels: 0, global_max/2, global_max (formatted as integers)
-            // We need to estimate global_max - it's roughly the max of data bin counts and theory bin counts
-            // For estimation, use the data size as a proxy for maximum counts
-            let estimated_global_max = sorted_data.len();
-            let hist_label_0 = format!("{}", 0);
-            let hist_label_mid = format!("{}", estimated_global_max / 2);
-            let hist_label_max = format!("{}", estimated_global_max);
-            let hist_max_width = hist_label_0
-                .chars()
-                .count()
-                .max(hist_label_mid.chars().count())
-                .max(hist_label_max.chars().count());
-
-            // Use the maximum of both, adding 1 for padding
-            qq_max_width.max(hist_max_width)
-        };
-
-        let shared_y_axis_label_width = (max_label_width as u16).max(1) + 1; // Max label width + 1 char padding
-
-        // Calculate unified X-axis range for visual alignment between Q-Q plot and histogram
-        // This ensures both charts use the same X-axis scale for easy comparison
-        // Calculate unified X-axis range for both Q-Q plot and histogram
-        // Use ONLY actual data range (no padding, no theoretical extensions)
-        // This ensures log scale works correctly and both charts stay in sync
-        let unified_x_range = if !sorted_data.is_empty() {
-            let data_min = sorted_data[0];
-            let data_max = sorted_data[sorted_data.len() - 1];
-            // Use strict data range - no padding, no theoretical extensions
-            (data_min, data_max)
-        } else {
-            (0.0, 1.0) // Fallback for empty data
-        };
-
-        // Q-Q plot approximation (larger, better aspect ratio)
-        // Use selected theoretical distribution from selector
-        render_qq_plot(
-            dist,
-            self.selected_theoretical_distribution,
-            qq_plot_area,
-            buf,
-            shared_y_axis_label_width,
-            self.theme,
-            Some(unified_x_range),
-        );
-
-        // Histogram comparison (vertical bars)
-        // Use selected theoretical distribution from selector
-        // Check if log scale is requested but can't be used
-        // Use actual data values, not unified range (which may include theoretical bounds and padding)
-        let sorted_data = &dist.sorted_sample_values;
-        let can_use_log_scale = !sorted_data.is_empty() && sorted_data.iter().all(|&v| v > 0.0);
-        let log_scale_requested_but_unavailable =
-            matches!(self.histogram_scale, HistogramScale::Log) && !can_use_log_scale;
-
-        let histogram_config = HistogramRenderConfig {
-            dist,
-            dist_type: self.selected_theoretical_distribution,
-            area: histogram_area,
-            shared_y_axis_label_width,
-            theme: self.theme,
-            unified_x_range: Some(unified_x_range),
-            histogram_scale: self.histogram_scale,
-        };
-        render_distribution_histogram(histogram_config, buf);
-
-        // Right side: Distribution selector
-        render_distribution_selector(
-            dist,
-            self.selected_theoretical_distribution,
-            self.distribution_selector_state,
-            self.focus,
-            right_layout[0],
-            buf,
-            self.theme,
-        );
-
-        // Settings box below distribution selector
-        render_distribution_settings(
-            self.histogram_scale,
-            log_scale_requested_but_unavailable,
-            right_layout[1],
-            buf,
-            self.theme,
-        );
-
-        // No keybind hints line - removed
     }
 
     fn render_correlation_detail(self, _area: Rect, _buf: &mut Buffer) {

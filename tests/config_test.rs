@@ -466,10 +466,8 @@ fn test_validate_config_with_invalid_chart_series_color() {
     config.theme.colors.chart_series_color_1 = "invalid_color_name".to_string();
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Invalid color value"));
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("theme.colors.chart_series_color_1"), "{}", err);
 }
 
 #[test]
@@ -482,10 +480,8 @@ fn test_validate_config_with_invalid_color() {
 
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Invalid color value"));
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("theme.colors.keybind_hints"), "{}", err);
 }
 
 #[test]

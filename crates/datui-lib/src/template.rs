@@ -125,6 +125,8 @@ pub struct TemplateManager {
 }
 
 impl TemplateManager {
+    /// Creates a template manager that loads templates from disk. Use `empty()` when
+    /// config dirs are unavailable to avoid panicking on startup.
     pub fn new(config: &ConfigManager) -> Result<Self> {
         // Don't create directories on startup - be sensitive to constrained environments
         // Directories will be created lazily when actually needed (e.g., saving templates)
@@ -140,6 +142,16 @@ impl TemplateManager {
         // Don't create it if it doesn't exist
         manager.load_templates()?;
         Ok(manager)
+    }
+
+    /// Creates an empty in-memory template manager (no disk load). Use when
+    /// `new()` fails so the app can start without panicking; save may fail later.
+    pub fn empty(config: &ConfigManager) -> Self {
+        Self {
+            config: config.clone(),
+            templates: Vec::new(),
+            templates_dir: config.config_dir().join("templates"),
+        }
     }
 
     pub fn load_templates(&mut self) -> Result<()> {

@@ -406,8 +406,18 @@ pub fn prepare_histogram_data(
         });
     }
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let x_min = *values.first().unwrap();
-    let x_max = *values.last().unwrap();
+    let (x_min, x_max) = match (values.first(), values.last()) {
+        (Some(a), Some(b)) => (*a, *b),
+        _ => {
+            return Ok(HistogramData {
+                column: column.to_string(),
+                bins: vec![],
+                x_min: 0.0,
+                x_max: 1.0,
+                max_count: 0.0,
+            });
+        }
+    };
     let range = (x_max - x_min).abs();
     let bin_count = bins.max(1);
     if range <= f64::EPSILON {
@@ -496,8 +506,10 @@ pub fn prepare_box_plot_data<T: AsRef<str>>(
             continue;
         }
         values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let min = *values.first().unwrap();
-        let max = *values.last().unwrap();
+        let (min, max) = match (values.first(), values.last()) {
+            (Some(a), Some(b)) => (*a, *b),
+            _ => continue,
+        };
         let q1 = quantile(&values, 0.25);
         let median = quantile(&values, 0.5);
         let q3 = quantile(&values, 0.75);
@@ -569,8 +581,10 @@ pub fn prepare_kde_data<T: AsRef<str>>(
             continue;
         }
         values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let min = *values.first().unwrap();
-        let max = *values.last().unwrap();
+        let (min, max) = match (values.first(), values.last()) {
+            (Some(a), Some(b)) => (*a, *b),
+            _ => continue,
+        };
         let base_bw = kde_bandwidth(&values);
         let bandwidth = (base_bw * bandwidth_factor).max(f64::EPSILON);
         let x_start = min - 3.0 * bandwidth;

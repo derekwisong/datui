@@ -704,157 +704,158 @@ fn render_xy_chart(
     }
 
     if has_data {
-        let data = chart_data.unwrap();
-        let y_columns = modal.effective_y_columns();
-        let graph_type = match chart_type {
-            ChartType::Line => GraphType::Line,
-            ChartType::Scatter => GraphType::Scatter,
-            ChartType::Bar => GraphType::Bar,
-        };
-        let marker = match chart_type {
-            ChartType::Line => symbols::Marker::Braille,
-            ChartType::Scatter => symbols::Marker::Dot,
-            ChartType::Bar => symbols::Marker::HalfBlock,
-        };
+        if let Some(data) = chart_data {
+            let y_columns = modal.effective_y_columns();
+            let graph_type = match chart_type {
+                ChartType::Line => GraphType::Line,
+                ChartType::Scatter => GraphType::Scatter,
+                ChartType::Bar => GraphType::Bar,
+            };
+            let marker = match chart_type {
+                ChartType::Line => symbols::Marker::Braille,
+                ChartType::Scatter => symbols::Marker::Dot,
+                ChartType::Bar => symbols::Marker::HalfBlock,
+            };
 
-        let series_colors = [
-            "chart_series_color_1",
-            "chart_series_color_2",
-            "chart_series_color_3",
-            "chart_series_color_4",
-            "chart_series_color_5",
-            "chart_series_color_6",
-            "chart_series_color_7",
-        ];
+            let series_colors = [
+                "chart_series_color_1",
+                "chart_series_color_2",
+                "chart_series_color_3",
+                "chart_series_color_4",
+                "chart_series_color_5",
+                "chart_series_color_6",
+                "chart_series_color_7",
+            ];
 
-        let mut all_x_min = f64::INFINITY;
-        let mut all_x_max = f64::NEG_INFINITY;
-        let mut all_y_min = f64::INFINITY;
-        let mut all_y_max = f64::NEG_INFINITY;
+            let mut all_x_min = f64::INFINITY;
+            let mut all_x_max = f64::NEG_INFINITY;
+            let mut all_y_min = f64::INFINITY;
+            let mut all_y_max = f64::NEG_INFINITY;
 
-        // Data is already in display form (log-scaled when log_scale) from cache; use as-is.
-        let names_and_points: Vec<(&str, &[(f64, f64)])> = data
-            .iter()
-            .zip(y_columns.iter())
-            .filter_map(|(points, name)| {
-                if points.is_empty() {
-                    return None;
-                }
-                Some((name.as_str(), points.as_slice()))
-            })
-            .collect();
-
-        for (_, points) in &names_and_points {
-            let (x_min, x_max) = points
+            // Data is already in display form (log-scaled when log_scale) from cache; use as-is.
+            let names_and_points: Vec<(&str, &[(f64, f64)])> = data
                 .iter()
-                .map(|&(x, _)| x)
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
-                    (a.min(x), b.max(x))
-                });
-            let (y_min, y_max) = points
+                .zip(y_columns.iter())
+                .filter_map(|(points, name)| {
+                    if points.is_empty() {
+                        return None;
+                    }
+                    Some((name.as_str(), points.as_slice()))
+                })
+                .collect();
+
+            for (_, points) in &names_and_points {
+                let (x_min, x_max) = points
+                    .iter()
+                    .map(|&(x, _)| x)
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
+                        (a.min(x), b.max(x))
+                    });
+                let (y_min, y_max) = points
+                    .iter()
+                    .map(|&(_, y)| y)
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), y| {
+                        (a.min(y), b.max(y))
+                    });
+                all_x_min = all_x_min.min(x_min);
+                all_x_max = all_x_max.max(x_max);
+                all_y_min = all_y_min.min(y_min);
+                all_y_max = all_y_max.max(y_max);
+            }
+
+            let datasets: Vec<Dataset> = names_and_points
                 .iter()
-                .map(|&(_, y)| y)
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), y| {
-                    (a.min(y), b.max(y))
-                });
-            all_x_min = all_x_min.min(x_min);
-            all_x_max = all_x_max.max(x_max);
-            all_y_min = all_y_min.min(y_min);
-            all_y_max = all_y_max.max(y_max);
+                .enumerate()
+                .map(|(i, (name, points))| {
+                    let color_key = series_colors
+                        .get(i)
+                        .copied()
+                        .unwrap_or("primary_chart_series_color");
+                    let style = Style::default().fg(theme.get(color_key));
+                    Dataset::default()
+                        .name(*name)
+                        .marker(marker)
+                        .graph_type(graph_type)
+                        .style(style)
+                        .data(points)
+                })
+                .collect();
+
+            if datasets.is_empty() {
+                Paragraph::new("No valid data points")
+                    .style(Style::default().fg(text_secondary))
+                    .centered()
+                    .render(area, buf);
+                return;
+            }
+
+            let y_min_bounds = if chart_type == ChartType::Bar {
+                0.0_f64.min(all_y_min)
+            } else if y_starts_at_zero {
+                0.0
+            } else {
+                all_y_min
+            };
+            let y_max_bounds = if all_y_max > y_min_bounds {
+                all_y_max
+            } else {
+                y_min_bounds + 1.0
+            };
+            let x_min_bounds = if all_x_max > all_x_min {
+                all_x_min
+            } else {
+                all_x_min - 0.5
+            };
+            let x_max_bounds = if all_x_max > all_x_min {
+                all_x_max
+            } else {
+                all_x_min + 0.5
+            };
+
+            let axis_label_style = Style::default().fg(theme.get("text_primary"));
+            let format_x = |v: f64| format_x_axis_label(v, x_axis_kind);
+            let x_labels = vec![
+                Span::styled(format_x(x_min_bounds), axis_label_style),
+                Span::styled(
+                    format_x((x_min_bounds + x_max_bounds) / 2.0),
+                    axis_label_style,
+                ),
+                Span::styled(format_x(x_max_bounds), axis_label_style),
+            ];
+            let format_y_label = |log_v: f64| {
+                let v = if log_scale { log_v.exp_m1() } else { log_v };
+                format_axis_label(v)
+            };
+            let y_labels = vec![
+                Span::styled(format_y_label(y_min_bounds), axis_label_style),
+                Span::styled(
+                    format_y_label((y_min_bounds + y_max_bounds) / 2.0),
+                    axis_label_style,
+                ),
+                Span::styled(format_y_label(y_max_bounds), axis_label_style),
+            ];
+
+            let x_axis_title = modal.effective_x_column().map(|s| s.as_str()).unwrap_or("");
+            let y_axis_title = y_columns.join(", ");
+            let x_axis = Axis::default()
+                .title(x_axis_title)
+                .bounds([x_min_bounds, x_max_bounds])
+                .style(Style::default().fg(theme.get("text_primary")))
+                .labels(x_labels);
+            let y_axis = Axis::default()
+                .title(y_axis_title)
+                .bounds([y_min_bounds, y_max_bounds])
+                .style(Style::default().fg(theme.get("text_primary")))
+                .labels(y_labels);
+
+            let mut chart = Chart::new(datasets).x_axis(x_axis).y_axis(y_axis);
+            if show_legend {
+                chart = chart.legend_position(Some(ratatui::widgets::LegendPosition::TopRight));
+            } else {
+                chart = chart.legend_position(None);
+            }
+            chart.render(area, buf);
         }
-
-        let datasets: Vec<Dataset> = names_and_points
-            .iter()
-            .enumerate()
-            .map(|(i, (name, points))| {
-                let color_key = series_colors
-                    .get(i)
-                    .copied()
-                    .unwrap_or("primary_chart_series_color");
-                let style = Style::default().fg(theme.get(color_key));
-                Dataset::default()
-                    .name(*name)
-                    .marker(marker)
-                    .graph_type(graph_type)
-                    .style(style)
-                    .data(points)
-            })
-            .collect();
-
-        if datasets.is_empty() {
-            Paragraph::new("No valid data points")
-                .style(Style::default().fg(text_secondary))
-                .centered()
-                .render(area, buf);
-            return;
-        }
-
-        let y_min_bounds = if chart_type == ChartType::Bar {
-            0.0_f64.min(all_y_min)
-        } else if y_starts_at_zero {
-            0.0
-        } else {
-            all_y_min
-        };
-        let y_max_bounds = if all_y_max > y_min_bounds {
-            all_y_max
-        } else {
-            y_min_bounds + 1.0
-        };
-        let x_min_bounds = if all_x_max > all_x_min {
-            all_x_min
-        } else {
-            all_x_min - 0.5
-        };
-        let x_max_bounds = if all_x_max > all_x_min {
-            all_x_max
-        } else {
-            all_x_min + 0.5
-        };
-
-        let axis_label_style = Style::default().fg(theme.get("text_primary"));
-        let format_x = |v: f64| format_x_axis_label(v, x_axis_kind);
-        let x_labels = vec![
-            Span::styled(format_x(x_min_bounds), axis_label_style),
-            Span::styled(
-                format_x((x_min_bounds + x_max_bounds) / 2.0),
-                axis_label_style,
-            ),
-            Span::styled(format_x(x_max_bounds), axis_label_style),
-        ];
-        let format_y_label = |log_v: f64| {
-            let v = if log_scale { log_v.exp_m1() } else { log_v };
-            format_axis_label(v)
-        };
-        let y_labels = vec![
-            Span::styled(format_y_label(y_min_bounds), axis_label_style),
-            Span::styled(
-                format_y_label((y_min_bounds + y_max_bounds) / 2.0),
-                axis_label_style,
-            ),
-            Span::styled(format_y_label(y_max_bounds), axis_label_style),
-        ];
-
-        let x_axis_title = modal.effective_x_column().map(|s| s.as_str()).unwrap_or("");
-        let y_axis_title = y_columns.join(", ");
-        let x_axis = Axis::default()
-            .title(x_axis_title)
-            .bounds([x_min_bounds, x_max_bounds])
-            .style(Style::default().fg(theme.get("text_primary")))
-            .labels(x_labels);
-        let y_axis = Axis::default()
-            .title(y_axis_title)
-            .bounds([y_min_bounds, y_max_bounds])
-            .style(Style::default().fg(theme.get("text_primary")))
-            .labels(y_labels);
-
-        let mut chart = Chart::new(datasets).x_axis(x_axis).y_axis(y_axis);
-        if show_legend {
-            chart = chart.legend_position(Some(ratatui::widgets::LegendPosition::TopRight));
-        } else {
-            chart = chart.legend_position(None);
-        }
-        chart.render(area, buf);
     } else {
         Paragraph::new("Select X and Y columns in sidebar — Tab to change focus")
             .style(Style::default().fg(text_secondary))

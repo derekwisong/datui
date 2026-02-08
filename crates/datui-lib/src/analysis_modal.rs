@@ -98,10 +98,10 @@ impl AnalysisModal {
         self.describe_results = None;
         self.distribution_results = None;
         self.correlation_results = None;
-        // Generate initial random seed
+        // Generate initial random seed (use 0 if system time is before UNIX_EPOCH)
         self.random_seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
     }
 
@@ -269,7 +269,7 @@ impl AnalysisModal {
     pub fn recalculate(&mut self) {
         self.random_seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as u64;
     }
 

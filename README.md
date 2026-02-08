@@ -2,7 +2,13 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Version](https://img.shields.io/badge/version-0.2.39-orange.svg)
-![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
+![Rust](https://img.shields.io/badge/rust-1.89.0+-orange.svg)
+![Downloads](https://img.shields.io/github/downloads/derekwisong/datui/total?style=flat-square&logo=github&color=blue)
+![PyPI Downloads](https://img.shields.io/pypi/dm/datui?style=flat-square&logo=pypi&logoColor=white&color=blue)
+![AUR Version](https://img.shields.io/aur/version/datui-bin?style=flat-square&logo=arch-linux&logoColor=white&color=blue)
+![GitHub Stars](https://img.shields.io/github/stars/derekwisong/datui?style=flat-square&logo=github&color=blue)
+[![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white)](https://github.com/derekwisong/datui/actions)
+
 
 **Datui** is a high-performance terminal UI for exploring and analyzing datasets. Powered
 by the **Polars** engine and written in **Rust**, it brings SQL-like power and Excel-like

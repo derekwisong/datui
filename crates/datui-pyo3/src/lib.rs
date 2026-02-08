@@ -14,7 +14,51 @@ use polars::prelude::LazyFrame;
 use polars_plan::dsl::DslPlan;
 use pyo3::exceptions::{PyFileNotFoundError, PyPermissionError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use serde_json;
+use serde_json::{self, Value};
+
+/// Rewrite path objects from newer Polars JSON format to Rust 0.52 format.
+/// Newer Polars emits `"path": {"inner": "/foo"}`; polars-plan 0.52 expects `"path": {"Local": "/foo"}`.
+/// We only rewrite when the value of key "path" is an object with single key "inner" and string value.
+fn normalize_lazyframe_json(value: Value) -> Value {
+    match value {
+        Value::Object(mut map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for k in keys {
+                let v = map.get_mut(&k).expect("key exists");
+                if k == "path" {
+                    if let Some(normalized) = normalize_path_value(v.clone()) {
+                        *v = normalized;
+                    }
+                } else {
+                    *v = normalize_lazyframe_json(std::mem::take(v));
+                }
+            }
+            Value::Object(map)
+        }
+        Value::Array(arr) => Value::Array(
+            arr.into_iter()
+                .map(normalize_lazyframe_json)
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// If `value` is `{"inner": "<string>"}`, return `{"Local": "<string>"}`; else return None.
+fn normalize_path_value(value: Value) -> Option<Value> {
+    let obj = value.as_object()?;
+    if obj.len() != 1 {
+        return None;
+    }
+    let (key, val) = obj.iter().next()?;
+    if key != "inner" {
+        return None;
+    }
+    let path_str = val.as_str()?;
+    let mut m = serde_json::Map::new();
+    m.insert("Local".to_string(), Value::String(path_str.to_string()));
+    Some(Value::Object(m))
+}
 
 fn run_tui(plan: DslPlan, debug: bool) -> PyResult<()> {
     let lf = LazyFrame::from(plan);
@@ -105,7 +149,14 @@ fn view_from_json(
     json_str: &str,
     debug: bool,
 ) -> PyResult<()> {
-    let plan: DslPlan = serde_json::from_str(json_str).map_err(|e| {
+    let value: Value = serde_json::from_str(json_str).map_err(|e| {
+        PyValueError::new_err(format!(
+            "invalid LazyFrame JSON (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
+            e
+        ))
+    })?;
+    let normalized = normalize_lazyframe_json(value);
+    let plan: DslPlan = serde_json::from_value(normalized).map_err(|e| {
         PyValueError::new_err(format!(
             "invalid LazyFrame JSON (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
             e
@@ -250,6 +301,42 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
     let code = status.code().unwrap_or(-1);
     let _ = py.import("sys")?.getattr("exit")?.call1((code,));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_path_value_inner_to_local() {
+        let v = serde_json::json!({"inner": "/tmp/foo.parquet"});
+        let out = normalize_path_value(v).expect("normalized");
+        let obj = out.as_object().expect("object");
+        assert_eq!(obj.len(), 1);
+        assert_eq!(obj.get("Local").and_then(Value::as_str), Some("/tmp/foo.parquet"));
+    }
+
+    #[test]
+    fn normalize_path_value_non_inner_unchanged() {
+        let v = serde_json::json!({"Local": "/already/local"});
+        assert!(normalize_path_value(v).is_none());
+    }
+
+    #[test]
+    fn normalize_lazyframe_json_rewrites_nested_path() {
+        let json = serde_json::json!({
+            "DataFrameScan": {
+                "path": {"inner": "/data/file.parquet"},
+                "other": "unchanged"
+            }
+        });
+        let out = normalize_lazyframe_json(json);
+        let scan = out.get("DataFrameScan").expect("DataFrameScan").as_object().expect("obj");
+        let path = scan.get("path").expect("path").as_object().expect("path obj");
+        assert_eq!(path.get("Local").and_then(Value::as_str), Some("/data/file.parquet"));
+        assert!(!path.contains_key("inner"));
+        assert_eq!(scan.get("other").and_then(Value::as_str), Some("unchanged"));
+    }
 }
 
 /// Native extension module. The public `datui` package is provided by Python code

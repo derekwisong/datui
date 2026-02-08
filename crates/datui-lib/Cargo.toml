@@ -4,8 +4,12 @@ version = "0.2.42-dev"
 edition = "2021"
 description = "Data Exploration in the Terminal (library)"
 authors = ["Derek Wisong"]
+homepage = "https://derekwisong.github.io/datui"
 repository = "https://github.com/derekwisong/datui"
 license = "MIT"
+readme = "README.md"
+keywords = ["cli", "tui", "data", "utility", "analysis"]
+categories = ["command-line-utilities", "science"]
 
 [lib]
 path = "src/lib.rs"
@@ -18,7 +22,7 @@ sql = ["polars/sql", "dep:polars-sql"]
 streaming = ["polars/new_streaming"]
 
 [dependencies]
-datui-cli = { path = "../datui-cli" }
+datui-cli = { path = "../datui-cli", version = "0.2.42-dev" }
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

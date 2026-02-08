@@ -11,7 +11,11 @@ edition = "2021"
 authors = ["Derek Wisong"]
 description = "Data Exploration in the Terminal"
 repository = "https://github.com/derekwisong/datui"
+homepage = "https://derekwisong.github.io/datui"
 license = "MIT"
+readme = "README.md"
+keywords = ["cli", "tui", "data", "utility", "analysis"]
+categories = ["command-line-utilities", "science"]
 
 [[bin]]
 name = "datui"
@@ -26,8 +30,8 @@ streaming = ["datui/streaming"]
 
 [dependencies]
 # Import as `datui` in Rust; package name is datui-lib
-datui = { path = "crates/datui-lib", package = "datui-lib" }
-datui-cli = { path = "crates/datui-cli" }
+datui = { path = "crates/datui-lib", package = "datui-lib", version="0.2.42-dev" }
+datui-cli = { path = "crates/datui-cli", version="0.2.42-dev"}
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"
@@ -36,7 +40,7 @@ ratatui = { version = "0.29.0", features = ["all-widgets"] }
 [build-dependencies]
 clap = { version = "4.5.54", features = ["derive"] }
 clap_mangen = "0.2"
-datui-cli = { path = "crates/datui-cli" }
+datui-cli = { path = "crates/datui-cli", version="0.2.42-dev" }
 
 [dev-dependencies]
 # For integration tests (tests/*.rs) that use polars and config parsing

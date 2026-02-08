@@ -3,6 +3,13 @@ name = "datui-cli"
 version = "0.2.42-dev"
 edition = "2021"
 description = "Shared CLI definitions for datui (Args, CompressionFormat)"
+authors = ["Derek Wisong"]
+repository = "https://github.com/derekwisong/datui"
+homepage = "https://derekwisong.github.io/datui"
+license = "MIT"
+readme = "README.md"
+keywords = ["cli", "tui", "data", "utility", "analysis"]
+categories = ["command-line-utilities", "science"]
 
 [[bin]]
 name = "gen_docs"

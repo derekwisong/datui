@@ -5,7 +5,6 @@
 ![Rust](https://img.shields.io/badge/rust-1.89.0+-orange.svg)
 ![Downloads](https://img.shields.io/github/downloads/derekwisong/datui/total?style=flat-square&logo=github&color=blue)
 ![PyPI Downloads](https://img.shields.io/pypi/dm/datui?style=flat-square&logo=pypi&logoColor=white&color=blue)
-![AUR Version](https://img.shields.io/aur/version/datui-bin?style=flat-square&logo=arch-linux&logoColor=white&color=blue)
 ![GitHub Stars](https://img.shields.io/github/stars/derekwisong/datui?style=flat-square&logo=github&color=blue)
 [![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white)](https://github.com/derekwisong/datui/actions)
 

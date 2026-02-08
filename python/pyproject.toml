@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "datui"
-version = "0.2.41"
+version = "0.2.42.dev0"
 description = "Data Exploration in the Terminal"
 readme = "README.md"
 requires-python = ">=3.10"

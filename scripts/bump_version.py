@@ -3,9 +3,9 @@
 Bump version number in all Cargo.toml packages, README.md, and Python bindings.
 
 Updated files:
-  - Cargo.toml (root / main package)
-  - crates/datui-cli/Cargo.toml
-  - crates/datui-lib/Cargo.toml
+  - Cargo.toml (root: package version and dependency versions for datui-lib, datui-cli)
+  - crates/datui-cli/Cargo.toml (package version only; no workspace path deps)
+  - crates/datui-lib/Cargo.toml (package version and datui-cli dependency version)
   - crates/datui-pyo3/Cargo.toml
   - python/pyproject.toml
   - README.md (version badge; release only)
@@ -109,6 +109,38 @@ def _package_section_bounds(content: str) -> tuple[int, int] | None:
     end_match = re.search(r'^\s*\[', rest, re.MULTILINE)
     end = start + (end_match.start() if end_match else len(rest))
     return (start, end)
+
+
+def _update_dependency_version_in_line(line: str, path_fragment: str, new_version: str) -> str:
+    """If line is a dependency with path containing path_fragment, add or update version. Else return unchanged."""
+    if path_fragment not in line or "path" not in line or "=" not in line:
+        return line
+    if "version" in line:
+        return re.sub(r'version\s*=\s*"[^"]*"', f'version = "{new_version}"', line)
+    # Add version before the closing }
+    return re.sub(r'\}\s*$', f', version = "{new_version}" }}', line)
+
+
+def update_dependency_versions_in_cargo_toml(
+    file_path: Path, path_fragments: list[str], new_version: str, project_root: Path
+) -> None:
+    """Ensure each dependency whose path contains one of path_fragments has version = new_version."""
+    content = file_path.read_text()
+    lines = content.split("\n")
+    updated = []
+    for line in lines:
+        new_line = line
+        for frag in path_fragments:
+            new_line = _update_dependency_version_in_line(new_line, frag, new_version)
+        updated.append(new_line)
+    new_content = "\n".join(updated)
+    if new_content != content:
+        file_path.write_text(new_content)
+        try:
+            rel = file_path.relative_to(project_root)
+        except ValueError:
+            rel = file_path
+        print(f"Updated dependency version(s) in {rel} -> {new_version}")
 
 
 def update_cargo_toml(
@@ -461,6 +493,19 @@ Start next dev cycle:
             crate_cargo = project_root / rel_path
             if crate_cargo.exists():
                 update_cargo_toml_to_version(crate_cargo, new_version, project_root)
+
+        # Keep datui and datui-cli dependency version in sync (for crates.io publish)
+        update_dependency_versions_in_cargo_toml(
+            cargo_toml_path,
+            ["crates/datui-lib", "crates/datui-cli"],
+            new_version,
+            project_root,
+        )
+        datui_lib_cargo = project_root / "crates" / "datui-lib" / "Cargo.toml"
+        if datui_lib_cargo.exists():
+            update_dependency_versions_in_cargo_toml(
+                datui_lib_cargo, ["../datui-cli"], new_version, project_root
+            )
 
         # Update python/pyproject.toml: release -> X.Y.Z, bump -> X.Y.Z.dev0 (PEP 440)
         if pyproject_path.exists():

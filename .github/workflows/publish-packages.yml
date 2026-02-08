@@ -1,7 +1,7 @@
-# Reusable workflow: publish to AUR, PyPI, Homebrew, and WinGet after a release is created.
+# Reusable workflow: publish to crates.io, AUR, PyPI, Homebrew, and WinGet after a release is created.
 # Invoked by the Release workflow at the end of its publish step, or run manually (Actions → Publish packages → Run workflow).
 # Manual run with no tag uses the latest GitHub release.
-# Prerequisites: repository secrets for HOMEBREW_TAP_TOKEN, PYPI_API_TOKEN, AUR_*, WINGET_TOKEN.
+# Prerequisites: repository secrets for CARGO_REGISTRY_TOKEN (crates.io), HOMEBREW_TAP_TOKEN, PYPI_API_TOKEN, AUR_*, WINGET_TOKEN.
 # WinGet: at least one version of derekwisong.datui must exist in winget-pkgs; fork microsoft/winget-pkgs; WINGET_TOKEN = classic PAT with public_repo scope.
 name: Publish packages
 
@@ -24,6 +24,39 @@ permissions:
   contents: read
 
 jobs:
+  publish-crates-io:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: resolve-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            echo "tag_name=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName -q '.[0].tagName')
+            echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Publishing to crates.io: ${{ steps.resolve-tag.outputs.tag_name }}"
+
+      - name: Checkout at release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve-tag.outputs.tag_name }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish -p datui-cli --locked
+          cargo publish -p datui-lib --locked
+          cargo publish -p datui --locked
+
   publish:
     runs-on: ubuntu-latest
     steps:

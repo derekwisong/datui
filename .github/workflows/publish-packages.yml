@@ -56,9 +56,18 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          cargo publish -p datui-cli --locked
-          cargo publish -p datui-lib --locked
-          cargo publish -p datui --locked
+          for crate in datui-cli datui-lib datui; do
+            output=$(cargo publish -p "$crate" --locked 2>&1)
+            ret=$?
+            if [ "$ret" -eq 0 ]; then
+              echo "Published $crate"
+            elif echo "$output" | grep -qE "already uploaded|is already on the registry|already published|already exists on crates.io index"; then
+              echo "::notice:: $crate at this version is already on crates.io, skipping"
+            else
+              echo "$output"
+              exit 1
+            fi
+          done
 
   publish:
     runs-on: ubuntu-latest

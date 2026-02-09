@@ -2641,6 +2641,33 @@ impl App {
                     }
                     _ => {}
                 },
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Char('h')
+                | KeyCode::Char('l')
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Char('j')
+                | KeyCode::Char('k')
+                    if on_body
+                        && sort_tab
+                        && self.sort_filter_modal.sort.focus == SortFocus::Order =>
+                {
+                    let s = &mut self.sort_filter_modal.sort;
+                    match event.code {
+                        KeyCode::Left | KeyCode::Char('h') | KeyCode::Up | KeyCode::Char('k') => {
+                            s.ascending = true;
+                        }
+                        KeyCode::Right
+                        | KeyCode::Char('l')
+                        | KeyCode::Down
+                        | KeyCode::Char('j') => {
+                            s.ascending = false;
+                        }
+                        _ => {}
+                    }
+                    s.has_unapplied_changes = true;
+                }
                 KeyCode::Down
                     if on_body
                         && filter_tab

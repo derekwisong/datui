@@ -2999,6 +2999,7 @@ impl DataTableState {
         match parse_query(&query) {
             Ok((cols, filter, group_by_cols, group_by_col_names)) => {
                 let mut lf = self.original_lf.clone();
+                let mut schema_opt: Option<Arc<Schema>> = None;
 
                 // Apply filter first (where clause)
                 if let Some(f) = filter {
@@ -3008,7 +3009,6 @@ impl DataTableState {
                 if !group_by_cols.is_empty() {
                     if !cols.is_empty() {
                         lf = lf.group_by(group_by_cols.clone()).agg(cols);
-                        lf = lf.sort_by_exprs(group_by_cols.clone(), Default::default());
                     } else {
                         let schema = match lf.clone().collect_schema() {
                             Ok(s) => s,
@@ -3031,18 +3031,36 @@ impl DataTableState {
                         }
 
                         lf = lf.group_by(group_by_cols.clone()).agg(agg_exprs);
-                        lf = lf.sort_by_exprs(group_by_cols.clone(), Default::default());
                     }
+                    // Sort by the result's group-key column names (first N columns after agg).
+                    // Works for aliased or plain names without relying on parser-derived names.
+                    let schema = match lf.collect_schema() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            self.error = Some(e);
+                            return;
+                        }
+                    };
+                    schema_opt = Some(schema.clone());
+                    let sort_exprs: Vec<Expr> = schema
+                        .iter_names()
+                        .take(group_by_cols.len())
+                        .map(|n| col(n.as_str()))
+                        .collect();
+                    lf = lf.sort_by_exprs(sort_exprs, Default::default());
                 } else if !cols.is_empty() {
                     lf = lf.select(cols);
                 }
 
-                let schema = match lf.collect_schema() {
-                    Ok(schema) => schema,
-                    Err(e) => {
-                        self.error = Some(e);
-                        return;
-                    }
+                let schema = match schema_opt {
+                    Some(s) => s,
+                    None => match lf.collect_schema() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            self.error = Some(e);
+                            return;
+                        }
+                    },
                 };
 
                 self.schema = schema;
@@ -4551,5 +4569,76 @@ mod tests {
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.fuzzy_search("x".to_string());
         assert!(state.error.is_some());
+    }
+
+    /// By-queries must produce results sorted by the group columns (age_group, then team)
+    /// so that output order is deterministic and practical. Raw data is deliberately out of order.
+    #[test]
+    fn test_by_query_result_sorted_by_group_columns() {
+        // Build a small table: age_group (1-5, out of order), team (Red/Blue/Green), score (0-100)
+        let df = df!(
+            "age_group" => &[3i64, 1, 5, 2, 4, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5],
+            "team" => &[
+                "Red", "Blue", "Green", "Red", "Blue", "Green", "Green", "Red", "Blue",
+                "Green", "Red", "Blue", "Red", "Blue", "Green",
+            ],
+            "score" => &[50.0f64, 10.0, 90.0, 20.0, 30.0, 40.0, 60.0, 70.0, 80.0, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0],
+        )
+        .unwrap();
+        let lf = df.lazy();
+        let options = crate::OpenOptions::default();
+        let mut state = DataTableState::from_lazyframe(lf, &options).unwrap();
+        state.query("select avg score by age_group, team".to_string());
+        assert!(
+            state.error.is_none(),
+            "query should succeed: {:?}",
+            state.error
+        );
+        let result = state.lf.collect().unwrap();
+        // Result must be sorted by group columns (age_group, then team)
+        let sorted = result
+            .sort(
+                ["age_group", "team"],
+                SortMultipleOptions::default().with_order_descending(false),
+            )
+            .unwrap();
+        assert_eq!(
+            result, sorted,
+            "by-query result must be sorted by (age_group, team)"
+        );
+    }
+
+    /// Computed group keys (e.g. Fare: 1+floor Fare % 25) must be sorted by their result column
+    /// values, not by re-evaluating the expression on the result.
+    #[test]
+    fn test_by_query_computed_group_key_sorted_by_result_column() {
+        let df = df!(
+            "x" => &[7.0f64, 12.0, 3.0, 22.0, 17.0, 8.0],
+            "v" => &[1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
+        )
+        .unwrap();
+        let lf = df.lazy();
+        let options = crate::OpenOptions::default();
+        let mut state = DataTableState::from_lazyframe(lf, &options).unwrap();
+        // bucket: 1+floor(x)%3 -> values 1,2,3; raw x order 7,12,3,22,17,8 -> buckets 2,2,1,2,2,2
+        state.query("select sum v by bucket: 1+floor x % 3".to_string());
+        assert!(
+            state.error.is_none(),
+            "query should succeed: {:?}",
+            state.error
+        );
+        let result = state.lf.collect().unwrap();
+        let bucket = result.column("bucket").unwrap();
+        // Must be sorted by bucket (1, 2, 3)
+        for i in 1..result.height() {
+            let prev: i64 = bucket.get(i - 1).unwrap().try_extract().unwrap_or(0);
+            let curr: i64 = bucket.get(i).unwrap().try_extract().unwrap_or(0);
+            assert!(
+                curr >= prev,
+                "bucket column must be sorted: {} then {}",
+                prev,
+                curr
+            );
+        }
     }
 }

@@ -10708,7 +10708,11 @@ pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()
             config.performance.event_poll_interval_ms,
         ))? {
             match crossterm::event::read()? {
-                crossterm::event::Event::Key(key) => tx.send(AppEvent::Key(key))?,
+                crossterm::event::Event::Key(key) => {
+                    if key.is_press() {
+                        tx.send(AppEvent::Key(key))?
+                    }
+                }
                 crossterm::event::Event::Resize(cols, rows) => {
                     tx.send(AppEvent::Resize(cols, rows))?
                 }

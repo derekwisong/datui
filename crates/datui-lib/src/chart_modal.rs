@@ -531,6 +531,7 @@ impl ChartModal {
     }
 
     /// Clamp x/y list selection to display list length (e.g. after search filter changes).
+    /// When a list has items but no selection (e.g. after tabbing from the filter input), select the first item.
     pub fn clamp_list_selections_to_filtered(&mut self) {
         let x_display = self.x_display_list();
         let y_display = self.y_display_list();
@@ -539,71 +540,30 @@ impl ChartModal {
         let kde_display = self.kde_display_list();
         let heatmap_x_display = self.heatmap_x_display_list();
         let heatmap_y_display = self.heatmap_y_display_list();
-        if let Some(s) = self.x_list_state.selected() {
-            if s >= x_display.len() {
-                self.x_list_state.select(if x_display.is_empty() {
-                    None
-                } else {
-                    Some(x_display.len().saturating_sub(1))
-                });
+
+        fn clamp_one(list_state: &mut ListState, display_len: usize) {
+            if display_len == 0 {
+                list_state.select(None);
+                return;
+            }
+            match list_state.selected() {
+                Some(s) if s >= display_len => {
+                    list_state.select(Some(display_len.saturating_sub(1)));
+                }
+                None => {
+                    list_state.select(Some(0));
+                }
+                _ => {}
             }
         }
-        if let Some(s) = self.y_list_state.selected() {
-            if s >= y_display.len() {
-                self.y_list_state.select(if y_display.is_empty() {
-                    None
-                } else {
-                    Some(y_display.len().saturating_sub(1))
-                });
-            }
-        }
-        if let Some(s) = self.hist_list_state.selected() {
-            if s >= hist_display.len() {
-                self.hist_list_state.select(if hist_display.is_empty() {
-                    None
-                } else {
-                    Some(hist_display.len().saturating_sub(1))
-                });
-            }
-        }
-        if let Some(s) = self.box_list_state.selected() {
-            if s >= box_display.len() {
-                self.box_list_state.select(if box_display.is_empty() {
-                    None
-                } else {
-                    Some(box_display.len().saturating_sub(1))
-                });
-            }
-        }
-        if let Some(s) = self.kde_list_state.selected() {
-            if s >= kde_display.len() {
-                self.kde_list_state.select(if kde_display.is_empty() {
-                    None
-                } else {
-                    Some(kde_display.len().saturating_sub(1))
-                });
-            }
-        }
-        if let Some(s) = self.heatmap_x_list_state.selected() {
-            if s >= heatmap_x_display.len() {
-                self.heatmap_x_list_state
-                    .select(if heatmap_x_display.is_empty() {
-                        None
-                    } else {
-                        Some(heatmap_x_display.len().saturating_sub(1))
-                    });
-            }
-        }
-        if let Some(s) = self.heatmap_y_list_state.selected() {
-            if s >= heatmap_y_display.len() {
-                self.heatmap_y_list_state
-                    .select(if heatmap_y_display.is_empty() {
-                        None
-                    } else {
-                        Some(heatmap_y_display.len().saturating_sub(1))
-                    });
-            }
-        }
+
+        clamp_one(&mut self.x_list_state, x_display.len());
+        clamp_one(&mut self.y_list_state, y_display.len());
+        clamp_one(&mut self.hist_list_state, hist_display.len());
+        clamp_one(&mut self.box_list_state, box_display.len());
+        clamp_one(&mut self.kde_list_state, kde_display.len());
+        clamp_one(&mut self.heatmap_x_list_state, heatmap_x_display.len());
+        clamp_one(&mut self.heatmap_y_list_state, heatmap_y_display.len());
     }
 
     pub fn close(&mut self) {

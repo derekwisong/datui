@@ -26,7 +26,6 @@ pub enum PivotMeltFocus {
     PivotPivotCol,
     PivotValueCol,
     PivotAggregation,
-    PivotSortToggle,
     // Melt tab
     MeltFilter,
     MeltIndexList,
@@ -134,7 +133,11 @@ pub struct PivotSpec {
     pub pivot_column: String,
     pub value_column: String,
     pub aggregation: PivotAggregation,
-    pub sort_columns: bool,
+    /// Deprecated: new columns are always sorted alphabetically. Kept for template deserialization.
+    #[serde(default)]
+    #[serde(skip_serializing)]
+    #[allow(dead_code)]
+    pub sort_columns: Option<bool>,
 }
 
 /// Spec for melt operation.
@@ -167,7 +170,6 @@ pub struct PivotMeltModal {
     pub value_pool_idx: usize,
     pub value_pool_table: TableState,
     pub aggregation_idx: usize,
-    pub sort_new_columns: bool,
 
     // Melt form
     pub melt_filter_input: TextInput,
@@ -203,7 +205,6 @@ impl Default for PivotMeltModal {
             value_pool_idx: 0,
             value_pool_table: TableState::default(),
             aggregation_idx: 0,
-            sort_new_columns: false,
             melt_filter_input: TextInput::new(),
             melt_index_table: TableState::default(),
             melt_index_columns: Vec::new(),
@@ -272,7 +273,6 @@ impl PivotMeltModal {
             self.value_pool_table.select(None);
         }
         self.aggregation_idx = 0;
-        self.sort_new_columns = false;
         self.melt_filter_input.clear();
         self.melt_index_table
             .select(if self.available_columns.is_empty() {
@@ -301,7 +301,6 @@ impl PivotMeltModal {
             PivotMeltFocus::PivotPivotCol,
             PivotMeltFocus::PivotValueCol,
             PivotMeltFocus::PivotAggregation,
-            PivotMeltFocus::PivotSortToggle,
             PivotMeltFocus::Apply,
             PivotMeltFocus::Cancel,
             PivotMeltFocus::Clear,
@@ -413,18 +412,10 @@ impl PivotMeltModal {
             .collect()
     }
 
+    /// All aggregation options are shown. Polars will error on Apply if the chosen
+    /// aggregation does not apply to the value column type (e.g. mean on string).
     pub fn pivot_aggregation_options(&self) -> Vec<PivotAggregation> {
-        let value_col = match &self.value_column {
-            Some(s) => s,
-            None => return PivotAggregation::ALL.to_vec(),
-        };
-        let dtype = self.column_dtypes.get(value_col);
-        let is_string = dtype.is_some_and(|d| matches!(d, DataType::String));
-        if is_string {
-            PivotAggregation::STRING_ONLY.to_vec()
-        } else {
-            PivotAggregation::ALL.to_vec()
-        }
+        PivotAggregation::ALL.to_vec()
     }
 
     pub fn pivot_aggregation(&self) -> PivotAggregation {
@@ -472,7 +463,7 @@ impl PivotMeltModal {
             pivot_column: pivot,
             value_column: value,
             aggregation: self.pivot_aggregation(),
-            sort_columns: self.sort_new_columns,
+            sort_columns: None,
         })
     }
 
@@ -594,20 +585,31 @@ impl PivotMeltModal {
         }
     }
 
-    pub fn pivot_move_aggregation(&mut self, down: bool) {
+    /// Move aggregation selection by row/col in a grid with `columns` per row.
+    /// Used with arrow keys: Up (-1, 0), Down (1, 0), Left (0, -1), Right (0, 1).
+    pub fn pivot_move_aggregation_step(&mut self, columns: usize, row_delta: i32, col_delta: i32) {
         let opts = self.pivot_aggregation_options();
         let n = opts.len();
-        if n == 0 {
+        if n == 0 || columns == 0 {
             return;
         }
-        let i = self.aggregation_idx;
-        self.aggregation_idx = if down {
-            (i + 1) % n
-        } else if i == 0 {
-            n - 1
-        } else {
-            i - 1
-        };
+        let cols = columns.min(n) as i32;
+        let row = (self.aggregation_idx as i32) / cols;
+        let col = (self.aggregation_idx as i32) % cols;
+        let mut new_row = (row + row_delta).max(0);
+        let mut new_col = (col + col_delta).max(0);
+        let max_row = (n as i32 - 1) / cols;
+        let max_col_in_last = (n as i32 - 1) % cols;
+        if new_row > max_row {
+            new_row = max_row;
+        }
+        if new_row == max_row && new_col > max_col_in_last {
+            new_col = max_col_in_last;
+        } else if new_col >= cols {
+            new_col = cols - 1;
+        }
+        let new_idx = (new_row * cols + new_col).min((n as i32) - 1).max(0) as usize;
+        self.aggregation_idx = new_idx.min(n.saturating_sub(1));
     }
 
     // ----- Melt helpers -----
@@ -903,8 +905,6 @@ mod tests {
         assert!(matches!(m.focus, PivotMeltFocus::PivotValueCol));
         m.next_focus();
         assert!(matches!(m.focus, PivotMeltFocus::PivotAggregation));
-        m.next_focus();
-        assert!(matches!(m.focus, PivotMeltFocus::PivotSortToggle));
         m.next_focus();
         assert!(matches!(m.focus, PivotMeltFocus::Apply));
         m.next_focus();

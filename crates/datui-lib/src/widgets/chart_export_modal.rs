@@ -2,12 +2,10 @@
 
 use crate::chart_export::ChartExportFormat;
 use crate::chart_export_modal::{ChartExportFocus, ChartExportModal};
+use crate::widgets::radio_block::RadioBlock;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget};
-
-const FORMAT_COLS: u16 = 3;
 
 pub fn render_chart_export_modal(
     area: Rect,
@@ -35,52 +33,24 @@ pub fn render_chart_export_modal(
         ])
         .split(inner);
 
-    // Format: 3-column grid, only as many rows as needed (2 options = 1 row)
+    // Format: radio block (PNG / EPS)
     let format_area = chunks[0];
     let is_format_focused = modal.focus == ChartExportFocus::FormatSelector;
-    let format_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if is_format_focused {
-            active_color
-        } else {
-            border_color
-        }))
-        .title(" Format ");
-    let format_inner = format_block.inner(format_area);
-    format_block.render(format_area, buf);
-
-    let col_width = format_inner.width / FORMAT_COLS;
-    for (i, &format) in ChartExportFormat::ALL.iter().enumerate() {
-        let row = i / FORMAT_COLS as usize;
-        let col = i % FORMAT_COLS as usize;
-        let cell_x = format_inner.x + (col as u16 * col_width);
-        let cell_y = format_inner.y + row as u16;
-        if cell_y >= format_inner.bottom() {
-            break;
-        }
-        let cell_area = Rect {
-            x: cell_x,
-            y: cell_y,
-            width: col_width,
-            height: 1,
-        };
-        let marker = if modal.selected_format == format {
-            "●"
-        } else {
-            "○"
-        };
-        let style = if modal.selected_format == format {
-            Style::default().fg(active_color)
-        } else {
-            Style::default().fg(border_color)
-        };
-        Paragraph::new(Line::from(Span::styled(
-            format!("{} {}", marker, format.as_str()),
-            style,
-        )))
-        .render(cell_area, buf);
-    }
+    let format_labels: Vec<&str> = ChartExportFormat::ALL.iter().map(|f| f.as_str()).collect();
+    let format_selected = ChartExportFormat::ALL
+        .iter()
+        .position(|&f| f == modal.selected_format)
+        .unwrap_or(0);
+    RadioBlock::new(
+        " Format ",
+        &format_labels,
+        format_selected,
+        is_format_focused,
+        2,
+        border_color,
+        active_color,
+    )
+    .render(format_area, buf);
 
     // Chart title (optional; blank = no title on export)
     let title_area = chunks[1];

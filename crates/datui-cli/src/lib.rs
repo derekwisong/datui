@@ -131,6 +131,10 @@ pub struct Args {
     #[arg(long = "polars-streaming", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
     pub polars_streaming: Option<bool>,
 
+    /// Apply workaround for Polars 0.52 pivot with Date/Datetime index (default: true). Set to false to test without it.
+    #[arg(long = "workaround-pivot-date-index", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    pub workaround_pivot_date_index: Option<bool>,
+
     /// Number of pages to buffer ahead of the visible area (default: 3)
     /// Larger values provide smoother scrolling but use more memory
     #[arg(long = "pages-lookahead")]

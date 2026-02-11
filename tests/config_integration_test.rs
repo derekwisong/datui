@@ -37,6 +37,7 @@ fn test_config_used_for_row_numbers() {
         s3_secret_access_key: None,
         s3_region: None,
         polars_streaming: None,
+        workaround_pivot_date_index: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -83,6 +84,7 @@ fn test_cli_args_override_config() {
         s3_secret_access_key: None,
         s3_region: None,
         polars_streaming: None,
+        workaround_pivot_date_index: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -129,6 +131,7 @@ fn test_config_display_settings() {
         s3_secret_access_key: None,
         s3_region: None,
         polars_streaming: None,
+        workaround_pivot_date_index: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);
@@ -175,6 +178,7 @@ fn test_config_file_loading_settings() {
         s3_secret_access_key: None,
         s3_region: None,
         polars_streaming: None,
+        workaround_pivot_date_index: None,
     };
 
     let opts = OpenOptions::from_args_and_config(&args, &config);

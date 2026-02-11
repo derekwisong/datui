@@ -3,6 +3,7 @@
 //! Phase 4: Pivot tab UI. Phase 5: Melt tab UI.
 
 use crate::pivot_melt_modal::{PivotMeltFocus, PivotMeltModal, PivotMeltTab};
+use crate::widgets::radio_block::RadioBlock;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -158,11 +159,9 @@ fn render_pivot_body(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
-            Constraint::Min(6),
-            Constraint::Length(5),
-            Constraint::Length(5),
-            Constraint::Length(4),
-            Constraint::Length(4),
+            Constraint::Percentage(50), // Index columns list (shares with pivot+value)
+            Constraint::Percentage(50), // Pivot + Value column tables
+            Constraint::Length(4),      // Aggregation radio block (borders + 2 rows of options)
         ])
         .split(area);
 
@@ -299,41 +298,21 @@ fn render_pivot_body(
         StatefulWidget::render(vt, value_inner, buf, &mut modal.value_pool_table);
     }
 
-    // Aggregation
-    let agg_style = if modal.focus == PivotMeltFocus::PivotAggregation {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
+    // Aggregation: radio block (arrows to move, tab to leave)
     let opts = modal.pivot_aggregation_options();
-    let agg_label = opts
-        .get(modal.aggregation_idx)
-        .map(|a| a.as_str())
-        .unwrap_or("last");
-    let agg_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Aggregation")
-        .border_style(agg_style);
-    let agg_inner = agg_block.inner(chunks[3]);
-    agg_block.render(chunks[3], buf);
-    Paragraph::new(agg_label).render(agg_inner, buf);
-
-    // Sort toggle
-    let sort_style = if modal.focus == PivotMeltFocus::PivotSortToggle {
-        Style::default().fg(active_color)
-    } else {
-        Style::default().fg(border_color)
-    };
-    let sort_check = if modal.sort_new_columns { "[x]" } else { "[ ]" };
-    let sort_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("Sort New Columns")
-        .border_style(sort_style);
-    let sort_inner = sort_block.inner(chunks[4]);
-    sort_block.render(chunks[4], buf);
-    Paragraph::new(format!("{} Sort", sort_check)).render(sort_inner, buf);
+    let labels: Vec<&str> = opts.iter().map(|a| a.as_str()).collect();
+    let agg_focused = modal.focus == PivotMeltFocus::PivotAggregation;
+    let selected = modal.aggregation_idx.min(labels.len().saturating_sub(1));
+    RadioBlock::new(
+        " Aggregation ",
+        &labels,
+        selected,
+        agg_focused,
+        4,
+        border_color,
+        active_color,
+    )
+    .render(chunks[3], buf);
 }
 
 fn render_melt_body(

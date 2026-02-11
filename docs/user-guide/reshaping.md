@@ -21,7 +21,8 @@ Both operations run on the **current** table—i.e. the result of any filters, s
 2. **Pivot column**: The column whose distinct values become new column headers (e.g. `key` → `A`, `B`, `C`). Use ↑/↓ to select.
 3. **Value column**: The column whose values fill the new cells. Use ↑/↓ to select.
 4. **Aggregation**: How to combine multiple values per group: **last**, **first**, **min**, **max**, **avg**, **med**, **std**, **count**. Default is **last**. If the value column is string-typed, only **first** and **last** are available.
-5. **Sort new columns**: Toggle to sort new column names alphabetically.
+
+New column names (from the pivot column’s values) are always sorted alphabetically.
 
 **Apply** runs the pivot and closes the dialog. **Cancel** or **Esc** closes without changing the table. **Clear** resets the form.
 
@@ -42,7 +43,7 @@ Both operations run on the **current** table—i.e. the result of any filters, s
 - **Tab / Shift+Tab**: Move focus (tab bar → form fields → Apply → Cancel → Clear → tab bar).
 - **Left / Right**: On the tab bar, switch between **Pivot** and **Melt**. In text fields (filter, pattern, variable/value names), move the cursor.
 - **↑ / ↓**: Move selection in lists (index, pivot, value, aggregation, strategy, type, explicit list).
-- **Space**: Toggle selection in index and explicit value lists; toggle “Sort new columns” in Pivot.
+- **Space**: Toggle selection in index and explicit value lists.
 - **Enter**: Activate focused control (Apply, Cancel, Clear).
 - **Esc**: Close dialog without applying.
 - **?** / **F1**: Show help (F1 works in text fields).

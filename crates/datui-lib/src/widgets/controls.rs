@@ -1,3 +1,4 @@
+use crate::render::context::RenderContext;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
@@ -96,6 +97,24 @@ impl Controls {
     pub fn with_unicode_throbber(mut self, use_unicode: bool) -> Self {
         self.use_unicode_throbber = use_unicode;
         self
+    }
+
+    /// Create Controls from RenderContext (Phase 2+).
+    /// This is the preferred way to create Controls with proper theming.
+    pub fn from_context(row_count: usize, ctx: &RenderContext) -> Self {
+        Self {
+            row_count: Some(row_count),
+            dimmed: false,
+            query_active: false,
+            custom_controls: None,
+            bg_color: ctx.controls_bg,
+            key_color: ctx.keybind_hints,
+            label_color: ctx.keybind_labels,
+            throbber_color: ctx.throbber,
+            use_unicode_throbber: false,
+            busy: false,
+            throbber_frame: 0,
+        }
     }
 
     pub fn with_row_count_and_colors(

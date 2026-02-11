@@ -17,6 +17,7 @@ use crate::chart_data::{
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;
+use crate::widgets::radio_block::RadioBlock;
 use std::collections::HashSet;
 
 const SIDEBAR_WIDTH: u16 = 42;
@@ -238,8 +239,7 @@ pub fn render_chart_view(
             let sidebar_content = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1), // Plot style label
-                    Constraint::Length(1), // Plot style radio grid
+                    Constraint::Length(3), // Plot style radio block
                     Constraint::Length(1), // Padding between style and X axis
                     Constraint::Length(1), // X axis label
                     Constraint::Min(4),    // X axis box (input + list)
@@ -254,45 +254,28 @@ pub fn render_chart_view(
                 .split(sidebar_inner);
 
             let is_type_focused = focus == ChartFocus::ChartType;
-            let type_label_style = if is_type_focused {
-                Style::default().fg(active_color)
-            } else {
-                Style::default().fg(border_color)
-            };
-            Paragraph::new("Plot style:")
-                .style(type_label_style)
-                .render(sidebar_content[0], buf);
-
-            let type_options = [
-                (ChartType::Line, "Line"),
-                (ChartType::Scatter, "Scatter"),
-                (ChartType::Bar, "Bar"),
-            ];
-            let type_grid = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(8),
-                    Constraint::Length(10),
-                    Constraint::Length(6),
-                ])
-                .split(sidebar_content[1]);
-            for (idx, (t, label)) in type_options.iter().enumerate() {
-                let marker = if modal.chart_type == *t { "●" } else { "○" };
-                let style = if modal.chart_type == *t || is_type_focused {
-                    Style::default().fg(active_color)
-                } else {
-                    Style::default().fg(border_color)
-                };
-                let cell = format!("{} {}", marker, label);
-                Paragraph::new(Line::from(Span::styled(cell, style))).render(type_grid[idx], buf);
-            }
+            let type_labels: [&str; 3] = ["Line", "Scatter", "Bar"];
+            let type_selected = ChartType::ALL
+                .iter()
+                .position(|&t| t == modal.chart_type)
+                .unwrap_or(0);
+            RadioBlock::new(
+                " Plot style ",
+                &type_labels,
+                type_selected,
+                is_type_focused,
+                3,
+                border_color,
+                active_color,
+            )
+            .render(sidebar_content[0], buf);
 
             Paragraph::new("X axis:")
                 .style(Style::default().fg(text_primary))
-                .render(sidebar_content[3], buf);
+                .render(sidebar_content[2], buf);
 
             render_filter_group(
-                sidebar_content[4],
+                sidebar_content[3],
                 buf,
                 &mut modal.x_input,
                 &mut modal.x_list_state,
@@ -306,10 +289,10 @@ pub fn render_chart_view(
 
             Paragraph::new("Y axis:")
                 .style(Style::default().fg(text_primary))
-                .render(sidebar_content[6], buf);
+                .render(sidebar_content[5], buf);
 
             render_filter_group(
-                sidebar_content[7],
+                sidebar_content[6],
                 buf,
                 &mut modal.y_input,
                 &mut modal.y_list_state,
@@ -328,7 +311,7 @@ pub fn render_chart_view(
                     Constraint::Length(2),
                     Constraint::Min(1),
                 ])
-                .split(sidebar_content[8]);
+                .split(sidebar_content[7]);
             let is_y0_focused = focus == ChartFocus::YStartsAtZero;
             let y0_label_style = if is_y0_focused {
                 Style::default().fg(active_color)
@@ -354,7 +337,7 @@ pub fn render_chart_view(
                     Constraint::Length(2),
                     Constraint::Min(1),
                 ])
-                .split(sidebar_content[9]);
+                .split(sidebar_content[8]);
             let is_log_focused = focus == ChartFocus::LogScale;
             let log_label_style = if is_log_focused {
                 Style::default().fg(active_color)
@@ -380,7 +363,7 @@ pub fn render_chart_view(
                     Constraint::Length(2),
                     Constraint::Min(1),
                 ])
-                .split(sidebar_content[10]);
+                .split(sidebar_content[9]);
             let is_legend_focused = focus == ChartFocus::ShowLegend;
             let legend_label_style = if is_legend_focused {
                 Style::default().fg(active_color)
@@ -400,7 +383,7 @@ pub fn render_chart_view(
                 .render(legend_row[1], buf);
 
             render_number_option(
-                sidebar_content[11],
+                sidebar_content[10],
                 buf,
                 "Limit Rows:",
                 &modal.row_limit_display(),

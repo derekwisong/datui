@@ -367,6 +367,7 @@ fn test_merge_does_not_override_with_defaults() {
         row_start_index: 0,
         table_cell_padding: 1,
         column_colors: true,
+        sidebar_width: None,
     };
 
     let override_config = DisplayConfig::default();

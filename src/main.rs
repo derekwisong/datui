@@ -162,6 +162,7 @@ mod tests {
             s3_secret_access_key: None,
             s3_region: None,
             polars_streaming: None,
+            workaround_pivot_date_index: None,
         };
         let opts: OpenOptions = (&args).into();
         assert_eq!(opts.skip_lines, Some(1));

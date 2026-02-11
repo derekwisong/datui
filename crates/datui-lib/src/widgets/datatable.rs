@@ -104,6 +104,8 @@ pub struct DataTableState {
     decompress_temp_file: Option<NamedTempFile>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     pub polars_streaming: bool,
+    /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
+    workaround_pivot_date_index: bool,
 }
 
 /// Inferred type for an Excel column (preserves numbers, bools, dates; avoids stringifying).
@@ -170,6 +172,7 @@ impl DataTableState {
             partition_columns: None,
             decompress_temp_file: None,
             polars_streaming,
+            workaround_pivot_date_index: true,
         })
     }
 
@@ -185,6 +188,7 @@ impl DataTableState {
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
+        state.workaround_pivot_date_index = options.workaround_pivot_date_index;
         Ok(state)
     }
 
@@ -250,6 +254,7 @@ impl DataTableState {
             partition_columns,
             decompress_temp_file: None,
             polars_streaming: options.polars_streaming,
+            workaround_pivot_date_index: options.workaround_pivot_date_index,
         })
     }
 
@@ -2174,12 +2179,13 @@ impl DataTableState {
             .map(|name| col(name.as_str()))
             .collect();
 
+        let use_streaming = self.polars_streaming;
         let mut full_df = match collect_lazy(
             self.lf
                 .clone()
                 .select(all_columns)
                 .slice(buffer_start as i64, buffer_size as u32),
-            self.polars_streaming,
+            use_streaming,
         ) {
             Ok(df) => df,
             Err(e) => {
@@ -2620,6 +2626,23 @@ impl DataTableState {
             .saturating_sub(self.buffered_start_row)
     }
 
+    /// Current scrollable display buffer. None until first collect().
+    pub fn display_df(&self) -> Option<&DataFrame> {
+        self.df.as_ref()
+    }
+
+    /// Visible-window slice of the display buffer (same as passed to render_dataframe).
+    pub fn display_slice_df(&self) -> Option<DataFrame> {
+        let df = self.df.as_ref()?;
+        let offset = self.start_row.saturating_sub(self.buffered_start_row);
+        let slice_len = self.visible_rows.min(df.height().saturating_sub(offset));
+        if offset < df.height() && slice_len > 0 {
+            Some(df.slice(offset as i64, slice_len))
+        } else {
+            None
+        }
+    }
+
     /// Maximum buffer size in rows (0 = no limit).
     pub fn max_buffered_rows(&self) -> usize {
         self.max_buffered_rows
@@ -2774,6 +2797,41 @@ impl DataTableState {
         }
     }
 
+    /// Polars 0.52 pivot_stable panics (from_physical Date/UInt32) when index is Date/Datetime. Cast to Int32, restore after.
+    /// Returns (modified df, list of (column name, original dtype) to restore after pivot).
+    fn cast_temporal_index_columns_for_pivot(
+        df: &DataFrame,
+        index: &[String],
+    ) -> Result<(DataFrame, Vec<(String, DataType)>)> {
+        let mut out = df.clone();
+        let mut restore = Vec::new();
+        for name in index {
+            if let Ok(s) = out.column(name) {
+                let dtype = s.dtype();
+                if matches!(dtype, DataType::Date | DataType::Datetime(_, _)) {
+                    restore.push((name.clone(), dtype.clone()));
+                    let casted = s.cast(&DataType::Int32)?;
+                    out.with_column(casted)?;
+                }
+            }
+        }
+        Ok((out, restore))
+    }
+
+    /// Restore Date/Datetime types on index columns after pivot.
+    fn restore_temporal_index_columns_after_pivot(
+        pivoted: &mut DataFrame,
+        restore: &[(String, DataType)],
+    ) -> Result<()> {
+        for (name, dtype) in restore {
+            if let Ok(s) = pivoted.column(name) {
+                let restored = s.cast(dtype)?;
+                pivoted.with_column(restored)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Pivot the current `LazyFrame` (long → wide). Never uses `original_lf`.
     /// Collects current `lf`, runs `pivot_stable`, then replaces `lf` with result.
     /// We use pivot_stable for all aggregation types: Polars' non-stable pivot() prints
@@ -2787,15 +2845,28 @@ impl DataTableState {
         } else {
             Some(index_str)
         };
-        let pivoted = pivot_stable(
-            &df,
+
+        let (df_for_pivot, temporal_index_restore) = if self.workaround_pivot_date_index {
+            let (df_w, restore) =
+                Self::cast_temporal_index_columns_for_pivot(&df, spec.index.as_slice())?;
+            (df_w, Some(restore))
+        } else {
+            (df.clone(), None)
+        };
+        let sort_new_columns = spec.sort_columns.unwrap_or(true);
+        let mut pivoted = pivot_stable(
+            &df_for_pivot,
             [spec.pivot_column.as_str()],
             index_opt,
             Some([spec.value_column.as_str()]),
-            spec.sort_columns,
+            sort_new_columns,
             Some(agg_expr),
             None,
         )?;
+        if let Some(restore) = &temporal_index_restore {
+            Self::restore_temporal_index_columns_after_pivot(&mut pivoted, restore)?;
+        }
+
         self.last_pivot_spec = Some(spec.clone());
         self.last_melt_spec = None;
         self.replace_lf_after_reshape(pivoted.lazy())?;
@@ -4269,7 +4340,7 @@ mod tests {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::Last,
-            sort_columns: false,
+            sort_columns: None,
         };
         state.pivot(&spec).unwrap();
         let df = state.lf.clone().collect().unwrap();
@@ -4291,7 +4362,7 @@ mod tests {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::Last,
-            sort_columns: false,
+            sort_columns: None,
         };
         state.pivot(&spec).unwrap();
         let df = state.lf.clone().collect().unwrap();
@@ -4311,7 +4382,7 @@ mod tests {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::First,
-            sort_columns: false,
+            sort_columns: None,
         };
         state.pivot(&spec).unwrap();
         let df = state.lf.clone().collect().unwrap();
@@ -4330,7 +4401,7 @@ mod tests {
                 pivot_column: "key".to_string(),
                 value_column: "value".to_string(),
                 aggregation: PivotAggregation::Min,
-                sort_columns: false,
+                sort_columns: None,
             })
             .unwrap();
         let df_min = state_min.lf.clone().collect().unwrap();
@@ -4346,7 +4417,7 @@ mod tests {
                 pivot_column: "key".to_string(),
                 value_column: "value".to_string(),
                 aggregation: PivotAggregation::Max,
-                sort_columns: false,
+                sort_columns: None,
             })
             .unwrap();
         let df_max = state_max.lf.clone().collect().unwrap();
@@ -4366,7 +4437,7 @@ mod tests {
                 pivot_column: "key".to_string(),
                 value_column: "value".to_string(),
                 aggregation: PivotAggregation::Avg,
-                sort_columns: false,
+                sort_columns: None,
             })
             .unwrap();
         let df_avg = state_avg.lf.clone().collect().unwrap();
@@ -4384,7 +4455,7 @@ mod tests {
                 pivot_column: "key".to_string(),
                 value_column: "value".to_string(),
                 aggregation: PivotAggregation::Count,
-                sort_columns: false,
+                sort_columns: None,
             })
             .unwrap();
         let df_count = state_count.lf.clone().collect().unwrap();
@@ -4407,7 +4478,7 @@ mod tests {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::Last,
-            sort_columns: false,
+            sort_columns: None,
         };
         state.pivot(&spec).unwrap();
         let out = state.lf.clone().collect().unwrap();
@@ -4472,7 +4543,7 @@ mod tests {
             pivot_column: "key".to_string(),
             value_column: "value".to_string(),
             aggregation: PivotAggregation::Last,
-            sort_columns: false,
+            sort_columns: None,
         };
         state.pivot(&spec).unwrap();
         let df = state.lf.clone().collect().unwrap();

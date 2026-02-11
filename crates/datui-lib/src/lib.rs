@@ -9,19 +9,12 @@ use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 use polars::prelude::{PlPathRef, ScanArgsParquet};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
-use widgets::info::{
-    read_parquet_metadata, DataTableInfo, InfoContext, InfoFocus, InfoModal, InfoTab,
-    ParquetMetadataCache,
-};
+use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
 
-use ratatui::layout::{Alignment, Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, Gauge, List, ListItem, Paragraph, Row, StatefulWidget,
-    Table, Tabs,
-};
+use ratatui::widgets::{Block, Clear};
 
 pub mod analysis_modal;
 pub mod cache;
@@ -36,9 +29,10 @@ pub mod config;
 pub mod error_display;
 pub mod export_modal;
 pub mod filter_modal;
-mod help_strings;
+pub(crate) mod help_strings;
 pub mod pivot_melt_modal;
 mod query;
+mod render;
 pub mod sort_filter_modal;
 pub mod sort_modal;
 mod source;
@@ -68,10 +62,8 @@ use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus};
 pub use template::{Template, TemplateManager};
 use widgets::controls::Controls;
-use widgets::datatable::{DataTable, DataTableState};
+use widgets::datatable::DataTableState;
 use widgets::debug::DebugState;
-use widgets::export;
-use widgets::pivot_melt;
 use widgets::template_modal::{CreateFocus, TemplateFocus, TemplateModal, TemplateModalMode};
 use widgets::text_input::{TextInput, TextInputEvent};
 
@@ -225,6 +217,8 @@ pub struct OpenOptions {
     pub s3_region_override: Option<String>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     pub polars_streaming: bool,
+    /// When true, cast Date/Datetime pivot index columns to Int32 before pivot to avoid Polars 0.52 panic.
+    pub workaround_pivot_date_index: bool,
 }
 
 impl OpenOptions {
@@ -252,6 +246,7 @@ impl OpenOptions {
             s3_secret_access_key_override: None,
             s3_region_override: None,
             polars_streaming: true,
+            workaround_pivot_date_index: true,
         }
     }
 }
@@ -285,6 +280,11 @@ impl OpenOptions {
 
     pub fn with_compression(mut self, compression: CompressionFormat) -> Self {
         self.compression = Some(compression);
+        self
+    }
+
+    pub fn with_workaround_pivot_date_index(mut self, workaround_pivot_date_index: bool) -> Self {
+        self.workaround_pivot_date_index = workaround_pivot_date_index;
         self
     }
 }
@@ -379,6 +379,8 @@ impl OpenOptions {
             .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok());
 
         opts.polars_streaming = config.performance.polars_streaming;
+
+        opts.workaround_pivot_date_index = args.workaround_pivot_date_index.unwrap_or(true);
 
         opts
     }
@@ -702,13 +704,13 @@ struct TemplateApplicationState {
 }
 
 #[derive(Default)]
-struct ChartCache {
-    xy: Option<ChartCacheXY>,
-    x_range: Option<ChartCacheXRange>,
-    histogram: Option<ChartCacheHistogram>,
-    box_plot: Option<ChartCacheBoxPlot>,
-    kde: Option<ChartCacheKde>,
-    heatmap: Option<ChartCacheHeatmap>,
+pub(crate) struct ChartCache {
+    pub(crate) xy: Option<ChartCacheXY>,
+    pub(crate) x_range: Option<ChartCacheXRange>,
+    pub(crate) histogram: Option<ChartCacheHistogram>,
+    pub(crate) box_plot: Option<ChartCacheBoxPlot>,
+    pub(crate) kde: Option<ChartCacheKde>,
+    pub(crate) heatmap: Option<ChartCacheHeatmap>,
 }
 
 impl ChartCache {
@@ -717,50 +719,49 @@ impl ChartCache {
     }
 }
 
-struct ChartCacheXY {
-    x_column: String,
-    y_columns: Vec<String>,
-    row_limit: Option<usize>,
-    series: Vec<Vec<(f64, f64)>>,
-    /// Log-scaled series when log_scale was requested; filled on first use to avoid per-frame clone.
-    series_log: Option<Vec<Vec<(f64, f64)>>>,
-    x_axis_kind: chart_data::XAxisTemporalKind,
+pub(crate) struct ChartCacheXY {
+    pub(crate) x_column: String,
+    pub(crate) y_columns: Vec<String>,
+    pub(crate) row_limit: Option<usize>,
+    pub(crate) series: Vec<Vec<(f64, f64)>>,
+    pub(crate) series_log: Option<Vec<Vec<(f64, f64)>>>,
+    pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
 }
 
-struct ChartCacheXRange {
-    x_column: String,
-    row_limit: Option<usize>,
-    x_min: f64,
-    x_max: f64,
-    x_axis_kind: chart_data::XAxisTemporalKind,
+pub(crate) struct ChartCacheXRange {
+    pub(crate) x_column: String,
+    pub(crate) row_limit: Option<usize>,
+    pub(crate) x_min: f64,
+    pub(crate) x_max: f64,
+    pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
 }
 
-struct ChartCacheHistogram {
-    column: String,
-    bins: usize,
-    row_limit: Option<usize>,
-    data: chart_data::HistogramData,
+pub(crate) struct ChartCacheHistogram {
+    pub(crate) column: String,
+    pub(crate) bins: usize,
+    pub(crate) row_limit: Option<usize>,
+    pub(crate) data: chart_data::HistogramData,
 }
 
-struct ChartCacheBoxPlot {
-    column: String,
-    row_limit: Option<usize>,
-    data: chart_data::BoxPlotData,
+pub(crate) struct ChartCacheBoxPlot {
+    pub(crate) column: String,
+    pub(crate) row_limit: Option<usize>,
+    pub(crate) data: chart_data::BoxPlotData,
 }
 
-struct ChartCacheKde {
-    column: String,
-    bandwidth_factor: f64,
-    row_limit: Option<usize>,
-    data: chart_data::KdeData,
+pub(crate) struct ChartCacheKde {
+    pub(crate) column: String,
+    pub(crate) bandwidth_factor: f64,
+    pub(crate) row_limit: Option<usize>,
+    pub(crate) data: chart_data::KdeData,
 }
 
-struct ChartCacheHeatmap {
-    x_column: String,
-    y_column: String,
-    bins: usize,
-    row_limit: Option<usize>,
-    data: chart_data::HeatmapData,
+pub(crate) struct ChartCacheHeatmap {
+    pub(crate) x_column: String,
+    pub(crate) y_column: String,
+    pub(crate) bins: usize,
+    pub(crate) row_limit: Option<usize>,
+    pub(crate) data: chart_data::HeatmapData,
 }
 
 pub struct App {
@@ -787,7 +788,7 @@ pub struct App {
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
-    chart_cache: ChartCache,
+    pub(crate) chart_cache: ChartCache,
     error_modal: ErrorModal,
     success_modal: SuccessModal,
     confirmation_modal: ConfirmationModal,
@@ -909,53 +910,6 @@ impl App {
         }
 
         new_path
-    }
-
-    /// Render loading/export progress as a popover: box with frame, gauge (25% width when area is full frame).
-    /// Uses theme colors for border and gauge. For loading, call with centered_rect_loading(area).
-    fn render_loading_gauge(
-        loading_state: &LoadingState,
-        area: Rect,
-        buf: &mut Buffer,
-        theme: &Theme,
-    ) {
-        let (title, label_text, progress_percent) = match loading_state {
-            LoadingState::Loading {
-                current_phase,
-                progress_percent,
-                ..
-            } => ("Loading", current_phase.clone(), progress_percent),
-            LoadingState::Exporting {
-                file_path,
-                current_phase,
-                progress_percent,
-            } => {
-                let label = format!("{}: {}", current_phase, file_path.display());
-                ("Exporting", label, progress_percent)
-            }
-            LoadingState::Idle => return,
-        };
-
-        Clear.render(area, buf);
-
-        let border_color = theme.get("modal_border");
-        let gauge_fill_color = theme.get("primary_chart_series_color");
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(title)
-            .border_style(Style::default().fg(border_color));
-
-        let inner = block.inner(area);
-        block.render(area, buf);
-
-        let gauge = Gauge::default()
-            .gauge_style(Style::default().fg(gauge_fill_color))
-            .percent(*progress_percent)
-            .label(label_text);
-
-        gauge.render(inner, buf);
     }
 
     pub fn new(events: Sender<AppEvent>) -> App {
@@ -3206,7 +3160,9 @@ impl App {
                 KeyCode::Tab => self.pivot_melt_modal.next_focus(),
                 KeyCode::BackTab => self.pivot_melt_modal.prev_focus(),
                 KeyCode::Left => {
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter {
+                    if self.pivot_melt_modal.focus == PivotMeltFocus::PivotAggregation {
+                        self.pivot_melt_modal.pivot_move_aggregation_step(4, 0, -1);
+                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter {
                         self.pivot_melt_modal
                             .pivot_filter_input
                             .handle_key(event, None);
@@ -3235,7 +3191,18 @@ impl App {
                     }
                 }
                 KeyCode::Right => {
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter {
+                    if self.pivot_melt_modal.focus == PivotMeltFocus::PivotAggregation {
+                        self.pivot_melt_modal.pivot_move_aggregation_step(4, 0, 1);
+                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::PivotFilter {
+                        self.pivot_melt_modal
+                            .pivot_filter_input
+                            .handle_key(event, None);
+                        self.pivot_melt_modal.pivot_index_table.select(None);
+                    } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltFilter {
+                        self.pivot_melt_modal
+                            .melt_filter_input
+                            .handle_key(event, None);
+                        self.pivot_melt_modal.melt_index_table.select(None);
                     } else if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern {
                         let n = self.pivot_melt_modal.melt_pattern.chars().count();
                         if self.pivot_melt_modal.melt_pattern_cursor < n {
@@ -3289,67 +3256,67 @@ impl App {
                     }
                     _ => {}
                 },
-                KeyCode::Up | KeyCode::Char('k') => match self.pivot_melt_modal.focus {
-                    PivotMeltFocus::PivotIndexList => {
-                        self.pivot_melt_modal.pivot_move_index_selection(false);
+                KeyCode::Up | KeyCode::Char('k') if !pivot_melt_text_focus => {
+                    match self.pivot_melt_modal.focus {
+                        PivotMeltFocus::PivotIndexList => {
+                            self.pivot_melt_modal.pivot_move_index_selection(false);
+                        }
+                        PivotMeltFocus::PivotPivotCol => {
+                            self.pivot_melt_modal.pivot_move_pivot_selection(false);
+                        }
+                        PivotMeltFocus::PivotValueCol => {
+                            self.pivot_melt_modal.pivot_move_value_selection(false);
+                        }
+                        PivotMeltFocus::PivotAggregation => {
+                            self.pivot_melt_modal.pivot_move_aggregation_step(4, -1, 0);
+                        }
+                        PivotMeltFocus::MeltIndexList => {
+                            self.pivot_melt_modal.melt_move_index_selection(false);
+                        }
+                        PivotMeltFocus::MeltStrategy => {
+                            self.pivot_melt_modal.melt_move_strategy(false);
+                        }
+                        PivotMeltFocus::MeltType => {
+                            self.pivot_melt_modal.melt_move_type_filter(false);
+                        }
+                        PivotMeltFocus::MeltExplicitList => {
+                            self.pivot_melt_modal.melt_move_explicit_selection(false);
+                        }
+                        _ => {}
                     }
-                    PivotMeltFocus::PivotPivotCol => {
-                        self.pivot_melt_modal.pivot_move_pivot_selection(false);
+                }
+                KeyCode::Down | KeyCode::Char('j') if !pivot_melt_text_focus => {
+                    match self.pivot_melt_modal.focus {
+                        PivotMeltFocus::PivotIndexList => {
+                            self.pivot_melt_modal.pivot_move_index_selection(true);
+                        }
+                        PivotMeltFocus::PivotPivotCol => {
+                            self.pivot_melt_modal.pivot_move_pivot_selection(true);
+                        }
+                        PivotMeltFocus::PivotValueCol => {
+                            self.pivot_melt_modal.pivot_move_value_selection(true);
+                        }
+                        PivotMeltFocus::PivotAggregation => {
+                            self.pivot_melt_modal.pivot_move_aggregation_step(4, 1, 0);
+                        }
+                        PivotMeltFocus::MeltIndexList => {
+                            self.pivot_melt_modal.melt_move_index_selection(true);
+                        }
+                        PivotMeltFocus::MeltStrategy => {
+                            self.pivot_melt_modal.melt_move_strategy(true);
+                        }
+                        PivotMeltFocus::MeltType => {
+                            self.pivot_melt_modal.melt_move_type_filter(true);
+                        }
+                        PivotMeltFocus::MeltExplicitList => {
+                            self.pivot_melt_modal.melt_move_explicit_selection(true);
+                        }
+                        _ => {}
                     }
-                    PivotMeltFocus::PivotValueCol => {
-                        self.pivot_melt_modal.pivot_move_value_selection(false);
-                    }
-                    PivotMeltFocus::PivotAggregation => {
-                        self.pivot_melt_modal.pivot_move_aggregation(false);
-                    }
-                    PivotMeltFocus::MeltIndexList => {
-                        self.pivot_melt_modal.melt_move_index_selection(false);
-                    }
-                    PivotMeltFocus::MeltStrategy => {
-                        self.pivot_melt_modal.melt_move_strategy(false);
-                    }
-                    PivotMeltFocus::MeltType => {
-                        self.pivot_melt_modal.melt_move_type_filter(false);
-                    }
-                    PivotMeltFocus::MeltExplicitList => {
-                        self.pivot_melt_modal.melt_move_explicit_selection(false);
-                    }
-                    _ => {}
-                },
-                KeyCode::Down | KeyCode::Char('j') => match self.pivot_melt_modal.focus {
-                    PivotMeltFocus::PivotIndexList => {
-                        self.pivot_melt_modal.pivot_move_index_selection(true);
-                    }
-                    PivotMeltFocus::PivotPivotCol => {
-                        self.pivot_melt_modal.pivot_move_pivot_selection(true);
-                    }
-                    PivotMeltFocus::PivotValueCol => {
-                        self.pivot_melt_modal.pivot_move_value_selection(true);
-                    }
-                    PivotMeltFocus::PivotAggregation => {
-                        self.pivot_melt_modal.pivot_move_aggregation(true);
-                    }
-                    PivotMeltFocus::MeltIndexList => {
-                        self.pivot_melt_modal.melt_move_index_selection(true);
-                    }
-                    PivotMeltFocus::MeltStrategy => {
-                        self.pivot_melt_modal.melt_move_strategy(true);
-                    }
-                    PivotMeltFocus::MeltType => {
-                        self.pivot_melt_modal.melt_move_type_filter(true);
-                    }
-                    PivotMeltFocus::MeltExplicitList => {
-                        self.pivot_melt_modal.melt_move_explicit_selection(true);
-                    }
-                    _ => {}
-                },
-                KeyCode::Char(' ') => match self.pivot_melt_modal.focus {
+                }
+                KeyCode::Char(' ') if !pivot_melt_text_focus => match self.pivot_melt_modal.focus {
                     PivotMeltFocus::PivotIndexList => {
                         self.pivot_melt_modal.pivot_toggle_index_at_selection();
-                    }
-                    PivotMeltFocus::PivotSortToggle => {
-                        self.pivot_melt_modal.sort_new_columns =
-                            !self.pivot_melt_modal.sort_new_columns;
                     }
                     PivotMeltFocus::MeltIndexList => {
                         self.pivot_melt_modal.melt_toggle_index_at_selection();
@@ -3892,16 +3859,46 @@ impl App {
                 KeyCode::Char('r') => {
                     if self.sampling_threshold.is_some() {
                         self.analysis_modal.recalculate();
-                        // Invalidate current tool's cache so it recalculates with new seed
                         match self.analysis_modal.selected_tool {
                             Some(analysis_modal::AnalysisTool::Describe) => {
                                 self.analysis_modal.describe_results = None;
+                                self.analysis_modal.computing = Some(AnalysisProgress {
+                                    phase: "Describing data".to_string(),
+                                    current: 0,
+                                    total: 1,
+                                });
+                                self.analysis_computation = Some(AnalysisComputationState {
+                                    df: None,
+                                    schema: None,
+                                    partial_stats: Vec::new(),
+                                    current: 0,
+                                    total: 0,
+                                    total_rows: 0,
+                                    sample_seed: self.analysis_modal.random_seed,
+                                    sample_size: None,
+                                });
+                                self.busy = true;
+                                return Some(AppEvent::AnalysisChunk);
                             }
                             Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
                                 self.analysis_modal.distribution_results = None;
+                                self.analysis_modal.computing = Some(AnalysisProgress {
+                                    phase: "Distribution".to_string(),
+                                    current: 0,
+                                    total: 1,
+                                });
+                                self.busy = true;
+                                return Some(AppEvent::AnalysisDistributionCompute);
                             }
                             Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
                                 self.analysis_modal.correlation_results = None;
+                                self.analysis_modal.computing = Some(AnalysisProgress {
+                                    phase: "Correlation".to_string(),
+                                    current: 0,
+                                    total: 1,
+                                });
+                                self.busy = true;
+                                return Some(AppEvent::AnalysisCorrelationCompute);
                             }
                             None => {}
                         }
@@ -4397,7 +4394,19 @@ impl App {
                     }
                 }
                 KeyCode::BackTab if self.template_modal.delete_confirm => {
-                    // Toggle between Cancel and Delete buttons (reverse)
+                    self.template_modal.delete_confirm_focus =
+                        !self.template_modal.delete_confirm_focus;
+                }
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Char('h')
+                | KeyCode::Char('l')
+                | KeyCode::Char('j')
+                | KeyCode::Char('k')
+                    if self.template_modal.delete_confirm =>
+                {
                     self.template_modal.delete_confirm_focus =
                         !self.template_modal.delete_confirm_focus;
                 }
@@ -5010,6 +5019,40 @@ impl App {
                             }
                         }
                     }
+                }
+                KeyCode::Char('j')
+                    if self.template_modal.mode == TemplateModalMode::List
+                        && self.template_modal.focus == TemplateFocus::TemplateList
+                        && !self.template_modal.delete_confirm =>
+                {
+                    let i = match self.template_modal.table_state.selected() {
+                        Some(i) => {
+                            if i >= self.template_modal.templates.len().saturating_sub(1) {
+                                0
+                            } else {
+                                i + 1
+                            }
+                        }
+                        None => 0,
+                    };
+                    self.template_modal.table_state.select(Some(i));
+                }
+                KeyCode::Char('k')
+                    if self.template_modal.mode == TemplateModalMode::List
+                        && self.template_modal.focus == TemplateFocus::TemplateList
+                        && !self.template_modal.delete_confirm =>
+                {
+                    let i = match self.template_modal.table_state.selected() {
+                        Some(i) => {
+                            if i == 0 {
+                                self.template_modal.templates.len().saturating_sub(1)
+                            } else {
+                                i - 1
+                            }
+                        }
+                        None => 0,
+                    };
+                    self.template_modal.table_state.select(Some(i));
                 }
                 KeyCode::Char(c)
                     if self.template_modal.mode == TemplateModalMode::Create
@@ -5933,6 +5976,7 @@ impl App {
 
     pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
         self.debug.num_events += 1;
+
         match event {
             AppEvent::Key(key) => {
                 let is_column_scroll = matches!(
@@ -8062,2537 +8106,141 @@ impl Widget for &mut App {
             self.debug.show_help_at_render = self.show_help;
         }
 
-        // Clear entire area first so no ghost text from any widget (loading gauge label,
-        // modals, controls, etc.) can persist when layout or visibility changes (e.g. after pivot).
-        Clear.render(area, buf);
+        use crate::render::context::RenderContext;
+        use crate::render::layout::{app_layout, centered_rect_loading};
+        use crate::render::main_view::MainViewContent;
 
-        // Set background color for the entire application area
+        let ctx = RenderContext::from_theme_and_config(
+            &self.theme,
+            self.table_cell_padding,
+            self.column_colors,
+        );
+
+        let main_view_content = MainViewContent::from_app_state(
+            self.analysis_modal.active,
+            self.input_mode == InputMode::Chart,
+        );
+
+        Clear.render(area, buf);
         let background_color = self.color("background");
         Block::default()
             .style(Style::default().bg(background_color))
             .render(area, buf);
 
-        let mut constraints = vec![Constraint::Fill(1)];
-
-        // Adjust layout if sorting to show panel on the right
-        let mut has_error = false;
-        let mut err_msg = String::new();
-        if let Some(state) = &self.data_table_state {
-            if let Some(e) = &state.error {
-                has_error = true;
-                err_msg = crate::error_display::user_message_from_polars(e);
-            }
-        }
-
-        if self.input_mode == InputMode::Editing {
-            let height = if self.input_type == Some(InputType::Search) {
-                if has_error {
-                    9
-                } else {
-                    5
-                }
-            } else if has_error {
-                6
-            } else {
-                3
-            };
-            constraints.insert(1, Constraint::Length(height));
-        }
-        constraints.push(Constraint::Length(1)); // Controls
-        if self.debug.enabled {
-            constraints.push(Constraint::Length(1));
-        }
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(constraints)
-            .split(area);
-
-        let main_area = layout[0];
-        // Clear entire main content so no ghost text from modals or previous layout persists (e.g. after pivot).
+        let app_layout = app_layout(area, self.debug.enabled);
+        let main_area = app_layout.main_view;
         Clear.render(main_area, buf);
-        let mut data_area = main_area;
-        let mut sort_area = Rect::default();
 
-        if self.sort_filter_modal.active {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(0), Constraint::Length(50)])
-                .split(main_area);
-            data_area = chunks[0];
-            sort_area = chunks[1];
-        }
-        if self.template_modal.active {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(0), Constraint::Length(80)]) // Wider for 30 char descriptions
-                .split(main_area);
-            data_area = chunks[0];
-            sort_area = chunks[1]; // Reuse sort_area for template modal
-        }
-        if self.pivot_melt_modal.active {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(0), Constraint::Length(50)])
-                .split(main_area);
-            data_area = chunks[0];
-            sort_area = chunks[1];
-        }
-        if self.info_modal.active {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(0), Constraint::Max(72)])
-                .split(main_area);
-            data_area = chunks[0];
-            sort_area = chunks[1];
-        }
-
-        // Extract colors and table config before mutable borrow to avoid borrow checker issues
-        let primary_color = self.color("keybind_hints");
-        let _controls_bg_color = self.color("controls_bg");
-        let table_header_color = self.color("table_header");
-        let row_numbers_color = self.color("row_numbers");
-        let column_separator_color = self.color("column_separator");
-        let table_header_bg_color = self.color("table_header_bg");
-        let modal_border_color = self.color("modal_border");
-        let info_active_color = self.color("modal_border_active");
-        let info_primary_color = self.color("text_primary");
-        let table_cell_padding = self.table_cell_padding;
-        let alternate_row_bg = self.theme.get_optional("alternate_row_color");
-        let column_colors = self.column_colors;
-        let (str_col, int_col, float_col, bool_col, temporal_col) = if column_colors {
-            (
-                self.theme.get("str_col"),
-                self.theme.get("int_col"),
-                self.theme.get("float_col"),
-                self.theme.get("bool_col"),
-                self.theme.get("temporal_col"),
-            )
-        } else {
-            (
-                Color::Reset,
-                Color::Reset,
-                Color::Reset,
-                Color::Reset,
-                Color::Reset,
-            )
-        };
-
-        // Parquet metadata is loaded via DoLoadParquetMetadata when info panel is opened (not in render)
-
-        match &mut self.data_table_state {
-            Some(state) => {
-                // Render breadcrumb if drilled down
-                let mut table_area = data_area;
-                if state.is_drilled_down() {
-                    if let Some(ref key_values) = state.drilled_down_group_key {
-                        let breadcrumb_layout = Layout::default()
-                            .direction(Direction::Vertical)
-                            .constraints([Constraint::Length(3), Constraint::Fill(1)])
-                            .split(data_area);
-
-                        // Render breadcrumb with better styling
-                        let empty_vec = Vec::new();
-                        let key_columns = state
-                            .drilled_down_group_key_columns
-                            .as_ref()
-                            .unwrap_or(&empty_vec);
-                        let breadcrumb_parts: Vec<String> = key_columns
-                            .iter()
-                            .zip(key_values.iter())
-                            .map(|(col, val)| format!("{}={}", col, val))
-                            .collect();
-                        let breadcrumb_text = format!(
-                            "← Group: {} (Press Esc to go back)",
-                            breadcrumb_parts.join(" | ")
-                        );
-
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .border_style(Style::default().fg(primary_color))
-                            .title("Breadcrumb")
-                            .render(breadcrumb_layout[0], buf);
-
-                        let inner = Block::default().inner(breadcrumb_layout[0]);
-                        Paragraph::new(breadcrumb_text)
-                            .style(
-                                Style::default()
-                                    .fg(primary_color)
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                            .wrap(ratatui::widgets::Wrap { trim: true })
-                            .render(inner, buf);
-
-                        table_area = breadcrumb_layout[1];
-                    }
-                }
-
-                Clear.render(table_area, buf);
-                let mut dt = DataTable::new()
-                    .with_colors(
-                        table_header_bg_color,
-                        table_header_color,
-                        row_numbers_color,
-                        column_separator_color,
-                    )
-                    .with_cell_padding(table_cell_padding)
-                    .with_alternate_row_bg(alternate_row_bg);
-                if column_colors {
-                    dt = dt.with_column_type_colors(
-                        str_col,
-                        int_col,
-                        float_col,
-                        bool_col,
-                        temporal_col,
-                    );
-                }
-                dt.render(table_area, buf, state);
-                if self.info_modal.active {
-                    let ctx = InfoContext {
-                        path: self.path.as_deref(),
-                        format: self.original_file_format,
-                        parquet_metadata: self.parquet_metadata_cache.as_ref(),
-                    };
-                    let mut info_widget = DataTableInfo::new(
-                        state,
-                        ctx,
-                        &mut self.info_modal,
-                        modal_border_color,
-                        info_active_color,
-                        info_primary_color,
-                    );
-                    info_widget.render(sort_area, buf);
-                }
-            }
-            None => {
-                Paragraph::new("No data loaded").render(layout[0], buf);
-            }
-        }
-
-        let mut controls_area = layout[1];
-        let debug_area_index = layout.len() - 1;
-
-        if self.input_mode == InputMode::Editing {
-            let input_area = layout[1];
-            controls_area = layout[layout.len() - 1];
-
-            let title = match self.input_type {
-                Some(InputType::Search) => "Query",
-                Some(InputType::Filter) => "Filter",
-                Some(InputType::GoToLine) => "Go to line",
-                None => "Input",
-            };
-
-            let mut border_style = Style::default();
-            if has_error {
-                border_style = Style::default().fg(self.color("error"));
-            }
-
-            if self.debug.enabled {
-                controls_area = layout[layout.len() - 2];
-            }
-
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title(title)
-                .border_style(border_style);
-            let inner_area = block.inner(input_area);
-            block.render(input_area, buf);
-
-            if self.input_type == Some(InputType::Search) {
-                let border_c = self.color("modal_border");
-                let active_c = self.color("modal_border_active");
-                let tab_bar_focused = self.query_focus == QueryFocus::TabBar;
-
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(2), Constraint::Min(1)])
-                    .split(inner_area);
-
-                let tab_line_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Length(1)])
-                    .split(chunks[0]);
-                let tab_row_chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Min(0), Constraint::Max(40)])
-                    .split(tab_line_chunks[0]);
-                let tab_titles = vec!["SQL-Like", "Fuzzy", "SQL"];
-                let tabs = Tabs::new(tab_titles)
-                    .style(Style::default().fg(border_c))
-                    .highlight_style(
-                        Style::default()
-                            .fg(active_c)
-                            .add_modifier(Modifier::REVERSED),
-                    )
-                    .select(self.query_tab.index());
-                tabs.render(tab_row_chunks[0], buf);
-                let desc_text = match self.query_tab {
-                    QueryTab::SqlLike => "select [cols] [by ...] [where ...]",
-                    QueryTab::Fuzzy => "Search text to find matching rows",
-                    QueryTab::Sql => {
-                        #[cfg(feature = "sql")]
-                        {
-                            "Table: df"
-                        }
-                        #[cfg(not(feature = "sql"))]
-                        {
-                            ""
-                        }
-                    }
-                };
-                if !desc_text.is_empty() {
-                    Paragraph::new(desc_text)
-                        .style(Style::default().fg(self.color("text_secondary")))
-                        .alignment(Alignment::Right)
-                        .render(tab_row_chunks[1], buf);
-                }
-                let line_style = if tab_bar_focused {
-                    Style::default().fg(active_c)
-                } else {
-                    Style::default().fg(border_c)
-                };
-                Block::default()
-                    .borders(Borders::BOTTOM)
-                    .border_type(BorderType::Rounded)
-                    .border_style(line_style)
-                    .render(tab_line_chunks[1], buf);
-
-                match self.query_tab {
-                    QueryTab::SqlLike => {
-                        if has_error {
-                            let body_chunks = Layout::default()
-                                .direction(Direction::Vertical)
-                                .constraints([Constraint::Length(1), Constraint::Min(1)])
-                                .split(chunks[1]);
-                            self.query_input
-                                .set_focused(self.query_focus == QueryFocus::Input);
-                            (&self.query_input).render(body_chunks[0], buf);
-                            Paragraph::new(err_msg)
-                                .style(Style::default().fg(self.color("error")))
-                                .wrap(ratatui::widgets::Wrap { trim: true })
-                                .render(body_chunks[1], buf);
-                        } else {
-                            self.query_input
-                                .set_focused(self.query_focus == QueryFocus::Input);
-                            (&self.query_input).render(chunks[1], buf);
-                        }
-                    }
-                    QueryTab::Fuzzy => {
-                        self.query_input.set_focused(false);
-                        self.sql_input.set_focused(false);
-                        self.fuzzy_input
-                            .set_focused(self.query_focus == QueryFocus::Input);
-                        (&self.fuzzy_input).render(chunks[1], buf);
-                    }
-                    QueryTab::Sql => {
-                        self.query_input.set_focused(false);
-                        #[cfg(feature = "sql")]
-                        {
-                            if has_error {
-                                let body_chunks = Layout::default()
-                                    .direction(Direction::Vertical)
-                                    .constraints([Constraint::Length(1), Constraint::Min(1)])
-                                    .split(chunks[1]);
-                                self.sql_input
-                                    .set_focused(self.query_focus == QueryFocus::Input);
-                                (&self.sql_input).render(body_chunks[0], buf);
-                                Paragraph::new(err_msg)
-                                    .style(Style::default().fg(self.color("error")))
-                                    .wrap(ratatui::widgets::Wrap { trim: true })
-                                    .render(body_chunks[1], buf);
-                            } else {
-                                self.sql_input
-                                    .set_focused(self.query_focus == QueryFocus::Input);
-                                (&self.sql_input).render(chunks[1], buf);
-                            }
-                        }
-                        #[cfg(not(feature = "sql"))]
-                        {
-                            self.sql_input.set_focused(false);
-                            Paragraph::new(
-                                "SQL support not compiled in (build with --features sql)",
-                            )
-                            .style(Style::default().fg(self.color("text_secondary")))
-                            .render(chunks[1], buf);
-                        }
-                    }
-                }
-            } else if has_error {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Min(1),
-                    ])
-                    .split(inner_area);
-
-                (&self.query_input).render(chunks[0], buf);
-                Paragraph::new(err_msg)
-                    .style(Style::default().fg(self.color("error")))
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .render(chunks[2], buf);
-            } else {
-                (&self.query_input).render(inner_area, buf);
-            }
-        }
-
-        if self.sort_filter_modal.active {
-            Clear.render(sort_area, buf);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Sort & Filter");
-            let inner_area = block.inner(sort_area);
-            block.render(sort_area, buf);
-
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(2), // Tab bar + line
-                    Constraint::Min(0),    // Body
-                    Constraint::Length(3), // Footer
-                ])
-                .split(inner_area);
-
-            // Tab bar + line
-            let tab_line_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Length(1)])
-                .split(chunks[0]);
-            let tab_selected = match self.sort_filter_modal.active_tab {
-                SortFilterTab::Sort => 0,
-                SortFilterTab::Filter => 1,
-            };
-            let border_c = self.color("modal_border");
-            let active_c = self.color("modal_border_active");
-            let tabs = Tabs::new(vec!["Sort", "Filter"])
-                .style(Style::default().fg(border_c))
-                .highlight_style(
-                    Style::default()
-                        .fg(active_c)
-                        .add_modifier(Modifier::REVERSED),
-                )
-                .select(tab_selected);
-            tabs.render(tab_line_chunks[0], buf);
-            let line_style = if self.sort_filter_modal.focus == SortFilterFocus::TabBar {
-                Style::default().fg(active_c)
-            } else {
-                Style::default().fg(border_c)
-            };
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_type(BorderType::Rounded)
-                .border_style(line_style)
-                .render(tab_line_chunks[1], buf);
-
-            if self.sort_filter_modal.active_tab == SortFilterTab::Filter {
-                let fchunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(3),
-                        Constraint::Length(3),
-                        Constraint::Min(0),
-                    ])
-                    .split(chunks[1]);
-
-                let row_layout = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([
-                        Constraint::Percentage(30),
-                        Constraint::Percentage(20),
-                        Constraint::Percentage(30),
-                        Constraint::Percentage(20),
-                    ])
-                    .split(fchunks[0]);
-
-                let col_name = if self.sort_filter_modal.filter.available_columns.is_empty() {
-                    ""
-                } else {
-                    &self.sort_filter_modal.filter.available_columns
-                        [self.sort_filter_modal.filter.new_column_idx]
-                };
-                let col_style = if self.sort_filter_modal.filter.focus == FilterFocus::Column {
-                    Style::default().fg(active_c)
-                } else {
-                    Style::default().fg(border_c)
-                };
-                Paragraph::new(col_name)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .title("Col")
-                            .border_style(col_style),
-                    )
-                    .render(row_layout[0], buf);
-
-                let op_name = FilterOperator::iterator()
-                    .nth(self.sort_filter_modal.filter.new_operator_idx)
-                    .unwrap_or(FilterOperator::Eq)
-                    .as_str();
-                let op_style = if self.sort_filter_modal.filter.focus == FilterFocus::Operator {
-                    Style::default().fg(active_c)
-                } else {
-                    Style::default().fg(border_c)
-                };
-                Paragraph::new(op_name)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .title("Op")
-                            .border_style(op_style),
-                    )
-                    .render(row_layout[1], buf);
-
-                let val_style = if self.sort_filter_modal.filter.focus == FilterFocus::Value {
-                    Style::default().fg(active_c)
-                } else {
-                    Style::default().fg(border_c)
-                };
-                Paragraph::new(self.sort_filter_modal.filter.new_value.as_str())
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .title("Val")
-                            .border_style(val_style),
-                    )
-                    .render(row_layout[2], buf);
-
-                let log_name = LogicalOperator::iterator()
-                    .nth(self.sort_filter_modal.filter.new_logical_idx)
-                    .unwrap_or(LogicalOperator::And)
-                    .as_str();
-                let log_style = if self.sort_filter_modal.filter.focus == FilterFocus::Logical {
-                    Style::default().fg(active_c)
-                } else {
-                    Style::default().fg(border_c)
-                };
-                Paragraph::new(log_name)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .title("Logic")
-                            .border_style(log_style),
-                    )
-                    .render(row_layout[3], buf);
-
-                let add_style = if self.sort_filter_modal.filter.focus == FilterFocus::Add {
-                    Style::default().fg(active_c)
-                } else {
-                    Style::default().fg(border_c)
-                };
-                Paragraph::new("Add Filter")
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .border_style(add_style),
-                    )
-                    .centered()
-                    .render(fchunks[1], buf);
-
-                let items: Vec<ListItem> = self
-                    .sort_filter_modal
-                    .filter
-                    .statements
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| {
-                        let prefix = if i > 0 {
-                            format!("{} ", s.logical_op.as_str())
-                        } else {
-                            "".to_string()
-                        };
-                        ListItem::new(format!(
-                            "{}{}{}{}",
-                            prefix,
-                            s.column,
-                            s.operator.as_str(),
-                            s.value
-                        ))
-                    })
-                    .collect();
-                let list_style = if self.sort_filter_modal.filter.focus == FilterFocus::Statements {
-                    Style::default().fg(active_c)
-                } else {
-                    Style::default().fg(border_c)
-                };
-                let list = List::new(items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .title("Current Filters")
-                            .border_style(list_style),
-                    )
-                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-                StatefulWidget::render(
-                    list,
-                    fchunks[2],
-                    buf,
-                    &mut self.sort_filter_modal.filter.list_state,
-                );
-            } else {
-                // Sort tab body
-                let schunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(3),
-                        Constraint::Min(0),
-                        Constraint::Length(2),
-                        Constraint::Length(3),
-                    ])
-                    .split(chunks[1]);
-
-                let filter_block_title = "Filter Columns";
-                let mut filter_block_border_style = Style::default().fg(border_c);
-                if self.sort_filter_modal.sort.focus == SortFocus::Filter {
-                    filter_block_border_style = filter_block_border_style.fg(active_c);
-                }
-                let filter_block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title(filter_block_title)
-                    .border_style(filter_block_border_style);
-                let filter_inner_area = filter_block.inner(schunks[0]);
-                filter_block.render(schunks[0], buf);
-
-                // Render filter input using TextInput widget
-                let is_focused = self.sort_filter_modal.sort.focus == SortFocus::Filter;
-                self.sort_filter_modal
-                    .sort
-                    .filter_input
-                    .set_focused(is_focused);
-                (&self.sort_filter_modal.sort.filter_input).render(filter_inner_area, buf);
-
-                let filtered = self.sort_filter_modal.sort.filtered_columns();
-                let rows: Vec<Row> = filtered
-                    .iter()
-                    .map(|(_, col)| {
-                        let lock_cell = if col.is_locked {
-                            "●" // Full circle for locked
-                        } else if col.is_to_be_locked {
-                            "◐" // Half circle to indicate pending lock
-                        } else {
-                            " "
-                        };
-                        let lock_style = if col.is_locked {
-                            Style::default()
-                        } else if col.is_to_be_locked {
-                            Style::default().fg(self.color("dimmed")) // Dimmed style for pending lock
-                        } else {
-                            Style::default()
-                        };
-                        let order_cell = if col.is_visible && col.display_order < 9999 {
-                            format!("{:2}", col.display_order + 1)
-                        } else {
-                            "  ".to_string()
-                        };
-                        let sort_cell = if let Some(order) = col.sort_order {
-                            format!("{:2}", order)
-                        } else {
-                            "  ".to_string()
-                        };
-                        let name_cell = Cell::from(col.name.clone());
-
-                        // Apply dimmed style to hidden columns
-                        let row_style = if col.is_visible {
-                            Style::default()
-                        } else {
-                            Style::default().fg(self.color("dimmed"))
-                        };
-
-                        Row::new(vec![
-                            Cell::from(lock_cell).style(lock_style),
-                            Cell::from(order_cell).style(row_style),
-                            Cell::from(sort_cell).style(row_style),
-                            name_cell.style(row_style),
-                        ])
-                    })
-                    .collect();
-
-                let header = Row::new(vec![
-                    Cell::from("🔒").style(Style::default()),
-                    Cell::from("Order").style(Style::default()),
-                    Cell::from("Sort").style(Style::default()),
-                    Cell::from("Name").style(Style::default()),
-                ])
-                .style(Style::default().add_modifier(Modifier::UNDERLINED));
-
-                let table_border_style =
-                    if self.sort_filter_modal.sort.focus == SortFocus::ColumnList {
-                        Style::default().fg(active_c)
-                    } else {
-                        Style::default().fg(border_c)
-                    };
-                let table = Table::new(
-                    rows,
-                    [
-                        Constraint::Length(2),
-                        Constraint::Length(6),
-                        Constraint::Length(6),
-                        Constraint::Min(0),
-                    ],
-                )
-                .header(header)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title("Columns")
-                        .border_style(table_border_style),
-                )
-                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-
-                StatefulWidget::render(
-                    table,
-                    schunks[1],
-                    buf,
-                    &mut self.sort_filter_modal.sort.table_state,
-                );
-
-                // Keybind Hints
-                use ratatui::text::{Line, Span};
-                let mut hint_line1 = Line::default();
-                hint_line1.spans.push(Span::raw("Sort:    "));
-                hint_line1.spans.push(Span::styled(
-                    "Space",
-                    Style::default()
-                        .fg(self.color("keybind_hints"))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                hint_line1.spans.push(Span::raw(" Toggle "));
-                hint_line1.spans.push(Span::styled(
-                    "[]",
-                    Style::default()
-                        .fg(self.color("keybind_hints"))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                hint_line1.spans.push(Span::raw(" Reorder "));
-                hint_line1.spans.push(Span::styled(
-                    "1-9",
-                    Style::default()
-                        .fg(self.color("keybind_hints"))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                hint_line1.spans.push(Span::raw(" Jump"));
-
-                let mut hint_line2 = Line::default();
-                hint_line2.spans.push(Span::raw("Display: "));
-                hint_line2.spans.push(Span::styled(
-                    "L",
-                    Style::default()
-                        .fg(self.color("keybind_hints"))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                hint_line2.spans.push(Span::raw(" Lock "));
-                hint_line2.spans.push(Span::styled(
-                    "+-",
-                    Style::default()
-                        .fg(self.color("keybind_hints"))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                hint_line2.spans.push(Span::raw(" Reorder"));
-
-                Paragraph::new(vec![hint_line1, hint_line2]).render(schunks[2], buf);
-
-                let order_border_style = if self.sort_filter_modal.sort.focus == SortFocus::Order {
-                    Style::default().fg(active_c)
-                } else {
-                    Style::default().fg(border_c)
-                };
-
-                let order_block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title("Order")
-                    .border_style(order_border_style);
-                let order_inner = order_block.inner(schunks[3]);
-                order_block.render(schunks[3], buf);
-
-                let order_layout = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                    .split(order_inner);
-
-                // Ascending option
-                let ascending_indicator = if self.sort_filter_modal.sort.ascending {
-                    "●"
-                } else {
-                    "○"
-                };
-                let ascending_text = format!("{} Ascending", ascending_indicator);
-                let ascending_style = if self.sort_filter_modal.sort.ascending {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                Paragraph::new(ascending_text)
-                    .style(ascending_style)
-                    .centered()
-                    .render(order_layout[0], buf);
-
-                // Descending option
-                let descending_indicator = if !self.sort_filter_modal.sort.ascending {
-                    "●"
-                } else {
-                    "○"
-                };
-                let descending_text = format!("{} Descending", descending_indicator);
-                let descending_style = if !self.sort_filter_modal.sort.ascending {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                Paragraph::new(descending_text)
-                    .style(descending_style)
-                    .centered()
-                    .render(order_layout[1], buf);
-            }
-
-            // Shared footer
-            let footer_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(33),
-                    Constraint::Percentage(33),
-                    Constraint::Percentage(34),
-                ])
-                .split(chunks[2]);
-
-            let mut apply_text_style = Style::default();
-            let mut apply_border_style = Style::default();
-            if self.sort_filter_modal.focus == SortFilterFocus::Apply {
-                apply_text_style = apply_text_style.fg(active_c);
-                apply_border_style = apply_border_style.fg(active_c);
-            } else {
-                apply_text_style = apply_text_style.fg(border_c);
-                apply_border_style = apply_border_style.fg(border_c);
-            }
-            if self.sort_filter_modal.active_tab == SortFilterTab::Sort
-                && self.sort_filter_modal.sort.has_unapplied_changes
-            {
-                apply_text_style = apply_text_style.add_modifier(Modifier::BOLD);
-            }
-
-            Paragraph::new("Apply")
-                .style(apply_text_style)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(apply_border_style),
-                )
-                .centered()
-                .render(footer_chunks[0], buf);
-
-            let cancel_style = if self.sort_filter_modal.focus == SortFilterFocus::Cancel {
-                Style::default().fg(active_c)
-            } else {
-                Style::default().fg(border_c)
-            };
-            Paragraph::new("Cancel")
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(cancel_style),
-                )
-                .centered()
-                .render(footer_chunks[1], buf);
-
-            let clear_style = if self.sort_filter_modal.focus == SortFilterFocus::Clear {
-                Style::default().fg(active_c)
-            } else {
-                Style::default().fg(border_c)
-            };
-            Paragraph::new("Clear")
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(clear_style),
-                )
-                .centered()
-                .render(footer_chunks[2], buf);
-        }
-
-        if self.template_modal.active {
-            Clear.render(sort_area, buf);
-            let modal_title = match self.template_modal.mode {
-                TemplateModalMode::List => "Templates",
-                TemplateModalMode::Create => "Create Template",
-                TemplateModalMode::Edit => "Edit Template",
-            };
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title(modal_title);
-            let inner_area = block.inner(sort_area);
-            block.render(sort_area, buf);
-
-            match self.template_modal.mode {
-                TemplateModalMode::List => {
-                    // List Mode: Show templates as a table with relevance scores
-                    let chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Min(0),    // Template table
-                            Constraint::Length(1), // Hints
-                        ])
-                        .split(inner_area);
-
-                    // Template Table
-                    // Find max score for normalization
-                    let max_score = self
-                        .template_modal
-                        .templates
-                        .iter()
-                        .map(|(_, score)| *score)
-                        .fold(0.0, f64::max);
-
-                    // Calculate column widths
-                    // Score column: 2 chars, Active column: 1 char, Name column: 20 chars, Description: remaining
-                    let score_col_width = 2;
-                    let active_col_width = 1;
-                    let name_col_width = 20;
-
-                    let rows: Vec<Row> = self
-                        .template_modal
-                        .templates
-                        .iter()
-                        .map(|(template, score)| {
-                            // Check if this template is active
-                            let is_active = self
-                                .active_template_id
-                                .as_ref()
-                                .map(|id| id == &template.id)
-                                .unwrap_or(false);
-
-                            // Visual score indicator (circle with fill) - color foreground only
-                            let score_ratio = if max_score > 0.0 {
-                                score / max_score
-                            } else {
-                                0.0
-                            };
-                            let (circle_char, circle_color) = if score_ratio >= 0.8 {
-                                // High scores: green, filled circles
-                                if score_ratio >= 0.95 {
-                                    ('●', self.color("success"))
-                                } else if score_ratio >= 0.9 {
-                                    ('◉', self.color("success"))
-                                } else {
-                                    ('◐', self.color("success"))
-                                }
-                            } else if score_ratio >= 0.4 {
-                                // Medium scores: yellow
-                                if score_ratio >= 0.7 {
-                                    ('◐', self.color("warning"))
-                                } else if score_ratio >= 0.55 {
-                                    ('◑', self.color("warning"))
-                                } else {
-                                    ('○', self.color("warning"))
-                                }
-                            } else {
-                                // Low scores: uncolored
-                                if score_ratio >= 0.2 {
-                                    ('○', self.color("text_primary"))
-                                } else {
-                                    ('○', self.color("dimmed"))
-                                }
-                            };
-
-                            // Score cell with colored circle (foreground only)
-                            let score_cell = Cell::from(circle_char.to_string())
-                                .style(Style::default().fg(circle_color));
-
-                            // Active indicator cell (checkmark)
-                            let active_cell = if is_active {
-                                Cell::from("✓")
-                            } else {
-                                Cell::from(" ")
-                            };
-
-                            // Name cell
-                            let name_cell = Cell::from(template.name.clone());
-
-                            // Description cell - get first line and truncate if needed
-                            // Note: actual truncation will be handled by the table widget based on available space
-                            let desc = template.description.as_deref().unwrap_or("");
-                            let first_line = desc.lines().next().unwrap_or("");
-                            let desc_display = first_line.to_string();
-                            let desc_cell = Cell::from(desc_display);
-
-                            // Create row with cells (no highlighting)
-                            Row::new(vec![score_cell, active_cell, name_cell, desc_cell])
-                        })
-                        .collect();
-
-                    // Header row
-                    let header = Row::new(vec![
-                        Cell::from("●").style(Style::default()),
-                        Cell::from(" ").style(Style::default()), // Active column header (empty)
-                        Cell::from("Name").style(Style::default()),
-                        Cell::from("Description").style(Style::default()),
-                    ])
-                    .style(Style::default().add_modifier(Modifier::UNDERLINED));
-
-                    let table_border_style =
-                        if self.template_modal.focus == TemplateFocus::TemplateList {
-                            Style::default().fg(self.color("modal_border_active"))
-                        } else {
-                            Style::default()
-                        };
-
-                    let table = Table::new(
-                        rows,
-                        [
-                            Constraint::Length(score_col_width),
-                            Constraint::Length(active_col_width),
-                            Constraint::Length(name_col_width),
-                            Constraint::Min(0), // Description takes remaining space
-                        ],
-                    )
-                    .header(header)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(BorderType::Rounded)
-                            .title("Templates")
-                            .border_style(table_border_style),
-                    )
-                    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-
-                    StatefulWidget::render(
-                        table,
-                        chunks[0],
-                        buf,
-                        &mut self.template_modal.table_state,
-                    );
-
-                    // Keybind Hints - Single line
-                    use ratatui::text::{Line, Span};
-                    let mut hint_line = Line::default();
-                    hint_line.spans.push(Span::styled(
-                        "Enter",
-                        Style::default()
-                            .fg(self.color("keybind_hints"))
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    hint_line.spans.push(Span::raw(" Apply "));
-                    hint_line.spans.push(Span::styled(
-                        "s",
-                        Style::default()
-                            .fg(self.color("keybind_hints"))
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    hint_line.spans.push(Span::raw(" Create "));
-                    hint_line.spans.push(Span::styled(
-                        "e",
-                        Style::default()
-                            .fg(self.color("keybind_hints"))
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    hint_line.spans.push(Span::raw(" Edit "));
-                    hint_line.spans.push(Span::styled(
-                        "d",
-                        Style::default()
-                            .fg(self.color("keybind_hints"))
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    hint_line.spans.push(Span::raw(" Delete "));
-                    hint_line.spans.push(Span::styled(
-                        "Esc",
-                        Style::default()
-                            .fg(self.color("keybind_hints"))
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    hint_line.spans.push(Span::raw(" Close"));
-
-                    Paragraph::new(vec![hint_line]).render(chunks[1], buf);
-                }
-                TemplateModalMode::Create | TemplateModalMode::Edit => {
-                    // Create/Edit Mode: Multi-step dialog
-                    let chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(3), // Name
-                            Constraint::Length(6), // Description (taller for multi-line)
-                            Constraint::Length(3), // Exact Path
-                            Constraint::Length(3), // Relative Path
-                            Constraint::Length(3), // Path Pattern
-                            Constraint::Length(3), // Filename Pattern
-                            Constraint::Length(3), // Schema Match
-                            Constraint::Length(3), // Buttons
-                        ])
-                        .split(inner_area);
-
-                    // Name input
-                    let name_style = if self.template_modal.create_focus == CreateFocus::Name {
-                        Style::default().fg(self.color("modal_border_active"))
-                    } else {
-                        Style::default()
-                    };
-                    let name_title = if let Some(error) = &self.template_modal.name_error {
-                        format!("Name {}", error)
-                    } else {
-                        "Name".to_string()
-                    };
-                    let name_block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title(name_title)
-                        .title_style(if self.template_modal.name_error.is_some() {
-                            Style::default().fg(self.color("error"))
-                        } else {
-                            Style::default().add_modifier(Modifier::BOLD)
-                        })
-                        .border_style(name_style);
-                    let name_inner = name_block.inner(chunks[0]);
-                    name_block.render(chunks[0], buf);
-                    // Render name input using TextInput widget
-                    let is_focused = self.template_modal.create_focus == CreateFocus::Name;
-                    self.template_modal
-                        .create_name_input
-                        .set_focused(is_focused);
-                    (&self.template_modal.create_name_input).render(name_inner, buf);
-
-                    // Description input (scrollable, multi-line)
-                    let desc_style = if self.template_modal.create_focus == CreateFocus::Description
-                    {
-                        Style::default().fg(self.color("modal_border_active"))
-                    } else {
-                        Style::default()
-                    };
-                    let desc_block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title("Description")
-                        .border_style(desc_style);
-                    let desc_inner = desc_block.inner(chunks[1]);
-                    desc_block.render(chunks[1], buf);
-
-                    // Render description input using MultiLineTextInput widget
-                    let is_focused = self.template_modal.create_focus == CreateFocus::Description;
-                    self.template_modal
-                        .create_description_input
-                        .set_focused(is_focused);
-                    // Auto-scroll to keep cursor visible
-                    self.template_modal
-                        .create_description_input
-                        .ensure_cursor_visible(desc_inner.height, desc_inner.width);
-                    (&self.template_modal.create_description_input).render(desc_inner, buf);
-
-                    // Exact Path
-                    let exact_path_style =
-                        if self.template_modal.create_focus == CreateFocus::ExactPath {
-                            Style::default().fg(self.color("modal_border_active"))
-                        } else {
-                            Style::default()
-                        };
-                    let exact_path_block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title("Exact Path")
-                        .border_style(exact_path_style);
-                    let exact_path_inner = exact_path_block.inner(chunks[2]);
-                    exact_path_block.render(chunks[2], buf);
-                    // Render exact path input using TextInput widget
-                    let is_focused = self.template_modal.create_focus == CreateFocus::ExactPath;
-                    self.template_modal
-                        .create_exact_path_input
-                        .set_focused(is_focused);
-                    (&self.template_modal.create_exact_path_input).render(exact_path_inner, buf);
-
-                    // Relative Path
-                    let relative_path_style =
-                        if self.template_modal.create_focus == CreateFocus::RelativePath {
-                            Style::default().fg(self.color("modal_border_active"))
-                        } else {
-                            Style::default()
-                        };
-                    let relative_path_block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title("Relative Path")
-                        .border_style(relative_path_style);
-                    let relative_path_inner = relative_path_block.inner(chunks[3]);
-                    relative_path_block.render(chunks[3], buf);
-                    // Render relative path input using TextInput widget
-                    let is_focused = self.template_modal.create_focus == CreateFocus::RelativePath;
-                    self.template_modal
-                        .create_relative_path_input
-                        .set_focused(is_focused);
-                    (&self.template_modal.create_relative_path_input)
-                        .render(relative_path_inner, buf);
-
-                    // Path Pattern
-                    let path_pattern_style =
-                        if self.template_modal.create_focus == CreateFocus::PathPattern {
-                            Style::default().fg(self.color("modal_border_active"))
-                        } else {
-                            Style::default()
-                        };
-                    let path_pattern_block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title("Path Pattern")
-                        .border_style(path_pattern_style);
-                    let path_pattern_inner = path_pattern_block.inner(chunks[4]);
-                    path_pattern_block.render(chunks[4], buf);
-                    // Render path pattern input using TextInput widget
-                    let is_focused = self.template_modal.create_focus == CreateFocus::PathPattern;
-                    self.template_modal
-                        .create_path_pattern_input
-                        .set_focused(is_focused);
-                    (&self.template_modal.create_path_pattern_input)
-                        .render(path_pattern_inner, buf);
-
-                    // Filename Pattern
-                    let filename_pattern_style =
-                        if self.template_modal.create_focus == CreateFocus::FilenamePattern {
-                            Style::default().fg(self.color("modal_border_active"))
-                        } else {
-                            Style::default()
-                        };
-                    let filename_pattern_block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title("Filename Pattern")
-                        .border_style(filename_pattern_style);
-                    let filename_pattern_inner = filename_pattern_block.inner(chunks[5]);
-                    filename_pattern_block.render(chunks[5], buf);
-                    // Render filename pattern input using TextInput widget
-                    let is_focused =
-                        self.template_modal.create_focus == CreateFocus::FilenamePattern;
-                    self.template_modal
-                        .create_filename_pattern_input
-                        .set_focused(is_focused);
-                    (&self.template_modal.create_filename_pattern_input)
-                        .render(filename_pattern_inner, buf);
-
-                    // Schema Match
-                    let schema_style =
-                        if self.template_modal.create_focus == CreateFocus::SchemaMatch {
-                            Style::default().fg(self.color("modal_border_active"))
-                        } else {
-                            Style::default()
-                        };
-                    let schema_text = if self.template_modal.create_schema_match_enabled {
-                        "Enabled"
-                    } else {
-                        "Disabled"
-                    };
-                    Paragraph::new(schema_text)
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Rounded)
-                                .title("Schema Match")
-                                .border_style(schema_style),
-                        )
-                        .render(chunks[6], buf);
-
-                    // Buttons
-                    let btn_layout = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                        .split(chunks[7]);
-
-                    let save_style = if self.template_modal.create_focus == CreateFocus::SaveButton
-                    {
-                        Style::default().fg(self.color("modal_border_active"))
-                    } else {
-                        Style::default()
-                    };
-                    Paragraph::new("Save")
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Rounded)
-                                .border_style(save_style),
-                        )
-                        .centered()
-                        .render(btn_layout[0], buf);
-
-                    let cancel_create_style =
-                        if self.template_modal.create_focus == CreateFocus::CancelButton {
-                            Style::default().fg(self.color("modal_border_active"))
-                        } else {
-                            Style::default()
-                        };
-                    Paragraph::new("Cancel")
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Rounded)
-                                .border_style(cancel_create_style),
-                        )
-                        .centered()
-                        .render(btn_layout[1], buf);
-                }
-            }
-
-            // Delete Confirmation Dialog
-            if self.template_modal.delete_confirm {
-                if let Some(template) = self.template_modal.selected_template() {
-                    let confirm_area = centered_rect(sort_area, 50, 20);
-                    Clear.render(confirm_area, buf);
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title("Delete Template");
-                    let inner_area = block.inner(confirm_area);
-                    block.render(confirm_area, buf);
-
-                    let chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Min(0),    // Message
-                            Constraint::Length(3), // Buttons
-                        ])
-                        .split(inner_area);
-
-                    let message = format!(
-                        "Are you sure you want to delete the template \"{}\"?\n\nThis action cannot be undone.",
-                        template.name
-                    );
-                    Paragraph::new(message)
-                        .wrap(ratatui::widgets::Wrap { trim: false })
-                        .render(chunks[0], buf);
-
-                    let btn_layout = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                        .split(chunks[1]);
-
-                    // Delete button - highlight "D" in blue
-                    use ratatui::text::{Line, Span};
-                    let mut delete_line = Line::default();
-                    delete_line.spans.push(Span::styled(
-                        "D",
-                        Style::default()
-                            .fg(self.color("keybind_hints"))
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    delete_line.spans.push(Span::raw("elete"));
-
-                    let delete_style = if self.template_modal.delete_confirm_focus {
-                        Style::default().fg(self.color("modal_border_active"))
-                    } else {
-                        Style::default()
-                    };
-                    Paragraph::new(vec![delete_line])
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Rounded)
-                                .border_style(delete_style),
-                        )
-                        .centered()
-                        .render(btn_layout[0], buf);
-
-                    // Cancel button (default selected)
-                    let cancel_style = if !self.template_modal.delete_confirm_focus {
-                        Style::default().fg(self.color("modal_border_active"))
-                    } else {
-                        Style::default()
-                    };
-                    Paragraph::new("Cancel")
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Rounded)
-                                .border_style(cancel_style),
-                        )
-                        .centered()
-                        .render(btn_layout[1], buf);
-                }
-            }
-
-            // Score Details Dialog
-            if self.template_modal.show_score_details {
-                if let Some((template, score)) = self
-                    .template_modal
-                    .table_state
-                    .selected()
-                    .and_then(|idx| self.template_modal.templates.get(idx))
-                {
-                    if let Some(ref state) = self.data_table_state {
-                        if let Some(ref path) = self.path {
-                            let details_area = centered_rect(sort_area, 60, 50);
-                            Clear.render(details_area, buf);
-                            let block = Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(BorderType::Rounded)
-                                .title(format!("Score Details: {}", template.name));
-                            let inner_area = block.inner(details_area);
-                            block.render(details_area, buf);
-
-                            // Calculate score components
-                            let exact_path_match = template
-                                .match_criteria
-                                .exact_path
-                                .as_ref()
-                                .map(|exact| exact == path)
-                                .unwrap_or(false);
-
-                            let relative_path_match = if let Some(relative_path) =
-                                &template.match_criteria.relative_path
-                            {
-                                if let Ok(cwd) = std::env::current_dir() {
-                                    if let Ok(rel_path) = path.strip_prefix(&cwd) {
-                                        rel_path.to_string_lossy() == *relative_path
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            };
-
-                            let exact_schema_match = if let Some(required_cols) =
-                                &template.match_criteria.schema_columns
-                            {
-                                let file_cols: std::collections::HashSet<&str> =
-                                    state.schema.iter_names().map(|s| s.as_str()).collect();
-                                let required_cols_set: std::collections::HashSet<&str> =
-                                    required_cols.iter().map(|s| s.as_str()).collect();
-                                required_cols_set.is_subset(&file_cols)
-                                    && file_cols.len() == required_cols_set.len()
-                            } else {
-                                false
-                            };
-
-                            // Build score details text
-                            let mut details = format!("Total Score: {:.1}\n\n", score);
-
-                            if exact_path_match && exact_schema_match {
-                                details.push_str("Exact Path + Exact Schema: 2000.0\n");
-                            } else if exact_path_match {
-                                details.push_str("Exact Path: 1000.0\n");
-                            } else if relative_path_match && exact_schema_match {
-                                details.push_str("Relative Path + Exact Schema: 1950.0\n");
-                            } else if relative_path_match {
-                                details.push_str("Relative Path: 950.0\n");
-                            } else if exact_schema_match {
-                                details.push_str("Exact Schema: 900.0\n");
-                            } else {
-                                // For non-exact matches, show component breakdown
-                                if let Some(pattern) = &template.match_criteria.path_pattern {
-                                    if path
-                                        .to_str()
-                                        .map(|p| p.contains(pattern.trim_end_matches("/*")))
-                                        .unwrap_or(false)
-                                    {
-                                        details.push_str("Path Pattern Match: 50.0+\n");
-                                    }
-                                }
-                                if let Some(pattern) = &template.match_criteria.filename_pattern {
-                                    if path
-                                        .file_name()
-                                        .and_then(|f| f.to_str())
-                                        .map(|f| {
-                                            f.contains(pattern.trim_end_matches("*"))
-                                                || pattern == "*"
-                                        })
-                                        .unwrap_or(false)
-                                    {
-                                        details.push_str("Filename Pattern Match: 30.0+\n");
-                                    }
-                                }
-                                if let Some(required_cols) = &template.match_criteria.schema_columns
-                                {
-                                    let file_cols: std::collections::HashSet<&str> =
-                                        state.schema.iter_names().map(|s| s.as_str()).collect();
-                                    let matching_count = required_cols
-                                        .iter()
-                                        .filter(|col| file_cols.contains(col.as_str()))
-                                        .count();
-                                    if matching_count > 0 {
-                                        details.push_str(&format!(
-                                            "Partial Schema Match: {:.1} ({} columns)\n",
-                                            matching_count as f64 * 2.0,
-                                            matching_count
-                                        ));
-                                    }
-                                }
-                            }
-
-                            if template.usage_count > 0 {
-                                details.push_str(&format!(
-                                    "Usage Count: {:.1}\n",
-                                    (template.usage_count.min(10) as f64) * 1.0
-                                ));
-                            }
-                            if let Some(last_used) = template.last_used {
-                                if let Ok(duration) =
-                                    std::time::SystemTime::now().duration_since(last_used)
-                                {
-                                    let days_since = duration.as_secs() / 86400;
-                                    if days_since <= 7 {
-                                        details.push_str("Recent Usage: 5.0\n");
-                                    } else if days_since <= 30 {
-                                        details.push_str("Recent Usage: 2.0\n");
-                                    }
-                                }
-                            }
-                            if let Ok(duration) =
-                                std::time::SystemTime::now().duration_since(template.created)
-                            {
-                                let months_old = (duration.as_secs() / (30 * 86400)) as f64;
-                                if months_old > 0.0 {
-                                    details.push_str(&format!(
-                                        "Age Penalty: -{:.1}\n",
-                                        months_old * 1.0
-                                    ));
-                                }
-                            }
-
-                            Paragraph::new(details)
-                                .wrap(ratatui::widgets::Wrap { trim: false })
-                                .render(inner_area, buf);
-                        }
-                    }
-                }
-            }
-        }
-
-        if self.pivot_melt_modal.active {
-            let border = self.color("modal_border");
-            let active = self.color("modal_border_active");
-            let text_primary = self.color("text_primary");
-            let text_inverse = self.color("text_inverse");
-            pivot_melt::render_shell(
-                sort_area,
-                buf,
-                &mut self.pivot_melt_modal,
-                border,
-                active,
-                text_primary,
-                text_inverse,
-            );
-        }
-
-        if self.export_modal.active {
-            let border = self.color("modal_border");
-            let active = self.color("modal_border_active");
-            let text_primary = self.color("text_primary");
-            let text_inverse = self.color("text_inverse");
-            // Center the modal
-            let modal_width = (area.width * 3 / 4).min(80);
-            let modal_height = 20;
-            let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-            let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-            let modal_area = Rect {
-                x: modal_x,
-                y: modal_y,
-                width: modal_width,
-                height: modal_height,
-            };
-            export::render_export_modal(
-                modal_area,
-                buf,
-                &mut self.export_modal,
-                border,
-                active,
-                text_primary,
-                text_inverse,
-            );
-        }
-
-        // Render analysis modal (full screen in main area, leaving toolbar visible)
-        if self.analysis_modal.active {
-            // Use main_area so toolbar remains visible at bottom
-            let analysis_area = main_area;
-
-            // Progress overlay when chunked describe is running
-            if let Some(ref progress) = self.analysis_modal.computing {
-                let border = self.color("modal_border");
-                let text_primary = self.color("text_primary");
-                let label = self.color("label");
-                let percent = if progress.total > 0 {
-                    (progress.current as u16).saturating_mul(100) / progress.total as u16
-                } else {
-                    0
-                };
-                Clear.render(analysis_area, buf);
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(border))
-                    .title(" Analysis ");
-                let inner = block.inner(analysis_area);
-                block.render(analysis_area, buf);
-                let text = format!(
-                    "{}: {} / {}",
-                    progress.phase, progress.current, progress.total
-                );
-                Paragraph::new(text)
-                    .style(Style::default().fg(text_primary))
-                    .render(
-                        Rect {
-                            x: inner.x,
-                            y: inner.y,
-                            width: inner.width,
-                            height: 1,
-                        },
-                        buf,
-                    );
-                Gauge::default()
-                    .gauge_style(Style::default().fg(label))
-                    .ratio(percent as f64 / 100.0)
-                    .render(
-                        Rect {
-                            x: inner.x,
-                            y: inner.y + 1,
-                            width: inner.width,
-                            height: 1,
-                        },
-                        buf,
-                    );
-            } else if let Some(state) = &self.data_table_state {
-                // Per-tool sync fallback: when the selected tool has no cached results or seed changed, compute for that tool only.
-                let seed = self.analysis_modal.random_seed;
-                let needs_describe = self.analysis_modal.selected_tool
-                    == Some(analysis_modal::AnalysisTool::Describe)
-                    && (self.analysis_modal.describe_results.is_none()
-                        || self
-                            .analysis_modal
-                            .describe_results
-                            .as_ref()
-                            .is_some_and(|r| r.sample_seed != seed));
-                let needs_distribution = self.analysis_modal.selected_tool
-                    == Some(analysis_modal::AnalysisTool::DistributionAnalysis)
-                    && (self.analysis_modal.distribution_results.is_none()
-                        || self
-                            .analysis_modal
-                            .distribution_results
-                            .as_ref()
-                            .is_some_and(|r| r.sample_seed != seed));
-                let needs_correlation = self.analysis_modal.selected_tool
-                    == Some(analysis_modal::AnalysisTool::CorrelationMatrix)
-                    && (self.analysis_modal.correlation_results.is_none()
-                        || self
-                            .analysis_modal
-                            .correlation_results
-                            .as_ref()
-                            .is_some_and(|r| r.sample_seed != seed));
-
-                if needs_describe {
-                    self.busy = true;
-                    let lf = state.lf.clone();
-                    let options = crate::statistics::ComputeOptions {
-                        include_distribution_info: false,
-                        include_distribution_analyses: false,
-                        include_correlation_matrix: false,
-                        include_skewness_kurtosis_outliers: false,
-                        polars_streaming: self.app_config.performance.polars_streaming,
-                    };
-                    match crate::statistics::compute_statistics_with_options(
-                        &lf,
-                        self.sampling_threshold,
-                        seed,
-                        options,
-                    ) {
-                        Ok(results) => {
-                            self.analysis_modal.describe_results = Some(results);
-                        }
-                        Err(e) => {
-                            Clear.render(analysis_area, buf);
-                            let error_msg = format!(
-                                "Error computing statistics: {}",
-                                crate::error_display::user_message_from_report(&e, None)
-                            );
-                            Paragraph::new(error_msg)
-                                .centered()
-                                .style(Style::default().fg(self.color("error")))
-                                .render(analysis_area, buf);
-                        }
-                    }
-                    self.busy = false;
-                    self.drain_keys_on_next_loop = true;
-                } else if needs_distribution {
-                    self.busy = true;
-                    let lf = state.lf.clone();
-                    let options = crate::statistics::ComputeOptions {
-                        include_distribution_info: true,
-                        include_distribution_analyses: true,
-                        include_correlation_matrix: false,
-                        include_skewness_kurtosis_outliers: true,
-                        polars_streaming: self.app_config.performance.polars_streaming,
-                    };
-                    match crate::statistics::compute_statistics_with_options(
-                        &lf,
-                        self.sampling_threshold,
-                        seed,
-                        options,
-                    ) {
-                        Ok(results) => {
-                            self.analysis_modal.distribution_results = Some(results);
-                        }
-                        Err(e) => {
-                            Clear.render(analysis_area, buf);
-                            let error_msg = format!(
-                                "Error computing distribution: {}",
-                                crate::error_display::user_message_from_report(&e, None)
-                            );
-                            Paragraph::new(error_msg)
-                                .centered()
-                                .style(Style::default().fg(self.color("error")))
-                                .render(analysis_area, buf);
-                        }
-                    }
-                    self.busy = false;
-                    self.drain_keys_on_next_loop = true;
-                } else if needs_correlation {
-                    self.busy = true;
-                    if let Ok(df) =
-                        crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)
-                    {
-                        if let Ok(matrix) = crate::statistics::compute_correlation_matrix(&df) {
-                            self.analysis_modal.correlation_results =
-                                Some(crate::statistics::AnalysisResults {
-                                    column_statistics: vec![],
-                                    total_rows: df.height(),
-                                    sample_size: None,
-                                    sample_seed: seed,
-                                    correlation_matrix: Some(matrix),
-                                    distribution_analyses: vec![],
-                                });
-                        }
-                    }
-                    self.busy = false;
-                    self.drain_keys_on_next_loop = true;
-                }
-
-                // Always render the analysis widget when we have data (with or without results: widget shows
-                // "Select an analysis tool", "Computing...", or the selected tool content).
-                let context = state.get_analysis_context();
-                Clear.render(analysis_area, buf);
-                let column_offset = match self.analysis_modal.selected_tool {
-                    Some(analysis_modal::AnalysisTool::Describe) => {
-                        self.analysis_modal.describe_column_offset
-                    }
-                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                        self.analysis_modal.distribution_column_offset
-                    }
-                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                        self.analysis_modal.correlation_column_offset
-                    }
-                    None => 0,
-                };
-
-                // Clone current tool's results so we can pass a ref without holding a borrow on the modal (widget also needs &mut modal for table state).
-                let results_for_widget = self.analysis_modal.current_results().cloned();
-                let config = widgets::analysis::AnalysisWidgetConfig {
-                    state,
-                    results: results_for_widget.as_ref(),
-                    context: &context,
-                    view: self.analysis_modal.view,
-                    selected_tool: self.analysis_modal.selected_tool,
-                    column_offset,
-                    selected_correlation: self.analysis_modal.selected_correlation,
-                    focus: self.analysis_modal.focus,
-                    selected_theoretical_distribution: self
-                        .analysis_modal
-                        .selected_theoretical_distribution,
-                    histogram_scale: self.analysis_modal.histogram_scale,
-                    theme: &self.theme,
-                    table_cell_padding: self.table_cell_padding,
-                };
-                let widget = widgets::analysis::AnalysisWidget::new(
-                    config,
-                    &mut self.analysis_modal.table_state,
-                    &mut self.analysis_modal.distribution_table_state,
-                    &mut self.analysis_modal.correlation_table_state,
-                    &mut self.analysis_modal.sidebar_state,
-                    &mut self.analysis_modal.distribution_selector_state,
-                );
-                widget.render(analysis_area, buf);
-            } else {
-                // No data available
-                Clear.render(analysis_area, buf);
-                Paragraph::new("No data available for analysis")
-                    .centered()
-                    .style(Style::default().fg(self.color("warning")))
-                    .render(analysis_area, buf);
-            }
-            // Don't return - continue to render toolbar and other UI elements
-        }
-
-        // Render chart view (full screen in main area)
-        if self.input_mode == InputMode::Chart {
-            let chart_area = main_area;
-            Clear.render(chart_area, buf);
-            let mut xy_series: Option<&Vec<Vec<(f64, f64)>>> = None;
-            let mut x_axis_kind = chart_data::XAxisTemporalKind::Numeric;
-            let mut x_bounds: Option<(f64, f64)> = None;
-            let mut hist_data: Option<&chart_data::HistogramData> = None;
-            let mut box_data: Option<&chart_data::BoxPlotData> = None;
-            let mut kde_data: Option<&chart_data::KdeData> = None;
-            let mut heatmap_data: Option<&chart_data::HeatmapData> = None;
-
-            let row_limit_opt = self.chart_modal.row_limit;
-            let row_limit = self.chart_modal.effective_row_limit();
-            match self.chart_modal.chart_kind {
-                ChartKind::XY => {
-                    if let Some(x_column) = self.chart_modal.effective_x_column() {
-                        let x_key = x_column.to_string();
-                        let y_columns = self.chart_modal.effective_y_columns();
-                        if !y_columns.is_empty() {
-                            let use_cache = self.chart_cache.xy.as_ref().filter(|c| {
-                                c.x_column == x_key
-                                    && c.y_columns == y_columns
-                                    && c.row_limit == row_limit_opt
-                            });
-                            if use_cache.is_none() {
-                                if let Some(state) = self.data_table_state.as_ref() {
-                                    if let Ok(result) = chart_data::prepare_chart_data(
-                                        &state.lf,
-                                        &state.schema,
-                                        x_column,
-                                        &y_columns,
-                                        row_limit,
-                                    ) {
-                                        self.chart_cache.xy = Some(ChartCacheXY {
-                                            x_column: x_key.clone(),
-                                            y_columns: y_columns.clone(),
-                                            row_limit: row_limit_opt,
-                                            series: result.series,
-                                            series_log: None,
-                                            x_axis_kind: result.x_axis_kind,
-                                        });
-                                    }
-                                }
-                            }
-                            if self.chart_modal.log_scale {
-                                if let Some(cache) = self.chart_cache.xy.as_mut() {
-                                    if cache.x_column == x_key
-                                        && cache.y_columns == y_columns
-                                        && cache.row_limit == row_limit_opt
-                                        && cache.series_log.is_none()
-                                        && cache.series.iter().any(|s| !s.is_empty())
-                                    {
-                                        cache.series_log = Some(
-                                            cache
-                                                .series
-                                                .iter()
-                                                .map(|pts| {
-                                                    pts.iter()
-                                                        .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
-                                                        .collect()
-                                                })
-                                                .collect(),
-                                        );
-                                    }
-                                }
-                            }
-                            if let Some(cache) = self.chart_cache.xy.as_ref() {
-                                if cache.x_column == x_key
-                                    && cache.y_columns == y_columns
-                                    && cache.row_limit == row_limit_opt
-                                {
-                                    x_axis_kind = cache.x_axis_kind;
-                                    if self.chart_modal.log_scale {
-                                        if let Some(ref log) = cache.series_log {
-                                            if log.iter().any(|v| !v.is_empty()) {
-                                                xy_series = Some(log);
-                                            }
-                                        }
-                                    } else if cache.series.iter().any(|s| !s.is_empty()) {
-                                        xy_series = Some(&cache.series);
-                                    }
-                                }
-                            }
-                        } else {
-                            // Only X selected: cache x range for axis bounds
-                            let use_cache =
-                                self.chart_cache.x_range.as_ref().filter(|c| {
-                                    c.x_column == x_key && c.row_limit == row_limit_opt
-                                });
-                            if use_cache.is_none() {
-                                if let Some(state) = self.data_table_state.as_ref() {
-                                    if let Ok(result) = chart_data::prepare_chart_x_range(
-                                        &state.lf,
-                                        &state.schema,
-                                        x_column,
-                                        row_limit,
-                                    ) {
-                                        self.chart_cache.x_range = Some(ChartCacheXRange {
-                                            x_column: x_key.clone(),
-                                            row_limit: row_limit_opt,
-                                            x_min: result.x_min,
-                                            x_max: result.x_max,
-                                            x_axis_kind: result.x_axis_kind,
-                                        });
-                                    }
-                                }
-                            }
-                            if let Some(cache) = self.chart_cache.x_range.as_ref() {
-                                if cache.x_column == x_key && cache.row_limit == row_limit_opt {
-                                    x_axis_kind = cache.x_axis_kind;
-                                    x_bounds = Some((cache.x_min, cache.x_max));
-                                }
-                            } else if let Some(state) = self.data_table_state.as_ref() {
-                                x_axis_kind = chart_data::x_axis_temporal_kind_for_column(
-                                    &state.schema,
-                                    x_column,
-                                );
-                            }
-                        }
-                    }
-                }
-                ChartKind::Histogram => {
-                    if let (Some(state), Some(column)) = (
-                        self.data_table_state.as_ref(),
-                        self.chart_modal.effective_hist_column(),
-                    ) {
-                        let bins = self.chart_modal.hist_bins;
-                        let use_cache = self.chart_cache.histogram.as_ref().filter(|c| {
-                            c.column == column && c.bins == bins && c.row_limit == row_limit_opt
-                        });
-                        if use_cache.is_none() {
-                            if let Ok(data) = chart_data::prepare_histogram_data(
-                                &state.lf, &column, bins, row_limit,
-                            ) {
-                                self.chart_cache.histogram = Some(ChartCacheHistogram {
-                                    column: column.clone(),
-                                    bins,
-                                    row_limit: row_limit_opt,
-                                    data,
-                                });
-                            }
-                        }
-                        hist_data = self
-                            .chart_cache
-                            .histogram
-                            .as_ref()
-                            .filter(|c| {
-                                c.column == column && c.bins == bins && c.row_limit == row_limit_opt
-                            })
-                            .map(|c| &c.data);
-                    }
-                }
-                ChartKind::BoxPlot => {
-                    if let (Some(state), Some(column)) = (
-                        self.data_table_state.as_ref(),
-                        self.chart_modal.effective_box_column(),
-                    ) {
-                        let use_cache = self
-                            .chart_cache
-                            .box_plot
-                            .as_ref()
-                            .filter(|c| c.column == column && c.row_limit == row_limit_opt);
-                        if use_cache.is_none() {
-                            if let Ok(data) = chart_data::prepare_box_plot_data(
-                                &state.lf,
-                                std::slice::from_ref(&column),
-                                row_limit,
-                            ) {
-                                self.chart_cache.box_plot = Some(ChartCacheBoxPlot {
-                                    column: column.clone(),
-                                    row_limit: row_limit_opt,
-                                    data,
-                                });
-                            }
-                        }
-                        box_data = self
-                            .chart_cache
-                            .box_plot
-                            .as_ref()
-                            .filter(|c| c.column == column && c.row_limit == row_limit_opt)
-                            .map(|c| &c.data);
-                    }
-                }
-                ChartKind::Kde => {
-                    if let (Some(state), Some(column)) = (
-                        self.data_table_state.as_ref(),
-                        self.chart_modal.effective_kde_column(),
-                    ) {
-                        let bandwidth = self.chart_modal.kde_bandwidth_factor;
-                        let use_cache = self.chart_cache.kde.as_ref().filter(|c| {
-                            c.column == column
-                                && c.bandwidth_factor == bandwidth
-                                && c.row_limit == row_limit_opt
-                        });
-                        if use_cache.is_none() {
-                            if let Ok(data) = chart_data::prepare_kde_data(
-                                &state.lf,
-                                std::slice::from_ref(&column),
-                                bandwidth,
-                                row_limit,
-                            ) {
-                                self.chart_cache.kde = Some(ChartCacheKde {
-                                    column: column.clone(),
-                                    bandwidth_factor: bandwidth,
-                                    row_limit: row_limit_opt,
-                                    data,
-                                });
-                            }
-                        }
-                        kde_data = self
-                            .chart_cache
-                            .kde
-                            .as_ref()
-                            .filter(|c| {
-                                c.column == column
-                                    && c.bandwidth_factor == bandwidth
-                                    && c.row_limit == row_limit_opt
-                            })
-                            .map(|c| &c.data);
-                    }
-                }
-                ChartKind::Heatmap => {
-                    if let (Some(state), Some(x_column), Some(y_column)) = (
-                        self.data_table_state.as_ref(),
-                        self.chart_modal.effective_heatmap_x_column(),
-                        self.chart_modal.effective_heatmap_y_column(),
-                    ) {
-                        let bins = self.chart_modal.heatmap_bins;
-                        let use_cache = self.chart_cache.heatmap.as_ref().filter(|c| {
-                            c.x_column == x_column
-                                && c.y_column == y_column
-                                && c.bins == bins
-                                && c.row_limit == row_limit_opt
-                        });
-                        if use_cache.is_none() {
-                            if let Ok(data) = chart_data::prepare_heatmap_data(
-                                &state.lf, &x_column, &y_column, bins, row_limit,
-                            ) {
-                                self.chart_cache.heatmap = Some(ChartCacheHeatmap {
-                                    x_column: x_column.clone(),
-                                    y_column: y_column.clone(),
-                                    bins,
-                                    row_limit: row_limit_opt,
-                                    data,
-                                });
-                            }
-                        }
-                        heatmap_data = self
-                            .chart_cache
-                            .heatmap
-                            .as_ref()
-                            .filter(|c| {
-                                c.x_column == x_column
-                                    && c.y_column == y_column
-                                    && c.bins == bins
-                                    && c.row_limit == row_limit_opt
-                            })
-                            .map(|c| &c.data);
-                    }
-                }
-            }
-
-            let render_data = match self.chart_modal.chart_kind {
-                ChartKind::XY => widgets::chart::ChartRenderData::XY {
-                    series: xy_series,
-                    x_axis_kind,
-                    x_bounds,
-                },
-                ChartKind::Histogram => {
-                    widgets::chart::ChartRenderData::Histogram { data: hist_data }
-                }
-                ChartKind::BoxPlot => widgets::chart::ChartRenderData::BoxPlot { data: box_data },
-                ChartKind::Kde => widgets::chart::ChartRenderData::Kde { data: kde_data },
-                ChartKind::Heatmap => {
-                    widgets::chart::ChartRenderData::Heatmap { data: heatmap_data }
-                }
-            };
-
-            widgets::chart::render_chart_view(
-                chart_area,
-                buf,
-                &mut self.chart_modal,
-                &self.theme,
-                render_data,
-            );
-
-            if self.chart_export_modal.active {
-                let border = self.color("modal_border");
-                let active = self.color("modal_border_active");
-                // 4 rows (format, title, path, buttons) of 3 lines each + 2 for outer border = 14
-                const CHART_EXPORT_MODAL_HEIGHT: u16 = 14;
-                let modal_width = (chart_area.width * 3 / 4).clamp(40, 54);
-                let modal_height = CHART_EXPORT_MODAL_HEIGHT
-                    .min(chart_area.height)
-                    .max(CHART_EXPORT_MODAL_HEIGHT);
-                let modal_x = chart_area.x + chart_area.width.saturating_sub(modal_width) / 2;
-                let modal_y = chart_area.y + chart_area.height.saturating_sub(modal_height) / 2;
-                let modal_area = Rect {
-                    x: modal_x,
-                    y: modal_y,
-                    width: modal_width,
-                    height: modal_height,
-                };
-                widgets::chart_export_modal::render_chart_export_modal(
-                    modal_area,
-                    buf,
-                    &mut self.chart_export_modal,
-                    border,
-                    active,
-                );
-            }
-        }
+        crate::render::main_view_render::render_main_view(area, main_area, buf, self, &ctx);
 
         // Render loading progress popover (min 25 chars wide, max 25% of area; throbber spins via busy in controls)
         if matches!(self.loading_state, LoadingState::Loading { .. }) {
-            let popover_rect = centered_rect_loading(area);
-            App::render_loading_gauge(&self.loading_state, popover_rect, buf, &self.theme);
+            if let LoadingState::Loading {
+                current_phase,
+                progress_percent,
+                ..
+            } = &self.loading_state
+            {
+                let popover_rect = centered_rect_loading(area);
+                crate::render::overlays::render_loading_gauge(
+                    popover_rect,
+                    buf,
+                    "Loading",
+                    current_phase,
+                    *progress_percent,
+                    ctx.modal_border,
+                    ctx.primary_chart_series_color,
+                );
+            }
         }
-        // Render export progress bar (overlay when exporting)
         if matches!(self.loading_state, LoadingState::Exporting { .. }) {
-            App::render_loading_gauge(&self.loading_state, area, buf, &self.theme);
+            if let LoadingState::Exporting {
+                file_path,
+                current_phase,
+                progress_percent,
+            } = &self.loading_state
+            {
+                let label = format!("{}: {}", current_phase, file_path.display());
+                crate::render::overlays::render_loading_gauge(
+                    area,
+                    buf,
+                    "Exporting",
+                    &label,
+                    *progress_percent,
+                    ctx.modal_border,
+                    ctx.primary_chart_series_color,
+                );
+            }
         }
 
-        // Render confirmation modal (highest priority)
         if self.confirmation_modal.active {
-            let popup_area = centered_rect_with_min(area, 64, 26, 50, 12);
-            Clear.render(popup_area, buf);
-
-            // Set background color for the modal
-            let bg_color = self.color("background");
-            Block::default()
-                .style(Style::default().bg(bg_color))
-                .render(popup_area, buf);
-
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Confirm")
-                .border_style(Style::default().fg(self.color("modal_border_active")))
-                .style(Style::default().bg(bg_color));
-            let inner_area = block.inner(popup_area);
-            block.render(popup_area, buf);
-
-            // Split inner area into message and buttons
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(6),    // Message (minimum 6 lines for file path + question)
-                    Constraint::Length(3), // Buttons
-                ])
-                .split(inner_area);
-
-            // Render confirmation message (wrapped)
-            Paragraph::new(self.confirmation_modal.message.as_str())
-                .style(Style::default().fg(self.color("text_primary")).bg(bg_color))
-                .wrap(ratatui::widgets::Wrap { trim: true })
-                .render(chunks[0], buf);
-
-            // Render Yes/No buttons
-            let button_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Fill(1),
-                    Constraint::Length(12), // Yes button
-                    Constraint::Length(2),  // Spacing
-                    Constraint::Length(12), // No button
-                    Constraint::Fill(1),
-                ])
-                .split(chunks[1]);
-
-            let yes_style = if self.confirmation_modal.focus_yes {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-            let no_style = if !self.confirmation_modal.focus_yes {
-                Style::default().fg(self.color("modal_border_active"))
-            } else {
-                Style::default()
-            };
-
-            Paragraph::new("Yes")
-                .centered()
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(yes_style),
-                )
-                .render(button_chunks[1], buf);
-
-            Paragraph::new("No")
-                .centered()
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(no_style),
-                )
-                .render(button_chunks[3], buf);
+            crate::render::overlays::render_confirmation_modal(
+                area,
+                buf,
+                &self.confirmation_modal,
+                &ctx,
+            );
         }
-
-        // Render success modal
         if self.success_modal.active {
-            let popup_area = centered_rect(area, 70, 40);
-            Clear.render(popup_area, buf);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Success");
-            let inner_area = block.inner(popup_area);
-            block.render(popup_area, buf);
-
-            // Split inner area into message and button
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(0),    // Message (takes available space)
-                    Constraint::Length(3), // OK button
-                ])
-                .split(inner_area);
-
-            // Render success message (wrapped)
-            Paragraph::new(self.success_modal.message.as_str())
-                .style(Style::default().fg(self.color("text_primary")))
-                .wrap(ratatui::widgets::Wrap { trim: true })
-                .render(chunks[0], buf);
-
-            // Render OK button
-            let ok_style = Style::default().fg(self.color("modal_border_active"));
-            Paragraph::new("OK")
-                .centered()
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(ok_style),
-                )
-                .render(chunks[1], buf);
+            crate::render::overlays::render_success_modal(area, buf, &self.success_modal, &ctx);
         }
-
-        // Render error modal
         if self.error_modal.active {
-            let popup_area = centered_rect(area, 70, 40);
-            Clear.render(popup_area, buf);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Error")
-                .border_style(Style::default().fg(self.color("modal_border_error")));
-            let inner_area = block.inner(popup_area);
-            block.render(popup_area, buf);
-
-            // Split inner area into message and button
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(0),    // Message (takes available space)
-                    Constraint::Length(3), // OK button
-                ])
-                .split(inner_area);
-
-            // Render error message (wrapped)
-            Paragraph::new(self.error_modal.message.as_str())
-                .style(Style::default().fg(self.color("error")))
-                .wrap(ratatui::widgets::Wrap { trim: true })
-                .render(chunks[0], buf);
-
-            // Render OK button
-            let ok_style = Style::default().fg(self.color("modal_border_active"));
-            Paragraph::new("OK")
-                .centered()
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(ok_style),
-                )
-                .render(chunks[1], buf);
+            crate::render::overlays::render_error_modal(area, buf, &self.error_modal, &ctx);
         }
-
         if self.show_help
             || (self.template_modal.active && self.template_modal.show_help)
             || (self.analysis_modal.active && self.analysis_modal.show_help)
         {
-            let popup_area = centered_rect(area, 80, 80);
-            Clear.render(popup_area, buf);
-            let (title, text): (String, String) = if self.analysis_modal.active
-                && self.analysis_modal.show_help
-            {
-                match self.analysis_modal.view {
-                    analysis_modal::AnalysisView::DistributionDetail => (
-                        "Distribution Detail Help".to_string(),
-                        help_strings::analysis_distribution_detail().to_string(),
-                    ),
-                    analysis_modal::AnalysisView::CorrelationDetail => (
-                        "Correlation Detail Help".to_string(),
-                        help_strings::analysis_correlation_detail().to_string(),
-                    ),
-                    analysis_modal::AnalysisView::Main => match self.analysis_modal.selected_tool {
-                        Some(analysis_modal::AnalysisTool::DistributionAnalysis) => (
-                            "Distribution Analysis Help".to_string(),
-                            help_strings::analysis_distribution().to_string(),
-                        ),
-                        Some(analysis_modal::AnalysisTool::Describe) => (
-                            "Describe Tool Help".to_string(),
-                            help_strings::analysis_describe().to_string(),
-                        ),
-                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => (
-                            "Correlation Matrix Help".to_string(),
-                            help_strings::analysis_correlation_matrix().to_string(),
-                        ),
-                        None => (
-                            "Analysis Help".to_string(),
-                            "Select an analysis tool from the sidebar.".to_string(),
-                        ),
-                    },
-                }
-            } else if self.template_modal.active {
-                (
-                    "Template Help".to_string(),
-                    help_strings::template().to_string(),
-                )
-            } else {
-                let (t, txt) = self.get_help_info();
-                (t.to_string(), txt.to_string())
-            };
-
-            // Create layout with scrollbar
-            let help_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Fill(1), Constraint::Length(1)])
-                .split(popup_area);
-
-            let text_area = help_layout[0];
-            let scrollbar_area = help_layout[1];
-
-            // Render text with scroll offset
-            let block = Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded);
-            let inner_area = block.inner(text_area);
-            block.render(text_area, buf);
-
-            // Split text into source lines
-            let text_lines: Vec<&str> = text.as_str().lines().collect();
-            let available_width = inner_area.width as usize;
-            let available_height = inner_area.height as usize;
-
-            // Calculate wrapped lines for each source line
-            let mut wrapped_lines = Vec::new();
-            for line in &text_lines {
-                if line.len() <= available_width {
-                    wrapped_lines.push(*line);
+            let (title, text): (String, String) =
+                if self.analysis_modal.active && self.analysis_modal.show_help {
+                    crate::render::analysis_view::help_title_and_text(&self.analysis_modal)
+                } else if self.template_modal.active {
+                    (
+                        "Template Help".to_string(),
+                        help_strings::template().to_string(),
+                    )
                 } else {
-                    // Split long lines into wrapped segments (at char boundaries so UTF-8 is safe)
-                    let mut remaining = *line;
-                    while !remaining.is_empty() {
-                        let mut take = remaining.len().min(available_width);
-                        while take > 0 && !remaining.is_char_boundary(take) {
-                            take -= 1;
-                        }
-                        // If take is 0 (e.g. first char is multi-byte and width is 1), advance by one char
-                        let take_len = if take == 0 {
-                            remaining.chars().next().map_or(0, |c| c.len_utf8())
-                        } else {
-                            take
-                        };
-                        let (chunk, rest) = remaining.split_at(take_len);
-                        wrapped_lines.push(chunk);
-                        remaining = rest;
-                    }
-                }
-            }
-
-            let total_wrapped_lines = wrapped_lines.len();
-
-            // Clamp scroll position
-            let max_scroll = total_wrapped_lines.saturating_sub(available_height).max(0);
-            // Use analysis modal's help scroll if in analysis help, otherwise use main help scroll
-            let current_scroll = if self.analysis_modal.active && self.analysis_modal.show_help {
-                // For now, use main help_scroll - could add separate scroll for analysis if needed
-                self.help_scroll
-            } else {
-                self.help_scroll
-            };
-            let clamped_scroll = current_scroll.min(max_scroll);
-            if self.analysis_modal.active && self.analysis_modal.show_help {
-                // Could store in analysis_modal if needed, but for now use main help_scroll
-                self.help_scroll = clamped_scroll;
-            } else {
-                self.help_scroll = clamped_scroll;
-            }
-
-            // Get visible lines (use clamped scroll)
-            let scroll_pos = self.help_scroll;
-            let visible_lines: Vec<&str> = wrapped_lines
-                .iter()
-                .skip(scroll_pos)
-                .take(available_height)
-                .copied()
-                .collect();
-
-            let visible_text = visible_lines.join("\n");
-            Paragraph::new(visible_text)
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .render(inner_area, buf);
-
-            // Render scrollbar if content is scrollable
-            if total_wrapped_lines > available_height {
-                let scrollbar_height = scrollbar_area.height;
-                let scroll_pos = self.help_scroll;
-                let scrollbar_pos = if max_scroll > 0 {
-                    ((scroll_pos as f64 / max_scroll as f64)
-                        * (scrollbar_height.saturating_sub(1) as f64)) as u16
-                } else {
-                    0
+                    let (t, txt) = self.get_help_info();
+                    (t.to_string(), txt.to_string())
                 };
-
-                // Calculate thumb size (proportion of visible content)
-                let thumb_size = ((available_height as f64 / total_wrapped_lines as f64)
-                    * scrollbar_height as f64)
-                    .max(1.0) as u16;
-                let thumb_size = thumb_size.min(scrollbar_height);
-
-                // Draw scrollbar track
-                for y in 0..scrollbar_height {
-                    let is_thumb = y >= scrollbar_pos && y < scrollbar_pos + thumb_size;
-                    let style = if is_thumb {
-                        Style::default().bg(self.color("text_primary"))
-                    } else {
-                        Style::default().bg(self.color("surface"))
-                    };
-                    buf.set_string(scrollbar_area.x, scrollbar_area.y + y, "█", style);
-                }
-            }
+            crate::render::overlays::render_help_overlay(
+                area,
+                buf,
+                &title,
+                &text,
+                &mut self.help_scroll,
+                &ctx,
+            );
         }
 
-        // Get row count from state if available
         let row_count = self.data_table_state.as_ref().map(|s| s.num_rows);
-        // Check if query is active
-        let query_active = self
-            .data_table_state
-            .as_ref()
-            .map(|s| !s.active_query.trim().is_empty())
-            .unwrap_or(false);
-        // Dim controls when any modal is active (except analysis/chart modals use their own controls)
-        let is_modal_active = self.show_help
-            || self.input_mode == InputMode::Editing
-            || self.input_mode == InputMode::SortFilter
-            || self.input_mode == InputMode::PivotMelt
-            || self.input_mode == InputMode::Info
-            || self.sort_filter_modal.active;
-
-        // Build controls - use analysis-specific controls if analysis modal is active
         let use_unicode_throbber = std::env::var("LANG")
             .map(|l| l.to_uppercase().contains("UTF-8"))
             .unwrap_or(false);
-        let mut controls = Controls::with_row_count(row_count.unwrap_or(0))
-            .with_colors(
-                self.color("controls_bg"),
-                self.color("keybind_hints"),
-                self.color("keybind_labels"),
-                self.color("throbber"),
-            )
+        let mut controls = Controls::from_context(row_count.unwrap_or(0), &ctx)
             .with_unicode_throbber(use_unicode_throbber);
 
-        if self.analysis_modal.active {
-            // Build analysis-specific controls based on view
-            let mut analysis_controls = vec![
-                ("Esc", "Back"),
-                ("↑↓", "Navigate"),
-                ("←→", "Scroll Columns"),
-                ("Tab", "Sidebar"),
-                ("Enter", "Select"),
-            ];
-
-            // Show r Resample only when sampling is enabled and current tool's data was sampled
-            if self.sampling_threshold.is_some() {
-                if let Some(results) = self.analysis_modal.current_results() {
-                    if results.sample_size.is_some() {
-                        analysis_controls.push(("r", "Resample"));
-                    }
-                }
+        match crate::render::main_view::control_bar_spec(self, main_view_content) {
+            crate::render::main_view::ControlBarSpec::Datatable {
+                dimmed,
+                query_active,
+            } => {
+                controls = controls.with_dimmed(dimmed).with_query_active(query_active);
             }
-
-            controls = controls.with_custom_controls(analysis_controls);
-        } else if self.input_mode == InputMode::Chart {
-            let chart_controls = vec![("Esc", "Back"), ("e", "Export")];
-            controls = controls.with_custom_controls(chart_controls);
-        } else {
-            controls = controls
-                .with_dimmed(is_modal_active)
-                .with_query_active(query_active);
+            crate::render::main_view::ControlBarSpec::Custom(pairs) => {
+                controls = controls.with_custom_controls(pairs);
+            }
         }
 
         if self.busy {
             self.throbber_frame = self.throbber_frame.wrapping_add(1);
         }
         controls = controls.with_busy(self.busy, self.throbber_frame);
-        controls.render(controls_area, buf);
-        if self.debug.enabled && layout.len() > debug_area_index {
-            self.debug.render(layout[debug_area_index], buf);
+        controls.render(app_layout.control_bar, buf);
+        if let Some(debug_area) = app_layout.debug {
+            self.debug.render(debug_area, buf);
         }
     }
-}
-
-fn centered_rect(r: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
-
-/// Like `centered_rect` but enforces minimum width and height so the dialog
-/// stays usable on very small terminals.
-fn centered_rect_with_min(
-    r: Rect,
-    percent_x: u16,
-    percent_y: u16,
-    min_width: u16,
-    min_height: u16,
-) -> Rect {
-    let inner = centered_rect(r, percent_x, percent_y);
-    let width = inner.width.max(min_width).min(r.width);
-    let height = inner.height.max(min_height).min(r.height);
-    let x = r.x + r.width.saturating_sub(width) / 2;
-    let y = r.y + r.height.saturating_sub(height) / 2;
-    Rect::new(x, y, width, height)
-}
-
-/// Rect for the loading progress popover: at least 25 characters wide, at most 25% of area width.
-/// Height is at least 5 lines, at most 20% of area height.
-fn centered_rect_loading(r: Rect) -> Rect {
-    const MIN_WIDTH: u16 = 25;
-    const MAX_WIDTH_PERCENT: u16 = 25;
-    const MIN_HEIGHT: u16 = 5;
-    const MAX_HEIGHT_PERCENT: u16 = 20;
-
-    let width = (r.width * MAX_WIDTH_PERCENT / 100)
-        .max(MIN_WIDTH)
-        .min(r.width);
-    let height = (r.height * MAX_HEIGHT_PERCENT / 100)
-        .max(MIN_HEIGHT)
-        .min(r.height);
-
-    let x = r.x + r.width.saturating_sub(width) / 2;
-    let y = r.y + r.height.saturating_sub(height) / 2;
-    Rect::new(x, y, width, height)
 }
 
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.

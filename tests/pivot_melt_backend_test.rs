@@ -17,13 +17,34 @@ fn ensure_sample_data() {
     common::ensure_sample_data();
 }
 
-fn load_file(app: &mut App, path: PathBuf) {
-    let event = AppEvent::Open(vec![path], OpenOptions::default());
+fn load_file_with(app: &mut App, path: PathBuf, opts: OpenOptions) {
+    let event = AppEvent::Open(vec![path], opts);
     let mut next = app.event(&event);
     while let Some(ev) = next.take() {
         next = app.event(&ev);
     }
 }
+
+fn load_file(app: &mut App, path: PathBuf) {
+    load_file_with(app, path, OpenOptions::default());
+}
+
+/// TUI-like collect sequence before pivot: DoLoadBuffer → Collect → set visible_rows → collect.
+fn simulate_initial_tui_collects(app: &mut App, terminal_height: usize) {
+    let state = match app.data_table_state.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    state.collect();
+    state.collect();
+    state.visible_rows = terminal_height;
+    state.collect();
+}
+
+const SIMULATE_TUI_INITIAL_COLLECTS: bool = true;
+
+/// Polars 0.52 can panic in pivot_stable when the index column is Date (from_physical UInt32).
+/// We work around by casting Date/Datetime index columns to Int32 before pivot and restoring after; enabled by default.
 
 #[test]
 fn test_pivot_via_events() {
@@ -34,12 +55,20 @@ fn test_pivot_via_events() {
     load_file(&mut app, path);
 
     assert!(app.data_table_state.is_some());
+
+    if SIMULATE_TUI_INITIAL_COLLECTS {
+        simulate_initial_tui_collects(&mut app, 40);
+    } else if let Some(state) = app.data_table_state.as_mut() {
+        state.visible_rows = 40;
+        state.collect();
+    }
+
     let spec = PivotSpec {
-        index: vec!["id".to_string(), "date".to_string()],
+        index: vec!["date".to_string()],
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: false,
+        sort_columns: None,
     };
     let event = AppEvent::Pivot(spec);
     let mut next = app.event(&event);
@@ -50,12 +79,55 @@ fn test_pivot_via_events() {
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf.clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
-    assert!(names.contains(&"id"));
-    assert!(names.contains(&"date"));
-    assert!(names.contains(&"A"));
-    assert!(names.contains(&"B"));
-    assert!(names.contains(&"C"));
-    assert!(df.height() > 0);
+    assert_eq!(names, vec!["date", "A", "B", "C"]);
+    assert_eq!(df.height(), 31);
+}
+
+/// Same render path as UI: visible slice (display_slice_df) then cell formatting (get/str_value).
+/// With workaround off, pivot can panic inside Polars (restore_logical_type); test still exercises the path.
+#[test]
+fn test_pivot_date_index_render_simulation() {
+    ensure_sample_data();
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx);
+    let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
+    load_file_with(
+        &mut app,
+        path,
+        OpenOptions::default().with_workaround_pivot_date_index(false),
+    );
+    let state = app.data_table_state.as_mut().unwrap();
+    state.visible_rows = 40;
+    state.collect();
+    let spec = PivotSpec {
+        index: vec!["date".to_string()],
+        pivot_column: "key".to_string(),
+        value_column: "value".to_string(),
+        aggregation: PivotAggregation::Last,
+        sort_columns: None,
+    };
+    let mut next = app.event(&AppEvent::Pivot(spec));
+    while let Some(ev) = next.take() {
+        next = app.event(&ev);
+    }
+    let state = app.data_table_state.as_ref().unwrap();
+    let sliced_df = state
+        .display_slice_df()
+        .expect("buffer populated after Collect");
+    assert_eq!(sliced_df.get_column_names(), vec!["date", "A", "B", "C"]);
+    assert_eq!(sliced_df.height(), 31);
+    let (height, cols) = sliced_df.shape();
+    for col_index in 0..cols {
+        let col_data = &sliced_df[col_index];
+        for row_index in 0..height {
+            let value = col_data.get(row_index).unwrap();
+            let _ = if matches!(value, AnyValue::Null) {
+                String::new()
+            } else {
+                value.str_value().to_string()
+            };
+        }
+    }
 }
 
 #[test]
@@ -72,7 +144,7 @@ fn test_pivot_long_string_via_events() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: false,
+        sort_columns: None,
     };
     let event = AppEvent::Pivot(spec);
     let mut next = app.event(&event);
@@ -210,7 +282,7 @@ fn test_pivot_on_current_view_after_filter() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: false,
+        sort_columns: None,
     };
     let event = AppEvent::Pivot(spec);
     let mut next = app.event(&event);
@@ -371,7 +443,7 @@ fn test_template_save_and_apply_pivot() {
         pivot_column: "key".to_string(),
         value_column: "value".to_string(),
         aggregation: PivotAggregation::Last,
-        sort_columns: false,
+        sort_columns: None,
     };
     let mut next = app.event(&AppEvent::Pivot(spec));
     while let Some(ev) = next.take() {

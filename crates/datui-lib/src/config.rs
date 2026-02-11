@@ -514,6 +514,9 @@ pub struct DisplayConfig {
     pub table_cell_padding: usize,
     /// When true, colorize main table cells by column type (string, int, float, bool, temporal).
     pub column_colors: bool,
+    /// Optional fixed width for all sidebars (Info, Sort & Filter, Template, Pivot & Melt). When None, use built-in defaults per sidebar.
+    #[serde(default)]
+    pub sidebar_width: Option<u16>,
 }
 
 // Field comments for DisplayConfig
@@ -543,6 +546,10 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
     (
         "column_colors",
         "Colorize main table cells by column type (string, int, float, bool, date/datetime)\nSet to false to use default text color for all cells",
+    ),
+    (
+        "sidebar_width",
+        "Optional: fixed width in characters for all sidebars (Info, Sort & Filter, Templates, Pivot & Melt). When unset, each sidebar uses its default width. Example: sidebar_width = 70",
     ),
 ];
 
@@ -887,6 +894,7 @@ impl Default for DisplayConfig {
             row_start_index: 1,
             table_cell_padding: 2,
             column_colors: true,
+            sidebar_width: None,
         }
     }
 }
@@ -1146,6 +1154,9 @@ impl DisplayConfig {
         }
         if other.column_colors != default.column_colors {
             self.column_colors = other.column_colors;
+        }
+        if other.sidebar_width != default.sidebar_width {
+            self.sidebar_width = other.sidebar_width;
         }
     }
 }

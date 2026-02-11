@@ -710,15 +710,42 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
         let right_tokens = &tokens[pos + 1..];
 
         if let Token::Op(op) = op_token {
+            // Unary minus next to a literal with an operator on the other side: -0.1+discount → (-0.1)+discount
+            if left_tokens.is_empty()
+                && op == "-"
+                && !right_tokens.is_empty()
+                && matches!(right_tokens[0], Token::Number(_))
+            {
+                if let Token::Number(n) = right_tokens[0] {
+                    let negated = lit(0).sub(lit(n));
+                    if right_tokens.len() >= 3 && matches!(right_tokens[1], Token::Op(_)) {
+                        if let Token::Op(bin_op) = &right_tokens[1] {
+                            let right_expr = parse_expr(&right_tokens[2..])?;
+                            return apply_op(negated, bin_op, right_expr);
+                        }
+                    }
+                    if right_tokens.len() == 1 {
+                        return Ok(negated);
+                    }
+                }
+            }
+            // Unary plus/minus when there is no left operand (e.g. -x, +x, -(a+b))
+            if left_tokens.is_empty() && (op == "+" || op == "-") {
+                let inner = parse_expr(right_tokens)?;
+                return if op == "-" {
+                    Ok(lit(0).sub(inner))
+                } else {
+                    Ok(inner)
+                };
+            }
+            if left_tokens.is_empty() {
+                return Err("Missing left operand".to_string());
+            }
             // Parse right side first (right-to-left evaluation)
             // The right side contains any remaining operators that will be evaluated first
             let right = parse_expr(right_tokens)?;
             // Then parse left side
-            let left = if left_tokens.is_empty() {
-                return Err("Missing left operand".to_string());
-            } else {
-                parse_expr(left_tokens)?
-            };
+            let left = parse_expr(left_tokens)?;
             // Apply operator: left op right
             // This gives us right-to-left evaluation: c>c%n becomes c > (c%n)
             apply_op(left, op, right)
@@ -1176,6 +1203,36 @@ mod tests {
         let (_, filter, _, _) = parse_query(query).unwrap();
 
         assert_eq!(filter, Some(col("a").gt(lit(10.0))));
+    }
+
+    #[test]
+    fn test_parse_query_unary_minus_in_where() {
+        // Minus next to literal with operator on other side: -0.5+discount → (-0.5)+discount
+        let query = "select sum total-1 by product where 0<-0.5+discount";
+        let (cols, filter, _, _) = parse_query(query).unwrap();
+        assert_eq!(cols.len(), 1);
+        assert!(filter.is_some());
+        // Filter: 0 < (-0.5) + discount
+        let expected = lit(0.0).lt(lit(0).sub(lit(0.5)).add(col("discount")));
+        assert_eq!(filter, Some(expected));
+    }
+
+    #[test]
+    fn test_parse_query_negative_literal_where() {
+        let query = "select where 0<-0.1+discount";
+        let (_, filter, _, _) = parse_query(query).unwrap();
+        let expected = lit(0.0).lt(lit(0).sub(lit(0.1)).add(col("discount")));
+        assert_eq!(filter, Some(expected));
+    }
+
+    #[test]
+    fn test_parse_unary_plus_minus_expr() {
+        let tokens = tokenize("-0.5").unwrap();
+        let expr = parse_expr(&tokens).unwrap();
+        assert_eq!(expr, lit(0).sub(lit(0.5)));
+        let tokens = tokenize("+x").unwrap();
+        let expr = parse_expr(&tokens).unwrap();
+        assert_eq!(expr, col("x"));
     }
 
     #[test]

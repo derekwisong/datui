@@ -118,7 +118,7 @@ fn main() -> Result<()> {
     let opts = OpenOptions::from_args_and_config(&args, &config);
     let input = RunInput::Paths(args.paths.clone(), opts);
 
-    if let Err(e) = datui::run(input, Some(config), args.debug) {
+    if let Err(e) = datui::run(input, Some(config)) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }

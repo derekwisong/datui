@@ -10,6 +10,8 @@ def test_import_datui():
     import datui
 
     assert hasattr(datui, "view")
+    assert hasattr(datui, "DatuiOptions")
+    assert hasattr(datui, "CompressionFormat")
 
 
 def test_view_accepts_lazyframe():
@@ -83,7 +85,7 @@ def test_view_paths_empty_raises():
     import datui._datui
 
     with pytest.raises(ValueError, match="paths must not be empty"):
-        datui._datui.view_paths([], debug=False)
+        datui._datui.view_paths([])
 
 
 def test_run_cli_exists():
@@ -92,3 +94,52 @@ def test_run_cli_exists():
 
     assert hasattr(datui._datui, "run_cli")
     assert callable(datui._datui.run_cli)
+
+
+def test_datui_options_constructible():
+    """DatuiOptions should be constructible with kwargs (no TUI run)."""
+    import datui
+
+    opts = datui.DatuiOptions(delimiter=ord(","), skip_rows=2, row_numbers=True)
+    assert opts is not None
+    d = opts._as_dict()
+    assert d["delimiter"] == 44
+    assert d["skip_rows"] == 2
+    assert d["row_numbers"] is True
+    assert d["debug"] is False
+
+
+def test_datui_options_debug():
+    """DatuiOptions(debug=True) stores debug; view(..., debug=True) is valid via kwargs."""
+    import datui
+
+    opts = datui.DatuiOptions(debug=True)
+    assert opts._as_dict()["debug"] is True
+
+
+def test_datui_options_delimiter_single_char():
+    """DatuiOptions accepts single-char str for delimiter."""
+    import datui
+
+    opts = datui.DatuiOptions(delimiter=";")
+    assert opts is not None
+    d = opts._as_dict()
+    assert d["delimiter"] == ord(";")
+
+
+def test_view_invalid_kwarg_raises():
+    """view() with invalid option keyword should raise TypeError."""
+    import datui
+
+    with pytest.raises(TypeError, match="invalid option"):
+        datui.view("nonexistent.csv", not_an_option=1)
+
+
+def test_compression_format_values():
+    """CompressionFormat should expose gzip, zstd, bzip2, xz."""
+    import datui
+
+    assert hasattr(datui.CompressionFormat, "Gzip")
+    assert hasattr(datui.CompressionFormat, "Zstd")
+    assert hasattr(datui.CompressionFormat, "Bzip2")
+    assert hasattr(datui.CompressionFormat, "Xz")

@@ -221,6 +221,8 @@ pub struct OpenOptions {
     pub workaround_pivot_date_index: bool,
     /// Null value specs for CSV: global strings and/or "COL=VAL" for per-column. Empty = use Polars default.
     pub null_values: Option<Vec<String>>,
+    /// When true, show the debug overlay (session info, performance, query, etc.).
+    pub debug: bool,
 }
 
 impl OpenOptions {
@@ -250,6 +252,7 @@ impl OpenOptions {
             polars_streaming: true,
             workaround_pivot_date_index: true,
             null_values: None,
+            debug: false,
         }
     }
 }
@@ -384,6 +387,9 @@ impl OpenOptions {
         opts.polars_streaming = config.performance.polars_streaming;
 
         opts.workaround_pivot_date_index = args.workaround_pivot_date_index.unwrap_or(true);
+
+        // Debug: CLI flag overrides config
+        opts.debug = args.debug || config.debug.enabled;
 
         // Null values: merge config list with CLI list (CLI appended); if either is non-empty, set
         let config_nulls = config.file_loading.null_values.as_deref().unwrap_or(&[]);
@@ -8340,13 +8346,18 @@ impl Widget for &mut App {
 }
 
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.
-pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()> {
+pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     use std::io::Write;
     use std::sync::{mpsc, Mutex, Once};
 
     let config = match config {
         Some(c) => c,
         None => AppConfig::load(APP_NAME)?,
+    };
+
+    let opts = match &input {
+        RunInput::Paths(_, o) => o.clone(),
+        RunInput::LazyFrame(_, o) => o.clone(),
     };
 
     let theme = Theme::from_config(&config.theme)
@@ -8396,7 +8407,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>, debug: bool) -> Result<()
     })?;
     let (tx, rx) = mpsc::channel::<AppEvent>();
     let mut app = App::new_with_config(tx.clone(), theme, config.clone());
-    if debug {
+    if opts.debug {
         app.enable_debug();
     }
 

@@ -333,7 +333,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           shared-key: release
-          targets: ${{ matrix.target }}
+          key: ${{ matrix.target }}
           cache-workspace-crates: true
 
       - name: Build release binary

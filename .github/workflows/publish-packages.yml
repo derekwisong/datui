@@ -24,26 +24,36 @@ permissions:
   contents: read
 
 jobs:
-  publish-crates-io:
+  resolve-release:
     runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.export_tag.outputs.tag_name }}
     steps:
       - name: Resolve release tag
-        id: resolve-tag
+        id: resolve_tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "${{ inputs.tag_name }}" ]; then
-            echo "tag_name=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ inputs.tag_name }}"
           else
             TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName -q '.[0].tagName')
-            echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
           fi
-          echo "Publishing to crates.io: ${{ steps.resolve-tag.outputs.tag_name }}"
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $TAG"
 
+      - name: Export tag for job output
+        id: export_tag
+        run: echo "tag_name=${{ steps.resolve_tag.outputs.tag_name }}" >> "$GITHUB_OUTPUT"
+
+  publish-crates-io:
+    needs: resolve-release
+    runs-on: ubuntu-latest
+    steps:
       - name: Checkout at release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.resolve-tag.outputs.tag_name }}
+          ref: ${{ needs.resolve-release.outputs.tag_name }}
           fetch-depth: 0
 
       - name: Install Rust
@@ -71,27 +81,15 @@ jobs:
             fi
           done
 
-  publish:
+  publish-homebrew:
+    needs: resolve-release
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve release tag
-        id: resolve-tag
+      - name: Download macOS tarballs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -n "${{ inputs.tag_name }}" ]; then
-            echo "tag_name=${{ inputs.tag_name }}" >> "$GITHUB_OUTPUT"
-          else
-            TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName -q '.[0].tagName')
-            echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Publishing release ${{ steps.resolve-tag.outputs.tag_name }}"
-
-      - name: Download release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release download "${{ steps.resolve-tag.outputs.tag_name }}" --repo ${{ github.repository }}
+          gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} --pattern '*-apple-darwin.tar.gz'
 
       - name: Get Homebrew formula template
         env:
@@ -99,13 +97,13 @@ jobs:
         run: |
           mkdir -p scripts
           curl -sL -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/${{ github.repository }}/contents/scripts/homebrew-formula.rb.template?ref=${{ steps.resolve-tag.outputs.tag_name }}" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/scripts/homebrew-formula.rb.template?ref=${{ needs.resolve-release.outputs.tag_name }}" \
             -o scripts/homebrew-formula.rb.template
 
       - name: Compute macOS tarball checksums for Homebrew
-        id: brew-checksums
+        id: brew_checksums
         run: |
-          VERSION="${{ steps.resolve-tag.outputs.tag_name }}"
+          VERSION="${{ needs.resolve-release.outputs.tag_name }}"
           echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
           echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha_arm64=$(sha256sum *-aarch64-apple-darwin.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
@@ -117,10 +115,10 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-          TAG="${{ steps.brew-checksums.outputs.tag }}"
-          VERSION="${{ steps.brew-checksums.outputs.version }}"
-          SHA_ARM64="${{ steps.brew-checksums.outputs.sha_arm64 }}"
-          SHA_X64="${{ steps.brew-checksums.outputs.sha_x64 }}"
+          TAG="${{ steps.brew_checksums.outputs.tag }}"
+          VERSION="${{ steps.brew_checksums.outputs.version }}"
+          SHA_ARM64="${{ steps.brew_checksums.outputs.sha_arm64 }}"
+          SHA_X64="${{ steps.brew_checksums.outputs.sha_x64 }}"
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/derekwisong/homebrew-datui.git" tap
@@ -135,6 +133,16 @@ jobs:
           git add Formula/datui.rb
           git diff --staged --quiet || (git commit -m "datui $VERSION" && git push)
 
+  publish-pypi:
+    needs: resolve-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download wheel assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} --pattern '*.whl'
+
       - name: Publish to PyPI
         env:
           TWINE_USERNAME: __token__
@@ -144,6 +152,16 @@ jobs:
           pip install 'twine>=6.2' 'packaging>=24.2'
           twine upload --skip-existing *.whl
 
+  publish-aur:
+    needs: resolve-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download PKGBUILD from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} --pattern 'PKGBUILD'
+
       - name: Publish to AUR (datui-bin package)
         uses: KSXGitHub/github-actions-deploy-aur@v2.7.1
         with:
@@ -152,20 +170,19 @@ jobs:
           commit_username: ${{ secrets.AUR_USERNAME }}
           commit_email: ${{ secrets.AUR_EMAIL }}
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-          commit_message: Update to ${{ steps.resolve-tag.outputs.tag_name }}
+          commit_message: Update to ${{ needs.resolve-release.outputs.tag_name }}
           ssh_keyscan_types: rsa,ecdsa,ed25519
 
-  # winget:
-  #   runs-on: windows-latest
-  #   steps:
-  #     - name: Open winget-pkgs PR
-  #       uses: vedantmgoyal9/winget-releaser@main
-  #       with:
-  #         identifier: derekwisong.datui
-  #         installers-regex: '-windows-x86_64\.zip$'
-  #         token: ${{ secrets.WINGET_TOKEN }}
-
-          # Optional: keep only the latest N versions in winget (0 = keep all)
-          # max-versions-to-keep: 5
-          # If your winget-pkgs fork is under a different user, set fork-user:
-          # fork-user: your-fork-username
+  publish-winget:
+    needs: resolve-release
+    runs-on: windows-latest
+    # winget-releaser fetches release assets via GitHub API; no local download needed
+    steps:
+      - name: Open winget-pkgs PR
+        uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: derekwisong.datui
+          installers-regex: '-windows-x86_64\.zip$'
+          release-tag: ${{ needs.resolve-release.outputs.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
+          max-versions-to-keep: 20

@@ -8,7 +8,7 @@
 use std::panic;
 use std::path::{Path, PathBuf};
 
-use ::datui::{error_for_python, CompressionFormat, ErrorKindForPython, OpenOptions, RunInput, run};
+use ::datui::{error_for_python, CompressionFormat, ErrorKindForPython, FileFormat, OpenOptions, RunInput, run};
 use bincode::config::legacy;
 use polars::prelude::LazyFrame;
 use polars_plan::dsl::DslPlan;
@@ -26,6 +26,30 @@ fn parse_compression(s: &str) -> PyResult<CompressionFormat> {
             "compression must be one of: gzip, zstd, bzip2, xz (got {:?})",
             s
         ))),
+    }
+}
+
+fn parse_format(s: &str) -> PyResult<FileFormat> {
+    FileFormat::from_extension(s).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "format must be one of: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel (got {:?})",
+            s
+        ))
+    })
+}
+
+fn format_to_str(f: FileFormat) -> &'static str {
+    match f {
+        FileFormat::Parquet => "parquet",
+        FileFormat::Csv => "csv",
+        FileFormat::Tsv => "tsv",
+        FileFormat::Psv => "psv",
+        FileFormat::Json => "json",
+        FileFormat::Jsonl => "jsonl",
+        FileFormat::Arrow => "arrow",
+        FileFormat::Avro => "avro",
+        FileFormat::Orc => "orc",
+        FileFormat::Excel => "excel",
     }
 }
 
@@ -85,6 +109,7 @@ impl DatuiOptionsPy {
         skip_lines=None,
         skip_rows=None,
         compression=None,
+        format=None,
         pages_lookahead=None,
         pages_lookback=None,
         max_buffered_rows=None,
@@ -113,6 +138,7 @@ impl DatuiOptionsPy {
         skip_lines: Option<Bound<'_, pyo3::types::PyAny>>,
         skip_rows: Option<Bound<'_, pyo3::types::PyAny>>,
         compression: Option<Bound<'_, pyo3::types::PyAny>>,
+        format: Option<Bound<'_, pyo3::types::PyAny>>,
         pages_lookahead: Option<Bound<'_, pyo3::types::PyAny>>,
         pages_lookback: Option<Bound<'_, pyo3::types::PyAny>>,
         max_buffered_rows: Option<Bound<'_, pyo3::types::PyAny>>,
@@ -168,6 +194,14 @@ impl DatuiOptionsPy {
                     PyTypeError::new_err("compression must be str (e.g. 'gzip', 'zstd')")
                 })?;
                 opts.compression = Some(parse_compression(&s)?);
+            }
+        }
+        if let Some(ref a) = format {
+            if !a.is_none() {
+                let s: String = a.extract().map_err(|_| {
+                    PyTypeError::new_err("format must be str (e.g. 'csv', 'parquet')")
+                })?;
+                opts.format = Some(parse_format(&s)?);
             }
         }
         if let Some(ref a) = pages_lookahead {
@@ -252,6 +286,9 @@ impl DatuiOptionsPy {
                 CompressionFormat::Xz => "xz",
             };
             d.set_item("compression", s)?;
+        }
+        if let Some(ref v) = o.format {
+            d.set_item("format", format_to_str(*v))?;
         }
         if let Some(v) = o.pages_lookahead {
             d.set_item("pages_lookahead", v)?;

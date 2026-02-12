@@ -293,8 +293,8 @@ pub fn render(
     );
 
     if app.chart_export_modal.active {
-        const CHART_EXPORT_MODAL_HEIGHT: u16 = 14;
-        let modal_width = (chart_area.width * 3 / 4).clamp(40, 54);
+        const CHART_EXPORT_MODAL_HEIGHT: u16 = 20;
+        let modal_width = (chart_area.width * 3 / 4).clamp(80, 108);
         let modal_height = CHART_EXPORT_MODAL_HEIGHT
             .min(chart_area.height)
             .max(CHART_EXPORT_MODAL_HEIGHT);

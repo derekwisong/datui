@@ -1,4 +1,4 @@
-//! Chart export modal rendering: format (PNG/EPS), optional title, and path.
+//! Chart export modal rendering: format (vertical radio), path, title, dimensions, buttons (right).
 
 use crate::chart_export::ChartExportFormat;
 use crate::chart_export_modal::{ChartExportFocus, ChartExportModal};
@@ -23,54 +23,44 @@ pub fn render_chart_export_modal(
     let inner = block.inner(area);
     block.render(area, buf);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Format row
-            Constraint::Length(3), // Chart title (optional)
-            Constraint::Length(3), // Path row
-            Constraint::Length(3), // Buttons
-        ])
+    // Left: format list. Right: path, title, width x height, buttons.
+    let horz = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(12), Constraint::Min(40)])
         .split(inner);
 
-    // Format: radio block (PNG / EPS)
-    let format_area = chunks[0];
-    let is_format_focused = modal.focus == ChartExportFocus::FormatSelector;
-    let format_labels: Vec<&str> = ChartExportFormat::ALL.iter().map(|f| f.as_str()).collect();
+    let format_list_area = horz[0];
     let format_selected = ChartExportFormat::ALL
         .iter()
         .position(|&f| f == modal.selected_format)
         .unwrap_or(0);
+    let is_format_focused = modal.focus == ChartExportFocus::FormatSelector;
+    let format_labels: Vec<&str> = ChartExportFormat::ALL.iter().map(|f| f.as_str()).collect();
     RadioBlock::new(
         " Format ",
         &format_labels,
         format_selected,
         is_format_focused,
-        2,
+        1,
         border_color,
         active_color,
     )
-    .render(format_area, buf);
+    .render(format_list_area, buf);
 
-    // Chart title (optional; blank = no title on export)
-    let title_area = chunks[1];
-    let is_title_focused = modal.focus == ChartExportFocus::TitleInput;
-    let title_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if is_title_focused {
-            active_color
-        } else {
-            border_color
-        }))
-        .title(" Chart Title ");
-    let title_inner = title_block.inner(title_area);
-    title_block.render(title_area, buf);
-    modal.title_input.set_focused(is_title_focused);
-    (&modal.title_input).render(title_inner, buf);
+    let right = horz[1];
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // File path
+            Constraint::Length(3), // Chart title
+            Constraint::Length(3), // Width x Height
+            Constraint::Length(1), // Spacer
+            Constraint::Length(3), // Buttons
+        ])
+        .split(right);
 
-    // Path input
-    let path_area = chunks[2];
+    // File path (top)
+    let path_area = right_chunks[0];
     let is_path_focused = modal.focus == ChartExportFocus::PathInput;
     let path_block = Block::default()
         .borders(Borders::ALL)
@@ -86,8 +76,60 @@ pub fn render_chart_export_modal(
     modal.path_input.set_focused(is_path_focused);
     (&modal.path_input).render(path_inner, buf);
 
+    // Chart title
+    let title_area = right_chunks[1];
+    let is_title_focused = modal.focus == ChartExportFocus::TitleInput;
+    let title_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if is_title_focused {
+            active_color
+        } else {
+            border_color
+        }))
+        .title(" Chart Title ");
+    let title_inner = title_block.inner(title_area);
+    title_block.render(title_area, buf);
+    modal.title_input.set_focused(is_title_focused);
+    (&modal.title_input).render(title_inner, buf);
+
+    // Width x Height row
+    let size_area = right_chunks[2];
+    let size_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(size_area);
+    let is_width_focused = modal.focus == ChartExportFocus::WidthInput;
+    let is_height_focused = modal.focus == ChartExportFocus::HeightInput;
+    let width_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if is_width_focused {
+            active_color
+        } else {
+            border_color
+        }))
+        .title(" Width ");
+    let width_inner = width_block.inner(size_row[0]);
+    width_block.render(size_row[0], buf);
+    modal.width_input.set_focused(is_width_focused);
+    (&modal.width_input).render(width_inner, buf);
+    let height_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(if is_height_focused {
+            active_color
+        } else {
+            border_color
+        }))
+        .title(" Height ");
+    let height_inner = height_block.inner(size_row[1]);
+    height_block.render(size_row[1], buf);
+    modal.height_input.set_focused(is_height_focused);
+    (&modal.height_input).render(height_inner, buf);
+
     // Buttons
-    let btn_area = chunks[3];
+    let btn_area = right_chunks[4];
     let btn_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])

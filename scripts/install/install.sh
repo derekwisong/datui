@@ -67,20 +67,16 @@ if [ -f /etc/arch-release ] && [ "$ASSUME_YES" != true ] && [ -t 0 ]; then
     esac
 fi
 
-# Determine latest version tag from GitHub
+# Determine latest version tag from GitHub (used for rpm/tarball installs)
 TAG=$(curl -sI https://github.com/$REPO/releases/latest | grep -i "location:" | awk -F/ '{print $NF}' | tr -d '\r\n')
-# Trim the 'v' for the package filenames (e.g., 0.2.0)
 VERSION="${TAG#v}"
-
-echo "--- Installing $BINARY_NAME $VERSION for $OS ($CANONICAL_ARCH) ---"
 
 # Detect Package Manager / Format
 case "$OS" in
     linux*)
         if [ -f /etc/debian_version ]; then
-            # on ubuntu/debian-based systems use the deb package
-            FORMAT="deb"
-            FILENAME="${BINARY_NAME}_${VERSION}-1_${CANONICAL_ARCH}.deb"
+            # on ubuntu/debian-based systems use the APT repository
+            FORMAT="apt"
         elif [ -f /etc/redhat-release ] || [ -f /etc/fedora-release ]; then
             # on redhat/rpm-based systems use the rpm package
             FORMAT="rpm"
@@ -107,16 +103,25 @@ case "$OS" in
         ;;
 esac
 
-# Download
-TMP_DIR=$(mktemp -d)
-echo "Downloading $FILENAME... ($TMP_DIR)"
-curl -sSL "$GITHUB_URL/$FILENAME" -o "$TMP_DIR/$FILENAME"
+# Download (skip when using APT repository)
+if [ "$FORMAT" != "apt" ]; then
+    echo "Installing $BINARY_NAME $VERSION for $OS ($CANONICAL_ARCH)"
+    TMP_DIR=$(mktemp -d)
+    echo "Downloading $FILENAME... ($TMP_DIR)"
+    curl -sSL "$GITHUB_URL/$FILENAME" -o "$TMP_DIR/$FILENAME"
+fi
 
 # Install based on format
 case "$FORMAT" in
-    deb)
+    apt)
+        echo "Installing $BINARY_NAME for $OS ($CANONICAL_ARCH) via APT repository"
+        echo "Ensuring gnupg is installed..."
+        run_priv apt-get update -qq && run_priv apt-get install $NONINTERACTIVE --no-install-recommends gnupg
+        echo "Adding Datui APT repository..."
+        curl -fsSL https://derekwisong.github.io/datui-apt/public.key | gpg --dearmor | run_priv tee /usr/share/keyrings/datui-archive-keyring.gpg > /dev/null
+        echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | run_priv tee /etc/apt/sources.list.d/datui.list > /dev/null
         echo "Installing via apt..."
-        run_priv apt-get update -qq && run_priv apt-get install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
+        run_priv apt-get update -qq && run_priv apt-get install $NONINTERACTIVE datui
         ;;
     rpm)
         echo "Installing via dnf..."
@@ -142,6 +147,15 @@ case "$FORMAT" in
 esac
 
 # Cleanup
-rm -rf "$TMP_DIR"
-echo "--- $BINARY_NAME installed successfully! ---"
-$BINARY_NAME --version
+if [ -n "${TMP_DIR:-}" ]; then
+    rm -rf "$TMP_DIR"
+fi
+
+echo ""
+echo "--- $($BINARY_NAME --version) installed successfully! ---"
+echo ""
+echo "For instructions, see: $BINARY_NAME --help"
+# if linux or macos, suggest the man page
+if [ "$OS" = "linux" ] || [ "$OS" = "macos" ]; then
+    echo "For the manpage, run: man $BINARY_NAME"
+fi

@@ -72,6 +72,28 @@ dnf install https://github.com/derekwisong/datui/releases/download/vX.Y.Z/datui-
 
 ### Deb-based (Debian, Ubuntu)
 
+#### Install from the Datui Apt Repository
+
+Installing through the repository makes updating easy and automatic.
+
+- Install the GPG signing key and the Datui apt source. **You only need to do this once.**
+
+  ```bash
+  curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/datui-archive-keyring.gpg
+  ```
+
+  ```bash
+  echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | sudo tee /etc/apt/sources.list.d/datui.list
+  ```
+- Update the `apt` cache and install:
+
+  ```bash
+  sudo apt update
+  sudo apt install datui
+  ```
+
+#### Install from a `.deb` File
+
 Download the `.deb` file for the release version you want from the [Latest Release][latest-release].
 
 Use `apt` to install that file:

@@ -436,8 +436,8 @@ pub enum AppEvent {
     Pivot(PivotSpec),
     Melt(MeltSpec),
     Export(PathBuf, ExportFormat, ExportOptions), // Path, format, options
-    ChartExport(PathBuf, ChartExportFormat, String), // Chart export: path, format, optional title
-    DoChartExport(PathBuf, ChartExportFormat, String), // Deferred: show progress bar then run chart export
+    ChartExport(PathBuf, ChartExportFormat, String, u32, u32), // path, format, title, width, height
+    DoChartExport(PathBuf, ChartExportFormat, String, u32, u32), // Deferred: run chart export
     Collect,
     Update,
     Reset,
@@ -795,7 +795,7 @@ pub struct App {
     pending_export: Option<(PathBuf, ExportFormat, ExportOptions)>, // Store export request while waiting for confirmation
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
     export_df: Option<DataFrame>,
-    pending_chart_export: Option<(PathBuf, ChartExportFormat, String)>,
+    pending_chart_export: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
     /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation. Size is from HEAD when available.
     #[cfg(any(feature = "http", feature = "cloud"))]
     pending_download: Option<PendingDownload>,
@@ -2230,9 +2230,11 @@ impl App {
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
                         // User confirmed overwrite: chart export first, then dataframe export
-                        if let Some((path, format, title)) = self.pending_chart_export.take() {
+                        if let Some((path, format, title, width, height)) =
+                            self.pending_chart_export.take()
+                        {
                             self.confirmation_modal.hide();
-                            return Some(AppEvent::ChartExport(path, format, title));
+                            return Some(AppEvent::ChartExport(path, format, title, width, height));
                         }
                         if let Some((path, format, options)) = self.pending_export.take() {
                             self.confirmation_modal.hide();
@@ -2271,7 +2273,7 @@ impl App {
                         }
                     } else {
                         // User cancelled: if chart export overwrite, reopen chart export modal with path pre-filled
-                        if let Some((path, format, _)) = self.pending_chart_export.take() {
+                        if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
                             self.chart_export_modal.reopen_with_path(&path, format);
                         }
                         self.pending_export = None;
@@ -2285,7 +2287,7 @@ impl App {
                 }
                 KeyCode::Esc => {
                     // Cancel: if chart export overwrite, reopen chart export modal with path pre-filled
-                    if let Some((path, format, _)) = self.pending_chart_export.take() {
+                    if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
                         self.chart_export_modal.reopen_with_path(&path, format);
                     }
                     self.pending_export = None;
@@ -3603,7 +3605,34 @@ impl App {
                     KeyCode::BackTab if event.is_press() => {
                         self.chart_export_modal.prev_focus();
                     }
-                    // Only use h/j/k/l and arrows for format selector; when path input focused, pass all keys to path input
+                    KeyCode::Up | KeyCode::Char('k')
+                        if event.is_press()
+                            && self.chart_export_modal.focus
+                                == ChartExportFocus::FormatSelector =>
+                    {
+                        let idx = ChartExportFormat::ALL
+                            .iter()
+                            .position(|&f| f == self.chart_export_modal.selected_format)
+                            .unwrap_or(0);
+                        let prev = if idx == 0 {
+                            ChartExportFormat::ALL.len() - 1
+                        } else {
+                            idx - 1
+                        };
+                        self.chart_export_modal.selected_format = ChartExportFormat::ALL[prev];
+                    }
+                    KeyCode::Down | KeyCode::Char('j')
+                        if event.is_press()
+                            && self.chart_export_modal.focus
+                                == ChartExportFocus::FormatSelector =>
+                    {
+                        let idx = ChartExportFormat::ALL
+                            .iter()
+                            .position(|&f| f == self.chart_export_modal.selected_format)
+                            .unwrap_or(0);
+                        let next = (idx + 1) % ChartExportFormat::ALL.len();
+                        self.chart_export_modal.selected_format = ChartExportFormat::ALL[next];
+                    }
                     KeyCode::Left | KeyCode::Char('h')
                         if event.is_press()
                             && self.chart_export_modal.focus
@@ -3638,6 +3667,7 @@ impl App {
                             if !path_str.is_empty() {
                                 let title =
                                     self.chart_export_modal.title_input.value.trim().to_string();
+                                let (width, height) = self.chart_export_modal.export_dimensions();
                                 let mut path = PathBuf::from(path_str);
                                 let format = self.chart_export_modal.selected_format;
                                 // Only add default extension when user did not provide one
@@ -3646,7 +3676,8 @@ impl App {
                                 }
                                 let path_display = path.display().to_string();
                                 if path.exists() {
-                                    self.pending_chart_export = Some((path, format, title));
+                                    self.pending_chart_export =
+                                        Some((path, format, title, width, height));
                                     self.chart_export_modal.close();
                                     self.confirmation_modal.show(format!(
                                             "File already exists:\n{}\n\nDo you wish to overwrite this file?",
@@ -3654,7 +3685,9 @@ impl App {
                                         ));
                                 } else {
                                     self.chart_export_modal.close();
-                                    return Some(AppEvent::ChartExport(path, format, title));
+                                    return Some(AppEvent::ChartExport(
+                                        path, format, title, width, height,
+                                    ));
                                 }
                             }
                         }
@@ -3669,6 +3702,40 @@ impl App {
                                 let _ = self.chart_export_modal.title_input.handle_key(event, None);
                             } else if self.chart_export_modal.focus == ChartExportFocus::PathInput {
                                 let _ = self.chart_export_modal.path_input.handle_key(event, None);
+                            } else if self.chart_export_modal.focus == ChartExportFocus::WidthInput
+                            {
+                                let allow = match event.code {
+                                    KeyCode::Char(c) if c.is_ascii_digit() => true,
+                                    KeyCode::Backspace
+                                    | KeyCode::Delete
+                                    | KeyCode::Left
+                                    | KeyCode::Right
+                                    | KeyCode::Home
+                                    | KeyCode::End => true,
+                                    _ => false,
+                                };
+                                if allow {
+                                    let _ =
+                                        self.chart_export_modal.width_input.handle_key(event, None);
+                                }
+                            } else if self.chart_export_modal.focus == ChartExportFocus::HeightInput
+                            {
+                                let allow = match event.code {
+                                    KeyCode::Char(c) if c.is_ascii_digit() => true,
+                                    KeyCode::Backspace
+                                    | KeyCode::Delete
+                                    | KeyCode::Left
+                                    | KeyCode::Right
+                                    | KeyCode::Home
+                                    | KeyCode::End => true,
+                                    _ => false,
+                                };
+                                if allow {
+                                    let _ = self
+                                        .chart_export_modal
+                                        .height_input
+                                        .handle_key(event, None);
+                                }
                             }
                         }
                     }
@@ -7165,7 +7232,7 @@ impl App {
                     None
                 }
             }
-            AppEvent::ChartExport(path, format, title) => {
+            AppEvent::ChartExport(path, format, title, width, height) => {
                 self.busy = true;
                 self.loading_state = LoadingState::Exporting {
                     file_path: path.clone(),
@@ -7176,10 +7243,12 @@ impl App {
                     path.clone(),
                     *format,
                     title.clone(),
+                    *width,
+                    *height,
                 ))
             }
-            AppEvent::DoChartExport(path, format, title) => {
-                let result = self.do_chart_export(path, *format, title);
+            AppEvent::DoChartExport(path, format, title, width, height) => {
+                let result = self.do_chart_export(path, *format, title, *width, *height);
                 self.loading_state = LoadingState::Idle;
                 self.busy = false;
                 self.drain_keys_on_next_loop = true;
@@ -7319,11 +7388,14 @@ impl App {
 
     /// Perform chart export to file. Exports what is currently visible (effective x + y).
     /// Title is optional; blank or whitespace means no chart title on export.
+    /// Width and height are used for PNG output (pixels); EPS uses fixed logical size.
     fn do_chart_export(
         &self,
         path: &Path,
         format: ChartExportFormat,
         title: &str,
+        width: u32,
+        height: u32,
     ) -> color_eyre::Result<()> {
         let state = self
             .data_table_state
@@ -7470,7 +7542,9 @@ impl App {
                 };
 
                 match format {
-                    ChartExportFormat::Png => write_chart_png(path, &series, chart_type, &bounds),
+                    ChartExportFormat::Png => {
+                        write_chart_png(path, &series, chart_type, &bounds, (width, height))
+                    }
                     ChartExportFormat::Eps => write_chart_eps(path, &series, chart_type, &bounds),
                 }
             }
@@ -7526,7 +7600,7 @@ impl App {
                 };
                 match format {
                     ChartExportFormat::Png => {
-                        write_chart_png(path, &series, ChartType::Bar, &bounds)
+                        write_chart_png(path, &series, ChartType::Bar, &bounds, (width, height))
                     }
                     ChartExportFormat::Eps => {
                         write_chart_eps(path, &series, ChartType::Bar, &bounds)
@@ -7565,7 +7639,9 @@ impl App {
                     chart_title,
                 };
                 match format {
-                    ChartExportFormat::Png => write_box_plot_png(path, &data, &bounds),
+                    ChartExportFormat::Png => {
+                        write_box_plot_png(path, &data, &bounds, (width, height))
+                    }
                     ChartExportFormat::Eps => write_box_plot_eps(path, &data, &bounds),
                 }
             }
@@ -7613,7 +7689,7 @@ impl App {
                 };
                 match format {
                     ChartExportFormat::Png => {
-                        write_chart_png(path, &series, ChartType::Line, &bounds)
+                        write_chart_png(path, &series, ChartType::Line, &bounds, (width, height))
                     }
                     ChartExportFormat::Eps => {
                         write_chart_eps(path, &series, ChartType::Line, &bounds)
@@ -7661,7 +7737,9 @@ impl App {
                     chart_title,
                 };
                 match format {
-                    ChartExportFormat::Png => write_heatmap_png(path, &data, &bounds),
+                    ChartExportFormat::Png => {
+                        write_heatmap_png(path, &data, &bounds, (width, height))
+                    }
                     ChartExportFormat::Eps => write_heatmap_eps(path, &data, &bounds),
                 }
             }

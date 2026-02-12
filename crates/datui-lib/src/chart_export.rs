@@ -355,12 +355,13 @@ pub fn write_chart_eps(
     Ok(())
 }
 
-/// Write chart to PNG using plotters bitmap backend.
+/// Write chart to PNG using plotters bitmap backend. Size is (width, height) in pixels.
 pub fn write_chart_png(
     path: &Path,
     series: &[ChartExportSeries],
     chart_type: ChartType,
     bounds: &ChartExportBounds,
+    (width, height): (u32, u32),
 ) -> Result<()> {
     use plotters::prelude::*;
 
@@ -368,7 +369,7 @@ pub fn write_chart_png(
         return Err(color_eyre::eyre::eyre!("No data to export"));
     }
 
-    let root = BitMapBackend::new(path, (640, 480)).into_drawing_area();
+    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let x_min = bounds.x_min;
@@ -456,11 +457,12 @@ pub fn write_chart_png(
     Ok(())
 }
 
-/// Write box plot to PNG using plotters bitmap backend.
+/// Write box plot to PNG using plotters bitmap backend. Size is (width, height) in pixels.
 pub fn write_box_plot_png(
     path: &Path,
     data: &BoxPlotData,
     bounds: &BoxPlotExportBounds,
+    (width, height): (u32, u32),
 ) -> Result<()> {
     use plotters::prelude::*;
 
@@ -468,7 +470,7 @@ pub fn write_box_plot_png(
         return Err(color_eyre::eyre::eyre!("No data to export"));
     }
 
-    let root = BitMapBackend::new(path, (640, 480)).into_drawing_area();
+    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let x_min = -0.5;
@@ -553,11 +555,12 @@ pub fn write_box_plot_png(
     Ok(())
 }
 
-/// Write heatmap to PNG using plotters bitmap backend.
+/// Write heatmap to PNG using plotters bitmap backend. Size is (width, height) in pixels.
 pub fn write_heatmap_png(
     path: &Path,
     data: &HeatmapData,
     bounds: &ChartExportBounds,
+    (width, height): (u32, u32),
 ) -> Result<()> {
     use plotters::prelude::*;
 
@@ -565,7 +568,7 @@ pub fn write_heatmap_png(
         return Err(color_eyre::eyre::eyre!("No data to export"));
     }
 
-    let root = BitMapBackend::new(path, (640, 480)).into_drawing_area();
+    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let mut binding = ChartBuilder::on(&root);

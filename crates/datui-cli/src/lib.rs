@@ -76,6 +76,10 @@ pub struct Args {
     #[arg(long = "delimiter")]
     pub delimiter: Option<u8>,
 
+    /// Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount=
+    #[arg(long = "null-value", value_name = "VAL")]
+    pub null_value: Vec<String>,
+
     /// Specify the compression format explicitly (gzip, zstd, bzip2, xz)
     /// If not specified, compression is auto-detected from file extension.
     #[arg(long = "compression", value_enum)]

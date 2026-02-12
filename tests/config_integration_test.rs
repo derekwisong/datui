@@ -13,6 +13,7 @@ fn test_config_used_for_row_numbers() {
         skip_rows: None,
         no_header: None,
         delimiter: None,
+        null_value: vec![],
         compression: None,
         debug: false,
         excel_sheet: None,
@@ -60,6 +61,7 @@ fn test_cli_args_override_config() {
         skip_rows: None,
         no_header: None,
         delimiter: None,
+        null_value: vec![],
         compression: None,
         debug: false,
         excel_sheet: None,
@@ -107,6 +109,7 @@ fn test_config_display_settings() {
         skip_rows: None,
         no_header: None,
         delimiter: None,
+        null_value: vec![],
         compression: None,
         debug: false,
         excel_sheet: None,
@@ -154,6 +157,7 @@ fn test_config_file_loading_settings() {
         skip_rows: None,
         no_header: None,
         delimiter: None,
+        null_value: vec![],
         compression: None,
         debug: false,
         excel_sheet: None,
@@ -186,6 +190,54 @@ fn test_config_file_loading_settings() {
     assert_eq!(opts.delimiter, Some(b'\t'));
     assert_eq!(opts.has_header, Some(false));
     assert_eq!(opts.skip_lines, Some(2));
+}
+
+#[test]
+fn test_config_null_values_merge() {
+    let mut config = AppConfig::default();
+    config.file_loading.null_values = Some(vec!["NA".to_string(), "N/A".to_string()]);
+
+    let args = Args {
+        paths: vec![std::path::PathBuf::from("test.csv")],
+        skip_lines: None,
+        skip_rows: None,
+        no_header: None,
+        delimiter: None,
+        null_value: vec!["amount=".to_string()],
+        compression: None,
+        debug: false,
+        excel_sheet: None,
+        clear_cache: false,
+        template: None,
+        remove_templates: false,
+        sampling_threshold: None,
+        pages_lookahead: None,
+        pages_lookback: None,
+        row_numbers: false,
+        row_start_index: None,
+        column_colors: None,
+        generate_config: false,
+        force: false,
+        hive: false,
+        single_spine_schema: None,
+        parse_dates: None,
+        decompress_in_memory: None,
+        temp_dir: None,
+        s3_endpoint_url: None,
+        s3_access_key_id: None,
+        s3_secret_access_key: None,
+        s3_region: None,
+        polars_streaming: None,
+        workaround_pivot_date_index: None,
+    };
+
+    let opts = OpenOptions::from_args_and_config(&args, &config);
+
+    let nulls = opts.null_values.as_ref().unwrap();
+    assert_eq!(nulls.len(), 3);
+    assert_eq!(nulls[0], "NA");
+    assert_eq!(nulls[1], "N/A");
+    assert_eq!(nulls[2], "amount=");
 }
 
 #[test]

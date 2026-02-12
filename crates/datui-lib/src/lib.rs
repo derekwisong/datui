@@ -219,6 +219,8 @@ pub struct OpenOptions {
     pub polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot to avoid Polars 0.52 panic.
     pub workaround_pivot_date_index: bool,
+    /// Null value specs for CSV: global strings and/or "COL=VAL" for per-column. Empty = use Polars default.
+    pub null_values: Option<Vec<String>>,
 }
 
 impl OpenOptions {
@@ -247,6 +249,7 @@ impl OpenOptions {
             s3_region_override: None,
             polars_streaming: true,
             workaround_pivot_date_index: true,
+            null_values: None,
         }
     }
 }
@@ -381,6 +384,21 @@ impl OpenOptions {
         opts.polars_streaming = config.performance.polars_streaming;
 
         opts.workaround_pivot_date_index = args.workaround_pivot_date_index.unwrap_or(true);
+
+        // Null values: merge config list with CLI list (CLI appended); if either is non-empty, set
+        let config_nulls = config.file_loading.null_values.as_deref().unwrap_or(&[]);
+        let cli_nulls = &args.null_value;
+        if config_nulls.is_empty() && cli_nulls.is_empty() {
+            opts.null_values = None;
+        } else {
+            opts.null_values = Some(
+                config_nulls
+                    .iter()
+                    .chain(cli_nulls.iter())
+                    .cloned()
+                    .collect(),
+            );
+        }
 
         opts
     }

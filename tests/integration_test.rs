@@ -344,3 +344,55 @@ fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
         _ => panic!("expected Crash or DoLoadSchema when opening gs:// URL"),
     }
 }
+
+#[test]
+fn test_csv_null_values_global() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx);
+
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join("null_values_test.csv");
+    std::fs::write(&csv_path, "x,y\n1,NA\n2,3\n4,N/A\n").unwrap();
+
+    let opts = OpenOptions {
+        null_values: Some(vec!["NA".to_string(), "N/A".to_string()]),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, vec![csv_path], opts);
+
+    assert!(app.data_table_state.is_some());
+    let state = app.data_table_state.as_ref().unwrap();
+    let df = state.lf.clone().collect().unwrap();
+    let y = df.column("y").unwrap();
+    assert_eq!(
+        y.null_count(),
+        2,
+        "NA and N/A should be parsed as null in column y"
+    );
+}
+
+#[test]
+fn test_csv_null_values_per_column() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx);
+
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join("null_values_per_col_test.csv");
+    std::fs::write(&csv_path, "a,b\nx,1\nempty,2\nz,3\n").unwrap();
+
+    let opts = OpenOptions {
+        null_values: Some(vec!["a=empty".to_string()]),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, vec![csv_path], opts);
+
+    assert!(app.data_table_state.is_some());
+    let state = app.data_table_state.as_ref().unwrap();
+    let df = state.lf.clone().collect().unwrap();
+    let a = df.column("a").unwrap();
+    let b = df.column("b").unwrap();
+    assert_eq!(a.null_count(), 1, "only 'empty' in column a should be null");
+    assert_eq!(b.null_count(), 0, "column b has no per-column null spec");
+}

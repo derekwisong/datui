@@ -22,6 +22,7 @@ use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 use crate::query::parse_query;
 use crate::statistics::collect_lazy;
 use crate::{CompressionFormat, OpenOptions};
+use polars::io::csv::read::NullValues;
 use polars::lazy::frame::pivot::pivot_stable;
 use std::io::{BufReader, Read};
 
@@ -1379,7 +1380,110 @@ impl DataTableState {
         Ok(temp)
     }
 
+    /// Parse null value specs: "VAL" -> global, "COL=VAL" -> per-column (first '=' separates).
+    fn parse_null_value_specs(specs: &[String]) -> (Vec<String>, Vec<(String, String)>) {
+        let mut global = Vec::new();
+        let mut per_column = Vec::new();
+        for s in specs {
+            if let Some(i) = s.find('=') {
+                let (col, val) = (s[..i].to_string(), s[i + 1..].to_string());
+                per_column.push((col, val));
+            } else {
+                global.push(s.clone());
+            }
+        }
+        (global, per_column)
+    }
+
+    /// Build Polars NullValues from parsed specs. When both global and per_column are set, schema is required (caller does schema scan).
+    fn build_polars_null_values(
+        global: &[String],
+        per_column: &[(String, String)],
+        schema: Option<&Schema>,
+    ) -> Option<NullValues> {
+        if global.is_empty() && per_column.is_empty() {
+            return None;
+        }
+        if per_column.is_empty() {
+            let vals: Vec<PlSmallStr> = global
+                .iter()
+                .map(|s| PlSmallStr::from(s.as_str()))
+                .collect();
+            return Some(if vals.len() == 1 {
+                NullValues::AllColumnsSingle(vals[0].clone())
+            } else {
+                NullValues::AllColumns(vals)
+            });
+        }
+        if global.is_empty() {
+            let pairs: Vec<(PlSmallStr, PlSmallStr)> = per_column
+                .iter()
+                .map(|(c, v)| (PlSmallStr::from(c.as_str()), PlSmallStr::from(v.as_str())))
+                .collect();
+            return Some(NullValues::Named(pairs));
+        }
+        let schema = schema?;
+        let mut pairs: Vec<(PlSmallStr, PlSmallStr)> = Vec::new();
+        let first_global = PlSmallStr::from(global[0].as_str());
+        for (name, _) in schema.iter() {
+            let col_name = name.as_str();
+            let val = per_column
+                .iter()
+                .rev()
+                .find(|(c, _)| c == col_name)
+                .map(|(_, v)| PlSmallStr::from(v.as_str()))
+                .unwrap_or_else(|| first_global.clone());
+            pairs.push((PlSmallStr::from(col_name), val));
+        }
+        Some(NullValues::Named(pairs))
+    }
+
+    /// Infer CSV schema with minimal read (one row) for building null_values when both global and per-column are set.
+    fn csv_schema_for_null_values(path: &Path, options: &OpenOptions) -> Result<Arc<Schema>> {
+        let pl_path = PlPath::Local(Arc::from(path));
+        let mut reader = LazyCsvReader::new(pl_path).with_n_rows(Some(1));
+        if let Some(skip_lines) = options.skip_lines {
+            reader = reader.with_skip_lines(skip_lines);
+        }
+        if let Some(skip_rows) = options.skip_rows {
+            reader = reader.with_skip_rows(skip_rows);
+        }
+        if let Some(has_header) = options.has_header {
+            reader = reader.with_has_header(has_header);
+        }
+        reader = reader.with_try_parse_dates(options.parse_dates);
+        let mut lf = reader.finish()?;
+        lf.collect_schema().map_err(color_eyre::eyre::Report::from)
+    }
+
+    /// Build Polars NullValues from options; path_for_schema required when both global and per-column specs are set.
+    fn build_null_values_for_csv(
+        options: &OpenOptions,
+        path_for_schema: Option<&Path>,
+    ) -> Result<Option<NullValues>> {
+        let specs = match &options.null_values {
+            None => return Ok(None),
+            Some(s) if s.is_empty() => return Ok(None),
+            Some(s) => s.as_slice(),
+        };
+        let (global, per_column) = Self::parse_null_value_specs(specs);
+        let nv = if !global.is_empty() && !per_column.is_empty() {
+            let path = path_for_schema.ok_or_else(|| {
+                color_eyre::eyre::eyre!(
+                    "Internal error: path required for null_values with both global and per-column"
+                )
+            })?;
+            let schema = Self::csv_schema_for_null_values(path, options)?;
+            Self::build_polars_null_values(&global, &per_column, Some(schema.as_ref()))
+        } else {
+            Self::build_polars_null_values(&global, &per_column, None)
+        };
+        Ok(nv)
+    }
+
     pub fn from_csv(path: &Path, options: &OpenOptions) -> Result<Self> {
+        let nv = Self::build_null_values_for_csv(options, Some(path))?;
+
         // Determine compression format: explicit option, or auto-detect from extension
         let compression = options
             .compression
@@ -1401,7 +1505,11 @@ impl DataTableState {
                             read_options.has_header = has_header;
                         }
                         read_options = read_options.map_parse_options(|opts| {
-                            opts.with_try_parse_dates(options.parse_dates)
+                            let o = opts.with_try_parse_dates(options.parse_dates);
+                            match &nv {
+                                Some(n) => o.with_null_values(Some(n.clone())),
+                                None => o,
+                            }
                         });
                         let df = read_options
                             .try_into_reader_with_file_path(Some(path.into()))?
@@ -1435,7 +1543,11 @@ impl DataTableState {
                             read_options.has_header = has_header;
                         }
                         read_options = read_options.map_parse_options(|opts| {
-                            opts.with_try_parse_dates(options.parse_dates)
+                            let o = opts.with_try_parse_dates(options.parse_dates);
+                            match &nv {
+                                Some(n) => o.with_null_values(Some(n.clone())),
+                                None => o,
+                            }
                         });
                         let df = CsvReader::new(std::io::Cursor::new(decompressed))
                             .with_options(read_options)
@@ -1469,7 +1581,11 @@ impl DataTableState {
                             read_options.has_header = has_header;
                         }
                         read_options = read_options.map_parse_options(|opts| {
-                            opts.with_try_parse_dates(options.parse_dates)
+                            let o = opts.with_try_parse_dates(options.parse_dates);
+                            match &nv {
+                                Some(n) => o.with_null_values(Some(n.clone())),
+                                None => o,
+                            }
                         });
                         let df = CsvReader::new(std::io::Cursor::new(decompressed))
                             .with_options(read_options)
@@ -1492,6 +1608,7 @@ impl DataTableState {
                 // Decompress to temp file, then lazy scan
                 let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
                 let temp = Self::decompress_compressed_csv_to_temp(path, compression, &temp_dir)?;
+                let nv_temp = Self::build_null_values_for_csv(options, Some(temp.path()))?;
                 let mut state = Self::from_csv_customize(
                     temp.path(),
                     options.pages_lookahead,
@@ -1509,6 +1626,11 @@ impl DataTableState {
                             reader = reader.with_has_header(has_header);
                         }
                         reader = reader.with_try_parse_dates(options.parse_dates);
+                        reader = match &nv_temp {
+                            Some(n) => reader
+                                .map_parse_options(|opts| opts.with_null_values(Some(n.clone()))),
+                            None => reader,
+                        };
                         reader
                     },
                 )?;
@@ -1536,6 +1658,12 @@ impl DataTableState {
                         reader = reader.with_has_header(has_header);
                     }
                     reader = reader.with_try_parse_dates(options.parse_dates);
+                    reader = match &nv {
+                        Some(n) => {
+                            reader.map_parse_options(|opts| opts.with_null_values(Some(n.clone())))
+                        }
+                        None => reader,
+                    };
                     reader
                 },
             )?;
@@ -1576,6 +1704,7 @@ impl DataTableState {
         if paths.len() == 1 {
             return Self::from_csv(paths[0].as_ref(), options);
         }
+        let nv = Self::build_null_values_for_csv(options, Some(paths[0].as_ref()))?;
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
             let pl_path = PlPath::Local(Arc::from(p.as_ref()));
@@ -1590,6 +1719,10 @@ impl DataTableState {
                 reader = reader.with_has_header(has_header);
             }
             reader = reader.with_try_parse_dates(options.parse_dates);
+            reader = match &nv {
+                Some(n) => reader.map_parse_options(|opts| opts.with_null_values(Some(n.clone()))),
+                None => reader,
+            };
             let lf = reader.finish()?;
             lazy_frames.push(lf);
         }

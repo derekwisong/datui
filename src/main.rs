@@ -138,6 +138,7 @@ mod tests {
             skip_rows: Some(2),
             no_header: Some(true),
             delimiter: Some(b','),
+            null_value: vec![],
             compression: None,
             debug: false,
             excel_sheet: None,

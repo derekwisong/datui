@@ -467,6 +467,8 @@ pub struct FileLoadingConfig {
     pub temp_dir: Option<String>,
     /// When true (default), infer Hive/partitioned Parquet schema from one file (single-spine) for faster "Caching schema". When false, use Polars collect_schema() over all files.
     pub single_spine_schema: Option<bool>,
+    /// CSV null values: list of strings. Plain string = treat as null in all columns; "COL=VAL" = treat VAL as null only in column COL (first "=" separates). Example: ["NA", "amount="].
+    pub null_values: Option<Vec<String>>,
 }
 
 // Field comments for FileLoadingConfig
@@ -497,6 +499,10 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "single_spine_schema",
         "When true (default), infer Hive/partitioned Parquet schema from one file for faster load. When false, use full schema scan (Polars collect_schema).",
+    ),
+    (
+        "null_values",
+        "CSV: values to treat as null. Plain string = all columns; \"COL=VAL\" = column COL only. Example: [\"NA\", \"amount=\"]",
     ),
 ];
 
@@ -1124,6 +1130,9 @@ impl FileLoadingConfig {
         }
         if other.single_spine_schema.is_some() {
             self.single_spine_schema = other.single_spine_schema;
+        }
+        if other.null_values.is_some() {
+            self.null_values = other.null_values.clone();
         }
     }
 }

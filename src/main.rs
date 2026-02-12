@@ -140,6 +140,7 @@ mod tests {
             delimiter: Some(b','),
             null_value: vec![],
             compression: None,
+            format: None,
             debug: false,
             excel_sheet: None,
             clear_cache: false,

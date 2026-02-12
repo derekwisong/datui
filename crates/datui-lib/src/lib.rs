@@ -70,8 +70,21 @@ use widgets::text_input::{TextInput, TextInputEvent};
 /// Application name used for cache directory and other app-specific paths
 pub const APP_NAME: &str = "datui";
 
-/// Re-export compression format from CLI module
-pub use cli::CompressionFormat;
+/// Re-export compression format and file format from CLI module
+pub use cli::{CompressionFormat, FileFormat};
+
+/// Map FileFormat to ExportFormat for default export. Tsv/Psv map to Csv; Orc/Excel have no export variant.
+fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
+    match f {
+        FileFormat::Parquet => Some(ExportFormat::Parquet),
+        FileFormat::Csv | FileFormat::Tsv | FileFormat::Psv => Some(ExportFormat::Csv),
+        FileFormat::Json => Some(ExportFormat::Json),
+        FileFormat::Jsonl => Some(ExportFormat::Ndjson),
+        FileFormat::Arrow => Some(ExportFormat::Ipc),
+        FileFormat::Avro => Some(ExportFormat::Avro),
+        FileFormat::Orc | FileFormat::Excel => None,
+    }
+}
 
 #[cfg(test)]
 pub mod tests {
@@ -192,6 +205,8 @@ pub struct OpenOptions {
     pub skip_lines: Option<usize>,
     pub skip_rows: Option<usize>,
     pub compression: Option<CompressionFormat>,
+    /// When set, bypass extension-based format detection and use this format (e.g. for URLs or temp files without extension).
+    pub format: Option<FileFormat>,
     pub pages_lookahead: Option<usize>,
     pub pages_lookback: Option<usize>,
     pub max_buffered_rows: Option<usize>,
@@ -233,6 +248,7 @@ impl OpenOptions {
             skip_lines: None,
             skip_rows: None,
             compression: None,
+            format: None,
             pages_lookahead: None,
             pages_lookback: None,
             max_buffered_rows: None,
@@ -314,6 +330,9 @@ impl OpenOptions {
 
         // Compression: CLI only (auto-detect from extension when not specified)
         opts.compression = args.compression;
+
+        // Format: CLI only (auto-detect from extension when not specified)
+        opts.format = args.format;
 
         // Display options: CLI args override config
         opts.pages_lookahead = args
@@ -1054,18 +1073,19 @@ impl App {
         let compression = options
             .compression
             .or_else(|| CompressionFormat::from_extension(path));
-        let is_csv = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .map(|stem| {
-                stem.ends_with(".csv")
-                    || path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.eq_ignore_ascii_case("csv"))
-                        .unwrap_or(false)
-            })
-            .unwrap_or(false);
+        let is_csv = options.format == Some(FileFormat::Csv)
+            || path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| {
+                    stem.ends_with(".csv")
+                        || path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.eq_ignore_ascii_case("csv"))
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false);
         let is_compressed_csv = paths.len() == 1 && compression.is_some() && is_csv;
 
         // For compressed files, decompression phase is already set in DoLoad handler
@@ -1217,46 +1237,40 @@ impl App {
             };
         }
 
-        // Determine and store original file format (from first path)
-        let original_format = path.extension().and_then(|e| e.to_str()).and_then(|ext| {
-            if ext.eq_ignore_ascii_case("parquet") {
-                Some(ExportFormat::Parquet)
-            } else if ext.eq_ignore_ascii_case("csv") {
-                Some(ExportFormat::Csv)
-            } else if ext.eq_ignore_ascii_case("json") {
-                Some(ExportFormat::Json)
-            } else if ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson") {
-                Some(ExportFormat::Ndjson)
-            } else if ext.eq_ignore_ascii_case("arrow")
-                || ext.eq_ignore_ascii_case("ipc")
-                || ext.eq_ignore_ascii_case("feather")
-            {
-                Some(ExportFormat::Ipc)
-            } else if ext.eq_ignore_ascii_case("avro") {
-                Some(ExportFormat::Avro)
-            } else {
-                None
-            }
-        });
+        let effective_format = options.format.or_else(|| FileFormat::from_path(path));
+
+        // Determine and store original file format (from explicit format or first path)
+        let original_format = effective_format
+            .and_then(file_format_to_export_format)
+            .or_else(|| {
+                path.extension().and_then(|e| e.to_str()).and_then(|ext| {
+                    if ext.eq_ignore_ascii_case("parquet") {
+                        Some(ExportFormat::Parquet)
+                    } else if ext.eq_ignore_ascii_case("csv") {
+                        Some(ExportFormat::Csv)
+                    } else if ext.eq_ignore_ascii_case("json") {
+                        Some(ExportFormat::Json)
+                    } else if ext.eq_ignore_ascii_case("jsonl")
+                        || ext.eq_ignore_ascii_case("ndjson")
+                    {
+                        Some(ExportFormat::Ndjson)
+                    } else if ext.eq_ignore_ascii_case("arrow")
+                        || ext.eq_ignore_ascii_case("ipc")
+                        || ext.eq_ignore_ascii_case("feather")
+                    {
+                        Some(ExportFormat::Ipc)
+                    } else if ext.eq_ignore_ascii_case("avro") {
+                        Some(ExportFormat::Avro)
+                    } else {
+                        None
+                    }
+                })
+            });
 
         let lf = if paths.len() > 1 {
-            // Multiple files: same format assumed (from first path), concatenated into one LazyFrame
-            match path.extension() {
-                Some(ext) if ext.eq_ignore_ascii_case("parquet") => {
-                    DataTableState::from_parquet_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("csv") => {
-                    DataTableState::from_csv_paths(paths, options)?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json_paths(
+            // Multiple files: same format assumed (from first path or --format), concatenated into one LazyFrame
+            match effective_format {
+                Some(FileFormat::Parquet) => DataTableState::from_parquet_paths(
                     paths,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1265,44 +1279,8 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("jsonl") => {
-                    DataTableState::from_json_lines_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("ndjson") => {
-                    DataTableState::from_ndjson_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext)
-                    if ext.eq_ignore_ascii_case("arrow")
-                        || ext.eq_ignore_ascii_case("ipc")
-                        || ext.eq_ignore_ascii_case("feather") =>
-                {
-                    DataTableState::from_ipc_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("avro") => DataTableState::from_avro_paths(
+                Some(FileFormat::Csv) => DataTableState::from_csv_paths(paths, options)?,
+                Some(FileFormat::Json) => DataTableState::from_json_paths(
                     paths,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1311,7 +1289,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("orc") => DataTableState::from_orc_paths(
+                Some(FileFormat::Jsonl) => DataTableState::from_json_lines_paths(
                     paths,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1320,7 +1298,34 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                _ => {
+                Some(FileFormat::Arrow) => DataTableState::from_ipc_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(FileFormat::Avro) => DataTableState::from_avro_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(FileFormat::Orc) => DataTableState::from_orc_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
                     self.loading_state = LoadingState::Idle;
                     if !paths.is_empty() && !path.exists() {
                         return Err(std::io::Error::new(
@@ -1335,8 +1340,8 @@ impl App {
                 }
             }
         } else {
-            match path.extension() {
-                Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(
+            match effective_format {
+                Some(FileFormat::Parquet) => DataTableState::from_parquet(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1345,10 +1350,8 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("csv") => {
-                    DataTableState::from_csv(path, options)? // Already passes row_numbers via options
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("tsv") => DataTableState::from_delimited(
+                Some(FileFormat::Csv) => DataTableState::from_csv(path, options)?,
+                Some(FileFormat::Tsv) => DataTableState::from_delimited(
                     path,
                     b'\t',
                     options.pages_lookahead,
@@ -1358,7 +1361,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("psv") => DataTableState::from_delimited(
+                Some(FileFormat::Psv) => DataTableState::from_delimited(
                     path,
                     b'|',
                     options.pages_lookahead,
@@ -1368,7 +1371,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json(
+                Some(FileFormat::Json) => DataTableState::from_json(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1377,7 +1380,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("jsonl") => DataTableState::from_json_lines(
+                Some(FileFormat::Jsonl) => DataTableState::from_json_lines(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1386,7 +1389,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(
+                Some(FileFormat::Arrow) => DataTableState::from_ipc(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1395,22 +1398,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext)
-                    if ext.eq_ignore_ascii_case("arrow")
-                        || ext.eq_ignore_ascii_case("ipc")
-                        || ext.eq_ignore_ascii_case("feather") =>
-                {
-                    DataTableState::from_ipc(
-                        path,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("avro") => DataTableState::from_avro(
+                Some(FileFormat::Avro) => DataTableState::from_avro(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1419,24 +1407,17 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext)
-                    if ext.eq_ignore_ascii_case("xls")
-                        || ext.eq_ignore_ascii_case("xlsx")
-                        || ext.eq_ignore_ascii_case("xlsm")
-                        || ext.eq_ignore_ascii_case("xlsb") =>
-                {
-                    DataTableState::from_excel(
-                        path,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                        options.excel_sheet.as_deref(),
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("orc") => DataTableState::from_orc(
+                Some(FileFormat::Excel) => DataTableState::from_excel(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                    options.excel_sheet.as_deref(),
+                )?,
+                Some(FileFormat::Orc) => DataTableState::from_orc(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -1445,7 +1426,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                _ => {
+                None => {
                     self.loading_state = LoadingState::Idle;
                     if paths.len() == 1 && !path.exists() {
                         return Err(std::io::Error::new(
@@ -1479,15 +1460,22 @@ impl App {
         self.data_table_state = Some(lf);
         self.path = Some(path.clone());
         self.original_file_format = original_format;
-        // Store delimiter based on file type
-        self.original_file_delimiter = match path.extension().and_then(|e| e.to_str()) {
-            Some(ext) if ext.eq_ignore_ascii_case("csv") => {
-                // For CSV, use delimiter from options or default to comma
-                Some(options.delimiter.unwrap_or(b','))
-            }
-            Some(ext) if ext.eq_ignore_ascii_case("tsv") => Some(b'\t'),
-            Some(ext) if ext.eq_ignore_ascii_case("psv") => Some(b'|'),
-            _ => None, // Not a delimited file
+        // Store delimiter based on file type (use effective format when set)
+        self.original_file_delimiter = match effective_format {
+            Some(FileFormat::Csv) => Some(options.delimiter.unwrap_or(b',')),
+            Some(FileFormat::Tsv) => Some(b'\t'),
+            Some(FileFormat::Psv) => Some(b'|'),
+            _ => path.extension().and_then(|e| e.to_str()).and_then(|ext| {
+                if ext.eq_ignore_ascii_case("csv") {
+                    Some(options.delimiter.unwrap_or(b','))
+                } else if ext.eq_ignore_ascii_case("tsv") {
+                    Some(b'\t')
+                } else if ext.eq_ignore_ascii_case("psv") {
+                    Some(b'|')
+                } else {
+                    None
+                }
+            }),
         };
         self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
@@ -1992,23 +1980,11 @@ impl App {
             }
         }
 
+        let effective_format = options.format.or_else(|| FileFormat::from_path(path));
+
         let lf = if paths.len() > 1 {
-            match path.extension() {
-                Some(ext) if ext.eq_ignore_ascii_case("parquet") => {
-                    DataTableState::from_parquet_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("csv") => {
-                    DataTableState::from_csv_paths(paths, options)?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json_paths(
+            match effective_format {
+                Some(FileFormat::Parquet) => DataTableState::from_parquet_paths(
                     paths,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2017,44 +1993,8 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("jsonl") => {
-                    DataTableState::from_json_lines_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("ndjson") => {
-                    DataTableState::from_ndjson_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext)
-                    if ext.eq_ignore_ascii_case("arrow")
-                        || ext.eq_ignore_ascii_case("ipc")
-                        || ext.eq_ignore_ascii_case("feather") =>
-                {
-                    DataTableState::from_ipc_paths(
-                        paths,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("avro") => DataTableState::from_avro_paths(
+                Some(FileFormat::Csv) => DataTableState::from_csv_paths(paths, options)?,
+                Some(FileFormat::Json) => DataTableState::from_json_paths(
                     paths,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2063,7 +2003,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("orc") => DataTableState::from_orc_paths(
+                Some(FileFormat::Jsonl) => DataTableState::from_json_lines_paths(
                     paths,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2072,7 +2012,34 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                _ => {
+                Some(FileFormat::Arrow) => DataTableState::from_ipc_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(FileFormat::Avro) => DataTableState::from_avro_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(FileFormat::Orc) => DataTableState::from_orc_paths(
+                    paths,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                )?,
+                Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
                     if !paths.is_empty() && !path.exists() {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::NotFound,
@@ -2086,8 +2053,8 @@ impl App {
                 }
             }
         } else {
-            match path.extension() {
-                Some(ext) if ext.eq_ignore_ascii_case("parquet") => DataTableState::from_parquet(
+            match effective_format {
+                Some(FileFormat::Parquet) => DataTableState::from_parquet(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2096,10 +2063,8 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("csv") => {
-                    DataTableState::from_csv(path, options)?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("tsv") => DataTableState::from_delimited(
+                Some(FileFormat::Csv) => DataTableState::from_csv(path, options)?,
+                Some(FileFormat::Tsv) => DataTableState::from_delimited(
                     path,
                     b'\t',
                     options.pages_lookahead,
@@ -2109,7 +2074,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("psv") => DataTableState::from_delimited(
+                Some(FileFormat::Psv) => DataTableState::from_delimited(
                     path,
                     b'|',
                     options.pages_lookahead,
@@ -2119,7 +2084,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("json") => DataTableState::from_json(
+                Some(FileFormat::Json) => DataTableState::from_json(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2128,7 +2093,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("jsonl") => DataTableState::from_json_lines(
+                Some(FileFormat::Jsonl) => DataTableState::from_json_lines(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2137,7 +2102,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext) if ext.eq_ignore_ascii_case("ndjson") => DataTableState::from_ndjson(
+                Some(FileFormat::Arrow) => DataTableState::from_ipc(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2146,22 +2111,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext)
-                    if ext.eq_ignore_ascii_case("arrow")
-                        || ext.eq_ignore_ascii_case("ipc")
-                        || ext.eq_ignore_ascii_case("feather") =>
-                {
-                    DataTableState::from_ipc(
-                        path,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("avro") => DataTableState::from_avro(
+                Some(FileFormat::Avro) => DataTableState::from_avro(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2170,24 +2120,17 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                Some(ext)
-                    if ext.eq_ignore_ascii_case("xls")
-                        || ext.eq_ignore_ascii_case("xlsx")
-                        || ext.eq_ignore_ascii_case("xlsm")
-                        || ext.eq_ignore_ascii_case("xlsb") =>
-                {
-                    DataTableState::from_excel(
-                        path,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                        options.excel_sheet.as_deref(),
-                    )?
-                }
-                Some(ext) if ext.eq_ignore_ascii_case("orc") => DataTableState::from_orc(
+                Some(FileFormat::Excel) => DataTableState::from_excel(
+                    path,
+                    options.pages_lookahead,
+                    options.pages_lookback,
+                    options.max_buffered_rows,
+                    options.max_buffered_mb,
+                    options.row_numbers,
+                    options.row_start_index,
+                    options.excel_sheet.as_deref(),
+                )?,
+                Some(FileFormat::Orc) => DataTableState::from_orc(
                     path,
                     options.pages_lookahead,
                     options.pages_lookback,
@@ -2196,7 +2139,7 @@ impl App {
                     options.row_numbers,
                     options.row_start_index,
                 )?,
-                _ => {
+                None => {
                     if paths.len() == 1 && !path.exists() {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::NotFound,
@@ -6151,18 +6094,19 @@ impl App {
                 let compression = options
                     .compression
                     .or_else(|| CompressionFormat::from_extension(first));
-                let is_csv = first
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .map(|stem| {
-                        stem.ends_with(".csv")
-                            || first
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|e| e.eq_ignore_ascii_case("csv"))
-                                .unwrap_or(false)
-                    })
-                    .unwrap_or(false);
+                let is_csv = options.format == Some(FileFormat::Csv)
+                    || first
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(|stem| {
+                            stem.ends_with(".csv")
+                                || first
+                                    .extension()
+                                    .and_then(|e| e.to_str())
+                                    .map(|e| e.eq_ignore_ascii_case("csv"))
+                                    .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
                 let is_compressed_csv = matches!(src, source::InputSource::Local(_))
                     && paths.len() == 1
                     && compression.is_some()

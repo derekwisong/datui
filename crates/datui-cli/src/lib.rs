@@ -6,6 +6,58 @@
 use clap::{CommandFactory, Parser, ValueEnum};
 use std::path::Path;
 
+/// File format for data files (used to bypass extension-based detection).
+/// When `--format` is not specified, format is auto-detected from the file extension.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum FileFormat {
+    /// Parquet columnar format
+    Parquet,
+    /// Comma-separated values
+    Csv,
+    /// Tab-separated values
+    Tsv,
+    /// Pipe-separated values
+    Psv,
+    /// JSON array format
+    Json,
+    /// JSON Lines / NDJSON (one JSON object per line)
+    Jsonl,
+    /// Arrow IPC / Feather
+    Arrow,
+    /// Avro row format
+    Avro,
+    /// ORC columnar format
+    Orc,
+    /// Excel (.xls, .xlsx, .xlsm, .xlsb)
+    Excel,
+}
+
+impl FileFormat {
+    /// Detect file format from path extension. Returns None when extension is missing or unknown.
+    pub fn from_path(path: &Path) -> Option<Self> {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .and_then(Self::from_extension)
+    }
+
+    /// Parse format from extension string (e.g. "parquet", "csv").
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext.to_lowercase().as_str() {
+            "parquet" => Some(Self::Parquet),
+            "csv" => Some(Self::Csv),
+            "tsv" => Some(Self::Tsv),
+            "psv" => Some(Self::Psv),
+            "json" => Some(Self::Json),
+            "jsonl" | "ndjson" => Some(Self::Jsonl),
+            "arrow" | "ipc" | "feather" => Some(Self::Arrow),
+            "avro" => Some(Self::Avro),
+            "orc" => Some(Self::Orc),
+            "xls" | "xlsx" | "xlsm" | "xlsb" => Some(Self::Excel),
+            _ => None,
+        }
+    }
+}
+
 /// Compression format for data files
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum CompressionFormat {
@@ -84,6 +136,11 @@ pub struct Args {
     /// If not specified, compression is auto-detected from file extension.
     #[arg(long = "compression", value_enum)]
     pub compression: Option<CompressionFormat>,
+
+    /// Force file format (parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel).
+    /// By default format is auto-detected from the file extension. Use this for URLs or paths without an extension.
+    #[arg(long = "format", value_enum)]
+    pub format: Option<FileFormat>,
 
     /// Enable debug mode to show operational information
     #[arg(long = "debug", action)]
@@ -308,5 +365,26 @@ mod tests {
         assert_eq!(CompressionFormat::Zstd.extension(), "zst");
         assert_eq!(CompressionFormat::Bzip2.extension(), "bz2");
         assert_eq!(CompressionFormat::Xz.extension(), "xz");
+    }
+
+    #[test]
+    fn test_file_format_from_path() {
+        assert_eq!(
+            FileFormat::from_path(Path::new("data.parquet")),
+            Some(FileFormat::Parquet)
+        );
+        assert_eq!(
+            FileFormat::from_path(Path::new("data.csv")),
+            Some(FileFormat::Csv)
+        );
+        assert_eq!(
+            FileFormat::from_path(Path::new("file.jsonl")),
+            Some(FileFormat::Jsonl)
+        );
+        assert_eq!(FileFormat::from_path(Path::new("noext")), None);
+        assert_eq!(
+            FileFormat::from_path(Path::new("file.NDJSON")),
+            Some(FileFormat::Jsonl)
+        );
     }
 }

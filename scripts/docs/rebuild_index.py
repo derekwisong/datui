@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 Rebuild the index page for the documentation.
-Scans the book directory for version directories (tagged releases only, e.g. v0.2.22)
-and generates index.html using a Jinja2 template.
-Docs are only built on release; there is no "main" development version.
+Scans the book directory for version directories: tagged releases (e.g. v0.2.22)
+and development builds (e.g. main). Generates index.html using a Jinja2 template.
 """
 
 import os
@@ -72,6 +71,9 @@ def check_git_ref_exists(ref: str) -> bool:
 # Match vX.Y.Z or vX.Y (patch 0) or vX (minor/patch 0). No leading zeros in numbers.
 _VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$|^v(\d+)\.(\d+)$|^v(\d+)$")
 
+# Directory name used as a stable URL for the latest release (copy of newest v* tag). Not listed as its own version.
+LATEST_RELEASE_DIR = "latest"
+
 
 def parse_version(name: str) -> Optional[Tuple[int, int, int]]:
     """Parse a version string like v1.2.3 into (major, minor, patch). Returns None if not parseable."""
@@ -99,11 +101,20 @@ def sort_version_dirs(version_dirs: List[Path]) -> List[Path]:
     return sorted(version_dirs, key=key, reverse=True)
 
 
+def _is_release_tag(name: str) -> bool:
+    """True if name is a release tag (v*)."""
+    return bool(name) and name.startswith("v") and len(name) > 1 and name[1].isdigit()
+
+
 def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict], Optional[str]]:
-    """Collect version directories (tagged releases only) and return (recent_versions, older_versions, latest_stable_path).
-    recent_versions: 5 most recent tags.
+    """Collect version directories and return (recent_versions, older_versions, latest_stable_path).
+
+    - Release versions: v* tag dirs; "latest" is the latest release (not listed as its own row).
+    - Development versions: any other subdir (e.g. main, feature branches); docs can be built per branch
+      via build_single_version_docs.py <branch>.
+    recent_versions: development dirs first (main first, then alphabetical), then 5 most recent tags.
     older_versions: remaining tags, sorted newest first.
-    latest_stable_path: path of the newest tag (for demo image etc.), or None if no tags.
+    latest_stable_path: path of the newest tag (for demo image); same content as "latest" when present.
     """
     recent: List[Dict] = []
     older: List[Dict] = []
@@ -112,14 +123,36 @@ def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict], Optional
     if not output_dir.exists():
         return (recent, older, latest_stable_path)
 
-    version_dirs = [d for d in output_dir.iterdir() if d.is_dir() and d.name.startswith("v")]
-    sorted_dirs = sort_version_dirs(version_dirs)
-    if sorted_dirs:
-        latest_stable_path = sorted_dirs[0].name
+    all_dirs = [d for d in output_dir.iterdir() if d.is_dir()]
+    tag_dirs = [d for d in all_dirs if _is_release_tag(d.name)]
+    # Development = any dir that is not a release tag and not the "latest" alias
+    dev_dirs = [d for d in all_dirs if d.name != LATEST_RELEASE_DIR and not _is_release_tag(d.name)]
+    sorted_tag_dirs = sort_version_dirs(tag_dirs)
+    if sorted_tag_dirs:
+        latest_stable_path = sorted_tag_dirs[0].name
+
+    # Development entries: main first (if present), then the rest alphabetically
+    dev_names = sorted(d.name for d in dev_dirs)
+    if "main" in dev_names:
+        dev_names = ["main"] + [n for n in dev_names if n != "main"]
+    dev_entries: List[Dict] = []
+    for version_name in dev_names:
+        date_str = "Development"
+        if check_git_ref_exists(version_name):
+            ref_date = get_git_date(version_name)
+            if ref_date:
+                date_str = ref_date
+        dev_entries.append({
+            "name": version_name,
+            "path": version_name,
+            "is_development": True,
+            "is_latest_stable": False,
+            "date_str": date_str,
+        })
 
     RECENT_TAG_COUNT = 5
     tag_entries: List[Dict] = []
-    for idx, version_dir in enumerate(sorted_dirs):
+    for idx, version_dir in enumerate(sorted_tag_dirs):
         version_name = version_dir.name
         date_str = "Release version"
         if check_git_ref_exists(version_name):
@@ -134,7 +167,7 @@ def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict], Optional
             "date_str": date_str,
         })
 
-    recent = tag_entries[:RECENT_TAG_COUNT]
+    recent = dev_entries + tag_entries[:RECENT_TAG_COUNT]
     older = tag_entries[RECENT_TAG_COUNT:]
     return (recent, older, latest_stable_path)
 
@@ -143,31 +176,31 @@ def main():
     """Main function to rebuild the index page."""
     repo_root = get_repo_root()
     os.chdir(repo_root)
-    
+
     output_dir = repo_root / "book"
     output_dir.mkdir(exist_ok=True)
-    
+
     # Locate the template file
     script_dir = Path(__file__).parent
     template_file = script_dir / "index.html.j2"
-    
+
     if not template_file.exists():
         print(f"Error: Template file not found: {template_file}", file=sys.stderr)
         sys.exit(1)
-    
+
     # Set up Jinja2 environment
     env = Environment(
         loader=FileSystemLoader(str(script_dir)),
         autoescape=False
     )
-    
+
     try:
         template = env.get_template("index.html.j2")
     except TemplateNotFound:
         print(f"Error: Could not load template: {template_file}", file=sys.stderr)
         sys.exit(1)
-    
-    # Collect version information (tagged releases only)
+
+    # Collect version information (releases v* and development branch dirs)
     print("Rebuilding index page...")
     recent_versions, older_versions, latest_stable_path = collect_versions(output_dir)
 
@@ -182,11 +215,11 @@ def main():
         latest_stable_path=latest_stable_path,
         latest_permanent_path=latest_permanent_path,
     )
-    
+
     # Write the output file
     output_file = output_dir / "index.html"
     output_file.write_text(output_html, encoding="utf-8")
-    
+
     print("Index page regenerated")
 
 

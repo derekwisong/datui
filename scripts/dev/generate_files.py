@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 def generate_stress_test_parquet(target_mb, file_name):
     n_rows = 250_000
-    
+
     # 1. Use pl.select to build the DataFrame correctly from the start
     df_chunk = pl.select([
         pl.lit(np.random.randint(0, 1e9, n_rows, dtype=np.int64)).alias("id"),
@@ -24,30 +24,30 @@ def generate_stress_test_parquet(target_mb, file_name):
           .alias("null_heavy_col"),
         # Native Datetime range
         pl.datetime_range(
-            start=datetime(2023, 1, 1), 
-            end=datetime(2023, 1, 1) + timedelta(minutes=n_rows - 1), 
-            interval="1m", 
+            start=datetime(2023, 1, 1),
+            end=datetime(2023, 1, 1) + timedelta(minutes=n_rows - 1),
+            interval="1m",
             eager=True
         ).alias("timestamp")
     ])
 
     print(f"Generating {file_name} (Target: {target_mb}MB)...")
-    
+
     full_df = df_chunk
     current_size_mb = 0
-    
+
     # Start writing and growing
     while current_size_mb < target_mb:
         # row_group_size is key for S3 tool parallelization testing
         full_df.write_parquet(file_name, compression="snappy", row_group_size=100_000)
         current_size_mb = os.path.getsize(file_name) / (1024 * 1024)
-        
+
         if current_size_mb >= target_mb:
             break
-            
+
         # Double the dataframe size each iteration for speed
         full_df = pl.concat([full_df, full_df])
-        
+
         # Stop if we accidentally go way over (e.g. 2GB)
         if current_size_mb > target_mb * 2:
             break

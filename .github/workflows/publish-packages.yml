@@ -95,10 +95,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p scripts
+          mkdir -p scripts/packaging
           curl -sL -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/${{ github.repository }}/contents/scripts/homebrew-formula.rb.template?ref=${{ needs.resolve-release.outputs.tag_name }}" \
-            -o scripts/homebrew-formula.rb.template
+            "https://api.github.com/repos/${{ github.repository }}/contents/scripts/packaging/homebrew-formula.rb.template?ref=${{ needs.resolve-release.outputs.tag_name }}" \
+            -o scripts/packaging/homebrew-formula.rb.template
 
       - name: Compute macOS tarball checksums for Homebrew
         id: brew_checksums
@@ -129,7 +129,7 @@ jobs:
               -e "s/SHA_ARM64_PLACEHOLDER/$SHA_ARM64/" \
               -e "s|URL_X64_PLACEHOLDER|https://github.com/$REPO/releases/download/$TAG/datui-$TAG-x86_64-apple-darwin.tar.gz|" \
               -e "s/SHA_X64_PLACEHOLDER/$SHA_X64/" \
-              "$GITHUB_WORKSPACE/scripts/homebrew-formula.rb.template" > Formula/datui.rb
+              "$GITHUB_WORKSPACE/scripts/packaging/homebrew-formula.rb.template" > Formula/datui.rb
           git add Formula/datui.rb
           git diff --staged --quiet || (git commit -m "datui $VERSION" && git push)
 

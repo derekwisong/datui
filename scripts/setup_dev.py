@@ -86,7 +86,7 @@ def ensure_venv_activated():
     if not venv_python.exists():
         print("Error: Virtual environment Python not found. Please run this script again.")
         sys.exit(1)
-    
+
     # Check if we're using the venv's Python
     current_python = Path(sys.executable).resolve()
     if current_python != venv_python.resolve():
@@ -110,7 +110,7 @@ def install_requirements():
     if not REQUIREMENTS_FILE.exists():
         print(f"Warning: {REQUIREMENTS_FILE} not found. Skipping requirements installation.")
         return
-    
+
     print(f"Installing requirements from {REQUIREMENTS_FILE}...")
     venv_pip = get_venv_pip()
     run_command([str(venv_pip), "install", "-r", str(REQUIREMENTS_FILE)])
@@ -138,16 +138,16 @@ def get_venv_pre_commit():
 def install_pre_commit_hooks():
     """Install or update pre-commit hooks."""
     print("Installing/updating pre-commit hooks...")
-    
+
     # Check if pre-commit config exists
     pre_commit_config = REPO_ROOT / ".pre-commit-config.yaml"
     if not pre_commit_config.exists():
         print(f"Warning: {pre_commit_config} not found. Skipping pre-commit hook installation.")
         return
-    
+
     # Try to find pre-commit executable
     venv_pre_commit = get_venv_pre_commit()
-    
+
     # Check if pre-commit is installed in venv
     if not venv_pre_commit.exists():
         # Try to find it in PATH (might be installed globally)
@@ -159,13 +159,13 @@ def install_pre_commit_hooks():
         pre_commit_cmd = [pre_commit_path]
     else:
         pre_commit_cmd = [str(venv_pre_commit)]
-    
+
     # Run pre-commit install
     result = run_command(
         pre_commit_cmd + ["install"],
         check=False
     )
-    
+
     if result.returncode == 0:
         print("Pre-commit hooks installed/updated")
     else:
@@ -179,12 +179,12 @@ def find_mdbook():
     mdbook_path = shutil.which("mdbook")
     if mdbook_path:
         return mdbook_path
-    
+
     # Check common cargo install location
     cargo_bin = Path.home() / ".cargo" / "bin" / "mdbook"
     if cargo_bin.exists():
         return str(cargo_bin)
-    
+
     return None
 
 
@@ -193,7 +193,7 @@ def check_mdbook_installed():
     mdbook_path = find_mdbook()
     if not mdbook_path:
         return None
-    
+
     try:
         result = run_command([mdbook_path, "--version"], check=False)
         if result.returncode == 0:
@@ -212,37 +212,37 @@ def check_mdbook_installed():
 def install_mdbook():
     """Install mdbook at the correct version using cargo."""
     print(f"Checking mdbook installation (required version: {MDBOOK_VERSION})...")
-    
+
     installed_version = check_mdbook_installed()
-    
+
     if installed_version == MDBOOK_VERSION:
         print(f"mdbook {MDBOOK_VERSION} is already installed")
         return
-    
+
     if installed_version:
         print(f"  Found mdbook {installed_version}, but need {MDBOOK_VERSION}")
         print(f"  Installing mdbook {MDBOOK_VERSION}...")
     else:
         print(f"  mdbook not found. Installing mdbook {MDBOOK_VERSION}...")
-    
+
     # Check if cargo is available
     cargo_result = run_command(["cargo", "--version"], check=False)
     if cargo_result.returncode != 0:
         print("Error: cargo is not installed or not in PATH.")
         print("Please install Rust and cargo first: https://rustup.rs/")
         sys.exit(1)
-    
+
     # Install mdbook
     print(f"  Running: cargo install mdbook --version {MDBOOK_VERSION} --locked")
     result = run_command(
         ["cargo", "install", "mdbook", "--version", MDBOOK_VERSION, "--locked"],
         check=False
     )
-    
+
     if result.returncode != 0:
         print("Error: Failed to install mdbook. Please check the error messages above.")
         sys.exit(1)
-    
+
     # Verify installation
     installed_version = check_mdbook_installed()
     if installed_version == MDBOOK_VERSION:
@@ -257,11 +257,11 @@ def regenerate_test_data():
     print("Regenerating test data...")
     venv_python = get_venv_python()
     script_path = Path(__file__).parent / "generate_sample_data.py"
-    
+
     if not script_path.exists():
         print(f"Warning: {script_path} not found. Skipping test data generation.")
         return
-    
+
     run_command([str(venv_python), str(script_path)])
     print("Test data regenerated")
 
@@ -269,19 +269,19 @@ def regenerate_test_data():
 def build_local_documentation():
     """Build local documentation using the build script."""
     print("Building local documentation...")
-    doc_script = Path(__file__).parent / "docs" / "build_all_docs_local.py"
-    
+    doc_script = Path(__file__).parent / "docs" / "build_single_version_docs.py"
+
     if not doc_script.exists():
         print(f"Warning: {doc_script} not found. Skipping documentation build.")
         return
-    
+
     # Check if mdbook is available (required for docs)
     mdbook_path = find_mdbook()
     if not mdbook_path:
         print("Warning: mdbook not found. Skipping documentation build.")
         print("  Documentation will be built after mdbook is installed.")
         return
-    
+
     # Ensure mdbook is in PATH for the script
     env = os.environ.copy()
     if mdbook_path and str(Path(mdbook_path).parent) not in env.get("PATH", ""):
@@ -290,20 +290,37 @@ def build_local_documentation():
             env["PATH"] = f"{cargo_bin};{env.get('PATH', '')}"
         else:
             env["PATH"] = f"{cargo_bin}:{env.get('PATH', '')}"
-    
+
     result = run_command(
         [sys.executable, str(doc_script)],
         check=False,
         env=env,
         stdin=subprocess.DEVNULL
     )
-    
-    if result.returncode == 0:
-        print("Local documentation built successfully")
-        print(f"  Documentation is available in: {REPO_ROOT / 'book'}")
-    else:
+
+    if result.returncode != 0:
         print("Warning: Documentation build had errors. Check output above.")
-        print("  You can manually run: python3 scripts/docs/build_all_docs_local.py")
+        print("  You can manually run: python3 scripts/docs/build_single_version_docs.py [VERSION]")
+        return
+
+    print("Local documentation built successfully")
+    print(f"  Documentation is available in: {REPO_ROOT / 'book'}")
+
+    # Rebuild index page (book/index.html)
+    index_script = Path(__file__).parent / "docs" / "rebuild_index.py"
+    if index_script.exists():
+        index_result = run_command(
+            [sys.executable, str(index_script)],
+            check=False,
+            env=env,
+            stdin=subprocess.DEVNULL
+        )
+        if index_result.returncode == 0:
+            print("Documentation index page updated")
+        else:
+            print("Warning: rebuild_index.py had errors. Index page may be missing or stale.")
+    else:
+        print(f"Warning: {index_script} not found. Skipping index page.")
 
 
 def main():
@@ -312,41 +329,41 @@ def main():
     print("datui Development Environment Setup")
     print("=" * 60)
     print()
-    
+
     # Change to repo root
     os.chdir(REPO_ROOT)
-    
+
     # Create venv if needed
     venv_created = create_venv()
-    
+
     # Check venv activation status
     ensure_venv_activated()
-    
+
     # Get venv Python for subsequent commands
     venv_python = get_venv_python()
     if not venv_python.exists():
         print("Error: Virtual environment Python executable not found.")
         sys.exit(1)
-    
+
     # Upgrade pip (especially important for new venvs)
     if venv_created:
         upgrade_pip()
-    
+
     # Install/update requirements
     install_requirements()
-    
+
     # Install/update pre-commit hooks
     install_pre_commit_hooks()
-    
+
     # Install mdbook
     install_mdbook()
-    
+
     # Regenerate test data
     regenerate_test_data()
-    
+
     # Build local documentation
     build_local_documentation()
-    
+
     print()
     print("=" * 60)
     print("Setup complete!")

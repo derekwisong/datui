@@ -20,13 +20,13 @@ Run from the repository root:
 
 ```bash
 # Build a .deb package (Debian/Ubuntu)
-python3 scripts/build_package.py deb
+python3 scripts/packaging/build_package.py deb
 
 # Build a .rpm package (Fedora/RHEL)
-python3 scripts/build_package.py rpm
+python3 scripts/packaging/build_package.py rpm
 
 # Build AUR package (Arch Linux)
-python3 scripts/build_package.py aur
+python3 scripts/packaging/build_package.py aur
 ```
 
 The script automatically:
@@ -42,7 +42,7 @@ The script automatically:
 
 ```bash
 # Example: build .deb without rebuilding (artifacts must exist)
-python3 scripts/build_package.py deb --no-build
+python3 scripts/packaging/build_package.py deb --no-build
 ```
 
 ## License and metadata
@@ -92,7 +92,7 @@ To update the AUR package when you release a new version:
    ```bash
    git checkout vX.Y.Z
    cargo build --release --locked
-   python3 scripts/build_package.py aur --no-build
+   python3 scripts/packaging/build_package.py aur --no-build
    ```
 
 2. Generate `.SRCINFO` and copy to your AUR repo:

@@ -412,7 +412,7 @@
 </head>
 <body>
     <a href="#main-content" class="skip-link">Skip to main content</a>
-    
+
     <div class="container">
         <header class="header">
             <div class="header-content">
@@ -423,9 +423,9 @@
                 <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
                     <span id="theme-icon">☀️</span> <span id="theme-text">Light</span>
                 </button>
-                <a href="https://github.com/derekwisong/datui" 
-                   class="github-link" 
-                   target="_blank" 
+                <a href="https://github.com/derekwisong/datui"
+                   class="github-link"
+                   target="_blank"
                    rel="noopener noreferrer"
                    aria-label="View on GitHub">
                     <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -444,8 +444,8 @@
         <main id="main-content">
             <div class="demo-showcase">
                 {% if latest_stable_path %}
-                <img src="{{ (latest_permanent_path if latest_permanent_path is defined and latest_permanent_path else latest_stable_path) }}/demos/01-basic-navigation.gif" 
-                     alt="Datui demo showing basic navigation" 
+                <img src="{{ (latest_permanent_path if latest_permanent_path is defined and latest_permanent_path else latest_stable_path) }}/demos/01-basic-navigation.gif"
+                     alt="Datui demo showing basic navigation"
                      class="demo-gif"
                      loading="lazy">
                 {% endif %}
@@ -454,8 +454,8 @@
             <h2 class="versions-heading">Documentation:</h2>
             <div class="version-list" role="list">
                 {% for version in recent_versions %}
-                <a href="{{ (latest_permanent_path if version.is_latest_stable and (latest_permanent_path is defined and latest_permanent_path) else version.path) }}/index.html" 
-                   class="version-card" 
+                <a href="{{ (latest_permanent_path if version.is_latest_stable and (latest_permanent_path is defined and latest_permanent_path) else version.path) }}/index.html"
+                   class="version-card"
                    role="listitem"
                    data-version="{{ version.name }}"
                    tabindex="0">
@@ -463,6 +463,9 @@
                         {{ version.name }}
                         {% if version.is_latest_stable %}
                         <span class="version-badge stable">Latest</span>
+                        {% endif %}
+                        {% if version.is_development %}
+                        <span class="version-badge development">Development</span>
                         {% endif %}
                     </span>
                     <span class="version-date">{{ version.date_str }}</span>
@@ -474,12 +477,17 @@
                 <summary tabindex="0">Older Versions</summary>
                 <div class="version-list" role="list">
                     {% for version in older_versions %}
-                    <a href="{{ version.path }}/index.html" 
-                       class="version-card" 
+                    <a href="{{ version.path }}/index.html"
+                       class="version-card"
                        role="listitem"
                        data-version="{{ version.name }}"
                        tabindex="0">
-                        <span class="version-name">{{ version.name }}</span>
+                        <span class="version-name">
+                            {{ version.name }}
+                            {% if version.is_development %}
+                            <span class="version-badge development">Development</span>
+                            {% endif %}
+                        </span>
                         <span class="version-date">{{ version.date_str }}</span>
                     </a>
                     {% endfor %}
@@ -499,7 +507,7 @@
             const html = document.documentElement;
 
             // Get current theme (already set by inline script in head)
-            const currentTheme = html.getAttribute('data-theme') || 
+            const currentTheme = html.getAttribute('data-theme') ||
                 (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
             updateThemeUI(currentTheme);
 
@@ -533,14 +541,14 @@
             const allVersionCards = Array.from(document.querySelectorAll('.version-card'));
             const olderVersionsDetails = document.getElementById('older-versions');
             const olderVersionsSummary = olderVersionsDetails?.querySelector('summary');
-            
+
             function getNavigableItems() {
                 // Get visible version cards (not inside closed details)
                 const visibleCards = allVersionCards.filter(function(card) {
                     const details = card.closest('details');
                     return !details || details.open;
                 });
-                
+
                 // Insert the "Older Versions" summary after the recent versions (before older version cards)
                 if (olderVersionsSummary) {
                     // Find where recent versions end (cards not inside details)
@@ -554,7 +562,7 @@
                 }
                 return visibleCards;
             }
-            
+
             let navigableItems = getNavigableItems();
             let focusedIndex = -1;
 
@@ -602,7 +610,7 @@
                         }
                         focusItem(focusedIndex);
                         break;
-                    
+
                     case 'k':
                     case 'ArrowUp':
                         e.preventDefault();
@@ -614,7 +622,7 @@
                         }
                         focusItem(focusedIndex);
                         break;
-                    
+
                     case 'Enter':
                     case ' ':
                         if (focusedIndex >= 0 && focusedIndex < navigableItems.length) {
@@ -629,7 +637,7 @@
                             }
                         }
                         break;
-                    
+
                     case 'o':
                         // Toggle older versions with 'o' key
                         if (!e.ctrlKey && !e.metaKey && !e.altKey && olderVersionsDetails) {
@@ -637,7 +645,7 @@
                             olderVersionsDetails.open = !olderVersionsDetails.open;
                         }
                         break;
-                    
+
                     case 't':
                         if (!e.ctrlKey && !e.metaKey && !e.altKey) {
                             e.preventDefault();
@@ -645,13 +653,13 @@
                             toggleTheme();
                         }
                         break;
-                    
+
                     case 'Home':
                         e.preventDefault();
                         focusedIndex = 0;
                         focusItem(focusedIndex);
                         break;
-                    
+
                     case 'End':
                         e.preventDefault();
                         focusedIndex = navigableItems.length - 1;
@@ -675,7 +683,7 @@
                     focusedIndex = navigableItems.indexOf(card);
                 });
             });
-            
+
             // Handle older versions summary hover
             if (olderVersionsSummary) {
                 olderVersionsSummary.addEventListener('mouseenter', function() {

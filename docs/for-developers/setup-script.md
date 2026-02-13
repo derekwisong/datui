@@ -3,7 +3,7 @@
 The setup process can be automated by running:
 
 ```bash
-python scripts/setup-dev.py
+python scripts/setup_dev.py
 ```
 
 The script will:

@@ -1,7 +1,7 @@
 # Datui
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.2.47-orange.svg)
+![Version](https://img.shields.io/badge/version-0.2.48-orange.svg)
 ![Rust](https://img.shields.io/badge/rust-1.89.0+-orange.svg)
 ![Downloads](https://img.shields.io/github/downloads/derekwisong/datui/total?style=flat-square&logo=github&color=blue)
 ![PyPI Downloads](https://img.shields.io/pypi/dm/datui?style=flat-square&logo=pypi&logoColor=white&color=blue)

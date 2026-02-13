@@ -11,7 +11,7 @@ repos:
         entry: cargo fmt --check
         language: system
         types: [rust]
-        pass_filenames: true
+        pass_filenames: false
       - id: cargo-clippy
         name: cargo clippy
         entry: cargo clippy --workspace --all-targets --locked -- -D warnings

@@ -99,7 +99,7 @@ impl CompressionFormat {
 }
 
 /// Command-line arguments for datui
-#[derive(Parser, Debug)]
+#[derive(Clone, Parser, Debug)]
 #[command(
     name = "datui",
     version,
@@ -119,6 +119,10 @@ pub struct Args {
     /// Skip this many rows when reading a file
     #[arg(long = "skip-rows")]
     pub skip_rows: Option<usize>,
+
+    /// Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage)
+    #[arg(long = "skip-tail-rows", value_name = "N")]
+    pub skip_tail_rows: Option<usize>,
 
     /// Specify that the file has no header
     #[arg(long = "no-header")]
@@ -157,6 +161,14 @@ pub struct Args {
     /// Try to parse CSV string columns as dates (e.g. YYYY-MM-DD, ISO datetime). Default: true
     #[arg(long = "parse-dates", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
     pub parse_dates: Option<bool>,
+
+    /// Trim whitespace and parse CSV string columns as date, datetime, time, duration, int, or float. Default: applied to all string columns. Use --parse-strings=COL (repeatable) to limit to specific columns, or --no-parse-strings to disable.
+    #[arg(long = "parse-strings", value_name = "COL", num_args = 0.., default_missing_value = "")]
+    pub parse_strings: Vec<String>,
+
+    /// Disable parse-strings for CSV (trim and type inference). Overrides config and default.
+    #[arg(long = "no-parse-strings", action)]
+    pub no_parse_strings: bool,
 
     /// Decompress into memory. Default: decompress to temp file and use lazy scan
     #[arg(long = "decompress-in-memory", default_missing_value = "true", num_args = 0..=1, value_parser = clap::value_parser!(bool))]

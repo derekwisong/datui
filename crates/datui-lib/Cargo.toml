@@ -58,6 +58,8 @@ features = [
     "csv",
     "decompress",
     "dtype-datetime",
+    "dtype-time",
+    "dtype-duration",
     "ipc",
     "json",
     "lazy",

@@ -22,6 +22,7 @@ _DATUI_OPTIONS_KEYS = frozenset({
     "has_header",
     "skip_lines",
     "skip_rows",
+    "skip_tail_rows",
     "compression",
     "pages_lookahead",
     "pages_lookback",
@@ -32,6 +33,8 @@ _DATUI_OPTIONS_KEYS = frozenset({
     "hive",
     "single_spine_schema",
     "parse_dates",
+    "parse_strings",
+    "parse_strings_sample_rows",
     "decompress_in_memory",
     "temp_dir",
     "excel_sheet",
@@ -129,9 +132,10 @@ def view(
     (s3://, gs://, http(s)://). Remote non-Parquet files are downloaded to a temp
     file. With multiple paths, at most one may be remote.
 
-    Options (path-based viewing): delimiter, has_header, skip_lines, skip_rows,
-    compression, null_values, hive, debug, etc. (see DatuiOptions). For frame-based
-    viewing only display/buffer options (e.g. row_numbers, pages_lookahead, debug) apply.
+    Options (path-based viewing): delimiter, has_header, skip_lines, skip_rows, skip_tail_rows,
+    compression, null_values, parse_strings (default: all CSV string columns; use False to
+    disable or a list of column names to limit), parse_strings_sample_rows, hive, debug,
+    etc. (see DatuiOptions). For frame-based viewing only display/buffer options apply.
     Pass options as a DatuiOptions instance or as keyword arguments.
 
     Args:

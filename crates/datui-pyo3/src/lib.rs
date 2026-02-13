@@ -8,7 +8,10 @@
 use std::panic;
 use std::path::{Path, PathBuf};
 
-use ::datui::{error_for_python, CompressionFormat, ErrorKindForPython, FileFormat, OpenOptions, RunInput, run};
+use ::datui::{
+    error_for_python, CompressionFormat, ErrorKindForPython, FileFormat, OpenOptions, ParseStringsTarget,
+    RunInput, run,
+};
 use bincode::config::legacy;
 use polars::prelude::LazyFrame;
 use polars_plan::dsl::DslPlan;
@@ -94,7 +97,38 @@ fn opt_path_from_py(any: Option<&Bound<'_, pyo3::types::PyAny>>) -> PyResult<Opt
     Ok(Some(PathBuf::from(s)))
 }
 
+/// Convert Python value to Option<ParseStringsTarget>. None/omitted → All (default). False → disabled. True or [] → All. [str, ...] → Columns.
+fn parse_strings_from_py(any: Option<&Bound<'_, pyo3::types::PyAny>>) -> PyResult<Option<ParseStringsTarget>> {
+    let Some(any) = any else {
+        return Ok(Some(ParseStringsTarget::All));
+    };
+    if any.is_none() {
+        return Ok(Some(ParseStringsTarget::All));
+    }
+    if let Ok(false) = any.extract::<bool>() {
+        return Ok(None);
+    }
+    if let Ok(true) = any.extract::<bool>() {
+        return Ok(Some(ParseStringsTarget::All));
+    }
+    if let Ok(list) = any.extract::<Vec<String>>() {
+        if list.is_empty() {
+            return Ok(Some(ParseStringsTarget::All));
+        }
+        return Ok(Some(ParseStringsTarget::Columns(
+            list.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect(),
+        )));
+    }
+    Err(PyTypeError::new_err(
+        "parse_strings must be None, False, True, or a list of column name strings",
+    ))
+}
+
 /// Options for loading and displaying data in the TUI (Python name for OpenOptions).
+///
+/// **parse_strings**: Default is all CSV string columns (trim + type inference). Use `False` to
+/// disable; `True` or `[]` for all; or a list of column names to limit to those columns.
+/// **parse_strings_sample_rows**: Rows to sample for type inference when parse_strings is enabled (default 1000).
 #[pyclass(name = "DatuiOptions")]
 struct DatuiOptionsPy {
     inner: OpenOptions,
@@ -108,6 +142,7 @@ impl DatuiOptionsPy {
         has_header=None,
         skip_lines=None,
         skip_rows=None,
+        skip_tail_rows=None,
         compression=None,
         format=None,
         pages_lookahead=None,
@@ -129,7 +164,9 @@ impl DatuiOptionsPy {
         polars_streaming=true,
         workaround_pivot_date_index=true,
         null_values=None,
-        debug=false
+        debug=false,
+        parse_strings=None,
+        parse_strings_sample_rows=1000
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -137,6 +174,7 @@ impl DatuiOptionsPy {
         has_header: Option<Bound<'_, pyo3::types::PyAny>>,
         skip_lines: Option<Bound<'_, pyo3::types::PyAny>>,
         skip_rows: Option<Bound<'_, pyo3::types::PyAny>>,
+        skip_tail_rows: Option<Bound<'_, pyo3::types::PyAny>>,
         compression: Option<Bound<'_, pyo3::types::PyAny>>,
         format: Option<Bound<'_, pyo3::types::PyAny>>,
         pages_lookahead: Option<Bound<'_, pyo3::types::PyAny>>,
@@ -159,6 +197,8 @@ impl DatuiOptionsPy {
         workaround_pivot_date_index: bool,
         null_values: Option<Bound<'_, pyo3::types::PyAny>>,
         debug: bool,
+        parse_strings: Option<Bound<'_, pyo3::types::PyAny>>,
+        parse_strings_sample_rows: usize,
     ) -> PyResult<Self> {
         let mut opts = OpenOptions::new();
         opts.row_numbers = row_numbers;
@@ -186,6 +226,11 @@ impl DatuiOptionsPy {
         if let Some(ref a) = skip_rows {
             if !a.is_none() {
                 opts.skip_rows = Some(a.extract::<usize>()?);
+            }
+        }
+        if let Some(ref a) = skip_tail_rows {
+            if !a.is_none() {
+                opts.skip_tail_rows = Some(a.extract::<usize>()?);
             }
         }
         if let Some(ref a) = compression {
@@ -257,6 +302,8 @@ impl DatuiOptionsPy {
                 opts.null_values = Some(a.extract::<Vec<String>>()?);
             }
         }
+        opts.parse_strings = parse_strings_from_py(parse_strings.as_ref().map(|b| b.as_ref()))?;
+        opts.parse_strings_sample_rows = parse_strings_sample_rows;
         opts.debug = debug;
         Ok(Self { inner: opts })
     }
@@ -277,6 +324,9 @@ impl DatuiOptionsPy {
         }
         if let Some(v) = o.skip_rows {
             d.set_item("skip_rows", v)?;
+        }
+        if let Some(v) = o.skip_tail_rows {
+            d.set_item("skip_tail_rows", v)?;
         }
         if let Some(ref v) = o.compression {
             let s = match v {
@@ -307,6 +357,12 @@ impl DatuiOptionsPy {
         d.set_item("hive", o.hive)?;
         d.set_item("single_spine_schema", o.single_spine_schema)?;
         d.set_item("parse_dates", o.parse_dates)?;
+        match &o.parse_strings {
+            None => d.set_item("parse_strings", false)?,
+            Some(ParseStringsTarget::All) => d.set_item("parse_strings", true)?,
+            Some(ParseStringsTarget::Columns(c)) => d.set_item("parse_strings", c.clone())?,
+        }
+        d.set_item("parse_strings_sample_rows", o.parse_strings_sample_rows)?;
         d.set_item("decompress_in_memory", o.decompress_in_memory)?;
         if let Some(ref v) = o.temp_dir {
             d.set_item("temp_dir", v.to_string_lossy().as_ref())?;

@@ -5,8 +5,8 @@ Single entry point used by CI, release workflows, and local developers.
 Run from repo root.
 
 Usage:
-    python3 scripts/build_package.py <deb|rpm|aur> [--no-build] [--repo-root PATH]
-    ./scripts/build_package.py deb
+    python3 scripts/packaging/build_package.py <deb|rpm|aur> [--no-build] [--repo-root PATH]
+    ./scripts/packaging/build_package.py deb
 
 Options:
     --no-build    Skip 'cargo build --release'; use when artifacts already exist.
@@ -69,7 +69,7 @@ def ensure_gzipped_manpage(repo_root: Path) -> bool:
 
 def fix_aur_pkgbuild(repo_root: Path) -> bool:
     """Fix PKGBUILD for Arch compatibility: replace '-dev' with '.dev' in version.
-    
+
     Arch pkgver cannot contain hyphens. For dev versions:
     - Rename tarball to use .dev
     - Fix source URL to use 'dev' tag (dev releases use tag 'dev', not 'v0.2.11.dev')
@@ -77,35 +77,35 @@ def fix_aur_pkgbuild(repo_root: Path) -> bool:
     """
     aur_dir = repo_root / "target" / "cargo-aur"
     pkgbuild = aur_dir / "PKGBUILD"
-    
+
     if not pkgbuild.exists():
         return False
-    
+
     content = pkgbuild.read_text()
-    
+
     # Check if there's a -dev version that needs fixing
     if "-dev" not in content:
         return True  # Nothing to fix
-    
+
     # Replace -dev with .dev in the PKGBUILD content
     new_content = content.replace("-dev", ".dev")
-    
+
     # For dev versions, the source URL must use tag 'dev', not 'v$pkgver'
     # (GitHub dev release is at /releases/tag/dev)
     new_content = new_content.replace(
         'releases/download/v$pkgver/',
         'releases/download/dev/',
     )
-    
+
     pkgbuild.write_text(new_content)
-    
+
     # Rename the tarball to match (if it exists with -dev in the name)
     for tarball in aur_dir.glob("*-dev*.tar.gz"):
         new_name = tarball.name.replace("-dev", ".dev")
         new_path = tarball.parent / new_name
         tarball.rename(new_path)
         print(f"Renamed: {tarball.name} -> {new_name}")
-    
+
     print("Fixed PKGBUILD: replaced '-dev' with '.dev', source URL uses 'dev' tag")
     return True
 

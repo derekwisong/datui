@@ -106,13 +106,13 @@ jobs:
           command -v cargo-aur || cargo install cargo-aur
 
       - name: Build deb package
-        run: python3 scripts/build_package.py deb --no-build
+        run: python3 scripts/packaging/build_package.py deb --no-build
 
       - name: Build rpm package
-        run: python3 scripts/build_package.py rpm --no-build
+        run: python3 scripts/packaging/build_package.py rpm --no-build
 
       - name: Build AUR package
-        run: python3 scripts/build_package.py aur --no-build
+        run: python3 scripts/packaging/build_package.py aur --no-build
 
       - name: Bundle CLI for wheel
         run: |

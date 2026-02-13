@@ -47,10 +47,10 @@ jobs:
           cache-workspace-crates: true
 
       - name: Check formatting
-        run: ./scripts/check_format.sh
+        run: ./scripts/code/check_format.sh
 
       - name: Run clippy
-        run: ./scripts/check_clippy.sh
+        run: ./scripts/code/check_clippy.sh
 
   linux:
     runs-on: ubuntu-latest

@@ -8,19 +8,21 @@ repos:
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: bash -c 'if ! ./scripts/check_format.sh; then ./scripts/format.sh && echo "Code formatted - please stage changes and commit again" && exit 1; fi'
+        entry: cargo fmt --check
         language: system
-        pass_filenames: false
-        always_run: true
-        description: Format Rust code with cargo fmt
-
-  # Rust linting with cargo clippy
-  - repo: local
-    hooks:
+        types: [rust]
+        pass_filenames: true
       - id: cargo-clippy
         name: cargo clippy
-        entry: ./scripts/check_clippy.sh
+        entry: cargo clippy --workspace --all-targets --locked -- -D warnings
         language: system
+        types: [rust]
         pass_filenames: false
-        always_run: true
-        description: Run cargo clippy with all targets and deny warnings
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        name: check added large files
+      - id: trailing-whitespace
+        name: trailing whitespace
+        args: [--markdown-linebreak-ext=md]

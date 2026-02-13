@@ -3,15 +3,16 @@
 
 Usage:
     python3 scripts/docs/build_single_version_docs.py [VERSION] [--worktree]
-    VERSION: version tag (e.g. v1.0.0) or branch name (default: main)
+    VERSION: version tag (e.g. v1.0.0) or branch name (default: current branch)
     --worktree: caller is in a worktree; skip checkout/restore (used by build_all_docs_local.py and CI)
 
 Developer usage:
-    Build one tag:   python3 scripts/docs/build_single_version_docs.py v0.2.22
-    Build main:      python3 scripts/docs/build_single_version_docs.py main
-    Build all tags: python3 scripts/docs/build_all_docs_local.py
+    Build current branch: python3 scripts/docs/build_single_version_docs.py
+    Build one tag:       python3 scripts/docs/build_single_version_docs.py v0.2.22
+    Build main:          python3 scripts/docs/build_single_version_docs.py main
+    Build all tags:      python3 scripts/docs/build_all_docs_local.py
 
-Prerequisites: mdbook (cargo install mdbook). For main/branch builds, python3 + scripts/requirements.txt.
+Prerequisites: mdbook (cargo install mdbook). For branch builds, python3 + scripts/requirements.txt.
 """
 
 from __future__ import annotations
@@ -61,15 +62,35 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None) -> sub
     return subprocess.run(cmd, cwd=cwd, env=env or os.environ.copy(), capture_output=True, text=True)
 
 
+def get_current_branch(cwd: Path | None = None) -> str:
+    """Return current branch name, or 'main' if detached / not a repo."""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=cwd or Path.cwd(),
+        )
+        name = r.stdout.strip()
+        return name if name and name != "HEAD" else "main"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "main"
+
+
 def main() -> int:
+    cwd = Path.cwd().resolve()
+    repo_root = get_repo_root(cwd)
+    default_version = get_current_branch(repo_root)
+
     parser = argparse.ArgumentParser(
         description="Build documentation for a single version (tag or branch).",
     )
     parser.add_argument(
         "version",
         nargs="?",
-        default="main",
-        help="Version tag (e.g. v0.2.22) or branch name (default: main)",
+        default=default_version,
+        help="Version tag (e.g. v0.2.22) or branch name (default: current branch)",
     )
     parser.add_argument(
         "--worktree",
@@ -82,8 +103,6 @@ def main() -> int:
     use_worktree = args.worktree
     is_tag = len(version_name) > 1 and version_name.startswith("v") and version_name[1].isdigit()
 
-    cwd = Path.cwd().resolve()
-    repo_root = get_repo_root(cwd)
     if use_worktree:
         build_dir = cwd
     else:

@@ -459,6 +459,8 @@ pub struct FileLoadingConfig {
     pub has_header: Option<bool>,
     pub skip_lines: Option<usize>,
     pub skip_rows: Option<usize>,
+    /// Skip this many rows at the end of the file (e.g. vendor footer or trailing garbage). CSV only.
+    pub skip_tail_rows: Option<usize>,
     /// When true, CSV reader tries to parse string columns as dates (YYYY-MM-DD, ISO datetime). Default: true.
     pub parse_dates: Option<bool>,
     /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
@@ -469,6 +471,10 @@ pub struct FileLoadingConfig {
     pub single_spine_schema: Option<bool>,
     /// CSV null values: list of strings. Plain string = treat as null in all columns; "COL=VAL" = treat VAL as null only in column COL (first "=" separates). Example: ["NA", "amount="].
     pub null_values: Option<Vec<String>>,
+    /// When false, disable parse-strings for CSV. When true or unset, trim and parse all CSV string columns (default). Use CLI --parse-strings=COL for specific columns, --no-parse-strings to disable.
+    pub parse_strings: Option<bool>,
+    /// Number of rows to sample for parse_strings type inference (single file or multiple/partitioned). Default 1000.
+    pub parse_strings_sample_rows: Option<usize>,
 }
 
 // Field comments for FileLoadingConfig
@@ -484,6 +490,10 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     ),
     ("skip_lines", "Number of lines to skip at the start of files"),
     ("skip_rows", "Number of rows to skip when reading files"),
+    (
+        "skip_tail_rows",
+        "Number of rows to skip at the end of the file (e.g. vendor footer or trailing garbage). CSV only.",
+    ),
     (
         "parse_dates",
         "When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)",
@@ -503,6 +513,14 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "null_values",
         "CSV: values to treat as null. Plain string = all columns; \"COL=VAL\" = column COL only. Example: [\"NA\", \"amount=\"]",
+    ),
+    (
+        "parse_strings",
+        "When false, disable parse-strings. When true or unset, parse all CSV string columns (default). Use CLI --parse-strings=COL or --no-parse-strings.",
+    ),
+    (
+        "parse_strings_sample_rows",
+        "Rows to sample for parse_strings type inference (default 1000).",
     ),
 ];
 
@@ -1119,6 +1137,9 @@ impl FileLoadingConfig {
         if other.skip_rows.is_some() {
             self.skip_rows = other.skip_rows;
         }
+        if other.skip_tail_rows.is_some() {
+            self.skip_tail_rows = other.skip_tail_rows;
+        }
         if other.parse_dates.is_some() {
             self.parse_dates = other.parse_dates;
         }
@@ -1133,6 +1154,12 @@ impl FileLoadingConfig {
         }
         if other.null_values.is_some() {
             self.null_values = other.null_values.clone();
+        }
+        if other.parse_strings.is_some() {
+            self.parse_strings = other.parse_strings;
+        }
+        if other.parse_strings_sample_rows.is_some() {
+            self.parse_strings_sample_rows = other.parse_strings_sample_rows;
         }
     }
 }

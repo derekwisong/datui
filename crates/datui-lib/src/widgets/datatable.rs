@@ -21,9 +21,10 @@ use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 use crate::query::parse_query;
 use crate::statistics::collect_lazy;
-use crate::{CompressionFormat, OpenOptions};
+use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 use polars::io::csv::read::NullValues;
 use polars::lazy::frame::pivot::pivot_stable;
+use polars::prelude::StrptimeOptions;
 use std::io::{BufReader, Read};
 
 use calamine::{open_workbook_auto, Data, Reader};
@@ -1451,7 +1452,7 @@ impl DataTableState {
         if let Some(has_header) = options.has_header {
             reader = reader.with_has_header(has_header);
         }
-        reader = reader.with_try_parse_dates(options.parse_dates);
+        reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
         let mut lf = reader.finish()?;
         lf.collect_schema().map_err(color_eyre::eyre::Report::from)
     }
@@ -1481,6 +1482,367 @@ impl DataTableState {
         Ok(nv)
     }
 
+    /// Trim leading/trailing whitespace from CSV column names. Applied whenever we have a CSV LazyFrame.
+    fn trim_csv_column_names(mut lf: LazyFrame) -> Result<LazyFrame> {
+        let schema = lf.collect_schema()?;
+        let names: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
+        let trimmed: Vec<String> = names.iter().map(|s| s.trim().to_string()).collect();
+        if names == trimmed {
+            return Ok(lf);
+        }
+        Ok(lf.rename(
+            names.iter().map(|s| s.as_str()),
+            trimmed.iter().map(|s| s.as_str()),
+            false,
+        ))
+    }
+
+    /// If options.skip_tail_rows is set, run a count query and slice the LazyFrame to drop that many rows from the end. Used for CSV with trailing garbage/footer.
+    fn apply_skip_tail_rows_csv(lf: LazyFrame, options: &OpenOptions) -> Result<LazyFrame> {
+        let n = match options.skip_tail_rows {
+            None | Some(0) => return Ok(lf),
+            Some(n) => n,
+        };
+        let count_df = collect_lazy(lf.clone().select([len()]), options.polars_streaming)
+            .map_err(color_eyre::eyre::Report::from)?;
+        let total: u32 = if let Some(col) = count_df.get(0) {
+            match col.first() {
+                Some(AnyValue::UInt32(v)) => *v,
+                _ => return Ok(lf),
+            }
+        } else {
+            return Ok(lf);
+        };
+        let keep = total.saturating_sub(n as u32);
+        Ok(lf.slice(0, keep))
+    }
+
+    /// Try to detect a date format from a sample string (first format that parses).
+    /// Returns None if no format matches, so we can avoid passing format: None to Polars (which can error).
+    fn infer_date_format_from_sample(sample: &str) -> Option<&'static str> {
+        const DATE_FMTS: &[&str] = &[
+            "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y",
+            "%m-%d-%Y", "%m/%d/%Y",
+        ];
+        DATE_FMTS
+            .iter()
+            .find(|fmt| NaiveDate::parse_from_str(sample, fmt).is_ok())
+            .copied()
+    }
+
+    /// Try to detect a datetime format from a sample string.
+    fn infer_datetime_format_from_sample(sample: &str) -> Option<&'static str> {
+        const DATETIME_FMTS: &[&str] = &[
+            "%Y-%m-%dT%H:%M:%S%.f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S%.f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+            "%d-%m-%YT%H:%M:%S%.f",
+            "%d-%m-%YT%H:%M:%S",
+            "%d-%m-%Y %H:%M:%S%.f",
+            "%d-%m-%Y %H:%M:%S",
+            "%d/%m/%YT%H:%M:%S%.f",
+            "%d/%m/%YT%H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
+            "%Y%m%dT%H%M%S%.f",
+            "%Y%m%d %H%M%S",
+        ];
+        DATETIME_FMTS
+            .iter()
+            .find(|fmt| NaiveDateTime::parse_from_str(sample, fmt).is_ok())
+            .copied()
+    }
+
+    /// Parse a string ChunkedArray into a Duration ChunkedArray (nanoseconds). Uses Polars duration
+    /// format (e.g. `1d`, `2h30m`, `-1w2d`). Invalid or null inputs become null in the output.
+    fn string_chunked_to_duration_ns(str_ca: &StringChunked) -> DurationChunked {
+        let name = str_ca.name().clone();
+        let vals: Vec<Option<i64>> = str_ca
+            .iter()
+            .map(|opt_s| {
+                opt_s.and_then(|s| {
+                    polars::time::Duration::try_parse(s)
+                        .ok()
+                        .map(|d| d.duration_ns())
+                })
+            })
+            .collect();
+        let int_ca = Int64Chunked::from_iter_options(name, vals.into_iter());
+        int_ca.into_duration(TimeUnit::Nanoseconds)
+    }
+
+    /// Try to detect a time format from a sample string (HH:MM:SS, HH:MM, with optional fractional seconds).
+    fn infer_time_format_from_sample(sample: &str) -> Option<&'static str> {
+        const TIME_FMTS: &[&str] = &[
+            "%H:%M:%S%.9f",
+            "%H:%M:%S%.6f",
+            "%H:%M:%S%.3f",
+            "%H:%M:%S",
+            "%H:%M",
+        ];
+        TIME_FMTS
+            .iter()
+            .find(|fmt| NaiveTime::parse_from_str(sample, fmt).is_ok())
+            .copied()
+    }
+
+    /// Apply trim and type inference to CSV string columns when --parse-strings is enabled.
+    /// Samples up to `options.parse_strings_sample_rows` rows to infer types, then overlays lazy exprs (trim then cast) on the LazyFrame.
+    fn apply_parse_strings_to_csv_lazyframe(
+        lf: LazyFrame,
+        options: &OpenOptions,
+    ) -> Result<LazyFrame> {
+        let target = match &options.parse_strings {
+            None => return Ok(lf),
+            Some(t) => t,
+        };
+        let sample_rows = options.parse_strings_sample_rows;
+        let sample_df = lf.clone().limit(sample_rows as u32).collect()?;
+        let schema = sample_df.schema();
+        let string_cols: Vec<String> = schema
+            .iter()
+            .filter(|(_name, dtype)| **dtype == DataType::String)
+            .map(|(name, _)| name.to_string())
+            .collect();
+        let target_cols: Vec<String> = match target {
+            ParseStringsTarget::All => string_cols,
+            ParseStringsTarget::Columns(c) => c
+                .iter()
+                .filter(|name| string_cols.contains(name))
+                .cloned()
+                .collect(),
+        };
+        if target_cols.is_empty() {
+            return Ok(lf);
+        }
+        use polars::datatypes::TimeUnit;
+        let whitespace_pat = lit(PlSmallStr::from_static(" \t\n\r"));
+        // Re-collect sample with values trimmed so inference sees "1" not " 1 "
+        let trim_sample_exprs: Vec<Expr> = target_cols
+            .iter()
+            .map(|c| {
+                col(PlSmallStr::from(c.as_str()))
+                    .str()
+                    .strip_chars(whitespace_pat.clone())
+                    .alias(PlSmallStr::from(c.as_str()))
+            })
+            .collect();
+        // Treat blank (empty string after trim) as null so "all null" and accept_type use normalized semantics.
+        let blank_to_null_exprs: Vec<Expr> = target_cols
+            .iter()
+            .map(|c| {
+                let name = PlSmallStr::from(c.as_str());
+                when(col(name.clone()).eq(lit(PlSmallStr::from_static(""))))
+                    .then(Null {}.lit())
+                    .otherwise(col(name.clone()))
+                    .alias(name)
+            })
+            .collect();
+        let sample_df = lf
+            .clone()
+            .limit(sample_rows as u32)
+            .with_columns(trim_sample_exprs)
+            .with_columns(blank_to_null_exprs)
+            .collect()?;
+        let mut exprs = Vec::with_capacity(target_cols.len());
+        for col_name in &target_cols {
+            let s = sample_df.column(col_name.as_str())?;
+            let null_before = s.null_count();
+            let len = s.len();
+            // Accept type if we didn't introduce new nulls (null_after <= null_before).
+            let accept_type = |null_after: usize| null_after <= null_before;
+            // Inference order: Date → Datetime → Time → Duration → Int64 → Float64 → String.
+            enum InferredType {
+                Date,
+                Datetime,
+                Time,
+                Duration,
+                Int64,
+                Float64,
+                String,
+            }
+            let (inferred, date_fmt, datetime_fmt, time_fmt) = if null_before == len {
+                // Column is all null (including blanks treated as null): leave as string.
+                (InferredType::String, None, None, None)
+            } else {
+                match s.str() {
+                    Err(_) => (InferredType::String, None, None, None),
+                    Ok(str_ca) => {
+                        let first_val: Option<&str> = str_ca
+                            .iter()
+                            .find_map(|o: Option<&str>| o.filter(|s: &&str| !s.is_empty()));
+                        let (mut t, mut date_fmt, mut datetime_fmt, mut time_fmt) = match str_ca
+                            .as_date(None, true)
+                        {
+                            Ok(as_date) if accept_type(as_date.null_count()) => {
+                                let fmt = first_val.and_then(Self::infer_date_format_from_sample);
+                                if fmt.is_some() {
+                                    (InferredType::Date, fmt.map(String::from), None, None)
+                                } else {
+                                    (InferredType::String, None, None, None)
+                                }
+                            }
+                            _ => (InferredType::String, None, None, None),
+                        };
+                        if matches!(t, InferredType::String) {
+                            let amb_name: &str = str_ca.name().as_ref();
+                            let amb_series = Series::new(
+                                PlSmallStr::from(amb_name),
+                                vec!["raise"; str_ca.len()],
+                            );
+                            let amb_ca =
+                                amb_series.str().map_err(color_eyre::eyre::Report::from)?;
+                            (t, date_fmt, datetime_fmt, time_fmt) = match str_ca.as_datetime(
+                                None,
+                                TimeUnit::Microseconds,
+                                true,
+                                false,
+                                None,
+                                amb_ca,
+                            ) {
+                                Ok(as_dt) if accept_type(as_dt.null_count()) => {
+                                    let fmt =
+                                        first_val.and_then(Self::infer_datetime_format_from_sample);
+                                    if fmt.is_some() {
+                                        (InferredType::Datetime, None, fmt.map(String::from), None)
+                                    } else {
+                                        (InferredType::String, None, None, None)
+                                    }
+                                }
+                                _ => (InferredType::String, None, None, None),
+                            };
+                        }
+                        if matches!(t, InferredType::String) {
+                            (t, date_fmt, datetime_fmt, time_fmt) = match str_ca.as_time(None, true)
+                            {
+                                Ok(as_time) if accept_type(as_time.null_count()) => {
+                                    let fmt =
+                                        first_val.and_then(Self::infer_time_format_from_sample);
+                                    if fmt.is_some() {
+                                        (InferredType::Time, None, None, fmt.map(String::from))
+                                    } else {
+                                        (InferredType::String, None, None, None)
+                                    }
+                                }
+                                _ => (InferredType::String, None, None, None),
+                            };
+                        }
+                        if matches!(t, InferredType::String) {
+                            let duration_ca = Self::string_chunked_to_duration_ns(str_ca);
+                            (t, date_fmt, datetime_fmt, time_fmt) =
+                                if accept_type(duration_ca.null_count()) {
+                                    (InferredType::Duration, None, None, None)
+                                } else {
+                                    (InferredType::String, None, None, None)
+                                };
+                        }
+                        if matches!(t, InferredType::String) {
+                            (t, date_fmt, datetime_fmt, time_fmt) =
+                                match s.strict_cast(&DataType::Int64) {
+                                    Ok(as_int) if accept_type(as_int.null_count()) => {
+                                        (InferredType::Int64, None, None, None)
+                                    }
+                                    _ => (InferredType::String, None, None, None),
+                                };
+                        }
+                        if matches!(t, InferredType::String) {
+                            (t, date_fmt, datetime_fmt, time_fmt) =
+                                match s.strict_cast(&DataType::Float64) {
+                                    Ok(as_float) if accept_type(as_float.null_count()) => {
+                                        (InferredType::Float64, None, None, None)
+                                    }
+                                    _ => (InferredType::String, None, None, None),
+                                };
+                        }
+                        (t, date_fmt, datetime_fmt, time_fmt)
+                    }
+                }
+            };
+            let base = col(PlSmallStr::from(col_name.as_str()))
+                .str()
+                .strip_chars(whitespace_pat.clone());
+            // Treat blank as null in the applied pipeline so blanks become null in the result.
+            let base_with_nulls = when(base.clone().eq(lit(PlSmallStr::from_static(""))))
+                .then(Null {}.lit())
+                .otherwise(base.clone());
+            let expr = match inferred {
+                InferredType::Date => {
+                    let opts = StrptimeOptions {
+                        format: date_fmt.as_deref().map(PlSmallStr::from),
+                        strict: false,
+                        exact: false,
+                        cache: true,
+                    };
+                    base_with_nulls
+                        .clone()
+                        .str()
+                        .to_date(opts)
+                        .alias(PlSmallStr::from(col_name.as_str()))
+                }
+                InferredType::Datetime => {
+                    let opts = StrptimeOptions {
+                        format: datetime_fmt.as_deref().map(PlSmallStr::from),
+                        strict: false,
+                        exact: false,
+                        cache: true,
+                    };
+                    base_with_nulls
+                        .clone()
+                        .str()
+                        .to_datetime(
+                            Some(TimeUnit::Microseconds),
+                            None,
+                            opts,
+                            lit(PlSmallStr::from_static("raise")),
+                        )
+                        .alias(PlSmallStr::from(col_name.as_str()))
+                }
+                InferredType::Time => {
+                    let opts = StrptimeOptions {
+                        format: time_fmt.as_deref().map(PlSmallStr::from),
+                        strict: false,
+                        exact: true,
+                        cache: true,
+                    };
+                    base_with_nulls
+                        .clone()
+                        .str()
+                        .to_time(opts)
+                        .alias(PlSmallStr::from(col_name.as_str()))
+                }
+                // No strptime for Duration in Polars; parse via map using Duration::try_parse.
+                InferredType::Duration => base_with_nulls
+                    .clone()
+                    .map(
+                        |c: Column| {
+                            let str_ca = c.str()?;
+                            let duration_ca = Self::string_chunked_to_duration_ns(str_ca);
+                            Ok(duration_ca.into_column())
+                        },
+                        |_schema: &Schema, field: &Field| {
+                            Ok(Field::new(
+                                field.name().clone(),
+                                DataType::Duration(TimeUnit::Nanoseconds),
+                            ))
+                        },
+                    )
+                    .alias(PlSmallStr::from(col_name.as_str())),
+                InferredType::Int64 => base_with_nulls
+                    .clone()
+                    .cast(DataType::Int64)
+                    .alias(PlSmallStr::from(col_name.as_str())),
+                InferredType::Float64 => base_with_nulls
+                    .cast(DataType::Float64)
+                    .alias(PlSmallStr::from(col_name.as_str())),
+                InferredType::String => base.alias(PlSmallStr::from(col_name.as_str())),
+            };
+            exprs.push(expr);
+        }
+        Ok(lf.with_columns(exprs))
+    }
+
     pub fn from_csv(path: &Path, options: &OpenOptions) -> Result<Self> {
         let nv = Self::build_null_values_for_csv(options, Some(path))?;
 
@@ -1505,7 +1867,7 @@ impl DataTableState {
                             read_options.has_header = has_header;
                         }
                         read_options = read_options.map_parse_options(|opts| {
-                            let o = opts.with_try_parse_dates(options.parse_dates);
+                            let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
                                 Some(n) => o.with_null_values(Some(n.clone())),
                                 None => o,
@@ -1514,7 +1876,9 @@ impl DataTableState {
                         let df = read_options
                             .try_into_reader_with_file_path(Some(path.into()))?
                             .finish()?;
-                        let lf = df.lazy();
+                        let mut lf = Self::trim_csv_column_names(df.lazy())?;
+                        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+                        lf = Self::apply_skip_tail_rows_csv(lf, options)?;
                         let mut state = Self::new(
                             lf,
                             options.pages_lookahead,
@@ -1543,7 +1907,7 @@ impl DataTableState {
                             read_options.has_header = has_header;
                         }
                         read_options = read_options.map_parse_options(|opts| {
-                            let o = opts.with_try_parse_dates(options.parse_dates);
+                            let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
                                 Some(n) => o.with_null_values(Some(n.clone())),
                                 None => o,
@@ -1552,7 +1916,9 @@ impl DataTableState {
                         let df = CsvReader::new(std::io::Cursor::new(decompressed))
                             .with_options(read_options)
                             .finish()?;
-                        let lf = df.lazy();
+                        let mut lf = Self::trim_csv_column_names(df.lazy())?;
+                        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+                        lf = Self::apply_skip_tail_rows_csv(lf, options)?;
                         let mut state = Self::new(
                             lf,
                             options.pages_lookahead,
@@ -1581,7 +1947,7 @@ impl DataTableState {
                             read_options.has_header = has_header;
                         }
                         read_options = read_options.map_parse_options(|opts| {
-                            let o = opts.with_try_parse_dates(options.parse_dates);
+                            let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
                                 Some(n) => o.with_null_values(Some(n.clone())),
                                 None => o,
@@ -1590,7 +1956,9 @@ impl DataTableState {
                         let df = CsvReader::new(std::io::Cursor::new(decompressed))
                             .with_options(read_options)
                             .finish()?;
-                        let lf = df.lazy();
+                        let mut lf = Self::trim_csv_column_names(df.lazy())?;
+                        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+                        lf = Self::apply_skip_tail_rows_csv(lf, options)?;
                         let mut state = Self::new(
                             lf,
                             options.pages_lookahead,
@@ -1625,7 +1993,7 @@ impl DataTableState {
                         if let Some(has_header) = options.has_header {
                             reader = reader.with_has_header(has_header);
                         }
-                        reader = reader.with_try_parse_dates(options.parse_dates);
+                        reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
                         reader = match &nv_temp {
                             Some(n) => reader
                                 .map_parse_options(|opts| opts.with_null_values(Some(n.clone()))),
@@ -1634,6 +2002,20 @@ impl DataTableState {
                         reader
                     },
                 )?;
+                let mut lf = Self::trim_csv_column_names(std::mem::take(&mut state.lf))?;
+                state.original_lf = lf.clone();
+                state.schema = lf.clone().collect_schema()?;
+                state.lf = lf.clone();
+                if options.parse_strings.is_some() {
+                    lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+                    state.original_lf = lf.clone();
+                    state.schema = lf.clone().collect_schema()?;
+                    state.lf = lf.clone();
+                }
+                lf = Self::apply_skip_tail_rows_csv(lf, options)?;
+                state.original_lf = lf.clone();
+                state.schema = lf.clone().collect_schema()?;
+                state.lf = lf;
                 state.row_numbers = options.row_numbers;
                 state.row_start_index = options.row_start_index;
                 state.decompress_temp_file = Some(temp);
@@ -1657,7 +2039,7 @@ impl DataTableState {
                     if let Some(has_header) = options.has_header {
                         reader = reader.with_has_header(has_header);
                     }
-                    reader = reader.with_try_parse_dates(options.parse_dates);
+                    reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
                     reader = match &nv {
                         Some(n) => {
                             reader.map_parse_options(|opts| opts.with_null_values(Some(n.clone())))
@@ -1667,6 +2049,20 @@ impl DataTableState {
                     reader
                 },
             )?;
+            let mut lf = Self::trim_csv_column_names(std::mem::take(&mut state.lf))?;
+            state.original_lf = lf.clone();
+            state.schema = lf.clone().collect_schema()?;
+            state.lf = lf.clone();
+            if options.parse_strings.is_some() {
+                lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+                state.original_lf = lf.clone();
+                state.schema = lf.clone().collect_schema()?;
+                state.lf = lf.clone();
+            }
+            lf = Self::apply_skip_tail_rows_csv(lf, options)?;
+            state.original_lf = lf.clone();
+            state.schema = lf.clone().collect_schema()?;
+            state.lf = lf;
             state.row_numbers = options.row_numbers;
             Ok(state)
         }
@@ -1718,7 +2114,7 @@ impl DataTableState {
             if let Some(has_header) = options.has_header {
                 reader = reader.with_has_header(has_header);
             }
-            reader = reader.with_try_parse_dates(options.parse_dates);
+            reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
             reader = match &nv {
                 Some(n) => reader.map_parse_options(|opts| opts.with_null_values(Some(n.clone()))),
                 None => reader,
@@ -1726,7 +2122,12 @@ impl DataTableState {
             let lf = reader.finish()?;
             lazy_frames.push(lf);
         }
-        let lf = polars::prelude::concat(lazy_frames.as_slice(), Default::default())?;
+        let mut lf = Self::trim_csv_column_names(polars::prelude::concat(
+            lazy_frames.as_slice(),
+            Default::default(),
+        )?)?;
+        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
+        lf = Self::apply_skip_tail_rows_csv(lf, options)?;
         let mut state = Self::new(
             lf,
             options.pages_lookahead,

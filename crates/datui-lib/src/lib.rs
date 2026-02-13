@@ -198,12 +198,23 @@ pub mod tests {
     }
 }
 
+/// Which CSV string columns to trim and parse (date/datetime/time/duration/int/float). Default: all. None = disabled (e.g. --no-parse-strings).
+#[derive(Clone, Debug)]
+pub enum ParseStringsTarget {
+    /// Apply to all string columns.
+    All,
+    /// Apply only to these columns (must exist and be string type).
+    Columns(Vec<String>),
+}
+
 #[derive(Clone)]
 pub struct OpenOptions {
     pub delimiter: Option<u8>,
     pub has_header: Option<bool>,
     pub skip_lines: Option<usize>,
     pub skip_rows: Option<usize>,
+    /// Skip this many rows at the end of the file (e.g. vendor footer or trailing garbage). Applied after load for CSV.
+    pub skip_tail_rows: Option<usize>,
     pub compression: Option<CompressionFormat>,
     /// When set, bypass extension-based format detection and use this format (e.g. for URLs or temp files without extension).
     pub format: Option<FileFormat>,
@@ -219,6 +230,10 @@ pub struct OpenOptions {
     pub single_spine_schema: bool,
     /// When true, CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime).
     pub parse_dates: bool,
+    /// When set, trim and parse CSV string columns: None = off, Some(true) = all columns, Some(cols) = those columns only.
+    pub parse_strings: Option<ParseStringsTarget>,
+    /// Sample size (rows) for inferring types when parse_strings is enabled; single file or multiple/partitioned.
+    pub parse_strings_sample_rows: usize,
     /// When true, decompress compressed CSV into memory (eager read). When false (default), decompress to a temp file and use lazy scan.
     pub decompress_in_memory: bool,
     /// Directory for decompression temp files. None = system default (e.g. TMPDIR).
@@ -247,6 +262,7 @@ impl OpenOptions {
             has_header: None,
             skip_lines: None,
             skip_rows: None,
+            skip_tail_rows: None,
             compression: None,
             format: None,
             pages_lookahead: None,
@@ -258,6 +274,8 @@ impl OpenOptions {
             hive: false,
             single_spine_schema: true,
             parse_dates: true,
+            parse_strings: None,
+            parse_strings_sample_rows: 1000,
             decompress_in_memory: false,
             temp_dir: None,
             excel_sheet: None,
@@ -309,6 +327,13 @@ impl OpenOptions {
         self.workaround_pivot_date_index = workaround_pivot_date_index;
         self
     }
+
+    /// When loading CSV: use Polars try_parse_dates only if parse_strings is not set.
+    /// When parse_strings is set we do our own date parsing (with strict: false), so we disable
+    /// Polars' try_parse_dates to avoid "could not find an appropriate format" errors.
+    pub fn csv_try_parse_dates(&self) -> bool {
+        self.parse_strings.is_none() && self.parse_dates
+    }
 }
 
 impl OpenOptions {
@@ -320,6 +345,7 @@ impl OpenOptions {
         opts.delimiter = args.delimiter.or(config.file_loading.delimiter);
         opts.skip_lines = args.skip_lines.or(config.file_loading.skip_lines);
         opts.skip_rows = args.skip_rows.or(config.file_loading.skip_rows);
+        opts.skip_tail_rows = args.skip_tail_rows.or(config.file_loading.skip_tail_rows);
 
         // Handle has_header: CLI no_header flag overrides config
         opts.has_header = if let Some(no_header) = args.no_header {
@@ -364,6 +390,34 @@ impl OpenOptions {
             .parse_dates
             .or(config.file_loading.parse_dates)
             .unwrap_or(true);
+
+        // Parse strings (trim + type inference). Default: all CSV string columns. --no-parse-strings disables; --parse-strings=COL limits to columns.
+        if args.no_parse_strings {
+            opts.parse_strings = None;
+        } else if !args.parse_strings.is_empty() {
+            let has_all = args.parse_strings.iter().any(|s| s.is_empty());
+            opts.parse_strings = Some(if has_all {
+                ParseStringsTarget::All
+            } else {
+                let cols: Vec<String> = args
+                    .parse_strings
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                ParseStringsTarget::Columns(cols)
+            });
+        } else if config.file_loading.parse_strings == Some(false) {
+            opts.parse_strings = None;
+        } else {
+            opts.parse_strings = Some(ParseStringsTarget::All);
+        }
+        opts.parse_strings_sample_rows = config
+            .file_loading
+            .parse_strings_sample_rows
+            .unwrap_or(1000);
 
         // Decompress-in-memory: CLI overrides config; default false (decompress to temp, use scan)
         opts.decompress_in_memory = args
@@ -445,6 +499,8 @@ pub enum AppEvent {
     DoLoad(Vec<PathBuf>, OpenOptions), // Internal event to actually perform loading after UI update
     /// Scan paths and build LazyFrame; then emit DoLoadSchema (phased loading).
     DoLoadScanPaths(Vec<PathBuf>, OpenOptions),
+    /// Build LazyFrame for CSV with --parse-strings (phase already set to "Scanning string columns" so UI shows it).
+    DoLoadCsvWithParseStrings(Vec<PathBuf>, OpenOptions),
     /// Perform HTTP download (next loop so "Downloading" can render first). Then emit DoLoadFromHttpTemp.
     #[cfg(feature = "http")]
     DoDownloadHttp(String, OpenOptions),
@@ -1091,7 +1147,7 @@ impl App {
         // For compressed files, decompression phase is already set in DoLoad handler
         // Now actually perform decompression and CSV reading (this is the slow part)
         if is_compressed_csv {
-            // Phase: Reading data (decompressing + parsing CSV; user may see "Decompressing" until we return)
+            // Phase: Reading data or Scanning string columns (decompressing + parsing CSV; user may see "Decompressing" until we return)
             if let LoadingState::Loading {
                 file_path,
                 file_size,
@@ -1101,8 +1157,16 @@ impl App {
                 self.loading_state = LoadingState::Loading {
                     file_path: file_path.clone(),
                     file_size: *file_size,
-                    current_phase: "Reading data".to_string(),
-                    progress_percent: 50,
+                    current_phase: if options.parse_strings.is_some() {
+                        "Scanning string columns".to_string()
+                    } else {
+                        "Reading data".to_string()
+                    },
+                    progress_percent: if options.parse_strings.is_some() {
+                        55
+                    } else {
+                        50
+                    },
                 };
             }
             let lf = DataTableState::from_csv(path, options)?; // Already passes pages_lookahead/lookback via options
@@ -1222,7 +1286,10 @@ impl App {
         }
 
         // For non-gzipped files, proceed with normal loading
-        // Phase 2: Building lazyframe
+        // Phase 2: Building lazyframe (or Scanning string columns for CSV when --parse-strings)
+        let effective_format = options.format.or_else(|| FileFormat::from_path(path));
+        let csv_parse_strings =
+            effective_format == Some(FileFormat::Csv) && options.parse_strings.is_some();
         if let LoadingState::Loading {
             file_path,
             file_size,
@@ -1232,12 +1299,14 @@ impl App {
             self.loading_state = LoadingState::Loading {
                 file_path: file_path.clone(),
                 file_size: *file_size,
-                current_phase: "Building lazyframe".to_string(),
-                progress_percent: 60,
+                current_phase: if csv_parse_strings {
+                    "Scanning string columns".to_string()
+                } else {
+                    "Building lazyframe".to_string()
+                },
+                progress_percent: if csv_parse_strings { 55 } else { 60 },
             };
         }
-
-        let effective_format = options.format.or_else(|| FileFormat::from_path(path));
 
         // Determine and store original file format (from explicit format or first path)
         let original_format = effective_format
@@ -6209,6 +6278,26 @@ impl App {
                         }
                     }
                     let first = paths[0].clone();
+                    // When CSV with --parse-strings, set "Scanning string columns" and defer build so UI can show it before blocking.
+                    if paths.len() == 1 && is_csv && options.parse_strings.is_some() {
+                        if let LoadingState::Loading {
+                            file_path,
+                            file_size,
+                            ..
+                        } = &self.loading_state
+                        {
+                            self.loading_state = LoadingState::Loading {
+                                file_path: file_path.clone(),
+                                file_size: *file_size,
+                                current_phase: "Scanning string columns".to_string(),
+                                progress_percent: 55,
+                            };
+                        }
+                        return Some(AppEvent::DoLoadCsvWithParseStrings(
+                            paths.clone(),
+                            options.clone(),
+                        ));
+                    }
                     #[allow(clippy::needless_borrow)]
                     match self.build_lazyframe_from_paths(&paths, options) {
                         Ok(lf) => {
@@ -6241,6 +6330,42 @@ impl App {
                             );
                             Some(AppEvent::Crash(msg))
                         }
+                    }
+                }
+            }
+            AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
+                let first = paths[0].clone();
+                #[allow(clippy::needless_borrow)]
+                match self.build_lazyframe_from_paths(&paths, options) {
+                    Ok(lf) => {
+                        if let LoadingState::Loading {
+                            file_path,
+                            file_size,
+                            ..
+                        } = &self.loading_state
+                        {
+                            self.loading_state = LoadingState::Loading {
+                                file_path: file_path.clone(),
+                                file_size: *file_size,
+                                current_phase: "Caching schema".to_string(),
+                                progress_percent: 40,
+                            };
+                        }
+                        Some(AppEvent::DoLoadSchema(
+                            Box::new(lf),
+                            Some(first),
+                            options.clone(),
+                        ))
+                    }
+                    Err(e) => {
+                        self.loading_state = LoadingState::Idle;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                        let msg = crate::error_display::user_message_from_report(
+                            &e,
+                            paths.first().map(|p| p.as_path()),
+                        );
+                        Some(AppEvent::Crash(msg))
                     }
                 }
             }

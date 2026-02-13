@@ -9,11 +9,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white)](https://github.com/derekwisong/datui/actions)
 
 
-**Datui** is a high-performance terminal UI for exploring and analyzing datasets. Powered
-by the **Polars** engine and written in **Rust**, it brings SQL-like power and Excel-like
-visibility to your CLI.
-
-> Datui is in rapid development; features and interfaces are evolving.
+**Datui** is a high-performance terminal UI for exploring and analyzing datasets.
 
 📖 **Documentation**: [Full User Guide][docs].
 
@@ -36,8 +32,7 @@ visibility to your CLI.
 
 ## Installation
 
-Datui can be installed easily on Linux, macOS, and Windows. See the summary of each
-option below. Visit the [Install Guide][install-guide] for additional details.
+> Visit the [Install Guide][install-guide] for additional installation details
 
 ### ✨ Quick Install for Linux and macOS
 
@@ -51,20 +46,27 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 
 Get the pre-built binary for your platform from the [Latest Release](https://github.com/derekwisong/datui/releases/latest).
 
-### From Package Managers
+### Package Managers
 
 > See [Package Managers][pkg-managers]
 
+- **Arch Linux (AUR)**:
+  ```bash
+  paru -S datui-bin
+  ```
 - **macOS (Homebrew)**:
   ```bash
   brew tap derekwisong/datui
   brew install datui
   ```
-- **Arch Linux (AUR)**:
-  - `paru -S datui-bin`
-  - `yay -S datui-bin`
-- **Pip**: `pip install datui` (See [Python Module][python-module])
-- **Windows (WinGet)**: `winget install derekwisong.datui` *(Coming Soon)*
+- **Windows (WinGet)**:
+  ```powershell
+  winget install derekwisong.datui
+  ```
+- **Pip** (See [Python Module][python-module]):
+  ```
+  pip install datui
+  ```
 
 
 ### From Source
@@ -74,7 +76,7 @@ Get the pre-built binary for your platform from the [Latest Release](https://git
 ```bash
 git clone https://github.com/derekwisong/datui.git
 cd datui
-cargo build --release
+cargo build --release --locked
 ```
 
 The binary will be available at `target/release/datui`.

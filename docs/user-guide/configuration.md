@@ -41,6 +41,8 @@ skip_rows = 0         # Rows to skip when reading
 parse_dates = true    # When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)
 decompress_in_memory = false  # When true, decompress compressed CSV into memory; when false (default), decompress to a temp file so scan can be used
 temp_dir = null       # Directory for temp files when decompressing compressed CSV. null = system default (e.g. /tmp)
+infer_schema_length = 1000   # Rows to use when inferring CSV column types. Default 1000; higher reduces risk of wrong type (e.g. int then N/A)
+ignore_errors = false # When true, CSV reader skips rows that fail to parse instead of failing the load
 ```
 
 - **delimiter** — ASCII value of the CSV column separator (e.g. 44 for comma). Omit or set to `null` to use auto-detection.
@@ -49,6 +51,8 @@ temp_dir = null       # Directory for temp files when decompressing compressed C
 - **parse_dates** — When `true` (default), the CSV reader attempts to parse string columns that look like dates (e.g. `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`) into Polars Date or Datetime. Set to `false` to keep such columns as strings. Overridden by the `--parse-dates` CLI flag (e.g. `--parse-dates false` to disable; see [command-line options](../reference/command-line-options.md)).
 - **decompress_in_memory** — When `false` (default), compressed CSV is decompressed to a temporary file so the lazy CSV reader can scan it. When `true`, compressed data is decompressed into memory (eager load). Use `true` if you have no temp filesystem. Overridden by `--decompress-in-memory` / `--decompress-in-memory false`.
 - **temp_dir** — Directory used for temporary files when decompressing compressed CSV. Omit or set to `null` to use the system default (e.g. `/tmp` on Unix). Overridden by the `--temp-dir` CLI option.
+- **infer_schema_length** — Number of rows used to infer CSV column types (default 1000). If a column looks like integers in the first N rows but later has a non-numeric value (e.g. `N/A`), increasing this or adding that value to **null_values** avoids parse errors. Overridden by `--infer-schema-length`.
+- **ignore_errors** — When `false` (default), a CSV parse error (e.g. wrong type) fails the load. When `true`, the reader skips rows that fail to parse. Overridden by `--ignore-errors`.
 
 ### Display Settings
 

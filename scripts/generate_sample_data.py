@@ -20,6 +20,7 @@ Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 import os
 import sys
 from pathlib import Path
+from tkinter import W
 import polars as pl
 import numpy as np
 from datetime import date, datetime, timedelta
@@ -44,13 +45,13 @@ def generate_people_data():
     """Generate a people database with cities, states, etc. for grouping."""
     np.random.seed(42)
     random.seed(42)
-    
-    cities = ["Springfield", "Riverside", "Franklin", "Greenville", "Bristol", 
+
+    cities = ["Springfield", "Riverside", "Franklin", "Greenville", "Bristol",
               "Madison", "Clinton", "Marion", "Georgetown", "Salem"]
     states = ["CA", "NY", "TX", "FL", "IL", "PA", "OH", "GA", "NC", "MI"]
     departments = ["Engineering", "Sales", "Marketing", "HR", "Finance", "Operations"]
     job_titles = ["Manager", "Senior", "Junior", "Lead", "Director", "Analyst"]
-    
+
     n = 1000
     data = {
         "id": list(range(1, n + 1)),
@@ -65,9 +66,9 @@ def generate_people_data():
         "start_date": [(datetime(2020, 1, 1) + timedelta(days=random.randint(0, 1460))).date() for _ in range(n)],
         "active": np.random.choice([True, False], n, p=[0.8, 0.2]).tolist(),
     }
-    
+
     df = pl.DataFrame(data)
-    
+
     # Add some nulls - create a mask for each column
     null_count = int(n * 0.1)
     for col in ["city", "department", "salary"]:
@@ -87,17 +88,29 @@ def generate_people_data():
                 .otherwise(pl.col(col))
                 .alias(col)
             )
-    
+
     return df
+
+
+def generate_infer_schema_length_data():
+    """Generate data that looks like ints for 100 rows and then is an "N/A" followed by more ints"""
+    data = ["column"] + [str(i + 1) for i in range(100)] + ["N/A"] + [str(i + 101) for i in range(100)]
+    return data
+
+def save_infer_schema_length_data(data, filename):
+    path = OUTPUT_DIR / filename
+    with open(path, "w") as f:
+        f.writelines(("\n".join(data)))
+    print(f"Generated: {path}")
 
 def generate_sales_data():
     """Generate sales data for aggregate calculations."""
     np.random.seed(43)
     random.seed(43)
-    
+
     products = ["Widget A", "Widget B", "Widget C", "Gadget X", "Gadget Y", "Tool 1", "Tool 2"]
     regions = ["North", "South", "East", "West", "Central"]
-    
+
     n = 5000
     data = {
         "date": [(datetime(2023, 1, 1) + timedelta(days=random.randint(0, 730))).date() for _ in range(n)],
@@ -107,12 +120,12 @@ def generate_sales_data():
         "unit_price": [round(random.uniform(10.0, 500.0), 2) for _ in range(n)],
         "discount": [round(random.uniform(0.0, 0.3), 2) for _ in range(n)],
     }
-    
+
     df = pl.DataFrame(data)
     df = df.with_columns(
         (pl.col("quantity") * pl.col("unit_price") * (1 - pl.col("discount"))).alias("total")
     )
-    
+
     # Add some nulls
     null_count = int(n * 0.05)
     for col in ["quantity", "unit_price", "discount"]:
@@ -124,7 +137,7 @@ def generate_sales_data():
             .otherwise(pl.col(col))
             .alias(col)
         )
-    
+
     # Recalculate total where we have nulls
     df = df.with_columns(
         pl.when(pl.col("quantity").is_null() | pl.col("unit_price").is_null() | pl.col("discount").is_null())
@@ -132,13 +145,13 @@ def generate_sales_data():
         .otherwise(pl.col("quantity") * pl.col("unit_price") * (1 - pl.col("discount")))
         .alias("total")
     )
-    
+
     return df
 
 def generate_mixed_types():
     """Generate data with various types including nulls."""
     np.random.seed(44)
-    
+
     n = 200
     data = {
         "id": list(range(1, n + 1)),
@@ -148,9 +161,9 @@ def generate_mixed_types():
         "boolean_col": np.random.choice([True, False], n).tolist(),
         "date_col": [(datetime(2020, 1, 1) + timedelta(days=i)).date() for i in range(n)],
     }
-    
+
     df = pl.DataFrame(data)
-    
+
     # Add nulls to various columns
     null_count = int(n * 0.15)
     for col in ["integer_col", "float_col", "string_col", "boolean_col", "date_col"]:
@@ -162,7 +175,7 @@ def generate_mixed_types():
             .otherwise(pl.col(col))
             .alias(col)
         )
-    
+
     return df
 
 def generate_quoted_strings():
@@ -185,7 +198,7 @@ def generate_quoted_strings():
         ],
         "value": [10, 20, 30, 40, 50],
     }
-    
+
     df = pl.DataFrame(data)
     return df
 
@@ -214,70 +227,70 @@ def generate_large_dataset():
     """Generate a large dataset for performance testing with various distributions."""
     np.random.seed(45)
     random.seed(45)
-    
+
     n = 1000000
-    
+
     # Generate distributions with various characteristics
     # Preserve distribution characteristics for proper detection testing
-    
+
     # Normal distribution (can have negative values) - keep natural scale
     normal_data = np.random.normal(loc=0.0, scale=1.0, size=n)
-    
+
     # LogNormal distribution (positive values) - keep natural scale
     lognormal_data = np.random.lognormal(mean=0.0, sigma=1.0, size=n)
-    
+
     # Uniform distribution - keep in [0, 1] (natural for uniform)
     uniform_data = np.random.uniform(0.0, 1.0, n)
-    
+
     # Power Law distribution (positive values) - keep natural scale
     # Generate using inverse transform: x = xmin * (1 - u)^(-1/(alpha-1))
     # where u is uniform [0,1] and alpha > 1
     alpha = 2.5
     xmin = 1.0  # Start from 1.0 for better power-law characteristics
     powerlaw_data = xmin * np.power(1.0 - np.random.uniform(0.0, 1.0, n), -1.0 / (alpha - 1.0))
-    
+
     # Exponential distribution (positive values) - keep natural scale
     lambda_param = 2.0
     exponential_data = np.random.exponential(scale=1.0/lambda_param, size=n)
-    
+
     # Beta distribution - naturally in [0, 1], keep as is
     beta_data = np.random.beta(a=2.0, b=5.0, size=n)
-    
+
     # Gamma distribution (positive values) - keep natural scale
     shape = 2.0
     scale = 0.5
     gamma_data = np.random.gamma(shape=shape, scale=scale, size=n)
-    
+
     # Chi-squared distribution (non-negative) - keep natural scale
     df = 5.0
     chisq_data = np.random.chisquare(df=df, size=n)
-    
+
     # Student's t distribution (can have negative values) - keep natural scale
     t_df = 5.0
     t_data = np.random.standard_t(df=t_df, size=n)
-    
+
     # Poisson distribution (non-negative integers) - KEEP AS INTEGERS
     lambda_poisson = 5.0
     poisson_data = np.random.poisson(lam=lambda_poisson, size=n).astype(int)
-    
+
     # Bernoulli distribution - KEEP AS BINARY INTEGERS [0, 1]
     p_bernoulli = 0.3
     bernoulli_data = np.random.binomial(n=1, p=p_bernoulli, size=n).astype(int)
-    
+
     # Binomial distribution (non-negative integers) - KEEP AS INTEGERS
     n_binomial = 20
     p_binomial = 0.4
     binomial_data = np.random.binomial(n=n_binomial, p=p_binomial, size=n).astype(int)
-    
+
     # Geometric distribution (non-negative integers) - KEEP AS INTEGERS
     p_geometric = 0.3
     geometric_data = np.random.geometric(p=p_geometric, size=n).astype(int)
-    
+
     # Weibull distribution (positive values) - keep natural scale
     weibull_shape = 2.0
     weibull_scale = 1.0
     weibull_data = weibull_scale * np.power(-np.log(np.random.uniform(0.001, 1.0, n)), 1.0 / weibull_shape)
-    
+
     # Generate all 2-letter combinations (AA, AB, ..., ZZ) = 26*26 = 676 categories
     categories = [f"{chr(65+i)}{chr(65+j)}" for i in range(26) for j in range(26)]
     num_categories = len(categories)
@@ -287,7 +300,7 @@ def generate_large_dataset():
     category_indices = (power_law_values * num_categories).astype(int)
     category_indices = np.clip(category_indices, 0, num_categories - 1)
     category_data = [categories[idx] for idx in category_indices]
-    
+
     data = {
         "id": list(range(1, n + 1)),
         "category": category_data,
@@ -313,33 +326,33 @@ def generate_large_dataset():
         "dist_binomial": binomial_data.tolist(),
         "dist_geometric": geometric_data.tolist(),
     }
-    
+
     df = pl.DataFrame(data)
     return df
 
 def generate_error_cases():
     """Generate files that test error cases."""
     error_cases = {}
-    
+
     # Case 1: Inconsistent types in column (convert all to strings to simulate mixed types)
     error_cases["inconsistent_types"] = pl.DataFrame({
         "id": pl.Series(["1", "2", "3", "not_a_number", "5"], dtype=pl.Utf8),  # All strings, but some look like numbers
         "value": [10, 20, 30, 40, 50],
     })
-    
+
     # Case 2: Very long strings
     error_cases["long_strings"] = pl.DataFrame({
         "id": list(range(1, 11)),
         "long_text": ["A" * 1000] * 10,
     })
-    
+
     # Case 3: Special characters
     error_cases["special_chars"] = pl.DataFrame({
         "id": list(range(1, 6)),
         "text": ["\x00", "\t", "\n", "\r", "\\"],
         "unicode": ["αβγ", "🚀", "中文", "العربية", "русский"],
     })
-    
+
     return error_cases
 
 
@@ -622,19 +635,19 @@ def save_csv(df, filename, **kwargs):
     # Remove .csv extension if present, we'll add .csv.gz
     base_name = filename.replace('.csv', '')
     filepath = OUTPUT_DIR / f"{base_name}.csv.gz"
-    
+
     # Write to temporary file first, then compress
     temp_path = OUTPUT_DIR / f"{base_name}.csv.tmp"
     df.write_csv(temp_path, **kwargs)
-    
+
     # Compress the CSV file
     with open(temp_path, 'rb') as f_in:
         with gzip.open(filepath, 'wb', compresslevel=6) as f_out:
             f_out.writelines(f_in)
-    
+
     # Remove temporary file
     temp_path.unlink()
-    
+
     print(f"Generated: {filepath}")
 
 def save_parquet(df, filename):
@@ -734,7 +747,7 @@ def save_excel(df, filename):
 def main():
     print("Generating sample data files...")
     print(f"Output directory: {OUTPUT_DIR}")
-    
+
     # People data for grouping
     print("\n1. Generating people data...")
     people_df = generate_people_data()
@@ -761,7 +774,7 @@ def main():
     save_ipc(mixed_df, "mixed_types.arrow")
     save_avro(mixed_df, "mixed_types.avro")
     save_excel(mixed_df, "mixed_types.xlsx")
-    
+
     # Generate a small uncompressed CSV for testing (3 columns, good coverage)
     print("\n3a. Generating small test CSV (uncompressed)...")
     test_df = generate_mixed_types()  # Reuse mixed_types as it has good coverage
@@ -769,14 +782,14 @@ def main():
     test_filepath = OUTPUT_DIR / "3-sfd-header.csv"
     test_df.write_csv(test_filepath)
     print(f"Generated: {test_filepath}")
-    
+
     # Quoted strings
     print("\n4. Generating quoted strings data...")
     quoted_df = generate_quoted_strings()
     save_csv(quoted_df, "quoted_strings.csv")
     # For unquoted, we'll just save without special quoting (Polars handles this)
     save_csv(quoted_df, "unquoted_strings.csv")
-    
+
     # Empty table
     print("\n5. Generating empty table...")
     empty_df = generate_empty_table()
@@ -794,13 +807,13 @@ def main():
     save_ipc(single_df, "single_row.arrow")
     save_avro(single_df, "single_row.avro")
     save_excel(single_df, "single_row.xlsx")
-    
+
     # Large dataset
     print("\n7. Generating large dataset...")
     large_df = generate_large_dataset()
     save_csv(large_df, "large_dataset.csv")
     save_parquet(large_df, "large_dataset.parquet")
-    
+
     # Error cases
     print("\n8. Generating error case files...")
     error_cases = generate_error_cases()
@@ -840,6 +853,11 @@ def main():
     print("\n11. Generating correlation matrix demo data...")
     corr_df = generate_correlation_matrix_data()
     save_parquet(corr_df, "correlation_matrix_demo.parquet")
+
+    # Infer schema length demo (CSV only: 200 rows, 100 ints, then "N/A", then 100 more ints)
+    print("\n12. Generating infer schema length demo data...")
+    infer_schema_length_data = generate_infer_schema_length_data()
+    save_infer_schema_length_data(infer_schema_length_data, "infer_schema_length_data.csv")
 
     print("\nSample data generation complete!")
 

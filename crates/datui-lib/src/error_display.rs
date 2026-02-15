@@ -156,7 +156,51 @@ pub fn user_message_from_report(report: &color_eyre::eyre::Report, path: Option<
 
 /// Light cleanup for ComputeError messages: strip Polars-internal phrasing.
 fn simplify_compute_message(msg: &str) -> String {
+    if is_csv_parse_type_error(msg) {
+        return short_csv_parse_error_message(msg);
+    }
     crate::query::sanitize_query_error(msg)
+}
+
+/// True if this looks like Polars' "could not parse X as dtype Y" / "invalid primitive value" CSV error.
+fn is_csv_parse_type_error(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    (m.contains("could not parse") && m.contains("as dtype"))
+        || m.contains("invalid primitive value")
+}
+
+/// Extract column name from Polars message like "at column 'name'" or "at column \"name\"".
+fn extract_csv_parse_column(msg: &str) -> Option<String> {
+    let m = msg.to_lowercase();
+    for (needle, quote) in [("at column '", '\''), ("at column \"", '"')] {
+        if let Some(start) = m.find(needle) {
+            let after = &msg[start + needle.len()..];
+            let end = after.find(quote)?;
+            let name = after[..end].trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn short_csv_parse_error_message(raw: &str) -> String {
+    let col = extract_csv_parse_column(raw);
+    let first = match &col {
+        Some(c) => format!(
+            "CSV parse error in column '{}': a value didn't match the inferred type.",
+            c
+        ),
+        None => "CSV parse error: a value didn't match the inferred column type.".to_string(),
+    };
+    format!(
+        "{}\n\
+         Try: --infer-schema-length 1000\n\
+              --null-value <value>  (treat as null)\n\
+              --ignore-errors true  (skip bad rows)",
+        first
+    )
 }
 
 #[cfg(test)]
@@ -223,6 +267,40 @@ mod tests {
         assert!(
             msg.contains("Use aliases"),
             "expected alias suggestion: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_simplify_compute_message_csv_parse_error() {
+        let raw = "could not parse `N/A` as dtype `i64` at column 'column' (column number 1)\n\n\
+            The current offset in the file is 292 bytes.\n\n\
+            You might want to try: ...\n\
+            Original error: ```invalid primitive value found during CSV parsing```";
+        let msg = simplify_compute_message(raw);
+        assert!(
+            msg.contains("CSV parse error"),
+            "expected short CSV message: {}",
+            msg
+        );
+        assert!(
+            msg.contains("column 'column'"),
+            "expected offending column in message: {}",
+            msg
+        );
+        assert!(
+            msg.contains("--infer-schema-length"),
+            "expected CLI hint: {}",
+            msg
+        );
+        assert!(
+            msg.contains("--null-value"),
+            "expected null-value hint: {}",
+            msg
+        );
+        assert!(
+            !msg.contains("Original error"),
+            "should not regurgitate Polars: {}",
             msg
         );
     }

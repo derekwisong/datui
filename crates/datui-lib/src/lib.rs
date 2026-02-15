@@ -112,6 +112,7 @@ pub mod tests {
                 "empty.parquet",
                 "pivot_long.parquet",
                 "melt_wide.parquet",
+                "infer_schema_length_data.csv",
             ];
 
             let needs_generation = !sample_data_dir.exists()
@@ -251,6 +252,10 @@ pub struct OpenOptions {
     pub workaround_pivot_date_index: bool,
     /// Null value specs for CSV: global strings and/or "COL=VAL" for per-column. Empty = use Polars default.
     pub null_values: Option<Vec<String>>,
+    /// Number of rows to use when inferring CSV schema. None = Polars default (100). Larger values reduce risk of inferring wrong type (e.g. int then N/A).
+    pub infer_schema_length: Option<usize>,
+    /// When true, CSV reader ignores parse errors and continues with the next batch.
+    pub ignore_errors: bool,
     /// When true, show the debug overlay (session info, performance, query, etc.).
     pub debug: bool,
 }
@@ -286,6 +291,8 @@ impl OpenOptions {
             polars_streaming: true,
             workaround_pivot_date_index: true,
             null_values: None,
+            infer_schema_length: None,
+            ignore_errors: false,
             debug: false,
         }
     }
@@ -478,6 +485,18 @@ impl OpenOptions {
                     .collect(),
             );
         }
+
+        // CSV schema inference: CLI overrides config; default 1000 (Polars default is 100)
+        opts.infer_schema_length = args
+            .infer_schema_length
+            .or(config.file_loading.infer_schema_length)
+            .or(Some(1000));
+
+        // CSV ignore parse errors: CLI overrides config; default false
+        opts.ignore_errors = args
+            .ignore_errors
+            .or(config.file_loading.ignore_errors)
+            .unwrap_or(false);
 
         opts
     }

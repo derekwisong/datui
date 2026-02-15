@@ -1866,6 +1866,10 @@ impl DataTableState {
                         if let Some(has_header) = options.has_header {
                             read_options.has_header = has_header;
                         }
+                        if let Some(n) = options.infer_schema_length {
+                            read_options.infer_schema_length = Some(n);
+                        }
+                        read_options.ignore_errors = options.ignore_errors;
                         read_options = read_options.map_parse_options(|opts| {
                             let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
@@ -1906,6 +1910,10 @@ impl DataTableState {
                         if let Some(has_header) = options.has_header {
                             read_options.has_header = has_header;
                         }
+                        if let Some(n) = options.infer_schema_length {
+                            read_options.infer_schema_length = Some(n);
+                        }
+                        read_options.ignore_errors = options.ignore_errors;
                         read_options = read_options.map_parse_options(|opts| {
                             let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
@@ -1946,6 +1954,10 @@ impl DataTableState {
                         if let Some(has_header) = options.has_header {
                             read_options.has_header = has_header;
                         }
+                        if let Some(n) = options.infer_schema_length {
+                            read_options.infer_schema_length = Some(n);
+                        }
+                        read_options.ignore_errors = options.ignore_errors;
                         read_options = read_options.map_parse_options(|opts| {
                             let o = opts.with_try_parse_dates(options.csv_try_parse_dates());
                             match &nv {
@@ -1993,6 +2005,10 @@ impl DataTableState {
                         if let Some(has_header) = options.has_header {
                             reader = reader.with_has_header(has_header);
                         }
+                        if let Some(n) = options.infer_schema_length {
+                            reader = reader.with_infer_schema_length(Some(n));
+                        }
+                        reader = reader.with_ignore_errors(options.ignore_errors);
                         reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
                         reader = match &nv_temp {
                             Some(n) => reader
@@ -2039,6 +2055,10 @@ impl DataTableState {
                     if let Some(has_header) = options.has_header {
                         reader = reader.with_has_header(has_header);
                     }
+                    if let Some(n) = options.infer_schema_length {
+                        reader = reader.with_infer_schema_length(Some(n));
+                    }
+                    reader = reader.with_ignore_errors(options.ignore_errors);
                     reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
                     reader = match &nv {
                         Some(n) => {
@@ -2114,6 +2134,10 @@ impl DataTableState {
             if let Some(has_header) = options.has_header {
                 reader = reader.with_has_header(has_header);
             }
+            if let Some(n) = options.infer_schema_length {
+                reader = reader.with_infer_schema_length(Some(n));
+            }
+            reader = reader.with_ignore_errors(options.ignore_errors);
             reader = reader.with_try_parse_dates(options.csv_try_parse_dates());
             reader = match &nv {
                 Some(n) => reader.map_parse_options(|opts| opts.with_null_values(Some(n.clone()))),
@@ -4484,6 +4508,93 @@ mod tests {
         )
         .unwrap()
         .lazy()
+    }
+
+    /// Pump Open(path, opts) and subsequent events until no event is returned.
+    /// Returns true if a Crash event was seen.
+    fn pump_open_until_done(
+        app: &mut crate::App,
+        path: std::path::PathBuf,
+        opts: crate::OpenOptions,
+    ) -> bool {
+        use crate::AppEvent;
+        let mut next = Some(AppEvent::Open(vec![path], opts));
+        let mut saw_crash = false;
+        while let Some(ev) = next.take() {
+            if matches!(ev, AppEvent::Crash(_)) {
+                saw_crash = true;
+                break;
+            }
+            next = app.event(&ev);
+        }
+        saw_crash
+    }
+
+    /// CSV with 100 int-like rows then "N/A" then more ints. With infer_schema_length=100, Polars
+    /// infers Int from the first 100 rows; the parse error occurs at DoLoadBuffer (first collect),
+    /// matching CLI crash. We pump app events (Open -> ... -> DoLoadBuffer) and assert we get Crash.
+    #[test]
+    fn test_infer_schema_length_csv_fails_with_short_inference() {
+        use std::sync::mpsc;
+
+        let path = crate::tests::sample_data_dir().join("infer_schema_length_data.csv");
+        let opts = crate::OpenOptions {
+            infer_schema_length: Some(100),
+            ..Default::default()
+        };
+
+        let (tx, _rx) = mpsc::channel();
+        let mut app = crate::App::new(tx);
+
+        assert!(
+            pump_open_until_done(&mut app, path, opts),
+            "expected Crash when loading with infer_schema_length=100 (N/A at row 101)"
+        );
+    }
+
+    #[test]
+    fn test_infer_schema_length_csv_succeeds_with_longer_inference() {
+        use std::sync::mpsc;
+
+        let path = crate::tests::sample_data_dir().join("infer_schema_length_data.csv");
+        let opts = crate::OpenOptions {
+            infer_schema_length: Some(101),
+            ..Default::default()
+        };
+
+        let (tx, _rx) = mpsc::channel();
+        let mut app = crate::App::new(tx);
+
+        assert!(
+            !pump_open_until_done(&mut app, path, opts),
+            "load with infer_schema_length=101 should not crash"
+        );
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.schema.len(), 1);
+        assert!(state.schema.contains("column"));
+        assert_eq!(state.num_rows, 201);
+    }
+
+    #[test]
+    fn test_infer_schema_length_csv_succeeds_with_default() {
+        use std::sync::mpsc;
+
+        let path = crate::tests::sample_data_dir().join("infer_schema_length_data.csv");
+        let opts = crate::OpenOptions {
+            infer_schema_length: Some(1000),
+            ..Default::default()
+        };
+
+        let (tx, _rx) = mpsc::channel();
+        let mut app = crate::App::new(tx);
+
+        assert!(
+            !pump_open_until_done(&mut app, path, opts),
+            "load with infer_schema_length=1000 (default) should not crash"
+        );
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.schema.len(), 1);
+        assert_eq!(state.num_rows, 201);
     }
 
     #[test]

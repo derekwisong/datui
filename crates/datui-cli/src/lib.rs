@@ -132,6 +132,14 @@ pub struct Args {
     #[arg(long = "delimiter")]
     pub delimiter: Option<u8>,
 
+    /// Number of rows to use when inferring CSV schema (default: 1000). Larger values reduce risk of wrong type (e.g. int then N/A).
+    #[arg(long = "infer-schema-length", value_name = "N")]
+    pub infer_schema_length: Option<usize>,
+
+    /// When reading CSV, ignore parse errors and continue with the next batch (default: false)
+    #[arg(long = "ignore-errors", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    pub ignore_errors: Option<bool>,
+
     /// Treat these values as null when reading CSV. Use once per value; no "=" means all columns, COL=VAL means column COL only (first "=" separates column from value). Example: --null-value NA --null-value amount=
     #[arg(long = "null-value", value_name = "VAL")]
     pub null_value: Vec<String>,

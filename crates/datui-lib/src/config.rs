@@ -475,6 +475,10 @@ pub struct FileLoadingConfig {
     pub parse_strings: Option<bool>,
     /// Number of rows to sample for parse_strings type inference (single file or multiple/partitioned). Default 1000.
     pub parse_strings_sample_rows: Option<usize>,
+    /// Number of rows to use when inferring CSV schema. null = use default (1000 in datui). Larger values reduce risk of wrong type (e.g. int then N/A).
+    pub infer_schema_length: Option<usize>,
+    /// When true, CSV reader ignores parse errors and continues with the next batch. Default false.
+    pub ignore_errors: Option<bool>,
 }
 
 // Field comments for FileLoadingConfig
@@ -521,6 +525,14 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     (
         "parse_strings_sample_rows",
         "Rows to sample for parse_strings type inference (default 1000).",
+    ),
+    (
+        "infer_schema_length",
+        "Number of rows to use when inferring CSV schema (default 1000). Larger values reduce risk of wrong type (e.g. int then N/A).",
+    ),
+    (
+        "ignore_errors",
+        "When true, CSV reader ignores parse errors and continues with the next batch (default false).",
     ),
 ];
 
@@ -1160,6 +1172,12 @@ impl FileLoadingConfig {
         }
         if other.parse_strings_sample_rows.is_some() {
             self.parse_strings_sample_rows = other.parse_strings_sample_rows;
+        }
+        if other.infer_schema_length.is_some() {
+            self.infer_schema_length = other.infer_schema_length;
+        }
+        if other.ignore_errors.is_some() {
+            self.ignore_errors = other.ignore_errors;
         }
     }
 }

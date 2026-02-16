@@ -15,12 +15,11 @@ analyzed using a representative sample; the **r** key resamples and the tool sho
 
 See the [Configuration Guide: Performance Settings](../user-guide/configuration.md#performance-settings) for details.
 
-## Pivot is Eager
+## Pivot materializes the current view
 
-In order to determine all column names, pivot operations materialize all affected data in memory, which may increase
-RAM usage significantly for large tables.
+Pivot needs the full result set in memory to compute new column names and perform the reshape. The entire current view—whatever is on screen after your filters, query, and source (e.g. a single CSV, local Parquet, or partitioned Parquet on S3)—is collected before pivoting. Large views mean high RAM use and possibly slow runs.
 
-Do as much filtering on the data as possible before pivoting to keep things manageable.
+**Tip:** Filter or narrow the data (fewer rows/columns) before pivoting so the materialized set stays manageable.
 
 ## Prefer Directories with `--hive`
 

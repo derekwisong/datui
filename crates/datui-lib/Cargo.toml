@@ -1,6 +1,6 @@
 [package]
 name = "datui-lib"
-version = "0.2.49"
+version = "0.2.50-dev"
 edition = "2021"
 description = "Data Exploration in the Terminal (library)"
 authors = ["Derek Wisong"]
@@ -22,7 +22,7 @@ sql = ["polars/sql", "dep:polars-sql"]
 streaming = ["polars/new_streaming"]
 
 [dependencies]
-datui-cli = { path = "../datui-cli", version = "0.2.49" }
+datui-cli = { path = "../datui-cli", version = "0.2.50-dev" }
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

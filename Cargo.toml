@@ -44,7 +44,7 @@ datui-cli = { path = "crates/datui-cli", version = "0.2.50-dev" }
 
 [dev-dependencies]
 # For integration tests (tests/*.rs) that use polars and config parsing
-polars = { version = "0.52", features = ["lazy"] }
+polars = { version = "0.53", features = ["lazy"] }
 tempfile = "3.8"
 toml = "0.8"
 

@@ -6,7 +6,7 @@ use polars::datatypes::DataType;
 use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
 use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 #[cfg(feature = "cloud")]
-use polars::prelude::{PlPathRef, ScanArgsParquet};
+use polars::prelude::{PlRefPath, ScanArgsParquet};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
 use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
@@ -1983,7 +1983,7 @@ impl App {
                 {
                     let full = format!("s3://{url}");
                     let cloud_opts = Self::build_s3_cloud_options(&self.app_config.cloud, options);
-                    let pl_path = PlPathRef::new(&full).into_owned();
+                    let pl_path = PlRefPath::new(&full);
                     let is_glob = full.contains('*') || full.ends_with('/');
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
@@ -2016,7 +2016,7 @@ impl App {
                 #[cfg(feature = "cloud")]
                 {
                     let full = format!("gs://{url}");
-                    let pl_path = PlPathRef::new(&full).into_owned();
+                    let pl_path = PlRefPath::new(&full);
                     let is_glob = full.contains('*') || full.ends_with('/');
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
@@ -6675,7 +6675,7 @@ impl App {
                                                 store, key,
                                             ))
                                             .ok()?;
-                                        let pl_path = PlPathRef::new(&full).into_owned();
+                                        let pl_path = PlRefPath::new(&full);
                                         let args = ScanArgsParquet {
                                             schema: Some(merged_schema.clone()),
                                             cloud_options: Some(cloud_opts),
@@ -6722,7 +6722,7 @@ impl App {
                                             store, key,
                                         ))
                                         .ok()?;
-                                    let pl_path = PlPathRef::new(&full).into_owned();
+                                    let pl_path = PlRefPath::new(&full);
                                     let args = ScanArgsParquet {
                                         schema: Some(merged_schema.clone()),
                                         cloud_options: Some(CloudOptions::default()),

@@ -3404,8 +3404,14 @@ impl DataTableState {
             (df.clone(), None)
         };
 
+        let sort_new_columns = spec.sort_columns.unwrap_or(true);
         let pivot_col = df_for_pivot.column(spec.pivot_column.as_str())?;
         let distinct_col = pivot_col.unique()?;
+        let distinct_col = if sort_new_columns {
+            distinct_col.sort(SortOptions::default())?
+        } else {
+            distinct_col
+        };
         let on_columns_df = DataFrame::new_infer_height(vec![distinct_col])?;
         let on_columns = Arc::new(on_columns_df);
 
@@ -3416,7 +3422,6 @@ impl DataTableState {
             cols(index_str.iter().copied())
         };
         let values = cols([spec.value_column.as_str()]);
-        let sort_new_columns = spec.sort_columns.unwrap_or(true);
         let separator = PlSmallStr::from_static("_");
 
         let pivoted_lf = df_for_pivot.clone().lazy().pivot(

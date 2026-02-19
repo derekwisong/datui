@@ -9,7 +9,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white)](https://github.com/derekwisong/datui/actions)
 
 
-**Datui** is a high-performance terminal UI for exploring and analyzing datasets.
+**Datui** is a high-performance terminal UI for exploring and analyzing tabular datasets.
 
 📖 **Documentation**: [Full User Guide][docs].
 
@@ -17,16 +17,16 @@
 
 ![Overview Demo](demos/11-overview.gif)
 
-## Why Datui?
+## Features
 
 - 🚀 **Fast**: Powered by Polars streaming expressions for state-of-the-art performance on
   massive datsets
 - 📁 **Universal**: Supports Parquet, CSV, JSON, Avro, Arrow, ORC, and Excel
 - 🧰 **Flexible**: View data stored locally, on S3, or over HTTP/HTTPS
-- 🔍 **Queryable**: Fuzzy search or query with SQL or an SQL-like DSL
+- 🔍 **Queryable**: Fuzzy keyword search and SQL queries
 - 📊 **Charts**: Render terminal-based charts and export them as images
-- 🔬 **Analysis**: Use analytical tools to understand correlations, distributions, and more
-- ⚒️ **Transformations**: Sort, filter, pivot, melt, and more
+- 🔬 **Analysis**: Integrated analytical tools reveal correlations, distributions, and more
+- ⚒️ **Transformations**: Sort, filter, pivot, melt, and group
 - ⌨️ **Keyboard-Driven**: Arrow keys and Vim-style navigation (`h`/`j`/`k`/`l`)
 
 
@@ -128,8 +128,7 @@ datui --generate-config
 
 ### Setup
 
-See the [Setup Script][setup-script] guide to quickly get configured to run the tests,
-build docs, demos, and packages.
+See the [Setup Script][setup-script] guide to quickly get configured.
 
 ### Contributing
 
@@ -141,7 +140,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Note**: If you encounter any issues or have feature requests, please [open an issue on GitHub](https://github.com/derekwisong/datui/issues).
+> If you encounter any issues or have feature requests, please
+> [open an issue on  GitHub](https://github.com/derekwisong/datui/issues).
 
 [docs]: https://derekwisong.github.io/datui/
 [config-guide]: https://derekwisong.github.io/datui/latest/user-guide/configuration.html

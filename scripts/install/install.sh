@@ -1,6 +1,16 @@
 #!/bin/sh
 set -e
 
+cleanup() {
+    # Only proceed if TMP_DIR is set, is a directory, and is NOT root or home
+    if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ] && [ "$TMP_DIR" != "/" ] && [ "$TMP_DIR" != "$HOME" ]; then
+        rm -rf "$TMP_DIR"
+    fi
+}
+
+# Run cleanup when the script exits
+trap cleanup EXIT
+
 # Configuration
 REPO="derekwisong/datui"
 BINARY_NAME="datui"
@@ -53,11 +63,11 @@ if [ -f /etc/arch-release ] && [ "$ASSUME_YES" != true ] && [ -t 0 ]; then
     echo "You may install via the AUR instead if desired:"
     echo "  paru -S datui-bin  (or your preferred AUR helper)"
     echo ""
-    
+
     printf "Would you like to continue with the direct binary install anyway? [y/N]: "
     read -r response
     case "$response" in
-        [yY][eE][sS]|[yY]) 
+        [yY][eE][sS]|[yY])
             echo "Proceeding with binary installation..."
             ;;
         *)
@@ -114,14 +124,17 @@ fi
 # Install based on format
 case "$FORMAT" in
     apt)
+        export DEBIAN_FRONTEND=noninteractive
         echo "Installing $BINARY_NAME for $OS ($CANONICAL_ARCH) via APT repository"
         echo "Ensuring gnupg is installed..."
-        run_priv apt-get update -qq && run_priv apt-get install $NONINTERACTIVE --no-install-recommends gnupg
+        run_priv apt-get update -qq || true
+        run_priv apt-get install $NONINTERACTIVE --no-install-recommends gnupg
         echo "Adding Datui APT repository..."
         curl -fsSL https://derekwisong.github.io/datui-apt/public.key | gpg --dearmor | run_priv tee /usr/share/keyrings/datui-archive-keyring.gpg > /dev/null
         echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | run_priv tee /etc/apt/sources.list.d/datui.list > /dev/null
         echo "Installing via apt..."
-        run_priv apt-get update -qq && run_priv apt-get install $NONINTERACTIVE datui
+        run_priv apt-get update -qq || true
+        run_priv apt-get install $NONINTERACTIVE datui
         ;;
     rpm)
         echo "Installing via dnf..."
@@ -145,11 +158,6 @@ case "$FORMAT" in
         run_priv install -m 644 "$MANPAGE_PATH" "/usr/local/share/man/man1/"
         ;;
 esac
-
-# Cleanup
-if [ -n "${TMP_DIR:-}" ]; then
-    rm -rf "$TMP_DIR"
-fi
 
 echo ""
 echo "--- $($BINARY_NAME --version) installed successfully! ---"

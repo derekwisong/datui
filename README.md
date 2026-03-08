@@ -39,7 +39,10 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 ```
-
+**or via cargo:**
+```
+cargo install datui
+```
 *Don't like piping to shell? See the alternative methods below.*
 
 ### Pre-built Releases

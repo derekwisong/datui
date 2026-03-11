@@ -2403,30 +2403,29 @@ impl DataTableState {
         Ok(state)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_delimited(
-        path: &Path,
-        delimiter: u8,
-        pages_lookahead: Option<usize>,
-        pages_lookback: Option<usize>,
-        max_buffered_rows: Option<usize>,
-        max_buffered_mb: Option<usize>,
-        row_numbers: bool,
-        row_start_index: usize,
-    ) -> Result<Self> {
+    pub fn from_delimited(path: &Path, delimiter: u8, options: &OpenOptions) -> Result<Self> {
         let pl_path = PlPath::Local(Arc::from(path));
-        let reader = LazyCsvReader::new(pl_path).with_separator(delimiter);
+        let mut reader = LazyCsvReader::new(pl_path).with_separator(delimiter);
+        if let Some(skip_lines) = options.skip_lines {
+            reader = reader.with_skip_lines(skip_lines);
+        }
+        if let Some(skip_rows) = options.skip_rows {
+            reader = reader.with_skip_rows(skip_rows);
+        }
+        if let Some(has_header) = options.has_header {
+            reader = reader.with_has_header(has_header);
+        }
         let lf = reader.finish()?;
         let mut state = Self::new(
             lf,
-            pages_lookahead,
-            pages_lookback,
-            max_buffered_rows,
-            max_buffered_mb,
+            options.pages_lookahead,
+            options.pages_lookback,
+            options.max_buffered_rows,
+            options.max_buffered_mb,
             true,
         )?;
-        state.row_numbers = row_numbers;
-        state.row_start_index = row_start_index;
+        state.row_numbers = options.row_numbers;
+        state.row_start_index = options.row_start_index;
         Ok(state)
     }
 
@@ -4696,6 +4695,68 @@ mod tests {
         assert_eq!(state.schema.len(), 2);
         assert!(state.schema.contains("id"));
         assert!(state.schema.contains("name"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_from_delimited_tsv_has_header() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("datui_test_tsv_header.tsv");
+        let content = "a\tb\tc\td\n1\t2\t3\t4\n5\t6\t7\t8\n";
+        std::fs::write(&path, content).unwrap();
+        let opts = OpenOptions {
+            has_header: Some(true),
+            ..Default::default()
+        };
+        let mut state = DataTableState::from_delimited(&path, b'\t', &opts).unwrap();
+        state.collect();
+        assert_eq!(state.schema.len(), 4);
+        assert!(state.schema.contains("a"));
+        assert!(state.schema.contains("b"));
+        assert!(state.schema.contains("c"));
+        assert!(state.schema.contains("d"));
+        assert_eq!(state.num_rows, 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_from_delimited_tsv_no_header() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("datui_test_tsv_no_header.tsv");
+        let content = "a\tb\tc\td\n1\t2\t3\t4\n5\t6\t7\t8\n";
+        std::fs::write(&path, content).unwrap();
+        let opts = OpenOptions {
+            has_header: Some(false),
+            ..Default::default()
+        };
+        let mut state = DataTableState::from_delimited(&path, b'\t', &opts).unwrap();
+        state.collect();
+        assert_eq!(state.schema.len(), 4);
+        assert!(state.schema.contains("column_1"));
+        assert!(state.schema.contains("column_2"));
+        assert!(state.schema.contains("column_3"));
+        assert!(state.schema.contains("column_4"));
+        assert_eq!(state.num_rows, 3);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_from_delimited_psv_no_header() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("datui_test_psv_no_header.psv");
+        let content = "x|y|z\n10|20|30\n40|50|60\n";
+        std::fs::write(&path, content).unwrap();
+        let opts = OpenOptions {
+            has_header: Some(false),
+            ..Default::default()
+        };
+        let mut state = DataTableState::from_delimited(&path, b'|', &opts).unwrap();
+        state.collect();
+        assert_eq!(state.schema.len(), 3);
+        assert!(state.schema.contains("column_1"));
+        assert!(state.schema.contains("column_2"));
+        assert!(state.schema.contains("column_3"));
+        assert_eq!(state.num_rows, 3);
         let _ = std::fs::remove_file(&path);
     }
 

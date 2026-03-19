@@ -1,6 +1,6 @@
 # Run this container to test the apt repository installation
 
-from ubuntu:latest
+FROM ubuntu:latest
 
 RUN apt-get update && apt-get install -y curl && apt-get clean
 

@@ -113,49 +113,96 @@ case "$OS" in
         ;;
 esac
 
-# Download (skip when using APT repository)
-if [ "$FORMAT" != "apt" ]; then
-    echo "Installing $BINARY_NAME $VERSION for $OS ($CANONICAL_ARCH)"
+# --- Helper functions ---
+
+download_tarball() {
+    FILENAME="$1"
     TMP_DIR=$(mktemp -d)
     echo "Downloading $FILENAME... ($TMP_DIR)"
     curl -sSL "$GITHUB_URL/$FILENAME" -o "$TMP_DIR/$FILENAME"
+}
+
+install_tarball() {
+    echo "Extracting binary to /usr/local/bin..."
+    tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
+
+    if [ -f "$TMP_DIR/$MANPAGE_NAME" ]; then
+        # macOS tarball has datui/datui.1 at root
+        MANPAGE_PATH="$TMP_DIR/$MANPAGE_NAME"
+    else
+        # Linux tarball has target/release/datui.1.gz
+        MANPAGE_PATH="$TMP_DIR/target/release/$MANPAGE_GZ_NAME"
+    fi
+
+    run_priv install -d /usr/local/bin
+    run_priv install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
+    run_priv install -d /usr/local/share/man/man1
+    run_priv install -m 644 "$MANPAGE_PATH" "/usr/local/share/man/man1/"
+}
+
+install_apt() {
+    export DEBIAN_FRONTEND=noninteractive
+    echo "Installing $BINARY_NAME for $OS ($CANONICAL_ARCH) via APT repository"
+    echo "Ensuring gnupg is installed..."
+    run_priv apt-get update -qq || true
+    run_priv apt-get install $NONINTERACTIVE --no-install-recommends gnupg
+    echo "Adding Datui APT repository..."
+    curl -fsSL https://derekwisong.github.io/datui-apt/public.key | gpg --dearmor | run_priv tee /usr/share/keyrings/datui-archive-keyring.gpg > /dev/null
+    echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | run_priv tee /etc/apt/sources.list.d/datui.list > /dev/null
+    echo "Installing via apt..."
+    run_priv apt-get update -qq || true
+    run_priv apt-get install $NONINTERACTIVE datui
+}
+
+apt_with_fallback() {
+    if install_apt; then
+        return
+    fi
+
+    echo ""
+    echo "-------------------------------------------------------"
+    echo " APT installation failed — falling back to tarball"
+    echo "-------------------------------------------------------"
+
+    FALLBACK_FILENAME="${BINARY_NAME}-${VERSION}-${ARCH}.tar.gz"
+
+    if [ -t 0 ] && [ "$ASSUME_YES" != true ]; then
+        printf "Continue with tarball install? [Y/n]: "
+        read -r response
+        case "$response" in
+            [nN][oO]|[nN])
+                echo "Installation cancelled."
+                exit 1
+                ;;
+        esac
+    else
+        echo "Non-interactive mode: proceeding with tarball install automatically."
+    fi
+
+    echo "Installing $BINARY_NAME $VERSION for $OS ($CANONICAL_ARCH)"
+    download_tarball "$FALLBACK_FILENAME"
+    install_tarball
+}
+
+# --- Download & Install ---
+
+# Download (skip when using APT repository)
+if [ "$FORMAT" != "apt" ]; then
+    echo "Installing $BINARY_NAME $VERSION for $OS ($CANONICAL_ARCH)"
+    download_tarball "$FILENAME"
 fi
 
 # Install based on format
 case "$FORMAT" in
     apt)
-        export DEBIAN_FRONTEND=noninteractive
-        echo "Installing $BINARY_NAME for $OS ($CANONICAL_ARCH) via APT repository"
-        echo "Ensuring gnupg is installed..."
-        run_priv apt-get update -qq || true
-        run_priv apt-get install $NONINTERACTIVE --no-install-recommends gnupg
-        echo "Adding Datui APT repository..."
-        curl -fsSL https://derekwisong.github.io/datui-apt/public.key | gpg --dearmor | run_priv tee /usr/share/keyrings/datui-archive-keyring.gpg > /dev/null
-        echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | run_priv tee /etc/apt/sources.list.d/datui.list > /dev/null
-        echo "Installing via apt..."
-        run_priv apt-get update -qq || true
-        run_priv apt-get install $NONINTERACTIVE datui
+        apt_with_fallback
         ;;
     rpm)
         echo "Installing via dnf..."
         run_priv dnf install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
         ;;
     tar.gz)
-        echo "Extracting binary to /usr/local/bin..."
-        tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
-
-        if [ -f "$TMP_DIR/$MANPAGE_NAME" ]; then
-            # macOS tarball has datui/datui.1 at root
-            MANPAGE_PATH="$TMP_DIR/$MANPAGE_NAME"
-        else
-            # Linux tarball has target/release/datui.1.gz
-            MANPAGE_PATH="$TMP_DIR/target/release/$MANPAGE_GZ_NAME"
-        fi
-
-        run_priv install -d /usr/local/bin
-        run_priv install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
-        run_priv install -d /usr/local/share/man/man1
-        run_priv install -m 644 "$MANPAGE_PATH" "/usr/local/share/man/man1/"
+        install_tarball
         ;;
 esac
 

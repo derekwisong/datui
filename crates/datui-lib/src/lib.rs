@@ -4669,6 +4669,8 @@ impl App {
                                         self.template_modal.templates = self
                                             .template_manager
                                             .find_relevant_templates(path, &state.schema);
+                                        self.template_modal.broken_templates =
+                                            self.template_manager.broken_templates.clone();
                                         if !self.template_modal.templates.is_empty() {
                                             let new_idx = idx.min(
                                                 self.template_modal
@@ -4707,6 +4709,8 @@ impl App {
                                             self.template_modal.templates = self
                                                 .template_manager
                                                 .find_relevant_templates(path, &state.schema);
+                                            self.template_modal.broken_templates =
+                                                self.template_manager.broken_templates.clone();
                                             if !self.template_modal.templates.is_empty() {
                                                 let new_idx = idx.min(
                                                     self.template_modal
@@ -4736,10 +4740,13 @@ impl App {
                         TemplateModalMode::List => {
                             match self.template_modal.focus {
                                 TemplateFocus::TemplateList => {
-                                    // Apply selected template
+                                    // Apply selected template (skip broken template rows)
                                     let template_idx = self.template_modal.table_state.selected();
                                     if let Some(idx) = template_idx {
-                                        if let Some((template, _)) =
+                                        // Broken templates are rendered after valid ones — skip them
+                                        if idx >= self.template_modal.templates.len() {
+                                            // This is a broken template row; ignore Enter
+                                        } else if let Some((template, _)) =
                                             self.template_modal.templates.get(idx)
                                         {
                                             let template_clone = template.clone();
@@ -4956,6 +4963,10 @@ impl App {
                                                                     path,
                                                                     &state.schema,
                                                                 );
+                                                            self.template_modal.broken_templates =
+                                                                self.template_manager
+                                                                    .broken_templates
+                                                                    .clone();
                                                             self.template_modal.table_state.select(
                                                                 if self
                                                                     .template_modal
@@ -4997,6 +5008,10 @@ impl App {
                                                                 path,
                                                                 &state.schema,
                                                             );
+                                                        self.template_modal.broken_templates = self
+                                                            .template_manager
+                                                            .broken_templates
+                                                            .clone();
                                                         self.template_modal.table_state.select(
                                                             if self
                                                                 .template_modal
@@ -5890,6 +5905,8 @@ impl App {
                         self.template_modal.templates = self
                             .template_manager
                             .find_relevant_templates(path, &state.schema);
+                        self.template_modal.broken_templates =
+                            self.template_manager.broken_templates.clone();
                         self.template_modal.table_state.select(
                             if self.template_modal.templates.is_empty() {
                                 None

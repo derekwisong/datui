@@ -48,7 +48,7 @@ pub fn render(
             let active_col_width = 1;
             let name_col_width = 20;
 
-            let rows: Vec<Row> = app
+            let mut rows: Vec<Row> = app
                 .template_modal
                 .templates
                 .iter()
@@ -105,6 +105,22 @@ pub fn render(
                     Row::new(vec![score_cell, active_cell, name_cell, desc_cell])
                 })
                 .collect();
+
+            // Append broken template rows with warning indicator
+            for broken in &app.template_modal.broken_templates {
+                let warning_cell = Cell::from("⚠").style(Style::default().fg(ctx.warning));
+                let active_cell = Cell::from(" ");
+                let name_cell =
+                    Cell::from(broken.filename.clone()).style(Style::default().fg(ctx.warning));
+                let desc_cell =
+                    Cell::from(broken.error.clone()).style(Style::default().fg(ctx.dimmed));
+                rows.push(Row::new(vec![
+                    warning_cell,
+                    active_cell,
+                    name_cell,
+                    desc_cell,
+                ]));
+            }
 
             let header = Row::new(vec![
                 Cell::from("●").style(Style::default()),

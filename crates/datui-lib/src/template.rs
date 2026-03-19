@@ -118,10 +118,17 @@ pub struct TemplateSettings {
     pub melt: Option<MeltSpec>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BrokenTemplate {
+    pub filename: String,
+    pub error: String,
+}
+
 pub struct TemplateManager {
     config: ConfigManager,
     templates: Vec<Template>,
     pub(crate) templates_dir: PathBuf,
+    pub broken_templates: Vec<BrokenTemplate>,
 }
 
 impl TemplateManager {
@@ -136,6 +143,7 @@ impl TemplateManager {
             config: config.clone(),
             templates: Vec::new(),
             templates_dir,
+            broken_templates: Vec::new(),
         };
 
         // Only try to load templates if the directory exists
@@ -151,11 +159,13 @@ impl TemplateManager {
             config: config.clone(),
             templates: Vec::new(),
             templates_dir: config.config_dir().join("templates"),
+            broken_templates: Vec::new(),
         }
     }
 
     pub fn load_templates(&mut self) -> Result<()> {
         self.templates.clear();
+        self.broken_templates.clear();
 
         // Load all template files
         if !self.templates_dir.exists() {
@@ -174,7 +184,15 @@ impl TemplateManager {
                             self.templates.push(template);
                         }
                         Err(e) => {
-                            eprintln!("Warning: Could not parse template file {:?}: {}", path, e);
+                            let filename = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            self.broken_templates.push(BrokenTemplate {
+                                filename,
+                                error: e.to_string(),
+                            });
                         }
                     }
                 }

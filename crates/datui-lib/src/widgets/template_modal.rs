@@ -1,4 +1,4 @@
-use crate::template::Template;
+use crate::template::{BrokenTemplate, Template};
 use crate::widgets::multiline_text_input::MultiLineTextInput;
 use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
@@ -45,6 +45,7 @@ pub struct TemplateModal {
     pub create_focus: CreateFocus,
     pub table_state: TableState,
     pub templates: Vec<(Template, f64)>, // Templates with relevance scores
+    pub broken_templates: Vec<BrokenTemplate>, // Templates that failed to parse
     // Create/Edit mode fields
     pub create_name_input: TextInput,
     pub create_description_input: MultiLineTextInput,

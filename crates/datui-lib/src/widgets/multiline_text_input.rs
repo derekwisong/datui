@@ -339,8 +339,7 @@ impl MultiLineTextInput {
         // Lazy load history if needed
         if !self.history_loaded {
             if let Some(cache) = cache {
-                if let Err(e) = self.load_history(cache) {
-                    eprintln!("Warning: Could not load history: {}", e);
+                if self.load_history(cache).is_err() {
                     return;
                 }
             } else {

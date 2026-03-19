@@ -57,8 +57,9 @@ impl CacheManager {
         for filename in CACHE_FILES {
             let file_path = self.cache_file(filename);
             if file_path.exists() {
-                if let Err(e) = fs::remove_file(&file_path) {
-                    eprintln!("Warning: Could not remove cache file {}: {}", filename, e);
+                if let Err(_e) = fs::remove_file(&file_path) {
+                    // Silently ignore cache file removal failures — this runs in a TUI
+                    // context where stderr output would corrupt the terminal display.
                 }
             }
         }

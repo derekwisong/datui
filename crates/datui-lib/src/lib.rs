@@ -2543,9 +2543,21 @@ impl App {
                 KeyCode::Enter if on_clear => {
                     if sort_tab {
                         self.sort_filter_modal.sort.clear_selection();
+                        let columns = self.sort_filter_modal.sort.get_sorted_columns();
+                        let column_order = self.sort_filter_modal.sort.get_column_order();
+                        let locked_count = self.sort_filter_modal.sort.get_locked_columns_count();
+                        let ascending = self.sort_filter_modal.sort.ascending;
+                        self.sort_filter_modal.sort.has_unapplied_changes = false;
+                        self.sort_filter_modal.close();
+                        self.input_mode = InputMode::Normal;
+                        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
+                        return Some(AppEvent::Sort(columns, ascending));
                     } else {
                         self.sort_filter_modal.filter.statements.clear();
                         self.sort_filter_modal.filter.list_state.select(None);
+                        self.sort_filter_modal.close();
+                        self.input_mode = InputMode::Normal;
+                        return Some(AppEvent::Filter(vec![]));
                     }
                 }
                 KeyCode::Char(' ')

@@ -3480,7 +3480,7 @@ impl DataTableState {
     }
 
     fn apply_transformations(&mut self) {
-        let mut lf = self.lf.clone();
+        let mut lf = self.original_lf.clone();
         let mut final_expr: Option<Expr> = None;
 
         for filter in &self.filters {

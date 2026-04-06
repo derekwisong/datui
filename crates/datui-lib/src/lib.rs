@@ -1101,6 +1101,7 @@ impl App {
     /// compression suffix (e.g. .gz) when compression is selected. If the user
     /// provided a path with an extension (e.g. foo.feather), that extension is kept.
     /// Spawn an async buffer collect if needed. Returns true if a background task was spawned.
+    /// Increments task_generation to invalidate any in-flight collect from a prior call.
     fn spawn_async_collect(&mut self, status: &str) -> bool {
         let needs_collect = if let Some(state) = &mut self.data_table_state {
             state.prepare_async_collect(None)
@@ -1108,6 +1109,7 @@ impl App {
             None
         };
         if let Some(request) = needs_collect {
+            self.task_generation = self.task_generation.wrapping_add(1);
             let gen = self.task_generation;
             let tx = self.events.clone();
             let collect_slot = self.pending_collect_result.clone();

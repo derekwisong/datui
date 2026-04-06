@@ -149,7 +149,7 @@ pub fn render(
             }
         }
         None => {
-            Paragraph::new("No data loaded").render(main_area, buf);
+            // Show nothing while loading — the status bar spinner communicates progress.
         }
     }
 

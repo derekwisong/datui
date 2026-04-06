@@ -2936,6 +2936,16 @@ impl DataTableState {
         }
     }
 
+    /// Start row of the currently buffered range.
+    pub fn buffered_start(&self) -> usize {
+        self.buffered_start_row
+    }
+
+    /// End row (exclusive) of the currently buffered range.
+    pub fn buffered_end(&self) -> usize {
+        self.buffered_end_row
+    }
+
     /// Clamp buffer to max_buffered_rows; when at cap, slide window to keep view inside.
     fn clamp_buffer_to_max_size(
         &self,

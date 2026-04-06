@@ -1000,7 +1000,7 @@ pub struct App {
     task_generation: u64, // Incremented to invalidate stale background results
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<DataTableState>>>, // Result from background schema load
     pending_collect_result:
-        std::sync::Arc<std::sync::Mutex<Option<crate::widgets::datatable::CollectResult>>>, // Result from background buffer load
+        std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     busy: bool,                     // When true, show throbber and ignore keys
     throbber_frame: u8,             // Spinner frame index (0..3) for control bar
     drain_keys_on_next_loop: bool,  // Main loop drains crossterm key buffer when true
@@ -1013,6 +1013,11 @@ pub struct App {
 }
 
 impl App {
+    /// Returns true when the app is busy (background work in progress).
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
     /// Returns true when the main loop should drain the crossterm key buffer after render.
     pub fn should_drain_keys(&self) -> bool {
         self.drain_keys_on_next_loop
@@ -1102,7 +1107,7 @@ impl App {
     /// provided a path with an extension (e.g. foo.feather), that extension is kept.
     /// Spawn an async buffer collect if needed. Returns true if a background task was spawned.
     /// Increments task_generation to invalidate any in-flight collect from a prior call.
-    fn spawn_async_collect(&mut self, status: &str) -> bool {
+    pub fn spawn_async_collect(&mut self, status: &str) -> bool {
         let needs_collect = if let Some(state) = &mut self.data_table_state {
             state.prepare_async_collect(None)
         } else {
@@ -1118,13 +1123,21 @@ impl App {
             self.runtime.spawn_blocking(move || {
                 match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
                     Ok(df) => {
-                        *collect_slot.lock().unwrap_or_else(|e| e.into_inner()) =
-                            Some(crate::widgets::datatable::CollectResult {
-                                df,
-                                buffer_start: request.buffer_start,
-                                buffer_end: request.buffer_end,
-                                num_rows: request.num_rows,
-                            });
+                        let mut slot = collect_slot.lock().unwrap_or_else(|e| e.into_inner());
+                        // Only write if no newer result is already stored.
+                        let dominated = slot.as_ref().is_some_and(|(g, _)| *g > gen);
+                        if !dominated {
+                            *slot = Some((
+                                gen,
+                                crate::widgets::datatable::CollectResult {
+                                    df,
+                                    buffer_start: request.buffer_start,
+                                    buffer_end: request.buffer_end,
+                                    num_rows: request.num_rows,
+                                },
+                            ));
+                        }
+                        drop(slot);
                         let _ = tx.send(AppEvent::BackgroundCollectReady { generation: gen });
                     }
                     Err(e) => {
@@ -7385,23 +7398,26 @@ impl App {
                 None
             }
             AppEvent::BackgroundCollectReady { generation } => {
-                let taken = if *generation == self.task_generation {
-                    self.pending_collect_result
+                if *generation == self.task_generation {
+                    let taken = self
+                        .pending_collect_result
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .take()
-                } else {
-                    None
-                };
-                if let Some(result) = taken {
-                    if let Some(state) = &mut self.data_table_state {
-                        state.apply_async_collect(result);
+                        .take();
+                    if let Some((slot_gen, result)) = taken {
+                        if slot_gen == self.task_generation {
+                            if let Some(state) = &mut self.data_table_state {
+                                state.apply_async_collect(result);
+                            }
+                        }
                     }
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.loading_state = LoadingState::Idle;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
+                // Stale results (generation mismatch) are silently ignored —
+                // busy stays true until the current generation's result arrives.
                 None
             }
             AppEvent::BackgroundSchemaReady {

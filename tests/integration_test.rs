@@ -440,3 +440,97 @@ fn test_csv_null_values_per_column() {
     assert_eq!(a.null_count(), 1, "only 'empty' in column a should be null");
     assert_eq!(b.null_count(), 0, "column b has no per-column null spec");
 }
+
+/// Simulate the real main-loop startup: process events from the channel, render
+/// the widget (which sets visible_rows and needs_recollect), then check the flag
+/// and spawn another async collect.  Repeat many times to shake out races between
+/// the initial tiny-buffer collect (visible_rows=0) and the corrected one.
+#[test]
+fn test_startup_buffer_race_does_not_lose_rows() {
+    common::ensure_sample_data();
+    let csv_path = PathBuf::from("tests/sample-data/large_dataset.parquet");
+    let terminal_area = Rect::new(0, 0, 120, 50); // 50 rows → ~48 visible
+
+    for iteration in 0..50 {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+
+        // Simulate what run() does: send Open, mark busy.
+        tx.send(AppEvent::Open(
+            vec![csv_path.clone()],
+            OpenOptions::default(),
+        ))
+        .unwrap();
+
+        // Process events like the main loop: drain channel, render, check needs_recollect.
+        let mut completed = false;
+        for _tick in 0..200 {
+            // Drain all pending events.
+            loop {
+                match rx.try_recv() {
+                    Ok(AppEvent::Crash(msg)) => panic!("iteration {iteration}: Crash: {msg}"),
+                    Ok(event) => {
+                        if let Some(next) = app.event(&event) {
+                            tx.send(next).unwrap();
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            // Render into a buffer (this sets visible_rows and may set needs_recollect).
+            let mut buf = Buffer::empty(terminal_area);
+            app.render(terminal_area, &mut buf);
+
+            // After render, check needs_recollect — same as the real main loop.
+            let needs = app
+                .data_table_state
+                .as_mut()
+                .map(|s| {
+                    let n = s.needs_recollect;
+                    s.needs_recollect = false;
+                    n
+                })
+                .unwrap_or(false);
+            if needs {
+                app.spawn_async_collect("Loading buffer...");
+            }
+
+            // Check if we have data and are no longer busy.
+            if app.data_table_state.is_some() && !app.is_busy() {
+                completed = true;
+                break;
+            }
+
+            // Brief sleep to let background tasks run (simulates poll timeout).
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert!(
+            completed,
+            "iteration {iteration}: timed out waiting for data to load"
+        );
+
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.visible_rows > 0,
+            "iteration {iteration}: visible_rows should be set by render"
+        );
+
+        // The buffer must cover at least the visible window.
+        let buffered_rows = state.buffered_end().saturating_sub(state.buffered_start());
+        assert!(
+            buffered_rows >= state.visible_rows || buffered_rows >= state.num_rows,
+            "iteration {iteration}: buffer too small: {buffered_rows} buffered but \
+             {visible} visible, {total} total rows",
+            visible = state.visible_rows,
+            total = state.num_rows,
+        );
+
+        // display_slice_df must be Some (not None = no data to show).
+        assert!(
+            state.display_slice_df().is_some(),
+            "iteration {iteration}: display_slice_df is None — buffer not sliced into display"
+        );
+    }
+}

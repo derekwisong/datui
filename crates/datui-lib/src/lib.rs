@@ -998,7 +998,7 @@ pub struct App {
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
     task_generation: u64, // Incremented to invalidate stale background results
-    pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<DataTableState>>>, // Result from background schema load
+    pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     busy: bool,                     // When true, show throbber and ignore keys
@@ -6705,10 +6705,7 @@ impl App {
                         options.clone(),
                     ));
                 }
-                self.loading_state = LoadingState::Idle;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
+                // Stale download result — ignore.
                 None
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
@@ -7013,8 +7010,13 @@ impl App {
                                 part_cols_opt,
                             ) {
                                 Ok(state) => {
-                                    *schema_slot.lock().unwrap_or_else(|e| e.into_inner()) =
-                                        Some(state);
+                                    let mut slot =
+                                        schema_slot.lock().unwrap_or_else(|e| e.into_inner());
+                                    let dominated = slot.as_ref().is_some_and(|(g, _)| *g > gen);
+                                    if !dominated {
+                                        *slot = Some((gen, state));
+                                    }
+                                    drop(slot);
                                     let _ = tx.send(AppEvent::BackgroundSchemaReady {
                                         generation: gen,
                                         path: path_clone,
@@ -7426,22 +7428,30 @@ impl App {
                 options,
                 debug_label,
             } => {
-                let taken_state = if *generation == self.task_generation {
-                    self.pending_schema_result
+                if *generation == self.task_generation {
+                    let taken = self
+                        .pending_schema_result
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .take()
-                } else {
-                    None
-                };
-                if let Some(state) = taken_state {
-                    self.apply_schema_ready(state, path.clone(), options, debug_label.clone());
-                    return Some(AppEvent::DoLoadBuffer);
+                        .take();
+                    if let Some((slot_gen, state)) = taken {
+                        if slot_gen == self.task_generation {
+                            self.apply_schema_ready(
+                                state,
+                                path.clone(),
+                                options,
+                                debug_label.clone(),
+                            );
+                            return Some(AppEvent::DoLoadBuffer);
+                        }
+                    }
+                    // Generation matched but slot was empty or stale — loading failed silently.
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.loading_state = LoadingState::Idle;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
+                // Stale message (generation mismatch) — ignore entirely.
                 None
             }
             AppEvent::BackgroundDescribeReady {
@@ -7450,11 +7460,11 @@ impl App {
             } => {
                 if *generation == self.task_generation {
                     self.analysis_modal.describe_results = Some(results.clone());
+                    self.analysis_modal.computing = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.analysis_modal.computing = None;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::BackgroundDistributionReady {
@@ -7463,11 +7473,11 @@ impl App {
             } => {
                 if *generation == self.task_generation {
                     self.analysis_modal.distribution_results = Some(results.clone());
+                    self.analysis_modal.computing = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.analysis_modal.computing = None;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::BackgroundCorrelationReady {
@@ -7476,11 +7486,11 @@ impl App {
             } => {
                 if *generation == self.task_generation {
                     self.analysis_modal.correlation_results = Some(results.clone());
+                    self.analysis_modal.computing = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.analysis_modal.computing = None;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::BackgroundExportCollected {
@@ -7515,10 +7525,7 @@ impl App {
                         options.clone(),
                     ));
                 }
-                self.loading_state = LoadingState::Idle;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
+                // Stale export collect — ignore.
                 None
             }
             AppEvent::BackgroundExportWritten {
@@ -7526,11 +7533,11 @@ impl App {
                 path,
                 result,
             } => {
-                self.loading_state = LoadingState::Idle;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
                 if *generation == self.task_generation {
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                     match result {
                         Ok(()) => {
                             self.success_modal
@@ -7544,15 +7551,17 @@ impl App {
                 None
             }
             AppEvent::BackgroundError {
-                generation: _,
+                generation,
                 message,
             } => {
-                self.analysis_modal.computing = None;
-                self.loading_state = LoadingState::Idle;
-                self.status_message = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                self.error_modal.show(message.clone());
+                if *generation == self.task_generation {
+                    self.analysis_modal.computing = None;
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                    self.error_modal.show(message.clone());
+                }
                 None
             }
             AppEvent::Search(query) => {

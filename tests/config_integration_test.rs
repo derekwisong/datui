@@ -1,6 +1,8 @@
 use datui::config::AppConfig;
 use datui::{Args, OpenOptions, ParseStringsTarget};
 
+mod common;
+
 #[test]
 fn test_config_used_for_row_numbers() {
     let mut config = AppConfig::default();
@@ -280,7 +282,7 @@ fn test_config_sampling_threshold() {
 
     let theme = Theme::from_config(&config.theme).expect("Failed to create theme");
     let (tx, _rx) = channel::<AppEvent>();
-    let _app = App::new_with_config(tx, theme, config.clone());
+    let _app = App::new_with_config(tx, common::test_runtime(), theme, config.clone());
 
     // Verify the app uses the config's sampling threshold
     // Note: We can't directly access app.sampling_threshold as it's private,

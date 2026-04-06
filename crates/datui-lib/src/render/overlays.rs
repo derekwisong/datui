@@ -9,6 +9,7 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph};
 
 /// Renders a bordered box with progress gauge; border and gauge use the given colors.
+#[allow(dead_code)]
 pub fn render_loading_gauge(
     area: Rect,
     buf: &mut Buffer,

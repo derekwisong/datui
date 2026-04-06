@@ -93,6 +93,7 @@ pub fn centered_rect_with_min(
 }
 
 /// Create rect for loading gauge (25% width, centered).
+#[allow(dead_code)]
 pub fn centered_rect_loading(r: Rect) -> Rect {
     centered_rect(r, 25, 20)
 }

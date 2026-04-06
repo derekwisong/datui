@@ -16,7 +16,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["cloud", "http", "sql", "streaming"]
-cloud = ["polars/aws", "polars/gcp", "dep:object_store", "dep:tokio"]
+cloud = ["polars/aws", "polars/gcp", "dep:object_store"]
 http = ["dep:ureq"]
 sql = ["polars/sql", "dep:polars-sql"]
 streaming = ["polars/new_streaming"]
@@ -47,7 +47,7 @@ arrow = "57"
 tempfile = "3.14"
 ureq = { version = "2.11", optional = true }
 object_store = { version = "0.12", optional = true, default-features = false, features = ["aws", "gcp"] }
-tokio = { version = "1", optional = true, features = ["rt", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "rt", "io-util"] }
 polars-sql = { version = "0.52", optional = true }
 
 [dependencies.polars]

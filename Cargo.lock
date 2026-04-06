@@ -1185,6 +1185,7 @@ dependencies = [
  "polars",
  "ratatui",
  "tempfile",
+ "tokio",
  "toml",
 ]
 

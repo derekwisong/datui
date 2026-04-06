@@ -18,6 +18,7 @@ pub struct Controls {
     pub use_unicode_throbber: bool, // When true, use 8-dot braille spinner (4 rows tall); else |/-\
     pub busy: bool,                 // When true, show throbber at far right
     pub throbber_frame: u8,         // Spinner frame (0..3 or 0..7 for unicode)
+    pub status_message: Option<String>, // When Some, replaces keybindings with spinner + message
 }
 
 impl Default for Controls {
@@ -34,6 +35,7 @@ impl Default for Controls {
             use_unicode_throbber: false,
             busy: false,
             throbber_frame: 0,
+            status_message: None,
         }
     }
 }
@@ -56,6 +58,7 @@ impl Controls {
             use_unicode_throbber: false,
             busy: false,
             throbber_frame: 0,
+            status_message: None,
         }
     }
 
@@ -99,6 +102,11 @@ impl Controls {
         self
     }
 
+    pub fn with_status_message(mut self, message: Option<String>) -> Self {
+        self.status_message = message;
+        self
+    }
+
     /// Create Controls from RenderContext (Phase 2+).
     /// This is the preferred way to create Controls with proper theming.
     pub fn from_context(row_count: usize, ctx: &RenderContext) -> Self {
@@ -114,6 +122,7 @@ impl Controls {
             use_unicode_throbber: false,
             busy: false,
             throbber_frame: 0,
+            status_message: None,
         }
     }
 
@@ -136,6 +145,7 @@ impl Controls {
             use_unicode_throbber: false,
             busy: false,
             throbber_frame: 0,
+            status_message: None,
         }
     }
 }
@@ -149,6 +159,70 @@ impl Widget for &Controls {
                 .render(area, buf);
         }
 
+        // Throbber character for status mode (reused below).
+        const THROBBER_ASCII: [char; 4] = ['|', '/', '-', '\\'];
+        const THROBBER_BRAILLE_EIGHT: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
+
+        let throbber_ch = || -> String {
+            if self.busy {
+                if self.use_unicode_throbber {
+                    THROBBER_BRAILLE_EIGHT[self.throbber_frame as usize % 8].to_string()
+                } else {
+                    THROBBER_ASCII[self.throbber_frame as usize % 4].to_string()
+                }
+            } else {
+                " ".to_string()
+            }
+        };
+
+        let throbber_style = if no_bg {
+            Style::default().fg(self.throbber_color)
+        } else {
+            Style::default().bg(self.bg_color).fg(self.throbber_color)
+        };
+
+        let (label_style, fill_style) = if no_bg {
+            (Style::default().fg(self.label_color), Style::default())
+        } else {
+            let base = Style::default().bg(self.bg_color);
+            (base.fg(self.label_color), base)
+        };
+
+        // Status message mode: [spinner 2ch] [message Fill] [row_count 21ch]
+        if let Some(ref msg) = self.status_message {
+            let mut constraints = vec![
+                Constraint::Length(2), // spinner
+                Constraint::Fill(1),   // status message
+            ];
+            if self.row_count.is_some() {
+                constraints.push(Constraint::Length(21));
+            }
+
+            let layout = Layout::new(Direction::Horizontal, constraints).split(area);
+
+            // Spinner on the left
+            Paragraph::new(format!("{} ", throbber_ch()))
+                .style(throbber_style)
+                .render(layout[0], buf);
+
+            // Status message
+            Paragraph::new(msg.as_str())
+                .style(label_style)
+                .render(layout[1], buf);
+
+            // Row count (right-aligned, if available)
+            if let Some(count) = self.row_count {
+                let row_count_text = format!("Rows: {}", format_number_with_commas(count));
+                Paragraph::new(row_count_text)
+                    .style(label_style)
+                    .right_aligned()
+                    .render(layout[2], buf);
+            }
+
+            return;
+        }
+
+        // Normal keybinding mode (unchanged from original)
         const DEFAULT_CONTROLS: [(&str, &str); 9] = [
             ("/", "Query"),
             ("i", "Info"),
@@ -167,15 +241,12 @@ impl Widget for &Controls {
             DEFAULT_CONTROLS.to_vec()
         };
 
-        // Width of one key-label pair (fixed; pairs are never shrunk).
-        // Key: key.len() + 1 (one trailing space). Label: action.len() + 1 (one trailing = gap before next key).
         let pair_width = |(key, action): &(&str, &str)| -> u16 {
             (key.chars().count() as u16 + 1) + (action.chars().count() as u16 + 1)
         };
 
-        // Reserve space for fill, row count, and throbber (fixed width so layout never shifts).
-        const THROBBER_WIDTH: u16 = 3;
-        let right_reserved = (if self.row_count.is_some() { 21 } else { 1 }) + THROBBER_WIDTH;
+        // Reserve space for fill and row count (no right-side throbber in normal mode).
+        let right_reserved = if self.row_count.is_some() { 21 } else { 1 };
         let mut available = area.width.saturating_sub(right_reserved);
 
         let mut n_show = 0;
@@ -189,8 +260,6 @@ impl Widget for &Controls {
             }
         }
 
-        // Key: +1 trailing (avoids cut-off when terminals render bold/colored wider). Left-aligned so no leading gap.
-        // Label: +1 trailing (single space between label and next key).
         let mut constraints: Vec<Constraint> = controls
             .iter()
             .take(n_show)
@@ -206,19 +275,13 @@ impl Widget for &Controls {
         if self.row_count.is_some() {
             constraints.push(Constraint::Length(20));
         }
-        constraints.push(Constraint::Length(THROBBER_WIDTH));
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
 
-        let (key_style, label_style, fill_style) = if no_bg {
-            (
-                Style::default().fg(self.key_color),
-                Style::default().fg(self.label_color),
-                Style::default(),
-            )
+        let key_style = if no_bg {
+            Style::default().fg(self.key_color)
         } else {
-            let base = Style::default().bg(self.bg_color);
-            (base.fg(self.key_color), base.fg(self.label_color), base)
+            Style::default().bg(self.bg_color).fg(self.key_color)
         };
 
         for (i, (key, action)) in controls.iter().take(n_show).enumerate() {
@@ -241,31 +304,6 @@ impl Widget for &Controls {
         Paragraph::new("")
             .style(fill_style)
             .render(layout[fill_idx], buf);
-
-        // Throbber slot is always present (fixed width); animate only when busy.
-        // ASCII: |/-\ (4 frames). Unicode: 8-dot braille (8 frames, 4 rows tall) when LANG has UTF-8.
-        // Same as throbber-widgets-tui BRAILLE_EIGHT: https://ratatui.rs/showcase/third-party-widgets/
-        const THROBBER_ASCII: [char; 4] = ['|', '/', '-', '\\'];
-        const THROBBER_BRAILLE_EIGHT: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
-        let throbber_idx = fill_idx + if self.row_count.is_some() { 2 } else { 1 };
-        let throbber_ch = if self.busy {
-            if self.use_unicode_throbber {
-                THROBBER_BRAILLE_EIGHT[self.throbber_frame as usize % 8].to_string()
-            } else {
-                THROBBER_ASCII[self.throbber_frame as usize % 4].to_string()
-            }
-        } else {
-            " ".to_string()
-        };
-        let throbber_style = if no_bg {
-            Style::default().fg(self.throbber_color)
-        } else {
-            Style::default().bg(self.bg_color).fg(self.throbber_color)
-        };
-        Paragraph::new(throbber_ch)
-            .style(throbber_style)
-            .centered()
-            .render(layout[throbber_idx], buf);
     }
 }
 

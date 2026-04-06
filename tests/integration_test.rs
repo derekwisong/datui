@@ -10,13 +10,40 @@ use std::sync::mpsc;
 
 mod common;
 
-/// Pumps the load event chain (Open -> DoLoadScanPaths -> DoLoadSchema -> DoLoadSchemaBlocking -> DoLoadBuffer -> Collect) until no event is returned.
-fn pump_open_until_loaded(app: &mut App, paths: Vec<PathBuf>, options: OpenOptions) {
+/// Drains all pending events from the channel and processes them (for async operations).
+fn drain_events(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
+    while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+        if let Some(next) = app.event(&ev) {
+            if let Some(next2) = app.event(&next) {
+                app.event(&next2);
+            }
+        }
+    }
+}
+
+/// Pumps the load event chain until complete, including background task results from the channel.
+fn pump_open_until_loaded(
+    app: &mut App,
+    rx: &std::sync::mpsc::Receiver<AppEvent>,
+    paths: Vec<PathBuf>,
+    options: OpenOptions,
+) {
     let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
-    while let Some(ev) = next.take() {
-        next = app.event(&ev);
-        if matches!(ev, AppEvent::Crash(_)) {
-            return;
+    loop {
+        if let Some(ev) = next.take() {
+            if matches!(ev, AppEvent::Crash(_)) {
+                app.event(&ev);
+                return;
+            }
+            next = app.event(&ev);
+        } else {
+            // No chained event; check the channel for background task results.
+            match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+                Ok(ev) => {
+                    next = Some(ev);
+                }
+                Err(_) => return, // Timeout or disconnected: loading complete or stuck.
+            }
         }
     }
 }
@@ -24,14 +51,14 @@ fn pump_open_until_loaded(app: &mut App, paths: Vec<PathBuf>, options: OpenOptio
 #[test]
 fn test_app_creation() {
     let (tx, _) = mpsc::channel();
-    let app = App::new(tx);
+    let app = App::new(tx, common::test_runtime());
     assert_eq!(app.input_mode, InputMode::Normal);
 }
 
 #[test]
 fn test_full_workflow() {
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
 
     // 1. Create test CSV file inline
     let test_data_dir = PathBuf::from("tests/sample-data");
@@ -49,7 +76,12 @@ fn test_full_workflow() {
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
     // 2. Open the file (pump full load chain)
-    pump_open_until_loaded(&mut app, vec![csv_path.clone()], OpenOptions::default());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![csv_path.clone()],
+        OpenOptions::default(),
+    );
 
     assert!(app.data_table_state.is_some());
     let datatable = app.data_table_state.as_ref().unwrap();
@@ -73,6 +105,7 @@ fn test_full_workflow() {
     if let Some(next_event) = app.event(&AppEvent::Key(key_event)) {
         app.event(&next_event);
     }
+    drain_events(&mut app, &rx);
     assert!(!app.sort_filter_modal.active);
 
     let datatable = app.data_table_state.as_ref().unwrap();
@@ -108,6 +141,7 @@ fn test_full_workflow() {
     if let Some(next_event) = app.event(&AppEvent::Key(key_event)) {
         app.event(&next_event);
     }
+    drain_events(&mut app, &rx);
     assert!(!app.sort_filter_modal.active);
 
     let datatable = app.data_table_state.as_ref().unwrap();
@@ -117,8 +151,8 @@ fn test_full_workflow() {
 
 #[test]
 fn test_chart_open_and_esc_back() {
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
 
     let test_data_dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&test_data_dir).unwrap();
@@ -132,7 +166,12 @@ fn test_chart_open_and_esc_back() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    pump_open_until_loaded(&mut app, vec![csv_path.clone()], OpenOptions::default());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![csv_path.clone()],
+        OpenOptions::default(),
+    );
     assert!(app.data_table_state.is_some());
     assert_eq!(app.input_mode, InputMode::Normal);
 
@@ -149,8 +188,8 @@ fn test_chart_open_and_esc_back() {
 
 #[test]
 fn test_chart_q_does_not_exit() {
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
 
     let test_data_dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&test_data_dir).unwrap();
@@ -160,7 +199,7 @@ fn test_chart_q_does_not_exit() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    pump_open_until_loaded(&mut app, vec![csv_path], OpenOptions::default());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
@@ -178,8 +217,8 @@ fn test_chart_q_does_not_exit() {
 /// Ensures the chart render path does not panic and cache logic works.
 #[test]
 fn test_chart_view_render_with_cache() {
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
 
     let test_data_dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&test_data_dir).unwrap();
@@ -193,7 +232,12 @@ fn test_chart_view_render_with_cache() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    pump_open_until_loaded(&mut app, vec![csv_path.clone()], OpenOptions::default());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![csv_path.clone()],
+        OpenOptions::default(),
+    );
     assert!(app.data_table_state.is_some());
 
     // Open chart view (no x/y selected yet)
@@ -226,7 +270,7 @@ fn test_chart_view_render_with_cache() {
 #[test]
 fn test_open_s3_url_returns_crash_or_loads() {
     let (tx, _) = mpsc::channel();
-    let mut app = App::new(tx);
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("s3://my-bucket/path/to/file.parquet");
     let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
     let ev = next.expect("Open should emit DoLoadScanPaths");
@@ -246,7 +290,7 @@ fn test_open_s3_url_returns_crash_or_loads() {
 #[test]
 fn test_open_http_url_attempts_load_or_returns_friendly_error() {
     let (tx, _) = mpsc::channel();
-    let mut app = App::new(tx);
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("https://example.com/data.csv");
     let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
     let ev = next.expect("Open should emit DoLoadScanPaths");
@@ -287,7 +331,7 @@ fn test_open_http_url_attempts_load_or_returns_friendly_error() {
 #[test]
 fn test_multiple_remote_paths_returns_error() {
     let (tx, _) = mpsc::channel();
-    let mut app = App::new(tx);
+    let mut app = App::new(tx, common::test_runtime());
     let paths = vec![
         PathBuf::from("s3://bucket/a.parquet"),
         PathBuf::from("s3://bucket/b.parquet"),
@@ -305,7 +349,7 @@ fn test_multiple_remote_paths_returns_error() {
         _ => panic!("expected Crash when opening multiple S3 URLs"),
     }
     let (tx2, _) = mpsc::channel();
-    let mut app = App::new(tx2);
+    let mut app = App::new(tx2, common::test_runtime());
     let paths = vec![
         PathBuf::from("https://example.com/a.csv"),
         PathBuf::from("https://example.com/b.csv"),
@@ -326,7 +370,7 @@ fn test_multiple_remote_paths_returns_error() {
 #[test]
 fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
     let (tx, _) = mpsc::channel();
-    let mut app = App::new(tx);
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("gs://my-bucket/path/file.parquet");
     let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
     let ev = next.expect("Open should emit DoLoadScanPaths");
@@ -347,8 +391,8 @@ fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
 
 #[test]
 fn test_csv_null_values_global() {
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
 
     let test_data_dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&test_data_dir).unwrap();
@@ -359,7 +403,7 @@ fn test_csv_null_values_global() {
         null_values: Some(vec!["NA".to_string(), "N/A".to_string()]),
         ..OpenOptions::default()
     };
-    pump_open_until_loaded(&mut app, vec![csv_path], opts);
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], opts);
 
     assert!(app.data_table_state.is_some());
     let state = app.data_table_state.as_ref().unwrap();
@@ -374,8 +418,8 @@ fn test_csv_null_values_global() {
 
 #[test]
 fn test_csv_null_values_per_column() {
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
 
     let test_data_dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&test_data_dir).unwrap();
@@ -386,7 +430,7 @@ fn test_csv_null_values_per_column() {
         null_values: Some(vec!["a=empty".to_string()]),
         ..OpenOptions::default()
     };
-    pump_open_until_loaded(&mut app, vec![csv_path], opts);
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], opts);
 
     assert!(app.data_table_state.is_some());
     let state = app.data_table_state.as_ref().unwrap();

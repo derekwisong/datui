@@ -172,6 +172,20 @@ pub mod tests {
         });
     }
 
+    /// Returns a tokio runtime handle for use in tests.
+    pub fn test_runtime() -> tokio::runtime::Handle {
+        static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        RT.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("test tokio runtime")
+        })
+        .handle()
+        .clone()
+    }
+
     /// Path to the tests/sample-data directory (at repo root). Call `ensure_sample_data()` first if needed.
     pub fn sample_data_dir() -> std::path::PathBuf {
         ensure_sample_data();
@@ -574,6 +588,60 @@ pub enum AppEvent {
     AnalysisDistributionCompute,
     /// Run correlation matrix (deferred so progress overlay can show first).
     AnalysisCorrelationCompute,
+    /// Background task completed: describe/statistics results.
+    BackgroundDescribeReady {
+        generation: u64,
+        results: crate::statistics::AnalysisResults,
+    },
+    /// Background task completed: distribution analysis results.
+    BackgroundDistributionReady {
+        generation: u64,
+        results: crate::statistics::AnalysisResults,
+    },
+    /// Background task completed: correlation matrix results.
+    BackgroundCorrelationReady {
+        generation: u64,
+        results: crate::statistics::AnalysisResults,
+    },
+    /// Background task completed: buffer data collected.
+    /// The actual DataFrame is stored in App::pending_collect_result (to avoid cloning).
+    BackgroundCollectReady {
+        generation: u64,
+    },
+    /// Background task completed: schema loaded and DataTableState constructed.
+    /// The actual state is stored in App::pending_schema_result (to avoid cloning DataTableState).
+    BackgroundSchemaReady {
+        generation: u64,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+        debug_label: Option<String>,
+    },
+    /// Background task completed: export data collected.
+    BackgroundExportCollected {
+        generation: u64,
+        df: DataFrame,
+        path: PathBuf,
+        format: ExportFormat,
+        options: ExportOptions,
+    },
+    /// Background task completed: file written to disk.
+    BackgroundExportWritten {
+        generation: u64,
+        path: PathBuf,
+        result: Result<(), String>,
+    },
+    /// Background task completed: remote file downloaded to temp path.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    BackgroundDownloadReady {
+        generation: u64,
+        temp_path: PathBuf,
+        options: OpenOptions,
+    },
+    /// Background task failed.
+    BackgroundError {
+        generation: u64,
+        message: String,
+    },
 }
 
 /// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
@@ -928,9 +996,15 @@ pub struct App {
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
-    busy: bool,          // When true, show throbber and ignore keys
-    throbber_frame: u8,  // Spinner frame index (0..3) for control bar
-    drain_keys_on_next_loop: bool, // Main loop drains crossterm key buffer when true
+    runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
+    task_generation: u64, // Incremented to invalidate stale background results
+    pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<DataTableState>>>, // Result from background schema load
+    pending_collect_result:
+        std::sync::Arc<std::sync::Mutex<Option<crate::widgets::datatable::CollectResult>>>, // Result from background buffer load
+    busy: bool,                     // When true, show throbber and ignore keys
+    throbber_frame: u8,             // Spinner frame index (0..3) for control bar
+    drain_keys_on_next_loop: bool,  // Main loop drains crossterm key buffer when true
+    status_message: Option<String>, // Status text shown in control bar when busy (replaces keybindings)
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
     /// Temp file path for HTTP-downloaded data; removed when user opens different data or exits.
@@ -966,9 +1040,105 @@ impl App {
         };
     }
 
+    /// Apply a successfully loaded DataTableState to the app. Shared by all schema load paths.
+    fn apply_schema_ready(
+        &mut self,
+        state: DataTableState,
+        path: Option<PathBuf>,
+        options: &OpenOptions,
+        debug_label: Option<String>,
+    ) {
+        self.debug.schema_load = debug_label;
+        self.parquet_metadata_cache = None;
+        self.export_df = None;
+        self.data_table_state = Some(state);
+        self.path = path.clone();
+        if let Some(ref p) = path {
+            self.original_file_format = p.extension().and_then(|e| e.to_str()).and_then(|ext| {
+                if ext.eq_ignore_ascii_case("parquet") {
+                    Some(ExportFormat::Parquet)
+                } else if ext.eq_ignore_ascii_case("csv") {
+                    Some(ExportFormat::Csv)
+                } else if ext.eq_ignore_ascii_case("json") {
+                    Some(ExportFormat::Json)
+                } else if ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson") {
+                    Some(ExportFormat::Ndjson)
+                } else if ext.eq_ignore_ascii_case("arrow")
+                    || ext.eq_ignore_ascii_case("ipc")
+                    || ext.eq_ignore_ascii_case("feather")
+                {
+                    Some(ExportFormat::Ipc)
+                } else if ext.eq_ignore_ascii_case("avro") {
+                    Some(ExportFormat::Avro)
+                } else {
+                    None
+                }
+            });
+            self.original_file_delimiter = Some(options.delimiter.unwrap_or(b','));
+        } else {
+            self.original_file_format = None;
+            self.original_file_delimiter = None;
+        }
+        self.sort_filter_modal = SortFilterModal::new();
+        self.pivot_melt_modal = PivotMeltModal::new();
+        if let LoadingState::Loading {
+            file_path,
+            file_size,
+            ..
+        } = &self.loading_state
+        {
+            self.loading_state = LoadingState::Loading {
+                file_path: file_path.clone(),
+                file_size: *file_size,
+                current_phase: "Loading buffer".to_string(),
+                progress_percent: 70,
+            };
+        }
+        self.status_message = Some("Loading buffer...".to_string());
+    }
+
     /// Ensures file path has an extension when user did not provide one; only adds
     /// compression suffix (e.g. .gz) when compression is selected. If the user
     /// provided a path with an extension (e.g. foo.feather), that extension is kept.
+    /// Spawn an async buffer collect if needed. Returns true if a background task was spawned.
+    fn spawn_async_collect(&mut self, status: &str) -> bool {
+        let needs_collect = if let Some(state) = &mut self.data_table_state {
+            state.prepare_async_collect(None)
+        } else {
+            None
+        };
+        if let Some(request) = needs_collect {
+            let gen = self.task_generation;
+            let tx = self.events.clone();
+            let collect_slot = self.pending_collect_result.clone();
+            self.busy = true;
+            self.status_message = Some(status.to_string());
+            self.runtime.spawn_blocking(move || {
+                match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
+                    Ok(df) => {
+                        *collect_slot.lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(crate::widgets::datatable::CollectResult {
+                                df,
+                                buffer_start: request.buffer_start,
+                                buffer_end: request.buffer_end,
+                                num_rows: request.num_rows,
+                            });
+                        let _ = tx.send(AppEvent::BackgroundCollectReady { generation: gen });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::BackgroundError {
+                            generation: gen,
+                            message: crate::error_display::user_message_from_polars(&e),
+                        });
+                    }
+                }
+            });
+            true
+        } else {
+            false
+        }
+    }
+
     fn ensure_file_extension(
         path: &Path,
         format: ExportFormat,
@@ -1030,7 +1200,7 @@ impl App {
         new_path
     }
 
-    pub fn new(events: Sender<AppEvent>) -> App {
+    pub fn new(events: Sender<AppEvent>, runtime: tokio::runtime::Handle) -> App {
         // Create default theme for backward compatibility
         let theme = Theme::from_config(&AppConfig::default().theme).unwrap_or_else(|_| {
             // Create a minimal fallback theme
@@ -1039,14 +1209,23 @@ impl App {
             }
         });
 
-        Self::new_with_config(events, theme, AppConfig::default())
+        Self::new_with_config(events, runtime, theme, AppConfig::default())
     }
 
-    pub fn new_with_theme(events: Sender<AppEvent>, theme: Theme) -> App {
-        Self::new_with_config(events, theme, AppConfig::default())
+    pub fn new_with_theme(
+        events: Sender<AppEvent>,
+        runtime: tokio::runtime::Handle,
+        theme: Theme,
+    ) -> App {
+        Self::new_with_config(events, runtime, theme, AppConfig::default())
     }
 
-    pub fn new_with_config(events: Sender<AppEvent>, theme: Theme, app_config: AppConfig) -> App {
+    pub fn new_with_config(
+        events: Sender<AppEvent>,
+        runtime: tokio::runtime::Handle,
+        theme: Theme,
+        app_config: AppConfig,
+    ) -> App {
         let cache = CacheManager::new(APP_NAME).unwrap_or_else(|_| CacheManager {
             cache_dir: std::env::temp_dir().join(APP_NAME),
         });
@@ -1121,9 +1300,14 @@ impl App {
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
             column_colors: app_config.display.column_colors,
+            runtime,
+            task_generation: 0,
+            pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
             throbber_frame: 0,
             drain_keys_on_next_loop: false,
+            status_message: None,
             analysis_computation: None,
             app_config,
             #[cfg(feature = "http")]
@@ -1691,6 +1875,7 @@ impl App {
         s3_url: &str,
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
@@ -1736,17 +1921,19 @@ impl App {
         let store = builder
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
         let path = OsPath::from(key);
-        match rt.block_on(store.head(&path)) {
+        match runtime.block_on(store.head(&path)) {
             Ok(meta) => Ok(Some(meta.size)),
             Err(_) => Ok(None),
         }
     }
 
     #[cfg(feature = "cloud")]
-    fn fetch_remote_size_gcs(gs_url: &str, _options: &OpenOptions) -> Result<Option<u64>> {
+    fn fetch_remote_size_gcs(
+        gs_url: &str,
+        _options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
@@ -1762,10 +1949,8 @@ impl App {
             .with_bucket_name(bucket)
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
         let path = OsPath::from(key);
-        match rt.block_on(store.head(&path)) {
+        match runtime.block_on(store.head(&path)) {
             Ok(meta) => Ok(Some(meta.size)),
             Err(_) => Ok(None),
         }
@@ -1814,6 +1999,7 @@ impl App {
         s3_url: &str,
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<PathBuf> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
@@ -1863,13 +2049,11 @@ impl App {
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
         let path = OsPath::from(key);
-        let get_result = rt.block_on(store.get(&path)).map_err(|e| {
+        let get_result = runtime.block_on(store.get(&path)).map_err(|e| {
             color_eyre::eyre::eyre!("Could not read from S3. Check credentials and URL: {}", e)
         })?;
-        let bytes = rt
+        let bytes = runtime
             .block_on(get_result.bytes())
             .map_err(|e| color_eyre::eyre::eyre!("Could not read S3 object body: {}", e))?;
 
@@ -1891,7 +2075,11 @@ impl App {
     }
 
     #[cfg(feature = "cloud")]
-    fn download_gcs_to_temp(gs_url: &str, options: &OpenOptions) -> Result<PathBuf> {
+    fn download_gcs_to_temp(
+        gs_url: &str,
+        options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<PathBuf> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
@@ -1911,13 +2099,11 @@ impl App {
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
         let path = OsPath::from(key);
-        let get_result = rt.block_on(store.get(&path)).map_err(|e| {
+        let get_result = runtime.block_on(store.get(&path)).map_err(|e| {
             color_eyre::eyre::eyre!("Could not read from GCS. Check credentials and URL: {}", e)
         })?;
-        let bytes = rt
+        let bytes = runtime
             .block_on(get_result.bytes())
             .map_err(|e| color_eyre::eyre::eyre!("Could not read GCS object body: {}", e))?;
 
@@ -6114,6 +6300,7 @@ impl App {
                 if let Some(ref p) = self.http_temp_path.take() {
                     let _ = std::fs::remove_file(p);
                 }
+                self.task_generation = self.task_generation.wrapping_add(1);
                 self.busy = true;
                 let first = &paths[0];
                 let file_size = match source::input_source(first) {
@@ -6140,6 +6327,7 @@ impl App {
                 Some(AppEvent::DoLoadScanPaths(paths.clone(), options.clone()))
             }
             AppEvent::OpenLazyFrame(lf, options) => {
+                self.task_generation = self.task_generation.wrapping_add(1);
                 self.busy = true;
                 self.loading_state = LoadingState::Loading {
                     file_path: None,
@@ -6237,9 +6425,13 @@ impl App {
                         let (_, ext) = source::url_path_extension(&full);
                         let is_glob = full.contains('*') || full.ends_with('/');
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            let size =
-                                Self::fetch_remote_size_s3(&full, &self.app_config.cloud, options)
-                                    .unwrap_or(None);
+                            let size = Self::fetch_remote_size_s3(
+                                &full,
+                                &self.app_config.cloud,
+                                options,
+                                &self.runtime,
+                            )
+                            .unwrap_or(None);
                             let size_str = size
                                 .map(Self::format_bytes)
                                 .unwrap_or_else(|| "unknown".to_string());
@@ -6267,7 +6459,8 @@ impl App {
                         let (_, ext) = source::url_path_extension(&full);
                         let is_glob = full.contains('*') || full.ends_with('/');
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            let size = Self::fetch_remote_size_gcs(&full, options).unwrap_or(None);
+                            let size = Self::fetch_remote_size_gcs(&full, options, &self.runtime)
+                                .unwrap_or(None);
                             let size_str = size
                                 .map(Self::format_bytes)
                                 .unwrap_or_else(|| "unknown".to_string());
@@ -6383,95 +6576,125 @@ impl App {
             }
             #[cfg(feature = "http")]
             AppEvent::DoDownloadHttp(url, options) => {
-                let (_, ext) = source::url_path_extension(url.as_str());
-                match Self::download_http_to_temp(
-                    url.as_str(),
-                    options.temp_dir.as_deref(),
-                    ext.as_deref(),
-                ) {
-                    Ok(temp_path) => {
-                        self.http_temp_path = Some(temp_path.clone());
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Scanning".to_string(),
-                                progress_percent: 30,
-                            };
+                let gen = self.task_generation;
+                let tx = self.events.clone();
+                let url = url.clone();
+                let options = options.clone();
+                self.status_message = Some("Downloading...".to_string());
+                self.runtime.spawn_blocking(move || {
+                    let (_, ext) = source::url_path_extension(url.as_str());
+                    match Self::download_http_to_temp(
+                        url.as_str(),
+                        options.temp_dir.as_deref(),
+                        ext.as_deref(),
+                    ) {
+                        Ok(temp_path) => {
+                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
+                                generation: gen,
+                                temp_path,
+                                options,
+                            });
                         }
-                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                        Err(e) => {
+                            let msg = crate::error_display::user_message_from_report(&e, None);
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: gen,
+                                message: msg,
+                            });
+                        }
                     }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(&e, None);
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
+                });
+                None
             }
             #[cfg(feature = "cloud")]
             AppEvent::DoDownloadS3ToTemp(s3_url, options) => {
-                match Self::download_s3_to_temp(s3_url, &self.app_config.cloud, options) {
-                    Ok(temp_path) => {
-                        self.http_temp_path = Some(temp_path.clone());
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Scanning".to_string(),
-                                progress_percent: 30,
-                            };
+                let gen = self.task_generation;
+                let tx = self.events.clone();
+                let s3_url = s3_url.clone();
+                let cloud_config = self.app_config.cloud.clone();
+                let options = options.clone();
+                let rt = self.runtime.clone();
+                self.status_message = Some("Downloading from S3...".to_string());
+                self.runtime.spawn_blocking(move || {
+                    match Self::download_s3_to_temp(&s3_url, &cloud_config, &options, &rt) {
+                        Ok(temp_path) => {
+                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
+                                generation: gen,
+                                temp_path,
+                                options,
+                            });
                         }
-                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                        Err(e) => {
+                            let msg = crate::error_display::user_message_from_report(&e, None);
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: gen,
+                                message: msg,
+                            });
+                        }
                     }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(&e, None);
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
+                });
+                None
             }
             #[cfg(feature = "cloud")]
             AppEvent::DoDownloadGcsToTemp(gs_url, options) => {
-                match Self::download_gcs_to_temp(gs_url, options) {
-                    Ok(temp_path) => {
-                        self.http_temp_path = Some(temp_path.clone());
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Scanning".to_string(),
-                                progress_percent: 30,
-                            };
+                let gen = self.task_generation;
+                let tx = self.events.clone();
+                let gs_url = gs_url.clone();
+                let options = options.clone();
+                let rt = self.runtime.clone();
+                self.status_message = Some("Downloading from GCS...".to_string());
+                self.runtime.spawn_blocking(move || {
+                    match Self::download_gcs_to_temp(&gs_url, &options, &rt) {
+                        Ok(temp_path) => {
+                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
+                                generation: gen,
+                                temp_path,
+                                options,
+                            });
                         }
-                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                        Err(e) => {
+                            let msg = crate::error_display::user_message_from_report(&e, None);
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: gen,
+                                message: msg,
+                            });
+                        }
                     }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(&e, None);
-                        Some(AppEvent::Crash(msg))
+                });
+                None
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            AppEvent::BackgroundDownloadReady {
+                generation,
+                temp_path,
+                options,
+            } => {
+                if *generation == self.task_generation {
+                    self.http_temp_path = Some(temp_path.clone());
+                    if let LoadingState::Loading {
+                        file_path,
+                        file_size,
+                        ..
+                    } = &self.loading_state
+                    {
+                        self.loading_state = LoadingState::Loading {
+                            file_path: file_path.clone(),
+                            file_size: *file_size,
+                            current_phase: "Scanning".to_string(),
+                            progress_percent: 30,
+                        };
                     }
+                    self.status_message = Some("Scanning...".to_string());
+                    return Some(AppEvent::DoLoadFromHttpTemp(
+                        temp_path.clone(),
+                        options.clone(),
+                    ));
                 }
+                self.loading_state = LoadingState::Idle;
+                self.status_message = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             AppEvent::DoLoadFromHttpTemp(temp_path, options) => {
@@ -6568,58 +6791,12 @@ impl App {
                                 Some(partition_columns),
                             ) {
                                 Ok(state) => {
-                                    self.debug.schema_load = Some("one-file (local)".to_string());
-                                    self.parquet_metadata_cache = None;
-                                    self.export_df = None;
-                                    self.data_table_state = Some(state);
-                                    self.path = path.clone();
-                                    if let Some(ref path_p) = path {
-                                        self.original_file_format = path_p
-                                            .extension()
-                                            .and_then(|e| e.to_str())
-                                            .and_then(|ext| {
-                                                if ext.eq_ignore_ascii_case("parquet") {
-                                                    Some(ExportFormat::Parquet)
-                                                } else if ext.eq_ignore_ascii_case("csv") {
-                                                    Some(ExportFormat::Csv)
-                                                } else if ext.eq_ignore_ascii_case("json") {
-                                                    Some(ExportFormat::Json)
-                                                } else if ext.eq_ignore_ascii_case("jsonl")
-                                                    || ext.eq_ignore_ascii_case("ndjson")
-                                                {
-                                                    Some(ExportFormat::Ndjson)
-                                                } else if ext.eq_ignore_ascii_case("arrow")
-                                                    || ext.eq_ignore_ascii_case("ipc")
-                                                    || ext.eq_ignore_ascii_case("feather")
-                                                {
-                                                    Some(ExportFormat::Ipc)
-                                                } else if ext.eq_ignore_ascii_case("avro") {
-                                                    Some(ExportFormat::Avro)
-                                                } else {
-                                                    None
-                                                }
-                                            });
-                                        self.original_file_delimiter =
-                                            Some(options.delimiter.unwrap_or(b','));
-                                    } else {
-                                        self.original_file_format = None;
-                                        self.original_file_delimiter = None;
-                                    }
-                                    self.sort_filter_modal = SortFilterModal::new();
-                                    self.pivot_melt_modal = PivotMeltModal::new();
-                                    if let LoadingState::Loading {
-                                        file_path,
-                                        file_size,
-                                        ..
-                                    } = &self.loading_state
-                                    {
-                                        self.loading_state = LoadingState::Loading {
-                                            file_path: file_path.clone(),
-                                            file_size: *file_size,
-                                            current_phase: "Loading buffer".to_string(),
-                                            progress_percent: 70,
-                                        };
-                                    }
+                                    self.apply_schema_ready(
+                                        state,
+                                        path.clone(),
+                                        options,
+                                        Some("one-file (local)".to_string()),
+                                    );
                                     return Some(AppEvent::DoLoadBuffer);
                                 }
                                 Err(e) => {
@@ -6662,8 +6839,8 @@ impl App {
                                 Self::build_s3_object_store(&full, &self.app_config.cloud, options)
                                     .ok()
                                     .and_then(|store| {
-                                        let rt = tokio::runtime::Runtime::new().ok()?;
-                                        let (merged_schema, partition_columns) = rt
+                                        let (merged_schema, partition_columns) = self
+                                            .runtime
                                             .block_on(cloud_hive::schema_from_one_cloud_hive(
                                                 store, key,
                                             ))
@@ -6709,8 +6886,8 @@ impl App {
                                     .map(|(_, k)| k.trim_end_matches('/'))
                                     .unwrap_or("");
                                 Self::build_gcs_object_store(&full).ok().and_then(|store| {
-                                    let rt = tokio::runtime::Runtime::new().ok()?;
-                                    let (merged_schema, partition_columns) = rt
+                                    let (merged_schema, partition_columns) = self
+                                        .runtime
                                         .block_on(cloud_hive::schema_from_one_cloud_hive(
                                             store, key,
                                         ))
@@ -6751,56 +6928,12 @@ impl App {
                             _ => None,
                         };
                         if let Some(state) = try_cloud {
-                            self.debug.schema_load = Some("one-file (cloud)".to_string());
-                            self.parquet_metadata_cache = None;
-                            self.export_df = None;
-                            self.data_table_state = Some(state);
-                            self.path = path.clone();
-                            if let Some(ref path_p) = path {
-                                self.original_file_format =
-                                    path_p.extension().and_then(|e| e.to_str()).and_then(|ext| {
-                                        if ext.eq_ignore_ascii_case("parquet") {
-                                            Some(ExportFormat::Parquet)
-                                        } else if ext.eq_ignore_ascii_case("csv") {
-                                            Some(ExportFormat::Csv)
-                                        } else if ext.eq_ignore_ascii_case("json") {
-                                            Some(ExportFormat::Json)
-                                        } else if ext.eq_ignore_ascii_case("jsonl")
-                                            || ext.eq_ignore_ascii_case("ndjson")
-                                        {
-                                            Some(ExportFormat::Ndjson)
-                                        } else if ext.eq_ignore_ascii_case("arrow")
-                                            || ext.eq_ignore_ascii_case("ipc")
-                                            || ext.eq_ignore_ascii_case("feather")
-                                        {
-                                            Some(ExportFormat::Ipc)
-                                        } else if ext.eq_ignore_ascii_case("avro") {
-                                            Some(ExportFormat::Avro)
-                                        } else {
-                                            None
-                                        }
-                                    });
-                                self.original_file_delimiter =
-                                    Some(options.delimiter.unwrap_or(b','));
-                            } else {
-                                self.original_file_format = None;
-                                self.original_file_delimiter = None;
-                            }
-                            self.sort_filter_modal = SortFilterModal::new();
-                            self.pivot_melt_modal = PivotMeltModal::new();
-                            if let LoadingState::Loading {
-                                file_path,
-                                file_size,
-                                ..
-                            } = &self.loading_state
-                            {
-                                self.loading_state = LoadingState::Loading {
-                                    file_path: file_path.clone(),
-                                    file_size: *file_size,
-                                    current_phase: "Loading buffer".to_string(),
-                                    progress_percent: 70,
-                                };
-                            }
+                            self.apply_schema_ready(
+                                state,
+                                path.clone(),
+                                options,
+                                Some("one-file (cloud)".to_string()),
+                            );
                             return Some(AppEvent::DoLoadBuffer);
                         } else {
                             self.debug.schema_load = Some("fallback (cloud)".to_string());
@@ -6808,137 +6941,95 @@ impl App {
                     }
                 }
 
-                if self.debug.schema_load.is_none() {
-                    self.debug.schema_load = Some("full scan".to_string());
-                }
-                let mut lf_owned = (**lf).clone();
-                match lf_owned.collect_schema() {
-                    Ok(schema) => {
-                        let partition_columns = if path.as_ref().is_some_and(|p| {
-                            options.hive
-                                && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
-                        }) {
-                            let discovered = DataTableState::discover_hive_partition_columns(
-                                path.as_ref().expect("path set by caller"),
-                            );
-                            discovered
-                                .into_iter()
-                                .filter(|c| schema.contains(c.as_str()))
-                                .collect::<Vec<_>>()
-                        } else {
-                            Vec::new()
-                        };
-                        if !partition_columns.is_empty() {
-                            let exprs: Vec<_> = partition_columns
-                                .iter()
-                                .map(|s| col(s.as_str()))
-                                .chain(
-                                    schema
-                                        .iter_names()
-                                        .map(|s| s.to_string())
-                                        .filter(|c| !partition_columns.contains(c))
-                                        .map(|s| col(s.as_str())),
-                                )
-                                .collect();
-                            lf_owned = lf_owned.select(exprs);
-                        }
-                        let part_cols_opt = if partition_columns.is_empty() {
-                            None
-                        } else {
-                            Some(partition_columns)
-                        };
-                        match DataTableState::from_schema_and_lazyframe(
-                            schema,
-                            lf_owned,
-                            options,
-                            part_cols_opt,
-                        ) {
-                            Ok(state) => {
-                                self.parquet_metadata_cache = None;
-                                self.export_df = None;
-                                self.data_table_state = Some(state);
-                                self.path = path.clone();
-                                if let Some(ref p) = path {
-                                    self.original_file_format =
-                                        p.extension().and_then(|e| e.to_str()).and_then(|ext| {
-                                            if ext.eq_ignore_ascii_case("parquet") {
-                                                Some(ExportFormat::Parquet)
-                                            } else if ext.eq_ignore_ascii_case("csv") {
-                                                Some(ExportFormat::Csv)
-                                            } else if ext.eq_ignore_ascii_case("json") {
-                                                Some(ExportFormat::Json)
-                                            } else if ext.eq_ignore_ascii_case("jsonl")
-                                                || ext.eq_ignore_ascii_case("ndjson")
-                                            {
-                                                Some(ExportFormat::Ndjson)
-                                            } else if ext.eq_ignore_ascii_case("arrow")
-                                                || ext.eq_ignore_ascii_case("ipc")
-                                                || ext.eq_ignore_ascii_case("feather")
-                                            {
-                                                Some(ExportFormat::Ipc)
-                                            } else if ext.eq_ignore_ascii_case("avro") {
-                                                Some(ExportFormat::Avro)
-                                            } else {
-                                                None
-                                            }
-                                        });
-                                    self.original_file_delimiter =
-                                        Some(options.delimiter.unwrap_or(b','));
-                                } else {
-                                    self.original_file_format = None;
-                                    self.original_file_delimiter = None;
-                                }
-                                self.sort_filter_modal = SortFilterModal::new();
-                                self.pivot_melt_modal = PivotMeltModal::new();
-                                if let LoadingState::Loading {
-                                    file_path,
-                                    file_size,
-                                    ..
-                                } = &self.loading_state
-                                {
-                                    self.loading_state = LoadingState::Loading {
-                                        file_path: file_path.clone(),
-                                        file_size: *file_size,
-                                        current_phase: "Loading buffer".to_string(),
-                                        progress_percent: 70,
-                                    };
-                                }
-                                Some(AppEvent::DoLoadBuffer)
+                // General path: collect_schema() may be slow. Spawn to background.
+                let debug_label = if self.debug.schema_load.is_none() {
+                    Some("full scan".to_string())
+                } else {
+                    self.debug.schema_load.clone()
+                };
+                let gen = self.task_generation;
+                let tx = self.events.clone();
+                let lf_clone = (**lf).clone();
+                let path_clone = path.clone();
+                let options_clone = options.clone();
+                let schema_slot = self.pending_schema_result.clone();
+                self.status_message = Some("Caching schema...".to_string());
+                self.runtime.spawn_blocking(move || {
+                    let mut lf_owned = lf_clone;
+                    match lf_owned.collect_schema() {
+                        Ok(schema) => {
+                            let partition_columns = if path_clone.as_ref().is_some_and(|p| {
+                                options_clone.hive
+                                    && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
+                            }) {
+                                let discovered = DataTableState::discover_hive_partition_columns(
+                                    path_clone.as_ref().expect("path set by caller"),
+                                );
+                                discovered
+                                    .into_iter()
+                                    .filter(|c| schema.contains(c.as_str()))
+                                    .collect::<Vec<_>>()
+                            } else {
+                                Vec::new()
+                            };
+                            if !partition_columns.is_empty() {
+                                let exprs: Vec<_> = partition_columns
+                                    .iter()
+                                    .map(|s| col(s.as_str()))
+                                    .chain(
+                                        schema
+                                            .iter_names()
+                                            .map(|s| s.to_string())
+                                            .filter(|c| !partition_columns.contains(c))
+                                            .map(|s| col(s.as_str())),
+                                    )
+                                    .collect();
+                                lf_owned = lf_owned.select(exprs);
                             }
-                            Err(e) => {
-                                self.loading_state = LoadingState::Idle;
-                                self.busy = false;
-                                self.drain_keys_on_next_loop = true;
-                                let msg = crate::error_display::user_message_from_report(&e, None);
-                                Some(AppEvent::Crash(msg))
+                            let part_cols_opt = if partition_columns.is_empty() {
+                                None
+                            } else {
+                                Some(partition_columns)
+                            };
+                            match DataTableState::from_schema_and_lazyframe(
+                                schema,
+                                lf_owned,
+                                &options_clone,
+                                part_cols_opt,
+                            ) {
+                                Ok(state) => {
+                                    *schema_slot.lock().unwrap_or_else(|e| e.into_inner()) =
+                                        Some(state);
+                                    let _ = tx.send(AppEvent::BackgroundSchemaReady {
+                                        generation: gen,
+                                        path: path_clone,
+                                        options: options_clone,
+                                        debug_label,
+                                    });
+                                }
+                                Err(e) => {
+                                    let msg =
+                                        crate::error_display::user_message_from_report(&e, None);
+                                    let _ = tx.send(AppEvent::Crash(msg));
+                                }
                             }
                         }
+                        Err(e) => {
+                            let report = color_eyre::eyre::Report::from(e);
+                            let msg = crate::error_display::user_message_from_report(&report, None);
+                            let _ = tx.send(AppEvent::Crash(msg));
+                        }
                     }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let report = color_eyre::eyre::Report::from(e);
-                        let msg = crate::error_display::user_message_from_report(&report, None);
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
+                });
+                None
             }
             AppEvent::DoLoadBuffer => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.collect();
-                    if let Some(e) = state.error.take() {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_polars(&e);
-                        return Some(AppEvent::Crash(msg));
-                    }
+                if !self.spawn_async_collect("Loading buffer...") {
+                    self.loading_state = LoadingState::Idle;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.loading_state = LoadingState::Idle;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                Some(AppEvent::Collect)
+                None
             }
             AppEvent::DoLoad(paths, options) => {
                 let first = &paths[0];
@@ -7014,86 +7105,125 @@ impl App {
                     }
                 }
             }
-            AppEvent::Resize(_cols, rows) => {
-                self.busy = true;
-                if let Some(state) = &mut self.data_table_state {
-                    state.visible_rows = *rows as usize;
-                    state.collect();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
+            AppEvent::Resize(_cols, _rows) => {
+                // visible_rows is set correctly by the datatable render code (which knows the
+                // actual table area, not just terminal height). Trigger an async collect so the
+                // buffer adjusts to the new size after the next render sets visible_rows.
+                Some(AppEvent::Collect)
             }
             AppEvent::Collect => {
-                self.busy = true;
-                if let Some(ref mut state) = self.data_table_state {
-                    state.collect();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
+                self.spawn_async_collect("Loading buffer...");
                 None
             }
             AppEvent::DoScrollDown => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.page_down();
+                let needs = if let Some(state) = &mut self.data_table_state {
+                    state.page_down()
+                } else {
+                    false
+                };
+                if needs {
+                    self.spawn_async_collect("Loading buffer...");
+                } else {
+                    self.busy = false;
                 }
-                self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::DoScrollUp => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.page_up();
+                let needs = if let Some(state) = &mut self.data_table_state {
+                    state.page_up()
+                } else {
+                    false
+                };
+                if needs {
+                    self.spawn_async_collect("Loading buffer...");
+                } else {
+                    self.busy = false;
                 }
-                self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::DoScrollNext => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.select_next();
+                let needs = if let Some(state) = &mut self.data_table_state {
+                    state.select_next()
+                } else {
+                    false
+                };
+                if needs {
+                    self.spawn_async_collect("Loading buffer...");
+                } else {
+                    self.busy = false;
                 }
-                self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::DoScrollPrev => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.select_previous();
+                let needs = if let Some(state) = &mut self.data_table_state {
+                    state.select_previous()
+                } else {
+                    false
+                };
+                if needs {
+                    self.spawn_async_collect("Loading buffer...");
+                } else {
+                    self.busy = false;
                 }
-                self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::DoScrollEnd => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.scroll_to_end();
+                let needs = if let Some(state) = &mut self.data_table_state {
+                    state.scroll_to_end()
+                } else {
+                    false
+                };
+                if needs {
+                    self.spawn_async_collect("Loading buffer...");
+                } else {
+                    self.busy = false;
                 }
-                self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::DoScrollHalfDown => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.half_page_down();
+                let needs = if let Some(state) = &mut self.data_table_state {
+                    state.half_page_down()
+                } else {
+                    false
+                };
+                if needs {
+                    self.spawn_async_collect("Loading buffer...");
+                } else {
+                    self.busy = false;
                 }
-                self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::DoScrollHalfUp => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.half_page_up();
+                let needs = if let Some(state) = &mut self.data_table_state {
+                    state.half_page_up()
+                } else {
+                    false
+                };
+                if needs {
+                    self.spawn_async_collect("Loading buffer...");
+                } else {
+                    self.busy = false;
                 }
-                self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::GoToLine(n) => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.scroll_to_row_centered(*n);
+                let needs = if let Some(state) = &mut self.data_table_state {
+                    state.scroll_to_row_centered(*n)
+                } else {
+                    false
+                };
+                if needs {
+                    self.spawn_async_collect("Loading buffer...");
+                } else {
+                    self.busy = false;
                 }
-                self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
@@ -7109,127 +7239,322 @@ impl App {
                 };
                 let comp = self.analysis_computation.take()?;
                 if comp.df.is_none() {
-                    // First chunk: get row count then run describe (lazy aggregation, no full collect)
-                    // Reuse cached row count from control bar when valid to avoid extra full scan.
-                    let total_rows = match self
+                    // Spawn background task: get row count then run describe.
+                    let gen = self.task_generation;
+                    let tx = self.events.clone();
+                    let cached_rows = self
                         .data_table_state
                         .as_ref()
-                        .and_then(|s| s.num_rows_if_valid())
-                    {
-                        Some(n) => n,
-                        None => match crate::statistics::collect_lazy(
-                            lf.clone().select([len()]),
-                            self.app_config.performance.polars_streaming,
-                        ) {
-                            Ok(count_df) => {
-                                if let Some(col) = count_df.get(0) {
-                                    match col.first() {
-                                        Some(AnyValue::UInt32(n)) => *n as usize,
-                                        _ => 0,
+                        .and_then(|s| s.num_rows_if_valid());
+                    let sampling = self.sampling_threshold;
+                    let seed = comp.sample_seed;
+                    let streaming = self.app_config.performance.polars_streaming;
+                    self.status_message = Some("Computing statistics...".to_string());
+                    self.runtime.spawn_blocking(move || {
+                        let total_rows = match cached_rows {
+                            Some(n) => n,
+                            None => {
+                                match crate::statistics::collect_lazy(
+                                    lf.clone().select([len()]),
+                                    streaming,
+                                ) {
+                                    Ok(count_df) => {
+                                        if let Some(col) = count_df.get(0) {
+                                            match col.first() {
+                                                Some(AnyValue::UInt32(n)) => *n as usize,
+                                                _ => 0,
+                                            }
+                                        } else {
+                                            0
+                                        }
                                     }
-                                } else {
-                                    0
+                                    Err(e) => {
+                                        let _ = tx.send(AppEvent::BackgroundError {
+                                            generation: gen,
+                                            message: format!("{e}"),
+                                        });
+                                        return;
+                                    }
                                 }
                             }
-                            Err(_e) => {
-                                self.analysis_modal.computing = None;
-                                self.busy = false;
-                                self.drain_keys_on_next_loop = true;
-                                return None;
+                        };
+                        match crate::statistics::compute_describe_from_lazy(
+                            &lf, total_rows, sampling, seed, streaming,
+                        ) {
+                            Ok(results) => {
+                                let _ = tx.send(AppEvent::BackgroundDescribeReady {
+                                    generation: gen,
+                                    results,
+                                });
                             }
-                        },
-                    };
-                    match crate::statistics::compute_describe_from_lazy(
-                        &lf,
-                        total_rows,
-                        self.sampling_threshold,
-                        comp.sample_seed,
-                        self.app_config.performance.polars_streaming,
-                    ) {
-                        Ok(results) => {
-                            self.analysis_modal.describe_results = Some(results);
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            None
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: gen,
+                                    message: format!("{e}"),
+                                });
+                            }
                         }
-                        Err(_e) => {
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            None
-                        }
-                    }
-                } else {
-                    None
+                    });
                 }
+                None
             }
             AppEvent::AnalysisDistributionCompute => {
                 if let Some(state) = &self.data_table_state {
-                    let options = crate::statistics::ComputeOptions {
-                        include_distribution_info: true,
-                        include_distribution_analyses: true,
-                        include_correlation_matrix: false,
-                        include_skewness_kurtosis_outliers: true,
-                        polars_streaming: self.app_config.performance.polars_streaming,
-                    };
-                    if let Ok(results) = crate::statistics::compute_statistics_with_options(
-                        &state.lf,
-                        self.sampling_threshold,
-                        self.analysis_modal.random_seed,
-                        options,
-                    ) {
-                        self.analysis_modal.distribution_results = Some(results);
-                    }
+                    let gen = self.task_generation;
+                    let tx = self.events.clone();
+                    let lf = state.lf.clone();
+                    let sampling = self.sampling_threshold;
+                    let seed = self.analysis_modal.random_seed;
+                    let streaming = self.app_config.performance.polars_streaming;
+                    self.status_message = Some("Analyzing distributions...".to_string());
+                    self.runtime.spawn_blocking(move || {
+                        let options = crate::statistics::ComputeOptions {
+                            include_distribution_info: true,
+                            include_distribution_analyses: true,
+                            include_correlation_matrix: false,
+                            include_skewness_kurtosis_outliers: true,
+                            polars_streaming: streaming,
+                        };
+                        match crate::statistics::compute_statistics_with_options(
+                            &lf, sampling, seed, options,
+                        ) {
+                            Ok(results) => {
+                                let _ = tx.send(AppEvent::BackgroundDistributionReady {
+                                    generation: gen,
+                                    results,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: gen,
+                                    message: format!("{e}"),
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    self.analysis_modal.computing = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.analysis_modal.computing = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
-                    if let Ok(df) =
-                        crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)
-                    {
-                        if let Ok(matrix) = crate::statistics::compute_correlation_matrix(&df) {
-                            self.analysis_modal.correlation_results =
-                                Some(crate::statistics::AnalysisResults {
-                                    column_statistics: vec![],
-                                    total_rows: df.height(),
-                                    sample_size: None,
-                                    sample_seed: self.analysis_modal.random_seed,
-                                    correlation_matrix: Some(matrix),
-                                    distribution_analyses: vec![],
+                    let gen = self.task_generation;
+                    let tx = self.events.clone();
+                    let lf = state.lf.clone();
+                    let streaming = state.polars_streaming;
+                    let seed = self.analysis_modal.random_seed;
+                    self.status_message = Some("Computing correlation matrix...".to_string());
+                    self.runtime.spawn_blocking(move || {
+                        let result = crate::statistics::collect_lazy(lf, streaming).map(|df| {
+                            let matrix = crate::statistics::compute_correlation_matrix(&df).ok();
+                            let height = df.height();
+                            crate::statistics::AnalysisResults {
+                                column_statistics: vec![],
+                                total_rows: height,
+                                sample_size: None,
+                                sample_seed: seed,
+                                correlation_matrix: matrix,
+                                distribution_analyses: vec![],
+                            }
+                        });
+                        match result {
+                            Ok(results) => {
+                                let _ = tx.send(AppEvent::BackgroundCorrelationReady {
+                                    generation: gen,
+                                    results,
                                 });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: gen,
+                                    message: format!("{e}"),
+                                });
+                            }
                         }
+                    });
+                } else {
+                    self.analysis_modal.computing = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                }
+                None
+            }
+            AppEvent::BackgroundCollectReady { generation } => {
+                let taken = if *generation == self.task_generation {
+                    self.pending_collect_result
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take()
+                } else {
+                    None
+                };
+                if let Some(result) = taken {
+                    if let Some(state) = &mut self.data_table_state {
+                        state.apply_async_collect(result);
                     }
                 }
-                self.analysis_modal.computing = None;
+                self.loading_state = LoadingState::Idle;
+                self.status_message = None;
                 self.busy = false;
                 self.drain_keys_on_next_loop = true;
                 None
             }
+            AppEvent::BackgroundSchemaReady {
+                generation,
+                path,
+                options,
+                debug_label,
+            } => {
+                let taken_state = if *generation == self.task_generation {
+                    self.pending_schema_result
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take()
+                } else {
+                    None
+                };
+                if let Some(state) = taken_state {
+                    self.apply_schema_ready(state, path.clone(), options, debug_label.clone());
+                    return Some(AppEvent::DoLoadBuffer);
+                }
+                self.loading_state = LoadingState::Idle;
+                self.status_message = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::BackgroundDescribeReady {
+                generation,
+                results,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.describe_results = Some(results.clone());
+                }
+                self.analysis_modal.computing = None;
+                self.status_message = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::BackgroundDistributionReady {
+                generation,
+                results,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.distribution_results = Some(results.clone());
+                }
+                self.analysis_modal.computing = None;
+                self.status_message = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::BackgroundCorrelationReady {
+                generation,
+                results,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.correlation_results = Some(results.clone());
+                }
+                self.analysis_modal.computing = None;
+                self.status_message = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::BackgroundExportCollected {
+                generation,
+                df,
+                path,
+                format,
+                options,
+            } => {
+                if *generation == self.task_generation {
+                    self.export_df = Some(df.clone());
+                    let has_compression = match format {
+                        ExportFormat::Csv => options.csv_compression.is_some(),
+                        ExportFormat::Json => options.json_compression.is_some(),
+                        ExportFormat::Ndjson => options.ndjson_compression.is_some(),
+                        ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => false,
+                    };
+                    let phase = if has_compression {
+                        "Writing and compressing file"
+                    } else {
+                        "Writing file"
+                    };
+                    self.loading_state = LoadingState::Exporting {
+                        file_path: path.clone(),
+                        current_phase: phase.to_string(),
+                        progress_percent: 50,
+                    };
+                    self.status_message = Some(format!("{}...", phase));
+                    return Some(AppEvent::DoExportWrite(
+                        path.clone(),
+                        *format,
+                        options.clone(),
+                    ));
+                }
+                self.loading_state = LoadingState::Idle;
+                self.status_message = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::BackgroundExportWritten {
+                generation,
+                path,
+                result,
+            } => {
+                self.loading_state = LoadingState::Idle;
+                self.status_message = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                if *generation == self.task_generation {
+                    match result {
+                        Ok(()) => {
+                            self.success_modal
+                                .show(format!("Data exported successfully to\n{}", path.display()));
+                        }
+                        Err(e) => {
+                            self.error_modal.show(e.clone());
+                        }
+                    }
+                }
+                None
+            }
+            AppEvent::BackgroundError {
+                generation: _,
+                message,
+            } => {
+                self.analysis_modal.computing = None;
+                self.loading_state = LoadingState::Idle;
+                self.status_message = None;
+                self.busy = false;
+                self.drain_keys_on_next_loop = true;
+                self.error_modal.show(message.clone());
+                None
+            }
             AppEvent::Search(query) => {
                 let query_succeeded = if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.query(query.clone());
+                    state.defer_collect = false;
                     state.error.is_none()
                 } else {
                     false
                 };
 
-                // Only close input mode if query succeeded (no error after execution)
                 if query_succeeded {
-                    // History was already saved in TextInputEvent::Submit handler
                     self.input_mode = InputMode::Normal;
                     self.query_input.set_focused(false);
-                    // Re-enable error display in main view when closing query input
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
                     }
+                    self.spawn_async_collect("Applying query...");
                 }
-                // If there's an error, keep input mode open so user can fix the query
-                // suppress_error_display remains true to keep main view clean
                 None
             }
             AppEvent::SqlSearch(sql) => {
@@ -7245,14 +7570,15 @@ impl App {
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
                     }
-                    Some(AppEvent::Collect)
-                } else {
-                    None
+                    self.spawn_async_collect("Applying SQL query...");
                 }
+                None
             }
             AppEvent::FuzzySearch(query) => {
                 let fuzzy_succeeded = if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.fuzzy_search(query.clone());
+                    state.defer_collect = false;
                     state.error.is_none()
                 } else {
                     false
@@ -7263,27 +7589,35 @@ impl App {
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
                     }
-                    Some(AppEvent::Collect)
-                } else {
-                    None
+                    self.spawn_async_collect("Searching...");
                 }
+                None
             }
             AppEvent::Filter(statements) => {
                 if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.filter(statements.clone());
+                    state.defer_collect = false;
                 }
+                self.spawn_async_collect("Filtering...");
                 None
             }
             AppEvent::Sort(columns, ascending) => {
                 if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.sort(columns.clone(), *ascending);
+                    state.defer_collect = false;
                 }
+                self.spawn_async_collect("Sorting...");
                 None
             }
             AppEvent::Reset => {
                 if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.reset();
+                    state.defer_collect = false;
                 }
+                self.spawn_async_collect("Loading buffer...");
                 // Clear active template when resetting
                 self.active_template_id = None;
                 None
@@ -7298,11 +7632,15 @@ impl App {
             AppEvent::Pivot(spec) => {
                 self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
-                    match state.pivot(spec) {
+                    state.defer_collect = true;
+                    let result = state.pivot(spec);
+                    state.defer_collect = false;
+                    match result {
                         Ok(()) => {
                             self.pivot_melt_modal.close();
                             self.input_mode = InputMode::Normal;
-                            Some(AppEvent::Collect)
+                            self.spawn_async_collect("Computing pivot...");
+                            None
                         }
                         Err(e) => {
                             self.busy = false;
@@ -7319,11 +7657,15 @@ impl App {
             AppEvent::Melt(spec) => {
                 self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
-                    match state.melt(spec) {
+                    state.defer_collect = true;
+                    let result = state.melt(spec);
+                    state.defer_collect = false;
+                    match result {
                         Ok(()) => {
                             self.pivot_melt_modal.close();
                             self.input_mode = InputMode::Normal;
-                            Some(AppEvent::Collect)
+                            self.spawn_async_collect("Computing melt...");
+                            None
                         }
                         Err(e) => {
                             self.busy = false;
@@ -7411,68 +7753,61 @@ impl App {
             }
             AppEvent::DoExportCollect(path, format, options) => {
                 if let Some(state) = &self.data_table_state {
-                    match crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)
-                    {
-                        Ok(df) => {
-                            self.export_df = Some(df);
-                            let has_compression = match format {
-                                ExportFormat::Csv => options.csv_compression.is_some(),
-                                ExportFormat::Json => options.json_compression.is_some(),
-                                ExportFormat::Ndjson => options.ndjson_compression.is_some(),
-                                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-                                    false
-                                }
-                            };
-                            let phase = if has_compression {
-                                "Writing and compressing file"
-                            } else {
-                                "Writing file"
-                            };
-                            self.loading_state = LoadingState::Exporting {
-                                file_path: path.clone(),
-                                current_phase: phase.to_string(),
-                                progress_percent: 50,
-                            };
-                            Some(AppEvent::DoExportWrite(
-                                path.clone(),
-                                *format,
-                                options.clone(),
-                            ))
+                    let gen = self.task_generation;
+                    let tx = self.events.clone();
+                    let lf = state.lf.clone();
+                    let streaming = state.polars_streaming;
+                    let path = path.clone();
+                    let format = *format;
+                    let options = options.clone();
+                    self.status_message = Some("Collecting data for export...".to_string());
+                    self.runtime.spawn_blocking(move || {
+                        match crate::statistics::collect_lazy(lf, streaming) {
+                            Ok(df) => {
+                                let _ = tx.send(AppEvent::BackgroundExportCollected {
+                                    generation: gen,
+                                    df,
+                                    path,
+                                    format,
+                                    options,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: gen,
+                                    message: format!(
+                                        "Export failed: {}",
+                                        crate::error_display::user_message_from_polars(&e)
+                                    ),
+                                });
+                            }
                         }
-                        Err(e) => {
-                            self.loading_state = LoadingState::Idle;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            self.error_modal.show(format!(
-                                "Export failed: {}",
-                                crate::error_display::user_message_from_polars(&e)
-                            ));
-                            None
-                        }
-                    }
+                    });
                 } else {
                     self.busy = false;
-                    None
                 }
+                None
             }
             AppEvent::DoExportWrite(path, format, options) => {
-                let result = self
-                    .export_df
-                    .take()
-                    .map(|mut df| Self::export_data_from_df(&mut df, path, *format, options));
-                self.loading_state = LoadingState::Idle;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                match result {
-                    Some(Ok(())) => {
-                        self.success_modal
-                            .show(format!("Data exported successfully to\n{}", path.display()));
-                    }
-                    Some(Err(e)) => {
-                        let error_msg = Self::format_export_error(&e, path);
-                        self.error_modal.show(error_msg);
-                    }
-                    None => {}
+                if let Some(df) = self.export_df.take() {
+                    let gen = self.task_generation;
+                    let tx = self.events.clone();
+                    let path = path.clone();
+                    let format = *format;
+                    let options = options.clone();
+                    self.runtime.spawn_blocking(move || {
+                        let mut df = df;
+                        let result = Self::export_data_from_df(&mut df, &path, format, &options);
+                        let _ = tx.send(AppEvent::BackgroundExportWritten {
+                            generation: gen,
+                            path: path.clone(),
+                            result: result.map_err(|e| Self::format_export_error(&e, &path)),
+                        });
+                    });
+                } else {
+                    self.loading_state = LoadingState::Idle;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -8290,7 +8625,7 @@ impl Widget for &mut App {
         }
 
         use crate::render::context::RenderContext;
-        use crate::render::layout::{app_layout, centered_rect_loading};
+        use crate::render::layout::app_layout;
         use crate::render::main_view::MainViewContent;
 
         let ctx = RenderContext::from_theme_and_config(
@@ -8316,45 +8651,7 @@ impl Widget for &mut App {
 
         crate::render::main_view_render::render_main_view(area, main_area, buf, self, &ctx);
 
-        // Render loading progress popover (min 25 chars wide, max 25% of area; throbber spins via busy in controls)
-        if matches!(self.loading_state, LoadingState::Loading { .. }) {
-            if let LoadingState::Loading {
-                current_phase,
-                progress_percent,
-                ..
-            } = &self.loading_state
-            {
-                let popover_rect = centered_rect_loading(area);
-                crate::render::overlays::render_loading_gauge(
-                    popover_rect,
-                    buf,
-                    "Loading",
-                    current_phase,
-                    *progress_percent,
-                    ctx.modal_border,
-                    ctx.primary_chart_series_color,
-                );
-            }
-        }
-        if matches!(self.loading_state, LoadingState::Exporting { .. }) {
-            if let LoadingState::Exporting {
-                file_path,
-                current_phase,
-                progress_percent,
-            } = &self.loading_state
-            {
-                let label = format!("{}: {}", current_phase, file_path.display());
-                crate::render::overlays::render_loading_gauge(
-                    area,
-                    buf,
-                    "Exporting",
-                    &label,
-                    *progress_percent,
-                    ctx.modal_border,
-                    ctx.primary_chart_series_color,
-                );
-            }
-        }
+        // Status messages are shown inline in the control bar (no overlay popups).
 
         if self.confirmation_modal.active {
             crate::render::overlays::render_confirmation_modal(
@@ -8403,6 +8700,44 @@ impl Widget for &mut App {
         let mut controls = Controls::from_context(row_count.unwrap_or(0), &ctx)
             .with_unicode_throbber(use_unicode_throbber);
 
+        // Derive status message from loading_state or explicit status_message.
+        let status_msg = match &self.loading_state {
+            LoadingState::Loading {
+                current_phase,
+                progress_percent,
+                ..
+            } => {
+                if *progress_percent > 0 {
+                    Some(format!("{}... ({}%)", current_phase, progress_percent))
+                } else {
+                    Some(format!("{}...", current_phase))
+                }
+            }
+            LoadingState::Exporting {
+                current_phase,
+                progress_percent,
+                file_path,
+            } => {
+                let filename = file_path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+                if *progress_percent > 0 {
+                    Some(format!(
+                        "{}... ({}%)  {}",
+                        current_phase, progress_percent, filename
+                    ))
+                } else {
+                    Some(format!("{}...  {}", current_phase, filename))
+                }
+            }
+            LoadingState::Idle => {
+                if self.busy {
+                    self.status_message.clone()
+                } else {
+                    None
+                }
+            }
+        };
+        controls = controls.with_status_message(status_msg);
+
         match crate::render::main_view::control_bar_spec(self, main_view_content) {
             crate::render::main_view::ControlBarSpec::Datatable {
                 dimmed,
@@ -8415,9 +8750,6 @@ impl Widget for &mut App {
             }
         }
 
-        if self.busy {
-            self.throbber_frame = self.throbber_frame.wrapping_add(1);
-        }
         controls = controls.with_busy(self.busy, self.throbber_frame);
         controls.render(app_layout.control_bar, buf);
         if let Some(debug_area) = app_layout.debug {
@@ -8479,6 +8811,12 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             }
         }
     }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to create tokio runtime: {}", e))?;
+
     let mut terminal = ratatui::try_init().map_err(|e| {
         color_eyre::eyre::eyre!(
             "datui requires an interactive terminal (TTY). No terminal detected: {}. \
@@ -8487,97 +8825,90 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         )
     })?;
     let (tx, rx) = mpsc::channel::<AppEvent>();
-    let mut app = App::new_with_config(tx.clone(), theme, config.clone());
+    let mut app = App::new_with_config(tx.clone(), rt.handle().clone(), theme, config.clone());
     if opts.debug {
         app.enable_debug();
     }
 
-    terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
-
+    // Send initial event and show the first frame immediately.
     match input {
         RunInput::Paths(paths, opts) => {
+            app.set_loading_phase("Scanning input", 10);
             tx.send(AppEvent::Open(paths, opts))?;
         }
         RunInput::LazyFrame(lf, opts) => {
-            // Show loading dialog immediately so it is visible when launch is from Python/LazyFrame
-            // (before sending the event and before any blocking work in the event handler).
             app.set_loading_phase("Scanning input", 10);
-            terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
-            let _ = std::io::stdout().flush();
-            // Brief pause so the terminal can display the frame when run from Python (e.g. maturin).
-            std::thread::sleep(std::time::Duration::from_millis(150));
             tx.send(AppEvent::OpenLazyFrame(lf, opts))?;
         }
     }
+    app.busy = true;
+    terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+    let _ = std::io::stdout().flush();
 
-    // Process load events and draw so the loading progress dialog updates (e.g. "Caching schema")
-    // before any blocking work. Keeps processing until no event is received (timeout).
+    // Main event loop: poll for input, drain queued events, redraw.
     loop {
-        let event = match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            Ok(ev) => ev,
-            Err(mpsc::RecvTimeoutError::Timeout) => break,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        // Poll with shorter timeout when busy so throbber animates smoothly (~60fps).
+        let poll_ms = if app.busy {
+            16
+        } else {
+            config.performance.event_poll_interval_ms
         };
-        match event {
-            AppEvent::Exit => break,
-            AppEvent::Crash(msg) => {
-                ratatui::restore();
-                return Err(color_eyre::eyre::eyre!(msg));
-            }
-            ev => {
-                if let Some(next) = app.event(&ev) {
-                    let _ = tx.send(next);
-                }
-                terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
-                let _ = std::io::stdout().flush();
-                // After processing DoLoadSchema we've drawn "Caching schema"; next event is DoLoadSchemaBlocking (blocking).
-                // Leave it for the main loop so we don't block here.
-                if matches!(ev, AppEvent::DoLoadSchema(..)) {
-                    break;
-                }
-            }
-        }
-    }
 
-    loop {
-        if crossterm::event::poll(std::time::Duration::from_millis(
-            config.performance.event_poll_interval_ms,
-        ))? {
+        if crossterm::event::poll(std::time::Duration::from_millis(poll_ms))? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) => {
                     if key.is_press() {
-                        tx.send(AppEvent::Key(key))?
+                        tx.send(AppEvent::Key(key))?;
                     }
                 }
                 crossterm::event::Event::Resize(cols, rows) => {
-                    tx.send(AppEvent::Resize(cols, rows))?
+                    tx.send(AppEvent::Resize(cols, rows))?;
                 }
                 _ => {}
             }
         }
 
-        let updated = match rx.recv_timeout(std::time::Duration::from_millis(0)) {
-            Ok(event) => {
-                match event {
-                    AppEvent::Exit => break,
-                    AppEvent::Crash(msg) => {
-                        ratatui::restore();
-                        return Err(color_eyre::eyre::eyre!(msg));
-                    }
-                    event => {
-                        if let Some(next) = app.event(&event) {
-                            tx.send(next)?;
-                        }
-                    }
+        // Drain ALL pending events per iteration.
+        let mut updated = false;
+        loop {
+            match rx.try_recv() {
+                Ok(AppEvent::Exit) => {
+                    ratatui::restore();
+                    return Ok(());
                 }
-                true
+                Ok(AppEvent::Crash(msg)) => {
+                    ratatui::restore();
+                    return Err(color_eyre::eyre::eyre!(msg));
+                }
+                Ok(event) => {
+                    if let Some(next) = app.event(&event) {
+                        tx.send(next)?;
+                    }
+                    updated = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    ratatui::restore();
+                    return Ok(());
+                }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => false,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
+        }
+
+        // Animate throbber when busy (even without events).
+        if app.busy {
+            app.throbber_frame = app.throbber_frame.wrapping_add(1);
+            updated = true;
+        }
 
         if updated {
             terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+            // After render, check if visible_rows changed and trigger async buffer re-collect.
+            if let Some(state) = &mut app.data_table_state {
+                if state.needs_recollect {
+                    state.needs_recollect = false;
+                    app.spawn_async_collect("Loading buffer...");
+                }
+            }
             if app.should_drain_keys() {
                 while crossterm::event::poll(std::time::Duration::from_millis(0))? {
                     let _ = crossterm::event::read();
@@ -8586,7 +8917,4 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             }
         }
     }
-
-    ratatui::restore();
-    Ok(())
 }

@@ -6299,8 +6299,8 @@ impl App {
                     key.code,
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
                 );
-                let is_help_key = key.code == KeyCode::F(1);
-                // When busy (e.g. loading), still process column scroll, F1, and confirmation modal keys.
+                let is_help_key = key.code == KeyCode::F(1) || key.code == KeyCode::Char('?');
+                // When busy (e.g. loading), still process column scroll, help, and confirmation modal keys.
                 if self.busy && !is_column_scroll && !is_help_key && !self.confirmation_modal.active
                 {
                     return None;

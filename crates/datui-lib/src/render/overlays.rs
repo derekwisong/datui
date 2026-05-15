@@ -1,4 +1,4 @@
-//! Overlay rendering (loading/export gauge, confirmation/success/error modals, help).
+//! Overlay rendering (confirmation/success/error modals, help).
 
 use crate::render::context::RenderContext;
 use crate::render::layout::{centered_rect, centered_rect_with_min};
@@ -6,36 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Widget;
 use ratatui::style::Style;
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, Paragraph};
-
-/// Renders a bordered box with progress gauge; border and gauge use the given colors.
-pub fn render_loading_gauge(
-    area: Rect,
-    buf: &mut Buffer,
-    title: &str,
-    label: &str,
-    progress_percent: u16,
-    border_color: ratatui::style::Color,
-    gauge_fill_color: ratatui::style::Color,
-) {
-    Clear.render(area, buf);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(title)
-        .border_style(Style::default().fg(border_color));
-
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(gauge_fill_color))
-        .percent(progress_percent)
-        .label(label);
-
-    gauge.render(inner, buf);
-}
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 /// Renders the confirmation modal (Yes/No).
 pub fn render_confirmation_modal(
@@ -245,7 +216,7 @@ pub fn render_help_overlay(
     }
 
     let total_wrapped_lines = wrapped_lines.len();
-    let max_scroll = total_wrapped_lines.saturating_sub(available_height).max(0);
+    let max_scroll = total_wrapped_lines.saturating_sub(available_height);
     *scroll = (*scroll).min(max_scroll);
     let scroll_pos = *scroll;
 

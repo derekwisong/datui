@@ -17,7 +17,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Free disk space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -34,13 +34,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -66,7 +66,7 @@ jobs:
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin
           key: ${{ runner.os }}-cargo-packaging-tools-v1
@@ -101,7 +101,7 @@ jobs:
           cd python && maturin build --release --out dist
 
       - name: Upload packaging artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: nightly-linux
           path: |
@@ -120,16 +120,16 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -161,7 +161,7 @@ jobs:
           maturin build --release --out dist
 
       - name: Upload Windows wheel and binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: nightly-windows
           path: |
@@ -179,19 +179,19 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -242,7 +242,7 @@ jobs:
           cd python && maturin build --release --out dist --target ${{ matrix.target }}
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: nightly-macos-${{ matrix.target }}
           path: |

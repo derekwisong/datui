@@ -17,16 +17,33 @@ fn ensure_sample_data() {
     common::ensure_sample_data();
 }
 
-fn load_file_with(app: &mut App, path: PathBuf, opts: OpenOptions) {
-    let event = AppEvent::Open(vec![path], opts);
-    let mut next = app.event(&event);
-    while let Some(ev) = next.take() {
-        next = app.event(&ev);
+fn load_file_with(
+    app: &mut App,
+    rx: &std::sync::mpsc::Receiver<AppEvent>,
+    path: PathBuf,
+    opts: OpenOptions,
+) {
+    let mut next: Option<AppEvent> = Some(AppEvent::Open(vec![path], opts));
+    loop {
+        if let Some(ev) = next.take() {
+            if matches!(ev, AppEvent::Crash(_)) {
+                app.event(&ev);
+                return;
+            }
+            next = app.event(&ev);
+        } else {
+            match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+                Ok(ev) => {
+                    next = Some(ev);
+                }
+                Err(_) => return,
+            }
+        }
     }
 }
 
-fn load_file(app: &mut App, path: PathBuf) {
-    load_file_with(app, path, OpenOptions::default());
+fn load_file(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, path: PathBuf) {
+    load_file_with(app, rx, path, OpenOptions::default());
 }
 
 /// TUI-like collect sequence before pivot: DoLoadBuffer → Collect → set visible_rows → collect.
@@ -49,10 +66,10 @@ const SIMULATE_TUI_INITIAL_COLLECTS: bool = true;
 #[test]
 fn test_pivot_via_events() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file(&mut app, path);
+    load_file(&mut app, &rx, path);
 
     assert!(app.data_table_state.is_some());
 
@@ -88,11 +105,12 @@ fn test_pivot_via_events() {
 #[test]
 fn test_pivot_date_index_render_simulation() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
     load_file_with(
         &mut app,
+        &rx,
         path,
         OpenOptions::default().with_workaround_pivot_date_index(false),
     );
@@ -109,6 +127,12 @@ fn test_pivot_date_index_render_simulation() {
     let mut next = app.event(&AppEvent::Pivot(spec));
     while let Some(ev) = next.take() {
         next = app.event(&ev);
+    }
+    // Drain async collect events from background buffer load.
+    while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+        if let Some(n) = app.event(&ev) {
+            app.event(&n);
+        }
     }
     let state = app.data_table_state.as_ref().unwrap();
     let sliced_df = state
@@ -133,10 +157,10 @@ fn test_pivot_date_index_render_simulation() {
 #[test]
 fn test_pivot_long_string_via_events() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long_string.parquet");
-    load_file(&mut app, path);
+    load_file(&mut app, &rx, path);
 
     assert!(app.data_table_state.is_some());
     let spec = PivotSpec {
@@ -163,10 +187,10 @@ fn test_pivot_long_string_via_events() {
 #[test]
 fn test_melt_via_events() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/melt_wide.parquet");
-    load_file(&mut app, path);
+    load_file(&mut app, &rx, path);
 
     assert!(app.data_table_state.is_some());
     let cols = app.data_table_state.as_ref().unwrap().schema.iter_names();
@@ -202,10 +226,10 @@ fn test_melt_via_events() {
 #[test]
 fn test_melt_wide_many_via_events() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/melt_wide_many.parquet");
-    load_file(&mut app, path);
+    load_file(&mut app, &rx, path);
 
     assert!(app.data_table_state.is_some());
     let cols = app.data_table_state.as_ref().unwrap().schema.iter_names();
@@ -238,10 +262,10 @@ fn test_melt_wide_many_via_events() {
 #[test]
 fn test_pivot_on_current_view_after_filter() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file(&mut app, path);
+    load_file(&mut app, &rx, path);
 
     let raw_count = app
         .data_table_state
@@ -322,10 +346,10 @@ fn send_key(app: &mut App, code: KeyCode) {
 #[test]
 fn test_esc_cancels_pivot_melt_without_change() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file(&mut app, path);
+    load_file(&mut app, &rx, path);
 
     let rows_before = app
         .data_table_state
@@ -360,10 +384,10 @@ fn test_esc_cancels_pivot_melt_without_change() {
 #[test]
 fn test_pivot_via_modal_apply() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file(&mut app, path);
+    load_file(&mut app, &rx, path);
 
     send_key(&mut app, KeyCode::Char('p'));
     assert!(app.pivot_melt_modal.active);
@@ -395,10 +419,10 @@ fn test_pivot_via_modal_apply() {
 #[test]
 fn test_melt_via_modal_apply() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/melt_wide.parquet");
-    load_file(&mut app, path);
+    load_file(&mut app, &rx, path);
 
     send_key(&mut app, KeyCode::Char('p'));
     assert!(app.pivot_melt_modal.active);
@@ -433,10 +457,10 @@ fn test_melt_via_modal_apply() {
 #[test]
 fn test_template_save_and_apply_pivot() {
     ensure_sample_data();
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file(&mut app, path.clone());
+    load_file(&mut app, &rx, path.clone());
 
     let spec = PivotSpec {
         index: vec!["id".to_string(), "date".to_string()],
@@ -466,7 +490,7 @@ fn test_template_save_and_apply_pivot() {
         )
         .expect("create template");
 
-    load_file(&mut app, path.clone());
+    load_file(&mut app, &rx, path.clone());
     let raw_names: Vec<String> = app
         .data_table_state
         .as_ref()

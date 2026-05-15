@@ -716,7 +716,7 @@ impl ChartModal {
         };
         let next = match delta.cmp(&0) {
             std::cmp::Ordering::Greater => current.saturating_add(step).min(CHART_ROW_LIMIT_MAX),
-            std::cmp::Ordering::Less => current.saturating_sub(step).max(CHART_ROW_LIMIT_MIN),
+            std::cmp::Ordering::Less => current.saturating_sub(step),
             std::cmp::Ordering::Equal => current,
         };
         self.row_limit = if next == 0 { None } else { Some(next) };
@@ -735,7 +735,7 @@ impl ChartModal {
         let step = CHART_ROW_LIMIT_PAGE_STEP;
         let next = match delta.cmp(&0) {
             std::cmp::Ordering::Greater => current.saturating_add(step).min(CHART_ROW_LIMIT_MAX),
-            std::cmp::Ordering::Less => current.saturating_sub(step).max(CHART_ROW_LIMIT_MIN),
+            std::cmp::Ordering::Less => current.saturating_sub(step),
             std::cmp::Ordering::Equal => current,
         };
         self.row_limit = if next == 0 { None } else { Some(next) };

@@ -2,6 +2,8 @@ use datui::config::{AppConfig, Theme};
 use datui::{App, AppEvent};
 use std::sync::mpsc::channel;
 
+mod common;
+
 #[test]
 fn test_app_accepts_theme() {
     let config = AppConfig::default();
@@ -9,7 +11,7 @@ fn test_app_accepts_theme() {
         Theme::from_config(&config.theme).expect("Failed to create theme from default config");
 
     let (tx, _rx) = channel::<AppEvent>();
-    let app = App::new_with_theme(tx, theme);
+    let app = App::new_with_theme(tx, common::test_runtime(), theme);
 
     // Just verify the app was created successfully with a theme
     assert!(app.data_table_state.is_none()); // No data loaded yet
@@ -26,7 +28,7 @@ fn test_theme_with_custom_colors() {
         Theme::from_config(&config.theme).expect("Failed to create theme with custom colors");
 
     let (tx, _rx) = channel::<AppEvent>();
-    let _app = App::new_with_theme(tx, theme);
+    let _app = App::new_with_theme(tx, common::test_runtime(), theme);
 
     // App created successfully with custom theme
 }
@@ -34,7 +36,7 @@ fn test_theme_with_custom_colors() {
 #[test]
 fn test_default_app_has_theme() {
     let (tx, _rx) = channel::<AppEvent>();
-    let app = App::new(tx);
+    let app = App::new(tx, common::test_runtime());
 
     // App should have been created with default theme
     assert!(app.data_table_state.is_none());

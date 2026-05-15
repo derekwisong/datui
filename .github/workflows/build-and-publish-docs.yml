@@ -19,13 +19,13 @@ jobs:
   build-docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -41,7 +41,7 @@ jobs:
 
       - name: Cache mdbook
         id: cache-mdbook
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/mdbook
           key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
@@ -59,7 +59,7 @@ jobs:
           echo "version_sha=$VERSION_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore docs cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: book
           key: docs-book-${{ runner.os }}-${{ steps.compute-docs-key.outputs.version_sha }}

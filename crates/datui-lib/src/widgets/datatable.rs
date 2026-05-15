@@ -108,6 +108,12 @@ pub struct DataTableState {
     pub polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
     workaround_pivot_date_index: bool,
+    /// When true, `collect()` / `apply_transformations()` skip the blocking collect.
+    /// The caller is responsible for triggering an async collect afterwards.
+    pub defer_collect: bool,
+    /// Set by the render code when `visible_rows` changes. The App event loop checks this
+    /// after each render and triggers an async collect if needed.
+    pub needs_recollect: bool,
 }
 
 /// Inferred type for an Excel column (preserves numbers, bools, dates; avoids stringifying).
@@ -119,6 +125,28 @@ enum ExcelColType {
     Utf8,
     Date,
     Datetime,
+}
+
+/// Parameters for a background buffer load. Produced by `prepare_async_collect()`.
+pub struct CollectRequest {
+    /// LazyFrame to collect (sliced to the buffer range, with column selection applied).
+    pub lf: LazyFrame,
+    /// Whether to use Polars streaming engine.
+    pub polars_streaming: bool,
+    /// Buffer start row in the full dataset.
+    pub buffer_start: usize,
+    /// Buffer end row in the full dataset.
+    pub buffer_end: usize,
+    /// Row count for the full (unsliced) dataset.
+    pub num_rows: usize,
+}
+
+/// Result of a background buffer load. Consumed by `apply_async_collect()`.
+pub struct CollectResult {
+    pub df: DataFrame,
+    pub buffer_start: usize,
+    pub buffer_end: usize,
+    pub num_rows: usize,
 }
 
 impl DataTableState {
@@ -175,6 +203,8 @@ impl DataTableState {
             decompress_temp_file: None,
             polars_streaming,
             workaround_pivot_date_index: true,
+            defer_collect: false,
+            needs_recollect: false,
         })
     }
 
@@ -257,6 +287,8 @@ impl DataTableState {
             decompress_temp_file: None,
             polars_streaming: options.polars_streaming,
             workaround_pivot_date_index: options.workaround_pivot_date_index,
+            defer_collect: false,
+            needs_recollect: false,
         })
     }
 
@@ -2443,8 +2475,16 @@ impl DataTableState {
                     return false;
                 }
             }
-            (self.start_row as i64 + rows) as usize
+            let unclamped = (self.start_row as i64 + rows) as usize;
+            if rows > 0 {
+                unclamped.min(self.num_rows.saturating_sub(self.visible_rows))
+            } else {
+                unclamped
+            }
         };
+        if new_start_row == self.start_row {
+            return false;
+        }
         let view_end = new_start_row
             + self
                 .visible_rows
@@ -2455,9 +2495,13 @@ impl DataTableState {
         !within_buffer
     }
 
-    fn slide_table(&mut self, rows: i64) {
+    /// Update scroll position. If the view is within the buffer, re-slices display.
+    /// If outside the buffer, sets the position but the caller must trigger a collect
+    /// (synchronous or async) to load the new buffer range.
+    /// Returns true if a collect is needed (view is outside the current buffer).
+    pub fn slide_table(&mut self, rows: i64) -> bool {
         if rows < 0 && self.start_row == 0 {
-            return;
+            return false;
         }
 
         let new_start_row = if self.start_row as i64 + rows <= 0 {
@@ -2465,13 +2509,25 @@ impl DataTableState {
         } else {
             if let Some(df) = self.df.as_ref() {
                 if rows > 0 && df.shape().0 <= self.visible_rows {
-                    return;
+                    return false;
                 }
             }
-            (self.start_row as i64 + rows) as usize
+            let unclamped = (self.start_row as i64 + rows) as usize;
+            if rows > 0 {
+                // Clamp forward scroll to keep at least visible_rows of data in view.
+                // Without this, holding PageDown at the bottom pushes start_row past
+                // num_rows, which makes scroll_would_trigger_collect fire repeatedly
+                // and can leave busy stuck if the resulting collect is a no-op.
+                unclamped.min(self.num_rows.saturating_sub(self.visible_rows))
+            } else {
+                unclamped
+            }
         };
 
-        // Call collect() only when view is outside buffer; otherwise just update start_row.
+        if new_start_row == self.start_row {
+            return false;
+        }
+
         let view_end = new_start_row
             + self
                 .visible_rows
@@ -2480,16 +2536,24 @@ impl DataTableState {
             && view_end <= self.buffered_end_row
             && self.buffered_end_row > 0;
 
-        if within_buffer {
-            self.start_row = new_start_row;
-            return;
-        }
-
         self.start_row = new_start_row;
-        self.collect();
+
+        if within_buffer {
+            // Re-slice display from existing buffer.
+            self.slice_from_buffer();
+            if self.table_state.selected().is_none() {
+                self.table_state.select(Some(0));
+            }
+            false
+        } else {
+            true // caller must collect
+        }
     }
 
     pub fn collect(&mut self) {
+        if self.defer_collect {
+            return;
+        }
         // Update proximity threshold based on visible rows
         if self.visible_rows > 0 {
             self.proximity_threshold = self.visible_rows;
@@ -2678,6 +2742,190 @@ impl DataTableState {
         }
     }
 
+    /// Prepare the LazyFrame and parameters for an async collect, without blocking.
+    /// Updates internal state (proximity, start_row clamping) then returns
+    /// a `CollectRequest` if a new buffer load is needed, or `None` if the current
+    /// buffer is sufficient (in which case display slices are already updated).
+    ///
+    /// Caller must ensure `num_rows_valid` (via `set_num_rows`) before calling.
+    /// `num_rows_override`, when supplied, applies that value first.
+    pub fn prepare_async_collect(
+        &mut self,
+        num_rows_override: Option<usize>,
+    ) -> Option<CollectRequest> {
+        if self.visible_rows > 0 {
+            self.proximity_threshold = self.visible_rows;
+        }
+
+        if let Some(n) = num_rows_override {
+            self.num_rows = n;
+            self.num_rows_valid = true;
+        }
+        debug_assert!(
+            self.num_rows_valid,
+            "prepare_async_collect requires num_rows_valid; caller must run a background len() first",
+        );
+
+        if self.num_rows > 0 {
+            let max_start = self.num_rows.saturating_sub(1);
+            if self.start_row > max_start {
+                self.start_row = max_start;
+            }
+        } else {
+            self.start_row = 0;
+            self.buffered_start_row = 0;
+            self.buffered_end_row = 0;
+            self.buffered_df = None;
+            self.df = None;
+            self.locked_df = None;
+            return None;
+        }
+
+        let view_start = self.start_row;
+        let view_end = self.start_row + self.visible_rows.min(self.num_rows - self.start_row);
+        let within_buffer = view_start >= self.buffered_start_row
+            && view_end <= self.buffered_end_row
+            && self.buffered_end_row > 0;
+        let page_rows = self.visible_rows.max(1);
+
+        // Compute the buffer range using the same logic as collect().
+        let (new_buffer_start, new_buffer_end) = if within_buffer {
+            let dist_to_start = view_start.saturating_sub(self.buffered_start_row);
+            let dist_to_end = self.buffered_end_row.saturating_sub(view_end);
+            let needs_expansion_back =
+                dist_to_start <= self.proximity_threshold && self.buffered_start_row > 0;
+            let needs_expansion_forward =
+                dist_to_end <= self.proximity_threshold && self.buffered_end_row < self.num_rows;
+
+            if !needs_expansion_back && !needs_expansion_forward {
+                // Buffer is fine, just re-slice display.
+                let expected_len = self
+                    .buffered_end_row
+                    .saturating_sub(self.buffered_start_row);
+                if self
+                    .buffered_df
+                    .as_ref()
+                    .is_some_and(|b| b.height() == expected_len)
+                {
+                    self.slice_buffer_into_display();
+                    if self.table_state.selected().is_none() {
+                        self.table_state.select(Some(0));
+                    }
+                    return None;
+                }
+                (self.buffered_start_row, self.buffered_end_row)
+            } else {
+                let mut s = if needs_expansion_back {
+                    view_start.saturating_sub(self.pages_lookback * page_rows)
+                } else {
+                    self.buffered_start_row
+                };
+                let mut e = if needs_expansion_forward {
+                    (view_end + self.pages_lookahead * page_rows).min(self.num_rows)
+                } else {
+                    self.buffered_end_row
+                };
+                self.clamp_buffer_to_max_size(view_start, view_end, &mut s, &mut e);
+                (s, e)
+            }
+        } else {
+            let had_buffer = self.buffered_end_row > 0;
+            let scrolled_past_end = had_buffer && view_start >= self.buffered_end_row;
+            let scrolled_past_start = had_buffer && view_end <= self.buffered_start_row;
+            let extend_forward_ok = scrolled_past_end
+                && (view_start - self.buffered_end_row) <= self.pages_lookahead * page_rows;
+            let extend_backward_ok = scrolled_past_start
+                && (self.buffered_start_row - view_end) <= self.pages_lookback * page_rows;
+
+            let mut s;
+            let mut e;
+            if extend_forward_ok {
+                s = self.buffered_start_row;
+                e = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+            } else if extend_backward_ok {
+                s = view_start.saturating_sub(self.pages_lookback * page_rows);
+                e = self.buffered_end_row;
+            } else {
+                s = view_start.saturating_sub(self.pages_lookback * page_rows);
+                e = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+                let min_initial_len = (1 + self.pages_lookahead + self.pages_lookback) * page_rows;
+                let current_len = e.saturating_sub(s);
+                if current_len < min_initial_len {
+                    let need = min_initial_len.saturating_sub(current_len);
+                    let can_extend_end = self.num_rows.saturating_sub(e);
+                    let can_extend_start = s;
+                    if can_extend_end >= need {
+                        e = (e + need).min(self.num_rows);
+                    } else if can_extend_start >= need {
+                        s = s.saturating_sub(need);
+                    } else {
+                        e = (e + can_extend_end).min(self.num_rows);
+                        s = s.saturating_sub(need.saturating_sub(can_extend_end));
+                    }
+                }
+            }
+            self.clamp_buffer_to_max_size(view_start, view_end, &mut s, &mut e);
+            (s, e)
+        };
+
+        let buffer_size = new_buffer_end.saturating_sub(new_buffer_start);
+        if buffer_size == 0 {
+            return None;
+        }
+
+        let all_columns: Vec<_> = self
+            .column_order
+            .iter()
+            .map(|name| col(name.as_str()))
+            .collect();
+        let lf = self
+            .lf
+            .clone()
+            .select(all_columns)
+            .slice(new_buffer_start as i64, buffer_size as u32);
+
+        Some(CollectRequest {
+            lf,
+            polars_streaming: self.polars_streaming,
+            buffer_start: new_buffer_start,
+            buffer_end: new_buffer_end,
+            num_rows: self.num_rows,
+        })
+    }
+
+    /// Apply the result of a background buffer load.
+    pub fn apply_async_collect(&mut self, result: CollectResult) {
+        let mut full_df = result.df;
+        self.num_rows = result.num_rows;
+        self.num_rows_valid = true;
+        self.error = None;
+
+        let mut effective_buffer_end = result.buffer_end;
+        if self.max_buffered_mb > 0 {
+            let size = full_df.estimated_size();
+            let max_bytes = self.max_buffered_mb * 1024 * 1024;
+            if size > max_bytes {
+                let rows = full_df.height();
+                if let Some(bytes_per_row) = size.checked_div(rows) {
+                    let max_rows = (max_bytes / bytes_per_row.max(1)).min(rows);
+                    if max_rows < rows {
+                        full_df = full_df.slice(0, max_rows);
+                        effective_buffer_end = result.buffer_start + max_rows;
+                    }
+                }
+            }
+        }
+
+        self.buffered_start_row = result.buffer_start;
+        self.buffered_end_row = effective_buffer_end;
+        self.buffered_df = Some(full_df);
+        // Slice the buffered DataFrame into display DataFrames (locked + scroll columns).
+        self.slice_buffer_into_display();
+        if self.table_state.selected().is_none() {
+            self.table_state.select(Some(0));
+        }
+    }
+
     /// Invalidate num_rows cache when lf is mutated.
     fn invalidate_num_rows(&mut self) {
         self.num_rows_valid = false;
@@ -2691,6 +2939,39 @@ impl DataTableState {
         } else {
             None
         }
+    }
+
+    /// True when num_rows reflects the current `lf`. Used by App to decide whether
+    /// to dispatch a background len() query before planning the buffer collect.
+    pub fn is_num_rows_valid(&self) -> bool {
+        self.num_rows_valid
+    }
+
+    /// Apply a row count computed in the background (so prepare_async_collect doesn't
+    /// have to fall back to a blocking len() on the UI thread).
+    pub fn set_num_rows(&mut self, n: usize) {
+        self.num_rows = n;
+        self.num_rows_valid = true;
+    }
+
+    /// Clone of the LazyFrame for off-thread queries (e.g. background len()).
+    pub fn lf_clone(&self) -> LazyFrame {
+        self.lf.clone()
+    }
+
+    /// Whether the current LazyFrame should use Polars streaming engine.
+    pub fn polars_streaming_enabled(&self) -> bool {
+        self.polars_streaming
+    }
+
+    /// Start row of the currently buffered range.
+    pub fn buffered_start(&self) -> usize {
+        self.buffered_start_row
+    }
+
+    /// End row (exclusive) of the currently buffered range.
+    pub fn buffered_end(&self) -> usize {
+        self.buffered_end_row
     }
 
     /// Clamp buffer to max_buffered_rows; when at cap, slide window to keep view inside.
@@ -2757,8 +3038,7 @@ impl DataTableState {
             let max_bytes = self.max_buffered_mb * 1024 * 1024;
             if size > max_bytes {
                 let rows = full_df.height();
-                if rows > 0 {
-                    let bytes_per_row = size / rows;
+                if let Some(bytes_per_row) = size.checked_div(rows) {
                     let max_rows = (max_bytes / bytes_per_row.max(1)).min(rows);
                     if max_rows < rows {
                         full_df = full_df.slice(0, max_rows);
@@ -2920,51 +3200,48 @@ impl DataTableState {
         Ok(DataFrame::new(new_series)?)
     }
 
-    pub fn select_next(&mut self) {
+    /// Returns true if a buffer collect is needed after the scroll.
+    pub fn select_next(&mut self) -> bool {
         self.table_state.select_next();
         if let Some(selected) = self.table_state.selected() {
             if selected >= self.visible_rows && self.visible_rows > 0 {
-                self.slide_table(1);
+                return self.slide_table(1);
             }
         }
+        false
     }
 
-    pub fn page_down(&mut self) {
-        self.slide_table(self.visible_rows as i64);
+    /// Returns true if a buffer collect is needed after the scroll.
+    pub fn page_down(&mut self) -> bool {
+        self.slide_table(self.visible_rows as i64)
     }
 
-    pub fn select_previous(&mut self) {
+    /// Returns true if a buffer collect is needed after the scroll.
+    pub fn select_previous(&mut self) -> bool {
         if let Some(selected) = self.table_state.selected() {
             self.table_state.select_previous();
             if selected == 0 && self.start_row > 0 {
-                self.slide_table(-1);
+                return self.slide_table(-1);
             }
         } else {
             self.table_state.select(Some(0));
         }
+        false
     }
 
-    pub fn scroll_to(&mut self, index: usize) {
+    /// Returns true if a buffer collect is needed.
+    pub fn scroll_to(&mut self, index: usize) -> bool {
         if self.start_row == index {
-            return;
+            return false;
         }
-
-        if index == 0 {
-            self.start_row = 0;
-            self.collect();
-            self.start_row = 0;
-        } else {
-            self.start_row = index;
-            self.collect();
-        }
+        self.start_row = index;
+        true // caller must collect
     }
 
-    /// Scroll so that the given row index is centered in the view when possible (respects table bounds).
-    /// Selects that row. Used by go-to-line.
-    pub fn scroll_to_row_centered(&mut self, row_index: usize) {
-        self.ensure_num_rows();
+    /// Set scroll position for go-to-line (centered). Returns true if a collect is needed.
+    pub fn scroll_to_row_centered(&mut self, row_index: usize) -> bool {
         if self.num_rows == 0 || self.visible_rows == 0 {
-            return;
+            return false;
         }
         let center_offset = self.visible_rows / 2;
         let mut start_row = row_index.saturating_sub(center_offset);
@@ -2976,59 +3253,33 @@ impl DataTableState {
                 .saturating_sub(start_row)
                 .min(self.visible_rows.saturating_sub(1));
             self.table_state.select(Some(display_idx));
-            return;
+            return false;
         }
 
         self.start_row = start_row;
-        self.collect();
         let display_idx = row_index
             .saturating_sub(start_row)
             .min(self.visible_rows.saturating_sub(1));
         self.table_state.select(Some(display_idx));
+        true // caller must collect
     }
 
-    /// Ensure num_rows is up to date (runs len() query if needed). Used before scroll_to_end.
-    fn ensure_num_rows(&mut self) {
-        if self.num_rows_valid {
-            return;
-        }
-        if self.visible_rows > 0 {
-            self.proximity_threshold = self.visible_rows;
-        }
-        self.num_rows = match self.lf.clone().select([len()]).collect() {
-            Ok(df) => {
-                if let Some(col) = df.get(0) {
-                    if let Some(AnyValue::UInt32(len)) = col.first() {
-                        *len as usize
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                }
-            }
-            Err(_) => 0,
-        };
-        self.num_rows_valid = true;
-    }
-
-    /// Jump to the last page; buffer is trimmed/loaded as needed. Selects the last row.
-    pub fn scroll_to_end(&mut self) {
-        self.ensure_num_rows();
+    /// Jump to the last page. Returns true if a collect is needed.
+    pub fn scroll_to_end(&mut self) -> bool {
         if self.num_rows == 0 {
             self.start_row = 0;
             self.buffered_start_row = 0;
             self.buffered_end_row = 0;
-            return;
+            return false;
         }
         let end_start = self.num_rows.saturating_sub(self.visible_rows);
         if self.start_row == end_start {
             self.select_last_visible_row();
-            return;
+            return false;
         }
         self.start_row = end_start;
-        self.collect();
         self.select_last_visible_row();
+        true // caller must collect
     }
 
     /// Set table selection to the last row in the current view (for use after scroll_to_end).
@@ -3041,24 +3292,27 @@ impl DataTableState {
         self.table_state.select(Some(sel));
     }
 
-    pub fn half_page_down(&mut self) {
+    /// Returns true if a buffer collect is needed after the scroll.
+    pub fn half_page_down(&mut self) -> bool {
         let half = (self.visible_rows / 2).max(1) as i64;
-        self.slide_table(half);
+        self.slide_table(half)
     }
 
-    pub fn half_page_up(&mut self) {
+    /// Returns true if a buffer collect is needed after the scroll.
+    pub fn half_page_up(&mut self) -> bool {
         if self.start_row == 0 {
-            return;
+            return false;
         }
         let half = (self.visible_rows / 2).max(1) as i64;
-        self.slide_table(-half);
+        self.slide_table(-half)
     }
 
-    pub fn page_up(&mut self) {
+    /// Returns true if a buffer collect is needed after the scroll.
+    pub fn page_up(&mut self) -> bool {
         if self.start_row == 0 {
-            return;
+            return false;
         }
-        self.slide_table(-(self.visible_rows as i64));
+        self.slide_table(-(self.visible_rows as i64))
     }
 
     pub fn scroll_right(&mut self) {
@@ -4199,17 +4453,19 @@ impl StatefulWidget for DataTable {
         } else {
             0
         };
-        let needs_collect = new_visible_rows != state.visible_rows;
+        let visible_rows_changed = new_visible_rows != state.visible_rows;
         state.visible_rows = new_visible_rows;
 
         if let Some(selected) = state.table_state.selected() {
-            if selected >= state.visible_rows {
+            if selected >= state.visible_rows && state.visible_rows > 0 {
                 state.table_state.select(Some(state.visible_rows - 1))
             }
         }
 
-        if needs_collect {
-            state.collect();
+        if visible_rows_changed {
+            // Flag that the buffer needs re-collection for the new visible_rows.
+            // The App event loop checks this flag after each render and triggers an async collect.
+            state.needs_recollect = true;
         }
 
         // Only show errors in main view if not suppressed (e.g., when query input is active)
@@ -4513,27 +4769,37 @@ mod tests {
     /// Returns true if a Crash event was seen.
     fn pump_open_until_done(
         app: &mut crate::App,
+        rx: &std::sync::mpsc::Receiver<crate::AppEvent>,
         path: std::path::PathBuf,
         opts: crate::OpenOptions,
     ) -> bool {
         use crate::AppEvent;
-        let mut next = Some(AppEvent::Open(vec![path], opts));
+        let mut next: Option<AppEvent> = Some(AppEvent::Open(vec![path], opts));
         let mut saw_crash = false;
-        while let Some(ev) = next.take() {
-            if matches!(ev, AppEvent::Crash(_)) {
-                saw_crash = true;
-                break;
+        loop {
+            if let Some(ev) = next.take() {
+                if matches!(ev, AppEvent::Crash(_)) {
+                    saw_crash = true;
+                    break;
+                }
+                next = app.event(&ev);
+            } else {
+                match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+                    Ok(ev) => {
+                        next = Some(ev);
+                    }
+                    Err(_) => break,
+                }
             }
-            next = app.event(&ev);
         }
         saw_crash
     }
 
     /// CSV with 100 int-like rows then "N/A" then more ints. With infer_schema_length=100, Polars
-    /// infers Int from the first 100 rows; the parse error occurs at DoLoadBuffer (first collect),
-    /// matching CLI crash. We pump app events (Open -> ... -> DoLoadBuffer) and assert we get Crash.
+    /// infers Int from the first 100 rows; the parse error surfaces from the async collect as a
+    /// BackgroundError event, which the app shows in the error modal rather than crashing.
     #[test]
-    fn test_infer_schema_length_csv_fails_with_short_inference() {
+    fn test_infer_schema_length_csv_short_inference_shows_error_modal() {
         use std::sync::mpsc;
 
         let path = crate::tests::sample_data_dir().join("infer_schema_length_data.csv");
@@ -4542,13 +4808,18 @@ mod tests {
             ..Default::default()
         };
 
-        let (tx, _rx) = mpsc::channel();
-        let mut app = crate::App::new(tx);
+        let (tx, rx) = mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
 
         assert!(
-            pump_open_until_done(&mut app, path, opts),
-            "expected Crash when loading with infer_schema_length=100 (N/A at row 101)"
+            !pump_open_until_done(&mut app, &rx, path, opts),
+            "load should not crash; parse failure should be surfaced via error modal"
         );
+        assert!(
+            app.error_modal.active,
+            "error modal should be shown after parse failure"
+        );
+        assert!(!app.busy, "busy flag should be cleared after error");
     }
 
     #[test]
@@ -4561,11 +4832,11 @@ mod tests {
             ..Default::default()
         };
 
-        let (tx, _rx) = mpsc::channel();
-        let mut app = crate::App::new(tx);
+        let (tx, rx) = mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
 
         assert!(
-            !pump_open_until_done(&mut app, path, opts),
+            !pump_open_until_done(&mut app, &rx, path, opts),
             "load with infer_schema_length=101 should not crash"
         );
         let state = app.data_table_state.as_ref().unwrap();
@@ -4584,11 +4855,11 @@ mod tests {
             ..Default::default()
         };
 
-        let (tx, _rx) = mpsc::channel();
-        let mut app = crate::App::new(tx);
+        let (tx, rx) = mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
 
         assert!(
-            !pump_open_until_done(&mut app, path, opts),
+            !pump_open_until_done(&mut app, &rx, path, opts),
             "load with infer_schema_length=1000 (default) should not crash"
         );
         let state = app.data_table_state.as_ref().unwrap();

@@ -3321,15 +3321,11 @@ pub fn calculate_theoretical_probability_in_interval(
                 }
             }
         }
-        DistributionType::Exponential => {
-            if mean > 0.0 {
-                let lambda = 1.0 / mean;
-                let cdf_upper = exponential_cdf(upper, lambda);
-                let cdf_lower = exponential_cdf(lower, lambda);
-                cdf_upper - cdf_lower
-            } else {
-                0.0
-            }
+        DistributionType::Exponential if mean > 0.0 => {
+            let lambda = 1.0 / mean;
+            let cdf_upper = exponential_cdf(upper, lambda);
+            let cdf_lower = exponential_cdf(lower, lambda);
+            cdf_upper - cdf_lower
         }
         DistributionType::PowerLaw => {
             if sorted_data.is_empty() || !sorted_data.iter().any(|&v| v > 0.0) {
@@ -3385,18 +3381,14 @@ pub fn calculate_theoretical_probability_in_interval(
                 0.0
             }
         }
-        DistributionType::Gamma => {
-            if mean > 0.0 && std > 0.0 {
-                let variance = std * std;
-                let shape = (mean * mean) / variance;
-                let scale = variance / mean;
-                if shape > 0.0 && scale > 0.0 {
-                    let cdf_upper = gamma_cdf(upper, shape, scale);
-                    let cdf_lower = gamma_cdf(lower, shape, scale);
-                    cdf_upper - cdf_lower
-                } else {
-                    0.0
-                }
+        DistributionType::Gamma if mean > 0.0 && std > 0.0 => {
+            let variance = std * std;
+            let shape = (mean * mean) / variance;
+            let scale = variance / mean;
+            if shape > 0.0 && scale > 0.0 {
+                let cdf_upper = gamma_cdf(upper, shape, scale);
+                let cdf_lower = gamma_cdf(lower, shape, scale);
+                cdf_upper - cdf_lower
             } else {
                 0.0
             }
@@ -3469,21 +3461,17 @@ pub fn calculate_theoretical_probability_in_interval(
                 0.0
             }
         }
-        DistributionType::Weibull => {
-            if mean > 0.0 && std > 0.0 {
-                // Approximate shape from CV
-                let cv = std / mean;
-                let shape = if cv < 1.0 { 1.0 / cv } else { 1.0 };
-                // Scale from mean
-                let gamma_1_over_shape = 1.0 + 1.0 / shape; // Approximation
-                let scale = mean / gamma_1_over_shape;
-                if shape > 0.0 && scale > 0.0 {
-                    let cdf_upper = weibull_cdf(upper, shape, scale);
-                    let cdf_lower = weibull_cdf(lower, shape, scale);
-                    cdf_upper - cdf_lower
-                } else {
-                    0.0
-                }
+        DistributionType::Weibull if mean > 0.0 && std > 0.0 => {
+            // Approximate shape from CV
+            let cv = std / mean;
+            let shape = if cv < 1.0 { 1.0 / cv } else { 1.0 };
+            // Scale from mean
+            let gamma_1_over_shape = 1.0 + 1.0 / shape; // Approximation
+            let scale = mean / gamma_1_over_shape;
+            if shape > 0.0 && scale > 0.0 {
+                let cdf_upper = weibull_cdf(upper, shape, scale);
+                let cdf_lower = weibull_cdf(lower, shape, scale);
+                cdf_upper - cdf_lower
             } else {
                 0.0
             }

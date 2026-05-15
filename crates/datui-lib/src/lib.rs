@@ -172,6 +172,20 @@ pub mod tests {
         });
     }
 
+    /// Returns a tokio runtime handle for use in tests.
+    pub fn test_runtime() -> tokio::runtime::Handle {
+        static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        RT.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("test tokio runtime")
+        })
+        .handle()
+        .clone()
+    }
+
     /// Path to the tests/sample-data directory (at repo root). Call `ensure_sample_data()` first if needed.
     pub fn sample_data_dir() -> std::path::PathBuf {
         ensure_sample_data();
@@ -574,6 +588,69 @@ pub enum AppEvent {
     AnalysisDistributionCompute,
     /// Run correlation matrix (deferred so progress overlay can show first).
     AnalysisCorrelationCompute,
+    /// Background task completed: describe/statistics results.
+    BackgroundDescribeReady {
+        generation: u64,
+        results: crate::statistics::AnalysisResults,
+    },
+    /// Background task completed: distribution analysis results.
+    BackgroundDistributionReady {
+        generation: u64,
+        results: crate::statistics::AnalysisResults,
+    },
+    /// Background task completed: correlation matrix results.
+    BackgroundCorrelationReady {
+        generation: u64,
+        results: crate::statistics::AnalysisResults,
+    },
+    /// Background task completed: buffer data collected.
+    /// The actual DataFrame is stored in App::pending_collect_result (to avoid cloning).
+    BackgroundCollectReady {
+        generation: u64,
+    },
+    /// Background task completed: row count for the current LazyFrame. The handler
+    /// applies it to `data_table_state` and triggers the actual buffer collect.
+    /// `status` carries the original `spawn_async_collect` status string so the second
+    /// spawn keeps the user-facing message stable across the two-phase load.
+    BackgroundLenReady {
+        generation: u64,
+        num_rows: usize,
+        status: String,
+    },
+    /// Background task completed: schema loaded and DataTableState constructed.
+    /// The actual state is stored in App::pending_schema_result (to avoid cloning DataTableState).
+    BackgroundSchemaReady {
+        generation: u64,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+        debug_label: Option<String>,
+    },
+    /// Background task completed: export data collected.
+    BackgroundExportCollected {
+        generation: u64,
+        df: DataFrame,
+        path: PathBuf,
+        format: ExportFormat,
+        options: ExportOptions,
+    },
+    /// Background task completed: file written to disk.
+    BackgroundExportWritten {
+        generation: u64,
+        path: PathBuf,
+        result: Result<(), String>,
+    },
+    /// Background task completed: remote file downloaded to temp path.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    BackgroundDownloadReady {
+        generation: u64,
+        temp_path: PathBuf,
+        options: OpenOptions,
+    },
+    /// Background task failed.
+    BackgroundError {
+        generation: u64,
+        message: String,
+    },
 }
 
 /// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
@@ -928,9 +1005,15 @@ pub struct App {
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
-    busy: bool,          // When true, show throbber and ignore keys
-    throbber_frame: u8,  // Spinner frame index (0..3) for control bar
-    drain_keys_on_next_loop: bool, // Main loop drains crossterm key buffer when true
+    runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
+    task_generation: u64, // Incremented to invalidate stale background results
+    pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
+    pending_collect_result:
+        std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
+    busy: bool,                     // When true, show throbber and ignore keys
+    throbber_frame: u8,             // Spinner frame index (0..3) for control bar
+    drain_keys_on_next_loop: bool,  // Main loop drains crossterm key buffer when true
+    status_message: Option<String>, // Status text shown in control bar when busy (replaces keybindings)
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
     /// Temp file path for HTTP-downloaded data; removed when user opens different data or exits.
@@ -939,6 +1022,18 @@ pub struct App {
 }
 
 impl App {
+    /// Returns true when the app is busy (background work in progress).
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Current background-task generation. Bumped each time work is spawned that should
+    /// invalidate prior in-flight tasks. Exposed for tests that need to construct
+    /// synthetic Background* events with a known-stale generation.
+    pub fn task_generation(&self) -> u64 {
+        self.task_generation
+    }
+
     /// Returns true when the main loop should drain the crossterm key buffer after render.
     pub fn should_drain_keys(&self) -> bool {
         self.drain_keys_on_next_loop
@@ -966,9 +1061,180 @@ impl App {
         };
     }
 
+    /// Apply a successfully loaded DataTableState to the app. Shared by all schema load paths.
+    fn apply_schema_ready(
+        &mut self,
+        state: DataTableState,
+        path: Option<PathBuf>,
+        options: &OpenOptions,
+        debug_label: Option<String>,
+    ) {
+        self.debug.schema_load = debug_label;
+        self.parquet_metadata_cache = None;
+        self.export_df = None;
+        self.data_table_state = Some(state);
+        self.path = path.clone();
+        if let Some(ref p) = path {
+            self.original_file_format = p.extension().and_then(|e| e.to_str()).and_then(|ext| {
+                if ext.eq_ignore_ascii_case("parquet") {
+                    Some(ExportFormat::Parquet)
+                } else if ext.eq_ignore_ascii_case("csv") {
+                    Some(ExportFormat::Csv)
+                } else if ext.eq_ignore_ascii_case("json") {
+                    Some(ExportFormat::Json)
+                } else if ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson") {
+                    Some(ExportFormat::Ndjson)
+                } else if ext.eq_ignore_ascii_case("arrow")
+                    || ext.eq_ignore_ascii_case("ipc")
+                    || ext.eq_ignore_ascii_case("feather")
+                {
+                    Some(ExportFormat::Ipc)
+                } else if ext.eq_ignore_ascii_case("avro") {
+                    Some(ExportFormat::Avro)
+                } else {
+                    None
+                }
+            });
+            self.original_file_delimiter = Some(options.delimiter.unwrap_or(b','));
+        } else {
+            self.original_file_format = None;
+            self.original_file_delimiter = None;
+        }
+        self.sort_filter_modal = SortFilterModal::new();
+        self.pivot_melt_modal = PivotMeltModal::new();
+        if let LoadingState::Loading {
+            file_path,
+            file_size,
+            ..
+        } = &self.loading_state
+        {
+            self.loading_state = LoadingState::Loading {
+                file_path: file_path.clone(),
+                file_size: *file_size,
+                current_phase: "Loading buffer".to_string(),
+                progress_percent: 70,
+            };
+        }
+        self.status_message = Some("Loading buffer...".to_string());
+    }
+
     /// Ensures file path has an extension when user did not provide one; only adds
     /// compression suffix (e.g. .gz) when compression is selected. If the user
     /// provided a path with an extension (e.g. foo.feather), that extension is kept.
+    /// Spawn an async buffer collect if needed. Returns true if a background task was spawned.
+    /// Increments task_generation to invalidate any in-flight collect from a prior call.
+    ///
+    /// When the LazyFrame's row count is unknown (e.g. just after a filter/sort/pivot/melt
+    /// that invalidates the cache), this first spawns a `len()` task off-thread; the
+    /// `BackgroundLenReady` handler then re-enters here to spawn the actual buffer collect.
+    pub fn spawn_async_collect(&mut self, status: &str) -> bool {
+        let Some(state) = self.data_table_state.as_mut() else {
+            return false;
+        };
+
+        if !state.is_num_rows_valid() {
+            self.task_generation = self.task_generation.wrapping_add(1);
+            let lf = state.lf_clone();
+            let streaming = state.polars_streaming_enabled();
+            let status_owned = status.to_string();
+            self.spawn_bg(status, move |gen, tx| {
+                let num_rows = match crate::statistics::collect_lazy(lf.select([len()]), streaming)
+                {
+                    Ok(df) => match df.get(0) {
+                        Some(col) => match col.first() {
+                            Some(AnyValue::UInt32(n)) => *n as usize,
+                            _ => 0,
+                        },
+                        None => 0,
+                    },
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::BackgroundError {
+                            generation: gen,
+                            message: crate::error_display::user_message_from_polars(&e),
+                        });
+                        return;
+                    }
+                };
+                let _ = tx.send(AppEvent::BackgroundLenReady {
+                    generation: gen,
+                    num_rows,
+                    status: status_owned,
+                });
+            });
+            return true;
+        }
+
+        let Some(request) = state.prepare_async_collect(None) else {
+            return false;
+        };
+        self.task_generation = self.task_generation.wrapping_add(1);
+        let collect_slot = self.pending_collect_result.clone();
+        self.spawn_bg(status, move |gen, tx| {
+            match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
+                Ok(df) => {
+                    let mut slot = collect_slot.lock().unwrap_or_else(|e| e.into_inner());
+                    // Only write if no newer result is already stored.
+                    let dominated = slot.as_ref().is_some_and(|(g, _)| *g > gen);
+                    if !dominated {
+                        *slot = Some((
+                            gen,
+                            crate::widgets::datatable::CollectResult {
+                                df,
+                                buffer_start: request.buffer_start,
+                                buffer_end: request.buffer_end,
+                                num_rows: request.num_rows,
+                            },
+                        ));
+                    }
+                    drop(slot);
+                    let _ = tx.send(AppEvent::BackgroundCollectReady { generation: gen });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::BackgroundError {
+                        generation: gen,
+                        message: crate::error_display::user_message_from_polars(&e),
+                    });
+                }
+            }
+        });
+        true
+    }
+
+    /// Spawn a background task. Captures the current generation and event sender
+    /// for the closure, sets `busy` and `status_message`. The closure is responsible
+    /// for sending a follow-up event (typically `Background*Ready` or `BackgroundError`)
+    /// using the captured generation so stale results can be filtered out.
+    ///
+    /// Does not bump `task_generation`. Callers that need to invalidate prior in-flight
+    /// work should bump it explicitly before calling.
+    fn spawn_bg<F>(&mut self, status: &str, work: F)
+    where
+        F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
+    {
+        let gen = self.task_generation;
+        let tx = self.events.clone();
+        self.busy = true;
+        self.status_message = Some(status.to_string());
+        self.runtime.spawn_blocking(move || work(gen, tx));
+    }
+
+    /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
+    /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
+    /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
+    /// the busy flag set by the key handler would gate further input forever.
+    fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
+    where
+        F: FnOnce(&mut crate::widgets::datatable::DataTableState) -> bool,
+    {
+        let needs = self.data_table_state.as_mut().is_some_and(scroll);
+        if !needs || !self.spawn_async_collect("Loading buffer...") {
+            self.busy = false;
+            self.status_message = None;
+        }
+        self.drain_keys_on_next_loop = true;
+        None
+    }
+
     fn ensure_file_extension(
         path: &Path,
         format: ExportFormat,
@@ -1030,7 +1296,7 @@ impl App {
         new_path
     }
 
-    pub fn new(events: Sender<AppEvent>) -> App {
+    pub fn new(events: Sender<AppEvent>, runtime: tokio::runtime::Handle) -> App {
         // Create default theme for backward compatibility
         let theme = Theme::from_config(&AppConfig::default().theme).unwrap_or_else(|_| {
             // Create a minimal fallback theme
@@ -1039,14 +1305,23 @@ impl App {
             }
         });
 
-        Self::new_with_config(events, theme, AppConfig::default())
+        Self::new_with_config(events, runtime, theme, AppConfig::default())
     }
 
-    pub fn new_with_theme(events: Sender<AppEvent>, theme: Theme) -> App {
-        Self::new_with_config(events, theme, AppConfig::default())
+    pub fn new_with_theme(
+        events: Sender<AppEvent>,
+        runtime: tokio::runtime::Handle,
+        theme: Theme,
+    ) -> App {
+        Self::new_with_config(events, runtime, theme, AppConfig::default())
     }
 
-    pub fn new_with_config(events: Sender<AppEvent>, theme: Theme, app_config: AppConfig) -> App {
+    pub fn new_with_config(
+        events: Sender<AppEvent>,
+        runtime: tokio::runtime::Handle,
+        theme: Theme,
+        app_config: AppConfig,
+    ) -> App {
         let cache = CacheManager::new(APP_NAME).unwrap_or_else(|_| CacheManager {
             cache_dir: std::env::temp_dir().join(APP_NAME),
         });
@@ -1121,9 +1396,14 @@ impl App {
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
             column_colors: app_config.display.column_colors,
+            runtime,
+            task_generation: 0,
+            pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
             throbber_frame: 0,
             drain_keys_on_next_loop: false,
+            status_message: None,
             analysis_computation: None,
             app_config,
             #[cfg(feature = "http")]
@@ -1691,6 +1971,7 @@ impl App {
         s3_url: &str,
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
@@ -1736,17 +2017,19 @@ impl App {
         let store = builder
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
         let path = OsPath::from(key);
-        match rt.block_on(store.head(&path)) {
+        match runtime.block_on(store.head(&path)) {
             Ok(meta) => Ok(Some(meta.size)),
             Err(_) => Ok(None),
         }
     }
 
     #[cfg(feature = "cloud")]
-    fn fetch_remote_size_gcs(gs_url: &str, _options: &OpenOptions) -> Result<Option<u64>> {
+    fn fetch_remote_size_gcs(
+        gs_url: &str,
+        _options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
@@ -1762,10 +2045,8 @@ impl App {
             .with_bucket_name(bucket)
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
         let path = OsPath::from(key);
-        match rt.block_on(store.head(&path)) {
+        match runtime.block_on(store.head(&path)) {
             Ok(meta) => Ok(Some(meta.size)),
             Err(_) => Ok(None),
         }
@@ -1814,6 +2095,7 @@ impl App {
         s3_url: &str,
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<PathBuf> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
@@ -1863,13 +2145,11 @@ impl App {
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
         let path = OsPath::from(key);
-        let get_result = rt.block_on(store.get(&path)).map_err(|e| {
+        let get_result = runtime.block_on(store.get(&path)).map_err(|e| {
             color_eyre::eyre::eyre!("Could not read from S3. Check credentials and URL: {}", e)
         })?;
-        let bytes = rt
+        let bytes = runtime
             .block_on(get_result.bytes())
             .map_err(|e| color_eyre::eyre::eyre!("Could not read S3 object body: {}", e))?;
 
@@ -1891,7 +2171,11 @@ impl App {
     }
 
     #[cfg(feature = "cloud")]
-    fn download_gcs_to_temp(gs_url: &str, options: &OpenOptions) -> Result<PathBuf> {
+    fn download_gcs_to_temp(
+        gs_url: &str,
+        options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<PathBuf> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
@@ -1911,13 +2195,11 @@ impl App {
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
 
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| color_eyre::eyre::eyre!("Could not start runtime: {}", e))?;
         let path = OsPath::from(key);
-        let get_result = rt.block_on(store.get(&path)).map_err(|e| {
+        let get_result = runtime.block_on(store.get(&path)).map_err(|e| {
             color_eyre::eyre::eyre!("Could not read from GCS. Check credentials and URL: {}", e)
         })?;
-        let bytes = rt
+        let bytes = runtime
             .block_on(get_result.bytes())
             .map_err(|e| color_eyre::eyre::eyre!("Could not read GCS object body: {}", e))?;
 
@@ -3052,60 +3334,60 @@ impl App {
                                 }
                             }
                         }
-                        ExportFocus::ExportButton => {
-                            if !self.export_modal.path_input.value.is_empty() {
-                                let mut path = PathBuf::from(&self.export_modal.path_input.value);
-                                let format = self.export_modal.selected_format;
-                                // Get compression format for this export format
-                                let compression = match format {
-                                    ExportFormat::Csv => self.export_modal.csv_compression,
-                                    ExportFormat::Json => self.export_modal.json_compression,
-                                    ExportFormat::Ndjson => self.export_modal.ndjson_compression,
-                                    ExportFormat::Parquet
-                                    | ExportFormat::Ipc
-                                    | ExportFormat::Avro => None,
-                                };
-                                // Ensure file extension is present (including compression extension if needed)
-                                let path_with_ext =
-                                    Self::ensure_file_extension(&path, format, compression);
-                                // Update the path input to show the extension
-                                if path_with_ext != path {
-                                    self.export_modal
-                                        .path_input
-                                        .set_value(path_with_ext.display().to_string());
+                        ExportFocus::ExportButton
+                            if !self.export_modal.path_input.value.is_empty() =>
+                        {
+                            let mut path = PathBuf::from(&self.export_modal.path_input.value);
+                            let format = self.export_modal.selected_format;
+                            // Get compression format for this export format
+                            let compression = match format {
+                                ExportFormat::Csv => self.export_modal.csv_compression,
+                                ExportFormat::Json => self.export_modal.json_compression,
+                                ExportFormat::Ndjson => self.export_modal.ndjson_compression,
+                                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
+                                    None
                                 }
-                                path = path_with_ext;
-                                let delimiter =
-                                    self.export_modal
-                                        .csv_delimiter_input
-                                        .value
-                                        .chars()
-                                        .next()
-                                        .unwrap_or(',') as u8;
-                                let options = ExportOptions {
-                                    csv_delimiter: delimiter,
-                                    csv_include_header: self.export_modal.csv_include_header,
-                                    csv_compression: self.export_modal.csv_compression,
-                                    json_compression: self.export_modal.json_compression,
-                                    ndjson_compression: self.export_modal.ndjson_compression,
-                                    parquet_compression: None,
-                                };
-                                // Check if file exists and show confirmation
-                                if path.exists() {
-                                    let path_display = path.display().to_string();
-                                    self.pending_export = Some((path, format, options));
-                                    self.confirmation_modal.show(format!(
-                                        "File already exists:\n{}\n\nDo you wish to overwrite this file?",
-                                        path_display
-                                    ));
-                                    self.export_modal.close();
-                                    self.input_mode = InputMode::Normal;
-                                } else {
-                                    // Start export with progress
-                                    self.export_modal.close();
-                                    self.input_mode = InputMode::Normal;
-                                    return Some(AppEvent::Export(path, format, options));
-                                }
+                            };
+                            // Ensure file extension is present (including compression extension if needed)
+                            let path_with_ext =
+                                Self::ensure_file_extension(&path, format, compression);
+                            // Update the path input to show the extension
+                            if path_with_ext != path {
+                                self.export_modal
+                                    .path_input
+                                    .set_value(path_with_ext.display().to_string());
+                            }
+                            path = path_with_ext;
+                            let delimiter = self
+                                .export_modal
+                                .csv_delimiter_input
+                                .value
+                                .chars()
+                                .next()
+                                .unwrap_or(',') as u8;
+                            let options = ExportOptions {
+                                csv_delimiter: delimiter,
+                                csv_include_header: self.export_modal.csv_include_header,
+                                csv_compression: self.export_modal.csv_compression,
+                                json_compression: self.export_modal.json_compression,
+                                ndjson_compression: self.export_modal.ndjson_compression,
+                                parquet_compression: None,
+                            };
+                            // Check if file exists and show confirmation
+                            if path.exists() {
+                                let path_display = path.display().to_string();
+                                self.pending_export = Some((path, format, options));
+                                self.confirmation_modal.show(format!(
+                                    "File already exists:\n{}\n\nDo you wish to overwrite this file?",
+                                    path_display
+                                ));
+                                self.export_modal.close();
+                                self.input_mode = InputMode::Normal;
+                            } else {
+                                // Start export with progress
+                                self.export_modal.close();
+                                self.input_mode = InputMode::Normal;
+                                return Some(AppEvent::Export(path, format, options));
                             }
                         }
                         ExportFocus::CancelButton => {
@@ -3402,25 +3684,24 @@ impl App {
                     self.pivot_melt_modal.melt_pattern_cursor += 1;
                 }
                 KeyCode::Backspace
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern =>
+                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern
+                        && self.pivot_melt_modal.melt_pattern_cursor > 0 =>
                 {
-                    if self.pivot_melt_modal.melt_pattern_cursor > 0 {
-                        let prev_byte: usize = self
-                            .pivot_melt_modal
+                    let prev_byte: usize = self
+                        .pivot_melt_modal
+                        .melt_pattern
+                        .chars()
+                        .take(self.pivot_melt_modal.melt_pattern_cursor - 1)
+                        .map(|ch| ch.len_utf8())
+                        .sum();
+                    if let Some(ch) = self.pivot_melt_modal.melt_pattern[prev_byte..]
+                        .chars()
+                        .next()
+                    {
+                        self.pivot_melt_modal
                             .melt_pattern
-                            .chars()
-                            .take(self.pivot_melt_modal.melt_pattern_cursor - 1)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        if let Some(ch) = self.pivot_melt_modal.melt_pattern[prev_byte..]
-                            .chars()
-                            .next()
-                        {
-                            self.pivot_melt_modal
-                                .melt_pattern
-                                .drain(prev_byte..prev_byte + ch.len_utf8());
-                            self.pivot_melt_modal.melt_pattern_cursor -= 1;
-                        }
+                            .drain(prev_byte..prev_byte + ch.len_utf8());
+                        self.pivot_melt_modal.melt_pattern_cursor -= 1;
                     }
                 }
                 KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltPattern => {
@@ -3462,25 +3743,24 @@ impl App {
                     self.pivot_melt_modal.melt_variable_cursor += 1;
                 }
                 KeyCode::Backspace
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName =>
+                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName
+                        && self.pivot_melt_modal.melt_variable_cursor > 0 =>
                 {
-                    if self.pivot_melt_modal.melt_variable_cursor > 0 {
-                        let prev_byte: usize = self
-                            .pivot_melt_modal
+                    let prev_byte: usize = self
+                        .pivot_melt_modal
+                        .melt_variable_name
+                        .chars()
+                        .take(self.pivot_melt_modal.melt_variable_cursor - 1)
+                        .map(|ch| ch.len_utf8())
+                        .sum();
+                    if let Some(ch) = self.pivot_melt_modal.melt_variable_name[prev_byte..]
+                        .chars()
+                        .next()
+                    {
+                        self.pivot_melt_modal
                             .melt_variable_name
-                            .chars()
-                            .take(self.pivot_melt_modal.melt_variable_cursor - 1)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        if let Some(ch) = self.pivot_melt_modal.melt_variable_name[prev_byte..]
-                            .chars()
-                            .next()
-                        {
-                            self.pivot_melt_modal
-                                .melt_variable_name
-                                .drain(prev_byte..prev_byte + ch.len_utf8());
-                            self.pivot_melt_modal.melt_variable_cursor -= 1;
-                        }
+                            .drain(prev_byte..prev_byte + ch.len_utf8());
+                        self.pivot_melt_modal.melt_variable_cursor -= 1;
                     }
                 }
                 KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltVarName => {
@@ -3522,25 +3802,24 @@ impl App {
                     self.pivot_melt_modal.melt_value_cursor += 1;
                 }
                 KeyCode::Backspace
-                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName =>
+                    if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName
+                        && self.pivot_melt_modal.melt_value_cursor > 0 =>
                 {
-                    if self.pivot_melt_modal.melt_value_cursor > 0 {
-                        let prev_byte: usize = self
-                            .pivot_melt_modal
+                    let prev_byte: usize = self
+                        .pivot_melt_modal
+                        .melt_value_name
+                        .chars()
+                        .take(self.pivot_melt_modal.melt_value_cursor - 1)
+                        .map(|ch| ch.len_utf8())
+                        .sum();
+                    if let Some(ch) = self.pivot_melt_modal.melt_value_name[prev_byte..]
+                        .chars()
+                        .next()
+                    {
+                        self.pivot_melt_modal
                             .melt_value_name
-                            .chars()
-                            .take(self.pivot_melt_modal.melt_value_cursor - 1)
-                            .map(|ch| ch.len_utf8())
-                            .sum();
-                        if let Some(ch) = self.pivot_melt_modal.melt_value_name[prev_byte..]
-                            .chars()
-                            .next()
-                        {
-                            self.pivot_melt_modal
-                                .melt_value_name
-                                .drain(prev_byte..prev_byte + ch.len_utf8());
-                            self.pivot_melt_modal.melt_value_cursor -= 1;
-                        }
+                            .drain(prev_byte..prev_byte + ch.len_utf8());
+                        self.pivot_melt_modal.melt_value_cursor -= 1;
                     }
                 }
                 KeyCode::Delete if self.pivot_melt_modal.focus == PivotMeltFocus::MeltValName => {
@@ -3584,15 +3863,11 @@ impl App {
                     self.info_modal.close();
                     self.input_mode = InputMode::Normal;
                 }
-                KeyCode::Tab if event.is_press() => {
-                    if schema_tab {
-                        self.info_modal.next_focus();
-                    }
+                KeyCode::Tab if event.is_press() && schema_tab => {
+                    self.info_modal.next_focus();
                 }
-                KeyCode::BackTab if event.is_press() => {
-                    if schema_tab {
-                        self.info_modal.prev_focus();
-                    }
+                KeyCode::BackTab if event.is_press() && schema_tab => {
+                    self.info_modal.prev_focus();
                 }
                 KeyCode::Left | KeyCode::Char('h') if event.is_press() && on_tab_bar => {
                     let has_partitions = self
@@ -3954,12 +4229,77 @@ impl App {
                 KeyCode::Char('?') => {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
-                KeyCode::Char('r') => {
-                    if self.sampling_threshold.is_some() {
-                        self.analysis_modal.recalculate();
+                KeyCode::Char('r') if self.sampling_threshold.is_some() => {
+                    self.analysis_modal.recalculate();
+                    match self.analysis_modal.selected_tool {
+                        Some(analysis_modal::AnalysisTool::Describe) => {
+                            self.analysis_modal.describe_results = None;
+                            self.analysis_modal.computing = Some(AnalysisProgress {
+                                phase: "Describing data".to_string(),
+                                current: 0,
+                                total: 1,
+                            });
+                            self.analysis_computation = Some(AnalysisComputationState {
+                                df: None,
+                                schema: None,
+                                partial_stats: Vec::new(),
+                                current: 0,
+                                total: 0,
+                                total_rows: 0,
+                                sample_seed: self.analysis_modal.random_seed,
+                                sample_size: None,
+                            });
+                            self.busy = true;
+                            return Some(AppEvent::AnalysisChunk);
+                        }
+                        Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                            self.analysis_modal.distribution_results = None;
+                            self.analysis_modal.computing = Some(AnalysisProgress {
+                                phase: "Distribution".to_string(),
+                                current: 0,
+                                total: 1,
+                            });
+                            self.busy = true;
+                            return Some(AppEvent::AnalysisDistributionCompute);
+                        }
+                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                            self.analysis_modal.correlation_results = None;
+                            self.analysis_modal.computing = Some(AnalysisProgress {
+                                phase: "Correlation".to_string(),
+                                current: 0,
+                                total: 1,
+                            });
+                            self.busy = true;
+                            return Some(AppEvent::AnalysisCorrelationCompute);
+                        }
+                        None => {}
+                    }
+                }
+                KeyCode::Tab => {
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
+                        // Switch focus between main area and sidebar
+                        self.analysis_modal.switch_focus();
+                    } else if self.analysis_modal.view
+                        == analysis_modal::AnalysisView::DistributionDetail
+                    {
+                        // In distribution detail view, only the distribution selector is focusable
+                        // Tab does nothing - focus stays on the distribution selector
+                    } else {
+                        // In other detail views, Tab cycles through sections
+                        self.analysis_modal.next_detail_section();
+                    }
+                }
+                KeyCode::Enter
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
+                {
+                    if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
+                        // Select tool from sidebar
+                        self.analysis_modal.select_tool();
+                        // Trigger computation for the selected tool when that tool has no cached results
                         match self.analysis_modal.selected_tool {
-                            Some(analysis_modal::AnalysisTool::Describe) => {
-                                self.analysis_modal.describe_results = None;
+                            Some(analysis_modal::AnalysisTool::Describe)
+                                if self.analysis_modal.describe_results.is_none() =>
+                            {
                                 self.analysis_modal.computing = Some(AnalysisProgress {
                                     phase: "Describing data".to_string(),
                                     current: 0,
@@ -3978,8 +4318,9 @@ impl App {
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisChunk);
                             }
-                            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                self.analysis_modal.distribution_results = None;
+                            Some(analysis_modal::AnalysisTool::DistributionAnalysis)
+                                if self.analysis_modal.distribution_results.is_none() =>
+                            {
                                 self.analysis_modal.computing = Some(AnalysisProgress {
                                     phase: "Distribution".to_string(),
                                     current: 0,
@@ -3988,8 +4329,9 @@ impl App {
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisDistributionCompute);
                             }
-                            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                self.analysis_modal.correlation_results = None;
+                            Some(analysis_modal::AnalysisTool::CorrelationMatrix)
+                                if self.analysis_modal.correlation_results.is_none() =>
+                            {
                                 self.analysis_modal.computing = Some(AnalysisProgress {
                                     phase: "Correlation".to_string(),
                                     current: 0,
@@ -3998,87 +4340,18 @@ impl App {
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisCorrelationCompute);
                             }
-                            None => {}
+                            _ => {}
                         }
-                    }
-                }
-                KeyCode::Tab => {
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
-                        // Switch focus between main area and sidebar
-                        self.analysis_modal.switch_focus();
-                    } else if self.analysis_modal.view
-                        == analysis_modal::AnalysisView::DistributionDetail
-                    {
-                        // In distribution detail view, only the distribution selector is focusable
-                        // Tab does nothing - focus stays on the distribution selector
                     } else {
-                        // In other detail views, Tab cycles through sections
-                        self.analysis_modal.next_detail_section();
-                    }
-                }
-                KeyCode::Enter => {
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
-                        if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Sidebar {
-                            // Select tool from sidebar
-                            self.analysis_modal.select_tool();
-                            // Trigger computation for the selected tool when that tool has no cached results
-                            match self.analysis_modal.selected_tool {
-                                Some(analysis_modal::AnalysisTool::Describe)
-                                    if self.analysis_modal.describe_results.is_none() =>
-                                {
-                                    self.analysis_modal.computing = Some(AnalysisProgress {
-                                        phase: "Describing data".to_string(),
-                                        current: 0,
-                                        total: 1,
-                                    });
-                                    self.analysis_computation = Some(AnalysisComputationState {
-                                        df: None,
-                                        schema: None,
-                                        partial_stats: Vec::new(),
-                                        current: 0,
-                                        total: 0,
-                                        total_rows: 0,
-                                        sample_seed: self.analysis_modal.random_seed,
-                                        sample_size: None,
-                                    });
-                                    self.busy = true;
-                                    return Some(AppEvent::AnalysisChunk);
-                                }
-                                Some(analysis_modal::AnalysisTool::DistributionAnalysis)
-                                    if self.analysis_modal.distribution_results.is_none() =>
-                                {
-                                    self.analysis_modal.computing = Some(AnalysisProgress {
-                                        phase: "Distribution".to_string(),
-                                        current: 0,
-                                        total: 1,
-                                    });
-                                    self.busy = true;
-                                    return Some(AppEvent::AnalysisDistributionCompute);
-                                }
-                                Some(analysis_modal::AnalysisTool::CorrelationMatrix)
-                                    if self.analysis_modal.correlation_results.is_none() =>
-                                {
-                                    self.analysis_modal.computing = Some(AnalysisProgress {
-                                        phase: "Correlation".to_string(),
-                                        current: 0,
-                                        total: 1,
-                                    });
-                                    self.busy = true;
-                                    return Some(AppEvent::AnalysisCorrelationCompute);
-                                }
-                                _ => {}
+                        // Enter in main area opens detail view if applicable
+                        match self.analysis_modal.selected_tool {
+                            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                self.analysis_modal.open_distribution_detail();
                             }
-                        } else {
-                            // Enter in main area opens detail view if applicable
-                            match self.analysis_modal.selected_tool {
-                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                    self.analysis_modal.open_distribution_detail();
-                                }
-                                Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                    self.analysis_modal.open_correlation_detail();
-                                }
-                                _ => {}
+                            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                                self.analysis_modal.open_correlation_detail();
                             }
+                            _ => {}
                         }
                     }
                 }
@@ -4157,30 +4430,24 @@ impl App {
                                 _ => {}
                             }
                         }
-                        analysis_modal::AnalysisView::DistributionDetail => {
+                        analysis_modal::AnalysisView::DistributionDetail
                             if self.analysis_modal.focus
-                                == analysis_modal::AnalysisFocus::DistributionSelector
-                            {
-                                self.analysis_modal.next_distribution();
-                            }
+                                == analysis_modal::AnalysisFocus::DistributionSelector =>
+                        {
+                            self.analysis_modal.next_distribution();
                         }
                         _ => {}
                     }
                 }
-                KeyCode::Char('s') => {
+                KeyCode::Char('s')
                     // Toggle histogram scale (linear/log) in distribution detail view
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::DistributionDetail
-                    {
-                        self.analysis_modal.histogram_scale =
-                            match self.analysis_modal.histogram_scale {
-                                analysis_modal::HistogramScale::Linear => {
-                                    analysis_modal::HistogramScale::Log
-                                }
-                                analysis_modal::HistogramScale::Log => {
-                                    analysis_modal::HistogramScale::Linear
-                                }
-                            };
-                    }
+                    if self.analysis_modal.view
+                        == analysis_modal::AnalysisView::DistributionDetail =>
+                {
+                    self.analysis_modal.histogram_scale = match self.analysis_modal.histogram_scale {
+                        analysis_modal::HistogramScale::Linear => analysis_modal::HistogramScale::Log,
+                        analysis_modal::HistogramScale::Log => analysis_modal::HistogramScale::Linear,
+                    };
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
@@ -4194,269 +4461,262 @@ impl App {
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h')
-                    if !event.modifiers.contains(KeyModifiers::CONTROL) =>
+                    if !event.modifiers.contains(KeyModifiers::CONTROL)
+                        && self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
                 {
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
-                        match self.analysis_modal.focus {
-                            analysis_modal::AnalysisFocus::Sidebar => {
-                                // Sidebar navigation handled by Up/Down
-                            }
-                            analysis_modal::AnalysisFocus::DistributionSelector => {
-                                // Distribution selector navigation handled by Up/Down
-                            }
-                            analysis_modal::AnalysisFocus::Main => {
-                                match self.analysis_modal.selected_tool {
-                                    Some(analysis_modal::AnalysisTool::Describe) => {
-                                        self.analysis_modal.scroll_left();
-                                    }
-                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                        self.analysis_modal.scroll_left();
-                                    }
-                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                        if let Some(results) = self.analysis_modal.current_results()
-                                        {
-                                            if let Some(corr) = &results.correlation_matrix {
-                                                let max_cols = corr.columns.len();
-                                                // Calculate visible columns using same logic as render function
-                                                // This matches the render_correlation_matrix calculation
-                                                let row_header_width = 20u16;
-                                                let cell_width = 12u16;
-                                                let column_spacing = 1u16;
-                                                // Use a conservative estimate for available width
-                                                // In practice, main_area.width would be available, but we don't have access here
-                                                // Using a reasonable default that works for most terminals
-                                                let estimated_width = 80u16; // Conservative estimate (most terminals are 80+ wide)
-                                                let available_width = estimated_width
-                                                    .saturating_sub(row_header_width);
-                                                // Match render logic: first column has no spacing, subsequent ones do
-                                                let mut calculated_visible = 0usize;
-                                                let mut used = 0u16;
-                                                loop {
-                                                    let needed = if calculated_visible == 0 {
-                                                        cell_width
-                                                    } else {
-                                                        column_spacing + cell_width
-                                                    };
-                                                    if used + needed <= available_width
-                                                        && calculated_visible < max_cols
-                                                    {
-                                                        used += needed;
-                                                        calculated_visible += 1;
-                                                    } else {
-                                                        break;
-                                                    }
+                    match self.analysis_modal.focus {
+                        analysis_modal::AnalysisFocus::Sidebar => {
+                            // Sidebar navigation handled by Up/Down
+                        }
+                        analysis_modal::AnalysisFocus::DistributionSelector => {
+                            // Distribution selector navigation handled by Up/Down
+                        }
+                        analysis_modal::AnalysisFocus::Main => {
+                            match self.analysis_modal.selected_tool {
+                                Some(analysis_modal::AnalysisTool::Describe) => {
+                                    self.analysis_modal.scroll_left();
+                                }
+                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                    self.analysis_modal.scroll_left();
+                                }
+                                Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                                    if let Some(results) = self.analysis_modal.current_results() {
+                                        if let Some(corr) = &results.correlation_matrix {
+                                            let max_cols = corr.columns.len();
+                                            // Calculate visible columns using same logic as render function
+                                            // This matches the render_correlation_matrix calculation
+                                            let row_header_width = 20u16;
+                                            let cell_width = 12u16;
+                                            let column_spacing = 1u16;
+                                            // Use a conservative estimate for available width
+                                            // In practice, main_area.width would be available, but we don't have access here
+                                            // Using a reasonable default that works for most terminals
+                                            let estimated_width = 80u16; // Conservative estimate (most terminals are 80+ wide)
+                                            let available_width =
+                                                estimated_width.saturating_sub(row_header_width);
+                                            // Match render logic: first column has no spacing, subsequent ones do
+                                            let mut calculated_visible = 0usize;
+                                            let mut used = 0u16;
+                                            loop {
+                                                let needed = if calculated_visible == 0 {
+                                                    cell_width
+                                                } else {
+                                                    column_spacing + cell_width
+                                                };
+                                                if used + needed <= available_width
+                                                    && calculated_visible < max_cols
+                                                {
+                                                    used += needed;
+                                                    calculated_visible += 1;
+                                                } else {
+                                                    break;
                                                 }
-                                                let visible_cols =
-                                                    calculated_visible.max(1).min(max_cols);
-                                                self.analysis_modal.move_correlation_cell(
-                                                    (0, -1),
-                                                    max_cols,
-                                                    max_cols,
-                                                    visible_cols,
-                                                );
                                             }
+                                            let visible_cols =
+                                                calculated_visible.max(1).min(max_cols);
+                                            self.analysis_modal.move_correlation_cell(
+                                                (0, -1),
+                                                max_cols,
+                                                max_cols,
+                                                visible_cols,
+                                            );
                                         }
                                     }
-                                    None => {}
                                 }
+                                None => {}
                             }
                         }
                     }
                 }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
-                        match self.analysis_modal.focus {
-                            analysis_modal::AnalysisFocus::Sidebar => {
-                                // Sidebar navigation handled by Up/Down
-                            }
-                            analysis_modal::AnalysisFocus::DistributionSelector => {
-                                // Distribution selector navigation handled by Up/Down
-                            }
-                            analysis_modal::AnalysisFocus::Main => {
-                                match self.analysis_modal.selected_tool {
-                                    Some(analysis_modal::AnalysisTool::Describe) => {
-                                        // Number of statistics: count, null_count, mean, std, min, 25%, 50%, 75%, max, skewness, kurtosis, distribution
-                                        let max_stats = 12;
-                                        // Estimate visible stats based on terminal width (rough estimate)
-                                        let visible_stats = 8; // Will be calculated more accurately in widget
-                                        self.analysis_modal.scroll_right(max_stats, visible_stats);
-                                    }
-                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                        // Number of statistics: Distribution, P-value, Shapiro-Wilk, SW p-value, CV, Outliers, Skewness, Kurtosis
-                                        let max_stats = 8;
-                                        // Estimate visible stats based on terminal width (rough estimate)
-                                        let visible_stats = 6; // Will be calculated more accurately in widget
-                                        self.analysis_modal.scroll_right(max_stats, visible_stats);
-                                    }
-                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                        if let Some(results) = self.analysis_modal.current_results()
-                                        {
-                                            if let Some(corr) = &results.correlation_matrix {
-                                                let max_cols = corr.columns.len();
-                                                // Calculate visible columns using same logic as render function
-                                                let row_header_width = 20u16;
-                                                let cell_width = 12u16;
-                                                let column_spacing = 1u16;
-                                                let estimated_width = 80u16; // Conservative estimate
-                                                let available_width = estimated_width
-                                                    .saturating_sub(row_header_width);
-                                                let mut calculated_visible = 0usize;
-                                                let mut used = 0u16;
-                                                loop {
-                                                    let needed = if calculated_visible == 0 {
-                                                        cell_width
-                                                    } else {
-                                                        column_spacing + cell_width
-                                                    };
-                                                    if used + needed <= available_width
-                                                        && calculated_visible < max_cols
-                                                    {
-                                                        used += needed;
-                                                        calculated_visible += 1;
-                                                    } else {
-                                                        break;
-                                                    }
+                KeyCode::Right | KeyCode::Char('l')
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
+                {
+                    match self.analysis_modal.focus {
+                        analysis_modal::AnalysisFocus::Sidebar => {
+                            // Sidebar navigation handled by Up/Down
+                        }
+                        analysis_modal::AnalysisFocus::DistributionSelector => {
+                            // Distribution selector navigation handled by Up/Down
+                        }
+                        analysis_modal::AnalysisFocus::Main => {
+                            match self.analysis_modal.selected_tool {
+                                Some(analysis_modal::AnalysisTool::Describe) => {
+                                    // Number of statistics: count, null_count, mean, std, min, 25%, 50%, 75%, max, skewness, kurtosis, distribution
+                                    let max_stats = 12;
+                                    // Estimate visible stats based on terminal width (rough estimate)
+                                    let visible_stats = 8; // Will be calculated more accurately in widget
+                                    self.analysis_modal.scroll_right(max_stats, visible_stats);
+                                }
+                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                    // Number of statistics: Distribution, P-value, Shapiro-Wilk, SW p-value, CV, Outliers, Skewness, Kurtosis
+                                    let max_stats = 8;
+                                    // Estimate visible stats based on terminal width (rough estimate)
+                                    let visible_stats = 6; // Will be calculated more accurately in widget
+                                    self.analysis_modal.scroll_right(max_stats, visible_stats);
+                                }
+                                Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                                    if let Some(results) = self.analysis_modal.current_results() {
+                                        if let Some(corr) = &results.correlation_matrix {
+                                            let max_cols = corr.columns.len();
+                                            // Calculate visible columns using same logic as render function
+                                            let row_header_width = 20u16;
+                                            let cell_width = 12u16;
+                                            let column_spacing = 1u16;
+                                            let estimated_width = 80u16; // Conservative estimate
+                                            let available_width =
+                                                estimated_width.saturating_sub(row_header_width);
+                                            let mut calculated_visible = 0usize;
+                                            let mut used = 0u16;
+                                            loop {
+                                                let needed = if calculated_visible == 0 {
+                                                    cell_width
+                                                } else {
+                                                    column_spacing + cell_width
+                                                };
+                                                if used + needed <= available_width
+                                                    && calculated_visible < max_cols
+                                                {
+                                                    used += needed;
+                                                    calculated_visible += 1;
+                                                } else {
+                                                    break;
                                                 }
-                                                let visible_cols =
-                                                    calculated_visible.max(1).min(max_cols);
-                                                self.analysis_modal.move_correlation_cell(
-                                                    (0, 1),
-                                                    max_cols,
-                                                    max_cols,
-                                                    visible_cols,
-                                                );
                                             }
+                                            let visible_cols =
+                                                calculated_visible.max(1).min(max_cols);
+                                            self.analysis_modal.move_correlation_cell(
+                                                (0, 1),
+                                                max_cols,
+                                                max_cols,
+                                                visible_cols,
+                                            );
                                         }
                                     }
-                                    None => {}
                                 }
+                                None => {}
                             }
                         }
                     }
                 }
-                KeyCode::PageDown => {
+                KeyCode::PageDown
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main
-                        && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
-                    {
-                        match self.analysis_modal.selected_tool {
-                            Some(analysis_modal::AnalysisTool::Describe) => {
-                                if let Some(state) = &self.data_table_state {
-                                    let max_rows = state.schema.len();
+                        && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                {
+                    match self.analysis_modal.selected_tool {
+                        Some(analysis_modal::AnalysisTool::Describe) => {
+                            if let Some(state) = &self.data_table_state {
+                                let max_rows = state.schema.len();
+                                let page_size = 10;
+                                self.analysis_modal.page_down(max_rows, page_size);
+                            }
+                        }
+                        Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                            if let Some(results) = self.analysis_modal.current_results() {
+                                let max_rows = results.distribution_analyses.len();
+                                let page_size = 10;
+                                self.analysis_modal.page_down(max_rows, page_size);
+                            }
+                        }
+                        Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                            if let Some(results) = self.analysis_modal.current_results() {
+                                if let Some(corr) = &results.correlation_matrix {
+                                    let max_rows = corr.columns.len();
                                     let page_size = 10;
                                     self.analysis_modal.page_down(max_rows, page_size);
                                 }
                             }
-                            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                if let Some(results) = self.analysis_modal.current_results() {
-                                    let max_rows = results.distribution_analyses.len();
-                                    let page_size = 10;
-                                    self.analysis_modal.page_down(max_rows, page_size);
-                                }
-                            }
-                            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                if let Some(results) = self.analysis_modal.current_results() {
-                                    if let Some(corr) = &results.correlation_matrix {
-                                        let max_rows = corr.columns.len();
-                                        let page_size = 10;
-                                        self.analysis_modal.page_down(max_rows, page_size);
-                                    }
-                                }
-                            }
-                            None => {}
                         }
+                        None => {}
                     }
                 }
-                KeyCode::PageUp => {
+                KeyCode::PageUp
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main
-                        && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
-                    {
-                        let page_size = 10;
-                        self.analysis_modal.page_up(page_size);
-                    }
+                        && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                {
+                    let page_size = 10;
+                    self.analysis_modal.page_up(page_size);
                 }
-                KeyCode::Home => {
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
-                        match self.analysis_modal.focus {
-                            analysis_modal::AnalysisFocus::Sidebar => {
-                                self.analysis_modal.sidebar_state.select(Some(0));
-                            }
-                            analysis_modal::AnalysisFocus::DistributionSelector => {
-                                self.analysis_modal
-                                    .distribution_selector_state
-                                    .select(Some(0));
-                            }
-                            analysis_modal::AnalysisFocus::Main => {
-                                match self.analysis_modal.selected_tool {
-                                    Some(analysis_modal::AnalysisTool::Describe) => {
-                                        self.analysis_modal.table_state.select(Some(0));
-                                    }
-                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                        self.analysis_modal
-                                            .distribution_table_state
-                                            .select(Some(0));
-                                    }
-                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                        self.analysis_modal.correlation_table_state.select(Some(0));
-                                        self.analysis_modal.selected_correlation = Some((0, 0));
-                                    }
-                                    None => {}
+                KeyCode::Home
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
+                {
+                    match self.analysis_modal.focus {
+                        analysis_modal::AnalysisFocus::Sidebar => {
+                            self.analysis_modal.sidebar_state.select(Some(0));
+                        }
+                        analysis_modal::AnalysisFocus::DistributionSelector => {
+                            self.analysis_modal
+                                .distribution_selector_state
+                                .select(Some(0));
+                        }
+                        analysis_modal::AnalysisFocus::Main => {
+                            match self.analysis_modal.selected_tool {
+                                Some(analysis_modal::AnalysisTool::Describe) => {
+                                    self.analysis_modal.table_state.select(Some(0));
                                 }
+                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                    self.analysis_modal
+                                        .distribution_table_state
+                                        .select(Some(0));
+                                }
+                                Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                                    self.analysis_modal.correlation_table_state.select(Some(0));
+                                    self.analysis_modal.selected_correlation = Some((0, 0));
+                                }
+                                None => {}
                             }
                         }
                     }
                 }
-                KeyCode::End => {
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
-                        match self.analysis_modal.focus {
-                            analysis_modal::AnalysisFocus::Sidebar => {
-                                self.analysis_modal.sidebar_state.select(Some(2));
-                                // Last tool
-                            }
-                            analysis_modal::AnalysisFocus::DistributionSelector => {
-                                self.analysis_modal
-                                    .distribution_selector_state
-                                    .select(Some(13)); // Last distribution (Weibull, index 13 of 14 total)
-                            }
-                            analysis_modal::AnalysisFocus::Main => {
-                                match self.analysis_modal.selected_tool {
-                                    Some(analysis_modal::AnalysisTool::Describe) => {
-                                        if let Some(state) = &self.data_table_state {
-                                            let max_rows = state.schema.len();
-                                            if max_rows > 0 {
-                                                self.analysis_modal
-                                                    .table_state
-                                                    .select(Some(max_rows - 1));
-                                            }
+                KeyCode::End
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
+                {
+                    match self.analysis_modal.focus {
+                        analysis_modal::AnalysisFocus::Sidebar => {
+                            self.analysis_modal.sidebar_state.select(Some(2));
+                            // Last tool
+                        }
+                        analysis_modal::AnalysisFocus::DistributionSelector => {
+                            self.analysis_modal
+                                .distribution_selector_state
+                                .select(Some(13)); // Last distribution (Weibull, index 13 of 14 total)
+                        }
+                        analysis_modal::AnalysisFocus::Main => {
+                            match self.analysis_modal.selected_tool {
+                                Some(analysis_modal::AnalysisTool::Describe) => {
+                                    if let Some(state) = &self.data_table_state {
+                                        let max_rows = state.schema.len();
+                                        if max_rows > 0 {
+                                            self.analysis_modal
+                                                .table_state
+                                                .select(Some(max_rows - 1));
                                         }
                                     }
-                                    Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
-                                        if let Some(results) = self.analysis_modal.current_results()
-                                        {
-                                            let max_rows = results.distribution_analyses.len();
-                                            if max_rows > 0 {
-                                                self.analysis_modal
-                                                    .distribution_table_state
-                                                    .select(Some(max_rows - 1));
-                                            }
-                                        }
-                                    }
-                                    Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                        if let Some(results) = self.analysis_modal.current_results()
-                                        {
-                                            if let Some(corr) = &results.correlation_matrix {
-                                                let max_rows = corr.columns.len();
-                                                if max_rows > 0 {
-                                                    self.analysis_modal
-                                                        .correlation_table_state
-                                                        .select(Some(max_rows - 1));
-                                                    self.analysis_modal.selected_correlation =
-                                                        Some((max_rows - 1, max_rows - 1));
-                                                }
-                                            }
-                                        }
-                                    }
-                                    None => {}
                                 }
+                                Some(analysis_modal::AnalysisTool::DistributionAnalysis) => {
+                                    if let Some(results) = self.analysis_modal.current_results() {
+                                        let max_rows = results.distribution_analyses.len();
+                                        if max_rows > 0 {
+                                            self.analysis_modal
+                                                .distribution_table_state
+                                                .select(Some(max_rows - 1));
+                                        }
+                                    }
+                                }
+                                Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
+                                    if let Some(results) = self.analysis_modal.current_results() {
+                                        if let Some(corr) = &results.correlation_matrix {
+                                            let max_rows = corr.columns.len();
+                                            if max_rows > 0 {
+                                                self.analysis_modal
+                                                    .correlation_table_state
+                                                    .select(Some(max_rows - 1));
+                                                self.analysis_modal.selected_correlation =
+                                                    Some((max_rows - 1, max_rows - 1));
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {}
                             }
                         }
                     }
@@ -5215,12 +5475,10 @@ impl App {
                                 .create_filename_pattern_input
                                 .handle_key(&event, None);
                         }
-                        CreateFocus::SchemaMatch => {
+                        CreateFocus::SchemaMatch if c == ' ' => {
                             // Space toggles
-                            if c == ' ' {
-                                self.template_modal.create_schema_match_enabled =
-                                    !self.template_modal.create_schema_match_enabled;
-                            }
+                            self.template_modal.create_schema_match_enabled =
+                                !self.template_modal.create_schema_match_enabled;
                         }
                         _ => {}
                     }
@@ -5269,43 +5527,42 @@ impl App {
                     }
                 }
                 KeyCode::PageUp | KeyCode::PageDown
-                    if self.template_modal.mode == TemplateModalMode::Create
-                        || self.template_modal.mode == TemplateModalMode::Edit =>
-                {
                     // PageUp/PageDown for description field - move cursor up/down by 5 lines
                     // This is handled manually since MultiLineTextInput doesn't have built-in PageUp/PageDown
-                    if self.template_modal.create_focus == CreateFocus::Description {
-                        let lines: Vec<&str> = self
+                    if (self.template_modal.mode == TemplateModalMode::Create
+                        || self.template_modal.mode == TemplateModalMode::Edit)
+                        && self.template_modal.create_focus == CreateFocus::Description =>
+                {
+                    let lines: Vec<&str> = self
+                        .template_modal
+                        .create_description_input
+                        .value
+                        .lines()
+                        .collect();
+                    let current_line = self.template_modal.create_description_input.cursor_line;
+                    let current_col = self.template_modal.create_description_input.cursor_col;
+
+                    let target_line = if event.code == KeyCode::PageUp {
+                        current_line.saturating_sub(5)
+                    } else {
+                        (current_line + 5).min(lines.len().saturating_sub(1))
+                    };
+
+                    if target_line < lines.len() {
+                        let target_line_str = lines.get(target_line).unwrap_or(&"");
+                        let new_col = current_col.min(target_line_str.chars().count());
+                        self.template_modal.create_description_input.cursor = self
                             .template_modal
                             .create_description_input
-                            .value
-                            .lines()
-                            .collect();
-                        let current_line = self.template_modal.create_description_input.cursor_line;
-                        let current_col = self.template_modal.create_description_input.cursor_col;
-
-                        let target_line = if event.code == KeyCode::PageUp {
-                            current_line.saturating_sub(5)
-                        } else {
-                            (current_line + 5).min(lines.len().saturating_sub(1))
-                        };
-
-                        if target_line < lines.len() {
-                            let target_line_str = lines.get(target_line).unwrap_or(&"");
-                            let new_col = current_col.min(target_line_str.chars().count());
-                            self.template_modal.create_description_input.cursor = self
-                                .template_modal
-                                .create_description_input
-                                .line_col_to_cursor(target_line, new_col);
-                            self.template_modal
-                                .create_description_input
-                                .update_line_col_from_cursor();
-                            // Auto-scroll
-                            let area_height = 10;
-                            self.template_modal
-                                .create_description_input
-                                .ensure_cursor_visible(area_height, 80);
-                        }
+                            .line_col_to_cursor(target_line, new_col);
+                        self.template_modal
+                            .create_description_input
+                            .update_line_col_from_cursor();
+                        // Auto-scroll
+                        let area_height = 10;
+                        self.template_modal
+                            .create_description_input
+                            .ensure_cursor_visible(area_height, 80);
                     }
                 }
                 KeyCode::Backspace
@@ -5622,11 +5879,21 @@ impl App {
             }
             KeyCode::Esc => {
                 // First check if we're in drill-down mode
-                if let Some(ref mut state) = self.data_table_state {
+                let drilled_up = if let Some(ref mut state) = self.data_table_state {
                     if state.is_drilled_down() {
+                        state.defer_collect = true;
                         let _ = state.drill_up();
-                        return None;
+                        state.defer_collect = false;
+                        true
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+                if drilled_up {
+                    self.spawn_async_collect("Loading buffer...");
+                    return None;
                 }
                 // Escape no longer exits - use 'q' or Ctrl-C to exit
                 // (Info modal handles Esc in its own block)
@@ -5823,15 +6090,29 @@ impl App {
             }
             KeyCode::Enter if event.is_press() => {
                 // Only drill down if not in a modal and viewing grouped data
-                if self.input_mode == InputMode::Normal {
+                let drilled = if self.input_mode == InputMode::Normal {
                     if let Some(ref mut state) = self.data_table_state {
                         if state.is_grouped() && !state.is_drilled_down() {
                             if let Some(selected) = state.table_state.selected() {
                                 let group_index = state.start_row + selected;
-                                let _ = state.drill_down_into_group(group_index);
+                                state.defer_collect = true;
+                                let ok = state.drill_down_into_group(group_index).is_ok();
+                                state.defer_collect = false;
+                                ok
+                            } else {
+                                false
                             }
+                        } else {
+                            false
                         }
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+                if drilled {
+                    self.spawn_async_collect("Loading buffer...");
                 }
                 None
             }
@@ -6098,8 +6379,8 @@ impl App {
                     key.code,
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
                 );
-                let is_help_key = key.code == KeyCode::F(1);
-                // When busy (e.g. loading), still process column scroll, F1, and confirmation modal keys.
+                let is_help_key = key.code == KeyCode::F(1) || key.code == KeyCode::Char('?');
+                // When busy (e.g. loading), still process column scroll, help, and confirmation modal keys.
                 if self.busy && !is_column_scroll && !is_help_key && !self.confirmation_modal.active
                 {
                     return None;
@@ -6114,6 +6395,7 @@ impl App {
                 if let Some(ref p) = self.http_temp_path.take() {
                     let _ = std::fs::remove_file(p);
                 }
+                self.task_generation = self.task_generation.wrapping_add(1);
                 self.busy = true;
                 let first = &paths[0];
                 let file_size = match source::input_source(first) {
@@ -6140,6 +6422,7 @@ impl App {
                 Some(AppEvent::DoLoadScanPaths(paths.clone(), options.clone()))
             }
             AppEvent::OpenLazyFrame(lf, options) => {
+                self.task_generation = self.task_generation.wrapping_add(1);
                 self.busy = true;
                 self.loading_state = LoadingState::Loading {
                     file_path: None,
@@ -6237,9 +6520,13 @@ impl App {
                         let (_, ext) = source::url_path_extension(&full);
                         let is_glob = full.contains('*') || full.ends_with('/');
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            let size =
-                                Self::fetch_remote_size_s3(&full, &self.app_config.cloud, options)
-                                    .unwrap_or(None);
+                            let size = Self::fetch_remote_size_s3(
+                                &full,
+                                &self.app_config.cloud,
+                                options,
+                                &self.runtime,
+                            )
+                            .unwrap_or(None);
                             let size_str = size
                                 .map(Self::format_bytes)
                                 .unwrap_or_else(|| "unknown".to_string());
@@ -6267,7 +6554,8 @@ impl App {
                         let (_, ext) = source::url_path_extension(&full);
                         let is_glob = full.contains('*') || full.ends_with('/');
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            let size = Self::fetch_remote_size_gcs(&full, options).unwrap_or(None);
+                            let size = Self::fetch_remote_size_gcs(&full, options, &self.runtime)
+                                .unwrap_or(None);
                             let size_str = size
                                 .map(Self::format_bytes)
                                 .unwrap_or_else(|| "unknown".to_string());
@@ -6383,95 +6671,110 @@ impl App {
             }
             #[cfg(feature = "http")]
             AppEvent::DoDownloadHttp(url, options) => {
-                let (_, ext) = source::url_path_extension(url.as_str());
-                match Self::download_http_to_temp(
-                    url.as_str(),
-                    options.temp_dir.as_deref(),
-                    ext.as_deref(),
-                ) {
-                    Ok(temp_path) => {
-                        self.http_temp_path = Some(temp_path.clone());
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Scanning".to_string(),
-                                progress_percent: 30,
-                            };
+                let url = url.clone();
+                let options = options.clone();
+                self.spawn_bg("Downloading...", move |gen, tx| {
+                    let (_, ext) = source::url_path_extension(url.as_str());
+                    match Self::download_http_to_temp(
+                        url.as_str(),
+                        options.temp_dir.as_deref(),
+                        ext.as_deref(),
+                    ) {
+                        Ok(temp_path) => {
+                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
+                                generation: gen,
+                                temp_path,
+                                options,
+                            });
                         }
-                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: gen,
+                                message: crate::error_display::user_message_from_report(&e, None),
+                            });
+                        }
                     }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(&e, None);
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
+                });
+                None
             }
             #[cfg(feature = "cloud")]
             AppEvent::DoDownloadS3ToTemp(s3_url, options) => {
-                match Self::download_s3_to_temp(s3_url, &self.app_config.cloud, options) {
-                    Ok(temp_path) => {
-                        self.http_temp_path = Some(temp_path.clone());
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Scanning".to_string(),
-                                progress_percent: 30,
-                            };
+                let s3_url = s3_url.clone();
+                let cloud_config = self.app_config.cloud.clone();
+                let options = options.clone();
+                let rt = self.runtime.clone();
+                self.spawn_bg("Downloading from S3...", move |gen, tx| {
+                    match Self::download_s3_to_temp(&s3_url, &cloud_config, &options, &rt) {
+                        Ok(temp_path) => {
+                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
+                                generation: gen,
+                                temp_path,
+                                options,
+                            });
                         }
-                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: gen,
+                                message: crate::error_display::user_message_from_report(&e, None),
+                            });
+                        }
                     }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(&e, None);
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
+                });
+                None
             }
             #[cfg(feature = "cloud")]
             AppEvent::DoDownloadGcsToTemp(gs_url, options) => {
-                match Self::download_gcs_to_temp(gs_url, options) {
-                    Ok(temp_path) => {
-                        self.http_temp_path = Some(temp_path.clone());
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Scanning".to_string(),
-                                progress_percent: 30,
-                            };
+                let gs_url = gs_url.clone();
+                let options = options.clone();
+                let rt = self.runtime.clone();
+                self.spawn_bg("Downloading from GCS...", move |gen, tx| {
+                    match Self::download_gcs_to_temp(&gs_url, &options, &rt) {
+                        Ok(temp_path) => {
+                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
+                                generation: gen,
+                                temp_path,
+                                options,
+                            });
                         }
-                        Some(AppEvent::DoLoadFromHttpTemp(temp_path, options.clone()))
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: gen,
+                                message: crate::error_display::user_message_from_report(&e, None),
+                            });
+                        }
                     }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(&e, None);
-                        Some(AppEvent::Crash(msg))
+                });
+                None
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            AppEvent::BackgroundDownloadReady {
+                generation,
+                temp_path,
+                options,
+            } => {
+                if *generation == self.task_generation {
+                    self.http_temp_path = Some(temp_path.clone());
+                    if let LoadingState::Loading {
+                        file_path,
+                        file_size,
+                        ..
+                    } = &self.loading_state
+                    {
+                        self.loading_state = LoadingState::Loading {
+                            file_path: file_path.clone(),
+                            file_size: *file_size,
+                            current_phase: "Scanning".to_string(),
+                            progress_percent: 30,
+                        };
                     }
+                    self.status_message = Some("Scanning...".to_string());
+                    return Some(AppEvent::DoLoadFromHttpTemp(
+                        temp_path.clone(),
+                        options.clone(),
+                    ));
                 }
+                // Stale download result — ignore.
+                None
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             AppEvent::DoLoadFromHttpTemp(temp_path, options) => {
@@ -6568,58 +6871,12 @@ impl App {
                                 Some(partition_columns),
                             ) {
                                 Ok(state) => {
-                                    self.debug.schema_load = Some("one-file (local)".to_string());
-                                    self.parquet_metadata_cache = None;
-                                    self.export_df = None;
-                                    self.data_table_state = Some(state);
-                                    self.path = path.clone();
-                                    if let Some(ref path_p) = path {
-                                        self.original_file_format = path_p
-                                            .extension()
-                                            .and_then(|e| e.to_str())
-                                            .and_then(|ext| {
-                                                if ext.eq_ignore_ascii_case("parquet") {
-                                                    Some(ExportFormat::Parquet)
-                                                } else if ext.eq_ignore_ascii_case("csv") {
-                                                    Some(ExportFormat::Csv)
-                                                } else if ext.eq_ignore_ascii_case("json") {
-                                                    Some(ExportFormat::Json)
-                                                } else if ext.eq_ignore_ascii_case("jsonl")
-                                                    || ext.eq_ignore_ascii_case("ndjson")
-                                                {
-                                                    Some(ExportFormat::Ndjson)
-                                                } else if ext.eq_ignore_ascii_case("arrow")
-                                                    || ext.eq_ignore_ascii_case("ipc")
-                                                    || ext.eq_ignore_ascii_case("feather")
-                                                {
-                                                    Some(ExportFormat::Ipc)
-                                                } else if ext.eq_ignore_ascii_case("avro") {
-                                                    Some(ExportFormat::Avro)
-                                                } else {
-                                                    None
-                                                }
-                                            });
-                                        self.original_file_delimiter =
-                                            Some(options.delimiter.unwrap_or(b','));
-                                    } else {
-                                        self.original_file_format = None;
-                                        self.original_file_delimiter = None;
-                                    }
-                                    self.sort_filter_modal = SortFilterModal::new();
-                                    self.pivot_melt_modal = PivotMeltModal::new();
-                                    if let LoadingState::Loading {
-                                        file_path,
-                                        file_size,
-                                        ..
-                                    } = &self.loading_state
-                                    {
-                                        self.loading_state = LoadingState::Loading {
-                                            file_path: file_path.clone(),
-                                            file_size: *file_size,
-                                            current_phase: "Loading buffer".to_string(),
-                                            progress_percent: 70,
-                                        };
-                                    }
+                                    self.apply_schema_ready(
+                                        state,
+                                        path.clone(),
+                                        options,
+                                        Some("one-file (local)".to_string()),
+                                    );
                                     return Some(AppEvent::DoLoadBuffer);
                                 }
                                 Err(e) => {
@@ -6662,8 +6919,8 @@ impl App {
                                 Self::build_s3_object_store(&full, &self.app_config.cloud, options)
                                     .ok()
                                     .and_then(|store| {
-                                        let rt = tokio::runtime::Runtime::new().ok()?;
-                                        let (merged_schema, partition_columns) = rt
+                                        let (merged_schema, partition_columns) = self
+                                            .runtime
                                             .block_on(cloud_hive::schema_from_one_cloud_hive(
                                                 store, key,
                                             ))
@@ -6709,8 +6966,8 @@ impl App {
                                     .map(|(_, k)| k.trim_end_matches('/'))
                                     .unwrap_or("");
                                 Self::build_gcs_object_store(&full).ok().and_then(|store| {
-                                    let rt = tokio::runtime::Runtime::new().ok()?;
-                                    let (merged_schema, partition_columns) = rt
+                                    let (merged_schema, partition_columns) = self
+                                        .runtime
                                         .block_on(cloud_hive::schema_from_one_cloud_hive(
                                             store, key,
                                         ))
@@ -6751,56 +7008,12 @@ impl App {
                             _ => None,
                         };
                         if let Some(state) = try_cloud {
-                            self.debug.schema_load = Some("one-file (cloud)".to_string());
-                            self.parquet_metadata_cache = None;
-                            self.export_df = None;
-                            self.data_table_state = Some(state);
-                            self.path = path.clone();
-                            if let Some(ref path_p) = path {
-                                self.original_file_format =
-                                    path_p.extension().and_then(|e| e.to_str()).and_then(|ext| {
-                                        if ext.eq_ignore_ascii_case("parquet") {
-                                            Some(ExportFormat::Parquet)
-                                        } else if ext.eq_ignore_ascii_case("csv") {
-                                            Some(ExportFormat::Csv)
-                                        } else if ext.eq_ignore_ascii_case("json") {
-                                            Some(ExportFormat::Json)
-                                        } else if ext.eq_ignore_ascii_case("jsonl")
-                                            || ext.eq_ignore_ascii_case("ndjson")
-                                        {
-                                            Some(ExportFormat::Ndjson)
-                                        } else if ext.eq_ignore_ascii_case("arrow")
-                                            || ext.eq_ignore_ascii_case("ipc")
-                                            || ext.eq_ignore_ascii_case("feather")
-                                        {
-                                            Some(ExportFormat::Ipc)
-                                        } else if ext.eq_ignore_ascii_case("avro") {
-                                            Some(ExportFormat::Avro)
-                                        } else {
-                                            None
-                                        }
-                                    });
-                                self.original_file_delimiter =
-                                    Some(options.delimiter.unwrap_or(b','));
-                            } else {
-                                self.original_file_format = None;
-                                self.original_file_delimiter = None;
-                            }
-                            self.sort_filter_modal = SortFilterModal::new();
-                            self.pivot_melt_modal = PivotMeltModal::new();
-                            if let LoadingState::Loading {
-                                file_path,
-                                file_size,
-                                ..
-                            } = &self.loading_state
-                            {
-                                self.loading_state = LoadingState::Loading {
-                                    file_path: file_path.clone(),
-                                    file_size: *file_size,
-                                    current_phase: "Loading buffer".to_string(),
-                                    progress_percent: 70,
-                                };
-                            }
+                            self.apply_schema_ready(
+                                state,
+                                path.clone(),
+                                options,
+                                Some("one-file (cloud)".to_string()),
+                            );
                             return Some(AppEvent::DoLoadBuffer);
                         } else {
                             self.debug.schema_load = Some("fallback (cloud)".to_string());
@@ -6808,137 +7021,101 @@ impl App {
                     }
                 }
 
-                if self.debug.schema_load.is_none() {
-                    self.debug.schema_load = Some("full scan".to_string());
-                }
-                let mut lf_owned = (**lf).clone();
-                match lf_owned.collect_schema() {
-                    Ok(schema) => {
-                        let partition_columns = if path.as_ref().is_some_and(|p| {
-                            options.hive
-                                && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
-                        }) {
-                            let discovered = DataTableState::discover_hive_partition_columns(
-                                path.as_ref().expect("path set by caller"),
-                            );
-                            discovered
-                                .into_iter()
-                                .filter(|c| schema.contains(c.as_str()))
-                                .collect::<Vec<_>>()
-                        } else {
-                            Vec::new()
-                        };
-                        if !partition_columns.is_empty() {
-                            let exprs: Vec<_> = partition_columns
-                                .iter()
-                                .map(|s| col(s.as_str()))
-                                .chain(
-                                    schema
-                                        .iter_names()
-                                        .map(|s| s.to_string())
-                                        .filter(|c| !partition_columns.contains(c))
-                                        .map(|s| col(s.as_str())),
-                                )
-                                .collect();
-                            lf_owned = lf_owned.select(exprs);
+                // General path: collect_schema() may be slow. Spawn to background.
+                let debug_label = if self.debug.schema_load.is_none() {
+                    Some("full scan".to_string())
+                } else {
+                    self.debug.schema_load.clone()
+                };
+                let lf_clone = (**lf).clone();
+                let path_clone = path.clone();
+                let options_clone = options.clone();
+                let schema_slot = self.pending_schema_result.clone();
+                self.spawn_bg("Caching schema...", move |gen, tx| {
+                    let mut lf_owned = lf_clone;
+                    let schema = match lf_owned.collect_schema() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let report = color_eyre::eyre::Report::from(e);
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: gen,
+                                message: crate::error_display::user_message_from_report(
+                                    &report, None,
+                                ),
+                            });
+                            return;
                         }
-                        let part_cols_opt = if partition_columns.is_empty() {
-                            None
-                        } else {
-                            Some(partition_columns)
-                        };
-                        match DataTableState::from_schema_and_lazyframe(
-                            schema,
-                            lf_owned,
-                            options,
-                            part_cols_opt,
-                        ) {
-                            Ok(state) => {
-                                self.parquet_metadata_cache = None;
-                                self.export_df = None;
-                                self.data_table_state = Some(state);
-                                self.path = path.clone();
-                                if let Some(ref p) = path {
-                                    self.original_file_format =
-                                        p.extension().and_then(|e| e.to_str()).and_then(|ext| {
-                                            if ext.eq_ignore_ascii_case("parquet") {
-                                                Some(ExportFormat::Parquet)
-                                            } else if ext.eq_ignore_ascii_case("csv") {
-                                                Some(ExportFormat::Csv)
-                                            } else if ext.eq_ignore_ascii_case("json") {
-                                                Some(ExportFormat::Json)
-                                            } else if ext.eq_ignore_ascii_case("jsonl")
-                                                || ext.eq_ignore_ascii_case("ndjson")
-                                            {
-                                                Some(ExportFormat::Ndjson)
-                                            } else if ext.eq_ignore_ascii_case("arrow")
-                                                || ext.eq_ignore_ascii_case("ipc")
-                                                || ext.eq_ignore_ascii_case("feather")
-                                            {
-                                                Some(ExportFormat::Ipc)
-                                            } else if ext.eq_ignore_ascii_case("avro") {
-                                                Some(ExportFormat::Avro)
-                                            } else {
-                                                None
-                                            }
-                                        });
-                                    self.original_file_delimiter =
-                                        Some(options.delimiter.unwrap_or(b','));
-                                } else {
-                                    self.original_file_format = None;
-                                    self.original_file_delimiter = None;
-                                }
-                                self.sort_filter_modal = SortFilterModal::new();
-                                self.pivot_melt_modal = PivotMeltModal::new();
-                                if let LoadingState::Loading {
-                                    file_path,
-                                    file_size,
-                                    ..
-                                } = &self.loading_state
-                                {
-                                    self.loading_state = LoadingState::Loading {
-                                        file_path: file_path.clone(),
-                                        file_size: *file_size,
-                                        current_phase: "Loading buffer".to_string(),
-                                        progress_percent: 70,
-                                    };
-                                }
-                                Some(AppEvent::DoLoadBuffer)
+                    };
+                    let partition_columns = if path_clone.as_ref().is_some_and(|p| {
+                        options_clone.hive
+                            && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
+                    }) {
+                        let discovered = DataTableState::discover_hive_partition_columns(
+                            path_clone.as_ref().expect("path set by caller"),
+                        );
+                        discovered
+                            .into_iter()
+                            .filter(|c| schema.contains(c.as_str()))
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    if !partition_columns.is_empty() {
+                        let exprs: Vec<_> = partition_columns
+                            .iter()
+                            .map(|s| col(s.as_str()))
+                            .chain(
+                                schema
+                                    .iter_names()
+                                    .map(|s| s.to_string())
+                                    .filter(|c| !partition_columns.contains(c))
+                                    .map(|s| col(s.as_str())),
+                            )
+                            .collect();
+                        lf_owned = lf_owned.select(exprs);
+                    }
+                    let part_cols_opt = if partition_columns.is_empty() {
+                        None
+                    } else {
+                        Some(partition_columns)
+                    };
+                    match DataTableState::from_schema_and_lazyframe(
+                        schema,
+                        lf_owned,
+                        &options_clone,
+                        part_cols_opt,
+                    ) {
+                        Ok(state) => {
+                            let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
+                            let dominated = slot.as_ref().is_some_and(|(g, _)| *g > gen);
+                            if !dominated {
+                                *slot = Some((gen, state));
                             }
-                            Err(e) => {
-                                self.loading_state = LoadingState::Idle;
-                                self.busy = false;
-                                self.drain_keys_on_next_loop = true;
-                                let msg = crate::error_display::user_message_from_report(&e, None);
-                                Some(AppEvent::Crash(msg))
-                            }
+                            drop(slot);
+                            let _ = tx.send(AppEvent::BackgroundSchemaReady {
+                                generation: gen,
+                                path: path_clone,
+                                options: options_clone,
+                                debug_label,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::BackgroundError {
+                                generation: gen,
+                                message: crate::error_display::user_message_from_report(&e, None),
+                            });
                         }
                     }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let report = color_eyre::eyre::Report::from(e);
-                        let msg = crate::error_display::user_message_from_report(&report, None);
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
+                });
+                None
             }
             AppEvent::DoLoadBuffer => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.collect();
-                    if let Some(e) = state.error.take() {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_polars(&e);
-                        return Some(AppEvent::Crash(msg));
-                    }
+                if !self.spawn_async_collect("Loading buffer...") {
+                    self.loading_state = LoadingState::Idle;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.loading_state = LoadingState::Idle;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                Some(AppEvent::Collect)
+                None
             }
             AppEvent::DoLoad(paths, options) => {
                 let first = &paths[0];
@@ -7014,88 +7191,25 @@ impl App {
                     }
                 }
             }
-            AppEvent::Resize(_cols, rows) => {
-                self.busy = true;
-                if let Some(state) = &mut self.data_table_state {
-                    state.visible_rows = *rows as usize;
-                    state.collect();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
+            AppEvent::Resize(_cols, _rows) => {
+                // No work here: the next render sets visible_rows and flips needs_recollect,
+                // which the main loop turns into an async collect against the correct size.
                 None
             }
             AppEvent::Collect => {
-                self.busy = true;
-                if let Some(ref mut state) = self.data_table_state {
-                    state.collect();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
+                self.spawn_async_collect("Loading buffer...");
                 None
             }
-            AppEvent::DoScrollDown => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.page_down();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
-            }
-            AppEvent::DoScrollUp => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.page_up();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
-            }
-            AppEvent::DoScrollNext => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.select_next();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
-            }
-            AppEvent::DoScrollPrev => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.select_previous();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
-            }
-            AppEvent::DoScrollEnd => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.scroll_to_end();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
-            }
-            AppEvent::DoScrollHalfDown => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.half_page_down();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
-            }
-            AppEvent::DoScrollHalfUp => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.half_page_up();
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
-            }
+            AppEvent::DoScrollDown => self.handle_scroll(|s| s.page_down()),
+            AppEvent::DoScrollUp => self.handle_scroll(|s| s.page_up()),
+            AppEvent::DoScrollNext => self.handle_scroll(|s| s.select_next()),
+            AppEvent::DoScrollPrev => self.handle_scroll(|s| s.select_previous()),
+            AppEvent::DoScrollEnd => self.handle_scroll(|s| s.scroll_to_end()),
+            AppEvent::DoScrollHalfDown => self.handle_scroll(|s| s.half_page_down()),
+            AppEvent::DoScrollHalfUp => self.handle_scroll(|s| s.half_page_up()),
             AppEvent::GoToLine(n) => {
-                if let Some(state) = &mut self.data_table_state {
-                    state.scroll_to_row_centered(*n);
-                }
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                None
+                let n = *n;
+                self.handle_scroll(|s| s.scroll_to_row_centered(n))
             }
             AppEvent::AnalysisChunk => {
                 let lf = match &self.data_table_state {
@@ -7109,127 +7223,337 @@ impl App {
                 };
                 let comp = self.analysis_computation.take()?;
                 if comp.df.is_none() {
-                    // First chunk: get row count then run describe (lazy aggregation, no full collect)
-                    // Reuse cached row count from control bar when valid to avoid extra full scan.
-                    let total_rows = match self
+                    let cached_rows = self
                         .data_table_state
                         .as_ref()
-                        .and_then(|s| s.num_rows_if_valid())
-                    {
-                        Some(n) => n,
-                        None => match crate::statistics::collect_lazy(
-                            lf.clone().select([len()]),
-                            self.app_config.performance.polars_streaming,
-                        ) {
-                            Ok(count_df) => {
-                                if let Some(col) = count_df.get(0) {
-                                    match col.first() {
+                        .and_then(|s| s.num_rows_if_valid());
+                    let sampling = self.sampling_threshold;
+                    let seed = comp.sample_seed;
+                    let streaming = self.app_config.performance.polars_streaming;
+                    self.spawn_bg("Computing statistics...", move |gen, tx| {
+                        let total_rows = match cached_rows {
+                            Some(n) => n,
+                            None => match crate::statistics::collect_lazy(
+                                lf.clone().select([len()]),
+                                streaming,
+                            ) {
+                                Ok(count_df) => match count_df.get(0) {
+                                    Some(col) => match col.first() {
                                         Some(AnyValue::UInt32(n)) => *n as usize,
                                         _ => 0,
-                                    }
-                                } else {
-                                    0
+                                    },
+                                    None => 0,
+                                },
+                                Err(e) => {
+                                    let _ = tx.send(AppEvent::BackgroundError {
+                                        generation: gen,
+                                        message: format!("{e}"),
+                                    });
+                                    return;
                                 }
+                            },
+                        };
+                        match crate::statistics::compute_describe_from_lazy(
+                            &lf, total_rows, sampling, seed, streaming,
+                        ) {
+                            Ok(results) => {
+                                let _ = tx.send(AppEvent::BackgroundDescribeReady {
+                                    generation: gen,
+                                    results,
+                                });
                             }
-                            Err(_e) => {
-                                self.analysis_modal.computing = None;
-                                self.busy = false;
-                                self.drain_keys_on_next_loop = true;
-                                return None;
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: gen,
+                                    message: format!("{e}"),
+                                });
                             }
-                        },
-                    };
-                    match crate::statistics::compute_describe_from_lazy(
-                        &lf,
-                        total_rows,
-                        self.sampling_threshold,
-                        comp.sample_seed,
-                        self.app_config.performance.polars_streaming,
-                    ) {
-                        Ok(results) => {
-                            self.analysis_modal.describe_results = Some(results);
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            None
                         }
-                        Err(_e) => {
-                            self.analysis_modal.computing = None;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            None
-                        }
-                    }
-                } else {
-                    None
+                    });
                 }
+                None
             }
             AppEvent::AnalysisDistributionCompute => {
                 if let Some(state) = &self.data_table_state {
-                    let options = crate::statistics::ComputeOptions {
-                        include_distribution_info: true,
-                        include_distribution_analyses: true,
-                        include_correlation_matrix: false,
-                        include_skewness_kurtosis_outliers: true,
-                        polars_streaming: self.app_config.performance.polars_streaming,
-                    };
-                    if let Ok(results) = crate::statistics::compute_statistics_with_options(
-                        &state.lf,
-                        self.sampling_threshold,
-                        self.analysis_modal.random_seed,
-                        options,
-                    ) {
-                        self.analysis_modal.distribution_results = Some(results);
-                    }
+                    let lf = state.lf.clone();
+                    let sampling = self.sampling_threshold;
+                    let seed = self.analysis_modal.random_seed;
+                    let streaming = self.app_config.performance.polars_streaming;
+                    self.spawn_bg("Analyzing distributions...", move |gen, tx| {
+                        let options = crate::statistics::ComputeOptions {
+                            include_distribution_info: true,
+                            include_distribution_analyses: true,
+                            include_correlation_matrix: false,
+                            include_skewness_kurtosis_outliers: true,
+                            polars_streaming: streaming,
+                        };
+                        match crate::statistics::compute_statistics_with_options(
+                            &lf, sampling, seed, options,
+                        ) {
+                            Ok(results) => {
+                                let _ = tx.send(AppEvent::BackgroundDistributionReady {
+                                    generation: gen,
+                                    results,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: gen,
+                                    message: format!("{e}"),
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    self.analysis_modal.computing = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
-                self.analysis_modal.computing = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
                 None
             }
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
-                    if let Ok(df) =
-                        crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)
-                    {
-                        if let Ok(matrix) = crate::statistics::compute_correlation_matrix(&df) {
-                            self.analysis_modal.correlation_results =
-                                Some(crate::statistics::AnalysisResults {
-                                    column_statistics: vec![],
-                                    total_rows: df.height(),
-                                    sample_size: None,
-                                    sample_seed: self.analysis_modal.random_seed,
-                                    correlation_matrix: Some(matrix),
-                                    distribution_analyses: vec![],
+                    let lf = state.lf.clone();
+                    let streaming = state.polars_streaming;
+                    let seed = self.analysis_modal.random_seed;
+                    self.spawn_bg("Computing correlation matrix...", move |gen, tx| {
+                        let result = crate::statistics::collect_lazy(lf, streaming).map(|df| {
+                            let matrix = crate::statistics::compute_correlation_matrix(&df).ok();
+                            let height = df.height();
+                            crate::statistics::AnalysisResults {
+                                column_statistics: vec![],
+                                total_rows: height,
+                                sample_size: None,
+                                sample_seed: seed,
+                                correlation_matrix: matrix,
+                                distribution_analyses: vec![],
+                            }
+                        });
+                        match result {
+                            Ok(results) => {
+                                let _ = tx.send(AppEvent::BackgroundCorrelationReady {
+                                    generation: gen,
+                                    results,
                                 });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: gen,
+                                    message: format!("{e}"),
+                                });
+                            }
+                        }
+                    });
+                } else {
+                    self.analysis_modal.computing = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                }
+                None
+            }
+            AppEvent::BackgroundLenReady {
+                generation,
+                num_rows,
+                status,
+            } => {
+                if *generation == self.task_generation {
+                    if let Some(state) = self.data_table_state.as_mut() {
+                        state.set_num_rows(*num_rows);
+                    }
+                    // Re-enter spawn_async_collect; now num_rows is valid so it'll spawn
+                    // the actual buffer collect with the correct bounds.
+                    if !self.spawn_async_collect(status) {
+                        self.loading_state = LoadingState::Idle;
+                        self.status_message = None;
+                        self.busy = false;
+                        self.drain_keys_on_next_loop = true;
+                    }
+                }
+                None
+            }
+            AppEvent::BackgroundCollectReady { generation } => {
+                if *generation == self.task_generation {
+                    let taken = self
+                        .pending_collect_result
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some((slot_gen, result)) = taken {
+                        if slot_gen == self.task_generation {
+                            if let Some(state) = &mut self.data_table_state {
+                                state.apply_async_collect(result);
+                            }
+                        }
+                    }
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                }
+                // Stale results (generation mismatch) are silently ignored —
+                // busy stays true until the current generation's result arrives.
+                None
+            }
+            AppEvent::BackgroundSchemaReady {
+                generation,
+                path,
+                options,
+                debug_label,
+            } => {
+                if *generation == self.task_generation {
+                    let taken = self
+                        .pending_schema_result
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some((slot_gen, state)) = taken {
+                        if slot_gen == self.task_generation {
+                            self.apply_schema_ready(
+                                state,
+                                path.clone(),
+                                options,
+                                debug_label.clone(),
+                            );
+                            return Some(AppEvent::DoLoadBuffer);
+                        }
+                    }
+                    // Generation matched but slot was empty or stale — loading failed silently.
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                }
+                // Stale message (generation mismatch) — ignore entirely.
+                None
+            }
+            AppEvent::BackgroundDescribeReady {
+                generation,
+                results,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.describe_results = Some(results.clone());
+                    self.analysis_modal.computing = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                }
+                None
+            }
+            AppEvent::BackgroundDistributionReady {
+                generation,
+                results,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.distribution_results = Some(results.clone());
+                    self.analysis_modal.computing = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                }
+                None
+            }
+            AppEvent::BackgroundCorrelationReady {
+                generation,
+                results,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.correlation_results = Some(results.clone());
+                    self.analysis_modal.computing = None;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                }
+                None
+            }
+            AppEvent::BackgroundExportCollected {
+                generation,
+                df,
+                path,
+                format,
+                options,
+            } => {
+                if *generation == self.task_generation {
+                    self.export_df = Some(df.clone());
+                    let has_compression = match format {
+                        ExportFormat::Csv => options.csv_compression.is_some(),
+                        ExportFormat::Json => options.json_compression.is_some(),
+                        ExportFormat::Ndjson => options.ndjson_compression.is_some(),
+                        ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => false,
+                    };
+                    let phase = if has_compression {
+                        "Writing and compressing file"
+                    } else {
+                        "Writing file"
+                    };
+                    self.loading_state = LoadingState::Exporting {
+                        file_path: path.clone(),
+                        current_phase: phase.to_string(),
+                        progress_percent: 50,
+                    };
+                    self.status_message = Some(format!("{}...", phase));
+                    return Some(AppEvent::DoExportWrite(
+                        path.clone(),
+                        *format,
+                        options.clone(),
+                    ));
+                }
+                // Stale export collect — ignore.
+                None
+            }
+            AppEvent::BackgroundExportWritten {
+                generation,
+                path,
+                result,
+            } => {
+                if *generation == self.task_generation {
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                    match result {
+                        Ok(()) => {
+                            self.success_modal
+                                .show(format!("Data exported successfully to\n{}", path.display()));
+                        }
+                        Err(e) => {
+                            self.error_modal.show(e.clone());
                         }
                     }
                 }
-                self.analysis_modal.computing = None;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
+                None
+            }
+            AppEvent::BackgroundError {
+                generation,
+                message,
+            } => {
+                if *generation == self.task_generation {
+                    self.analysis_modal.computing = None;
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                    self.error_modal.show(message.clone());
+                }
                 None
             }
             AppEvent::Search(query) => {
                 let query_succeeded = if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.query(query.clone());
+                    state.defer_collect = false;
                     state.error.is_none()
                 } else {
                     false
                 };
 
-                // Only close input mode if query succeeded (no error after execution)
                 if query_succeeded {
-                    // History was already saved in TextInputEvent::Submit handler
                     self.input_mode = InputMode::Normal;
                     self.query_input.set_focused(false);
-                    // Re-enable error display in main view when closing query input
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
                     }
+                    self.spawn_async_collect("Applying query...");
                 }
-                // If there's an error, keep input mode open so user can fix the query
-                // suppress_error_display remains true to keep main view clean
                 None
             }
             AppEvent::SqlSearch(sql) => {
@@ -7245,14 +7569,15 @@ impl App {
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
                     }
-                    Some(AppEvent::Collect)
-                } else {
-                    None
+                    self.spawn_async_collect("Applying SQL query...");
                 }
+                None
             }
             AppEvent::FuzzySearch(query) => {
                 let fuzzy_succeeded = if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.fuzzy_search(query.clone());
+                    state.defer_collect = false;
                     state.error.is_none()
                 } else {
                     false
@@ -7263,27 +7588,35 @@ impl App {
                     if let Some(state) = &mut self.data_table_state {
                         state.suppress_error_display = false;
                     }
-                    Some(AppEvent::Collect)
-                } else {
-                    None
+                    self.spawn_async_collect("Searching...");
                 }
+                None
             }
             AppEvent::Filter(statements) => {
                 if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.filter(statements.clone());
+                    state.defer_collect = false;
                 }
+                self.spawn_async_collect("Filtering...");
                 None
             }
             AppEvent::Sort(columns, ascending) => {
                 if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.sort(columns.clone(), *ascending);
+                    state.defer_collect = false;
                 }
+                self.spawn_async_collect("Sorting...");
                 None
             }
             AppEvent::Reset => {
                 if let Some(state) = &mut self.data_table_state {
+                    state.defer_collect = true;
                     state.reset();
+                    state.defer_collect = false;
                 }
+                self.spawn_async_collect("Loading buffer...");
                 // Clear active template when resetting
                 self.active_template_id = None;
                 None
@@ -7298,11 +7631,15 @@ impl App {
             AppEvent::Pivot(spec) => {
                 self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
-                    match state.pivot(spec) {
+                    state.defer_collect = true;
+                    let result = state.pivot(spec);
+                    state.defer_collect = false;
+                    match result {
                         Ok(()) => {
                             self.pivot_melt_modal.close();
                             self.input_mode = InputMode::Normal;
-                            Some(AppEvent::Collect)
+                            self.spawn_async_collect("Computing pivot...");
+                            None
                         }
                         Err(e) => {
                             self.busy = false;
@@ -7319,11 +7656,15 @@ impl App {
             AppEvent::Melt(spec) => {
                 self.busy = true;
                 if let Some(state) = &mut self.data_table_state {
-                    match state.melt(spec) {
+                    state.defer_collect = true;
+                    let result = state.melt(spec);
+                    state.defer_collect = false;
+                    match result {
                         Ok(()) => {
                             self.pivot_melt_modal.close();
                             self.input_mode = InputMode::Normal;
-                            Some(AppEvent::Collect)
+                            self.spawn_async_collect("Computing melt...");
+                            None
                         }
                         Err(e) => {
                             self.busy = false;
@@ -7411,68 +7752,56 @@ impl App {
             }
             AppEvent::DoExportCollect(path, format, options) => {
                 if let Some(state) = &self.data_table_state {
-                    match crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)
-                    {
-                        Ok(df) => {
-                            self.export_df = Some(df);
-                            let has_compression = match format {
-                                ExportFormat::Csv => options.csv_compression.is_some(),
-                                ExportFormat::Json => options.json_compression.is_some(),
-                                ExportFormat::Ndjson => options.ndjson_compression.is_some(),
-                                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-                                    false
-                                }
-                            };
-                            let phase = if has_compression {
-                                "Writing and compressing file"
-                            } else {
-                                "Writing file"
-                            };
-                            self.loading_state = LoadingState::Exporting {
-                                file_path: path.clone(),
-                                current_phase: phase.to_string(),
-                                progress_percent: 50,
-                            };
-                            Some(AppEvent::DoExportWrite(
-                                path.clone(),
-                                *format,
-                                options.clone(),
-                            ))
+                    let lf = state.lf.clone();
+                    let streaming = state.polars_streaming;
+                    let path = path.clone();
+                    let format = *format;
+                    let options = options.clone();
+                    self.spawn_bg("Collecting data for export...", move |gen, tx| {
+                        match crate::statistics::collect_lazy(lf, streaming) {
+                            Ok(df) => {
+                                let _ = tx.send(AppEvent::BackgroundExportCollected {
+                                    generation: gen,
+                                    df,
+                                    path,
+                                    format,
+                                    options,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: gen,
+                                    message: format!(
+                                        "Export failed: {}",
+                                        crate::error_display::user_message_from_polars(&e)
+                                    ),
+                                });
+                            }
                         }
-                        Err(e) => {
-                            self.loading_state = LoadingState::Idle;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            self.error_modal.show(format!(
-                                "Export failed: {}",
-                                crate::error_display::user_message_from_polars(&e)
-                            ));
-                            None
-                        }
-                    }
+                    });
                 } else {
                     self.busy = false;
-                    None
                 }
+                None
             }
             AppEvent::DoExportWrite(path, format, options) => {
-                let result = self
-                    .export_df
-                    .take()
-                    .map(|mut df| Self::export_data_from_df(&mut df, path, *format, options));
-                self.loading_state = LoadingState::Idle;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                match result {
-                    Some(Ok(())) => {
-                        self.success_modal
-                            .show(format!("Data exported successfully to\n{}", path.display()));
-                    }
-                    Some(Err(e)) => {
-                        let error_msg = Self::format_export_error(&e, path);
-                        self.error_modal.show(error_msg);
-                    }
-                    None => {}
+                if let Some(df) = self.export_df.take() {
+                    let path = path.clone();
+                    let format = *format;
+                    let options = options.clone();
+                    self.spawn_bg("Writing file...", move |gen, tx| {
+                        let mut df = df;
+                        let result = Self::export_data_from_df(&mut df, &path, format, &options);
+                        let _ = tx.send(AppEvent::BackgroundExportWritten {
+                            generation: gen,
+                            path: path.clone(),
+                            result: result.map_err(|e| Self::format_export_error(&e, &path)),
+                        });
+                    });
+                } else {
+                    self.loading_state = LoadingState::Idle;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -8290,7 +8619,7 @@ impl Widget for &mut App {
         }
 
         use crate::render::context::RenderContext;
-        use crate::render::layout::{app_layout, centered_rect_loading};
+        use crate::render::layout::app_layout;
         use crate::render::main_view::MainViewContent;
 
         let ctx = RenderContext::from_theme_and_config(
@@ -8316,45 +8645,7 @@ impl Widget for &mut App {
 
         crate::render::main_view_render::render_main_view(area, main_area, buf, self, &ctx);
 
-        // Render loading progress popover (min 25 chars wide, max 25% of area; throbber spins via busy in controls)
-        if matches!(self.loading_state, LoadingState::Loading { .. }) {
-            if let LoadingState::Loading {
-                current_phase,
-                progress_percent,
-                ..
-            } = &self.loading_state
-            {
-                let popover_rect = centered_rect_loading(area);
-                crate::render::overlays::render_loading_gauge(
-                    popover_rect,
-                    buf,
-                    "Loading",
-                    current_phase,
-                    *progress_percent,
-                    ctx.modal_border,
-                    ctx.primary_chart_series_color,
-                );
-            }
-        }
-        if matches!(self.loading_state, LoadingState::Exporting { .. }) {
-            if let LoadingState::Exporting {
-                file_path,
-                current_phase,
-                progress_percent,
-            } = &self.loading_state
-            {
-                let label = format!("{}: {}", current_phase, file_path.display());
-                crate::render::overlays::render_loading_gauge(
-                    area,
-                    buf,
-                    "Exporting",
-                    &label,
-                    *progress_percent,
-                    ctx.modal_border,
-                    ctx.primary_chart_series_color,
-                );
-            }
-        }
+        // Status messages are shown inline in the control bar (no overlay popups).
 
         if self.confirmation_modal.active {
             crate::render::overlays::render_confirmation_modal(
@@ -8403,6 +8694,44 @@ impl Widget for &mut App {
         let mut controls = Controls::from_context(row_count.unwrap_or(0), &ctx)
             .with_unicode_throbber(use_unicode_throbber);
 
+        // Derive status message from loading_state or explicit status_message.
+        let status_msg = match &self.loading_state {
+            LoadingState::Loading {
+                current_phase,
+                progress_percent,
+                ..
+            } => {
+                if *progress_percent > 0 {
+                    Some(format!("{}... ({}%)", current_phase, progress_percent))
+                } else {
+                    Some(format!("{}...", current_phase))
+                }
+            }
+            LoadingState::Exporting {
+                current_phase,
+                progress_percent,
+                file_path,
+            } => {
+                let filename = file_path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+                if *progress_percent > 0 {
+                    Some(format!(
+                        "{}... ({}%)  {}",
+                        current_phase, progress_percent, filename
+                    ))
+                } else {
+                    Some(format!("{}...  {}", current_phase, filename))
+                }
+            }
+            LoadingState::Idle => {
+                if self.busy {
+                    self.status_message.clone()
+                } else {
+                    None
+                }
+            }
+        };
+        controls = controls.with_status_message(status_msg);
+
         match crate::render::main_view::control_bar_spec(self, main_view_content) {
             crate::render::main_view::ControlBarSpec::Datatable {
                 dimmed,
@@ -8415,9 +8744,6 @@ impl Widget for &mut App {
             }
         }
 
-        if self.busy {
-            self.throbber_frame = self.throbber_frame.wrapping_add(1);
-        }
         controls = controls.with_busy(self.busy, self.throbber_frame);
         controls.render(app_layout.control_bar, buf);
         if let Some(debug_area) = app_layout.debug {
@@ -8479,6 +8805,12 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             }
         }
     }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|e| color_eyre::eyre::eyre!("Failed to create tokio runtime: {}", e))?;
+
     let mut terminal = ratatui::try_init().map_err(|e| {
         color_eyre::eyre::eyre!(
             "datui requires an interactive terminal (TTY). No terminal detected: {}. \
@@ -8487,97 +8819,89 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         )
     })?;
     let (tx, rx) = mpsc::channel::<AppEvent>();
-    let mut app = App::new_with_config(tx.clone(), theme, config.clone());
+    let mut app = App::new_with_config(tx.clone(), rt.handle().clone(), theme, config.clone());
     if opts.debug {
         app.enable_debug();
     }
 
-    terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
-
+    // Send initial event and show the first frame immediately.
     match input {
         RunInput::Paths(paths, opts) => {
+            app.set_loading_phase("Scanning input", 10);
             tx.send(AppEvent::Open(paths, opts))?;
         }
         RunInput::LazyFrame(lf, opts) => {
-            // Show loading dialog immediately so it is visible when launch is from Python/LazyFrame
-            // (before sending the event and before any blocking work in the event handler).
             app.set_loading_phase("Scanning input", 10);
-            terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
-            let _ = std::io::stdout().flush();
-            // Brief pause so the terminal can display the frame when run from Python (e.g. maturin).
-            std::thread::sleep(std::time::Duration::from_millis(150));
             tx.send(AppEvent::OpenLazyFrame(lf, opts))?;
         }
     }
+    app.busy = true;
+    terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+    let _ = std::io::stdout().flush();
 
-    // Process load events and draw so the loading progress dialog updates (e.g. "Caching schema")
-    // before any blocking work. Keeps processing until no event is received (timeout).
+    // Main event loop: poll for input, drain queued events, redraw.
     loop {
-        let event = match rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            Ok(ev) => ev,
-            Err(mpsc::RecvTimeoutError::Timeout) => break,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        // Poll with a shorter timeout when busy so the throbber animates (~30fps).
+        // 33ms is plenty for a spinner and halves redraw load vs. 60fps.
+        let poll_ms = if app.busy {
+            33
+        } else {
+            config.performance.event_poll_interval_ms
         };
-        match event {
-            AppEvent::Exit => break,
-            AppEvent::Crash(msg) => {
-                ratatui::restore();
-                return Err(color_eyre::eyre::eyre!(msg));
-            }
-            ev => {
-                if let Some(next) = app.event(&ev) {
-                    let _ = tx.send(next);
-                }
-                terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
-                let _ = std::io::stdout().flush();
-                // After processing DoLoadSchema we've drawn "Caching schema"; next event is DoLoadSchemaBlocking (blocking).
-                // Leave it for the main loop so we don't block here.
-                if matches!(ev, AppEvent::DoLoadSchema(..)) {
-                    break;
-                }
-            }
-        }
-    }
 
-    loop {
-        if crossterm::event::poll(std::time::Duration::from_millis(
-            config.performance.event_poll_interval_ms,
-        ))? {
+        if crossterm::event::poll(std::time::Duration::from_millis(poll_ms))? {
             match crossterm::event::read()? {
-                crossterm::event::Event::Key(key) => {
-                    if key.is_press() {
-                        tx.send(AppEvent::Key(key))?
-                    }
+                crossterm::event::Event::Key(key) if key.is_press() => {
+                    tx.send(AppEvent::Key(key))?;
                 }
                 crossterm::event::Event::Resize(cols, rows) => {
-                    tx.send(AppEvent::Resize(cols, rows))?
+                    tx.send(AppEvent::Resize(cols, rows))?;
                 }
                 _ => {}
             }
         }
 
-        let updated = match rx.recv_timeout(std::time::Duration::from_millis(0)) {
-            Ok(event) => {
-                match event {
-                    AppEvent::Exit => break,
-                    AppEvent::Crash(msg) => {
-                        ratatui::restore();
-                        return Err(color_eyre::eyre::eyre!(msg));
-                    }
-                    event => {
-                        if let Some(next) = app.event(&event) {
-                            tx.send(next)?;
-                        }
-                    }
+        // Drain ALL pending events per iteration.
+        let mut updated = false;
+        loop {
+            match rx.try_recv() {
+                Ok(AppEvent::Exit) => {
+                    ratatui::restore();
+                    return Ok(());
                 }
-                true
+                Ok(AppEvent::Crash(msg)) => {
+                    ratatui::restore();
+                    return Err(color_eyre::eyre::eyre!(msg));
+                }
+                Ok(event) => {
+                    if let Some(next) = app.event(&event) {
+                        tx.send(next)?;
+                    }
+                    updated = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    ratatui::restore();
+                    return Ok(());
+                }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => false,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
+        }
+
+        // Animate throbber when busy (even without events).
+        if app.busy {
+            app.throbber_frame = app.throbber_frame.wrapping_add(1);
+            updated = true;
+        }
 
         if updated {
             terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+            // After render, check if visible_rows changed and trigger async buffer re-collect.
+            if let Some(state) = &mut app.data_table_state {
+                if state.needs_recollect {
+                    state.needs_recollect = false;
+                    app.spawn_async_collect("Loading buffer...");
+                }
+            }
             if app.should_drain_keys() {
                 while crossterm::event::poll(std::time::Duration::from_millis(0))? {
                     let _ = crossterm::event::read();
@@ -8586,7 +8910,4 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             }
         }
     }
-
-    ratatui::restore();
-    Ok(())
 }

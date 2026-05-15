@@ -5,6 +5,21 @@ use std::sync::Once;
 #[allow(dead_code)]
 static INIT: Once = Once::new();
 
+/// Returns a tokio runtime handle for use in tests.
+#[allow(dead_code)]
+pub fn test_runtime() -> tokio::runtime::Handle {
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("test tokio runtime")
+    })
+    .handle()
+    .clone()
+}
+
 /// Ensures that sample data files are generated before tests run.
 /// This function uses `std::sync::Once` to ensure it only runs once,
 /// even if called from multiple tests.

@@ -40,7 +40,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -60,13 +60,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -92,7 +92,7 @@ jobs:
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin
           key: ${{ runner.os }}-cargo-packaging-tools-v1
@@ -133,7 +133,7 @@ jobs:
 
       - name: Cache mdbook
         id: cache-mdbook
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo/bin/mdbook
           key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
@@ -151,7 +151,7 @@ jobs:
           echo "version_sha=$VERSION_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore docs cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: book
           key: docs-book-${{ runner.os }}-${{ steps.compute-docs-key.outputs.version_sha }}
@@ -211,7 +211,7 @@ jobs:
           path: ./book-deploy
 
       - name: Upload linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: datui-linux-artifacts
           path: |
@@ -229,7 +229,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -237,10 +237,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -283,7 +283,7 @@ jobs:
           Compress-Archive -Path "$staging/*" -DestinationPath "datui-${version}-windows-x86_64.zip"
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: datui-windows-artifacts
           path: |
@@ -302,7 +302,7 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -310,13 +310,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: Add Rust target
         run: rustup target add ${{ matrix.target }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -369,7 +369,7 @@ jobs:
           maturin build --release --out dist --target ${{ matrix.target }}
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: datui-macos-${{ matrix.target }}-artifacts
           path: |
@@ -387,29 +387,29 @@ jobs:
       pages: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download linux artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: datui-linux-artifacts
 
       - name: Download Windows artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: datui-windows-artifacts
           path: windows-artifacts
 
       - name: Download macOS aarch64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: datui-macos-aarch64-apple-darwin-artifacts
           path: macos-aarch64
 
       - name: Download macOS x86_64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: datui-macos-x86_64-apple-darwin-artifacts
           path: macos-x86_64

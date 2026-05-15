@@ -92,11 +92,6 @@ pub fn centered_rect_with_min(
     }
 }
 
-/// Create rect for loading gauge (25% width, centered).
-pub fn centered_rect_loading(r: Rect) -> Rect {
-    centered_rect(r, 25, 20)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,14 +169,5 @@ mod tests {
 
         assert_eq!(centered.width, 80);
         assert_eq!(centered.height, 80);
-    }
-
-    #[test]
-    fn test_centered_rect_loading() {
-        let area = Rect::new(0, 0, 100, 100);
-        let loading = centered_rect_loading(area);
-
-        assert_eq!(loading.width, 25);
-        assert_eq!(loading.height, 20);
     }
 }

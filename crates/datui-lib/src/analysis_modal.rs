@@ -230,15 +230,11 @@ impl AnalysisModal {
 
     pub fn scroll_left(&mut self) {
         match self.selected_tool {
-            Some(AnalysisTool::Describe) => {
-                if self.describe_column_offset > 0 {
-                    self.describe_column_offset -= 1;
-                }
+            Some(AnalysisTool::Describe) if self.describe_column_offset > 0 => {
+                self.describe_column_offset -= 1;
             }
-            Some(AnalysisTool::DistributionAnalysis) => {
-                if self.distribution_column_offset > 0 {
-                    self.distribution_column_offset -= 1;
-                }
+            Some(AnalysisTool::DistributionAnalysis) if self.distribution_column_offset > 0 => {
+                self.distribution_column_offset -= 1;
             }
             _ => {}
         }

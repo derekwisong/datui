@@ -179,7 +179,8 @@ jobs:
     # winget-releaser fetches release assets via GitHub API; no local download needed
     steps:
       - name: Open winget-pkgs PR
-        uses: vedantmgoyal9/winget-releaser@main
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        uses: vedantmgoyal9/winget-releaser@7bd472be23763def6e16bd06cc8b1cdfab0e2fd5 # main as of 2026-03-15
         with:
           identifier: derekwisong.datui
           installers-regex: '-windows-x86_64\.zip$'

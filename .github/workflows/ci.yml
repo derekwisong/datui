@@ -63,7 +63,8 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Free disk space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2023-10-18
         with:
           tool-cache: false
           android: true
@@ -153,7 +154,6 @@ jobs:
   windows:
     runs-on: windows-latest
     needs: [check]
-    environment: ci-gate
     if: needs.check.outputs.is_dev_version != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -227,7 +227,6 @@ jobs:
   macos:
     runs-on: macos-latest
     needs: [check]
-    environment: ci-gate
     if: needs.check.outputs.is_dev_version != 'true'
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target

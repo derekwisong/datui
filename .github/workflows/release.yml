@@ -204,15 +204,15 @@ jobs:
           find book-deploy -name .built_sha -delete
 
       - name: Setup Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: ./book-deploy
 
       - name: Upload linux artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: datui-linux-artifacts
           path: |
@@ -284,7 +284,7 @@ jobs:
           Compress-Archive -Path "$staging/*" -DestinationPath "datui-${version}-windows-x86_64.zip"
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: datui-windows-artifacts
           path: |
@@ -370,7 +370,7 @@ jobs:
           maturin build --release --out dist --target ${{ matrix.target }}
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: datui-macos-${{ matrix.target }}-artifacts
           path: |
@@ -393,30 +393,31 @@ jobs:
           fetch-depth: 0
 
       - name: Download linux artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: datui-linux-artifacts
 
       - name: Download Windows artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: datui-windows-artifacts
           path: windows-artifacts
 
       - name: Download macOS aarch64 artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: datui-macos-aarch64-apple-darwin-artifacts
           path: macos-aarch64
 
       - name: Download macOS x86_64 artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           name: datui-macos-x86_64-apple-darwin-artifacts
           path: macos-x86_64
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ github.ref_name }}
           files: |
@@ -435,11 +436,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v6
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
   publish-packages:
     needs: publish

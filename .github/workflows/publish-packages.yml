@@ -163,7 +163,10 @@ jobs:
           gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} --pattern 'PKGBUILD'
 
       - name: Publish to AUR (datui-bin package)
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.1
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        # v2.7.1 broke after an Arch base image util-linux update tightened
+        # runuser's su-compatible option parsing (KSXGitHub#50).
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
         with:
           pkgname: datui-bin
           pkgbuild: PKGBUILD
@@ -223,7 +226,8 @@ jobs:
           gpg --batch --yes -u "$GPG_EMAIL" --clearsign -o InRelease Release
 
       - name: Deploy to datui-apt
-        uses: peaceiris/actions-gh-pages@v3
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        uses: peaceiris/actions-gh-pages@1ef5a1b1df4c63fe21a2242edbee6cac921ece01 # v4.1.0
         with:
           personal_token: ${{ secrets.DATUI_APT_TOKEN }}
           external_repository: derekwisong/datui-apt

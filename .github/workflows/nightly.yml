@@ -102,7 +102,7 @@ jobs:
           cd python && maturin build --release --out dist
 
       - name: Upload packaging artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-linux
           path: |
@@ -162,7 +162,7 @@ jobs:
           maturin build --release --out dist
 
       - name: Upload Windows wheel and binary
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-windows
           path: |
@@ -243,7 +243,7 @@ jobs:
           cd python && maturin build --release --out dist --target ${{ matrix.target }}
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-macos-${{ matrix.target }}
           path: |

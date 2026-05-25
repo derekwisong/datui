@@ -20,6 +20,7 @@ import glob
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 PKG_CHOICES = ("deb", "rpm", "aur")
@@ -65,6 +66,23 @@ def ensure_gzipped_manpage(repo_root: Path) -> bool:
             sys.stderr.write(proc.stderr)
         return False
     return (repo_root / "target" / "release" / "datui.1.gz").exists()
+
+
+def rpm_version_override(repo_root: Path) -> str | None:
+    """Return an RPM-safe version when Cargo.toml's version contains '-'.
+
+    RPM disallows '-' in versions (it separates version from release). Tilde is
+    RPM's pre-release marker, so '0.2.54~dev' correctly sorts below '0.2.54'
+    — unlike '.dev', which would sort above. cargo-generate-rpm 0.21 enforces
+    this strictly; earlier versions did not, which is why the nightly only
+    started failing once that release rolled out.
+    """
+    with (repo_root / "Cargo.toml").open("rb") as f:
+        data = tomllib.load(f)
+    version = data.get("package", {}).get("version", "")
+    if "-" not in version:
+        return None
+    return version.replace("-", "~")
 
 
 def fix_aur_pkgbuild(repo_root: Path) -> bool:
@@ -182,6 +200,9 @@ def main() -> int:
         cmd = ["cargo", "aur"]
     elif args.pkg == "rpm":
         cmd = ["cargo", subcmd]
+        override = rpm_version_override(repo_root)
+        if override is not None:
+            cmd.extend(["-s", f'version="{override}"'])
     else:
         cmd = ["cargo", subcmd, "-p", "datui"]
     proc = run(cmd, cwd=repo_root)

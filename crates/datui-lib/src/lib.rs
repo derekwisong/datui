@@ -1107,6 +1107,14 @@ impl App {
             self.original_file_format = None;
             self.original_file_delimiter = None;
         }
+        // Enable the cheap footer-sum row count for a local Parquet hive directory.
+        if options.hive {
+            if let Some(p) = path.as_ref().filter(|p| p.is_dir()) {
+                if let Some(state) = self.data_table_state.as_mut() {
+                    state.set_parquet_count_dir(p.clone());
+                }
+            }
+        }
         self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
         if let LoadingState::Loading {
@@ -1148,20 +1156,36 @@ impl App {
         if !state.is_num_rows_valid() {
             let len_gen = state.len_generation();
             if self.len_count_inflight != Some(len_gen) {
+                // Prefer the cheap footer-sum count for a pristine local Parquet hive
+                // directory; otherwise fall back to a `len()` data scan.
+                let count_dir = state.parquet_count_dir();
                 let lf = state.lf_clone();
                 let streaming = state.polars_streaming_enabled();
                 self.len_count_inflight = Some(len_gen);
                 let tx = self.events.clone();
                 self.runtime.spawn_blocking(move || {
-                    match crate::statistics::collect_lazy(lf.select([len()]), streaming) {
-                        Ok(df) => {
-                            let num_rows = match df.get(0) {
-                                Some(col) => match col.first() {
-                                    Some(AnyValue::UInt32(n)) => *n as usize,
-                                    _ => 0,
-                                },
-                                None => 0,
-                            };
+                    let counted = match count_dir {
+                        Some(dir) => {
+                            crate::widgets::datatable::DataTableState::count_rows_from_parquet_dir(
+                                &dir,
+                            )
+                            .map_err(|_| ())
+                        }
+                        None => {
+                            match crate::statistics::collect_lazy(lf.select([len()]), streaming) {
+                                Ok(df) => Ok(match df.get(0) {
+                                    Some(col) => match col.first() {
+                                        Some(AnyValue::UInt32(n)) => *n as usize,
+                                        _ => 0,
+                                    },
+                                    None => 0,
+                                }),
+                                Err(_) => Err(()),
+                            }
+                        }
+                    };
+                    match counted {
+                        Ok(num_rows) => {
                             let _ = tx.send(AppEvent::BackgroundLenReady {
                                 len_generation: len_gen,
                                 num_rows,
@@ -1169,7 +1193,7 @@ impl App {
                         }
                         // Count failed: leave the total provisional and allow a retry on a
                         // later interaction. The buffer paint below is unaffected.
-                        Err(_) => {
+                        Err(()) => {
                             let _ = tx.send(AppEvent::BackgroundLenFailed {
                                 len_generation: len_gen,
                             });
@@ -1595,6 +1619,13 @@ impl App {
                     self.path = Some(path.clone());
                     self.original_file_format = Some(ExportFormat::Parquet);
                     self.original_file_delimiter = None;
+                    // Enable the cheap footer-sum row count for a local hive directory
+                    // (globs go through the same constructor but aren't a single dir).
+                    if path.is_dir() {
+                        if let Some(state) = self.data_table_state.as_mut() {
+                            state.set_parquet_count_dir(path.clone());
+                        }
+                    }
                     self.sort_filter_modal = SortFilterModal::new();
                     self.pivot_melt_modal = PivotMeltModal::new();
                     return Ok(());

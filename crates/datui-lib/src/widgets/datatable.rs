@@ -2,7 +2,7 @@ use color_eyre::Result;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::{fs, fs::File, path::Path};
+use std::{fs, fs::File, path::Path, path::PathBuf};
 
 use polars::io::HiveOptions;
 use polars::prelude::*;
@@ -75,6 +75,11 @@ pub struct DataTableState {
     /// longer matches is stale (the data changed) and is dropped. Decoupled from
     /// `task_generation` so a mere scroll doesn't invalidate / restart an in-flight count.
     len_generation: u64,
+    /// When set, the current `lf` is a pristine scan of this local Parquet hive directory,
+    /// so the exact row count equals the sum of per-file footer counts — far cheaper than
+    /// a `len()` data scan over a huge/partitioned set. Cleared whenever `lf` is mutated
+    /// (filter/query/group/etc.), since footers can't count row-reducing operations.
+    parquet_count_dir: Option<PathBuf>,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
@@ -186,6 +191,7 @@ impl DataTableState {
             num_rows: 0,
             num_rows_valid: false,
             len_generation: 0,
+            parquet_count_dir: None,
             filters: Vec::new(),
             sort_columns: Vec::new(),
             sort_ascending: true,
@@ -271,6 +277,7 @@ impl DataTableState {
             num_rows: 0,
             num_rows_valid: false,
             len_generation: 0,
+            parquet_count_dir: None,
             filters: Vec::new(),
             sort_columns: Vec::new(),
             sort_ascending: true,
@@ -1175,6 +1182,87 @@ impl DataTableState {
             }
         }
         first_partition_child.and_then(|p| Self::first_parquet_file_spine(&p, depth + 1, max_depth))
+    }
+
+    /// Recursively collect every `*.parquet` file under `dir`. Unlike the single-spine
+    /// walks used for schema/partition discovery, this visits the whole tree because an
+    /// exact row count needs every file. Bounded depth guards against pathological trees.
+    fn collect_parquet_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize, max_depth: usize) {
+        if depth >= max_depth {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() {
+                Self::collect_parquet_files(&child, out, depth + 1, max_depth);
+            } else if child
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
+            {
+                out.push(child);
+            }
+        }
+    }
+
+    /// Exact row count for a local Parquet hive directory, computed by summing per-file
+    /// footer row counts (metadata only — no data is read). This is the cheap alternative
+    /// to a `len()` data scan: footers are tiny, so the cost is one metadata read per file,
+    /// fanned out across threads. Files that fail to read (e.g. an in-progress write) are
+    /// skipped so a single bad file can't force the slow path; `Err` only if the directory
+    /// has no readable Parquet files at all.
+    pub fn count_rows_from_parquet_dir(dir: &Path) -> Result<usize> {
+        const MAX_DEPTH: usize = 64;
+        let mut files = Vec::new();
+        Self::collect_parquet_files(dir, &mut files, 0, MAX_DEPTH);
+        if files.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "No parquet files found under {}",
+                dir.display()
+            ));
+        }
+
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(files.len())
+            .max(1);
+        let chunk_size = files.len().div_ceil(workers);
+
+        let (total, read_ok) = std::thread::scope(|scope| {
+            let handles: Vec<_> = files
+                .chunks(chunk_size)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        let mut sum = 0usize;
+                        let mut ok = 0usize;
+                        for path in chunk {
+                            if let Ok(file) = File::open(path) {
+                                if let Ok(n) = ParquetReader::new(file).num_rows() {
+                                    sum += n;
+                                    ok += 1;
+                                }
+                            }
+                        }
+                        (sum, ok)
+                    })
+                })
+                .collect();
+            handles.into_iter().fold((0usize, 0usize), |(s, o), h| {
+                let (cs, co) = h.join().unwrap_or((0, 0));
+                (s + cs, o + co)
+            })
+        });
+
+        if read_ok == 0 {
+            return Err(color_eyre::eyre::eyre!(
+                "Could not read any parquet footers under {}",
+                dir.display()
+            ));
+        }
+        Ok(total)
     }
 
     /// Read schema from a single parquet file (metadata only, no data scan). Used to avoid collect_schema() over many files.
@@ -2970,10 +3058,26 @@ impl DataTableState {
     }
 
     /// Invalidate num_rows cache when lf is mutated. Bumps `len_generation` so any
-    /// in-flight background count for the previous `lf` is recognized as stale.
+    /// in-flight background count for the previous `lf` is recognized as stale. Also drops
+    /// the cheap Parquet-footer count source: once `lf` carries a filter/query/group, the
+    /// row count no longer equals the sum of file footers.
     fn invalidate_num_rows(&mut self) {
         self.num_rows_valid = false;
         self.len_generation = self.len_generation.wrapping_add(1);
+        self.parquet_count_dir = None;
+    }
+
+    /// Record that the current `lf` is a pristine scan of `dir` (a local Parquet hive
+    /// directory), enabling the cheap footer-sum row count. Set by the loader; cleared by
+    /// `invalidate_num_rows` on any row-changing mutation.
+    pub fn set_parquet_count_dir(&mut self, dir: PathBuf) {
+        self.parquet_count_dir = Some(dir);
+    }
+
+    /// The directory whose Parquet footers can be summed for an exact row count, if the
+    /// current `lf` still allows it. See `parquet_count_dir`.
+    pub fn parquet_count_dir(&self) -> Option<PathBuf> {
+        self.parquet_count_dir.clone()
     }
 
     /// Current count generation. A background `len()` task captures this; its result is
@@ -5752,5 +5856,50 @@ mod tests {
                 curr
             );
         }
+    }
+
+    fn write_parquet(path: &Path, n: i64) {
+        let mut df = df!("v" => (0..n).collect::<Vec<i64>>()).unwrap();
+        let file = File::create(path).unwrap();
+        ParquetWriter::new(file).finish(&mut df).unwrap();
+    }
+
+    #[test]
+    fn test_count_rows_from_parquet_dir_sums_footers() {
+        let dir = tempfile::tempdir().unwrap();
+        // Hive-style layout: two partitions, multiple files each.
+        let p1 = dir.path().join("year=2020");
+        let p2 = dir.path().join("year=2021");
+        fs::create_dir_all(&p1).unwrap();
+        fs::create_dir_all(&p2).unwrap();
+        write_parquet(&p1.join("a.parquet"), 10);
+        write_parquet(&p1.join("b.parquet"), 5);
+        write_parquet(&p2.join("c.parquet"), 7);
+
+        let n = DataTableState::count_rows_from_parquet_dir(dir.path()).unwrap();
+        assert_eq!(n, 22, "should sum footer row counts across all files");
+    }
+
+    #[test]
+    fn test_count_rows_skips_non_parquet_and_corrupt_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write_parquet(&dir.path().join("good.parquet"), 8);
+        // A non-parquet file must be ignored entirely.
+        fs::write(dir.path().join("notes.txt"), b"ignore me").unwrap();
+        // A corrupt .parquet must be skipped, not abort the whole count.
+        fs::write(dir.path().join("bad.parquet"), b"not a parquet footer").unwrap();
+
+        let n = DataTableState::count_rows_from_parquet_dir(dir.path()).unwrap();
+        assert_eq!(n, 8, "non-parquet and unreadable files should be skipped");
+    }
+
+    #[test]
+    fn test_count_rows_errors_when_no_readable_parquet() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("only.txt"), b"nothing here").unwrap();
+        assert!(
+            DataTableState::count_rows_from_parquet_dir(dir.path()).is_err(),
+            "a directory with no parquet files should error so the caller can fall back"
+        );
     }
 }

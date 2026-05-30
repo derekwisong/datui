@@ -70,6 +70,11 @@ pub struct DataTableState {
     pub num_rows: usize,
     /// When true, collect() skips the len() query.
     num_rows_valid: bool,
+    /// Bumped whenever `lf` changes (via `invalidate_num_rows`). A background `len()`
+    /// count carries the generation it was spawned under; a result whose generation no
+    /// longer matches is stale (the data changed) and is dropped. Decoupled from
+    /// `task_generation` so a mere scroll doesn't invalidate / restart an in-flight count.
+    len_generation: u64,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
@@ -137,8 +142,11 @@ pub struct CollectRequest {
     pub buffer_start: usize,
     /// Buffer end row in the full dataset.
     pub buffer_end: usize,
-    /// Row count for the full (unsliced) dataset.
+    /// Row count for the full (unsliced) dataset. Only meaningful when `count_known`.
     pub num_rows: usize,
+    /// Whether `num_rows` is the true total. False for a first buffer rendered before
+    /// the background `len()` count has resolved; in that case `num_rows` is provisional.
+    pub count_known: bool,
 }
 
 /// Result of a background buffer load. Consumed by `apply_async_collect()`.
@@ -147,6 +155,8 @@ pub struct CollectResult {
     pub buffer_start: usize,
     pub buffer_end: usize,
     pub num_rows: usize,
+    /// See `CollectRequest::count_known`.
+    pub count_known: bool,
 }
 
 impl DataTableState {
@@ -175,6 +185,7 @@ impl DataTableState {
             schema,
             num_rows: 0,
             num_rows_valid: false,
+            len_generation: 0,
             filters: Vec::new(),
             sort_columns: Vec::new(),
             sort_ascending: true,
@@ -259,6 +270,7 @@ impl DataTableState {
             schema,
             num_rows: 0,
             num_rows_valid: false,
+            len_generation: 0,
             filters: Vec::new(),
             sort_columns: Vec::new(),
             sort_ascending: true,
@@ -2761,28 +2773,34 @@ impl DataTableState {
             self.num_rows = n;
             self.num_rows_valid = true;
         }
-        debug_assert!(
-            self.num_rows_valid,
-            "prepare_async_collect requires num_rows_valid; caller must run a background len() first",
-        );
 
-        if self.num_rows > 0 {
-            let max_start = self.num_rows.saturating_sub(1);
-            if self.start_row > max_start {
-                self.start_row = max_start;
+        // `bound` is the exact total when known, or `usize::MAX` while the background
+        // `len()` is still running. Using it instead of `self.num_rows` lets us plan a
+        // top-of-data window for first paint without waiting for the count. See
+        // `num_rows_bound`.
+        let count_known = self.num_rows_valid;
+        let bound = self.num_rows_bound();
+
+        if count_known {
+            if self.num_rows > 0 {
+                let max_start = self.num_rows.saturating_sub(1);
+                if self.start_row > max_start {
+                    self.start_row = max_start;
+                }
+            } else {
+                // Confirmed-empty dataset: clear everything.
+                self.start_row = 0;
+                self.buffered_start_row = 0;
+                self.buffered_end_row = 0;
+                self.buffered_df = None;
+                self.df = None;
+                self.locked_df = None;
+                return None;
             }
-        } else {
-            self.start_row = 0;
-            self.buffered_start_row = 0;
-            self.buffered_end_row = 0;
-            self.buffered_df = None;
-            self.df = None;
-            self.locked_df = None;
-            return None;
         }
 
         let view_start = self.start_row;
-        let view_end = self.start_row + self.visible_rows.min(self.num_rows - self.start_row);
+        let view_end = self.start_row + self.visible_rows.min(bound - self.start_row);
         let within_buffer = view_start >= self.buffered_start_row
             && view_end <= self.buffered_end_row
             && self.buffered_end_row > 0;
@@ -2795,7 +2813,7 @@ impl DataTableState {
             let needs_expansion_back =
                 dist_to_start <= self.proximity_threshold && self.buffered_start_row > 0;
             let needs_expansion_forward =
-                dist_to_end <= self.proximity_threshold && self.buffered_end_row < self.num_rows;
+                dist_to_end <= self.proximity_threshold && self.buffered_end_row < bound;
 
             if !needs_expansion_back && !needs_expansion_forward {
                 // Buffer is fine, just re-slice display.
@@ -2821,7 +2839,7 @@ impl DataTableState {
                     self.buffered_start_row
                 };
                 let mut e = if needs_expansion_forward {
-                    (view_end + self.pages_lookahead * page_rows).min(self.num_rows)
+                    (view_end + self.pages_lookahead * page_rows).min(bound)
                 } else {
                     self.buffered_end_row
                 };
@@ -2841,25 +2859,25 @@ impl DataTableState {
             let mut e;
             if extend_forward_ok {
                 s = self.buffered_start_row;
-                e = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+                e = (view_end + self.pages_lookahead * page_rows).min(bound);
             } else if extend_backward_ok {
                 s = view_start.saturating_sub(self.pages_lookback * page_rows);
                 e = self.buffered_end_row;
             } else {
                 s = view_start.saturating_sub(self.pages_lookback * page_rows);
-                e = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+                e = (view_end + self.pages_lookahead * page_rows).min(bound);
                 let min_initial_len = (1 + self.pages_lookahead + self.pages_lookback) * page_rows;
                 let current_len = e.saturating_sub(s);
                 if current_len < min_initial_len {
                     let need = min_initial_len.saturating_sub(current_len);
-                    let can_extend_end = self.num_rows.saturating_sub(e);
+                    let can_extend_end = bound.saturating_sub(e);
                     let can_extend_start = s;
                     if can_extend_end >= need {
-                        e = (e + need).min(self.num_rows);
+                        e = (e + need).min(bound);
                     } else if can_extend_start >= need {
                         s = s.saturating_sub(need);
                     } else {
-                        e = (e + can_extend_end).min(self.num_rows);
+                        e = (e + can_extend_end).min(bound);
                         s = s.saturating_sub(need.saturating_sub(can_extend_end));
                     }
                 }
@@ -2889,15 +2907,40 @@ impl DataTableState {
             polars_streaming: self.polars_streaming,
             buffer_start: new_buffer_start,
             buffer_end: new_buffer_end,
-            num_rows: self.num_rows,
+            // When the count isn't known yet, `num_rows` is provisional (the planned end of
+            // this buffer). `apply_async_collect` keeps `num_rows_valid` false so the
+            // background `len()` corrects it, unless the short read reveals the true end.
+            num_rows: if count_known {
+                self.num_rows
+            } else {
+                new_buffer_end
+            },
+            count_known,
         })
     }
 
     /// Apply the result of a background buffer load.
     pub fn apply_async_collect(&mut self, result: CollectResult) {
         let mut full_df = result.df;
-        self.num_rows = result.num_rows;
-        self.num_rows_valid = true;
+        let returned_rows = full_df.height();
+        let requested_rows = result.buffer_end.saturating_sub(result.buffer_start);
+
+        if result.count_known {
+            self.num_rows = result.num_rows;
+            self.num_rows_valid = true;
+        } else if returned_rows < requested_rows {
+            // Short read: the slice ran off the end, so we now know the exact total
+            // without waiting for the background len() count.
+            self.num_rows = result.buffer_start + returned_rows;
+            self.num_rows_valid = true;
+        } else if !self.num_rows_valid {
+            // Full buffer with the count still unresolved: render with a provisional
+            // total (at least this buffer's end) and leave num_rows_valid false so the
+            // in-flight background len() corrects it via set_num_rows().
+            self.num_rows = self.num_rows.max(result.buffer_end);
+        }
+        // else: the background len() already resolved the exact count between this
+        // buffer being requested and applied — keep it; don't downgrade to provisional.
         self.error = None;
 
         let mut effective_buffer_end = result.buffer_end;
@@ -2926,9 +2969,17 @@ impl DataTableState {
         }
     }
 
-    /// Invalidate num_rows cache when lf is mutated.
+    /// Invalidate num_rows cache when lf is mutated. Bumps `len_generation` so any
+    /// in-flight background count for the previous `lf` is recognized as stale.
     fn invalidate_num_rows(&mut self) {
         self.num_rows_valid = false;
+        self.len_generation = self.len_generation.wrapping_add(1);
+    }
+
+    /// Current count generation. A background `len()` task captures this; its result is
+    /// only applied if the generation still matches (i.e. the data hasn't changed since).
+    pub fn len_generation(&self) -> u64 {
+        self.len_generation
     }
 
     /// Returns the cached row count when valid (same value shown in the control bar). Use this to
@@ -2945,6 +2996,18 @@ impl DataTableState {
     /// to dispatch a background len() query before planning the buffer collect.
     pub fn is_num_rows_valid(&self) -> bool {
         self.num_rows_valid
+    }
+
+    /// Effective upper bound on row indices for buffer planning. When the exact count
+    /// is known, that's `num_rows`; when it isn't yet (first paint before the background
+    /// `len()` resolves), treat the dataset as unbounded so we plan a top-of-data window
+    /// (`slice(0, N)`) instead of clamping everything to a stale/zero count.
+    fn num_rows_bound(&self) -> usize {
+        if self.num_rows_valid {
+            self.num_rows
+        } else {
+            usize::MAX
+        }
     }
 
     /// Apply a row count computed in the background (so prepare_async_collect doesn't
@@ -2990,18 +3053,19 @@ impl DataTableState {
         if requested_len <= max_len {
             return;
         }
+        let bound = self.num_rows_bound();
         let view_len = view_end.saturating_sub(view_start);
         if view_len >= max_len {
             *buffer_start = view_start;
-            *buffer_end = (view_start + max_len).min(self.num_rows);
+            *buffer_end = (view_start + max_len).min(bound);
         } else {
             let half = (max_len - view_len) / 2;
-            *buffer_end = (view_end + half).min(self.num_rows);
+            *buffer_end = (view_end + half).min(bound);
             *buffer_start = (*buffer_end).saturating_sub(max_len);
             if *buffer_start > view_start {
                 *buffer_start = view_start;
             }
-            *buffer_end = (*buffer_start + max_len).min(self.num_rows);
+            *buffer_end = (*buffer_start + max_len).min(bound);
         }
     }
 

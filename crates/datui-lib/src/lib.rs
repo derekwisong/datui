@@ -608,14 +608,18 @@ pub enum AppEvent {
     BackgroundCollectReady {
         generation: u64,
     },
-    /// Background task completed: row count for the current LazyFrame. The handler
-    /// applies it to `data_table_state` and triggers the actual buffer collect.
-    /// `status` carries the original `spawn_async_collect` status string so the second
-    /// spawn keeps the user-facing message stable across the two-phase load.
+    /// Background task completed: exact row count for the current LazyFrame. Applied to
+    /// `data_table_state` only if `len_generation` still matches (the data is unchanged).
+    /// Runs concurrently with — and independently of — the first buffer paint, so the
+    /// count fills in the scrollbar/total without ever blocking the initial render.
     BackgroundLenReady {
-        generation: u64,
+        len_generation: u64,
         num_rows: usize,
-        status: String,
+    },
+    /// Background row count failed. Clears the in-flight marker so the count can be retried
+    /// on a later interaction; the total stays provisional in the meantime.
+    BackgroundLenFailed {
+        len_generation: u64,
     },
     /// Background task completed: schema loaded and DataTableState constructed.
     /// The actual state is stored in App::pending_schema_result (to avoid cloning DataTableState).
@@ -1007,6 +1011,9 @@ pub struct App {
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
     task_generation: u64, // Incremented to invalidate stale background results
+    // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
+    // the (potentially minutes-long) count on every scroll while it's still running.
+    len_count_inflight: Option<u64>,
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
@@ -1124,46 +1131,59 @@ impl App {
     /// Spawn an async buffer collect if needed. Returns true if a background task was spawned.
     /// Increments task_generation to invalidate any in-flight collect from a prior call.
     ///
-    /// When the LazyFrame's row count is unknown (e.g. just after a filter/sort/pivot/melt
-    /// that invalidates the cache), this first spawns a `len()` task off-thread; the
-    /// `BackgroundLenReady` handler then re-enters here to spawn the actual buffer collect.
+    /// When the LazyFrame's row count is unknown (e.g. fresh load, or just after a
+    /// filter/sort/pivot/melt that invalidates the cache), the exact `len()` is computed
+    /// in the background and applied later via `BackgroundLenReady` — it never gates the
+    /// buffer paint. `prepare_async_collect` plans a top-of-data window when the count is
+    /// still unknown, so the first screen renders immediately. For large/partitioned/remote
+    /// datasets the count can take a long time; it runs silently and concurrently.
     pub fn spawn_async_collect(&mut self, status: &str) -> bool {
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
 
+        // Kick off the exact row count off-thread when it isn't known, unless one is
+        // already running for this data version. This task is independent of
+        // `task_generation` (a scroll must not restart it) and does not set `busy`.
         if !state.is_num_rows_valid() {
-            self.task_generation = self.task_generation.wrapping_add(1);
-            let lf = state.lf_clone();
-            let streaming = state.polars_streaming_enabled();
-            let status_owned = status.to_string();
-            self.spawn_bg(status, move |gen, tx| {
-                let num_rows = match crate::statistics::collect_lazy(lf.select([len()]), streaming)
-                {
-                    Ok(df) => match df.get(0) {
-                        Some(col) => match col.first() {
-                            Some(AnyValue::UInt32(n)) => *n as usize,
-                            _ => 0,
-                        },
-                        None => 0,
-                    },
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::BackgroundError {
-                            generation: gen,
-                            message: crate::error_display::user_message_from_polars(&e),
-                        });
-                        return;
+            let len_gen = state.len_generation();
+            if self.len_count_inflight != Some(len_gen) {
+                let lf = state.lf_clone();
+                let streaming = state.polars_streaming_enabled();
+                self.len_count_inflight = Some(len_gen);
+                let tx = self.events.clone();
+                self.runtime.spawn_blocking(move || {
+                    match crate::statistics::collect_lazy(lf.select([len()]), streaming) {
+                        Ok(df) => {
+                            let num_rows = match df.get(0) {
+                                Some(col) => match col.first() {
+                                    Some(AnyValue::UInt32(n)) => *n as usize,
+                                    _ => 0,
+                                },
+                                None => 0,
+                            };
+                            let _ = tx.send(AppEvent::BackgroundLenReady {
+                                len_generation: len_gen,
+                                num_rows,
+                            });
+                        }
+                        // Count failed: leave the total provisional and allow a retry on a
+                        // later interaction. The buffer paint below is unaffected.
+                        Err(_) => {
+                            let _ = tx.send(AppEvent::BackgroundLenFailed {
+                                len_generation: len_gen,
+                            });
+                        }
                     }
-                };
-                let _ = tx.send(AppEvent::BackgroundLenReady {
-                    generation: gen,
-                    num_rows,
-                    status: status_owned,
                 });
-            });
-            return true;
+            }
         }
 
+        // Plan and spawn the buffer collect. With the count unknown this is a top-of-data
+        // window (`slice(0, N)`) that touches only the first file(s) of a partitioned set.
+        let Some(state) = self.data_table_state.as_mut() else {
+            return false;
+        };
         let Some(request) = state.prepare_async_collect(None) else {
             return false;
         };
@@ -1183,6 +1203,7 @@ impl App {
                                 buffer_start: request.buffer_start,
                                 buffer_end: request.buffer_end,
                                 num_rows: request.num_rows,
+                                count_known: request.count_known,
                             },
                         ));
                     }
@@ -1399,6 +1420,7 @@ impl App {
             runtime,
             task_generation: 0,
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            len_count_inflight: None,
             pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
             throbber_frame: 0,
@@ -7352,22 +7374,26 @@ impl App {
                 None
             }
             AppEvent::BackgroundLenReady {
-                generation,
+                len_generation,
                 num_rows,
-                status,
             } => {
-                if *generation == self.task_generation {
-                    if let Some(state) = self.data_table_state.as_mut() {
+                if self.len_count_inflight == Some(*len_generation) {
+                    self.len_count_inflight = None;
+                }
+                // Apply the exact total only if the data hasn't changed since the count
+                // was spawned. This runs independently of the buffer paint (which has
+                // usually already rendered), so it just corrects the scrollbar/total —
+                // no busy state, no re-collect.
+                if let Some(state) = self.data_table_state.as_mut() {
+                    if state.len_generation() == *len_generation {
                         state.set_num_rows(*num_rows);
                     }
-                    // Re-enter spawn_async_collect; now num_rows is valid so it'll spawn
-                    // the actual buffer collect with the correct bounds.
-                    if !self.spawn_async_collect(status) {
-                        self.loading_state = LoadingState::Idle;
-                        self.status_message = None;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                    }
+                }
+                None
+            }
+            AppEvent::BackgroundLenFailed { len_generation } => {
+                if self.len_count_inflight == Some(*len_generation) {
+                    self.len_count_inflight = None;
                 }
                 None
             }
@@ -8811,6 +8837,28 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         .build()
         .map_err(|e| color_eyre::eyre::eyre!("Failed to create tokio runtime: {}", e))?;
 
+    // Background work (e.g. the row-count `len()` over a huge or remote dataset) runs on
+    // the runtime's blocking pool. Dropping the runtime normally *joins* those threads, so
+    // quitting would hang until an in-flight count finished — minutes for a 474 GB hive
+    // set. Shut the runtime down in the background instead: exit is immediate and the
+    // abandoned read-only task dies with the process. This guard covers every return path
+    // (Exit, Crash, `?`-propagated errors, channel disconnect).
+    struct RtGuard(Option<tokio::runtime::Runtime>);
+    impl Drop for RtGuard {
+        fn drop(&mut self) {
+            if let Some(rt) = self.0.take() {
+                rt.shutdown_background();
+            }
+        }
+    }
+    let rt_guard = RtGuard(Some(rt));
+    let rt_handle = rt_guard
+        .0
+        .as_ref()
+        .expect("runtime present")
+        .handle()
+        .clone();
+
     let mut terminal = ratatui::try_init().map_err(|e| {
         color_eyre::eyre::eyre!(
             "datui requires an interactive terminal (TTY). No terminal detected: {}. \
@@ -8819,7 +8867,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         )
     })?;
     let (tx, rx) = mpsc::channel::<AppEvent>();
-    let mut app = App::new_with_config(tx.clone(), rt.handle().clone(), theme, config.clone());
+    let mut app = App::new_with_config(tx.clone(), rt_handle, theme, config.clone());
     if opts.debug {
         app.enable_debug();
     }

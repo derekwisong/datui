@@ -761,3 +761,71 @@ fn test_async_collect_handles_invalidated_num_rows() {
         "display buffer should be populated after async len + collect"
     );
 }
+
+/// Opening a Parquet hive directory should paint the first buffer and resolve the exact
+/// total row count via the footer-sum path (Fix 1 + Fix 2), without a full data scan.
+#[test]
+fn test_hive_dir_loads_and_counts_via_footers() {
+    let dir = tempfile::tempdir().unwrap();
+    let mk = |sub: &str, n: i64| {
+        let d = dir.path().join(sub);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut df = df!("v" => (0..n).collect::<Vec<i64>>()).unwrap();
+        let f = File::create(d.join("data.parquet")).unwrap();
+        ParquetWriter::new(f).finish(&mut df).unwrap();
+    };
+    // Hive layout across two partition keys; 30 + 12 + 8 = 50 rows total.
+    mk("form_type=a/year=2020", 30);
+    mk("form_type=a/year=2021", 12);
+    mk("form_type=b/year=2020", 8);
+
+    let terminal_area = Rect::new(0, 0, 80, 30);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let opts = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![dir.path().to_path_buf()], opts);
+
+    // Drive render -> buffer collect -> background count to completion.
+    let mut counted = false;
+    for _ in 0..200 {
+        let mut buf = Buffer::empty(terminal_area);
+        app.render(terminal_area, &mut buf);
+        let needs = app
+            .data_table_state
+            .as_mut()
+            .map(|s| {
+                let n = s.needs_recollect;
+                s.needs_recollect = false;
+                n
+            })
+            .unwrap_or(false);
+        if needs {
+            app.spawn_async_collect("Loading buffer...");
+        }
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        counted = app
+            .data_table_state
+            .as_ref()
+            .and_then(|s| s.num_rows_if_valid())
+            == Some(50);
+        if !app.is_busy() && !needs && counted {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert!(counted, "exact total should resolve to the footer sum (50)");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows, 50, "hive dir total should equal footer sum");
+    assert!(
+        state.display_slice_df().is_some(),
+        "first buffer should be populated"
+    );
+}

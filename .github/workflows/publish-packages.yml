@@ -162,10 +162,51 @@ jobs:
         run: |
           gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} --pattern 'PKGBUILD'
 
-      - name: Publish to AUR (datui-bin package)
-        # SHA-pinned to defend against upstream takeover; bump deliberately.
-        # v2.7.1 broke after an Arch base image util-linux update tightened
-        # runuser's su-compatible option parsing (KSXGitHub#50).
+      # Retried up to 3x: the AUR git clone over HTTPS intermittently dies with
+      # "OpenSSL SSL_read: unexpected eof" (transient aur.archlinux.org blip).
+      # Duplicate-step retry instead of a wrapper action: keeps the AUR SSH key
+      # out of scope of any new third-party dependency. Final attempt is
+      # un-guarded so a genuine failure still fails the job.
+      # SHA-pinned to defend against upstream takeover; bump deliberately.
+      # v2.7.1 broke after an Arch base image util-linux update tightened
+      # runuser's su-compatible option parsing (KSXGitHub#50).
+      - name: Publish to AUR (datui-bin package) (attempt 1)
+        id: aur1
+        continue-on-error: true
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
+        with:
+          pkgname: datui-bin
+          pkgbuild: PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to ${{ needs.resolve-release.outputs.tag_name }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+
+      - name: Backoff before AUR retry
+        if: steps.aur1.outcome == 'failure'
+        run: sleep 20
+
+      - name: Publish to AUR (datui-bin package) (attempt 2)
+        id: aur2
+        if: steps.aur1.outcome == 'failure'
+        continue-on-error: true
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
+        with:
+          pkgname: datui-bin
+          pkgbuild: PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to ${{ needs.resolve-release.outputs.tag_name }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519
+
+      - name: Backoff before final AUR attempt
+        if: steps.aur1.outcome == 'failure' && steps.aur2.outcome == 'failure'
+        run: sleep 20
+
+      - name: Publish to AUR (datui-bin package) (attempt 3)
+        if: steps.aur1.outcome == 'failure' && steps.aur2.outcome == 'failure'
         uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
         with:
           pkgname: datui-bin
@@ -181,8 +222,48 @@ jobs:
     runs-on: windows-latest
     # winget-releaser fetches release assets via GitHub API; no local download needed
     steps:
-      - name: Open winget-pkgs PR
-        # SHA-pinned to defend against upstream takeover; bump deliberately.
+      # Retried up to 3x: komac's GitHub GraphQL mutations intermittently fail
+      # with "Ref cannot be created" or "Something went wrong while executing
+      # your query" (transient server-side / secondary-rate-limit hiccups, not
+      # auth errors). Duplicate-step retry instead of a wrapper action: keeps
+      # WINGET_TOKEN out of scope of any new third-party dependency. Final
+      # attempt is un-guarded so a genuine failure still fails the job.
+      # SHA-pinned to defend against upstream takeover; bump deliberately.
+      - name: Open winget-pkgs PR (attempt 1)
+        id: winget1
+        continue-on-error: true
+        uses: vedantmgoyal9/winget-releaser@7bd472be23763def6e16bd06cc8b1cdfab0e2fd5 # main as of 2026-03-15
+        with:
+          identifier: derekwisong.datui
+          installers-regex: '-windows-x86_64\.zip$'
+          release-tag: ${{ needs.resolve-release.outputs.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
+          max-versions-to-keep: 20
+
+      - name: Backoff before winget retry
+        if: steps.winget1.outcome == 'failure'
+        run: sleep 20
+        shell: bash
+
+      - name: Open winget-pkgs PR (attempt 2)
+        id: winget2
+        if: steps.winget1.outcome == 'failure'
+        continue-on-error: true
+        uses: vedantmgoyal9/winget-releaser@7bd472be23763def6e16bd06cc8b1cdfab0e2fd5 # main as of 2026-03-15
+        with:
+          identifier: derekwisong.datui
+          installers-regex: '-windows-x86_64\.zip$'
+          release-tag: ${{ needs.resolve-release.outputs.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
+          max-versions-to-keep: 20
+
+      - name: Backoff before final winget attempt
+        if: steps.winget1.outcome == 'failure' && steps.winget2.outcome == 'failure'
+        run: sleep 20
+        shell: bash
+
+      - name: Open winget-pkgs PR (attempt 3)
+        if: steps.winget1.outcome == 'failure' && steps.winget2.outcome == 'failure'
         uses: vedantmgoyal9/winget-releaser@7bd472be23763def6e16bd06cc8b1cdfab0e2fd5 # main as of 2026-03-15
         with:
           identifier: derekwisong.datui

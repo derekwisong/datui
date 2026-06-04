@@ -3009,7 +3009,7 @@ impl DataTableState {
 
     /// Apply the result of a background buffer load.
     pub fn apply_async_collect(&mut self, result: CollectResult) {
-        let mut full_df = result.df;
+        let full_df = result.df;
         let returned_rows = full_df.height();
         let requested_rows = result.buffer_end.saturating_sub(result.buffer_start);
 
@@ -3031,24 +3031,10 @@ impl DataTableState {
         // buffer being requested and applied — keep it; don't downgrade to provisional.
         self.error = None;
 
-        let mut effective_buffer_end = result.buffer_end;
-        if self.max_buffered_mb > 0 {
-            let size = full_df.estimated_size();
-            let max_bytes = self.max_buffered_mb * 1024 * 1024;
-            if size > max_bytes {
-                let rows = full_df.height();
-                if let Some(bytes_per_row) = size.checked_div(rows) {
-                    let max_rows = (max_bytes / bytes_per_row.max(1)).min(rows);
-                    if max_rows < rows {
-                        full_df = full_df.slice(0, max_rows);
-                        effective_buffer_end = result.buffer_start + max_rows;
-                    }
-                }
-            }
-        }
+        let (full_df, eff_start, eff_end) = self.clamp_buffer_bytes(full_df, result.buffer_start);
 
-        self.buffered_start_row = result.buffer_start;
-        self.buffered_end_row = effective_buffer_end;
+        self.buffered_start_row = eff_start;
+        self.buffered_end_row = eff_end;
         self.buffered_df = Some(full_df);
         // Slice the buffered DataFrame into display DataFrames (locked + scroll columns).
         self.slice_buffer_into_display();
@@ -3173,6 +3159,44 @@ impl DataTableState {
         }
     }
 
+    /// Trim a freshly collected buffer `df` (spanning `[buffer_start, buffer_start + df.height())`)
+    /// down to the `max_buffered_mb` byte budget. Crucially, the kept window is centered on the
+    /// current view rather than always taken from the buffer's head — otherwise a jump near the
+    /// END of the dataset drops exactly the rows the view needs, leaving the table blank.
+    /// Returns the (possibly sliced) df and its new `[start, end)` row range.
+    fn clamp_buffer_bytes(&self, df: DataFrame, buffer_start: usize) -> (DataFrame, usize, usize) {
+        let total = df.height();
+        let full_end = buffer_start + total;
+        if self.max_buffered_mb == 0 || total == 0 {
+            return (df, buffer_start, full_end);
+        }
+        let size = df.estimated_size();
+        let max_bytes = self.max_buffered_mb * 1024 * 1024;
+        if size <= max_bytes {
+            return (df, buffer_start, full_end);
+        }
+        let bytes_per_row = (size / total).max(1);
+        let max_rows = (max_bytes / bytes_per_row).clamp(1, total);
+        if max_rows >= total {
+            return (df, buffer_start, full_end);
+        }
+        // Keep `max_rows` rows centered on the view so the visible window survives the trim.
+        let view_off = self.start_row.saturating_sub(buffer_start).min(total);
+        let view_len = self.visible_rows.max(1).min(total);
+        let view_center = view_off + view_len / 2;
+        let mut keep_start = view_center.saturating_sub(max_rows / 2);
+        if keep_start + max_rows > total {
+            keep_start = total - max_rows;
+        }
+        let kept = max_rows.min(total - keep_start);
+        let sliced = df.slice(keep_start as i64, kept);
+        (
+            sliced,
+            buffer_start + keep_start,
+            buffer_start + keep_start + kept,
+        )
+    }
+
     fn load_buffer(&mut self, buffer_start: usize, buffer_end: usize) {
         let buffer_size = buffer_end.saturating_sub(buffer_start);
         if buffer_size == 0 {
@@ -3186,7 +3210,7 @@ impl DataTableState {
             .collect();
 
         let use_streaming = self.polars_streaming;
-        let mut full_df = match collect_lazy(
+        let full_df = match collect_lazy(
             self.lf
                 .clone()
                 .select(all_columns)
@@ -3200,21 +3224,9 @@ impl DataTableState {
             }
         };
 
-        let mut effective_buffer_end = buffer_end;
-        if self.max_buffered_mb > 0 {
-            let size = full_df.estimated_size();
-            let max_bytes = self.max_buffered_mb * 1024 * 1024;
-            if size > max_bytes {
-                let rows = full_df.height();
-                if let Some(bytes_per_row) = size.checked_div(rows) {
-                    let max_rows = (max_bytes / bytes_per_row.max(1)).min(rows);
-                    if max_rows < rows {
-                        full_df = full_df.slice(0, max_rows);
-                        effective_buffer_end = buffer_start + max_rows;
-                    }
-                }
-            }
-        }
+        // Trim to the byte budget while keeping the view in range (see clamp_buffer_bytes).
+        let (full_df, effective_buffer_start, effective_buffer_end) =
+            self.clamp_buffer_bytes(full_df, buffer_start);
 
         if self.locked_columns_count > 0 {
             let locked_names: Vec<&str> = self
@@ -3280,7 +3292,7 @@ impl DataTableState {
         if self.error.is_some() {
             self.error = None;
         }
-        self.buffered_start_row = buffer_start;
+        self.buffered_start_row = effective_buffer_start;
         self.buffered_end_row = effective_buffer_end;
         self.buffered_df = Some(full_df);
     }
@@ -4350,6 +4362,17 @@ struct RowNumbersParams {
     selected_row: Option<usize>,
 }
 
+/// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
+/// (strings, raw bytes, categorical/enum labels) are fine to clip — a partial value still reads
+/// as a clipped string. Numeric, temporal and boolean columns are excluded: a truncated number or
+/// timestamp reads as a different (wrong) value, so those are dropped until scrolled into view.
+fn is_truncatable_dtype(dtype: &DataType) -> bool {
+    match dtype {
+        DataType::String | DataType::Binary => true,
+        other => other.is_categorical() || other.is_enum(),
+    }
+}
+
 impl DataTable {
     pub fn new() -> Self {
         Self::default()
@@ -4421,6 +4444,9 @@ impl DataTable {
         }
     }
 
+    /// Render the dataframe into `area`, returning the number of columns that were actually
+    /// shown (which may be fewer than `df`'s column count when they don't all fit). The caller
+    /// uses this to decide whether to draw an "more columns off-screen" indicator.
     fn render_dataframe(
         &self,
         df: &DataFrame,
@@ -4429,7 +4455,7 @@ impl DataTable {
         state: &mut TableState,
         _row_numbers: bool,
         _start_row_offset: usize,
-    ) {
+    ) -> usize {
         // make each column as wide as it needs to be to fit the content
         let (height, cols) = df.shape();
 
@@ -4479,16 +4505,23 @@ impl DataTable {
             // Use > not >= so the last column is shown when it fits exactly (no padding needed after it)
             let overflows = (used_width + max_len) > area.width;
 
-            if overflows && col_data.dtype() == &DataType::String {
-                let visible_width = area.width.saturating_sub(used_width);
-                visible_columns += 1;
-                widths[col_index] = visible_width;
-                break;
-            } else if !overflows {
+            if !overflows {
                 visible_columns += 1;
                 widths[col_index] = max_len;
                 used_width += max_len + self.table_cell_padding;
             } else {
+                // The column doesn't fully fit. A string column is shown truncated to the
+                // remaining width so the horizontal space is used and (most importantly) its
+                // heading is visible — as long as there's enough room to be meaningful. Numeric
+                // and temporal columns are NOT truncated: a partial value reads as a wrong value,
+                // so they're left for the next scroll (the off-screen indicator still flags them).
+                // Either way nothing past this column can fit, so stop here.
+                const MIN_PARTIAL_COLUMN_WIDTH: u16 = 3;
+                let remaining = area.width.saturating_sub(used_width);
+                if is_truncatable_dtype(col_data.dtype()) && remaining >= MIN_PARTIAL_COLUMN_WIDTH {
+                    visible_columns += 1;
+                    widths[col_index] = remaining;
+                }
                 break;
             }
         }
@@ -4532,6 +4565,8 @@ impl DataTable {
             buf,
             state,
         );
+
+        visible_columns
     }
 
     fn render_row_numbers(&self, area: Rect, buf: &mut Buffer, params: RowNumbersParams) {
@@ -4653,6 +4688,11 @@ impl StatefulWidget for DataTable {
             }
             // If suppress_error_display is true, continue rendering the table normally
         }
+
+        // Captures the scrollable area plus whether columns exist off-screen to the left/right,
+        // so a header-row indicator can be drawn after the table is rendered.
+        // Tuple: (scrollable_area, more_columns_left, more_columns_right).
+        let mut scroll_indicator: Option<(Rect, bool, bool)> = None;
 
         // Calculate row number column width if enabled
         let row_num_width = if state.row_numbers {
@@ -4784,7 +4824,8 @@ impl StatefulWidget for DataTable {
                 let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
                 if offset < df.height() && slice_len > 0 {
                     let sliced_df = df.slice(offset as i64, slice_len);
-                    self.render_dataframe(
+                    let total_cols = sliced_df.width();
+                    let shown = self.render_dataframe(
                         &sliced_df,
                         adjusted_scrollable_area,
                         buf,
@@ -4792,6 +4833,11 @@ impl StatefulWidget for DataTable {
                         false,
                         state.start_row,
                     );
+                    scroll_indicator = Some((
+                        adjusted_scrollable_area,
+                        state.termcol_index > 0,
+                        shown < total_cols,
+                    ));
                 }
             }
         } else if let Some(df) = state.df.as_ref() {
@@ -4829,7 +4875,8 @@ impl StatefulWidget for DataTable {
                 let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
                 if offset < df.height() && slice_len > 0 {
                     let sliced_df = df.slice(offset as i64, slice_len);
-                    self.render_dataframe(
+                    let total_cols = sliced_df.width();
+                    let shown = self.render_dataframe(
                         &sliced_df,
                         data_area,
                         buf,
@@ -4837,6 +4884,8 @@ impl StatefulWidget for DataTable {
                         false,
                         state.start_row,
                     );
+                    scroll_indicator =
+                        Some((data_area, state.termcol_index > 0, shown < total_cols));
                 }
             } else {
                 // Slice buffer to visible portion
@@ -4844,7 +4893,8 @@ impl StatefulWidget for DataTable {
                 let slice_len = state.visible_rows.min(df.height().saturating_sub(offset));
                 if offset < df.height() && slice_len > 0 {
                     let sliced_df = df.slice(offset as i64, slice_len);
-                    self.render_dataframe(
+                    let total_cols = sliced_df.width();
+                    let shown = self.render_dataframe(
                         &sliced_df,
                         area,
                         buf,
@@ -4852,6 +4902,7 @@ impl StatefulWidget for DataTable {
                         false,
                         state.start_row,
                     );
+                    scroll_indicator = Some((area, state.termcol_index > 0, shown < total_cols));
                 }
             }
         } else if !state.column_order.is_empty() {
@@ -4903,6 +4954,35 @@ impl StatefulWidget for DataTable {
         } else {
             // Truly empty: no schema, not loaded, or blank file
             Paragraph::new("No data").render(area, buf);
+        }
+
+        // Header-row markers showing that more columns exist off-screen. Drawn last so they sit
+        // on top of the rightmost/leftmost header cell.
+        if let Some((scroll_area, more_left, more_right)) = scroll_indicator {
+            if scroll_area.width > 0 && scroll_area.height > 0 {
+                let indicator_style = if self.header_bg == Color::Reset {
+                    Style::default()
+                        .fg(self.header_fg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .bg(self.header_bg)
+                        .fg(self.header_fg)
+                        .add_modifier(Modifier::BOLD)
+                };
+                let header_y = scroll_area.y;
+                if more_right {
+                    let x = scroll_area.x + scroll_area.width - 1;
+                    let cell = &mut buf[(x, header_y)];
+                    cell.set_char('▶');
+                    cell.set_style(indicator_style);
+                }
+                if more_left {
+                    let cell = &mut buf[(scroll_area.x, header_y)];
+                    cell.set_char('◀');
+                    cell.set_style(indicator_style);
+                }
+            }
         }
     }
 }
@@ -5900,6 +5980,176 @@ mod tests {
         assert!(
             DataTableState::count_rows_from_parquet_dir(dir.path()).is_err(),
             "a directory with no parquet files should error so the caller can fall back"
+        );
+    }
+
+    // Read the header (top) row of a rendered buffer as a string.
+    fn header_row_string(buf: &Buffer, area: Rect) -> String {
+        (area.x..area.x + area.width)
+            .map(|x| buf[(x, area.y)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn trailing_overflow_string_column_is_truncated_not_dropped() {
+        // A string trailing column that doesn't fully fit should still be shown truncated
+        // (filling the remaining width) rather than dropped entirely (leaving blank space).
+        let table = DataTable::default();
+        let df = df!(
+            "a" => &[1i32, 2, 3],
+            "wide_text" => &["aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"],
+        )
+        .unwrap();
+        // "a" needs width 1; with padding that's used_width 2, leaving 6 for "wide_text",
+        // whose full width (10) overflows -> it must be shown truncated to the remaining 6.
+        let area = Rect::new(0, 0, 8, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(
+            shown, 2,
+            "the overflowing trailing string column should be kept (truncated)"
+        );
+        // Part of the heading should be visible so the user knows what the column is.
+        assert!(
+            header_row_string(&buf, area).contains("wide"),
+            "truncated column heading should be visible: {:?}",
+            header_row_string(&buf, area)
+        );
+    }
+
+    #[test]
+    fn trailing_overflow_numeric_column_is_dropped_not_truncated() {
+        // A numeric column must NOT be shown truncated: a partial number reads as a wrong value.
+        let table = DataTable::default();
+        let df = df!(
+            "a" => &[1i32, 2, 3],
+            "wide_number" => &[111_111_111i64, 222_222_222, 333_333_333],
+        )
+        .unwrap();
+        let area = Rect::new(0, 0, 8, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(
+            shown, 1,
+            "an overflowing numeric column should be dropped, not truncated"
+        );
+    }
+
+    #[test]
+    fn byte_clamp_keeps_view_near_end_of_buffer() {
+        // Regression: jumping to the END of a large dataset used to go blank because the
+        // max_buffered_mb byte-clamp trimmed the buffer's HEAD (slice(0, max_rows)), discarding
+        // exactly the tail rows the view needed. The clamp must keep the view in range.
+        let lf = df!("a" => &["seed"]).unwrap().lazy();
+        // 1 MB byte budget.
+        let mut state = DataTableState::new(lf, None, None, None, Some(1), true).unwrap();
+        state.num_rows = 1000;
+        state.num_rows_valid = true;
+        state.visible_rows = 40;
+        state.start_row = 960; // jump-to-end position (num_rows - visible_rows)
+
+        // Buffer spans [900, 1000); the view [960, 1000) sits at its tail. ~2 MB of data forces
+        // a trim to roughly half the rows.
+        let buffer_start = 900;
+        let big: Vec<String> = (0..100).map(|_| "z".repeat(20_000)).collect();
+        let df = df!("a" => big).unwrap();
+
+        let (sliced, eff_start, eff_end) = state.clamp_buffer_bytes(df, buffer_start);
+        assert!(
+            sliced.height() < 100,
+            "expected a trim below the byte budget"
+        );
+        assert!(
+            eff_start <= state.start_row,
+            "view start {} fell before kept buffer start {}",
+            state.start_row,
+            eff_start
+        );
+        assert!(
+            eff_end >= state.start_row + state.visible_rows,
+            "view end {} fell after kept buffer end {}",
+            state.start_row + state.visible_rows,
+            eff_end
+        );
+        assert_eq!(
+            sliced.height(),
+            eff_end - eff_start,
+            "df height must match range"
+        );
+    }
+
+    #[test]
+    fn trailing_overflow_binary_column_is_truncated() {
+        // Binary columns render as text (e.g. b"...") and should be truncated like strings —
+        // this is the EDGAR `txt_bytes` case where a wide Binary column was wrongly dropped.
+        let table = DataTable::default();
+        let a = Series::new("a".into(), &[1i32, 2, 3]);
+        let bin = Series::new(
+            "wide_bytes".into(),
+            &["aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"],
+        )
+        .cast(&DataType::Binary)
+        .unwrap();
+        let df = DataFrame::new(vec![a.into(), bin.into()]).unwrap();
+        let area = Rect::new(0, 0, 8, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(
+            shown, 2,
+            "an overflowing binary column should be shown truncated"
+        );
+    }
+
+    #[test]
+    fn tiny_remaining_width_drops_overflow_string_column() {
+        // Even a string column should not render a useless 1-2 char sliver.
+        let table = DataTable::default();
+        let df = df!(
+            "abcd" => &[1i32, 2, 3],
+            "next" => &["yyyy", "yyyy", "yyyy"],
+        )
+        .unwrap();
+        // "abcd" is 4 wide; used_width becomes 5, leaving only 1 (< MIN) for "next".
+        let area = Rect::new(0, 0, 5, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(shown, 1, "a sub-minimal sliver should not be shown");
+    }
+
+    #[test]
+    fn more_columns_indicator_appears_and_tracks_scroll() {
+        // 4 columns that can't all fit: a right-edge marker should signal off-screen columns,
+        // and after scrolling right a left-edge marker should appear too.
+        let mut state =
+            DataTableState::new(create_large_test_lf(), None, None, None, None, true).unwrap();
+        state.visible_rows = 3;
+        state.collect();
+
+        let area = Rect::new(0, 0, 6, 4); // narrow: not all 4 columns fit
+        let mut buf = Buffer::empty(area);
+        DataTable::default().render(area, &mut buf, &mut state);
+        let header = header_row_string(&buf, area);
+        assert!(
+            header.contains('▶'),
+            "expected right indicator, header: {header:?}"
+        );
+        assert!(
+            !header.contains('◀'),
+            "should not show left indicator at offset 0: {header:?}"
+        );
+
+        // Scroll right: now columns exist both left and right of the viewport.
+        state.scroll_right();
+        let mut buf2 = Buffer::empty(area);
+        DataTable::default().render(area, &mut buf2, &mut state);
+        let header2 = header_row_string(&buf2, area);
+        assert!(
+            header2.contains('◀'),
+            "expected left indicator after scroll: {header2:?}"
         );
     }
 }

@@ -19,6 +19,8 @@ pub struct Controls {
     pub busy: bool,                 // When true, show throbber at far right
     pub throbber_frame: u8,         // Spinner frame (0..3 or 0..7 for unicode)
     pub status_message: Option<String>, // When Some, replaces keybindings with spinner + message
+    pub row_count_pending: bool, // When true, the exact count is still being determined: show a spinner in place of the (provisional, possibly inaccurate) number
+    pub row_count_unknown: bool, // When true, the count could not be determined: show "?" instead of a misleading provisional number (takes effect only when not pending)
 }
 
 impl Default for Controls {
@@ -36,6 +38,8 @@ impl Default for Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            row_count_pending: false,
+            row_count_unknown: false,
         }
     }
 }
@@ -59,6 +63,8 @@ impl Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            row_count_pending: false,
+            row_count_unknown: false,
         }
     }
 
@@ -107,6 +113,16 @@ impl Controls {
         self
     }
 
+    pub fn with_row_count_pending(mut self, pending: bool) -> Self {
+        self.row_count_pending = pending;
+        self
+    }
+
+    pub fn with_row_count_unknown(mut self, unknown: bool) -> Self {
+        self.row_count_unknown = unknown;
+        self
+    }
+
     /// Create Controls from RenderContext (Phase 2+).
     /// This is the preferred way to create Controls with proper theming.
     pub fn from_context(row_count: usize, ctx: &RenderContext) -> Self {
@@ -123,6 +139,8 @@ impl Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            row_count_pending: false,
+            row_count_unknown: false,
         }
     }
 
@@ -146,6 +164,8 @@ impl Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            row_count_pending: false,
+            row_count_unknown: false,
         }
     }
 }
@@ -172,6 +192,29 @@ impl Widget for &Controls {
                 }
             } else {
                 " ".to_string()
+            }
+        };
+
+        // Spinner frame independent of `busy` — used for the row-count placeholder while the
+        // exact total is still being determined (that background count does not set `busy`).
+        let spinner_ch = || -> char {
+            if self.use_unicode_throbber {
+                THROBBER_BRAILLE_EIGHT[self.throbber_frame as usize % 8]
+            } else {
+                THROBBER_ASCII[self.throbber_frame as usize % 4]
+            }
+        };
+
+        // Row-count text: while the count is pending a spinner stands in for the number, and if
+        // the count couldn't be determined a "?" is shown — so the user never mistakes an
+        // incomplete partial total for the final figure.
+        let row_count_text = |count: usize| -> String {
+            if self.row_count_pending {
+                format!("Rows: {}", spinner_ch())
+            } else if self.row_count_unknown {
+                "Rows: ?".to_string()
+            } else {
+                format!("Rows: {}", format_number_with_commas(count))
             }
         };
 
@@ -212,8 +255,7 @@ impl Widget for &Controls {
 
             // Row count (right-aligned, if available)
             if let Some(count) = self.row_count {
-                let row_count_text = format!("Rows: {}", format_number_with_commas(count));
-                Paragraph::new(row_count_text)
+                Paragraph::new(row_count_text(count))
                     .style(label_style)
                     .right_aligned()
                     .render(layout[2], buf);
@@ -294,8 +336,7 @@ impl Widget for &Controls {
 
         let fill_idx = n_show * 2;
         if let Some(count) = self.row_count {
-            let row_count_text = format!("Rows: {}", format_number_with_commas(count));
-            Paragraph::new(row_count_text)
+            Paragraph::new(row_count_text(count))
                 .style(label_style)
                 .right_aligned()
                 .render(layout[fill_idx + 1], buf);
@@ -320,4 +361,72 @@ fn format_number_with_commas(n: usize) -> String {
     }
 
     result.chars().rev().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn render_to_string(controls: &Controls, width: u16) -> String {
+        let area = Rect::new(0, 0, width, 1);
+        let mut buf = Buffer::empty(area);
+        controls.render(area, &mut buf);
+        (0..width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn shows_number_when_count_known() {
+        let controls = Controls::with_row_count(1_234_567);
+        let out = render_to_string(&controls, 80);
+        assert!(out.contains("Rows: 1,234,567"), "got: {out:?}");
+    }
+
+    #[test]
+    fn shows_spinner_not_number_when_count_pending() {
+        // ASCII throbber, frame 1 -> '/'
+        let controls = Controls::with_row_count(42)
+            .with_row_count_pending(true)
+            .with_busy(false, 1);
+        let out = render_to_string(&controls, 80);
+        assert!(out.contains("Rows: /"), "expected spinner, got: {out:?}");
+        // The provisional number must not leak into the display.
+        assert!(!out.contains("42"), "provisional count leaked: {out:?}");
+    }
+
+    #[test]
+    fn shows_question_mark_when_count_failed() {
+        let controls = Controls::with_row_count(42).with_row_count_unknown(true);
+        let out = render_to_string(&controls, 80);
+        assert!(out.contains("Rows: ?"), "expected '?', got: {out:?}");
+        assert!(!out.contains("42"), "provisional count leaked: {out:?}");
+    }
+
+    #[test]
+    fn pending_takes_precedence_over_unknown() {
+        let controls = Controls::with_row_count(42)
+            .with_row_count_pending(true)
+            .with_row_count_unknown(true)
+            .with_busy(false, 1);
+        let out = render_to_string(&controls, 80);
+        assert!(out.contains("Rows: /"), "expected spinner, got: {out:?}");
+        assert!(
+            !out.contains('?'),
+            "should not show '?' while pending: {out:?}"
+        );
+    }
+
+    #[test]
+    fn pending_spinner_shown_in_status_message_mode() {
+        let controls = Controls::with_row_count(99)
+            .with_row_count_pending(true)
+            .with_status_message(Some("Loading buffer...".to_string()))
+            .with_busy(false, 0);
+        let out = render_to_string(&controls, 80);
+        assert!(out.contains("Loading buffer..."), "got: {out:?}");
+        // Frame 0 ASCII -> '|'
+        assert!(out.contains("Rows: |"), "expected spinner, got: {out:?}");
+        assert!(!out.contains("99"), "provisional count leaked: {out:?}");
+    }
 }

@@ -1014,6 +1014,10 @@ pub struct App {
     // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
     // the (potentially minutes-long) count on every scroll while it's still running.
     len_count_inflight: Option<u64>,
+    // `len_generation` whose background row-count failed. While this matches the current
+    // generation (and the count is still invalid) the row count is shown as "?" rather than a
+    // misleading provisional total.
+    len_count_failed: Option<u64>,
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
@@ -1162,6 +1166,10 @@ impl App {
                 let lf = state.lf_clone();
                 let streaming = state.polars_streaming_enabled();
                 self.len_count_inflight = Some(len_gen);
+                // A fresh attempt for this generation clears any prior failure marker.
+                if self.len_count_failed == Some(len_gen) {
+                    self.len_count_failed = None;
+                }
                 let tx = self.events.clone();
                 self.runtime.spawn_blocking(move || {
                     let counted = match count_dir {
@@ -1445,6 +1453,7 @@ impl App {
             task_generation: 0,
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             len_count_inflight: None,
+            len_count_failed: None,
             pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
             throbber_frame: 0,
@@ -6433,8 +6442,17 @@ impl App {
                     KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
                 );
                 let is_help_key = key.code == KeyCode::F(1) || key.code == KeyCode::Char('?');
-                // When busy (e.g. loading), still process column scroll, help, and confirmation modal keys.
-                if self.busy && !is_column_scroll && !is_help_key && !self.confirmation_modal.active
+                // Quit must always work, even mid-load — otherwise a slow collect leaves the user
+                // stuck with only Ctrl-C (which kills via SIGINT rather than quitting cleanly).
+                let is_quit_key = matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL));
+                // When busy (e.g. loading), still process quit, column scroll, help, and confirmation modal keys.
+                if self.busy
+                    && !is_column_scroll
+                    && !is_help_key
+                    && !is_quit_key
+                    && !self.confirmation_modal.active
                 {
                     return None;
                 }
@@ -7411,6 +7429,9 @@ impl App {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
                 }
+                if self.len_count_failed == Some(*len_generation) {
+                    self.len_count_failed = None;
+                }
                 // Apply the exact total only if the data hasn't changed since the count
                 // was spawned. This runs independently of the buffer paint (which has
                 // usually already rendered), so it just corrects the scrollbar/total —
@@ -7426,6 +7447,9 @@ impl App {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
                 }
+                // Mark this generation's count as failed so the row count renders as "?"
+                // instead of a misleading provisional total.
+                self.len_count_failed = Some(*len_generation);
                 None
             }
             AppEvent::BackgroundCollectReady { generation } => {
@@ -8802,6 +8826,18 @@ impl Widget for &mut App {
         }
 
         controls = controls.with_busy(self.busy, self.throbber_frame);
+        // Reflect the row-count's determinacy in the control bar:
+        //  - in flight   -> spinner (still being computed)
+        //  - failed       -> "?" (computation gave up; don't show a misleading partial total)
+        //  - otherwise    -> the number
+        let count_pending = self.len_count_inflight.is_some();
+        let count_unknown = !count_pending
+            && self.data_table_state.as_ref().is_some_and(|s| {
+                !s.is_num_rows_valid() && self.len_count_failed == Some(s.len_generation())
+            });
+        controls = controls
+            .with_row_count_pending(count_pending)
+            .with_row_count_unknown(count_unknown);
         controls.render(app_layout.control_bar, buf);
         if let Some(debug_area) = app_layout.debug {
             self.debug.render(debug_area, buf);
@@ -8922,7 +8958,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     loop {
         // Poll with a shorter timeout when busy so the throbber animates (~30fps).
         // 33ms is plenty for a spinner and halves redraw load vs. 60fps.
-        let poll_ms = if app.busy {
+        let poll_ms = if app.busy || app.len_count_inflight.is_some() {
             33
         } else {
             config.performance.event_poll_interval_ms
@@ -8966,8 +9002,9 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             }
         }
 
-        // Animate throbber when busy (even without events).
-        if app.busy {
+        // Animate throbber when busy or while the background row count is still resolving
+        // (that count doesn't set `busy` but drives the row-count spinner).
+        if app.busy || app.len_count_inflight.is_some() {
             app.throbber_frame = app.throbber_frame.wrapping_add(1);
             updated = true;
         }

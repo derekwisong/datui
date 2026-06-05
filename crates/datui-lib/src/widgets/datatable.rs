@@ -3604,6 +3604,16 @@ impl DataTableState {
             .collect()
     }
 
+    /// Names of binary columns in the source schema. Their values are not read into the display
+    /// buffer (the `‹binary›` stub stands in); the renderer uses this to style those cells.
+    pub fn binary_column_names(&self) -> std::collections::HashSet<String> {
+        self.schema
+            .iter()
+            .filter(|(_, dtype)| matches!(dtype, DataType::Binary))
+            .map(|(name, _)| name.to_string())
+            .collect()
+    }
+
     /// Estimated heap size in bytes of the currently buffered slice (locked + scrollable), if collected.
     pub fn buffered_memory_bytes(&self) -> Option<usize> {
         let locked = self
@@ -4340,6 +4350,12 @@ pub struct DataTable {
     pub float_col: Option<Color>,
     pub bool_col: Option<Color>,
     pub temporal_col: Option<Color>,
+    /// Color for binary-column placeholder cells (the `‹binary›` stub). Applied with italic,
+    /// independent of `column_colors`, so stubs always read as "placeholder, not data".
+    pub binary_col: Option<Color>,
+    /// Names of columns that are binary in the source schema. Their cells hold the `‹binary›`
+    /// stub (see [`BINARY_STUB`]) and are styled with `binary_col` + italic.
+    pub binary_cols: std::collections::HashSet<String>,
 }
 
 impl Default for DataTable {
@@ -4357,6 +4373,8 @@ impl Default for DataTable {
             float_col: None,
             bool_col: None,
             temporal_col: None,
+            binary_col: None,
+            binary_cols: std::collections::HashSet::new(),
         }
     }
 }
@@ -4433,6 +4451,18 @@ impl DataTable {
         self
     }
 
+    /// Set the color used for binary-column placeholder cells.
+    pub fn with_binary_col(mut self, color: Color) -> Self {
+        self.binary_col = Some(color);
+        self
+    }
+
+    /// Set the names of binary columns, whose cells render the `‹binary›` stub.
+    pub fn with_binary_columns(mut self, names: std::collections::HashSet<String>) -> Self {
+        self.binary_cols = names;
+        self
+    }
+
     /// Return the color for a column dtype when column_colors is enabled.
     fn column_type_color(&self, dtype: &DataType) -> Option<Color> {
         if !self.column_colors {
@@ -4491,10 +4521,23 @@ impl DataTable {
             0
         });
 
+        let col_names = df.get_column_names();
         for col_index in 0..cols {
             let mut max_len = widths[col_index];
             let col_data = &df[col_index];
-            let col_color = self.column_type_color(col_data.dtype());
+            // Binary columns hold the `‹binary›` stub: style them with binary_col + italic so they
+            // read as a placeholder rather than data, regardless of the column_colors setting.
+            let is_binary = self.binary_cols.contains(col_names[col_index].as_str());
+            let cell_style = if is_binary {
+                let mut s = Style::default().add_modifier(Modifier::ITALIC);
+                if let Some(c) = self.binary_col {
+                    s = s.fg(c);
+                }
+                Some(s)
+            } else {
+                self.column_type_color(col_data.dtype())
+                    .map(|c| Style::default().fg(c))
+            };
 
             for (row_index, row) in rows.iter_mut().take(max_rows).enumerate() {
                 let value = col_data.get(row_index).unwrap();
@@ -4505,11 +4548,8 @@ impl DataTable {
                 };
                 let len = val_str.chars().count() as u16;
                 max_len = max_len.max(len);
-                let cell = match col_color {
-                    Some(c) => Cell::from(Line::from(Span::styled(
-                        val_str.into_owned(),
-                        Style::default().fg(c),
-                    ))),
+                let cell = match cell_style {
+                    Some(s) => Cell::from(Line::from(Span::styled(val_str.into_owned(), s))),
                     None => Cell::from(Line::from(val_str)),
                 };
                 row.push(cell);
@@ -6028,6 +6068,46 @@ mod tests {
             header_row_string(&buf, area).contains("wide"),
             "truncated column heading should be visible: {:?}",
             header_row_string(&buf, area)
+        );
+    }
+
+    #[test]
+    fn binary_stub_cells_are_styled_with_binary_color_and_italic() {
+        // Binary columns render the `‹binary›` stub; those cells should be colored with
+        // binary_col and italicized so they read as a placeholder, while ordinary columns
+        // keep their normal (non-italic) styling.
+        let table = DataTable {
+            binary_col: Some(Color::DarkGray),
+            binary_cols: std::collections::HashSet::from(["blob".to_string()]),
+            ..DataTable::default()
+        };
+        let df = df!(
+            "a" => &[1i32, 2],
+            "blob" => &[BINARY_STUB, BINARY_STUB],
+        )
+        .unwrap();
+        let area = Rect::new(0, 0, 20, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+
+        // A data row (y = 1; y = 0 is the header). The stub cells should be dark gray + italic.
+        let stub_styled = (area.x..area.x + area.width).any(|x| {
+            let cell = &buf[(x, 1)];
+            cell.fg == Color::DarkGray && cell.modifier.contains(Modifier::ITALIC)
+        });
+        assert!(
+            stub_styled,
+            "binary stub cells should be colored with binary_col and italicized"
+        );
+        // The non-binary "a" column must not be italicized.
+        let any_italic_non_darkgray = (area.x..area.x + area.width).any(|x| {
+            let cell = &buf[(x, 1)];
+            cell.modifier.contains(Modifier::ITALIC) && cell.fg != Color::DarkGray
+        });
+        assert!(
+            !any_italic_non_darkgray,
+            "only binary columns should be italicized"
         );
     }
 

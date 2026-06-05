@@ -327,6 +327,7 @@ fn test_theme_with_custom_colors() {
         float_col: "blue".to_string(),
         bool_col: "yellow".to_string(),
         temporal_col: "magenta".to_string(),
+        binary_col: "dark_gray".to_string(),
         chart_series_color_1: "cyan".to_string(),
         chart_series_color_2: "magenta".to_string(),
         chart_series_color_3: "green".to_string(),

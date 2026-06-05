@@ -35,6 +35,9 @@ pub struct RenderContext {
     pub float_col: Color,
     pub bool_col: Color,
     pub temporal_col: Color,
+    /// Placeholder color for binary-column cells. Applied regardless of `column_colors` since the
+    /// `‹binary›` stub is a placeholder, not data.
+    pub binary_col: Color,
 
     pub table_cell_padding: u16,
     pub column_colors: bool,
@@ -99,6 +102,7 @@ impl RenderContext {
             } else {
                 Color::Reset
             },
+            binary_col: theme.get("binary_col"),
 
             table_cell_padding,
             column_colors,

@@ -142,6 +142,10 @@ If you pass an S3 or `gs://` URI to a binary built that way, you will see an err
 
 **CSV date inference** — By default, CSV string columns that look like dates (e.g. `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`) are parsed as Polars Date/Datetime. Use `--parse-dates false` or set `parse_dates = false` in [configuration](configuration.md) to disable.
 
+## Binary columns
+
+Binary (blob) columns often hold large values (e.g. raw document bytes) that are slow to read and not meaningful to print. The table shows a `‹binary›` placeholder instead of the bytes — rendered dim and italic — so scrolling and jump-to-end stay fast. The underlying bytes are still read for exports and analysis. Customize the placeholder color with `binary_col` in [configuration](configuration.md).
+
 ## Compression
 
 Compressed files are identified by extension and decompressed before loading. Use the `--compression` option to specify the format when the file has no extension or the extension is wrong.

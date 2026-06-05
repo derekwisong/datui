@@ -753,6 +753,8 @@ pub struct ColorConfig {
     pub float_col: String,
     pub bool_col: String,
     pub temporal_col: String,
+    /// Main data table: placeholder color for binary columns (the `‹binary›` stub)
+    pub binary_col: String,
     /// Chart view: series colors 1–7 (line/scatter/bar series)
     pub chart_series_color_1: String,
     pub chart_series_color_2: String,
@@ -818,6 +820,7 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("float_col", "Main table: float column text color"),
     ("bool_col", "Main table: boolean column text color"),
     ("temporal_col", "Main table: date/datetime/time column text color"),
+    ("binary_col", "Main table: binary column placeholder color"),
     ("chart_series_color_1", "Chart view: first series color"),
     ("chart_series_color_2", "Chart view: second series color"),
     ("chart_series_color_3", "Chart view: third series color"),
@@ -983,6 +986,7 @@ impl Default for ColorConfig {
             float_col: "blue".to_string(),
             bool_col: "yellow".to_string(),
             temporal_col: "magenta".to_string(),
+            binary_col: "dark_gray".to_string(),
             chart_series_color_1: "cyan".to_string(),
             chart_series_color_2: "magenta".to_string(),
             chart_series_color_3: "green".to_string(),
@@ -1416,6 +1420,9 @@ impl ColorConfig {
         if other.temporal_col != default.temporal_col {
             self.temporal_col = other.temporal_col;
         }
+        if other.binary_col != default.binary_col {
+            self.binary_col = other.binary_col;
+        }
         if other.chart_series_color_1 != default.chart_series_color_1 {
             self.chart_series_color_1 = other.chart_series_color_1;
         }
@@ -1804,6 +1811,10 @@ impl Theme {
         colors.insert(
             "temporal_col".to_string(),
             parser.parse(&config.colors.temporal_col)?,
+        );
+        colors.insert(
+            "binary_col".to_string(),
+            parser.parse(&config.colors.binary_col)?,
         );
         colors.insert(
             "chart_series_color_1".to_string(),

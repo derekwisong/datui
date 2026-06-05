@@ -120,7 +120,9 @@ pub fn render(
                     ctx.column_separator,
                 )
                 .with_cell_padding(ctx.table_cell_padding)
-                .with_alternate_row_bg(ctx.alternate_row_color);
+                .with_alternate_row_bg(ctx.alternate_row_color)
+                .with_binary_col(ctx.binary_col)
+                .with_binary_columns(state.binary_column_names());
             if ctx.column_colors {
                 dt = dt.with_column_type_colors(
                     ctx.str_col,

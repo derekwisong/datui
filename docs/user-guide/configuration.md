@@ -321,6 +321,7 @@ int_col = "#8be9fd"                    # Cyan
 float_col = "#bd93f9"                  # Purple
 bool_col = "#f1fa8c"                  # Yellow
 temporal_col = "#ff79c6"               # Pink
+binary_col = "dark_gray"               # Binary column ‹binary› placeholder (always applied, shown italic)
 
 # Borders and modals
 sidebar_border = "#6272a4"             # Comment

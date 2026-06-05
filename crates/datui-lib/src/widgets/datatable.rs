@@ -2849,6 +2849,22 @@ impl DataTableState {
     ///
     /// Caller must ensure `num_rows_valid` (via `set_num_rows`) before calling.
     /// `num_rows_override`, when supplied, applies that value first.
+    /// Column expressions for the display buffer, in `column_order`. Binary columns are replaced
+    /// by a stub literal ([`BINARY_STUB`]) so their blobs are never read — keeping scroll/jump
+    /// collects fast. The full bytes stay available through `lf` for export and analysis.
+    fn display_column_exprs(&self) -> Vec<Expr> {
+        self.column_order
+            .iter()
+            .map(|name| {
+                if matches!(self.schema.get(name.as_str()), Some(DataType::Binary)) {
+                    lit(BINARY_STUB).alias(name.as_str())
+                } else {
+                    col(name.as_str())
+                }
+            })
+            .collect()
+    }
+
     pub fn prepare_async_collect(
         &mut self,
         num_rows_override: Option<usize>,
@@ -2979,11 +2995,7 @@ impl DataTableState {
             return None;
         }
 
-        let all_columns: Vec<_> = self
-            .column_order
-            .iter()
-            .map(|name| col(name.as_str()))
-            .collect();
+        let all_columns = self.display_column_exprs();
         let lf = self
             .lf
             .clone()
@@ -3203,11 +3215,7 @@ impl DataTableState {
             return;
         }
 
-        let all_columns: Vec<_> = self
-            .column_order
-            .iter()
-            .map(|name| col(name.as_str()))
-            .collect();
+        let all_columns = self.display_column_exprs();
 
         let use_streaming = self.polars_streaming;
         let full_df = match collect_lazy(
@@ -4361,6 +4369,11 @@ struct RowNumbersParams {
     row_start_index: usize,
     selected_row: Option<usize>,
 }
+
+/// Placeholder shown in the table for binary columns. Their values (often large blobs, e.g.
+/// raw document bytes) are never read into the display buffer — only this stub is — which keeps
+/// scrolling and jump-to-end fast. The real bytes remain in `lf` for export/analysis.
+const BINARY_STUB: &str = "‹binary›";
 
 /// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
 /// (strings, raw bytes, categorical/enum labels) are fine to clip — a partial value still reads
@@ -6078,6 +6091,31 @@ mod tests {
             eff_end - eff_start,
             "df height must match range"
         );
+    }
+
+    #[test]
+    fn binary_columns_are_stubbed_in_display_buffer() {
+        // Binary columns must not be materialized into the display buffer (their blobs can be huge
+        // and reading them is what stalls jump-to-end); the buffer holds a stub instead.
+        let a = Series::new("a".into(), &[1i32, 2, 3]);
+        let blob = Series::new("blob".into(), &["aaaa", "bbbb", "cccc"])
+            .cast(&DataType::Binary)
+            .unwrap();
+        let lf = DataFrame::new(vec![a.into(), blob.into()]).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 10;
+        state.collect();
+
+        let df = state.df.as_ref().expect("display df present");
+        let col = df.column("blob").expect("blob column present in buffer");
+        assert_eq!(
+            col.dtype(),
+            &DataType::String,
+            "binary column should be stubbed (not read as binary)"
+        );
+        assert_eq!(col.str().unwrap().get(0).unwrap(), BINARY_STUB);
+        // A non-binary column is untouched.
+        assert_eq!(df.column("a").unwrap().dtype(), &DataType::Int32);
     }
 
     #[test]

@@ -7283,8 +7283,10 @@ impl App {
                 self.handle_scroll(|s| s.scroll_to_row_centered(n))
             }
             AppEvent::AnalysisChunk => {
+                // Stub out binary columns: their blobs are never read for analysis (reading
+                // multi-GB blobs across partitions can exhaust memory and freeze the process).
                 let lf = match &self.data_table_state {
-                    Some(state) => state.lf.clone(),
+                    Some(state) => state.lf.clone().select(state.binary_stub_exprs()),
                     None => {
                         self.analysis_computation = None;
                         self.analysis_modal.computing = None;
@@ -7346,7 +7348,8 @@ impl App {
             }
             AppEvent::AnalysisDistributionCompute => {
                 if let Some(state) = &self.data_table_state {
-                    let lf = state.lf.clone();
+                    // Stub binary columns so their blobs are never materialized (see AnalysisChunk).
+                    let lf = state.lf.clone().select(state.binary_stub_exprs());
                     let sampling = self.sampling_threshold;
                     let seed = self.analysis_modal.random_seed;
                     let streaming = self.app_config.performance.polars_streaming;
@@ -7384,7 +7387,8 @@ impl App {
             }
             AppEvent::AnalysisCorrelationCompute => {
                 if let Some(state) = &self.data_table_state {
-                    let lf = state.lf.clone();
+                    // Stub binary columns so their blobs are never materialized (see AnalysisChunk).
+                    let lf = state.lf.clone().select(state.binary_stub_exprs());
                     let streaming = state.polars_streaming;
                     let seed = self.analysis_modal.random_seed;
                     self.spawn_bg("Computing correlation matrix...", move |gen, tx| {

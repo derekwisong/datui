@@ -2849,10 +2849,12 @@ impl DataTableState {
     ///
     /// Caller must ensure `num_rows_valid` (via `set_num_rows`) before calling.
     /// `num_rows_override`, when supplied, applies that value first.
-    /// Column expressions for the display buffer, in `column_order`. Binary columns are replaced
-    /// by a stub literal ([`BINARY_STUB`]) so their blobs are never read — keeping scroll/jump
-    /// collects fast. The full bytes stay available through `lf` for export and analysis.
-    fn display_column_exprs(&self) -> Vec<Expr> {
+    /// Column expressions for every column in `column_order`, with binary columns replaced by a
+    /// stub literal ([`BINARY_STUB`]) so their blobs are never read. Used both for the display
+    /// buffer (keeps scroll/jump collects fast) and for analysis (describe/distribution/
+    /// correlation), where reading multi-GB blobs across partitions would otherwise exhaust
+    /// memory and freeze the process. The full bytes stay available through `lf` for export.
+    pub(crate) fn binary_stub_exprs(&self) -> Vec<Expr> {
         self.column_order
             .iter()
             .map(|name| {
@@ -2995,7 +2997,7 @@ impl DataTableState {
             return None;
         }
 
-        let all_columns = self.display_column_exprs();
+        let all_columns = self.binary_stub_exprs();
         let lf = self
             .lf
             .clone()
@@ -3215,7 +3217,7 @@ impl DataTableState {
             return;
         }
 
-        let all_columns = self.display_column_exprs();
+        let all_columns = self.binary_stub_exprs();
 
         let use_streaming = self.polars_streaming;
         let full_df = match collect_lazy(
@@ -6196,6 +6198,46 @@ mod tests {
         assert_eq!(col.str().unwrap().get(0).unwrap(), BINARY_STUB);
         // A non-binary column is untouched.
         assert_eq!(df.column("a").unwrap().dtype(), &DataType::Int32);
+    }
+
+    #[test]
+    fn analysis_describe_stubs_binary_columns_without_reading_blobs() {
+        // Describe (and the other analysis tools) route the frame through `binary_stub_exprs`
+        // so binary blobs are never materialized — reading multi-GB blobs across partitions is
+        // what froze the process. The binary column still appears, as a stub.
+        let a = Series::new("a".into(), &[1i32, 2, 3]);
+        let blob = Series::new("blob".into(), &["aaaa", "bbbb", "cccc"])
+            .cast(&DataType::Binary)
+            .unwrap();
+        let lf = DataFrame::new(vec![a.into(), blob.into()]).unwrap().lazy();
+        let state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+
+        let analysis_lf = state.lf.clone().select(state.binary_stub_exprs());
+        let results =
+            crate::statistics::compute_describe_from_lazy(&analysis_lf, 3, None, 0, false)
+                .expect("describe should not fail on binary columns");
+
+        let blob_stat = results
+            .column_statistics
+            .iter()
+            .find(|c| c.name == "blob")
+            .expect("binary column present in describe");
+        // Stubbed to a constant string, so describe treats it as categorical and its min/max is
+        // the stub — never the raw bytes.
+        assert_eq!(blob_stat.dtype, DataType::String);
+        let cat = blob_stat
+            .categorical_stats
+            .as_ref()
+            .expect("stubbed binary column has categorical stats");
+        assert_eq!(cat.min.as_deref(), Some(BINARY_STUB));
+        assert_eq!(cat.max.as_deref(), Some(BINARY_STUB));
+        // The numeric column is still described normally.
+        let a_stat = results
+            .column_statistics
+            .iter()
+            .find(|c| c.name == "a")
+            .expect("numeric column present in describe");
+        assert!(a_stat.numeric_stats.is_some());
     }
 
     #[test]

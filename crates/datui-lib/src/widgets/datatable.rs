@@ -4536,6 +4536,9 @@ impl DataTable {
         // Reused across every cell in the frame so formatting allocates only
         // the destination string each cell already needs.
         let mut scratch = String::new();
+        // Headers follow their column's alignment; a left-aligned heading over
+        // right-aligned digits reads as a rendering bug.
+        let mut right_aligned_cols: Vec<bool> = vec![false; cols];
 
         let col_names = df.get_column_names();
         for col_index in 0..cols {
@@ -4564,17 +4567,27 @@ impl DataTable {
                 self.number_format
                     .formatter_for(col_names[col_index].as_str(), col_data.dtype())
             };
+            // Numeric columns render flush-right so magnitudes line up; strings,
+            // booleans, temporals and binary stubs stay left.
+            let right_align = self.number_format.align_numeric_right
+                && !is_binary
+                && numfmt::is_right_aligned_dtype(col_data.dtype());
+            right_aligned_cols[col_index] = right_align;
 
             for (row_index, row) in rows.iter_mut().take(max_rows).enumerate() {
                 let value = col_data.get(row_index).unwrap();
                 let val_str: Cow<str> = numfmt::format_any_value(&col_fmt, &value, &mut scratch);
                 let len = val_str.chars().count() as u16;
                 max_len = max_len.max(len);
-                let cell = match cell_style {
-                    Some(s) => Cell::from(Line::from(Span::styled(val_str.into_owned(), s))),
-                    None => Cell::from(Line::from(val_str.into_owned())),
+                let line = match cell_style {
+                    Some(s) => Line::from(Span::styled(val_str.into_owned(), s)),
+                    None => Line::from(val_str.into_owned()),
                 };
-                row.push(cell);
+                row.push(Cell::from(if right_align {
+                    line.right_aligned()
+                } else {
+                    line
+                }));
             }
 
             // Use > not >= so the last column is shown when it fits exactly (no padding needed after it)
@@ -4624,11 +4637,19 @@ impl DataTable {
         } else {
             Style::default().bg(self.header_bg).fg(self.header_fg)
         };
-        let headers: Vec<Span> = df
+        let headers: Vec<Cell> = df
             .get_column_names()
             .iter()
             .take(visible_columns)
-            .map(|name| Span::styled(name.to_string(), Style::default()))
+            .enumerate()
+            .map(|(i, name)| {
+                let line = Line::from(Span::styled(name.to_string(), Style::default()));
+                Cell::from(if right_aligned_cols[i] {
+                    line.right_aligned()
+                } else {
+                    line
+                })
+            })
             .collect();
 
         StatefulWidget::render(
@@ -6076,13 +6097,13 @@ mod tests {
             .collect()
     }
 
-    fn table_with_format(preset: &str) -> DataTable {
+    fn table_with_format(preset: &str, align: bool) -> DataTable {
         DataTable::default().with_number_format(NumberFormatSettings {
             format: crate::numfmt::NumberFormat::preset(preset).unwrap(),
             enabled: true,
             exclude: Vec::new(),
             include: Vec::new(),
-            align_numeric_right: false,
+            align_numeric_right: align,
         })
     }
 
@@ -6102,7 +6123,7 @@ mod tests {
 
     #[test]
     fn thousands_separators_are_applied_to_integer_columns() {
-        let table = table_with_format("thousands");
+        let table = table_with_format("thousands", false);
         // Genomic coordinates, the case from issue #51.
         let df = df!("chromStart" => &[248956422i64, 3088269832]).unwrap();
         let area = Rect::new(0, 0, 30, 4);
@@ -6117,7 +6138,7 @@ mod tests {
     fn column_width_accounts_for_separators() {
         // The separators widen the column; the heading must not be clipped and
         // the value must render in full.
-        let table = table_with_format("thousands");
+        let table = table_with_format("thousands", false);
         let df = df!("n" => &[1234567i64]).unwrap();
         let area = Rect::new(0, 0, 12, 3);
         let mut buf = Buffer::empty(area);
@@ -6129,7 +6150,7 @@ mod tests {
 
     #[test]
     fn strings_and_short_integers_are_untouched() {
-        let table = table_with_format("thousands");
+        let table = table_with_format("thousands", false);
         let df = df!(
             "chrom" => &["chr1"],
             "year" => &[2024i32],
@@ -6147,6 +6168,58 @@ mod tests {
             !row.contains("2,024"),
             "year should not be grouped: {row:?}"
         );
+    }
+
+    #[test]
+    fn numeric_columns_and_their_headers_render_flush_right() {
+        let table = table_with_format("none", true);
+        // Header "value" is 5 wide; the values are shorter, so they must be
+        // padded on the left, not the right.
+        let df = df!("value" => &[7i64, 42]).unwrap();
+        let area = Rect::new(0, 0, 5, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(row_string(&buf, area, 1), "    7");
+        assert_eq!(row_string(&buf, area, 2), "   42");
+        assert_eq!(header_row_string(&buf, area), "value");
+    }
+
+    #[test]
+    fn header_follows_its_column_alignment() {
+        // A wide numeric column: the heading must sit flush right over the
+        // digits rather than floating left.
+        let table = table_with_format("none", true);
+        let df = df!("n" => &[1234567i64]).unwrap();
+        let area = Rect::new(0, 0, 7, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(header_row_string(&buf, area), "      n");
+        assert_eq!(row_string(&buf, area, 1), "1234567");
+    }
+
+    #[test]
+    fn non_numeric_columns_stay_left_aligned() {
+        let table = table_with_format("none", true);
+        let df = df!("name" => &["ab"]).unwrap();
+        let area = Rect::new(0, 0, 4, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(row_string(&buf, area, 1), "ab  ");
+        assert_eq!(header_row_string(&buf, area), "name");
+    }
+
+    #[test]
+    fn alignment_can_be_turned_off() {
+        let table = table_with_format("none", false);
+        let df = df!("value" => &[7i64]).unwrap();
+        let area = Rect::new(0, 0, 5, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(row_string(&buf, area, 1), "7    ");
     }
 
     #[test]
@@ -6197,7 +6270,7 @@ mod tests {
         // The stub is a placeholder, not data.
         let table = DataTable {
             binary_cols: std::collections::HashSet::from(["blob".to_string()]),
-            ..table_with_format("thousands")
+            ..table_with_format("thousands", true)
         };
         let df = df!("blob" => &[BINARY_STUB]).unwrap();
         let area = Rect::new(0, 0, 10, 3);

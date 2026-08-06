@@ -34,4 +34,14 @@ In the main view, the following keyboard shortcuts are available.
 | `q` | Quit |
 | `?` / `F1` | Help (F1 works in text fields, e.g. query input) |
 
+**Display toggles:**
+
+These change how the current view is drawn. They take effect immediately and
+last for the session only — the config file decides the state at launch.
+
+| Key | Action |
+|-----|--------|
+| `N` | Toggle row numbers |
+| `F` | Toggle number formatting — thousands separators (See [Configuration](../user-guide/configuration.md#number-formatting)) |
+
 **Note for Alacritty users:** If F1 does nothing, ensure F1 is not bound in `~/.config/alacritty/alacritty.toml`. You can still use `?` for help when not in a text field.

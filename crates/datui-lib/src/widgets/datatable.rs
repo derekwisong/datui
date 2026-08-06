@@ -18,6 +18,7 @@ use ratatui::{
 
 use crate::error_display::user_message_from_polars;
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 use crate::query::parse_query;
 use crate::statistics::collect_lazy;
@@ -4358,6 +4359,8 @@ pub struct DataTable {
     /// Names of columns that are binary in the source schema. Their cells hold the `‹binary›`
     /// stub (see [`BINARY_STUB`]) and are styled with `binary_col` + italic.
     pub binary_cols: std::collections::HashSet<String>,
+    /// Display-time number formatting (digit grouping, separators, alignment).
+    pub number_format: NumberFormatSettings,
 }
 
 impl Default for DataTable {
@@ -4377,6 +4380,7 @@ impl Default for DataTable {
             temporal_col: None,
             binary_col: None,
             binary_cols: std::collections::HashSet::new(),
+            number_format: NumberFormatSettings::default(),
         }
     }
 }
@@ -4465,6 +4469,12 @@ impl DataTable {
         self
     }
 
+    /// Set display-time number formatting (digit grouping and alignment).
+    pub fn with_number_format(mut self, settings: NumberFormatSettings) -> Self {
+        self.number_format = settings;
+        self
+    }
+
     /// Return the color for a column dtype when column_colors is enabled.
     fn column_type_color(&self, dtype: &DataType) -> Option<Color> {
         if !self.column_colors {
@@ -4523,6 +4533,10 @@ impl DataTable {
             0
         });
 
+        // Reused across every cell in the frame so formatting allocates only
+        // the destination string each cell already needs.
+        let mut scratch = String::new();
+
         let col_names = df.get_column_names();
         for col_index in 0..cols {
             let mut max_len = widths[col_index];
@@ -4541,18 +4555,24 @@ impl DataTable {
                     .map(|c| Style::default().fg(c))
             };
 
+            // Resolved once per column: dtype eligibility and the include/exclude
+            // globs never touch the per-cell path. A binary column holds the
+            // `‹binary›` stub, not a number, so it is always passthrough.
+            let col_fmt = if is_binary {
+                CellFormatter::Passthrough
+            } else {
+                self.number_format
+                    .formatter_for(col_names[col_index].as_str(), col_data.dtype())
+            };
+
             for (row_index, row) in rows.iter_mut().take(max_rows).enumerate() {
                 let value = col_data.get(row_index).unwrap();
-                let val_str: Cow<str> = if matches!(value, AnyValue::Null) {
-                    Cow::Borrowed("")
-                } else {
-                    value.str_value()
-                };
+                let val_str: Cow<str> = numfmt::format_any_value(&col_fmt, &value, &mut scratch);
                 let len = val_str.chars().count() as u16;
                 max_len = max_len.max(len);
                 let cell = match cell_style {
                     Some(s) => Cell::from(Line::from(Span::styled(val_str.into_owned(), s))),
-                    None => Cell::from(Line::from(val_str)),
+                    None => Cell::from(Line::from(val_str.into_owned())),
                 };
                 row.push(cell);
             }
@@ -4761,18 +4781,22 @@ impl StatefulWidget for DataTable {
         let mut locked_width = row_num_width;
         if let Some(locked_df) = state.locked_df.as_ref() {
             let (_, cols) = locked_df.shape();
+            // This pass only needs widths, so integers take numfmt's arithmetic
+            // path instead of building a string per cell and throwing it away.
+            let mut scratch = String::new();
             for col_index in 0..cols {
                 let col_name = locked_df.get_column_names()[col_index];
                 let mut max_len = col_name.chars().count() as u16;
                 let col_data = &locked_df[col_index];
+                let col_fmt = if self.binary_cols.contains(col_name.as_str()) {
+                    CellFormatter::Passthrough
+                } else {
+                    self.number_format
+                        .formatter_for(col_name.as_str(), col_data.dtype())
+                };
                 for row_index in 0..locked_df.height().min(state.visible_rows) {
                     let value = col_data.get(row_index).unwrap();
-                    let val_str: Cow<str> = if matches!(value, AnyValue::Null) {
-                        Cow::Borrowed("")
-                    } else {
-                        value.str_value()
-                    };
-                    let len = val_str.chars().count() as u16;
+                    let len = numfmt::display_width(&col_fmt, &value, &mut scratch) as u16;
                     max_len = max_len.max(len);
                 }
                 locked_width += max_len + 1;
@@ -6043,6 +6067,144 @@ mod tests {
         (area.x..area.x + area.width)
             .map(|x| buf[(x, area.y)].symbol().to_string())
             .collect()
+    }
+
+    // Read an arbitrary row of a rendered buffer as a string (y = 0 is the header).
+    fn row_string(buf: &Buffer, area: Rect, y: u16) -> String {
+        (area.x..area.x + area.width)
+            .map(|x| buf[(x, area.y + y)].symbol().to_string())
+            .collect()
+    }
+
+    fn table_with_format(preset: &str) -> DataTable {
+        DataTable::default().with_number_format(NumberFormatSettings {
+            format: crate::numfmt::NumberFormat::preset(preset).unwrap(),
+            enabled: true,
+            exclude: Vec::new(),
+            include: Vec::new(),
+            align_numeric_right: false,
+        })
+    }
+
+    #[test]
+    fn grouping_is_off_by_default() {
+        // Upgrading must not change how anything renders.
+        let table = DataTable::default();
+        let df = df!("pos" => &[1234567i64]).unwrap();
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let row = row_string(&buf, area, 1);
+        assert!(row.contains("1234567"), "got: {row:?}");
+        assert!(!row.contains("1,234,567"), "got: {row:?}");
+    }
+
+    #[test]
+    fn thousands_separators_are_applied_to_integer_columns() {
+        let table = table_with_format("thousands");
+        // Genomic coordinates, the case from issue #51.
+        let df = df!("chromStart" => &[248956422i64, 3088269832]).unwrap();
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert!(row_string(&buf, area, 1).contains("248,956,422"));
+        assert!(row_string(&buf, area, 2).contains("3,088,269,832"));
+    }
+
+    #[test]
+    fn column_width_accounts_for_separators() {
+        // The separators widen the column; the heading must not be clipped and
+        // the value must render in full.
+        let table = table_with_format("thousands");
+        let df = df!("n" => &[1234567i64]).unwrap();
+        let area = Rect::new(0, 0, 12, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        let shown = table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert_eq!(shown, 1);
+        assert!(row_string(&buf, area, 1).contains("1,234,567"));
+    }
+
+    #[test]
+    fn strings_and_short_integers_are_untouched() {
+        let table = table_with_format("thousands");
+        let df = df!(
+            "chrom" => &["chr1"],
+            "year" => &[2024i32],
+        )
+        .unwrap();
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let row = row_string(&buf, area, 1);
+        assert!(row.contains("chr1"), "got: {row:?}");
+        // min_digits defaults to 5, so a four-digit year keeps its plain form.
+        assert!(row.contains("2024"), "got: {row:?}");
+        assert!(
+            !row.contains("2,024"),
+            "year should not be grouped: {row:?}"
+        );
+    }
+
+    #[test]
+    fn excluded_columns_are_not_grouped() {
+        let table = DataTable::default().with_number_format(NumberFormatSettings {
+            format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
+            enabled: true,
+            exclude: vec![crate::numfmt::Glob::new("*_id")],
+            include: Vec::new(),
+            align_numeric_right: false,
+        });
+        let df = df!(
+            "sample_id" => &[1234567i64],
+            "count" => &[1234567i64],
+        )
+        .unwrap();
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let row = row_string(&buf, area, 1);
+        assert!(row.contains("1234567"), "excluded column raw: {row:?}");
+        assert!(row.contains("1,234,567"), "other column grouped: {row:?}");
+    }
+
+    #[test]
+    fn disabled_formatting_renders_raw_digits() {
+        // What the F toggle does: same settings, enabled = false.
+        let mut settings = NumberFormatSettings {
+            format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
+            enabled: true,
+            exclude: Vec::new(),
+            include: Vec::new(),
+            align_numeric_right: false,
+        };
+        settings.enabled = false;
+        let table = DataTable::default().with_number_format(settings);
+        let df = df!("n" => &[1234567i64]).unwrap();
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert!(row_string(&buf, area, 1).contains("1234567"));
+    }
+
+    #[test]
+    fn binary_stub_columns_are_never_formatted_or_aligned() {
+        // The stub is a placeholder, not data.
+        let table = DataTable {
+            binary_cols: std::collections::HashSet::from(["blob".to_string()]),
+            ..table_with_format("thousands")
+        };
+        let df = df!("blob" => &[BINARY_STUB]).unwrap();
+        let area = Rect::new(0, 0, 10, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        assert!(row_string(&buf, area, 1).starts_with(BINARY_STUB));
     }
 
     #[test]

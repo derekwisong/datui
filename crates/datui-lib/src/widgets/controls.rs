@@ -214,7 +214,7 @@ impl Widget for &Controls {
             } else if self.row_count_unknown {
                 "Rows: ?".to_string()
             } else {
-                format!("Rows: {}", format_number_with_commas(count))
+                format!("Rows: {}", crate::numfmt::group_chrome(count))
             }
         };
 
@@ -346,21 +346,6 @@ impl Widget for &Controls {
             .style(fill_style)
             .render(layout[fill_idx], buf);
     }
-}
-
-fn format_number_with_commas(n: usize) -> String {
-    let s = n.to_string();
-    let mut result = String::new();
-    let chars: Vec<char> = s.chars().rev().collect();
-
-    for (i, ch) in chars.iter().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            result.push(',');
-        }
-        result.push(*ch);
-    }
-
-    result.chars().rev().collect()
 }
 
 #[cfg(test)]

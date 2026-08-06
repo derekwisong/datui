@@ -155,6 +155,17 @@ impl NumberFormat {
         })
     }
 
+    /// Comma grouping with no digit threshold, used for the application's own
+    /// labels rather than the user's data.
+    pub const CHROME: Self = Self {
+        grouping: Grouping::Thousands,
+        group_sep: ',',
+        decimal_sep: '.',
+        min_digits: 0,
+        floats: true,
+        float_precision: None,
+    };
+
     /// Every preset name, for CLI value parsing and error messages.
     pub const PRESET_NAMES: &'static [&'static str] = &[
         "none",
@@ -323,6 +334,19 @@ impl NumberFormat {
         }
         width
     }
+}
+
+/// Comma-group a count for the application's own chrome — the control bar's
+/// row count, info-panel totals, and similar labels.
+///
+/// Deliberately unconditional: these are datui's labels, not the user's data,
+/// so they stay readable regardless of `display.number_format` or the `F`
+/// toggle. Keeping the distinction means turning formatting off to read exact
+/// data values never makes the surrounding UI harder to read.
+pub fn group_chrome(n: usize) -> String {
+    let mut out = String::new();
+    NumberFormat::CHROME.write_u64(n as u64, &mut out);
+    out
 }
 
 /// Digits in the base-10 representation of `n` (`0` counts as one digit).
@@ -799,6 +823,17 @@ mod tests {
             ..NumberFormat::PLAIN
         }
         .is_noop());
+    }
+
+    #[test]
+    fn chrome_grouping_is_unconditional() {
+        // The app's own labels group regardless of the user's data settings,
+        // and with no digit threshold: "Rows: 1,234" not "Rows: 1234".
+        assert_eq!(group_chrome(0), "0");
+        assert_eq!(group_chrome(999), "999");
+        assert_eq!(group_chrome(1234), "1,234");
+        assert_eq!(group_chrome(1_234_567), "1,234,567");
+        assert_eq!(group_chrome(usize::MAX), "18,446,744,073,709,551,615");
     }
 
     #[test]

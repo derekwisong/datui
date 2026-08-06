@@ -935,6 +935,22 @@ mod tests {
         );
     }
 
+    /// The CLI crate duplicates the preset list to give clap `--help` output and
+    /// completion, since it cannot depend on this crate. Catch drift here.
+    #[test]
+    fn number_format_values_match_presets() {
+        let mut cli: Vec<&str> = datui_cli::NUMBER_FORMAT_VALUES.to_vec();
+        let mut expected: Vec<&str> = NumberFormat::PRESET_NAMES.to_vec();
+        // "system" is CLI/config-only: it resolves to a preset, it is not one.
+        expected.push("system");
+        cli.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(
+            cli, expected,
+            "datui_cli::NUMBER_FORMAT_VALUES is out of sync with NumberFormat::PRESET_NAMES"
+        );
+    }
+
     #[test]
     fn locale_tags_map_to_presets() {
         assert_eq!(preset_for_locale_tag("en_US.UTF-8"), "thousands");

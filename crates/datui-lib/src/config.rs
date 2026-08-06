@@ -676,6 +676,23 @@ impl NumberFormatConfig {
         })
     }
 
+    /// Override just the grouping style, keeping any long-form settings the
+    /// user configured.
+    ///
+    /// `--number-format thousands` should change the grouping without silently
+    /// discarding the `exclude_columns` / `min_digits` / precision a user set up
+    /// in `[display.number_format]`.
+    pub fn with_grouping_override(&self, name: &str) -> Self {
+        match self {
+            NumberFormatConfig::Preset(_) => NumberFormatConfig::Preset(name.to_string()),
+            NumberFormatConfig::Custom(table) => {
+                let mut table = table.clone();
+                table.grouping = Some(name.to_string());
+                NumberFormatConfig::Custom(table)
+            }
+        }
+    }
+
     /// Resolve a preset name, expanding the opt-in `system` value.
     fn lookup_preset(name: &str) -> Result<NumberFormat> {
         // "system" is the only environment-dependent value, and it is opt-in:

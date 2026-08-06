@@ -98,6 +98,23 @@ impl CompressionFormat {
     }
 }
 
+/// Accepted values for `--number-format`.
+///
+/// This crate cannot depend on datui-lib (the dependency runs the other way),
+/// so the list is duplicated here to give clap proper `--help` output and shell
+/// completion. `number_format_values_match_presets` in datui-lib asserts the two
+/// lists stay in sync.
+pub const NUMBER_FORMAT_VALUES: &[&str] = &[
+    "none",
+    "thousands",
+    "european",
+    "si",
+    "swiss",
+    "indian",
+    "underscore",
+    "system",
+];
+
 /// Command-line arguments for datui
 #[derive(Clone, Parser, Debug)]
 #[command(
@@ -237,6 +254,15 @@ pub struct Args {
     /// Colorize main table cells by column type (default: true). Set to false to disable.
     #[arg(long = "column-colors", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
     pub column_colors: Option<bool>,
+
+    /// Digit grouping for numbers in the data table (default: none). Press F to toggle while running.
+    /// "system" reads LC_ALL/LC_NUMERIC/LANG and picks a matching style.
+    #[arg(long = "number-format", value_name = "FORMAT", value_parser = clap::builder::PossibleValuesParser::new(NUMBER_FORMAT_VALUES))]
+    pub number_format: Option<String>,
+
+    /// Right-align numeric columns and their headers (default: true). Set to false to left-align.
+    #[arg(long = "align-numeric-right", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
+    pub align_numeric_right: Option<bool>,
 
     /// Generate default configuration file at ~/.config/datui/config.toml
     #[arg(long = "generate-config", action)]

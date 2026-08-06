@@ -1,4 +1,7 @@
-use datui::config::{AppConfig, ConfigManager, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT};
+use datui::config::{
+    AppConfig, ConfigManager, NumberFormatConfig, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT,
+};
+use datui::numfmt::Grouping;
 use std::fs;
 use tempfile::TempDir;
 
@@ -368,6 +371,8 @@ fn test_merge_does_not_override_with_defaults() {
         table_cell_padding: 1,
         column_colors: true,
         sidebar_width: None,
+        align_numeric_right: false,
+        number_format: NumberFormatConfig::Preset("thousands".to_string()),
     };
 
     let override_config = DisplayConfig::default();
@@ -379,6 +384,12 @@ fn test_merge_does_not_override_with_defaults() {
     assert_eq!(base.pages_lookback, 5);
     assert!(base.row_numbers);
     assert_eq!(base.row_start_index, 0);
+    // Non-default number formatting must survive a merge of defaults too.
+    assert!(!base.align_numeric_right);
+    assert_eq!(
+        base.number_format,
+        NumberFormatConfig::Preset("thousands".to_string())
+    );
 }
 
 #[test]
@@ -531,4 +542,213 @@ fn test_template_sampling_threshold_default_none() {
         rust_default.performance.sampling_threshold, None,
         "Rust default sampling_threshold should be None"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Number formatting (display.number_format / display.align_numeric_right)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_number_format_defaults_are_inert() {
+    let config = AppConfig::default();
+
+    // Default must render exactly as before, so upgrading changes nothing.
+    assert_eq!(
+        config.display.number_format,
+        NumberFormatConfig::Preset("none".to_string())
+    );
+    let settings = config
+        .display
+        .number_format
+        .resolve(config.display.align_numeric_right)
+        .expect("default config must resolve");
+    assert_eq!(settings.format.grouping, Grouping::None);
+    assert!(settings.format.is_noop());
+
+    // Alignment, unlike grouping, is on by default: it changes neither the
+    // characters of a value nor a column's width.
+    assert!(config.display.align_numeric_right);
+    assert!(settings.align_numeric_right);
+}
+
+#[test]
+fn test_number_format_preset_shorthand() {
+    let toml_str = r#"
+version = "0.2"
+
+[display]
+number_format = "thousands"
+"#;
+    let config: AppConfig = toml::from_str(toml_str).expect("shorthand form should parse");
+    assert_eq!(
+        config.display.number_format,
+        NumberFormatConfig::Preset("thousands".to_string())
+    );
+
+    let settings = config.display.number_format.resolve(true).unwrap();
+    assert_eq!(settings.format.grouping, Grouping::Thousands);
+    assert_eq!(settings.format.group_sep, ',');
+    assert_eq!(settings.format.min_digits, 5);
+}
+
+#[test]
+fn test_number_format_table_form() {
+    let toml_str = r#"
+version = "0.2"
+
+[display.number_format]
+grouping = "thousands"
+group_separator = " "
+decimal_separator = ","
+min_digits = 3
+floats = false
+float_precision = 2
+exclude_columns = ["*_id", "year"]
+include_columns = ["tiny"]
+"#;
+    let config: AppConfig = toml::from_str(toml_str).expect("table form should parse");
+    let settings = config.display.number_format.resolve(false).unwrap();
+
+    assert_eq!(settings.format.grouping, Grouping::Thousands);
+    assert_eq!(settings.format.group_sep, ' ');
+    assert_eq!(settings.format.decimal_sep, ',');
+    assert_eq!(settings.format.min_digits, 3);
+    assert!(!settings.format.floats);
+    assert_eq!(settings.format.float_precision, Some(2));
+    assert_eq!(settings.exclude.len(), 2);
+    assert_eq!(settings.include.len(), 1);
+    assert!(!settings.align_numeric_right);
+}
+
+#[test]
+fn test_number_format_all_presets_resolve() {
+    for name in [
+        "none",
+        "thousands",
+        "european",
+        "si",
+        "swiss",
+        "indian",
+        "underscore",
+    ] {
+        let cfg = NumberFormatConfig::Preset(name.to_string());
+        assert!(cfg.resolve(true).is_ok(), "preset {name} should resolve");
+    }
+}
+
+#[test]
+fn test_number_format_unknown_preset_is_rejected() {
+    let cfg = NumberFormatConfig::Preset("klingon".to_string());
+    let err = cfg.resolve(true).unwrap_err().to_string();
+    assert!(err.contains("unknown value 'klingon'"), "got: {err}");
+    // The message must list what IS valid.
+    assert!(err.contains("thousands"), "got: {err}");
+    assert!(err.contains("system"), "got: {err}");
+}
+
+#[test]
+fn test_number_format_separator_conflict_is_rejected() {
+    let toml_str = r#"
+version = "0.2"
+
+[display.number_format]
+grouping = "thousands"
+group_separator = "."
+decimal_separator = "."
+"#;
+    let config: AppConfig = toml::from_str(toml_str).unwrap();
+    let err = config.validate().unwrap_err().to_string();
+    assert!(err.contains("must differ"), "got: {err}");
+}
+
+#[test]
+fn test_number_format_multichar_separator_is_rejected() {
+    let toml_str = r#"
+version = "0.2"
+
+[display.number_format]
+group_separator = ", "
+"#;
+    let config: AppConfig = toml::from_str(toml_str).unwrap();
+    let err = config.validate().unwrap_err().to_string();
+    assert!(err.contains("single character"), "got: {err}");
+}
+
+#[test]
+fn test_number_format_bad_value_fails_validation_not_parsing() {
+    // A bad preset name is a valid TOML string, so it must be caught by
+    // validate() (which reports the config file path) rather than silently
+    // falling back at render time.
+    let toml_str = r#"
+version = "0.2"
+
+[display]
+number_format = "nonsense"
+"#;
+    let config: AppConfig = toml::from_str(toml_str).expect("should parse as a string");
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn test_number_format_merge_overrides_default() {
+    let mut base = AppConfig::default();
+    let toml_str = r#"
+version = "0.2"
+
+[display]
+number_format = "indian"
+align_numeric_right = false
+"#;
+    let user: AppConfig = toml::from_str(toml_str).unwrap();
+    base.merge(user);
+
+    assert_eq!(
+        base.display.number_format,
+        NumberFormatConfig::Preset("indian".to_string())
+    );
+    assert!(!base.display.align_numeric_right);
+}
+
+#[test]
+fn test_number_format_merge_keeps_existing_when_user_omits() {
+    let mut base = AppConfig::default();
+    base.display.number_format = NumberFormatConfig::Preset("european".to_string());
+
+    // A user config that says nothing about number_format must not reset it.
+    let user: AppConfig = toml::from_str("version = \"0.2\"\n").unwrap();
+    base.merge(user);
+
+    assert_eq!(
+        base.display.number_format,
+        NumberFormatConfig::Preset("european".to_string())
+    );
+}
+
+#[test]
+fn test_generated_config_documents_number_format() {
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template = config_manager.generate_default_config();
+
+    // The generated config is the main discovery surface: it must show the
+    // shorthand, the long form, and the runtime toggle.
+    assert!(template.contains("number_format = \"none\""));
+    assert!(template.contains("[display.number_format]"));
+    assert!(template.contains("align_numeric_right = true"));
+    assert!(template.contains("Press F"));
+    assert!(template.contains("exclude_columns"));
+    assert!(template.contains("min_digits"));
+
+    // Generated configs must not carry trailing whitespace.
+    for (i, line) in template.lines().enumerate() {
+        assert_eq!(
+            line,
+            line.trim_end(),
+            "trailing whitespace on line {}",
+            i + 1
+        );
+    }
+
+    // And the whole thing must still round-trip as valid TOML.
+    let parsed: AppConfig = toml::from_str(&template).expect("generated config must parse");
+    parsed.validate().expect("generated config must validate");
 }

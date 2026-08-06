@@ -1,3 +1,4 @@
+use crate::numfmt::{self, Glob, Grouping, NumberFormat, NumberFormatSettings};
 use color_eyre::eyre::eyre;
 use color_eyre::Result;
 use ratatui::style::Color;
@@ -182,6 +183,12 @@ impl ConfigManager {
                 // Add comment if we have one
                 if let Some(comment) = comments.get(&field_path) {
                     for comment_line in comment.lines() {
+                        // Blank comment lines stay bare so generated configs
+                        // carry no trailing whitespace.
+                        if comment_line.is_empty() {
+                            result.push_str("#\n");
+                            continue;
+                        }
                         result.push_str("# ");
                         result.push_str(comment_line);
                         result.push('\n');
@@ -553,6 +560,157 @@ pub struct DisplayConfig {
     /// Optional fixed width for all sidebars (Info, Sort & Filter, Template, Pivot & Melt). When None, use built-in defaults per sidebar.
     #[serde(default)]
     pub sidebar_width: Option<u16>,
+    /// Right-align numeric columns and their headers in the data table.
+    pub align_numeric_right: bool,
+    /// How numbers are displayed. Either a preset name (`number_format = "thousands"`)
+    /// or a `[display.number_format]` table for finer control.
+    #[serde(default)]
+    pub number_format: NumberFormatConfig,
+}
+
+/// Number display settings: a preset name shorthand, or a full table.
+///
+/// Both forms are accepted:
+/// ```toml
+/// [display]
+/// number_format = "thousands"
+/// ```
+/// ```toml
+/// [display.number_format]
+/// grouping = "thousands"
+/// min_digits = 5
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum NumberFormatConfig {
+    /// Shorthand: one of [`NumberFormat::PRESET_NAMES`].
+    Preset(String),
+    /// Long form with individual overrides.
+    Custom(Box<NumberFormatTable>),
+}
+
+impl Default for NumberFormatConfig {
+    fn default() -> Self {
+        // Default renders exactly as before, so upgrading changes nothing.
+        NumberFormatConfig::Preset("none".to_string())
+    }
+}
+
+/// Long-form number formatting options. Every field is optional; unset fields
+/// take their value from the preset named by `grouping` (or the default).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct NumberFormatTable {
+    /// `none` | `thousands` | `indian` | `system` | any preset name.
+    pub grouping: Option<String>,
+    /// Character placed between digit groups.
+    pub group_separator: Option<String>,
+    /// Character used as the decimal point.
+    pub decimal_separator: Option<String>,
+    /// Integers with fewer digits than this are never grouped.
+    pub min_digits: Option<u8>,
+    /// Whether float columns get grouping too.
+    pub floats: Option<bool>,
+    /// Fixed decimal places for floats. Unset keeps Polars' own rendering.
+    pub float_precision: Option<u8>,
+    /// Columns never formatted. Supports `*` and `?` globs.
+    pub exclude_columns: Vec<String>,
+    /// Columns always formatted, ignoring `min_digits`. Supports globs.
+    pub include_columns: Vec<String>,
+}
+
+impl NumberFormatConfig {
+    /// Resolve into the runtime settings used by the renderer.
+    ///
+    /// Returns a descriptive error for unknown preset names, multi-character
+    /// separators, and a group separator equal to the decimal separator (which
+    /// would render `1.234.567` ambiguously).
+    pub fn resolve(&self, align_numeric_right: bool) -> Result<NumberFormatSettings> {
+        let (format, exclude, include) = match self {
+            NumberFormatConfig::Preset(name) => {
+                (Self::lookup_preset(name)?, Vec::new(), Vec::new())
+            }
+            NumberFormatConfig::Custom(table) => {
+                let base = match table.grouping.as_deref() {
+                    Some(name) => Self::lookup_preset(name)?,
+                    None => NumberFormat::PLAIN,
+                };
+                let mut fmt = base;
+                if let Some(sep) = table.group_separator.as_deref() {
+                    fmt.group_sep = Self::single_char(sep, "group_separator")?;
+                }
+                if let Some(sep) = table.decimal_separator.as_deref() {
+                    fmt.decimal_sep = Self::single_char(sep, "decimal_separator")?;
+                }
+                if let Some(v) = table.min_digits {
+                    fmt.min_digits = v;
+                }
+                if let Some(v) = table.floats {
+                    fmt.floats = v;
+                }
+                if table.float_precision.is_some() {
+                    fmt.float_precision = table.float_precision;
+                }
+                (
+                    fmt,
+                    table.exclude_columns.iter().map(Glob::new).collect(),
+                    table.include_columns.iter().map(Glob::new).collect(),
+                )
+            }
+        };
+
+        if format.grouping != Grouping::None && format.group_sep == format.decimal_sep {
+            return Err(eyre!(
+                "display.number_format: group_separator and decimal_separator are both '{}'; \
+                 they must differ or numbers become ambiguous",
+                format.group_sep
+            ));
+        }
+
+        Ok(NumberFormatSettings {
+            format,
+            enabled: true,
+            exclude,
+            include,
+            align_numeric_right,
+        })
+    }
+
+    /// Resolve a preset name, expanding the opt-in `system` value.
+    fn lookup_preset(name: &str) -> Result<NumberFormat> {
+        // "system" is the only environment-dependent value, and it is opt-in:
+        // data files are locale-neutral, so rendering does not follow the
+        // ambient locale unless the user explicitly asks for it.
+        let name = if name == "system" {
+            match numfmt::system_locale_tag() {
+                Some(tag) => numfmt::preset_for_locale_tag(&tag),
+                // Unset or C/POSIX: no meaningful locale, so group plainly
+                // rather than silently doing nothing.
+                None => "thousands",
+            }
+        } else {
+            name
+        };
+        NumberFormat::preset(name).ok_or_else(|| {
+            eyre!(
+                "display.number_format: unknown value '{}'. Expected one of: {}, system",
+                name,
+                NumberFormat::PRESET_NAMES.join(", ")
+            )
+        })
+    }
+
+    fn single_char(s: &str, field: &str) -> Result<char> {
+        let mut chars = s.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) => Ok(c),
+            _ => Err(eyre!(
+                "display.number_format.{}: expected a single character, got {:?}",
+                field,
+                s
+            )),
+        }
+    }
 }
 
 // Field comments for DisplayConfig
@@ -586,6 +744,39 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
     (
         "sidebar_width",
         "Optional: fixed width in characters for all sidebars (Info, Sort & Filter, Templates, Pivot & Melt). When unset, each sidebar uses its default width. Example: sidebar_width = 70",
+    ),
+    (
+        "align_numeric_right",
+        "Right-align numeric columns and their headers in the data table (default: true)\nSet to false to left-align everything as in datui 0.2.55 and earlier",
+    ),
+    (
+        "number_format",
+        "How numbers are displayed in the data table. Press F to toggle on/off while running.\n\
+         Shorthand — one of:\n\
+         \x20  none         1234567    (default: renders exactly as the file stores it)\n\
+         \x20  thousands    1,234,567\n\
+         \x20  european     1.234.567,89\n\
+         \x20  si           1 234 567.89   (narrow no-break space, ISO 31-0)\n\
+         \x20  swiss        1'234'567.89\n\
+         \x20  indian       12,34,567.89   (lakh / crore)\n\
+         \x20  underscore   1_234_567\n\
+         \n\
+         For finer control, replace the line below with a table:\n\
+         \x20  [display.number_format]\n\
+         \x20  grouping = \"thousands\"     # none | thousands | indian | system | any preset above\n\
+         \x20  group_separator = \",\"\n\
+         \x20  decimal_separator = \".\"\n\
+         \x20  min_digits = 5             # never group shorter integers, so years stay 2024 not 2,024\n\
+         \x20  floats = true              # group float columns too\n\
+         \x20  float_precision = 2        # omit to keep the file's own decimal rendering\n\
+         \x20  exclude_columns = [\"*_id\", \"year\"]   # never format these (globs: * and ?)\n\
+         \x20  include_columns = []                 # always format these, ignoring min_digits\n\
+         \n\
+         grouping = \"system\" is opt-in: it reads LC_ALL / LC_NUMERIC / LANG and picks a matching\n\
+         preset. Formatting is otherwise never taken from the environment, because a data file has\n\
+         no locale and the same file should render identically on every machine.\n\
+         \n\
+         Formatting is display-only. Exports, queries, filters and templates always use raw values.",
     ),
 ];
 
@@ -934,6 +1125,8 @@ impl Default for DisplayConfig {
             table_cell_padding: 2,
             column_colors: true,
             sidebar_width: None,
+            align_numeric_right: true,
+            number_format: NumberFormatConfig::default(),
         }
     }
 }
@@ -1130,6 +1323,12 @@ impl AppConfig {
             }
         }
 
+        // Resolve number formatting so bad preset names and separator clashes
+        // are reported at load time rather than silently ignored at render time.
+        self.display
+            .number_format
+            .resolve(self.display.align_numeric_right)?;
+
         // Validate all colors can be parsed
         let parser = ColorParser::new();
         self.theme.colors.validate(&parser)?;
@@ -1215,6 +1414,12 @@ impl DisplayConfig {
         }
         if other.sidebar_width != default.sidebar_width {
             self.sidebar_width = other.sidebar_width;
+        }
+        if other.align_numeric_right != default.align_numeric_right {
+            self.align_numeric_right = other.align_numeric_right;
+        }
+        if other.number_format != default.number_format {
+            self.number_format = other.number_format;
         }
     }
 }

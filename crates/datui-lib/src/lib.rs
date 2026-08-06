@@ -30,6 +30,7 @@ pub mod error_display;
 pub mod export_modal;
 pub mod filter_modal;
 pub(crate) mod help_strings;
+pub mod numfmt;
 pub mod pivot_melt_modal;
 mod query;
 mod render;

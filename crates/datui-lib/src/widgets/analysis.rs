@@ -12,12 +12,14 @@ use ratatui::{
 
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool, AnalysisView, HistogramScale};
 use crate::config::Theme;
+use crate::numfmt::{self, NumberFormatSettings};
 use crate::statistics::{
     beta_pdf, chi_squared_pdf, gamma_pdf, gamma_quantile, geometric_pmf, geometric_quantile,
     students_t_pdf, weibull_pdf, AnalysisContext, AnalysisResults, DistributionAnalysis,
     DistributionType,
 };
 use crate::widgets::datatable::DataTableState;
+use polars::prelude::{AnyValue, DataType};
 
 pub struct AnalysisWidgetConfig<'a> {
     pub state: &'a DataTableState,
@@ -32,6 +34,8 @@ pub struct AnalysisWidgetConfig<'a> {
     pub histogram_scale: HistogramScale,
     pub theme: &'a Theme,
     pub table_cell_padding: u16,
+    /// Display-time number formatting, so counts here match the data table.
+    pub number_format: &'a NumberFormatSettings,
 }
 
 pub struct AnalysisWidget<'a> {
@@ -52,6 +56,7 @@ pub struct AnalysisWidget<'a> {
     histogram_scale: HistogramScale,
     theme: &'a Theme,
     table_cell_padding: u16,
+    number_format: &'a NumberFormatSettings,
 }
 
 impl<'a> AnalysisWidget<'a> {
@@ -81,6 +86,7 @@ impl<'a> AnalysisWidget<'a> {
             histogram_scale: config.histogram_scale,
             theme: config.theme,
             table_cell_padding: config.table_cell_padding,
+            number_format: config.number_format,
         }
     }
 }
@@ -170,6 +176,7 @@ impl<'a> AnalysisWidget<'a> {
                                 buf,
                                 self.theme,
                                 self.table_cell_padding,
+                                self.number_format,
                             );
                         }
                         AnalysisTool::DistributionAnalysis => {
@@ -448,6 +455,7 @@ impl<'a> AnalysisWidget<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_statistics_table(
     results: &AnalysisResults,
     table_state: &mut TableState,
@@ -456,6 +464,7 @@ fn render_statistics_table(
     buf: &mut Buffer,
     theme: &Theme,
     table_cell_padding: u16,
+    number_format: &NumberFormatSettings,
 ) {
     let num_columns = results.column_statistics.len();
     if num_columns == 0 {
@@ -495,8 +504,8 @@ fn render_statistics_table(
     for col_stat in &results.column_statistics {
         for (stat_idx, stat_name) in stat_names.iter().enumerate() {
             let value_str = match *stat_name {
-                "count" => col_stat.count.to_string(),
-                "null_count" => col_stat.null_count.to_string(),
+                "count" => format_count(col_stat.count, number_format),
+                "null_count" => format_count(col_stat.null_count, number_format),
                 "mean" => col_stat
                     .numeric_stats
                     .as_ref()
@@ -647,8 +656,8 @@ fn render_statistics_table(
         for &stat_idx in &visible_stats {
             let stat_name = stat_names[stat_idx];
             let value = match stat_name {
-                "count" => col_stat.count.to_string(),
-                "null_count" => col_stat.null_count.to_string(),
+                "count" => format_count(col_stat.count, number_format),
+                "null_count" => format_count(col_stat.null_count, number_format),
                 "mean" => col_stat
                     .numeric_stats
                     .as_ref()
@@ -714,6 +723,16 @@ fn render_statistics_table(
 
     // Use StatefulWidget for row selection
     StatefulWidget::render(table, area, buf, table_state);
+}
+
+/// Format a row/null count, following the same grouping setting as the data
+/// table so a user who turned formatting on sees it everywhere they read
+/// numbers. Float statistics go through `format_num`, which switches to
+/// scientific notation well before grouping would apply.
+fn format_count(n: usize, settings: &NumberFormatSettings) -> String {
+    let fmt = settings.formatter_for("", &DataType::UInt64);
+    let mut scratch = String::new();
+    numfmt::format_any_value(&fmt, &AnyValue::UInt64(n as u64), &mut scratch).into_owned()
 }
 
 fn format_num(n: f64) -> String {
@@ -2703,5 +2722,52 @@ fn approximate_normal_quantile(p: f64) -> f64 {
         let t = ((p - 0.5).ln() * -2.0).sqrt();
         t - (2.515517 + 0.802853 * t + 0.010328 * t * t)
             / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::numfmt::NumberFormat;
+
+    fn settings(preset: &str, enabled: bool) -> NumberFormatSettings {
+        NumberFormatSettings {
+            format: NumberFormat::preset(preset).unwrap(),
+            enabled,
+            exclude: Vec::new(),
+            include: Vec::new(),
+            align_numeric_right: true,
+        }
+    }
+
+    #[test]
+    fn counts_follow_the_data_table_grouping_setting() {
+        // A user who turned grouping on should see it wherever they read
+        // numbers, not just in the main table.
+        assert_eq!(
+            format_count(3_088_269, &settings("thousands", true)),
+            "3,088,269"
+        );
+        assert_eq!(
+            format_count(3_088_269, &settings("european", true)),
+            "3.088.269"
+        );
+    }
+
+    #[test]
+    fn counts_are_raw_when_formatting_is_off() {
+        assert_eq!(
+            format_count(3_088_269, &settings("thousands", false)),
+            "3088269"
+        );
+        assert_eq!(format_count(0, &settings("thousands", false)), "0");
+    }
+
+    #[test]
+    fn short_counts_keep_their_plain_form() {
+        // min_digits defaults to 5.
+        assert_eq!(format_count(42, &settings("thousands", true)), "42");
+        assert_eq!(format_count(2024, &settings("thousands", true)), "2024");
+        assert_eq!(format_count(10_000, &settings("thousands", true)), "10,000");
     }
 }

@@ -67,3 +67,25 @@ pub fn analysis_describe() -> &'static str {
 pub fn analysis_correlation_matrix() -> &'static str {
     include_help!("analysis_correlation_matrix")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The data table has no on-screen indicator for its display toggles, so
+    /// the help overlay is the only place a user can discover them. Keep both
+    /// listed.
+    #[test]
+    fn main_view_help_documents_display_toggles() {
+        let help = main_view();
+        assert!(help.contains("N:"), "row numbers toggle missing from help");
+        assert!(
+            help.contains("F:"),
+            "number formatting toggle missing from help"
+        );
+        assert!(
+            help.contains("number formatting"),
+            "the F toggle needs a description a user can search for"
+        );
+    }
+}

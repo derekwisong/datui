@@ -5954,6 +5954,23 @@ impl App {
                 }
                 None
             }
+            KeyCode::Char('F') => {
+                // Formatting is applied at render time, so this takes effect on
+                // the next frame with no re-collect. Session-only: the config
+                // file stays the source of truth at launch.
+                self.number_format.enabled = !self.number_format.enabled;
+                if self.debug.enabled {
+                    self.debug.last_action = format!(
+                        "toggle_number_format({})",
+                        if self.number_format.enabled {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    );
+                }
+                None
+            }
             KeyCode::Esc => {
                 // First check if we're in drill-down mode
                 let drilled_up = if let Some(ref mut state) = self.data_table_state {

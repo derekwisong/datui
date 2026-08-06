@@ -667,9 +667,24 @@ impl NumberFormatConfig {
             ));
         }
 
+        // Formatting starts on only if the user actually configured something.
+        // When they did not, F still needs a format to turn on, so the toggle
+        // target becomes Thousands grouping while keeping every other setting
+        // they chose (separators, min_digits, precision). Comma grouping is what
+        // the default user pressing F is asking for.
+        let enabled = !format.is_noop();
+        let format = if enabled {
+            format
+        } else {
+            NumberFormat {
+                grouping: Grouping::Thousands,
+                ..format
+            }
+        };
+
         Ok(NumberFormatSettings {
             format,
-            enabled: true,
+            enabled,
             exclude,
             include,
             align_numeric_right,

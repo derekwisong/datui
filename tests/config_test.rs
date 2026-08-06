@@ -1,7 +1,8 @@
 use datui::config::{
     AppConfig, ConfigManager, NumberFormatConfig, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT,
 };
-use datui::numfmt::Grouping;
+use datui::numfmt::{Grouping, NumberFormatSettings};
+use polars::prelude::DataType;
 use std::fs;
 use tempfile::TempDir;
 
@@ -562,13 +563,80 @@ fn test_number_format_defaults_are_inert() {
         .number_format
         .resolve(config.display.align_numeric_right)
         .expect("default config must resolve");
-    assert_eq!(settings.format.grouping, Grouping::None);
-    assert!(settings.format.is_noop());
+    // Inert because formatting starts off -- not because there is nothing to
+    // apply. Every column resolves to Passthrough while disabled.
+    assert!(!settings.enabled);
+    assert!(settings
+        .formatter_for("pos", &DataType::Int64)
+        .is_passthrough());
+
+    // F still needs something to turn on, so the toggle target is Thousands.
+    let toggled = NumberFormatSettings {
+        enabled: true,
+        ..settings.clone()
+    };
+    assert_eq!(toggled.format.grouping, Grouping::Thousands);
+    assert!(!toggled
+        .formatter_for("pos", &DataType::Int64)
+        .is_passthrough());
 
     // Alignment, unlike grouping, is on by default: it changes neither the
     // characters of a value nor a column's width.
     assert!(config.display.align_numeric_right);
     assert!(settings.align_numeric_right);
+}
+
+#[test]
+fn test_configured_format_starts_enabled() {
+    // A user who configured a format wants to see it without pressing F.
+    let settings = NumberFormatConfig::Preset("thousands".to_string())
+        .resolve(true)
+        .unwrap();
+    assert!(settings.enabled);
+    assert_eq!(settings.format.grouping, Grouping::Thousands);
+}
+
+#[test]
+fn test_toggle_target_keeps_user_settings_when_grouping_is_none() {
+    // Grouping off but min_digits and excludes configured: pressing F must
+    // honour those, not reset to a bare preset.
+    let toml_str = r#"
+version = "0.2"
+
+[display.number_format]
+grouping = "none"
+min_digits = 3
+group_separator = "_"
+exclude_columns = ["*_id"]
+"#;
+    let config: AppConfig = toml::from_str(toml_str).unwrap();
+    let settings = config.display.number_format.resolve(true).unwrap();
+
+    assert!(!settings.enabled, "grouping = none should start off");
+    assert_eq!(settings.format.grouping, Grouping::Thousands);
+    assert_eq!(settings.format.min_digits, 3);
+    assert_eq!(settings.format.group_sep, '_');
+    assert_eq!(settings.exclude.len(), 1);
+}
+
+#[test]
+fn test_non_grouping_format_still_starts_enabled() {
+    // Decimal separator alone is a real change, so it applies immediately
+    // rather than being treated as "nothing configured".
+    let toml_str = r#"
+version = "0.2"
+
+[display.number_format]
+grouping = "none"
+decimal_separator = ","
+"#;
+    let config: AppConfig = toml::from_str(toml_str).unwrap();
+    let settings = config.display.number_format.resolve(true).unwrap();
+
+    assert!(settings.enabled);
+    // Grouping stays off: the user asked only for a decimal separator.
+    assert_eq!(settings.format.grouping, Grouping::None);
+    assert_eq!(settings.format.decimal_sep, ',');
 }
 
 #[test]

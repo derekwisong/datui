@@ -605,7 +605,6 @@ version = "0.2"
 
 [display.number_format]
 grouping = "none"
-min_digits = 3
 group_separator = "_"
 exclude_columns = ["*_id"]
 "#;
@@ -614,7 +613,6 @@ exclude_columns = ["*_id"]
 
     assert!(!settings.enabled, "grouping = none should start off");
     assert_eq!(settings.format.grouping, Grouping::Thousands);
-    assert_eq!(settings.format.min_digits, 3);
     assert_eq!(settings.format.group_sep, '_');
     assert_eq!(settings.exclude.len(), 1);
 }
@@ -656,7 +654,6 @@ number_format = "thousands"
     let settings = config.display.number_format.resolve(true).unwrap();
     assert_eq!(settings.format.grouping, Grouping::Thousands);
     assert_eq!(settings.format.group_sep, ',');
-    assert_eq!(settings.format.min_digits, 5);
 }
 
 #[test]
@@ -668,11 +665,9 @@ version = "0.2"
 grouping = "thousands"
 group_separator = " "
 decimal_separator = ","
-min_digits = 3
 floats = false
 float_precision = 2
 exclude_columns = ["*_id", "year"]
-include_columns = ["tiny"]
 "#;
     let config: AppConfig = toml::from_str(toml_str).expect("table form should parse");
     let settings = config.display.number_format.resolve(false).unwrap();
@@ -680,11 +675,9 @@ include_columns = ["tiny"]
     assert_eq!(settings.format.grouping, Grouping::Thousands);
     assert_eq!(settings.format.group_sep, ' ');
     assert_eq!(settings.format.decimal_sep, ',');
-    assert_eq!(settings.format.min_digits, 3);
     assert!(!settings.format.floats);
     assert_eq!(settings.format.float_precision, Some(2));
     assert_eq!(settings.exclude.len(), 2);
-    assert_eq!(settings.include.len(), 1);
     assert!(!settings.align_numeric_right);
 }
 
@@ -804,7 +797,11 @@ fn test_generated_config_documents_number_format() {
     assert!(template.contains("align_numeric_right = true"));
     assert!(template.contains("Press F"));
     assert!(template.contains("exclude_columns"));
-    assert!(template.contains("min_digits"));
+    // No magnitude threshold: the comment must point at exclude_columns as the
+    // way to leave identifier columns alone.
+    assert!(!template.contains("min_digits"));
+    assert!(!template.contains("include_columns"));
+    assert!(template.contains("identifiers rather than quantities"));
 
     // Generated configs must not carry trailing whitespace.
     for (i, line) in template.lines().enumerate() {

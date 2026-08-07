@@ -134,7 +134,6 @@ fn bench_column_resolution(c: &mut Criterion) {
             datui_lib::numfmt::Glob::new("*_id"),
             datui_lib::numfmt::Glob::new("year"),
         ],
-        include: vec![],
         align_numeric_right: true,
     };
     let names: Vec<String> = (0..32).map(|i| format!("column_{i}")).collect();

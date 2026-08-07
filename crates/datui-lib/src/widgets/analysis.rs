@@ -2735,7 +2735,6 @@ mod tests {
             format: NumberFormat::preset(preset).unwrap(),
             enabled,
             exclude: Vec::new(),
-            include: Vec::new(),
             align_numeric_right: true,
         }
     }
@@ -2764,10 +2763,9 @@ mod tests {
     }
 
     #[test]
-    fn short_counts_keep_their_plain_form() {
-        // min_digits defaults to 5.
+    fn counts_group_uniformly_with_no_magnitude_threshold() {
         assert_eq!(format_count(42, &settings("thousands", true)), "42");
-        assert_eq!(format_count(2024, &settings("thousands", true)), "2024");
+        assert_eq!(format_count(1000, &settings("thousands", true)), "1,000");
         assert_eq!(format_count(10_000, &settings("thousands", true)), "10,000");
     }
 }

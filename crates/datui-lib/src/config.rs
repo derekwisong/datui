@@ -607,16 +607,12 @@ pub struct NumberFormatTable {
     pub group_separator: Option<String>,
     /// Character used as the decimal point.
     pub decimal_separator: Option<String>,
-    /// Integers with fewer digits than this are never grouped.
-    pub min_digits: Option<u8>,
     /// Whether float columns get grouping too.
     pub floats: Option<bool>,
     /// Fixed decimal places for floats. Unset keeps Polars' own rendering.
     pub float_precision: Option<u8>,
     /// Columns never formatted. Supports `*` and `?` globs.
     pub exclude_columns: Vec<String>,
-    /// Columns always formatted, ignoring `min_digits`. Supports globs.
-    pub include_columns: Vec<String>,
 }
 
 impl NumberFormatConfig {
@@ -626,10 +622,8 @@ impl NumberFormatConfig {
     /// separators, and a group separator equal to the decimal separator (which
     /// would render `1.234.567` ambiguously).
     pub fn resolve(&self, align_numeric_right: bool) -> Result<NumberFormatSettings> {
-        let (format, exclude, include) = match self {
-            NumberFormatConfig::Preset(name) => {
-                (Self::lookup_preset(name)?, Vec::new(), Vec::new())
-            }
+        let (format, exclude) = match self {
+            NumberFormatConfig::Preset(name) => (Self::lookup_preset(name)?, Vec::new()),
             NumberFormatConfig::Custom(table) => {
                 let base = match table.grouping.as_deref() {
                     Some(name) => Self::lookup_preset(name)?,
@@ -642,20 +636,13 @@ impl NumberFormatConfig {
                 if let Some(sep) = table.decimal_separator.as_deref() {
                     fmt.decimal_sep = Self::single_char(sep, "decimal_separator")?;
                 }
-                if let Some(v) = table.min_digits {
-                    fmt.min_digits = v;
-                }
                 if let Some(v) = table.floats {
                     fmt.floats = v;
                 }
                 if table.float_precision.is_some() {
                     fmt.float_precision = table.float_precision;
                 }
-                (
-                    fmt,
-                    table.exclude_columns.iter().map(Glob::new).collect(),
-                    table.include_columns.iter().map(Glob::new).collect(),
-                )
+                (fmt, table.exclude_columns.iter().map(Glob::new).collect())
             }
         };
 
@@ -686,7 +673,6 @@ impl NumberFormatConfig {
             format,
             enabled,
             exclude,
-            include,
             align_numeric_right,
         })
     }
@@ -798,11 +784,12 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
          \x20  grouping = \"thousands\"     # none | thousands | indian | system | any preset above\n\
          \x20  group_separator = \",\"\n\
          \x20  decimal_separator = \".\"\n\
-         \x20  min_digits = 5             # never group shorter integers, so years stay 2024 not 2,024\n\
          \x20  floats = true              # group float columns too\n\
          \x20  float_precision = 2        # omit to keep the file's own decimal rendering\n\
          \x20  exclude_columns = [\"*_id\", \"year\"]   # never format these (globs: * and ?)\n\
-         \x20  include_columns = []                 # always format these, ignoring min_digits\n\
+         \n\
+         Every value in a formatted column is grouped. Use exclude_columns for columns that hold\n\
+         identifiers rather than quantities -- years, sample IDs, ZIP codes, accession numbers.\n\
          \n\
          grouping = \"system\" is opt-in: it reads LC_ALL / LC_NUMERIC / LANG and picks a matching\n\
          preset. Formatting is otherwise never taken from the environment, because a data file has\n\

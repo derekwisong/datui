@@ -15,8 +15,8 @@
 //!   emitted inline — one pass, no intermediate string.
 //! - [`NumberFormat::width_i64`] computes display width arithmetically, so the
 //!   locked-column measurement pass never builds a string it throws away.
-//! - Per-column decisions (dtype eligibility, include/exclude globs) resolve to
-//!   a [`CellFormatter`] once per column per frame, never per cell.
+//! - Per-column decisions (dtype eligibility, exclude globs) resolve to a
+//!   [`CellFormatter`] once per column per frame, never per cell.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -73,9 +73,6 @@ pub struct NumberFormat {
     pub group_sep: char,
     /// Character used as the decimal point.
     pub decimal_sep: char,
-    /// Integers with fewer than this many digits are never grouped. Keeps years
-    /// (`2024`) and short IDs from picking up a separator.
-    pub min_digits: u8,
     /// Apply grouping to float columns as well as integer columns.
     pub floats: bool,
     /// Fixed decimal places for floats. `None` keeps the default rendering.
@@ -95,7 +92,6 @@ impl NumberFormat {
         grouping: Grouping::None,
         group_sep: ',',
         decimal_sep: '.',
-        min_digits: 5,
         floats: true,
         float_precision: None,
     };
@@ -161,7 +157,6 @@ impl NumberFormat {
         grouping: Grouping::Thousands,
         group_sep: ',',
         decimal_sep: '.',
-        min_digits: 0,
         floats: true,
         float_precision: None,
     };
@@ -183,10 +178,15 @@ impl NumberFormat {
         self.grouping == Grouping::None && self.decimal_sep == '.' && self.float_precision.is_none()
     }
 
-    /// Whether an integer with this many digits gets grouped.
+    /// Whether values get digit grouping at all.
+    ///
+    /// Every value in a formatted column is grouped, with no magnitude
+    /// threshold: within a table, uniform treatment of a column reads better
+    /// than the prose convention of leaving four-digit numbers alone. Columns
+    /// holding identifiers rather than quantities are named in `exclude`.
     #[inline]
-    fn groups(&self, digits: usize) -> bool {
-        self.grouping != Grouping::None && digits >= self.min_digits as usize
+    fn groups(&self) -> bool {
+        self.grouping != Grouping::None
     }
 
     /// Display width (in characters) of `v` as this format would render it,
@@ -198,7 +198,7 @@ impl NumberFormat {
     /// Display width (in characters) of `v` as this format would render it.
     pub fn width_u64(&self, v: u64) -> usize {
         let digits = digit_count(v);
-        let seps = if self.groups(digits) {
+        let seps = if self.groups() {
             self.grouping.separator_count(digits)
         } else {
             0
@@ -225,7 +225,7 @@ impl NumberFormat {
         let mut pos = buf.len();
         let mut width = 0usize;
 
-        let group = self.groups(digit_count(mag));
+        let group = self.groups();
         let mut sep_bytes = [0u8; 4];
         let sep = self.group_sep.encode_utf8(&mut sep_bytes);
         let sep = sep.as_bytes();
@@ -310,7 +310,7 @@ impl NumberFormat {
         }
 
         let digits = int_part.len();
-        if self.groups(digits) {
+        if self.groups() {
             for (i, ch) in int_part.chars().enumerate() {
                 // A separator precedes this digit when the digits still to come
                 // (including this one) land on a group boundary.
@@ -406,8 +406,6 @@ pub struct NumberFormatSettings {
     pub enabled: bool,
     /// Columns never formatted (precompiled globs).
     pub exclude: Vec<Glob>,
-    /// Columns always formatted, ignoring `min_digits` (precompiled globs).
-    pub include: Vec<Glob>,
     /// Right-align numeric columns and their headers.
     pub align_numeric_right: bool,
 }
@@ -418,7 +416,6 @@ impl Default for NumberFormatSettings {
             format: NumberFormat::PLAIN,
             enabled: true,
             exclude: Vec::new(),
-            include: Vec::new(),
             align_numeric_right: true,
         }
     }
@@ -435,10 +432,6 @@ impl NumberFormatSettings {
             return CellFormatter::Passthrough;
         }
         let mut fmt = self.format.clone();
-        if self.include.iter().any(|g| g.matches(col_name)) {
-            // Explicit include overrides the short-number threshold.
-            fmt.min_digits = 0;
-        }
         if !fmt.floats && matches!(dtype, DataType::Float32 | DataType::Float64) {
             // Grouping is off for floats, but a decimal separator or fixed
             // precision may still apply.
@@ -649,35 +642,23 @@ mod tests {
     }
 
     #[test]
-    fn min_digits_threshold_keeps_years_intact() {
+    fn every_value_in_a_formatted_column_is_grouped() {
+        // No magnitude threshold: a column must not mix "1000" and
+        // "248,956,422". Columns holding identifiers are named in `exclude`
+        // instead of being guessed at by size.
         let nf = thousands();
-        assert_eq!(nf.min_digits, 5);
-        // Below the threshold: untouched.
         assert_eq!(fmt_i64(&nf, 0), "0");
         assert_eq!(fmt_i64(&nf, 999), "999");
-        assert_eq!(fmt_i64(&nf, 2024), "2024");
-        assert_eq!(fmt_i64(&nf, 9999), "9999");
-        // At and above: grouped.
+        assert_eq!(fmt_i64(&nf, 1000), "1,000");
+        assert_eq!(fmt_i64(&nf, 2024), "2,024");
+        assert_eq!(fmt_i64(&nf, 9999), "9,999");
         assert_eq!(fmt_i64(&nf, 10000), "10,000");
         assert_eq!(fmt_i64(&nf, 1234567), "1,234,567");
     }
 
     #[test]
-    fn min_digits_zero_groups_everything() {
-        let nf = NumberFormat {
-            min_digits: 0,
-            ..thousands()
-        };
-        assert_eq!(fmt_i64(&nf, 1000), "1,000");
-        assert_eq!(fmt_i64(&nf, 999), "999");
-    }
-
-    #[test]
     fn negatives_and_extremes() {
-        let nf = NumberFormat {
-            min_digits: 0,
-            ..thousands()
-        };
+        let nf = thousands();
         assert_eq!(fmt_i64(&nf, -1234567), "-1,234,567");
         assert_eq!(fmt_i64(&nf, -999), "-999");
         assert_eq!(fmt_i64(&nf, i64::MIN), "-9,223,372,036,854,775,808");
@@ -700,10 +681,7 @@ mod tests {
 
     #[test]
     fn indian_grouping() {
-        let nf = NumberFormat {
-            min_digits: 0,
-            ..NumberFormat::preset("indian").unwrap()
-        };
+        let nf = NumberFormat::preset("indian").unwrap();
         assert_eq!(fmt_i64(&nf, 100), "100");
         assert_eq!(fmt_i64(&nf, 1000), "1,000");
         assert_eq!(fmt_i64(&nf, 12345), "12,345");
@@ -755,10 +733,7 @@ mod tests {
 
     #[test]
     fn floats_regroup_integer_part_only() {
-        let nf = NumberFormat {
-            min_digits: 0,
-            ..thousands()
-        };
+        let nf = thousands();
         let mut s = String::new();
         let w = nf.regroup_decimal("1234567.891", &mut s);
         assert_eq!(s, "1,234,567.891");
@@ -771,10 +746,7 @@ mod tests {
 
     #[test]
     fn european_swaps_decimal_separator() {
-        let nf = NumberFormat {
-            min_digits: 0,
-            ..NumberFormat::preset("european").unwrap()
-        };
+        let nf = NumberFormat::preset("european").unwrap();
         let mut s = String::new();
         let w = nf.regroup_decimal("1234567.89", &mut s);
         assert_eq!(s, "1.234.567,89");
@@ -795,7 +767,6 @@ mod tests {
     #[test]
     fn float_precision_is_applied() {
         let nf = NumberFormat {
-            min_digits: 0,
             float_precision: Some(2),
             ..thousands()
         };
@@ -857,7 +828,6 @@ mod tests {
             format: thousands(),
             enabled: true,
             exclude: vec![Glob::new("*_id"), Glob::new("year")],
-            include: vec![Glob::new("small")],
             align_numeric_right: true,
         };
         // Numeric column: formatted.
@@ -878,11 +848,6 @@ mod tests {
         assert!(settings
             .formatter_for("year", &DataType::Int32)
             .is_passthrough());
-        // Included: threshold dropped.
-        match settings.formatter_for("small", &DataType::Int64) {
-            CellFormatter::Number(nf) => assert_eq!(nf.min_digits, 0),
-            other => panic!("expected Number, got {other:?}"),
-        }
     }
 
     #[test]
@@ -924,10 +889,7 @@ mod tests {
 
     #[test]
     fn any_value_formatting_and_width_agree() {
-        let fmt = CellFormatter::Number(NumberFormat {
-            min_digits: 0,
-            ..thousands()
-        });
+        let fmt = CellFormatter::Number(thousands());
         let mut scratch = String::new();
         let cases: Vec<AnyValue> = vec![
             AnyValue::Int32(1234567),

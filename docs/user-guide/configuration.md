@@ -107,17 +107,24 @@ For finer control, replace the shorthand with a table:
 grouping = "thousands"     # none | thousands | indian | system | any preset above
 group_separator = ","
 decimal_separator = "."
-min_digits = 5             # never group shorter integers
 floats = true              # group float columns too
 float_precision = 2        # omit to keep the file's own decimal rendering
 exclude_columns = ["*_id", "year"]   # never format these (globs: * and ?)
-include_columns = []                 # always format these, ignoring min_digits
 ```
 
-**`min_digits`** is what keeps grouping from becoming annoying. At the default
-of `5`, a `year` column stays `2024` rather than becoming `2,024`, while
-`10000` becomes `10,000`. Use `exclude_columns` for columns that are numeric but
-not quantities — sample IDs, ZIP codes, accession numbers.
+**Every value in a formatted column is grouped**, with no size threshold — a
+column never mixes `1000` and `248,956,422`. Uniform treatment of a column reads
+better in a table than the prose convention of leaving four-digit numbers alone.
+
+**`exclude_columns`** is how you keep a column plain. Use it for columns that
+are numeric but are not quantities — years, sample IDs, ZIP codes, accession
+numbers:
+
+```toml
+[display.number_format]
+grouping = "thousands"
+exclude_columns = ["year", "*_id", "zip"]
+```
 
 ##### Why formatting is not taken from your locale
 

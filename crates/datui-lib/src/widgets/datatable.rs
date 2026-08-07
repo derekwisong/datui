@@ -6102,7 +6102,6 @@ mod tests {
             format: crate::numfmt::NumberFormat::preset(preset).unwrap(),
             enabled: true,
             exclude: Vec::new(),
-            include: Vec::new(),
             align_numeric_right: align,
         })
     }
@@ -6149,11 +6148,11 @@ mod tests {
     }
 
     #[test]
-    fn strings_and_short_integers_are_untouched() {
+    fn strings_are_untouched_and_integers_group_uniformly() {
         let table = table_with_format("thousands", false);
         let df = df!(
             "chrom" => &["chr1"],
-            "year" => &[2024i32],
+            "n" => &[2024i32],
         )
         .unwrap();
         let area = Rect::new(0, 0, 30, 3);
@@ -6162,12 +6161,33 @@ mod tests {
         table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
         let row = row_string(&buf, area, 1);
         assert!(row.contains("chr1"), "got: {row:?}");
-        // min_digits defaults to 5, so a four-digit year keeps its plain form.
-        assert!(row.contains("2024"), "got: {row:?}");
-        assert!(
-            !row.contains("2,024"),
-            "year should not be grouped: {row:?}"
-        );
+        // No magnitude threshold: a column must not mix grouped and ungrouped
+        // values, so four-digit numbers group like everything else.
+        assert!(row.contains("2,024"), "got: {row:?}");
+    }
+
+    #[test]
+    fn excluding_a_column_is_how_identifier_columns_stay_plain() {
+        // The replacement for a digit threshold: name the columns that hold
+        // identifiers rather than quantities.
+        let table = DataTable::default().with_number_format(NumberFormatSettings {
+            format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
+            enabled: true,
+            exclude: vec![crate::numfmt::Glob::new("year")],
+            align_numeric_right: false,
+        });
+        let df = df!(
+            "year" => &[2024i32],
+            "count" => &[2024i32],
+        )
+        .unwrap();
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        let mut ts = TableState::default();
+        table.render_dataframe(&df, area, &mut buf, &mut ts, false, 0);
+        let row = row_string(&buf, area, 1);
+        assert!(row.contains("2024"), "excluded column stays plain: {row:?}");
+        assert!(row.contains("2,024"), "other column groups: {row:?}");
     }
 
     #[test]
@@ -6228,7 +6248,6 @@ mod tests {
             format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
             enabled: true,
             exclude: vec![crate::numfmt::Glob::new("*_id")],
-            include: Vec::new(),
             align_numeric_right: false,
         });
         let df = df!(
@@ -6252,7 +6271,6 @@ mod tests {
             format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
             enabled: true,
             exclude: Vec::new(),
-            include: Vec::new(),
             align_numeric_right: false,
         };
         settings.enabled = false;

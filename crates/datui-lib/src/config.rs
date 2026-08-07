@@ -613,7 +613,20 @@ pub struct NumberFormatTable {
     pub float_precision: Option<u8>,
     /// Columns never formatted. Supports `*` and `?` globs.
     pub exclude_columns: Vec<String>,
+    /// Keys that are not recognised, captured rather than discarded.
+    ///
+    /// A misspelled key here would otherwise be invisible: every field has a
+    /// default, so the table resolves to "no formatting" — which is also what
+    /// the default config does. The user would see identical output whether
+    /// they typo'd the key or never wrote it. Capturing unknown keys lets
+    /// [`NumberFormatConfig::resolve`] name the offending one instead.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
 }
+
+/// Field names accepted inside `[display.number_format]`, for error messages.
+const NUMBER_FORMAT_KEYS: &str =
+    "grouping, group_separator, decimal_separator, floats, float_precision, exclude_columns";
 
 impl NumberFormatConfig {
     /// Resolve into the runtime settings used by the renderer.
@@ -625,6 +638,18 @@ impl NumberFormatConfig {
         let (format, exclude) = match self {
             NumberFormatConfig::Preset(name) => (Self::lookup_preset(name)?, Vec::new()),
             NumberFormatConfig::Custom(table) => {
+                if !table.unknown.is_empty() {
+                    let keys: Vec<&str> = table.unknown.keys().map(String::as_str).collect();
+                    return Err(eyre!(
+                        "display.number_format: unknown key{} {}. Expected one of: {}",
+                        if keys.len() > 1 { "s" } else { "" },
+                        keys.iter()
+                            .map(|k| format!("'{}'", k))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        NUMBER_FORMAT_KEYS
+                    ));
+                }
                 let base = match table.grouping.as_deref() {
                     Some(name) => Self::lookup_preset(name)?,
                     None => NumberFormat::PLAIN,

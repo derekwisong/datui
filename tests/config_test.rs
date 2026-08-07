@@ -817,3 +817,75 @@ fn test_generated_config_documents_number_format() {
     let parsed: AppConfig = toml::from_str(&template).expect("generated config must parse");
     parsed.validate().expect("generated config must validate");
 }
+
+#[test]
+fn test_number_format_unknown_key_is_reported() {
+    // A misspelled key must not be silently ignored. Every field has a default,
+    // so an ignored typo would resolve to "no formatting" -- identical to the
+    // default config, leaving the user no way to tell the difference.
+    let toml_str = r#"
+version = "0.2"
+
+[display.number_format]
+groupng = "thousands"
+"#;
+    let config: AppConfig = toml::from_str(toml_str).expect("should still parse");
+    let err = config.validate().unwrap_err().to_string();
+    assert!(err.contains("unknown key 'groupng'"), "got: {err}");
+    // The message must say what IS accepted.
+    assert!(err.contains("grouping"), "got: {err}");
+    assert!(err.contains("exclude_columns"), "got: {err}");
+}
+
+#[test]
+fn test_number_format_reports_every_unknown_key() {
+    let toml_str = r#"
+version = "0.2"
+
+[display.number_format]
+groupng = "thousands"
+floatz = true
+"#;
+    let config: AppConfig = toml::from_str(toml_str).unwrap();
+    let err = config.validate().unwrap_err().to_string();
+    assert!(err.contains("unknown keys"), "should pluralise: {err}");
+    assert!(err.contains("'groupng'"), "got: {err}");
+    assert!(err.contains("'floatz'"), "got: {err}");
+}
+
+#[test]
+fn test_number_format_known_keys_are_not_flagged_as_unknown() {
+    // Guard against the unknown-key capture swallowing real fields.
+    let toml_str = r#"
+version = "0.2"
+
+[display.number_format]
+grouping = "thousands"
+group_separator = "_"
+decimal_separator = "."
+floats = false
+float_precision = 3
+exclude_columns = ["year"]
+"#;
+    let config: AppConfig = toml::from_str(toml_str).unwrap();
+    config.validate().expect("all known keys must validate");
+    let settings = config.display.number_format.resolve(true).unwrap();
+    assert_eq!(settings.format.group_sep, '_');
+    assert_eq!(settings.format.float_precision, Some(3));
+    assert!(!settings.format.floats);
+    assert_eq!(settings.exclude.len(), 1);
+}
+
+#[test]
+fn test_number_format_wrong_types_still_fail_at_parse_time() {
+    // Capturing unknown keys must not turn type errors into generic ones.
+    for bad in [
+        "[display.number_format]\nfloat_precision = \"two\"\n",
+        "[display.number_format]\nfloats = \"yes\"\n",
+        "[display]\nnumber_format = 7\n",
+    ] {
+        let src = format!("version = \"0.2\"\n{bad}");
+        let parsed = toml::from_str::<AppConfig>(&src);
+        assert!(parsed.is_err(), "should fail to parse: {bad}");
+    }
+}

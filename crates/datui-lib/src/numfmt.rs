@@ -258,8 +258,17 @@ impl NumberFormat {
         // Every byte written is either ASCII or a complete UTF-8 encoding of
         // `group_sep`, so the slice is valid UTF-8 by construction.
         debug_assert!(std::str::from_utf8(&buf[pos..]).is_ok());
-        out.push_str(std::str::from_utf8(&buf[pos..]).unwrap_or(""));
-        width
+        match std::str::from_utf8(&buf[pos..]) {
+            Ok(s) => {
+                out.push_str(s);
+                width
+            }
+            // Unreachable. Report zero rather than `width` anyway: callers size
+            // table columns from this return value, so a width that does not
+            // match what was actually pushed would corrupt the layout instead
+            // of failing visibly.
+            Err(_) => 0,
+        }
     }
 
     /// Append `v` to `out`, returning the display width in characters.

@@ -693,16 +693,10 @@ impl<'a> DataTableInfo<'a> {
     }
 }
 
+/// Comma-group a count for the info panel. Thin alias over the shared chrome
+/// formatter, kept so call sites and tests read the same as before.
 fn format_int(n: usize) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.insert(0, ',');
-        }
-        out.insert(0, c);
-    }
-    out
+    crate::numfmt::group_chrome(n)
 }
 
 fn columns_by_type(schema: &Schema) -> String {

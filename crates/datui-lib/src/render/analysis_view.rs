@@ -85,6 +85,7 @@ pub fn render(
             histogram_scale: app.analysis_modal.histogram_scale,
             theme: &app.theme,
             table_cell_padding: app.table_cell_padding,
+            number_format: &ctx.number_format,
         };
         let widget = analysis::AnalysisWidget::new(
             config,

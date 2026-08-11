@@ -107,6 +107,14 @@ fn main() -> Result<()> {
         config.display.column_colors = cc;
     }
 
+    if let Some(nf) = args.number_format.as_deref() {
+        config.display.number_format = config.display.number_format.with_grouping_override(nf);
+    }
+
+    if let Some(ar) = args.align_numeric_right {
+        config.display.align_numeric_right = ar;
+    }
+
     if let Some(st) = args.sampling_threshold {
         config.performance.sampling_threshold = if st == 0 { None } else { Some(st) };
     }
@@ -157,6 +165,8 @@ mod tests {
             hive: false,
             single_spine_schema: None,
             column_colors: None,
+            number_format: None,
+            align_numeric_right: None,
             parse_dates: None,
             parse_strings: vec![],
             no_parse_strings: false,

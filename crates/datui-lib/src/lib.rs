@@ -30,6 +30,7 @@ pub mod error_display;
 pub mod export_modal;
 pub mod filter_modal;
 pub(crate) mod help_strings;
+pub mod numfmt;
 pub mod pivot_melt_modal;
 mod query;
 mod render;
@@ -57,6 +58,7 @@ use chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 pub use error_display::{error_for_python, ErrorKindForPython};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 use filter_modal::{FilterFocus, FilterOperator, FilterStatement, LogicalOperator};
+use numfmt::NumberFormatSettings;
 use pivot_melt_modal::{MeltSpec, PivotMeltFocus, PivotMeltModal, PivotMeltTab, PivotSpec};
 use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
 use sort_modal::{SortColumn, SortFocus};
@@ -1009,8 +1011,10 @@ pub struct App {
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
+    // Resolved display-time number formatting. `enabled` is flipped by the F key.
+    number_format: NumberFormatSettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
-    task_generation: u64, // Incremented to invalidate stale background results
+    task_generation: u64,            // Incremented to invalidate stale background results
     // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
     // the (potentially minutes-long) count on every scroll while it's still running.
     len_count_inflight: Option<u64>,
@@ -1449,6 +1453,17 @@ impl App {
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
             column_colors: app_config.display.column_colors,
+            number_format: app_config
+                .display
+                .number_format
+                .resolve(app_config.display.align_numeric_right)
+                // AppConfig::load validates this, but App can be built from an
+                // unvalidated config (e.g. the Python API): fall back to no
+                // formatting while still honouring the alignment setting.
+                .unwrap_or_else(|_| NumberFormatSettings {
+                    align_numeric_right: app_config.display.align_numeric_right,
+                    ..Default::default()
+                }),
             runtime,
             task_generation: 0,
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -5939,6 +5954,23 @@ impl App {
                 }
                 None
             }
+            KeyCode::Char('F') => {
+                // Formatting is applied at render time, so this takes effect on
+                // the next frame with no re-collect. Session-only: the config
+                // file stays the source of truth at launch.
+                self.number_format.enabled = !self.number_format.enabled;
+                if self.debug.enabled {
+                    self.debug.last_action = format!(
+                        "toggle_number_format({})",
+                        if self.number_format.enabled {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    );
+                }
+                None
+            }
             KeyCode::Esc => {
                 // First check if we're in drill-down mode
                 let drilled_up = if let Some(ref mut state) = self.data_table_state {
@@ -8711,6 +8743,7 @@ impl Widget for &mut App {
             &self.theme,
             self.table_cell_padding,
             self.column_colors,
+            self.number_format.clone(),
         );
 
         let main_view_content = MainViewContent::from_app_state(

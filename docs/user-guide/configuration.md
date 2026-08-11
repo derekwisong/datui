@@ -65,6 +65,8 @@ pages_lookback = 3    # Pages to buffer behind
 row_numbers = false   # Show row numbers on left side
 row_start_index = 1   # Starting index for row numbers (0 or 1)
 table_cell_padding = 1   # Spaces between columns in the main table (>= 0)
+align_numeric_right = true   # Right-align numeric columns and their headers
+number_format = "none"       # Digit grouping — see below
 ```
 
 **Example: Enable row numbers starting at 0**
@@ -73,6 +75,99 @@ table_cell_padding = 1   # Spaces between columns in the main table (>= 0)
 row_numbers = true
 row_start_index = 0
 ```
+
+#### Number formatting
+
+Large integers — genomic coordinates, row counts, IDs — are hard to read as an
+unbroken run of digits. `number_format` adds digit grouping:
+
+```toml
+[display]
+number_format = "thousands"   # 1,234,567
+```
+
+Press <kbd>F</kbd> in the data table to toggle formatting on and off at any
+time. The toggle is session-only; the config file decides the state at launch.
+With the default `"none"`, <kbd>F</kbd> turns on comma grouping.
+
+| Preset | Renders `1234567.89` as |
+|--------|-------------------------|
+| `none` (default) | `1234567.89` |
+| `thousands` | `1,234,567.89` |
+| `european` | `1.234.567,89` |
+| `si` | `1 234 567.89` (narrow no-break space, ISO 31-0) |
+| `swiss` | `1'234'567.89` |
+| `indian` | `12,34,567.89` (lakh / crore) |
+| `underscore` | `1_234_567.89` |
+
+For finer control, replace the shorthand with a table:
+
+```toml
+[display.number_format]
+grouping = "thousands"     # none | thousands | indian | system | any preset above
+group_separator = ","
+decimal_separator = "."
+floats = true              # group float columns too
+float_precision = 2        # omit to keep the file's own decimal rendering
+exclude_columns = ["*_id", "year"]   # never format these (globs: * and ?)
+```
+
+**Every value in a formatted column is grouped**, with no size threshold — a
+column never mixes `1000` and `248,956,422`. Uniform treatment of a column reads
+better in a table than the prose convention of leaving four-digit numbers alone.
+
+**`exclude_columns`** is how you keep a column plain. Use it for columns that
+are numeric but are not quantities — years, sample IDs, ZIP codes, accession
+numbers:
+
+```toml
+[display.number_format]
+grouping = "thousands"
+exclude_columns = ["year", "*_id", "zip"]
+```
+
+##### Why formatting is not taken from your locale
+
+By default datui never reads `LC_NUMERIC` or `LANG` to decide how to render
+numbers. A data file has no locale, so the same file should look the same on
+your laptop and over SSH on a cluster — and `LC_NUMERIC` is unset or `C` on much
+of the infrastructure this feature is aimed at, so detection would silently do
+nothing exactly where it was wanted. Proper locale formatting also needs
+ICU/CLDR data, which is megabytes for a tool that ships as a single binary.
+
+The presets above cover the same conventions explicitly. If you do want the
+environment consulted, opt in:
+
+```toml
+[display.number_format]
+grouping = "system"   # reads LC_ALL / LC_NUMERIC / LANG, falls back to "thousands"
+```
+
+##### What formatting does and does not affect
+
+Formatting is **display-only**. Exported files, query and filter expressions,
+templates, and group-by keys always use raw values — what you see grouped on
+screen is written out ungrouped.
+
+The control bar's row count and the info panel's totals are datui's own labels
+rather than your data, so they always group and ignore both this setting and
+the <kbd>F</kbd> toggle.
+
+#### Numeric alignment
+
+`align_numeric_right` (default `true`) renders integer and float columns, and
+their headers, flush right so magnitudes line up. Strings, booleans and
+temporal columns stay left-aligned. Set it to `false` for the pre-0.2.56
+appearance:
+
+```toml
+[display]
+align_numeric_right = false
+```
+
+Unlike grouping, alignment is on by default: it changes neither the characters
+of a value nor a column's width, so nothing reflows and copied text is
+identical.
 
 ### Performance Settings
 

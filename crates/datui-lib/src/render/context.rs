@@ -1,4 +1,5 @@
 use crate::config::Theme;
+use crate::numfmt::NumberFormatSettings;
 use ratatui::style::Color;
 
 /// Snapshot of theme colors and display configuration for rendering.
@@ -41,6 +42,8 @@ pub struct RenderContext {
 
     pub table_cell_padding: u16,
     pub column_colors: bool,
+    /// Resolved number formatting, including the runtime `F` toggle state.
+    pub number_format: NumberFormatSettings,
 }
 
 impl RenderContext {
@@ -50,6 +53,7 @@ impl RenderContext {
         theme: &Theme,
         table_cell_padding: u16,
         column_colors: bool,
+        number_format: NumberFormatSettings,
     ) -> Self {
         Self {
             keybind_hints: theme.get("keybind_hints"),
@@ -106,6 +110,7 @@ impl RenderContext {
 
             table_cell_padding,
             column_colors,
+            number_format,
         }
     }
 }

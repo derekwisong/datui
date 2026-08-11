@@ -21,6 +21,7 @@ Display:
   Tab / Shift+Tab:  In Info: move focus (tab bar ↔ schema table)
   Left / Right:     In Info, on tab bar: switch Schema | Resources
   N:                Toggle row numbers
+  F:                Toggle number formatting (thousands separators)
   ? / F1:           Open this help (F1 works in text fields). Esc or ? to close.
 
 Help Navigation:

@@ -126,6 +126,55 @@ The release workflow can push PKGBUILD and .SRCINFO to the AUR automatically whe
 
 If these secrets are not set, the "Publish to AUR" step will fail. To disable automated AUR updates, remove or comment out that step in `.github/workflows/release.yml`.
 
+## WinGet releases
+
+The `publish-winget` job in `.github/workflows/publish-packages.yml` uses
+[winget-releaser](https://github.com/vedantmgoyal9/winget-releaser), which drives
+[komac](https://github.com/russellbanks/Komac) to open a manifest PR against
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) from our fork at
+`derekwisong/winget-pkgs`.
+
+**Required repository secret:**
+
+| Secret | Description |
+|--------|-------------|
+| `WINGET_TOKEN` | Classic PAT with `public_repo` scope. Fine-grained PATs do not work — they cannot open a cross-fork PR against a repo you don't own. |
+
+At least one version of `derekwisong.datui` must already exist in winget-pkgs; the
+action refuses to create a brand-new package.
+
+### Recovering from "does not have the correct permissions to execute `UpdateRef`"
+
+Before opening the PR, komac fast-forwards our fork from upstream. GitHub blocks any
+ref update that touches `.github/workflows/` unless the token carries `workflow`
+scope, and upstream winget-pkgs edits its own workflows every few weeks — so the sync
+fails once enough time has passed since the last release. The error names a
+permissions problem, but **`WINGET_TOKEN` is fine; do not rotate it.**
+
+We can't just add the scope: GitHub's classic-PAT UI force-selects full `repo`
+(private repos included) whenever `workflow` is checked.
+
+The preflight step attempts the sync itself and, when blocked, fails fast with these
+steps in the job log:
+
+1. Open <https://github.com/derekwisong/winget-pkgs> and click **Sync fork** →
+   **Update branch**. A browser session has permissions the PAT doesn't.
+2. Re-run just the failed job:
+   ```bash
+   gh run rerun <run-id> --failed
+   ```
+3. Confirm the PR opened:
+   ```bash
+   gh pr list --repo microsoft/winget-pkgs --author derekwisong
+   ```
+
+Being a few commits behind upstream at job start is harmless — winget-pkgs merges
+manifest PRs constantly and those never touch workflow files.
+
+If this becomes a recurring nuisance, the durable fix is a dedicated machine account
+that owns the fork and holds a `repo` + `workflow` PAT (full `repo` scope is harmless
+on an account with no private repos), wired up via the action's `fork-user` input.
+
 ## More Information
 
 For detailed information about packaging metadata, policies, and AUR submission, see

@@ -222,6 +222,44 @@ jobs:
     runs-on: windows-latest
     # winget-releaser fetches release assets via GitHub API; no local download needed
     steps:
+      # Preflight. winget-releaser runs `komac sync-fork` to fast-forward our
+      # winget-pkgs fork from upstream before opening the PR. WINGET_TOKEN is a classic
+      # PAT with `public_repo` scope only, and GitHub refuses any ref update that
+      # creates or updates files under `.github/workflows/` unless the token also has
+      # `workflow` scope -- which upstream winget-pkgs changes every few weeks. komac
+      # reports that as "does not have the correct permissions to execute `UpdateRef`",
+      # which reads like an expired/invalid token and sends you rotating secrets.
+      #
+      # Adding `workflow` scope is not an option: GitHub's classic-PAT UI force-selects
+      # full `repo` (private repos included) alongside it. So do the sync here with the
+      # same token, and when it's blocked, fail immediately with the actual recovery
+      # steps instead of three retries of a misleading error.
+      #
+      # Fork distance is only the trigger, not the cause: the longer the gap between
+      # releases, the likelier upstream touched a workflow file. Back-to-back releases
+      # sync cleanly; a quiet stretch is what breaks it.
+      - name: Sync winget-pkgs fork (preflight)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          FORK: derekwisong/winget-pkgs
+        run: |
+          set -uo pipefail
+          echo "Fast-forwarding $FORK master from microsoft/winget-pkgs..."
+          if out=$(gh api "repos/$FORK/merge-upstream" -f branch=master 2>&1); then
+            echo "$out"
+            echo "Fork is in sync; handing off to winget-releaser."
+            exit 0
+          fi
+          echo "$out"
+          if grep -qi 'without .workflow. scope' <<<"$out"; then
+            echo "::error title=winget fork sync blocked::WINGET_TOKEN lacks 'workflow' scope and upstream changed .github/workflows. RECOVER: open https://github.com/${FORK} and click 'Sync fork' -> 'Update branch', then re-run only the failed job with 'gh run rerun ${GITHUB_RUN_ID} --failed'. Do NOT rotate WINGET_TOKEN -- it is valid; this is a scope restriction, not an auth failure. Details: docs/for-developers/packaging.md#winget-releases"
+            exit 1
+          fi
+          # Anything else (transient 5xx, rate limit, unexpected fork state) is not
+          # provably fatal -- komac may still succeed, and it retries 3x below.
+          echo "::warning title=winget fork sync failed::Could not fast-forward the fork (see log above). Continuing anyway; winget-releaser may still succeed."
+
       # Retried up to 3x: komac's GitHub GraphQL mutations intermittently fail
       # with "Ref cannot be created" or "Something went wrong while executing
       # your query" (transient server-side / secondary-rate-limit hiccups, not

@@ -263,6 +263,17 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked -p datui
 
+      - name: Verify version resource
+        run: |
+          $vi = (Get-Item target/release/datui.exe).VersionInfo
+          Write-Host "ProductName=$($vi.ProductName) CompanyName=$($vi.CompanyName) FileVersion=$($vi.FileVersion)"
+          foreach ($field in 'ProductName','CompanyName','FileDescription','FileVersion','LegalCopyright') {
+            if ([string]::IsNullOrWhiteSpace($vi.$field)) {
+              Write-Error "VERSIONINFO field '$field' is empty - refusing to ship an anonymous binary"
+              exit 1
+            }
+          }
+
       - name: Bundle CLI for wheel
         run: |
           New-Item -ItemType Directory -Force -Path python/datui_bin

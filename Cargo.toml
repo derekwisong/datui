@@ -42,6 +42,11 @@ clap = { version = "4.5.54", features = ["derive"] }
 clap_mangen = "0.2"
 datui-cli = { path = "crates/datui-cli", version = "0.2.57-dev" }
 
+# Embeds the VERSIONINFO resource in datui.exe. Host-gated: only pulled in when
+# building on Windows, where the MSVC toolchain provides the resource compiler.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.31"
+
 [dev-dependencies]
 # For integration tests (tests/*.rs) that use polars and config parsing
 polars = { version = "0.52", features = ["lazy"] }

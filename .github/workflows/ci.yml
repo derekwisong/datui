@@ -205,6 +205,17 @@ jobs:
         run: |
           if (!(Test-Path target\debug\datui.exe)) { Write-Error "Binary not found"; exit 1 }
 
+      - name: Verify version resource
+        run: |
+          $vi = (Get-Item target\debug\datui.exe).VersionInfo
+          Write-Host "ProductName=$($vi.ProductName) CompanyName=$($vi.CompanyName) FileVersion=$($vi.FileVersion)"
+          foreach ($field in 'ProductName','CompanyName','FileDescription','FileVersion','LegalCopyright') {
+            if ([string]::IsNullOrWhiteSpace($vi.$field)) {
+              Write-Error "VERSIONINFO field '$field' is empty - build.rs did not embed the resource"
+              exit 1
+            }
+          }
+
       - name: Bundle CLI for wheel
         run: |
           New-Item -ItemType Directory -Force -Path python/datui_bin

@@ -889,3 +889,301 @@ fn test_number_format_wrong_types_still_fail_at_parse_time() {
         assert!(parsed.is_err(), "should fail to parse: {bad}");
     }
 }
+
+// ============================================================================
+// Config `import` layering
+//
+// `import` is what lets an external theme system (Omarchy, chezmoi, a dotfiles
+// repo) drop a generated file into place and have datui pick it up, without
+// datui knowing anything about that system.
+// ============================================================================
+
+/// Write `contents` to `dir/name` and return the path.
+fn write_config(dir: &TempDir, name: &str, contents: &str) -> std::path::PathBuf {
+    let path = dir.path().join(name);
+    fs::write(&path, contents).expect("Failed to write config");
+    path
+}
+
+#[test]
+fn test_import_applies_theme_colors() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "theme.toml",
+        "[theme.colors]\nsuccess = \"#00ff00\"\nerror = \"#ff0000\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.success, "#00ff00");
+    assert_eq!(config.theme.colors.error, "#ff0000");
+}
+
+#[test]
+fn test_import_is_overridden_by_importing_file() {
+    // The whole point of the precedence order: a user keeps their own tweaks
+    // even while following a generated theme.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "theme.toml",
+        "[theme.colors]\nsuccess = \"#00ff00\"\nerror = \"#ff0000\"\n",
+    );
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"theme.toml\"]\n\n[theme.colors]\nerror = \"#123456\"\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.error, "#123456", "user value must win");
+    assert_eq!(
+        config.theme.colors.success, "#00ff00",
+        "untouched imported value must survive"
+    );
+}
+
+#[test]
+fn test_imports_apply_in_declaration_order() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "first.toml",
+        "[theme.colors]\nsuccess = \"#111111\"\nerror = \"#aaaaaa\"\n",
+    );
+    write_config(
+        &temp_dir,
+        "second.toml",
+        "[theme.colors]\nsuccess = \"#222222\"\n",
+    );
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"first.toml\", \"second.toml\"]\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.success, "#222222", "later import wins");
+    assert_eq!(config.theme.colors.error, "#aaaaaa");
+}
+
+#[test]
+fn test_nested_import_is_merged_before_its_importer() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "base.toml",
+        "[theme.colors]\nsuccess = \"#111111\"\nerror = \"#aaaaaa\"\n",
+    );
+    write_config(
+        &temp_dir,
+        "mid.toml",
+        "import = [\"base.toml\"]\n\n[theme.colors]\nsuccess = \"#222222\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"mid.toml\"]\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(
+        config.theme.colors.success, "#222222",
+        "importer beats importee"
+    );
+    assert_eq!(
+        config.theme.colors.error, "#aaaaaa",
+        "nested value reaches the top"
+    );
+}
+
+#[test]
+fn test_missing_import_is_skipped_not_fatal() {
+    // The Omarchy state directory does not exist on a machine that has never
+    // set a theme. datui must still start.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"nope.toml\"]\n\n[display]\nrow_numbers = true\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Missing import must not be fatal");
+
+    assert!(
+        config.display.row_numbers,
+        "rest of the config still applies"
+    );
+    assert_eq!(
+        config.theme.colors.success,
+        AppConfig::default().theme.colors.success
+    );
+}
+
+#[test]
+fn test_import_relative_path_resolves_against_importing_file() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let nested = temp_dir.path().join("themes");
+    fs::create_dir(&nested).expect("Failed to create dir");
+    fs::write(
+        nested.join("dark.toml"),
+        "[theme.colors]\nsuccess = \"#00ff00\"\n",
+    )
+    .expect("Failed to write theme");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"themes/dark.toml\"]\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.success, "#00ff00");
+}
+
+#[test]
+fn test_import_expands_env_var() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let theme = write_config(
+        &temp_dir,
+        "theme.toml",
+        "[theme.colors]\nsuccess = \"#00ff00\"\n",
+    );
+    // Unique name: tests in a binary share one process environment.
+    std::env::set_var("DATUI_TEST_IMPORT_DIR", temp_dir.path());
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"$DATUI_TEST_IMPORT_DIR/theme.toml\"]\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+    std::env::remove_var("DATUI_TEST_IMPORT_DIR");
+
+    assert!(theme.exists());
+    assert_eq!(config.theme.colors.success, "#00ff00");
+}
+
+#[test]
+fn test_circular_import_is_an_error() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(&temp_dir, "a.toml", "import = [\"b.toml\"]\n");
+    write_config(&temp_dir, "b.toml", "import = [\"a.toml\"]\n");
+    let root = write_config(&temp_dir, "config.toml", "import = [\"a.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("cycle must be reported");
+
+    assert!(
+        err.to_string().contains("circular config import"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_self_import_is_an_error() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(&temp_dir, "config.toml", "import = [\"config.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("self-import must be reported");
+
+    assert!(
+        err.to_string().contains("circular config import"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_deep_import_chain_is_capped() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    // 20 files, each importing the next: past any legitimate use.
+    for i in 0..20 {
+        write_config(
+            &temp_dir,
+            &format!("l{i}.toml"),
+            &format!("import = [\"l{}.toml\"]\n", i + 1),
+        );
+    }
+    write_config(
+        &temp_dir,
+        "l20.toml",
+        "[theme.colors]\nsuccess = \"#00ff00\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"l0.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("depth cap must trigger");
+
+    assert!(err.to_string().contains("deep"), "unexpected error: {err}");
+}
+
+#[test]
+fn test_unparseable_import_is_an_error() {
+    // Unlike a missing file, a file the user named that is actually broken must
+    // be loud — otherwise it just looks like the theme silently not applying.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(&temp_dir, "theme.toml", "this is not toml =\n");
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("broken import must be reported");
+    let msg = err.to_string();
+
+    assert!(msg.contains("Failed to parse"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("theme.toml"),
+        "error must name the file: {msg}"
+    );
+}
+
+#[test]
+fn test_imported_invalid_color_is_reported() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "theme.toml",
+        "[theme.colors]\nsuccess = \"#not-a-color\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("invalid color must be reported");
+
+    assert!(
+        err.to_string().contains("theme.colors.success"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_config_without_import_is_unchanged() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(&temp_dir, "config.toml", "[display]\nrow_numbers = true\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert!(config.display.row_numbers);
+    assert!(config.import.is_empty());
+}
+
+#[test]
+fn test_load_from_missing_config_file_yields_defaults() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = temp_dir.path().join("config.toml");
+
+    let config = AppConfig::load_from_file(&root).expect("Missing config is not an error");
+
+    assert_eq!(config.version, AppConfig::default().version);
+    assert!(config.import.is_empty());
+}
+
+#[test]
+fn test_generated_config_documents_import() {
+    // The generated config is the discovery surface for this feature.
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template = config_manager.generate_default_config();
+
+    assert!(template.contains("import"));
+    assert!(template.contains("omarchy/current/theme/datui.toml"));
+
+    // Still valid TOML with the new key present.
+    let parsed: AppConfig = toml::from_str(&template).expect("Template should be valid TOML");
+    assert!(parsed.import.is_empty());
+}

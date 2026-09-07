@@ -23,8 +23,70 @@ This creates `~/.config/datui/config.toml` with all available options and helpfu
 Settings are applied in this order (later values override earlier ones):
 
 1. **Default values** (hardcoded)
-2. **Config file** (`~/.config/datui/config.toml`)
-3. **Command-line arguments** (highest priority)
+2. **Imported files** (each entry of `import`, in the order listed — see below)
+3. **Config file** (`~/.config/datui/config.toml`)
+4. **Command-line arguments** (highest priority)
+
+## Importing Other Config Files
+
+The top-level `import` key names other TOML files to merge in *before* your own
+settings. It is the seam that lets an external theme system — Omarchy, chezmoi,
+home-manager, a dotfiles repo — restyle datui without datui knowing anything
+about that system.
+
+```toml
+# ~/.config/datui/config.toml
+import = ["~/.local/state/omarchy/current/theme/datui.toml"]
+
+[display]
+row_numbers = true
+```
+
+Rules:
+
+- **Order is precedence.** Imports apply in the order listed, each overriding the
+  last. Your own file's values are applied last, so they always win over an
+  imported theme.
+- **Imports may nest.** An imported file can declare its own `import`; those are
+  merged before the file that pulled them in. Chains are capped at 8 files, and a
+  cycle is reported as an error rather than followed.
+- **Paths** may be absolute, relative to the importing file's directory, or use
+  `~` and `$VAR` / `${VAR}`.
+- **A missing file is skipped** with a warning on stderr, and datui starts
+  normally on the remaining layers. That is deliberate: a generated theme file
+  may not exist yet (or at all, on another machine), and that must not stop datui
+  from running.
+- **A file that exists but is broken is an error.** If an import cannot be read
+  or parsed, datui reports the file and exits, rather than quietly looking like
+  the theme failed to apply.
+
+### Following your system theme
+
+datui does not detect any particular desktop or theme manager. Point `import` at
+whatever file your system generates, exactly as Alacritty's `general.import` and
+btop's `color_theme` do. On [Omarchy](https://omarchy.org/), a template rendered
+to `~/.local/state/omarchy/current/theme/datui.toml` is picked up by the import
+line shown above, and `omarchy theme set <name>` restyles datui along with
+everything else.
+
+To stop following a system theme, delete the `import` line. datui has no opinion
+about it either way — with no `import`, you get datui's stock theme.
+
+### A caveat when overriding an imported color
+
+datui decides whether you set a color by comparing it against the built-in
+default. A color you set *to the same value as datui's default* is
+indistinguishable from one you never set, so it will not override an imported
+theme.
+
+For example, datui's default `error` is `red`. Given an import that sets `error`
+to `#FF5345`, writing `error = "red"` in your own config has no effect — the
+imported value wins. Use an explicit form the default does not already use (for
+instance `#ff0000`, or `indexed(9)`) when you need to override an imported color
+back to something datui also uses by default.
+
+This only affects colors you want to pin to one of datui's own default values;
+every other override behaves as expected.
 
 ## Configuration Sections
 
@@ -537,6 +599,21 @@ If your config isn't being used:
 2. **Check syntax**: TOML must be valid. Run `datui <file>` and check for warnings
 3. **Check version**: Config must start with `version = "0.2"`
 4. **Check validation**: Ensure values are in valid ranges (e.g., if set, `sampling_threshold > 0`)
+5. **Check imports**: If you use `import`, a missing file is reported on stderr —
+   run `datui <file> 2>/tmp/datui.log` and read the log after quitting
+
+### Imported Theme Not Applying
+
+If an `import` does not seem to take effect:
+
+1. **Confirm the file exists** at the resolved path. A missing import is skipped
+   with a warning on stderr, which the TUI hides while it is running — redirect
+   stderr to a file to see it.
+2. **Confirm the value differs from datui's default.** A color set to the same
+   string as datui's default cannot override an import — see
+   [the caveat above](#a-caveat-when-overriding-an-imported-color).
+3. **Confirm nothing later overrides it.** Your own config file and any
+   command-line flags both win over an imported file.
 
 ### Invalid Color
 

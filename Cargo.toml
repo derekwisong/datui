@@ -93,7 +93,10 @@ files = [
 opt-level = 3
 
 [profile.release]
-strip = true
+# "debuginfo" rather than true/"symbols": keep .symtab so color-eyre can resolve
+# function names in panic backtraces from released binaries. Release already sets
+# debug = false, so there is no DWARF to carry -- this is symbol names only.
+strip = "debuginfo"
 lto = "thin"
 codegen-units = 1
 opt-level = 3

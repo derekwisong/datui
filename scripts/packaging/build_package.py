@@ -128,6 +128,34 @@ def fix_aur_pkgbuild(repo_root: Path) -> bool:
     return True
 
 
+def add_pkgbuild_options(repo_root: Path) -> bool:
+    """Stop makepkg from stripping the released binary on the builder's machine.
+
+    The tarball ships a symbol table (see strip = "debuginfo" in Cargo.toml). Arch's
+    default OPTIONS has both strip and debug, so without this makepkg strips datui and
+    splits the symbols into a datui-bin-debug package -- which pacman marks --asdeps,
+    orphans immediately, and removes on the next -Rns cleanup. Either path loses the
+    backtraces, so opt out of both. Returns True on success.
+    """
+    pkgbuild = repo_root / "target" / "cargo-aur" / "PKGBUILD"
+
+    if not pkgbuild.exists():
+        return False
+
+    content = pkgbuild.read_text()
+
+    if "options=" in content:
+        return True  # cargo-aur emits its own now; don't fight it
+
+    if "\nsource=" not in content:
+        return False
+
+    content = content.replace("\nsource=", "\noptions=(!strip !debug)\nsource=", 1)
+    pkgbuild.write_text(content)
+    print("Added options=(!strip !debug) to PKGBUILD")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build OS packages (deb, rpm, aur) for datui.",
@@ -216,6 +244,8 @@ def main() -> int:
     if args.pkg == "aur":
         if not fix_aur_pkgbuild(repo_root):
             sys.stderr.write("warning: failed to fix PKGBUILD for Arch compatibility\n")
+        if not add_pkgbuild_options(repo_root):
+            sys.stderr.write("warning: failed to add options=(!strip !debug) to PKGBUILD\n")
 
     # 6. Verify outputs and print paths
     if out_dir_or_aur == "aur":

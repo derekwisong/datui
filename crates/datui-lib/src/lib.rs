@@ -1550,12 +1550,40 @@ impl App {
         self.input_mode = InputMode::Home;
     }
 
-    /// Leave home. Returns to the table if something is loaded; otherwise stays,
-    /// because with no dataset there is nowhere else to be.
-    fn leave_home(&mut self) {
+    /// Esc backs out one layer of context at a time, and quits once there is none.
+    ///
+    /// Escalating rather than doing one fixed thing keeps Esc as the "get me out of
+    /// this" key whatever "this" currently is — and it is the only way out when
+    /// nothing is loaded, since `q` has to remain typeable into the filter.
+    fn home_escape(&mut self) -> Option<AppEvent> {
+        if !self.home.filter.is_empty() {
+            self.home.filter.clear();
+            self.home.selected = 0;
+            self.home.clamp_selection();
+            return None;
+        }
+        if self.home.browsing.is_some() {
+            self.home_ascend();
+            return None;
+        }
         if self.data_table_state.is_some() {
             self.input_mode = InputMode::Normal;
+            return None;
         }
+        Some(AppEvent::Exit)
+    }
+
+    /// Step out of a directory that was descended into.
+    fn home_ascend(&mut self) {
+        let Some(current) = self.home.browsing.clone() else {
+            return;
+        };
+        self.home.browsing = current
+            .parent()
+            .map(|p| p.to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty() && p != &current);
+        self.home.selected = 0;
+        self.home_refresh();
     }
 
     /// Open the highlighted entry: descend into a directory, or load a dataset.
@@ -1592,6 +1620,14 @@ impl App {
     /// Key handling for the home screen.
     fn home_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+
+        // The home screen puts every plain character into the filter — `q` has to
+        // type a `q`, or you could never search for "quarterly". So quitting is
+        // Ctrl+C, checked before anything else can swallow it, and Esc once there is
+        // no context left to back out of.
+        if ctrl && matches!(event.code, KeyCode::Char('c') | KeyCode::Char('q')) {
+            return Some(AppEvent::Exit);
+        }
 
         if self.home.path_input_active {
             match event.code {
@@ -1637,7 +1673,7 @@ impl App {
         }
 
         match event.code {
-            KeyCode::Esc => self.leave_home(),
+            KeyCode::Esc => return self.home_escape(),
             KeyCode::Enter => return self.home_open_selected(),
             KeyCode::Up => self.home.move_selection(-1),
             KeyCode::Down => self.home.move_selection(1),
@@ -1651,21 +1687,7 @@ impl App {
             }
             KeyCode::Backspace => {
                 if self.home.filter.is_empty() {
-                    // Step back out of a directory we descended into.
-                    if let Some(current) = self.home.browsing.clone() {
-                        self.home.browsing =
-                            current.parent().map(|p| p.to_path_buf()).filter(|p| {
-                                // Stop ascending at the point the root listing takes over.
-                                !p.as_os_str().is_empty()
-                                    && discover::classify_directory(p)
-                                        == discover::EntryKind::Directory
-                            });
-                        if self.home.browsing.as_deref() == Some(current.as_path()) {
-                            self.home.browsing = None;
-                        }
-                        self.home.selected = 0;
-                        self.home_refresh();
-                    }
+                    self.home_ascend();
                 } else {
                     self.home.filter.pop();
                     self.home.selected = 0;

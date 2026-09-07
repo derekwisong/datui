@@ -57,15 +57,27 @@ pub fn ensure_sample_data() {
                 );
             }
 
-            // Try to find Python (python3 or python)
-            let python_cmd = if Command::new("python3").arg("--version").output().is_ok() {
-                "python3"
+            // Prefer the project virtualenv: the generator needs Polars and friends,
+            // which a system Python almost never has. Falling straight through to
+            // `python3` produces a bare ImportError that tells nobody what to do.
+            let venv_python = if cfg!(windows) {
+                Path::new(".venv/Scripts/python.exe")
+            } else {
+                Path::new(".venv/bin/python")
+            };
+
+            let python_cmd = if venv_python.exists() {
+                venv_python.to_string_lossy().into_owned()
+            } else if Command::new("python3").arg("--version").output().is_ok() {
+                "python3".to_string()
             } else if Command::new("python").arg("--version").output().is_ok() {
-                "python"
+                "python".to_string()
             } else {
                 panic!(
-                    "Python not found. Please install Python 3 to generate test data. \
-                    The script requires: polars>=0.20.0 and numpy>=1.24.0"
+                    "Python not found, and no project virtualenv at {}.\n\
+                     Run ./scripts/dev/setup-test-data.sh to create one and generate \
+                     the fixtures these tests read.",
+                    venv_python.display()
                 );
             };
 
@@ -84,14 +96,25 @@ pub fn ensure_sample_data() {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let stdout = String::from_utf8_lossy(&output.stdout);
+                let hint = if venv_python.exists() {
+                    String::new()
+                } else {
+                    format!(
+                        "\n\nNo virtualenv at {}. This usually means the generator's \
+                         dependencies (Polars, NumPy, pyarrow, fastavro, openpyxl) are \
+                         missing.\nRun ./scripts/dev/setup-test-data.sh to set it up.",
+                        venv_python.display()
+                    )
+                };
                 panic!(
                     "Sample data generation failed!\n\
                     Exit code: {:?}\n\
                     stdout:\n{}\n\
-                    stderr:\n{}",
+                    stderr:\n{}{}",
                     output.status.code(),
                     stdout,
-                    stderr
+                    stderr,
+                    hint
                 );
             }
 

@@ -128,8 +128,13 @@ know.
 | <kbd>~</kbd> | type a path directly |
 | <kbd>Backspace</kbd> | delete a filter character, or leave a directory |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | clear the filter |
-| <kbd>Esc</kbd> | back to the data you already had open |
+| <kbd>Esc</kbd> | back out one layer: clear the filter, leave a directory, return to your data — and quit once there is nothing left to back out of |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | quit |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | return here from anywhere, even mid-load |
+
+Note that <kbd>q</kbd> does **not** quit here, unlike the table view: every plain
+character goes into the filter, or you could never search for `quarterly`. The
+control bar always shows what <kbd>Esc</kbd> will do next.
 
 <kbd>Ctrl</kbd>+<kbd>O</kbd> works while a dataset is still loading, so opening a
 large file by mistake costs one keystroke rather than a wait.

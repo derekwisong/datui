@@ -73,23 +73,126 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             ControlBarSpec::Custom(pairs)
         }
         MainViewContent::Chart => ControlBarSpec::Custom(vec![("Esc", "Back"), ("e", "Export")]),
-        MainViewContent::Home => {
-            let g = crate::glyphs::get();
-            let mut keys = vec![(g.updown, "Move"), (g.enter, "Open")];
-            if app.home.path_input_active {
-                keys.push(("Esc", "Cancel"));
+        MainViewContent::Home => ControlBarSpec::Custom(home_control_keys(
+            app.home.path_input_active,
+            app.home.browsing.is_some(),
+            !app.home.filter.is_empty(),
+            app.data_table_state.is_some(),
+        )),
+    }
+}
+
+/// Control bar keys for the home screen.
+///
+/// Split out as a pure function so the one invariant that matters can be tested: the
+/// bar must never advertise plain `q` as quit. Every plain character on this screen
+/// goes into the filter — `q` types a `q`, or you could not search for "quarterly" —
+/// and a control bar promising otherwise leaves the user with no visible way out.
+pub fn home_control_keys(
+    path_input_active: bool,
+    browsing: bool,
+    has_filter: bool,
+    has_data: bool,
+) -> Vec<(&'static str, &'static str)> {
+    let g = crate::glyphs::get();
+    let mut keys = vec![(g.updown, "Move"), (g.enter, "Open")];
+
+    if path_input_active {
+        keys.push(("Esc", "Cancel"));
+    } else {
+        keys.push(("type", "Filter"));
+        keys.push(("~", "Path"));
+        if browsing {
+            keys.push((g.backspace, "Up"));
+        }
+        // Esc peels off one layer of context at a time, so label it with what it will
+        // actually do next rather than a generic "Back".
+        keys.push((
+            "Esc",
+            if has_filter {
+                "Clear"
+            } else if browsing {
+                "Up"
+            } else if has_data {
+                "Back to data"
             } else {
-                keys.push(("type", "Filter"));
-                keys.push(("~", "Path"));
-                if app.home.browsing.is_some() {
-                    keys.push((g.backspace, "Up"));
-                }
-                if app.data_table_state.is_some() {
-                    keys.push(("Esc", "Back to data"));
+                "Quit"
+            },
+        ));
+    }
+
+    keys.push(("^C", "Quit"));
+    keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::home_control_keys;
+
+    /// Every combination of home-screen state the control bar can be drawn in.
+    fn all_states() -> Vec<(bool, bool, bool, bool)> {
+        let mut out = Vec::new();
+        for path_input in [false, true] {
+            for browsing in [false, true] {
+                for filter in [false, true] {
+                    for data in [false, true] {
+                        out.push((path_input, browsing, filter, data));
+                    }
                 }
             }
-            keys.push(("q", "Quit"));
-            ControlBarSpec::Custom(keys)
         }
+        out
+    }
+
+    #[test]
+    fn home_bar_never_advertises_bare_q_as_quit() {
+        // The bug this guards: the bar said "q Quit" while `q` typed into the filter,
+        // so there was no discoverable way to leave the home screen.
+        for (p, b, f, d) in all_states() {
+            for (key, _) in home_control_keys(p, b, f, d) {
+                assert_ne!(
+                    key, "q",
+                    "bare `q` advertised in state (path={p}, browsing={b}, filter={f}, data={d})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn home_bar_always_offers_a_way_out() {
+        for (p, b, f, d) in all_states() {
+            let keys = home_control_keys(p, b, f, d);
+            assert!(
+                keys.iter().any(|(_, label)| *label == "Quit"),
+                "no quit offered in state (path={p}, browsing={b}, filter={f}, data={d})"
+            );
+        }
+    }
+
+    #[test]
+    fn home_bar_labels_esc_with_what_it_will_do() {
+        // Esc escalates, so the label has to track the state rather than say "Back".
+        let esc = |p, b, f, d| {
+            home_control_keys(p, b, f, d)
+                .into_iter()
+                .find(|(key, _)| *key == "Esc")
+                .map(|(_, label)| label)
+        };
+        assert_eq!(esc(false, false, true, false), Some("Clear"));
+        assert_eq!(esc(false, true, false, false), Some("Up"));
+        assert_eq!(esc(false, false, false, true), Some("Back to data"));
+        assert_eq!(esc(false, false, false, false), Some("Quit"));
+        assert_eq!(esc(true, false, false, false), Some("Cancel"));
+    }
+
+    #[test]
+    fn home_bar_offers_up_only_while_browsing() {
+        let has_up = |b| {
+            home_control_keys(false, b, false, false)
+                .iter()
+                .any(|(_, label)| *label == "Up")
+        };
+        assert!(has_up(true));
+        assert!(!has_up(false));
     }
 }

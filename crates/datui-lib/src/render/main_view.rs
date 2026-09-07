@@ -7,6 +7,8 @@ pub enum MainViewContent {
     Analysis,
     /// Full-screen chart view.
     Chart,
+    /// Full-screen home screen: pick a dataset.
+    Home,
 }
 
 impl MainViewContent {
@@ -71,5 +73,23 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             ControlBarSpec::Custom(pairs)
         }
         MainViewContent::Chart => ControlBarSpec::Custom(vec![("Esc", "Back"), ("e", "Export")]),
+        MainViewContent::Home => {
+            let g = crate::glyphs::get();
+            let mut keys = vec![(g.updown, "Move"), (g.enter, "Open")];
+            if app.home.path_input_active {
+                keys.push(("Esc", "Cancel"));
+            } else {
+                keys.push(("type", "Filter"));
+                keys.push(("~", "Path"));
+                if app.home.browsing.is_some() {
+                    keys.push((g.backspace, "Up"));
+                }
+                if app.data_table_state.is_some() {
+                    keys.push(("Esc", "Back to data"));
+                }
+            }
+            keys.push(("q", "Quit"));
+            ControlBarSpec::Custom(keys)
+        }
     }
 }

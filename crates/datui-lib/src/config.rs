@@ -84,6 +84,16 @@ impl ConfigManager {
             comments.insert(format!("cloud.{}", field), comment.to_string());
         }
 
+        comments.insert(
+            "display.unicode".to_string(),
+            DISPLAY_UNICODE_COMMENT.to_string(),
+        );
+
+        // Data (home screen roots)
+        for (field, comment) in DATA_COMMENTS {
+            comments.insert(format!("data.{}", field), comment.to_string());
+        }
+
         // File loading fields
         for (field, comment) in FILE_LOADING_COMMENTS {
             comments.insert(format!("file_loading.{}", field), comment.to_string());
@@ -352,6 +362,7 @@ pub struct AppConfig {
     pub performance: PerformanceConfig,
     pub chart: ChartConfig,
     pub theme: ThemeConfig,
+    pub data: DataConfig,
     pub ui: UiConfig,
     pub query: QueryConfig,
     pub templates: TemplateConfig,
@@ -561,6 +572,8 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
+    /// Whether to draw box-drawing and arrow characters, or fall back to ASCII.
+    pub unicode: crate::glyphs::UnicodeMode,
     pub pages_lookahead: usize,
     pub pages_lookback: usize,
     /// Max rows in scroll buffer (0 = no limit).
@@ -949,6 +962,48 @@ fn detect_terminal_mode() -> ThemeMode {
     }
 }
 
+/// Where datui looks for datasets on the home screen.
+///
+/// This is `PATH`-shaped: a short, stable list of *places*, not per-dataset
+/// metadata. datui records nothing about the datasets it finds there.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DataConfig {
+    /// Directories to offer as roots on the home screen, in order.
+    /// Supports `~` and `$VAR`.
+    pub directories: Vec<String>,
+}
+
+impl DataConfig {
+    pub fn merge(&mut self, other: Self) {
+        if !other.directories.is_empty() {
+            self.directories = other.directories;
+        }
+    }
+
+    /// Configured directories with `~`/`$VAR` expanded. Non-existent paths are kept:
+    /// the home screen shows an unavailable root rather than hiding it, because
+    /// "the mount is down" is information.
+    pub fn resolved_directories(&self) -> Vec<PathBuf> {
+        self.directories.iter().map(|d| expand_path(d)).collect()
+    }
+}
+
+const DISPLAY_UNICODE_COMMENT: &str =
+    "Draw box-drawing and arrow characters: \"auto\" (default), \"always\", or \"never\".\n\
+     \"auto\" uses them when the locale is UTF-8. Set \"never\" on a terminal that shows\n\
+     replacement boxes instead — datui falls back to plain ASCII throughout.";
+
+const DATA_COMMENTS: &[(&str, &str)] = &[(
+    "directories",
+    "Directories to offer as roots on the datui home screen (opened with no arguments).\n\
+     Think of this like PATH: a list of places, not a catalogue. datui stores nothing\n\
+     about what it finds. Supports ~ and $VAR.\n\
+     Directories of datasets you opened recently are offered automatically, so this is\n\
+     only needed for places you have not visited yet.\n\
+     Example: directories = [\"/mnt/data\", \"~/datasets\"]",
+)];
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ThemeConfig {
@@ -1225,6 +1280,7 @@ impl Default for AppConfig {
             performance: PerformanceConfig::default(),
             chart: ChartConfig::default(),
             theme: ThemeConfig::default(),
+            data: DataConfig::default(),
             ui: UiConfig::default(),
             query: QueryConfig::default(),
             templates: TemplateConfig::default(),
@@ -1236,6 +1292,7 @@ impl Default for AppConfig {
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
+            unicode: crate::glyphs::UnicodeMode::default(),
             pages_lookahead: 3,
             pages_lookback: 3,
             max_buffered_rows: 100_000,
@@ -1425,6 +1482,10 @@ const MAX_IMPORT_DEPTH: usize = 8;
 /// Unset variables expand to nothing, as in a shell. This is what lets a config
 /// name a path such as `~/.local/state/omarchy/current/theme/datui.toml` without
 /// hardcoding a home directory.
+pub fn expand_config_path(raw: &str) -> PathBuf {
+    expand_path(raw)
+}
+
 fn expand_path(raw: &str) -> PathBuf {
     let mut expanded = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
@@ -1650,6 +1711,7 @@ impl AppConfig {
         self.performance.merge(other.performance);
         self.chart.merge(other.chart);
         self.theme.merge(other.theme);
+        self.data.merge(other.data);
         self.ui.merge(other.ui);
         self.query.merge(other.query);
         self.templates.merge(other.templates);
@@ -1751,6 +1813,9 @@ impl FileLoadingConfig {
 
 impl DisplayConfig {
     pub fn merge(&mut self, other: Self) {
+        if other.unicode != crate::glyphs::UnicodeMode::default() {
+            self.unicode = other.unicode;
+        }
         let default = DisplayConfig::default();
         if other.pages_lookahead != default.pages_lookahead {
             self.pages_lookahead = other.pages_lookahead;

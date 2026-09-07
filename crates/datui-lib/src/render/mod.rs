@@ -3,6 +3,7 @@ pub mod chart_view;
 pub mod context;
 pub mod datatable_main;
 pub mod datatable_view;
+pub mod home_view;
 pub mod input_strip;
 pub mod layout;
 pub mod main_view;

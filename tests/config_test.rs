@@ -363,6 +363,7 @@ fn test_merge_does_not_override_with_defaults() {
     use datui::config::DisplayConfig;
 
     let mut base = DisplayConfig {
+        unicode: Default::default(),
         pages_lookahead: 5,
         pages_lookback: 5,
         max_buffered_rows: 100_000,

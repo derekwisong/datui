@@ -125,8 +125,9 @@ pub const NUMBER_FORMAT_VALUES: &[&str] = &[
 )]
 pub struct Args {
     /// Path(s) to the data file(s) to open.
-    /// Multiple files of the same format are concatenated into one table (not required with --generate-config, --clear-cache, or --remove-templates)
-    #[arg(required_unless_present_any = ["generate_config", "clear_cache", "remove_templates"], num_args = 1.., value_name = "PATH")]
+    /// Multiple files of the same format are concatenated into one table.
+    /// With no PATH, datui opens its home screen so you can pick a dataset.
+    #[arg(num_args = 0.., value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
 
     /// Skip this many lines when reading a file

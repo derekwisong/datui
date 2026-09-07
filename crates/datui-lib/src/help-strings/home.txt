@@ -1,0 +1,24 @@
+The home screen is where datui starts when you launch it without a path, and
+where Ctrl+O returns you from anywhere.
+
+NAVIGATION
+  ↑ / ↓ / k / j     Move the selection
+  Enter             Open the selected dataset, or descend into a directory
+  Backspace         Leave a directory you descended into
+  Esc               Return to the data you already had open
+
+FINDING
+  (type)            Filter by name; matching is fuzzy, so "sal" finds "sales"
+  Backspace         Delete a filter character
+  ~                 Type a path directly, for somewhere datui has not seen yet
+  Ctrl+U            Clear the filter or path input
+
+WHERE THESE COME FROM
+  Recent            Datasets you have opened before, most recent first
+  Configured        Directories from [data] directories in your config
+  Current directory Where you launched datui
+
+  Opening a dataset also teaches datui about the directory holding it, so a
+  dataset on a mount only has to be found by hand once.
+
+  datui stores nothing about your data except this list of recent paths.

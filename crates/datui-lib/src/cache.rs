@@ -106,3 +106,39 @@ impl CacheManager {
         Ok(())
     }
 }
+
+/// Maximum number of recently opened paths kept. Enough to span a few days of work;
+/// small enough that the home screen never has to paginate it.
+pub const MAX_RECENTS: usize = 50;
+
+impl CacheManager {
+    /// Recently opened dataset paths, most recent first.
+    ///
+    /// This is the *only* thing datui remembers about your data between runs. It is
+    /// a convenience, not a record: deleting it loses nothing but ordering.
+    pub fn load_recents(&self) -> Vec<std::path::PathBuf> {
+        self.load_history_file("recents")
+            .unwrap_or_default()
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
+
+    /// Record a path as most recently opened, de-duplicating and capping the list.
+    ///
+    /// Failures are ignored: not being able to write a convenience list must never
+    /// interfere with opening data.
+    pub fn push_recent(&self, path: &std::path::Path) {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let mut recents = self.load_recents();
+        recents.retain(|p| p != &canonical);
+        recents.insert(0, canonical);
+        recents.truncate(MAX_RECENTS);
+
+        let as_strings: Vec<String> = recents
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let _ = self.save_history_file("recents", &as_strings);
+    }
+}

@@ -7,6 +7,7 @@ use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
 use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 #[cfg(feature = "cloud")]
 use polars::prelude::{PlPathRef, ScanArgsParquet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc};
 use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
@@ -26,10 +27,13 @@ pub mod cli;
 #[cfg(feature = "cloud")]
 mod cloud_hive;
 pub mod config;
+pub mod discover;
 pub mod error_display;
 pub mod export_modal;
 pub mod filter_modal;
+pub mod glyphs;
 pub(crate) mod help_strings;
+pub mod home;
 pub mod numfmt;
 pub mod pivot_melt_modal;
 mod query;
@@ -680,6 +684,10 @@ pub struct ExportOptions {
 pub enum InputMode {
     #[default]
     Normal,
+    /// The home screen: pick a dataset to open. Reachable at startup with no
+    /// arguments, and from inside a session, which is what makes datui a place you
+    /// stay rather than a command you re-run.
+    Home,
     SortFilter,
     PivotMelt,
     Editing,
@@ -967,6 +975,12 @@ pub(crate) struct ChartCacheHeatmap {
 
 pub struct App {
     pub data_table_state: Option<DataTableState>,
+    /// Home screen state. Rebuilt from the filesystem whenever home is entered;
+    /// nothing here is persisted beyond the recents list.
+    pub home: home::HomeState,
+    /// Schema previews, memoised for the session only. Persisting these would be a
+    /// catalogue by another name, and it would go stale.
+    home_schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
     path: Option<PathBuf>,
     original_file_format: Option<ExportFormat>, // Track original file format for default export
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
@@ -1403,6 +1417,8 @@ impl App {
         App {
             path: None,
             data_table_state: None,
+            home: home::HomeState::default(),
+            home_schema_cache: HashMap::new(),
             original_file_format: None,
             original_file_delimiter: None,
             events,
@@ -1483,6 +1499,186 @@ impl App {
 
     pub fn enable_debug(&mut self) {
         self.debug.enabled = true;
+    }
+
+    // ---- Home screen -----------------------------------------------------
+
+    /// Schema for a home-screen entry, read from Parquet metadata and memoised for
+    /// the session. `None` means "not knowable without a scan", which the UI reports
+    /// rather than papering over.
+    pub fn home_schema(&mut self, entry: &discover::Entry) -> Option<discover::SchemaPreview> {
+        if let Some(cached) = self.home_schema_cache.get(&entry.path) {
+            return cached.clone();
+        }
+        let schema = discover::schema_preview(entry);
+        self.home_schema_cache
+            .insert(entry.path.clone(), schema.clone());
+        schema
+    }
+
+    /// Rebuild the home listing from the filesystem.
+    fn home_refresh(&mut self) {
+        let dirs = self.app_config.data.resolved_directories();
+        let recents = self.cache.load_recents();
+        let mut home = std::mem::take(&mut self.home);
+        home.rebuild(&dirs, &recents);
+        self.home = home;
+    }
+
+    /// Enter the home screen, rebuilding it. Safe to call while a load is in flight.
+    ///
+    /// Returning home puts the cursor on whatever you currently have open, so the
+    /// round trip out and back lands where you left rather than at the top.
+    pub fn enter_home(&mut self) {
+        self.home.status = None;
+        self.home_refresh();
+        if let Some(open_path) = self.path.clone() {
+            let target = open_path
+                .canonicalize()
+                .unwrap_or_else(|_| open_path.clone());
+            if let Some(idx) = self.home.visible().iter().position(|(_, e)| {
+                e.path.canonicalize().unwrap_or_else(|_| e.path.clone()) == target
+            }) {
+                self.home.selected = idx;
+            }
+        }
+        self.input_mode = InputMode::Home;
+    }
+
+    /// Leave home. Returns to the table if something is loaded; otherwise stays,
+    /// because with no dataset there is nowhere else to be.
+    fn leave_home(&mut self) {
+        if self.data_table_state.is_some() {
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
+    /// Open the highlighted entry: descend into a directory, or load a dataset.
+    fn home_open_selected(&mut self) -> Option<AppEvent> {
+        let entry = self.home.selected_entry()?;
+        if entry.kind == discover::EntryKind::Directory {
+            self.home.browsing = Some(entry.path.clone());
+            self.home.filter.clear();
+            self.home.selected = 0;
+            self.home_refresh();
+            return None;
+        }
+        Some(self.home_open_path(entry.path))
+    }
+
+    /// Load a path from the home screen, recording it as recent.
+    ///
+    /// Recording here rather than at load completion is deliberate: the recents list
+    /// is about where you have *been looking*, and a dataset that failed to open is
+    /// still somewhere you tried to go.
+    fn home_open_path(&mut self, path: PathBuf) -> AppEvent {
+        self.cache.push_recent(&path);
+        let mut options = OpenOptions::default();
+        // A directory of partitions is only meaningful read as one hive dataset.
+        if path.is_dir() {
+            options.hive = true;
+        }
+        self.input_mode = InputMode::Normal;
+        self.set_loading_phase("Scanning input", 10);
+        self.busy = true;
+        AppEvent::Open(vec![path], options)
+    }
+
+    /// Key handling for the home screen.
+    fn home_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+
+        if self.home.path_input_active {
+            match event.code {
+                KeyCode::Esc => {
+                    self.home.path_input_active = false;
+                    self.home.path_input.clear();
+                    self.home.status = None;
+                }
+                KeyCode::Enter => {
+                    let raw = self.home.path_input.trim().to_string();
+                    if raw.is_empty() {
+                        self.home.path_input_active = false;
+                        return None;
+                    }
+                    let path = home::expand_user_path(&raw);
+                    if !path.exists() {
+                        self.home.status = Some(format!("No such path: {}", path.display()));
+                        return None;
+                    }
+                    self.home.path_input.clear();
+                    self.home.path_input_active = false;
+                    if path.is_dir()
+                        && discover::classify_directory(&path) == discover::EntryKind::Directory
+                    {
+                        // An ordinary directory: browse it rather than trying to load it.
+                        self.home.browsing = Some(path);
+                        self.home.filter.clear();
+                        self.home.selected = 0;
+                        self.home_refresh();
+                        return None;
+                    }
+                    return Some(self.home_open_path(path));
+                }
+                KeyCode::Backspace => {
+                    self.home.path_input.pop();
+                    self.home.status = None;
+                }
+                KeyCode::Char('u') if ctrl => self.home.path_input.clear(),
+                KeyCode::Char(c) => self.home.path_input.push(c),
+                _ => {}
+            }
+            return None;
+        }
+
+        match event.code {
+            KeyCode::Esc => self.leave_home(),
+            KeyCode::Enter => return self.home_open_selected(),
+            KeyCode::Up => self.home.move_selection(-1),
+            KeyCode::Down => self.home.move_selection(1),
+            KeyCode::PageUp => self.home.move_selection(-10),
+            KeyCode::PageDown => self.home.move_selection(10),
+            KeyCode::Char('k') if self.home.filter.is_empty() => self.home.move_selection(-1),
+            KeyCode::Char('j') if self.home.filter.is_empty() => self.home.move_selection(1),
+            KeyCode::Char('u') if ctrl => {
+                self.home.filter.clear();
+                self.home.selected = 0;
+            }
+            KeyCode::Backspace => {
+                if self.home.filter.is_empty() {
+                    // Step back out of a directory we descended into.
+                    if let Some(current) = self.home.browsing.clone() {
+                        self.home.browsing =
+                            current.parent().map(|p| p.to_path_buf()).filter(|p| {
+                                // Stop ascending at the point the root listing takes over.
+                                !p.as_os_str().is_empty()
+                                    && discover::classify_directory(p)
+                                        == discover::EntryKind::Directory
+                            });
+                        if self.home.browsing.as_deref() == Some(current.as_path()) {
+                            self.home.browsing = None;
+                        }
+                        self.home.selected = 0;
+                        self.home_refresh();
+                    }
+                } else {
+                    self.home.filter.pop();
+                    self.home.selected = 0;
+                    self.home.clamp_selection();
+                }
+            }
+            KeyCode::Char('~') if self.home.filter.is_empty() => {
+                self.home.path_input_active = true;
+                self.home.status = None;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.home.filter.push(c);
+                self.home.selected = 0;
+                self.home.clamp_selection();
+            }
+            _ => {}
+        }
+        None
     }
 
     /// Get a color from the theme by name
@@ -2591,6 +2787,22 @@ impl App {
             return None;
         }
 
+        // Home owns the whole screen and every key while it is up.
+        if self.input_mode == InputMode::Home && !self.confirmation_modal.active {
+            return self.home_key(event);
+        }
+
+        // Ctrl+O goes home from anywhere, including mid-load. That is what makes
+        // browsing cheap: opening the wrong 300 MB file costs one keystroke to leave,
+        // not a wait for it to finish.
+        if event.code == KeyCode::Char('o')
+            && event.modifiers.contains(KeyModifiers::CONTROL)
+            && !self.confirmation_modal.active
+        {
+            self.enter_home();
+            return None;
+        }
+
         // Handle modals first - they have highest priority
         // Confirmation modal (for overwrite)
         if self.confirmation_modal.active {
@@ -2791,6 +3003,9 @@ impl App {
             let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
             let in_text_input = match self.input_mode {
                 InputMode::Editing => true,
+                // The home screen is always accepting characters, into either the
+                // filter or the path input.
+                InputMode::Home => true,
                 InputMode::Export => matches!(
                     self.export_modal.focus,
                     ExportFocus::PathInput | ExportFocus::CsvDelimiter
@@ -6479,11 +6694,18 @@ impl App {
                 let is_quit_key = matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
                     || (key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL));
-                // When busy (e.g. loading), still process quit, column scroll, help, and confirmation modal keys.
+                // Going home must work mid-load too, or a slow dataset traps you in it
+                // and browsing stops being cheap.
+                let is_home_key = (key.code == KeyCode::Char('o')
+                    && key.modifiers.contains(KeyModifiers::CONTROL))
+                    || self.input_mode == InputMode::Home;
+                // When busy (e.g. loading), still process quit, column scroll, help,
+                // home, and confirmation modal keys.
                 if self.busy
                     && !is_column_scroll
                     && !is_help_key
                     && !is_quit_key
+                    && !is_home_key
                     && !self.confirmation_modal.active
                 {
                     return None;
@@ -8723,6 +8945,7 @@ impl App {
             InputMode::Export => ("Export Help", help_strings::export()),
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
+            InputMode::Home => ("Home Help", help_strings::home()),
         };
         (title.to_string(), content.to_string())
     }
@@ -8746,10 +8969,16 @@ impl Widget for &mut App {
             self.number_format.clone(),
         );
 
-        let main_view_content = MainViewContent::from_app_state(
-            self.analysis_modal.active,
-            self.input_mode == InputMode::Chart,
-        );
+        // Must match the dispatch in `render_main_view`: home takes precedence, so the
+        // control bar shows home's keys rather than the table's.
+        let main_view_content = if self.input_mode == InputMode::Home {
+            MainViewContent::Home
+        } else {
+            MainViewContent::from_app_state(
+                self.analysis_modal.active,
+                self.input_mode == InputMode::Chart,
+            )
+        };
 
         Clear.render(area, buf);
         let background_color = self.color("background");
@@ -8914,11 +9143,9 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     {
         return Err(color_eyre::eyre::eyre!(e.to_string()));
     }
-    // Require at least one path so event handlers can safely use paths[0].
+    // No paths is no longer an error: it means "start at home". Validation below
+    // still applies to any paths that were given.
     if let RunInput::Paths(ref paths, _) = input {
-        if paths.is_empty() {
-            return Err(color_eyre::eyre::eyre!("At least one path is required"));
-        }
         for path in paths {
             let s = path.to_string_lossy();
             let is_remote = s.starts_with("s3://")
@@ -8963,6 +9190,11 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         .handle()
         .clone();
 
+    // Choose the glyph alphabet before the first frame: on a terminal that is not
+    // doing UTF-8, box-drawing characters render as replacement boxes and make the
+    // UI harder to read rather than prettier.
+    glyphs::init(config.display.unicode);
+
     let mut terminal = ratatui::try_init().map_err(|e| {
         color_eyre::eyre::eyre!(
             "datui requires an interactive terminal (TTY). No terminal detected: {}. \
@@ -8977,7 +9209,13 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     }
 
     // Send initial event and show the first frame immediately.
+    let mut starting_at_home = false;
     match input {
+        // No paths: open the home screen instead of loading anything.
+        RunInput::Paths(paths, _) if paths.is_empty() => {
+            app.enter_home();
+            starting_at_home = true;
+        }
         RunInput::Paths(paths, opts) => {
             app.set_loading_phase("Scanning input", 10);
             tx.send(AppEvent::Open(paths, opts))?;
@@ -8987,7 +9225,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             tx.send(AppEvent::OpenLazyFrame(lf, opts))?;
         }
     }
-    app.busy = true;
+    app.busy = !starting_at_home;
     terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
     let _ = std::io::stdout().flush();
 

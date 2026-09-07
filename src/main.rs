@@ -189,15 +189,13 @@ mod tests {
     }
 
     #[test]
-    fn test_path_required_for_normal_operation() {
+    fn test_no_path_opens_home_screen() {
         use clap::Parser;
 
-        let result = Args::try_parse_from(vec!["datui"]);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
-        assert!(err.to_string().contains("PATH"));
+        // No PATH is no longer an error: datui starts at its home screen so you can
+        // pick a dataset without having to name one on the command line first.
+        let args = Args::try_parse_from(vec!["datui"]).expect("no-path invocation is valid");
+        assert!(args.paths.is_empty());
     }
 
     #[test]

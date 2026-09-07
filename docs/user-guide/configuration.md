@@ -267,6 +267,21 @@ Default limit for how many rows are used when building chart data (display and e
 row_limit = 10000  # Max rows for chart data (1 to 10_000_000). Default 10000
 ```
 
+### Data Directories
+
+Places the [home screen](home-screen.md) looks for datasets:
+
+```toml
+[data]
+directories = ["/mnt/data", "~/datasets"]
+```
+
+Think of this like `PATH`: a short list of *places*, not a catalogue. datui records
+nothing about the datasets it finds there.
+
+You usually need this only for directories you have not visited yet — opening a
+dataset teaches datui about the directory holding it automatically.
+
 ### Theme Mode (light and dark terminals)
 
 Some of datui's colors — header fills, alternating row stripes, borders, dim text —

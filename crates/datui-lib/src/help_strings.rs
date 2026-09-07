@@ -44,6 +44,10 @@ pub fn chart() -> &'static str {
     include_help!("chart")
 }
 
+pub fn home() -> &'static str {
+    include_help!("home")
+}
+
 pub fn template() -> &'static str {
     include_help!("template")
 }

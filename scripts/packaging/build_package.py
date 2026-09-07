@@ -17,6 +17,11 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
+import re
+import shutil
+import tarfile
+import tempfile
 import os
 import subprocess
 import sys
@@ -156,6 +161,93 @@ def add_pkgbuild_options(repo_root: Path) -> bool:
     return True
 
 
+def save_release_binary(repo_root: Path) -> Path | None:
+    """Snapshot target/release/datui before cargo-aur strips it in place.
+
+    cargo-aur runs `strip` directly on the release binary (src/main.rs, `strip(&binary)`)
+    before copying it into the tarball. That mutates the shared build output, so every
+    artifact produced after the AUR step -- notably the CLI bundled into the Python
+    wheel -- silently loses its symbol table. Keep a copy so we can put it back.
+    """
+    binary = repo_root / "target" / "release" / "datui"
+
+    if not binary.exists():
+        return None
+
+    backup = binary.with_name("datui.unstripped")
+    shutil.copy2(binary, backup)
+    return backup
+
+
+def restore_unstripped_binary(repo_root: Path, backup: Path) -> bool:
+    """Undo cargo-aur's strip: restore the binary and repack the AUR tarball.
+
+    Puts the unstripped binary back at target/release/datui (for later steps), swaps it
+    into the generated tarball, and refreshes the PKGBUILD sha256sum so it still matches
+    the tarball that gets uploaded to the release. Returns True on success.
+    """
+    if not backup.exists():
+        return False
+
+    aur_dir = repo_root / "target" / "cargo-aur"
+    binary = repo_root / "target" / "release" / "datui"
+
+    # 1. Restore the shared build output for downstream steps (wheel bundling).
+    shutil.copy2(backup, binary)
+
+    tarballs = list(aur_dir.glob("*.tar.gz"))
+    if len(tarballs) != 1:
+        sys.stderr.write(
+            f"warning: expected exactly 1 AUR tarball, found {len(tarballs)}; "
+            "leaving it stripped\n"
+        )
+        backup.unlink(missing_ok=True)
+        return False
+    tarball = tarballs[0]
+
+    # 2. Repack the tarball with the unstripped binary, preserving entry order/modes.
+    with tempfile.TemporaryDirectory() as tmp:
+        staging = Path(tmp) / "staging"
+        with tarfile.open(tarball, "r:gz") as tar:
+            members = tar.getnames()
+            tar.extractall(staging)
+
+        staged_binary = staging / "datui"
+        if not staged_binary.exists():
+            sys.stderr.write("warning: no 'datui' entry in AUR tarball; leaving it stripped\n")
+            backup.unlink(missing_ok=True)
+            return False
+
+        mode = staged_binary.stat().st_mode
+        shutil.copy2(backup, staged_binary)
+        staged_binary.chmod(mode)
+
+        with tarfile.open(tarball, "w:gz") as tar:
+            for name in members:
+                tar.add(staging / name, arcname=name, recursive=False)
+
+    # 3. Refresh the checksum in the PKGBUILD so it matches the repacked tarball.
+    pkgbuild = aur_dir / "PKGBUILD"
+    if pkgbuild.exists():
+        digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+        content = pkgbuild.read_text()
+        updated = re.sub(
+            r'sha256sums=\("[0-9a-f]{64}"\)',
+            f'sha256sums=("{digest}")',
+            content,
+            count=1,
+        )
+        if updated == content:
+            sys.stderr.write("warning: could not update sha256sums in PKGBUILD\n")
+            backup.unlink(missing_ok=True)
+            return False
+        pkgbuild.write_text(updated)
+        print(f"Repacked AUR tarball unstripped; sha256 now {digest[:16]}...")
+
+    backup.unlink(missing_ok=True)
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build OS packages (deb, rpm, aur) for datui.",
@@ -224,8 +316,11 @@ def main() -> int:
     # 4. Run packaging command (package datui for deb/rpm/aur)
     # Run from repo root; datui is the root package. cargo generate-rpm -p datui looks for
     # datui/Cargo.toml (wrong). cargo-aur does not support -p. So only deb uses -p datui.
+    saved_binary = None
     if args.pkg == "aur":
         cmd = ["cargo", "aur"]
+        # cargo-aur strips target/release/datui in place; snapshot it first.
+        saved_binary = save_release_binary(repo_root)
     elif args.pkg == "rpm":
         cmd = ["cargo", subcmd]
         override = rpm_version_override(repo_root)
@@ -246,6 +341,8 @@ def main() -> int:
             sys.stderr.write("warning: failed to fix PKGBUILD for Arch compatibility\n")
         if not add_pkgbuild_options(repo_root):
             sys.stderr.write("warning: failed to add options=(!strip !debug) to PKGBUILD\n")
+        if saved_binary is not None and not restore_unstripped_binary(repo_root, saved_binary):
+            sys.stderr.write("warning: AUR tarball left stripped by cargo-aur\n")
 
     # 6. Verify outputs and print paths
     if out_dir_or_aur == "aur":

@@ -45,6 +45,9 @@ it finds in them.
 **The current directory** — where you launched datui. Useful for local exports and
 fixtures, though the big datasets usually live elsewhere, which is why it comes last.
 
+**Elsewhere** — directories your desktop records you opening data files from. See
+below.
+
 ### Opening something teaches datui where it lives
 
 Open a dataset on a mount and the directory holding it becomes somewhere datui
@@ -53,6 +56,33 @@ and "my data is over there" — you establish it by using it once.
 
 So a brand-new install starts empty, and the way out is <kbd>~</kbd>: type a path
 directly. After that the place is remembered.
+
+### Places your desktop knows about
+
+A fresh install has no recents of its own, so it has nowhere to point you. To help
+with that, datui reads `recently-used.xbel` — the freedesktop list your file manager
+and GTK applications write — and offers the **directories** it mentions.
+
+**Only the directories, never the file names.** That list holds whatever you last
+opened anywhere on the machine, and it is regularly something you would not want on
+a screen you are sharing: a bank export, a password vault dump. Every one of those
+is a perfectly valid CSV. So these places are listed unexpanded, under `ELSEWHERE`,
+and nothing inside one is shown until you press <kbd>Enter</kbd> on it:
+
+```
+  ELSEWHERE                        opened elsewhere · press Enter to look
+    ~/Downloads/                 dir
+```
+
+Turn it off entirely with:
+
+```toml
+[data]
+use_desktop_recents = false
+```
+
+datui reads this file and nothing else about your desktop, never writes to it, and
+never sends anything anywhere.
 
 ## What counts as a dataset
 
@@ -107,7 +137,7 @@ large file by mistake costs one keystroke rather than a wait.
 ## What datui remembers
 
 **One thing: a list of recently opened paths**, in your cache directory. Everything
-else on this screen is read from the filesystem when the screen is drawn, and
+else on this screen — including the desktop places above — is read at draw time and
 forgotten when datui exits.
 
 This is deliberate. datui is not a data catalogue: there is nothing to register,

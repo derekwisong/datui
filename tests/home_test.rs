@@ -171,7 +171,7 @@ fn test_recent_dataset_implies_its_directory_is_a_root() {
     let mount = tmp.path().join("mnt/data");
     let dataset = touch(&mount, "sales.parquet");
 
-    let roots = HomeState::roots(&[], &[dataset]);
+    let roots = HomeState::roots(&[], &[dataset], &[]);
     let derived = roots
         .iter()
         .find(|r| r.path == mount)
@@ -186,7 +186,7 @@ fn test_configured_directories_become_roots() {
     let configured = tmp.path().join("datasets");
     fs::create_dir_all(&configured).unwrap();
 
-    let roots = HomeState::roots(std::slice::from_ref(&configured), &[]);
+    let roots = HomeState::roots(std::slice::from_ref(&configured), &[], &[]);
     assert_eq!(roots[0].path, configured);
     assert_eq!(roots[0].origin, RootOrigin::Configured);
 }
@@ -195,7 +195,7 @@ fn test_configured_directories_become_roots() {
 fn test_unavailable_root_is_reported_not_hidden() {
     // "The mount is down" is information; silently dropping the row is not.
     let missing = std::path::PathBuf::from("/definitely/not/here");
-    let roots = HomeState::roots(std::slice::from_ref(&missing), &[]);
+    let roots = HomeState::roots(std::slice::from_ref(&missing), &[], &[]);
     let root = roots.iter().find(|r| r.path == missing).expect("kept");
     assert!(!root.available);
 }
@@ -206,7 +206,7 @@ fn test_roots_are_deduplicated() {
     let dir = tmp.path().join("data");
     let dataset = touch(&dir, "a.parquet");
 
-    let roots = HomeState::roots(std::slice::from_ref(&dir), &[dataset]);
+    let roots = HomeState::roots(std::slice::from_ref(&dir), &[dataset], &[]);
     let hits = roots.iter().filter(|r| r.path == dir).count();
     assert_eq!(hits, 1, "a directory named twice should appear once");
 }
@@ -411,4 +411,180 @@ fn test_filtering_does_not_show_the_same_dataset_twice() {
         .filter(|(_, e)| e.path.ends_with("sales.parquet"))
         .count();
     assert_eq!(hits, 1, "a dataset should appear once in filtered results");
+}
+
+// ---------------------------------------------------------------------------
+// Desktop recents — roots, never rows
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_desktop_recents_yield_directories_not_files() {
+    // The whole design of this feature: the desktop's recently-used list routinely
+    // holds things nobody wants on a screen they are sharing. Offering the directory
+    // as somewhere to look is useful; listing the file is not datui's business.
+    let tmp = TempDir::new().unwrap();
+    let dataset = touch(tmp.path(), "quarterly.csv");
+
+    let xbel = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+        <xbel version="1.0">
+          <bookmark href="file://{}" added="2026-01-01T00:00:00Z"/>
+        </xbel>"#,
+        dataset.display()
+    );
+
+    let dirs = datui::home::dirs_from_xbel(&xbel);
+    assert_eq!(dirs, vec![tmp.path().to_path_buf()]);
+    assert!(
+        !dirs.iter().any(|d| d.ends_with("quarterly.csv")),
+        "a file must never come back from this"
+    );
+}
+
+#[test]
+fn test_desktop_recents_ignore_non_data_and_missing_files() {
+    let tmp = TempDir::new().unwrap();
+    let data = touch(tmp.path(), "real.parquet");
+    let doc = touch(tmp.path(), "notes.odt");
+
+    let xbel = format!(
+        r#"<xbel>
+          <bookmark href="file://{}"/>
+          <bookmark href="file://{}"/>
+          <bookmark href="file:///nowhere/at/all/ghost.csv"/>
+        </xbel>"#,
+        data.display(),
+        doc.display()
+    );
+
+    // The data file's directory is offered once; a document datui cannot open and a
+    // path that no longer exists contribute nothing.
+    assert_eq!(
+        datui::home::dirs_from_xbel(&xbel),
+        vec![tmp.path().to_path_buf()]
+    );
+}
+
+#[test]
+fn test_desktop_recents_decode_percent_escapes() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("my data");
+    let dataset = touch(&dir, "a.csv");
+    let encoded = dataset.display().to_string().replace(' ', "%20");
+
+    let xbel = format!(r#"<xbel><bookmark href="file://{encoded}"/></xbel>"#);
+    assert_eq!(datui::home::dirs_from_xbel(&xbel), vec![dir]);
+}
+
+#[test]
+fn test_desktop_roots_rank_below_everything_else() {
+    // They are the weakest signal: useful only before datui has recents of its own.
+    let tmp = TempDir::new().unwrap();
+    let configured = tmp.path().join("configured");
+    let downloads = tmp.path().join("downloads");
+    fs::create_dir_all(&configured).unwrap();
+    let recent = touch(&tmp.path().join("mount"), "sales.parquet");
+    fs::create_dir_all(&downloads).unwrap();
+
+    let roots = HomeState::roots(
+        std::slice::from_ref(&configured),
+        std::slice::from_ref(&recent),
+        std::slice::from_ref(&downloads),
+    );
+    let origins: Vec<RootOrigin> = roots.iter().map(|r| r.origin).collect();
+    let desktop_at = origins
+        .iter()
+        .position(|o| *o == RootOrigin::Desktop)
+        .expect("desktop root present");
+    assert_eq!(
+        desktop_at,
+        origins.len() - 1,
+        "desktop-derived roots must come last"
+    );
+}
+
+#[test]
+fn test_desktop_recents_can_be_turned_off() {
+    use datui::config::DataConfig;
+    let default = DataConfig::default();
+    assert!(default.use_desktop_recents, "on by default");
+
+    let off: DataConfig = toml::from_str("use_desktop_recents = false").expect("parses");
+    assert!(!off.use_desktop_recents);
+}
+
+#[test]
+fn test_desktop_places_are_listed_but_never_expanded() {
+    // The guarantee this feature rests on: a directory the desktop mentioned appears
+    // as somewhere to step into, and nothing inside it is listed until you ask. The
+    // desktop's recently-used list routinely holds files nobody wants on a shared
+    // screen — a bank export, a vault dump — and they are all valid data files.
+    let tmp = TempDir::new().unwrap();
+    let downloads = tmp.path().join("downloads");
+    touch(&downloads, "vault_export.csv");
+
+    let mut home = HomeState::default();
+    home.rebuild_with(&[], &[], std::slice::from_ref(&downloads));
+
+    let names: Vec<&str> = home
+        .visible()
+        .iter()
+        .map(|(_, e)| e.name.as_str())
+        .collect();
+    assert!(
+        !names.iter().any(|n| n.contains("vault_export")),
+        "a file inside a desktop-derived place must not be listed: {names:?}"
+    );
+    assert!(
+        home.visible()
+            .iter()
+            .any(|(_, e)| e.path == downloads && e.kind == EntryKind::Directory),
+        "the place itself should be offered as a directory: {names:?}"
+    );
+}
+
+#[test]
+fn test_desktop_place_contents_appear_only_after_descending() {
+    let tmp = TempDir::new().unwrap();
+    let downloads = tmp.path().join("downloads");
+    touch(&downloads, "vault_export.csv");
+
+    let mut home = HomeState {
+        browsing: Some(downloads.clone()),
+        ..Default::default()
+    };
+    home.rebuild_with(&[], &[], std::slice::from_ref(&downloads));
+
+    assert!(
+        home.visible()
+            .iter()
+            .any(|(_, e)| e.name == "vault_export.csv"),
+        "descending is the explicit ask, and then contents show normally"
+    );
+}
+
+#[test]
+fn test_desktop_place_already_covered_is_not_repeated() {
+    // If the place is already a configured root it is expanded there; it must not
+    // also show up as an unexpanded "elsewhere" row.
+    let tmp = TempDir::new().unwrap();
+    let shared = tmp.path().join("data");
+    touch(&shared, "a.parquet");
+
+    let mut home = HomeState::default();
+    home.rebuild_with(
+        std::slice::from_ref(&shared),
+        &[],
+        std::slice::from_ref(&shared),
+    );
+
+    let places = home
+        .sections
+        .iter()
+        .filter(|s| s.title == "Elsewhere")
+        .count();
+    assert_eq!(
+        places, 0,
+        "a configured root should not repeat as elsewhere"
+    );
 }

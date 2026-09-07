@@ -282,6 +282,15 @@ nothing about the datasets it finds there.
 You usually need this only for directories you have not visited yet — opening a
 dataset teaches datui about the directory holding it automatically.
 
+datui also offers directories your desktop records you opening data files from, as
+unexpanded places you can step into. Only the directories are used, never the file
+names. Turn it off with:
+
+```toml
+[data]
+use_desktop_recents = false
+```
+
 ### Theme Mode (light and dark terminals)
 
 Some of datui's colors — header fills, alternating row stripes, borders, dim text —

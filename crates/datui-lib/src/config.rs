@@ -966,18 +966,35 @@ fn detect_terminal_mode() -> ThemeMode {
 ///
 /// This is `PATH`-shaped: a short, stable list of *places*, not per-dataset
 /// metadata. datui records nothing about the datasets it finds there.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DataConfig {
     /// Directories to offer as roots on the home screen, in order.
     /// Supports `~` and `$VAR`.
     pub directories: Vec<String>,
+    /// Whether to also offer directories the desktop records you opening data from.
+    /// Only the directories are used, never the file names.
+    pub use_desktop_recents: bool,
+}
+
+impl Default for DataConfig {
+    fn default() -> Self {
+        Self {
+            directories: Vec::new(),
+            // On by default: it only ever contributes *places*, and it is the one
+            // thing that gives a fresh install somewhere to point you.
+            use_desktop_recents: true,
+        }
+    }
 }
 
 impl DataConfig {
     pub fn merge(&mut self, other: Self) {
         if !other.directories.is_empty() {
             self.directories = other.directories;
+        }
+        if other.use_desktop_recents != DataConfig::default().use_desktop_recents {
+            self.use_desktop_recents = other.use_desktop_recents;
         }
     }
 
@@ -994,15 +1011,25 @@ const DISPLAY_UNICODE_COMMENT: &str =
      \"auto\" uses them when the locale is UTF-8. Set \"never\" on a terminal that shows\n\
      replacement boxes instead — datui falls back to plain ASCII throughout.";
 
-const DATA_COMMENTS: &[(&str, &str)] = &[(
-    "directories",
-    "Directories to offer as roots on the datui home screen (opened with no arguments).\n\
+const DATA_COMMENTS: &[(&str, &str)] = &[
+    (
+        "directories",
+        "Directories to offer as roots on the datui home screen (opened with no arguments).\n\
      Think of this like PATH: a list of places, not a catalogue. datui stores nothing\n\
      about what it finds. Supports ~ and $VAR.\n\
      Directories of datasets you opened recently are offered automatically, so this is\n\
      only needed for places you have not visited yet.\n\
      Example: directories = [\"/mnt/data\", \"~/datasets\"]",
-)];
+    ),
+    (
+        "use_desktop_recents",
+        "Also offer directories your desktop records you opening data files from\n\
+         (freedesktop's recently-used list, written by file managers and GTK apps).\n\
+         Only the DIRECTORIES are used, never the file names: that list often holds\n\
+         things you would not want on a screen you are sharing.\n\
+         Set false to ignore it entirely.",
+    ),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]

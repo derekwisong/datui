@@ -356,10 +356,16 @@ fn entry_line<'a>(
         format!(" {kind}")
     };
 
-    // Truncate the name, never the metadata: the columns must stay aligned.
+    // Truncate the name, never the metadata: the columns must stay aligned. A row
+    // whose name is a path keeps its tail, since the leaf is what identifies it;
+    // an ordinary filename keeps its head, where the distinguishing part usually is.
     let budget = name_width.saturating_sub(2 + kind_cell.chars().count() + 1);
     if name.chars().count() > budget && budget > 1 {
-        name = name.chars().take(budget - 1).collect::<String>() + g.ellipsis;
+        name = if name.starts_with('/') || name.starts_with('~') {
+            truncate_start(&name, budget)
+        } else {
+            name.chars().take(budget - 1).collect::<String>() + g.ellipsis
+        };
     }
     let pad = name_width.saturating_sub(2 + name.chars().count() + kind_cell.chars().count());
 

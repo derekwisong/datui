@@ -79,6 +79,11 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// A plain directory row — somewhere to step into, with nothing read from it.
+    pub fn directory(path: &Path) -> Self {
+        Self::new(path.to_path_buf(), EntryKind::Directory)
+    }
+
     fn new(path: PathBuf, kind: EntryKind) -> Self {
         let name = path
             .file_name()

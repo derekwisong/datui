@@ -1520,8 +1520,13 @@ impl App {
     fn home_refresh(&mut self) {
         let dirs = self.app_config.data.resolved_directories();
         let recents = self.cache.load_recents();
+        let desktop = if self.app_config.data.use_desktop_recents {
+            home::desktop_recent_dirs()
+        } else {
+            Vec::new()
+        };
         let mut home = std::mem::take(&mut self.home);
-        home.rebuild(&dirs, &recents);
+        home.rebuild_with(&dirs, &recents, &desktop);
         self.home = home;
     }
 

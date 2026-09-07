@@ -26,6 +26,8 @@ pub enum RootOrigin {
     Cwd,
     Configured,
     Recent,
+    /// Derived from the desktop's own recently-used list.
+    Desktop,
 }
 
 impl RootOrigin {
@@ -34,8 +36,83 @@ impl RootOrigin {
             RootOrigin::Cwd => "current directory",
             RootOrigin::Configured => "configured",
             RootOrigin::Recent => "recent",
+            RootOrigin::Desktop => "opened elsewhere",
         }
     }
+}
+
+/// Directories holding data files that the desktop has recorded you opening.
+///
+/// Reads `recently-used.xbel`, the freedesktop standard that file managers and GTK
+/// applications write. It is here to solve one problem: a fresh install has no
+/// recents of its own, so it has nowhere to point you.
+///
+/// **Only the directories are used, never the files.** That distinction is the whole
+/// design. The list contains whatever you last opened anywhere on the machine, which
+/// is frequently something you would not want appearing on a screen you demo — a
+/// bank export, a password vault dump. Surfacing `~/Downloads` as a place to look is
+/// useful; listing what is in it, unbidden, is not datui's business.
+pub fn desktop_recent_dirs() -> Vec<PathBuf> {
+    let Some(data_dir) = dirs::data_dir() else {
+        return Vec::new();
+    };
+    let path = data_dir.join("recently-used.xbel");
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    dirs_from_xbel(&contents)
+}
+
+/// Extract directories of data files from XBEL content.
+///
+/// Split out from the filesystem read so it can be tested directly. Scans for
+/// `href="file://…"` rather than parsing XML: the attribute is all that is needed,
+/// and a hand-rolled scan avoids taking an XML dependency for one file.
+pub fn dirs_from_xbel(contents: &str) -> Vec<PathBuf> {
+    const PREFIX: &str = "href=\"file://";
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    for chunk in contents.split(PREFIX).skip(1) {
+        let Some(end) = chunk.find('"') else { continue };
+        let decoded = percent_decode(&chunk[..end]);
+        let file = PathBuf::from(decoded);
+        // Only files datui could actually open, and only ones still present.
+        if !crate::discover::is_data_file(&file) || !file.is_file() {
+            continue;
+        }
+        let Some(parent) = file.parent() else {
+            continue;
+        };
+        if parent.as_os_str().is_empty() {
+            continue;
+        }
+        let parent = parent.to_path_buf();
+        if !dirs.contains(&parent) {
+            dirs.push(parent);
+        }
+    }
+
+    dirs
+}
+
+/// Decode `%20`-style escapes in a file URI.
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A place datui will look, and whether it can currently be read.
@@ -118,7 +195,11 @@ impl HomeState {
     /// Order matters and is deliberate: configured places first (you said they
     /// matter), then directories implied by what you have actually opened, then the
     /// working directory. Duplicates collapse to their highest-priority origin.
-    pub fn roots(config_dirs: &[PathBuf], recents: &[PathBuf]) -> Vec<Root> {
+    pub fn roots(
+        config_dirs: &[PathBuf],
+        recents: &[PathBuf],
+        desktop_dirs: &[PathBuf],
+    ) -> Vec<Root> {
         let mut roots: Vec<Root> = Vec::new();
         let mut seen: Vec<PathBuf> = Vec::new();
 
@@ -175,6 +256,12 @@ impl HomeState {
             push(cwd, RootOrigin::Cwd, &mut roots, &mut seen);
         }
 
+        // Last, and weakest: places the desktop says you have opened data from. Only
+        // useful before datui has recents of its own, so it should never outrank one.
+        for dir in desktop_dirs {
+            push(dir.clone(), RootOrigin::Desktop, &mut roots, &mut seen);
+        }
+
         roots
     }
 
@@ -183,6 +270,17 @@ impl HomeState {
     /// Recents lead, because for data on a mount the thing you want is almost always
     /// something you have opened before. Roots follow, each scanned one level deep.
     pub fn rebuild(&mut self, config_dirs: &[PathBuf], recents: &[PathBuf]) {
+        self.rebuild_with(config_dirs, recents, &[])
+    }
+
+    /// As [`HomeState::rebuild`], plus directories derived from the desktop's own
+    /// recently-used list.
+    pub fn rebuild_with(
+        &mut self,
+        config_dirs: &[PathBuf],
+        recents: &[PathBuf],
+        desktop_dirs: &[PathBuf],
+    ) {
         self.sections.clear();
 
         // Descended into a directory: show only that.
@@ -217,9 +315,28 @@ impl HomeState {
             });
         }
 
-        for root in Self::roots(config_dirs, recents) {
-            // A recent-derived root whose contents are already fully represented by
-            // the Recent section adds noise; keep configured and cwd roots always.
+        // Desktop-derived places are collected rather than expanded — see below.
+        let mut elsewhere: Vec<Entry> = Vec::new();
+
+        for root in Self::roots(config_dirs, recents, desktop_dirs) {
+            // A place the desktop mentioned is listed as a directory to step into,
+            // never expanded. Its contents are whatever you last opened anywhere on
+            // the machine, which is regularly something you would not want appearing
+            // on a screen you are sharing. Naming the place is useful; showing what
+            // is in it, unasked, is not datui's business. Pressing Enter is the ask.
+            if root.origin == RootOrigin::Desktop {
+                if root.available {
+                    let mut entry = Entry::directory(&root.path);
+                    // Show the place, not just its leaf: "~/Downloads" says more
+                    // than "Downloads" when the section has no path of its own.
+                    entry.name = display_path(&root.path);
+                    elsewhere.push(entry);
+                }
+                continue;
+            }
+
+            // A derived root with nothing in it adds noise; keep configured and cwd
+            // roots always, since the user named them or is standing in them.
             let mut rows = if root.available {
                 discover::scan_dir(&root.path)
             } else {
@@ -236,6 +353,15 @@ impl HomeState {
                 subtitle: Some(root.origin.note().to_string()),
                 rows,
                 unavailable: !root.available,
+            });
+        }
+
+        if !elsewhere.is_empty() {
+            self.sections.push(Section {
+                title: "Elsewhere".to_string(),
+                subtitle: Some("opened elsewhere · press Enter to look".to_string()),
+                rows: elsewhere,
+                unavailable: false,
             });
         }
 

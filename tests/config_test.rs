@@ -1187,3 +1187,162 @@ fn test_generated_config_documents_import() {
     let parsed: AppConfig = toml::from_str(&template).expect("Template should be valid TOML");
     assert!(parsed.import.is_empty());
 }
+
+// ============================================================================
+// Theme mode (light / dark chrome defaults)
+//
+// datui's chrome slots (header fills, row striping, borders, dim text) resolve
+// to fixed shades because no ANSI colour means "slightly off from the
+// background". A set tuned for a dark terminal is unreadable on a light one.
+// ============================================================================
+
+use datui::config::{ColorConfig, ThemeMode};
+
+#[test]
+fn test_default_mode_is_dark_chrome() {
+    // Existing configs must not change appearance: the stock palette stays dark.
+    let config = AppConfig::default();
+    assert_eq!(config.theme.colors, ColorConfig::dark());
+    assert_eq!(config.theme.colors.table_header_bg, "indexed(235)");
+}
+
+#[test]
+fn test_light_mode_selects_light_chrome() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(&temp_dir, "config.toml", "[theme]\nmode = \"light\"\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.mode, Some(ThemeMode::Light));
+    assert_eq!(config.theme.colors, ColorConfig::light());
+}
+
+#[test]
+fn test_light_chrome_inverts_rather_than_lightens() {
+    // The bug this fixes: fixed dark shades on a light terminal. The light set's
+    // fills must be near-white, not near-black.
+    let light = ColorConfig::light();
+    for (name, value) in [
+        ("table_header_bg", &light.table_header_bg),
+        ("alternate_row_color", &light.alternate_row_color),
+        ("controls_bg", &light.controls_bg),
+    ] {
+        let n: u8 = value
+            .trim_start_matches("indexed(")
+            .trim_end_matches(')')
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} should be an indexed colour, got {value}"));
+        assert!(
+            n >= 250,
+            "{name} must be a near-white fill on a light terminal, got indexed({n})"
+        );
+    }
+    assert_eq!(ColorConfig::dark().table_header_bg, "indexed(235)");
+}
+
+#[test]
+fn test_explicit_colors_override_light_mode() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "[theme]\nmode = \"light\"\n\n[theme.colors]\ntable_header_bg = \"#123456\"\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.table_header_bg, "#123456");
+    // Untouched slots still come from the light set.
+    assert_eq!(
+        config.theme.colors.alternate_row_color,
+        ColorConfig::light().alternate_row_color
+    );
+}
+
+#[test]
+fn test_mode_can_come_from_an_import() {
+    // A theme file can declare the polarity it was built for.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(&temp_dir, "theme.toml", "[theme]\nmode = \"light\"\n");
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.mode, Some(ThemeMode::Light));
+    assert_eq!(config.theme.colors, ColorConfig::light());
+}
+
+#[test]
+fn test_own_mode_beats_imported_mode() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(&temp_dir, "theme.toml", "[theme]\nmode = \"light\"\n");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"theme.toml\"]\n\n[theme]\nmode = \"dark\"\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.mode, Some(ThemeMode::Dark));
+    assert_eq!(config.theme.colors, ColorConfig::dark());
+}
+
+#[test]
+fn test_light_palette_is_valid_and_complete() {
+    // Every light value must parse, and none may be left at its dark counterpart
+    // by accident where the two sets are meant to differ.
+    let mut config = AppConfig::default();
+    config.theme.colors = ColorConfig::light();
+    config.validate().expect("light palette must validate");
+
+    let dark = ColorConfig::dark();
+    let light = ColorConfig::light();
+    assert_ne!(light.table_header_bg, dark.table_header_bg);
+    assert_ne!(light.controls_bg, dark.controls_bg);
+    assert_ne!(light.alternate_row_color, dark.alternate_row_color);
+    assert_ne!(light.keybind_labels, dark.keybind_labels);
+}
+
+// ============================================================================
+// Shipped Omarchy template
+// ============================================================================
+
+#[test]
+fn test_omarchy_template_covers_every_color_slot() {
+    // The template maps datui's colour slots onto an Omarchy palette. If a slot is
+    // added to ColorConfig and not to the template, the generated theme silently
+    // leaves that slot at datui's default — which is exactly the kind of drift a
+    // human reviewer will not catch. Fail here instead.
+    let template = fs::read_to_string("contrib/omarchy/datui.toml.tpl")
+        .expect("contrib/omarchy/datui.toml.tpl should exist");
+
+    let serialized = toml::to_string(&ColorConfig::default()).expect("serialize");
+    let expected: std::collections::BTreeSet<String> = serialized
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, _)| k.trim().to_string())
+        .collect();
+
+    let found: std::collections::BTreeSet<String> = template
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, _)| k.trim().to_string())
+        .collect();
+
+    let missing: Vec<_> = expected.difference(&found).collect();
+    assert!(
+        missing.is_empty(),
+        "template is missing colour slots: {missing:?}"
+    );
+
+    let unknown: Vec<_> = found
+        .difference(&expected)
+        .filter(|k| *k != "mode")
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "template sets slots that do not exist in ColorConfig: {unknown:?}"
+    );
+}

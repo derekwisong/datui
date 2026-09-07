@@ -62,6 +62,9 @@ Rules:
 
 ### Following your system theme
 
+> For a full walkthrough — including the Omarchy template and per-theme overrides —
+> see [Theming from Your System](system-theming.md).
+
 datui does not detect any particular desktop or theme manager. Point `import` at
 whatever file your system generates, exactly as Alacritty's `general.import` and
 btop's `color_theme` do. On [Omarchy](https://omarchy.org/), a template rendered
@@ -263,6 +266,30 @@ Default limit for how many rows are used when building chart data (display and e
 [chart]
 row_limit = 10000  # Max rows for chart data (1 to 10_000_000). Default 10000
 ```
+
+### Theme Mode (light and dark terminals)
+
+Some of datui's colors — header fills, alternating row stripes, borders, dim text —
+need to sit *near* the terminal background without matching it. No ANSI color means
+"slightly off from the background", so those slots resolve to fixed shades, and a
+set tuned for a dark terminal is unreadable on a light one.
+
+```toml
+[theme]
+mode = "auto"   # "auto" (default), "dark", or "light"
+```
+
+- **auto** — reads the `COLORFGBG` environment variable, falling back to `dark`.
+- **dark** / **light** — pick a set explicitly.
+
+Alacritty, Kitty and Ghostty do not set `COLORFGBG`. **If you use a light terminal
+color scheme in one of those, set `mode = "light"`** — otherwise the header bar and
+row striping will render as near-black blocks on your light background.
+
+`mode` only chooses the starting point; any color you set under `[theme.colors]`
+overrides it. An imported theme can also declare `mode`, which is how a generated
+light theme gets light chrome automatically — see
+[Theming from Your System](system-theming.md).
 
 ### Color Themes
 

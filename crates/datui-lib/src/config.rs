@@ -901,20 +901,80 @@ impl ChartConfig {
     }
 }
 
+/// Which set of built-in colour defaults to start from.
+///
+/// datui's stock chrome (header fills, row striping, borders, secondary text) has
+/// to sit *near* the terminal background without matching it. There is no ANSI
+/// colour that means "slightly off from the background", so those slots resolve to
+/// fixed values — and a set tuned for a dark terminal is unreadable on a light one.
+/// This selects which set to use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    /// Detect from the environment, falling back to `Dark`.
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
+impl ThemeMode {
+    /// Resolve `Auto` against the environment. `Dark` and `Light` pass through.
+    ///
+    /// Detection reads `COLORFGBG`, which several terminals set to `fg;bg` using
+    /// ANSI colour numbers — a background of 7 or 15 (white) means a light terminal.
+    /// Terminals that do not set it (Alacritty, Kitty and Ghostty among them) fall
+    /// back to `Dark`, which is why `mode` can also be set explicitly.
+    pub fn resolve(self) -> Self {
+        match self {
+            Self::Auto => detect_terminal_mode(),
+            other => other,
+        }
+    }
+}
+
+/// Best-effort light/dark detection from `COLORFGBG`. Defaults to `Dark`.
+fn detect_terminal_mode() -> ThemeMode {
+    let Ok(raw) = std::env::var("COLORFGBG") else {
+        return ThemeMode::Dark;
+    };
+    // Format is "fg;bg" or "fg;default;bg" — the background is the last field.
+    match raw
+        .rsplit(';')
+        .next()
+        .and_then(|b| b.trim().parse::<u8>().ok())
+    {
+        Some(7) | Some(15) => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ThemeConfig {
+    /// Which built-in palette to start from. `None` means the key was absent, which
+    /// is treated as `Auto`; keeping it optional is what lets the layer chain tell
+    /// "unset" from "explicitly dark".
+    pub mode: Option<ThemeMode>,
     pub colors: ColorConfig,
 }
 
 // Field comments for ThemeConfig
-const THEME_COMMENTS: &[(&str, &str)] = &[];
+const THEME_COMMENTS: &[(&str, &str)] = &[(
+    "mode",
+    "Which built-in colour set to start from: \"auto\" (default), \"dark\" or \"light\".\n\
+     datui's stock chrome (header fills, row striping, borders, dim text) uses fixed\n\
+     shades, and a set tuned for a dark terminal is unreadable on a light one.\n\
+     \"auto\" reads COLORFGBG and falls back to dark; Alacritty, Kitty and Ghostty do\n\
+     not set it, so on a light background in those terminals set this to \"light\".\n\
+     Individual colours below always override whichever set is chosen.",
+)];
 
 fn default_row_numbers_color() -> String {
     "dark_gray".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 /// Color configuration for the application theme.
 ///
@@ -1202,7 +1262,24 @@ impl Default for PerformanceConfig {
 }
 
 impl Default for ColorConfig {
+    /// Dark, preserving datui's historical defaults. Light is opt-in via
+    /// `theme.mode`, so no existing config changes appearance.
     fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl ColorConfig {
+    /// The built-in set for whichever mode is in effect.
+    pub fn for_mode(mode: ThemeMode) -> Self {
+        match mode.resolve() {
+            ThemeMode::Light => Self::light(),
+            _ => Self::dark(),
+        }
+    }
+
+    /// Defaults tuned for a dark terminal background.
+    pub fn dark() -> Self {
         Self {
             keybind_hints: "cyan".to_string(),
             keybind_labels: "indexed(252)".to_string(),
@@ -1247,6 +1324,63 @@ impl Default for ColorConfig {
             chart_series_color_5: "blue".to_string(),
             chart_series_color_6: "red".to_string(),
             chart_series_color_7: "bright_cyan".to_string(),
+        }
+    }
+
+    /// Defaults tuned for a light terminal background.
+    ///
+    /// The chrome shades are inverted rather than merely lightened: on a light
+    /// terminal the "slightly off from background" shades must be *darker* than the
+    /// background, where on a dark terminal they are lighter. Hues that are legible
+    /// on black and not on white (plain `cyan`, plain `yellow`) are replaced with
+    /// darker equivalents from the 256-colour cube.
+    pub fn light() -> Self {
+        Self {
+            keybind_hints: "blue".to_string(),
+            keybind_labels: "indexed(238)".to_string(),
+            throbber: "blue".to_string(),
+            primary_chart_series_color: "blue".to_string(),
+            secondary_chart_series_color: "indexed(244)".to_string(),
+            success: "green".to_string(),
+            error: "red".to_string(),
+            // Plain yellow is unreadable on white; 94 is a dark amber (5.7:1).
+            warning: "indexed(94)".to_string(),
+            dimmed: "indexed(243)".to_string(),
+            background: "default".to_string(),
+            surface: "default".to_string(),
+            controls_bg: "indexed(254)".to_string(),
+            text_primary: "default".to_string(),
+            text_secondary: "indexed(240)".to_string(),
+            text_inverse: "white".to_string(),
+            table_header: "black".to_string(),
+            table_header_bg: "indexed(253)".to_string(),
+            row_numbers: "indexed(243)".to_string(),
+            column_separator: "indexed(250)".to_string(),
+            table_selected: "reversed".to_string(),
+            sidebar_border: "indexed(250)".to_string(),
+            modal_border_active: "blue".to_string(),
+            modal_border_error: "red".to_string(),
+            distribution_normal: "green".to_string(),
+            distribution_skewed: "indexed(94)".to_string(),
+            distribution_other: "black".to_string(),
+            outlier_marker: "red".to_string(),
+            cursor_focused: "default".to_string(),
+            cursor_dimmed: "default".to_string(),
+            alternate_row_color: "indexed(254)".to_string(),
+            str_col: "green".to_string(),
+            // Plain cyan washes out on white; 23 is a dark teal (7.5:1).
+            int_col: "indexed(23)".to_string(),
+            float_col: "blue".to_string(),
+            bool_col: "indexed(94)".to_string(),
+            temporal_col: "magenta".to_string(),
+            binary_col: "indexed(243)".to_string(),
+            chart_series_color_1: "blue".to_string(),
+            chart_series_color_2: "green".to_string(),
+            chart_series_color_3: "magenta".to_string(),
+            chart_series_color_4: "indexed(94)".to_string(),
+            chart_series_color_5: "indexed(23)".to_string(),
+            chart_series_color_6: "red".to_string(),
+            chart_series_color_7: "indexed(54)".to_string(),
         }
     }
 }
@@ -1370,7 +1504,8 @@ impl AppConfig {
     /// that exists but cannot be read or parsed is an error: the user named that file
     /// explicitly, so failing quietly would just look like the theme not applying.
     pub fn load_from_file(config_path: &Path) -> Result<Self> {
-        let mut config = AppConfig::default();
+        let mut layers: Vec<AppConfig> = Vec::new();
+        let mut imports: Vec<String> = Vec::new();
 
         if config_path.exists() {
             // A user config that fails to parse falls back to defaults rather than
@@ -1380,16 +1515,37 @@ impl AppConfig {
                     .canonicalize()
                     .unwrap_or_else(|_| config_path.to_path_buf());
                 let mut stack = vec![root];
-                let imports = layer.import.clone();
+                imports = layer.import.clone();
 
-                config.merge_imports(&imports, config_path, &mut stack)?;
-                config.merge(layer);
-                // `merge` deliberately ignores `import` (it is a load-time directive,
-                // already resolved above); restore the declared list so the loaded
-                // config still reports what it was built from.
-                config.import = imports;
+                Self::collect_imports(&imports, config_path, &mut stack, &mut layers)?;
+                layers.push(layer);
             }
         }
+
+        // Which built-in palette the layers merge *onto* depends on the mode, and the
+        // mode itself is declared in those layers — so resolve it before building the
+        // base. Last explicit declaration wins; `mode` is Option, so "absent" and
+        // "explicitly auto" stay distinguishable.
+        let declared = layers
+            .iter()
+            .rev()
+            .find_map(|l| l.theme.mode)
+            .unwrap_or_default();
+        let resolved = declared.resolve();
+
+        let mut config = AppConfig::default();
+        config.theme.colors = ColorConfig::for_mode(resolved);
+
+        for layer in layers {
+            config.merge(layer);
+        }
+
+        // `merge` deliberately ignores `import` (a load-time directive, already
+        // resolved above); restore the declared list so the loaded config still
+        // reports what it was built from. Record the resolved mode for the same
+        // reason — after the merge, so a layer's raw "auto" cannot overwrite it.
+        config.import = imports;
+        config.theme.mode = Some(resolved);
 
         // Validate configuration (e.g. color names); report config file path on error
         config
@@ -1399,16 +1555,19 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Merge every file named by `imports` into `self`, depth-first, in order.
+    /// Append every file named by `imports` to `out`, depth-first, in order.
+    ///
+    /// Collecting rather than merging in place lets the caller inspect the whole
+    /// chain (to resolve `theme.mode`) before choosing the base to merge onto.
     ///
     /// `origin` is the file that declared them; relative paths resolve against its
     /// directory. `stack` holds the canonical paths currently being loaded, so a
     /// cycle is reported instead of followed.
-    fn merge_imports(
-        &mut self,
+    fn collect_imports(
         imports: &[String],
         origin: &Path,
         stack: &mut Vec<PathBuf>,
+        out: &mut Vec<AppConfig>,
     ) -> Result<()> {
         if imports.is_empty() {
             return Ok(());
@@ -1456,10 +1615,10 @@ impl AppConfig {
             let nested = layer.import.clone();
 
             stack.push(canonical);
-            self.merge_imports(&nested, &path, stack)?;
+            Self::collect_imports(&nested, &path, stack, out)?;
             stack.pop();
 
-            self.merge(layer);
+            out.push(layer);
         }
 
         Ok(())
@@ -1646,6 +1805,10 @@ impl PerformanceConfig {
 
 impl ThemeConfig {
     pub fn merge(&mut self, other: Self) {
+        // `mode` is Option, so presence is unambiguous: a later layer that names it wins.
+        if other.mode.is_some() {
+            self.mode = other.mode;
+        }
         self.colors.merge(other.colors);
     }
 }

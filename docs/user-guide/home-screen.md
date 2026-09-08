@@ -178,23 +178,22 @@ unicode = "auto"    # "auto" (default), "always", or "never"
 datui's interface uses no Nerd Font characters anywhere, so no patched font is
 needed. (The Omarchy menu entry below does use one, because Omarchy provides it.)
 
-## Omarchy
+## Desktop launchers
 
-Merge `contrib/omarchy/omarchy-menu.jsonc` into
-`~/.config/omarchy/extensions/omarchy-menu.jsonc` for a **Data** entry in the
-launcher. It has two rows, and the distinction matters:
+datui installs a freedesktop entry at `/usr/share/applications/datui.desktop`, so it
+appears in whatever launcher your desktop uses — GNOME, KDE, rofi, wofi, and
+Omarchy's menu under **Apps** — with no per-desktop configuration.
 
-- **Explore** focuses a datui that is already running. Asking for "a datui" when one
-  is open almost always means you want the one you have, and <kbd>Ctrl</kbd>+<kbd>O</kbd>
-  inside it reaches anything else.
-- **New window** always starts a fresh instance — for when you are working in one
-  dataset and want a second beside it to compare.
+Launching it with no file opens the home screen. The entry also declares the formats
+datui reads, so a file manager offers "Open with datui" for a Parquet or CSV file.
+That makes datui *available* as a handler; whether it becomes the default stays your
+choice, in `mimeapps.list`.
 
-Any row you add that names a specific dataset should open a new window too: naming a
-dataset means you want *that* one, not whatever is currently loaded.
+Searching works on the entry's keywords, so `data`, `parquet`, `dataframe` and
+`csv` all find it.
 
-See [Theming from Your System](system-theming.md) for making datui match your
-Omarchy theme while you are there.
+On Omarchy specifically, see [Theming from Your System](system-theming.md) for making
+datui match your desktop theme.
 
 ## See Also
 

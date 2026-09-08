@@ -52,6 +52,12 @@ All packages include the MIT license as required:
 - **deb**: `[package.metadata.deb]` sets `license-file = ["LICENSE", "0"]`; cargo-deb installs it in the package.
 - **rpm**: `[[package.metadata.generate-rpm.assets]]` includes `LICENSE` at `/usr/share/licenses/datui/LICENSE`.
 - **aur**: `[package.metadata.aur]` `files` includes `["LICENSE", "/usr/share/licenses/datui/LICENSE"]`.
+- **desktop entry**: `scripts/packaging/datui.desktop` installs to
+  `/usr/share/applications/datui.desktop` in all three package formats. This is
+  what puts datui in desktop launchers — including Omarchy's menu, which lists
+  applications from the freedesktop database rather than anything Omarchy-specific.
+  `tests/desktop_entry_test.rs` checks the file is valid and wired into every
+  packager, because a broken entry fails silently: launchers just ignore it.
 - **Python wheel**: `python/pyproject.toml` uses `license = { file = "LICENSE" }` and `sdist-include = ["LICENSE"]`. CI and release workflows copy the root `LICENSE` into `python/LICENSE`.
 
 ## Output Locations

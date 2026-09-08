@@ -1551,8 +1551,15 @@ impl App {
             let target = open_path
                 .canonicalize()
                 .unwrap_or_else(|_| open_path.clone());
-            if let Some(idx) = self.home.visible().iter().position(|(_, e)| {
-                e.path.canonicalize().unwrap_or_else(|_| e.path.clone()) == target
+            if let Some(idx) = self.home.visible().iter().position(|row| match row {
+                home::Row::Entry { entry, .. } => {
+                    entry
+                        .path
+                        .canonicalize()
+                        .unwrap_or_else(|_| entry.path.clone())
+                        == target
+                }
+                home::Row::Header { .. } => false,
             }) {
                 self.home.selected = idx;
             }
@@ -1583,6 +1590,30 @@ impl App {
         Some(AppEvent::Exit)
     }
 
+    /// Collapse or expand the section the cursor is in.
+    ///
+    /// Collapsing moves the cursor to the header, so the section the user just folded
+    /// is what stays selected rather than whatever row happens to fall into place.
+    fn home_collapse(&mut self, collapse: bool) {
+        let Some(section) = self.home.selected_section() else {
+            return;
+        };
+        if collapse && !self.home.is_collapsed(section) {
+            self.home.set_collapsed(section, true);
+            if let Some(idx) = self
+                .home
+                .visible()
+                .iter()
+                .position(|row| row.section() == section)
+            {
+                self.home.selected = idx;
+            }
+        } else if !collapse {
+            self.home.set_collapsed(section, false);
+        }
+        self.home.clamp_selection();
+    }
+
     /// Step out of a directory that was descended into.
     fn home_ascend(&mut self) {
         let Some(current) = self.home.browsing.clone() else {
@@ -1596,8 +1627,16 @@ impl App {
         self.home_refresh();
     }
 
-    /// Open the highlighted entry: descend into a directory, or load a dataset.
+    /// Open the highlighted entry: toggle a section, descend into a directory, or
+    /// load a dataset.
     fn home_open_selected(&mut self) -> Option<AppEvent> {
+        if self.home.selection_is_header() {
+            if let Some(section) = self.home.selected_section() {
+                self.home.toggle_collapsed(section);
+                self.home.clamp_selection();
+            }
+            return None;
+        }
         let entry = self.home.selected_entry()?;
         if entry.kind == discover::EntryKind::Directory {
             self.home.browsing = Some(entry.path.clone());
@@ -1609,13 +1648,11 @@ impl App {
         Some(self.home_open_path(entry.path))
     }
 
-    /// Load a path from the home screen, recording it as recent.
+    /// Load a path from the home screen.
     ///
-    /// Recording here rather than at load completion is deliberate: the recents list
-    /// is about where you have *been looking*, and a dataset that failed to open is
-    /// still somewhere you tried to go.
+    /// The recent entry is recorded by the `Open` handler, which every open goes
+    /// through, so this does not record one itself.
     fn home_open_path(&mut self, path: PathBuf) -> AppEvent {
-        self.cache.push_recent(&path);
         let mut options = OpenOptions::default();
         // A directory of partitions is only meaningful read as one hive dataset.
         if path.is_dir() {
@@ -1687,21 +1724,26 @@ impl App {
             KeyCode::Enter => return self.home_open_selected(),
             KeyCode::Up => self.home.move_selection(-1),
             KeyCode::Down => self.home.move_selection(1),
+            // Left/right fold the section the cursor is in, wherever in it the cursor
+            // happens to be — so collapsing does not require first finding the header.
+            KeyCode::Left => self.home_collapse(true),
+            KeyCode::Right => self.home_collapse(false),
+            KeyCode::Char('h') if self.home.filter.is_empty() => self.home_collapse(true),
+            KeyCode::Char('l') if self.home.filter.is_empty() => self.home_collapse(false),
             KeyCode::PageUp => self.home.move_selection(-10),
             KeyCode::PageDown => self.home.move_selection(10),
             KeyCode::Char('k') if self.home.filter.is_empty() => self.home.move_selection(-1),
             KeyCode::Char('j') if self.home.filter.is_empty() => self.home.move_selection(1),
             KeyCode::Char('u') if ctrl => {
                 self.home.filter.clear();
-                self.home.selected = 0;
+                self.home.select_first_entry();
             }
             KeyCode::Backspace => {
                 if self.home.filter.is_empty() {
                     self.home_ascend();
                 } else {
                     self.home.filter.pop();
-                    self.home.selected = 0;
-                    self.home.clamp_selection();
+                    self.home.select_first_entry();
                 }
             }
             KeyCode::Char('~') if self.home.filter.is_empty() => {
@@ -1710,8 +1752,7 @@ impl App {
             }
             KeyCode::Char(c) if !ctrl => {
                 self.home.filter.push(c);
-                self.home.selected = 0;
-                self.home.clamp_selection();
+                self.home.select_first_entry();
             }
             _ => {}
         }
@@ -6823,6 +6864,15 @@ impl App {
                 self.task_generation = self.task_generation.wrapping_add(1);
                 self.busy = true;
                 let first = &paths[0];
+                // Every open records a recent, not just those started from the home
+                // screen — most datasets are named on the command line, and those are
+                // exactly the ones worth being able to get back to. Remote URLs are
+                // skipped: `push_recent` canonicalises, which is meaningless for them.
+                if matches!(source::input_source(first), source::InputSource::Local(_))
+                    && first.exists()
+                {
+                    self.cache.push_recent(first);
+                }
                 let file_size = match source::input_source(first) {
                     source::InputSource::Local(_) => {
                         std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
@@ -9364,8 +9414,18 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             updated = true;
         }
 
+        // The home screen measures a few rows per frame, so it needs another frame
+        // while any remain — without this it stops at whatever the first paint could
+        // afford, since an idle home screen has nothing else asking it to redraw.
+        if app.home.pending_enrich && app.input_mode == InputMode::Home {
+            updated = true;
+        }
+
         if updated {
             terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+            // Rows on the home screen are measured a few per frame; ask for another
+            // frame while any remain, so the columns fill in rather than stalling the
+            // first paint.
             // After render, check if visible_rows changed and trigger async buffer re-collect.
             if let Some(state) = &mut app.data_table_state {
                 if state.needs_recollect {

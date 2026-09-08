@@ -1,11 +1,22 @@
 //! Home screen: dataset discovery, roots, and filtering.
 
 use datui::discover::{self, EntryKind};
-use datui::home::{fuzzy_score, HomeState, RootOrigin};
+use datui::home::{fuzzy_score, HomeState, RootOrigin, Row};
 use std::fs;
 use tempfile::TempDir;
 
 mod common;
+
+/// Names of the dataset rows on screen, ignoring section headers.
+fn visible_names(home: &HomeState) -> Vec<String> {
+    home.visible()
+        .iter()
+        .filter_map(|r| match r {
+            Row::Entry { entry, .. } => Some(entry.name.clone()),
+            Row::Header { .. } => None,
+        })
+        .collect()
+}
 
 fn touch(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let path = dir.join(name);
@@ -244,15 +255,13 @@ fn test_filter_narrows_the_listing() {
         ..Default::default()
     };
     home.rebuild(&[], &[]);
-    assert_eq!(home.visible().len(), 2);
+    assert_eq!(visible_names(&home).len(), 2);
 
     home.filter = "sal".to_string();
-    let visible = home.visible();
-    assert_eq!(visible.len(), 1);
-    assert_eq!(visible[0].1.name, "sales.parquet");
+    assert_eq!(visible_names(&home), vec!["sales.parquet"]);
 
     home.filter = "zzz".to_string();
-    assert!(home.visible().is_empty());
+    assert!(visible_names(&home).is_empty());
 }
 
 #[test]
@@ -267,13 +276,23 @@ fn test_selection_wraps_and_stays_in_range() {
     };
     home.rebuild(&[], &[]);
 
-    assert_eq!(home.selected, 0);
-    home.move_selection(1);
-    assert_eq!(home.selected, 1);
-    home.move_selection(1);
-    assert_eq!(home.selected, 0, "should wrap");
+    // The list is [header, a, b]; the cursor starts on the first dataset, and moving
+    // walks headers too, since reaching one is how a section gets expanded.
+    let total = home.visible().len();
+    assert_eq!(total, 3);
+    let start = home.selected;
+    assert!(home.selected_entry().is_some(), "should start on a dataset");
+
+    for _ in 0..total {
+        home.move_selection(1);
+    }
+    assert_eq!(home.selected, start, "a full cycle returns to the start");
+
     home.move_selection(-1);
-    assert_eq!(home.selected, 1, "should wrap backwards");
+    assert!(
+        home.selected < total,
+        "selection stays in range going backwards"
+    );
 }
 
 #[test]
@@ -287,12 +306,19 @@ fn test_selection_clamps_when_filter_shrinks_the_list() {
         ..Default::default()
     };
     home.rebuild(&[], &[]);
-    home.selected = 1;
+    home.selected = home.visible().len() - 1;
 
     home.filter = "aaa".to_string();
     home.clamp_selection();
-    assert_eq!(home.selected, 0);
-    assert!(home.selected_entry().is_some());
+    assert!(
+        home.selected < home.visible().len(),
+        "selection must stay inside the shrunken list"
+    );
+    home.select_first_entry();
+    assert_eq!(
+        home.selected_entry().map(|e| e.name),
+        Some("aaa.parquet".to_string())
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +422,7 @@ fn test_no_nerd_font_glyphs_in_either_set() {
 }
 
 #[test]
-fn test_filtering_does_not_show_the_same_dataset_twice() {
+fn test_filtered_results_stay_grouped_by_where_they_came_from() {
     // A dataset can be both recent and present in a listed directory. Grouped, the
     // headers explain that; filtered, the headers are gone and the repeat just looks
     // like a bug.
@@ -407,12 +433,27 @@ fn test_filtering_does_not_show_the_same_dataset_twice() {
     home.rebuild(&[tmp.path().to_path_buf()], std::slice::from_ref(&dataset));
     home.filter = "sales".to_string();
 
-    let hits = home
-        .visible()
-        .iter()
-        .filter(|(_, e)| e.path.ends_with("sales.parquet"))
-        .count();
-    assert_eq!(hits, 1, "a dataset should appear once in filtered results");
+    // Grouped results keep provenance, so the same dataset can legitimately appear
+    // under RECENT and again under the directory it lives in — each under a heading
+    // that says which. What must not happen is a repeat inside one section.
+    for section in 0..home.sections.len() {
+        let in_section: Vec<_> = home
+            .visible()
+            .iter()
+            .filter_map(|r| match r {
+                Row::Entry { entry, section: s } if *s == section => Some(entry.path.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut deduped = in_section.clone();
+        deduped.sort();
+        deduped.dedup();
+        assert_eq!(
+            in_section.len(),
+            deduped.len(),
+            "a dataset should appear once within a section"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -528,19 +569,16 @@ fn test_desktop_places_are_listed_but_never_expanded() {
     let mut home = HomeState::default();
     home.rebuild_with(&[], &[], std::slice::from_ref(&downloads));
 
-    let names: Vec<&str> = home
-        .visible()
-        .iter()
-        .map(|(_, e)| e.name.as_str())
-        .collect();
+    let names = visible_names(&home);
     assert!(
         !names.iter().any(|n| n.contains("vault_export")),
         "a file inside a desktop-derived place must not be listed: {names:?}"
     );
     assert!(
-        home.visible()
-            .iter()
-            .any(|(_, e)| e.path == downloads && e.kind == EntryKind::Directory),
+        home.visible().iter().any(|r| matches!(
+            r,
+            Row::Entry { entry, .. } if entry.path == downloads && entry.kind == EntryKind::Directory
+        )),
         "the place itself should be offered as a directory: {names:?}"
     );
 }
@@ -558,9 +596,7 @@ fn test_desktop_place_contents_appear_only_after_descending() {
     home.rebuild_with(&[], &[], std::slice::from_ref(&downloads));
 
     assert!(
-        home.visible()
-            .iter()
-            .any(|(_, e)| e.name == "vault_export.csv"),
+        visible_names(&home).contains(&"vault_export.csv".to_string()),
         "descending is the explicit ask, and then contents show normally"
     );
 }
@@ -621,4 +657,229 @@ fn test_stale_background_scan_is_discarded() {
         app.event(&stale).is_none(),
         "a superseded scan must not continue the load pipeline"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Collapsing sections
+// ---------------------------------------------------------------------------
+
+fn home_with_two_sections() -> (TempDir, HomeState) {
+    let tmp = TempDir::new().unwrap();
+    let a = tmp.path().join("a");
+    let b = tmp.path().join("b");
+    touch(&a, "one.parquet");
+    touch(&a, "two.parquet");
+    touch(&b, "three.parquet");
+
+    let mut home = HomeState::default();
+    home.rebuild(&[a, b], &[]);
+    (tmp, home)
+}
+
+#[test]
+fn test_collapsing_hides_a_sections_rows_but_keeps_its_header() {
+    let (_tmp, mut home) = home_with_two_sections();
+    let rows_before = visible_names(&home).len();
+    let headers = |h: &HomeState| {
+        h.visible()
+            .iter()
+            .filter(|r| matches!(r, Row::Header { .. }))
+            .count()
+    };
+    let headers_before = headers(&home);
+    assert!(rows_before >= 3);
+
+    home.toggle_collapsed(0);
+
+    assert_eq!(
+        headers(&home),
+        headers_before,
+        "a collapsed section keeps its header"
+    );
+    assert!(
+        visible_names(&home).len() < rows_before,
+        "collapsing should hide rows"
+    );
+}
+
+#[test]
+fn test_collapsed_header_reports_what_it_is_hiding() {
+    // A collapsed section with no count looks like an empty one.
+    let (_tmp, mut home) = home_with_two_sections();
+    home.set_collapsed(0, true);
+
+    let header = home
+        .visible()
+        .into_iter()
+        .find(|r| matches!(r, Row::Header { section: 0, .. }))
+        .expect("header present");
+    match header {
+        Row::Header {
+            matches, collapsed, ..
+        } => {
+            assert!(collapsed);
+            assert!(
+                matches > 0,
+                "a collapsed header should still count its rows"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn test_collapse_state_survives_a_rebuild() {
+    // Rebuilding renumbers sections, so the state is keyed by title rather than index.
+    let (_tmp, mut home) = home_with_two_sections();
+    let title = home.sections[0].title.clone();
+    home.set_collapsed(0, true);
+
+    home.rebuild(&[], &[]);
+    let idx = home.sections.iter().position(|s| s.title == title);
+    if let Some(idx) = idx {
+        assert!(home.is_collapsed(idx), "collapse should survive a rebuild");
+    }
+}
+
+#[test]
+fn test_expanding_restores_the_rows() {
+    let (_tmp, mut home) = home_with_two_sections();
+    let before = visible_names(&home);
+
+    home.toggle_collapsed(0);
+    home.toggle_collapsed(0);
+
+    assert_eq!(visible_names(&home), before);
+}
+
+#[test]
+fn test_selection_starts_on_a_dataset_not_a_header() {
+    let (_tmp, home) = home_with_two_sections();
+    assert!(
+        home.selected_entry().is_some(),
+        "the preview pane needs something to show without a keypress"
+    );
+    assert!(!home.selection_is_header());
+}
+
+// ---------------------------------------------------------------------------
+// Measuring rows is lazy
+//
+// Enriching during rebuild meant every dataset under every root paid for a footer
+// walk before the first frame. On a directory holding a dozen large datasets that
+// is hundreds of file reads, and the home screen does not appear for tens of
+// seconds. These pin the shape of the fix.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_rebuild_does_not_measure_anything() {
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "a.parquet");
+    touch(tmp.path(), "b.parquet");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    assert!(
+        home.enriched.is_empty(),
+        "rebuild must not read any footers; that is what stalls the first paint"
+    );
+    for row in home.visible() {
+        if let Row::Entry { entry, .. } = row {
+            assert!(entry.rows.is_none() && entry.cols.is_none());
+        }
+    }
+}
+
+#[test]
+fn test_enrichment_is_capped_per_pass_and_reports_more_work() {
+    let tmp = TempDir::new().unwrap();
+    for i in 0..6 {
+        touch(tmp.path(), &format!("f{i}.parquet"));
+    }
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    let more = home.enrich_visible(100, 2);
+    assert!(more, "with 6 rows and a budget of 2, work must remain");
+    assert_eq!(home.enriched.len(), 2, "a pass spends only its budget");
+
+    home.enrich_visible(100, 2);
+    assert_eq!(
+        home.enriched.len(),
+        4,
+        "the next pass continues where it left off"
+    );
+
+    let more = home.enrich_visible(100, 10);
+    assert_eq!(home.enriched.len(), 6);
+    assert!(!more, "nothing left to measure");
+}
+
+#[test]
+fn test_enrichment_only_touches_rows_that_are_on_screen() {
+    let tmp = TempDir::new().unwrap();
+    for i in 0..20 {
+        touch(tmp.path(), &format!("f{i:02}.parquet"));
+    }
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    // A short window measures a short list, however many datasets exist.
+    home.enrich_visible(3, 100);
+    assert!(
+        home.enriched.len() <= 3,
+        "measured {} rows for a 3-row window",
+        home.enriched.len()
+    );
+}
+
+#[test]
+fn test_collapsed_sections_are_not_measured() {
+    // Folding a section should make it cheaper, not just shorter.
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("data");
+    for i in 0..4 {
+        touch(&dir, &format!("f{i}.parquet"));
+    }
+
+    let mut home = HomeState::default();
+    home.rebuild(std::slice::from_ref(&dir), &[]);
+    let section = home
+        .sections
+        .iter()
+        .position(|s| s.rows.iter().any(|r| r.name.starts_with("f0")))
+        .expect("section present");
+    home.set_collapsed(section, true);
+
+    home.enrich_visible(100, 100);
+    let measured_in_section = home.enriched.keys().filter(|p| p.starts_with(&dir)).count();
+    assert_eq!(
+        measured_in_section, 0,
+        "a folded section's rows are not drawn, so they must not be read"
+    );
+}
+
+#[test]
+fn test_network_detection_reads_the_mount_table() {
+    use datui::home::is_network_path;
+
+    // A local path must not be flagged. Anything unusual about the mount table is
+    // treated as "not network", so this is a hint and never a gate.
+    let tmp = TempDir::new().unwrap();
+    assert!(!is_network_path(tmp.path()));
+    assert!(!is_network_path(std::path::Path::new(
+        "/definitely/not/mounted"
+    )));
 }

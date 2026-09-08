@@ -115,11 +115,69 @@ fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Filesystem types that live over a network. Listing one can be slow, and it can
+/// stop working entirely when the link or the server goes away — worth saying so next
+/// to a root rather than leaving the user to wonder why a listing is empty or slow.
+const NETWORK_FILESYSTEMS: &[&str] = &[
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "afs",
+    "9p",
+    "ceph",
+    "glusterfs",
+    "fuse.sshfs",
+    "fuse.rclone",
+    "fuse.s3fs",
+    "fuse.davfs",
+    "davfs",
+    "ftpfs",
+];
+
+/// Whether `path` sits on a network filesystem, according to the mount table.
+///
+/// Reads `/proc/self/mountinfo` and takes the longest mount point that is a prefix of
+/// the path. Returns false wherever that file is unavailable or unparseable, so this
+/// is a hint and never a gate.
+pub fn is_network_path(path: &Path) -> bool {
+    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    let mut best: Option<(usize, bool)> = None;
+
+    for line in mountinfo.lines() {
+        // Fields before the separator end with the mount point at index 4; the
+        // filesystem type is the first field after it.
+        let Some((before, after)) = line.split_once(" - ") else {
+            continue;
+        };
+        let Some(mount_point) = before.split_whitespace().nth(4) else {
+            continue;
+        };
+        let Some(fstype) = after.split_whitespace().next() else {
+            continue;
+        };
+        if !path.starts_with(mount_point) {
+            continue;
+        }
+        let len = mount_point.len();
+        if best.is_none_or(|(n, _)| len > n) {
+            best = Some((len, NETWORK_FILESYSTEMS.contains(&fstype)));
+        }
+    }
+
+    best.map(|(_, network)| network).unwrap_or(false)
+}
+
 /// A place datui will look, and whether it can currently be read.
 #[derive(Debug, Clone)]
 pub struct Root {
     pub path: PathBuf,
     pub origin: RootOrigin,
+    /// True when the root is on a network filesystem.
+    pub network: bool,
     /// False when the directory cannot be read — an unmounted NAS, a deleted
     /// scratch dir. Shown rather than hidden: "the mount is down" is information.
     pub available: bool,
@@ -134,6 +192,34 @@ pub struct Section {
     pub rows: Vec<Entry>,
     /// Set when a root could not be read, so the UI can say why it is empty.
     pub unavailable: bool,
+}
+
+/// What measuring a dataset yielded: rows, columns, and total size, each absent when
+/// it cannot be known without reading the data.
+pub type Measured = (Option<usize>, Option<usize>, Option<u64>);
+
+/// One line of the home screen. Headers are selectable so a section can be
+/// collapsed and expanded from the keyboard.
+#[derive(Debug, Clone, Copy)]
+pub enum Row<'a> {
+    Header {
+        section: usize,
+        /// Rows this section holds under the current filter.
+        matches: usize,
+        collapsed: bool,
+    },
+    Entry {
+        section: usize,
+        entry: &'a Entry,
+    },
+}
+
+impl Row<'_> {
+    pub fn section(&self) -> usize {
+        match self {
+            Row::Header { section, .. } | Row::Entry { section, .. } => *section,
+        }
+    }
 }
 
 /// Home screen state.
@@ -152,6 +238,18 @@ pub struct HomeState {
     pub browsing: Option<PathBuf>,
     /// Transient message (e.g. a path that does not exist).
     pub status: Option<String>,
+    /// Set while rows on screen are still unmeasured, so the main loop knows to draw
+    /// another frame and measure the next batch.
+    pub pending_enrich: bool,
+    /// Row and column counts already read, keyed by path. Reading a Parquet footer
+    /// is cheap; reading several hundred of them is not, so results are kept for the
+    /// session and each dataset is measured once.
+    pub enriched: std::collections::HashMap<PathBuf, Measured>,
+    /// Titles of sections the user has collapsed. Keyed by title rather than index
+    /// so the state survives a rebuild, which reorders and renumbers sections.
+    /// Use [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`] rather
+    /// than touching this directly.
+    pub collapsed: std::collections::HashSet<String>,
 }
 
 /// Case-insensitive subsequence match, the cheap half of fuzzy finding.
@@ -211,10 +309,12 @@ impl HomeState {
                 }
                 seen.push(key);
                 let available = std::fs::read_dir(&path).is_ok();
+                let network = is_network_path(&path);
                 roots.push(Root {
                     path,
                     origin,
                     available,
+                    network,
                 });
             };
 
@@ -285,17 +385,14 @@ impl HomeState {
 
         // Descended into a directory: show only that.
         if let Some(dir) = self.browsing.clone() {
-            let mut rows = discover::scan_dir(&dir);
-            for row in rows.iter_mut() {
-                discover::enrich(row);
-            }
+            let rows = discover::scan_dir(&dir);
             self.sections.push(Section {
                 title: display_path(&dir),
                 subtitle: None,
                 rows,
                 unavailable: false,
             });
-            self.clamp_selection();
+            self.select_first_entry();
             return;
         }
 
@@ -337,20 +434,24 @@ impl HomeState {
 
             // A derived root with nothing in it adds noise; keep configured and cwd
             // roots always, since the user named them or is standing in them.
-            let mut rows = if root.available {
+            let rows = if root.available {
                 discover::scan_dir(&root.path)
             } else {
                 Vec::new()
             };
-            for row in rows.iter_mut() {
-                discover::enrich(row);
-            }
             if rows.is_empty() && root.origin == RootOrigin::Recent {
                 continue;
             }
+            // A network root is worth flagging: it is the one that will be slow, and
+            // the one that can stop answering.
+            let subtitle = if root.network {
+                format!("network · {}", root.origin.note())
+            } else {
+                root.origin.note().to_string()
+            };
             self.sections.push(Section {
                 title: display_path(&root.path),
-                subtitle: Some(root.origin.note().to_string()),
+                subtitle: Some(subtitle),
                 rows,
                 unavailable: !root.available,
             });
@@ -365,41 +466,178 @@ impl HomeState {
             });
         }
 
-        self.clamp_selection();
+        self.select_first_entry();
     }
 
     /// Rows currently passing the filter, flattened, as `(section index, row)`.
-    pub fn visible(&self) -> Vec<(usize, &Entry)> {
-        let mut out: Vec<(usize, &Entry, usize)> = Vec::new();
+    /// Whether a section is collapsed.
+    pub fn is_collapsed(&self, section: usize) -> bool {
+        self.sections
+            .get(section)
+            .is_some_and(|s| self.collapsed.contains(&s.title))
+    }
+
+    /// Collapse or expand a section.
+    pub fn toggle_collapsed(&mut self, section: usize) {
+        let Some(title) = self.sections.get(section).map(|s| s.title.clone()) else {
+            return;
+        };
+        if !self.collapsed.remove(&title) {
+            self.collapsed.insert(title);
+        }
+    }
+
+    pub fn set_collapsed(&mut self, section: usize, collapsed: bool) {
+        let Some(title) = self.sections.get(section).map(|s| s.title.clone()) else {
+            return;
+        };
+        if collapsed {
+            self.collapsed.insert(title);
+        } else {
+            self.collapsed.remove(&title);
+        }
+    }
+
+    /// Lines currently on screen: a header per non-empty section, followed by its
+    /// matching rows unless it is collapsed.
+    ///
+    /// Results stay grouped even while filtering. Ranking them across sections would
+    /// read better as a hit list, but it costs the one thing the grouping is for —
+    /// seeing *where* a dataset lives — and a name on its own rarely says that.
+    pub fn visible(&self) -> Vec<Row<'_>> {
+        let mut out: Vec<Row<'_>> = Vec::new();
         for (si, section) in self.sections.iter().enumerate() {
-            for row in &section.rows {
-                if let Some(score) = fuzzy_score(&self.filter, &row.name) {
-                    out.push((si, row, score));
+            let mut matched: Vec<(&Entry, usize)> = section
+                .rows
+                .iter()
+                .filter_map(|row| fuzzy_score(&self.filter, &row.name).map(|s| (row, s)))
+                .collect();
+
+            // A section with nothing to show is dropped, unless it is standing in for
+            // a root the user named or is currently in, where its absence would be
+            // more confusing than an empty heading.
+            let keep_empty = section.unavailable
+                || matches!(
+                    section.subtitle.as_deref(),
+                    Some("configured") | Some("current directory")
+                );
+            if matched.is_empty() && !(keep_empty && self.filter.is_empty()) {
+                continue;
+            }
+
+            // Within a section, rank by match quality; without a filter every score is
+            // equal and the curated order is preserved.
+            if !self.filter.is_empty() {
+                matched.sort_by_key(|(_, score)| *score);
+            }
+
+            let collapsed = self.collapsed.contains(&section.title);
+            out.push(Row::Header {
+                section: si,
+                matches: matched.len(),
+                collapsed,
+            });
+            if !collapsed {
+                out.extend(
+                    matched
+                        .into_iter()
+                        .map(|(entry, _)| Row::Entry { section: si, entry }),
+                );
+            }
+        }
+        out
+    }
+
+    /// The highlighted row, when it is a dataset rather than a section header.
+    pub fn selected_entry(&self) -> Option<Entry> {
+        match self.visible().get(self.selected) {
+            Some(Row::Entry { entry, .. }) => Some((*entry).clone()),
+            _ => None,
+        }
+    }
+
+    /// The section the highlighted row belongs to.
+    pub fn selected_section(&self) -> Option<usize> {
+        self.visible().get(self.selected).map(|r| r.section())
+    }
+
+    /// Whether the highlighted row is a section header.
+    pub fn selection_is_header(&self) -> bool {
+        matches!(self.visible().get(self.selected), Some(Row::Header { .. }))
+    }
+
+    /// Measure the rows about to be drawn, and only those.
+    ///
+    /// Enriching during `rebuild` meant every dataset under every root paid for a
+    /// footer walk before the first frame — on a directory holding a dozen datasets
+    /// that is hundreds of file reads, and the home screen simply does not appear
+    /// for tens of seconds. Bounded by what fits on screen, it is a handful of reads,
+    /// and the cache means scrolling back costs nothing.
+    /// Returns true when rows remain unmeasured, so the caller can schedule another
+    /// pass rather than paying for all of them before the first frame.
+    pub fn enrich_visible(&mut self, limit: usize, budget: usize) -> bool {
+        // Collect targets first: `visible()` borrows the sections immutably.
+        let targets: Vec<(usize, PathBuf)> = self
+            .visible()
+            .iter()
+            .filter_map(|r| match r {
+                Row::Entry { section, entry } => Some((*section, entry.path.clone())),
+                Row::Header { .. } => None,
+            })
+            .take(limit)
+            .collect();
+
+        let mut spent = 0usize;
+        let mut remaining = false;
+        for (section, path) in targets {
+            let measured = match self.enriched.get(&path) {
+                Some(cached) => *cached,
+                None => {
+                    // Measuring a hive dataset walks its files. A directory holding a
+                    // dozen of them is hundreds of reads, so only a few are done per
+                    // frame and the rest fill in over the next ones.
+                    if spent >= budget {
+                        remaining = true;
+                        continue;
+                    }
+                    spent += 1;
+                    let Some(row) = self
+                        .sections
+                        .get(section)
+                        .and_then(|s| s.rows.iter().find(|r| r.path == path))
+                    else {
+                        continue;
+                    };
+                    let mut probe = row.clone();
+                    discover::enrich(&mut probe);
+                    let measured = (probe.rows, probe.cols, probe.size.or(row.size));
+                    self.enriched.insert(path.clone(), measured);
+                    measured
+                }
+            };
+            if let Some(row) = self
+                .sections
+                .get_mut(section)
+                .and_then(|s| s.rows.iter_mut().find(|r| r.path == path))
+            {
+                row.rows = measured.0;
+                row.cols = measured.1;
+                if measured.2.is_some() {
+                    row.size = measured.2;
                 }
             }
         }
-        // With an active filter, rank across sections by match quality; without one,
-        // keep the curated order (recents first, then roots).
-        if !self.filter.is_empty() {
-            out.sort_by_key(|(_, _, score)| *score);
-            // Section headers are hidden while filtering, so a dataset that is both
-            // recent and present in a listed directory would appear twice with
-            // nothing to explain why. Keep the best-ranked occurrence.
-            let mut seen: Vec<&std::path::Path> = Vec::new();
-            out.retain(|(_, row, _)| {
-                if seen.contains(&row.path.as_path()) {
-                    false
-                } else {
-                    seen.push(row.path.as_path());
-                    true
-                }
-            });
-        }
-        out.into_iter().map(|(si, row, _)| (si, row)).collect()
+        remaining
     }
 
-    pub fn selected_entry(&self) -> Option<Entry> {
-        self.visible().get(self.selected).map(|(_, e)| (*e).clone())
+    /// Put the cursor on the first dataset rather than the first header, so the
+    /// preview pane has something to show without a keypress.
+    pub fn select_first_entry(&mut self) {
+        let rows = self.visible();
+        self.selected = rows
+            .iter()
+            .position(|r| matches!(r, Row::Entry { .. }))
+            .unwrap_or(0);
     }
 
     pub fn clamp_selection(&mut self) {
@@ -447,7 +685,6 @@ fn entry_for_path(path: &Path) -> Entry {
         }
         entry.modified = meta.modified().ok();
     }
-    discover::enrich(&mut entry);
     entry
 }
 

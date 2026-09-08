@@ -22,20 +22,19 @@ The quickest path, from a fresh checkout:
 cargo test --workspace
 ```
 
-That creates `.venv`, installs `scripts/requirements.txt` into it, and generates the
-fixtures — the same steps CI runs, so a green local run means what a green CI run
-means. It uses [uv](https://github.com/astral-sh/uv) when available and falls back to
-`python -m venv`. Re-running is safe; pass `--force` to regenerate from scratch.
+That creates `.venv`, installs `scripts/requirements.txt`, and generates the
+fixtures — the same steps CI runs. It uses [uv](https://github.com/astral-sh/uv)
+when available, otherwise `python -m venv`. Re-running is safe; `--force`
+regenerates the fixtures from scratch.
 
-You do **not** need to activate the virtualenv: the test harness looks for
-`.venv/bin/python` (or `.venv\Scripts\python.exe` on Windows) before falling back to
-a system Python.
+Activating the virtualenv is not necessary: the test harness looks for
+`.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) before falling back to a
+system Python.
 
-Without those fixtures, the statistics, distribution-detection and pivot/melt tests
-fail — the generator needs Polars, NumPy, pyarrow, fastavro and openpyxl, which a
-system Python almost never has.
+Without the fixtures, the statistics, distribution-detection and pivot/melt tests
+fail. The generator requires Polars, NumPy, pyarrow, fastavro and openpyxl.
 
-The rest of this section describes the same thing done by hand.
+The rest of this section describes the same steps done by hand.
 
 > If you used the [Setup Script](setup-script.md), the sample data has already
 > been generated. To regenerate the data, see the [instructions](tests.md#regenerating-or-updating-the-sample-data)

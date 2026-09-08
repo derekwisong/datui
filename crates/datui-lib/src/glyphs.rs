@@ -30,10 +30,15 @@ pub struct Glyphs {
     pub ellipsis: &'static str,
     /// Between row and column counts: `2.4M × 18`.
     pub times: &'static str,
+    /// Section collapse markers; both must be the same display width.
+    pub collapsed: &'static str,
+    pub expanded: &'static str,
     /// Keycap names for the control bar.
     pub enter: &'static str,
     pub backspace: &'static str,
     pub updown: &'static str,
+    /// Left/right pair, for the fold hint.
+    pub updown_lr: &'static str,
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -44,9 +49,12 @@ const UNICODE: Glyphs = Glyphs {
     rule: "│",
     ellipsis: "…",
     times: "×",
+    collapsed: "▸ ",
+    expanded: "▾ ",
     enter: "⏎",
     backspace: "⌫",
     updown: "↑↓",
+    updown_lr: "←→",
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -57,9 +65,12 @@ const ASCII: Glyphs = Glyphs {
     rule: "|",
     ellipsis: "...",
     times: "x",
+    collapsed: "+ ",
+    expanded: "- ",
     enter: "Enter",
     backspace: "Bksp",
     updown: "Up/Dn",
+    updown_lr: "Lt/Rt",
 };
 
 /// What the user asked for, from `[display] unicode`.

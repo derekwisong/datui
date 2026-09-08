@@ -76,8 +76,12 @@ fn type_color(dtype: &polars::prelude::DataType, ctx: &RenderContext) -> ratatui
 /// list. Empty strings where a fact is genuinely unknown — a CSV's row count cannot
 /// be had without scanning it, and inventing one would be worse than a blank.
 fn meta_columns(entry: &Entry) -> String {
+    // A dataset too large to count still knows its width. Showing `? x 158` says more
+    // than a blank, and the `?` is an admission rather than a guess.
+    let times = glyphs::get().times;
     let shape = match (entry.rows, entry.cols) {
-        (Some(r), Some(c)) => format!("{} {} {}", discover::format_rows(r), glyphs::get().times, c),
+        (Some(r), Some(c)) => format!("{} {times} {c}", discover::format_rows(r)),
+        (None, Some(c)) => format!("? {times} {c}"),
         _ => String::new(),
     };
     let size = entry.size.map(discover::format_size).unwrap_or_default();
@@ -88,30 +92,29 @@ fn meta_columns(entry: &Entry) -> String {
 pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
     Clear.render(area, buf);
 
-    // Generous left margin and a breath at the top: the whole design rests on space.
+    // One column of breathing room, no more. Vertical space is the scarce thing in a
+    // terminal: every blank line here is a dataset the user cannot see.
     let padded = Rect {
-        x: area.x.saturating_add(2),
-        y: area.y.saturating_add(1),
-        width: area.width.saturating_sub(4),
-        height: area.height.saturating_sub(1),
+        x: area.x.saturating_add(1),
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
     };
-    if padded.width < 20 || padded.height < 6 {
+    if padded.width < 20 || padded.height < 5 {
         return;
     }
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // wordmark
-            Constraint::Length(1), // spacer
+            Constraint::Length(1), // title bar
             Constraint::Length(1), // prompt
-            Constraint::Length(1), // spacer
             Constraint::Fill(1),   // body
         ])
         .split(padded);
 
-    render_wordmark(rows[0], buf, app, ctx);
-    render_prompt(rows[2], buf, app, ctx);
+    render_title_bar(rows[0], buf, app, ctx);
+    render_prompt(rows[1], buf, app, ctx);
 
     let show_preview = padded.width >= PREVIEW_MIN_WIDTH;
     if show_preview {
@@ -122,17 +125,18 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
                 Constraint::Length(3), // the rule and its gutters
                 Constraint::Length(42),
             ])
-            .split(rows[4]);
+            .split(rows[2]);
         render_list(body[0], buf, app, ctx);
         render_rule(body[1], buf, ctx);
         render_preview(body[2], buf, app, ctx);
     } else {
-        render_list(rows[4], buf, app, ctx);
+        render_list(rows[2], buf, app, ctx);
     }
 }
 
-/// `datui` at rest, with the current location trailing right. Identity without noise.
-fn render_wordmark(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
+/// A filled bar carrying the name and current location, mirroring the control bar at
+/// the foot of the screen so the list sits between two anchors.
+fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
     let location = app
         .home
         .browsing
@@ -145,19 +149,19 @@ fn render_wordmark(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderC
         })
         .unwrap_or_default();
 
+    let bar = Style::default().bg(ctx.controls_bg);
     let left = Span::styled(
-        "datui",
-        Style::default()
-            .fg(ctx.keybind_hints)
-            .add_modifier(Modifier::BOLD),
+        " datui ",
+        bar.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
     );
     // Keep the tail of a long path; the leaf is what tells you where you are.
-    let location = truncate_start(&location, (area.width as usize).saturating_sub(8));
-    let pad = (area.width as usize).saturating_sub(5 + location.chars().count());
+    let location = truncate_start(&location, (area.width as usize).saturating_sub(12));
+    let pad = (area.width as usize).saturating_sub(8 + location.chars().count());
     Paragraph::new(Line::from(vec![
         left,
-        Span::raw(" ".repeat(pad)),
-        Span::styled(location, Style::default().fg(ctx.dimmed)),
+        Span::styled(" ".repeat(pad), bar),
+        Span::styled(location, bar.fg(ctx.text_secondary)),
+        Span::styled(" ", bar),
     ]))
     .render(area, buf);
 }
@@ -216,6 +220,9 @@ fn render_rule(area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
 }
 
 fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
+    // Measure what this frame draws, a few rows per pass so the first frame is not
+    // held up by a directory full of large datasets.
+    app.home.pending_enrich = app.home.enrich_visible(area.height as usize, 6);
     let visible = app.home.visible();
 
     if visible.is_empty() {
@@ -252,48 +259,53 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         area.width as usize
     };
 
-    // Headers appear only in the unfiltered listing: once results are ranked across
-    // sections, grouping them would be a lie about the order.
-    let grouped = app.home.filter.is_empty();
-    let mut lines: Vec<(Option<usize>, Line)> = Vec::new();
-    let mut last_section: Option<usize> = None;
-
-    for (idx, (si, entry)) in visible.iter().enumerate() {
-        if grouped && last_section != Some(*si) {
-            let section = &app.home.sections[*si];
-            if !lines.is_empty() {
-                lines.push((None, Line::from("")));
+    let mut lines: Vec<Line> = Vec::new();
+    for (idx, row) in visible.iter().enumerate() {
+        let selected = idx == app.home.selected;
+        match row {
+            crate::home::Row::Header {
+                section,
+                matches,
+                collapsed,
+            } => {
+                lines.push(section_header(
+                    &app.home.sections[*section],
+                    *matches,
+                    *collapsed,
+                    selected,
+                    area.width as usize,
+                    ctx,
+                ));
             }
-            lines.push((None, section_header(section, area.width as usize, ctx)));
-            last_section = Some(*si);
+            crate::home::Row::Entry { entry, .. } => {
+                lines.push(entry_line(entry, selected, name_width, show_meta, ctx));
+            }
         }
-        lines.push((
-            Some(idx),
-            entry_line(entry, idx == app.home.selected, name_width, show_meta, ctx),
-        ));
     }
 
-    let height = area.height as usize;
-    let sel_line = lines
-        .iter()
-        .position(|(i, _)| *i == Some(app.home.selected))
-        .unwrap_or(0);
     // Keep a little context above the selection rather than pinning it to the edge.
-    let scroll = sel_line.saturating_sub(height.saturating_sub(3).max(1));
+    // One drawn line per row now that the spacer is gone.
+    let height = area.height as usize;
+    let scroll = app
+        .home
+        .selected
+        .saturating_sub(height.saturating_sub(3).max(1));
 
-    let body: Vec<Line> = lines.into_iter().skip(scroll).map(|(_, l)| l).collect();
+    let body: Vec<Line> = lines.into_iter().skip(scroll).collect();
     Paragraph::new(body).render(area, buf);
 }
 
-/// Section headers are small caps in the accent, with the provenance trailing right —
-/// so the list explains itself without a legend.
+/// Section headers carry the collapse marker and the provenance note, so the list
+/// explains itself without a legend.
 fn section_header<'a>(
     section: &'a crate::home::Section,
+    matches: usize,
+    collapsed: bool,
+    selected: bool,
     width: usize,
     ctx: &RenderContext,
 ) -> Line<'a> {
-    // Labels like "Recent" read as small caps; a filesystem path does not, and
-    // shouting a path is both ugly and harder to read.
+    let g = glyphs::get();
     let note = if section.unavailable {
         "unavailable".to_string()
     } else {
@@ -305,27 +317,43 @@ fn section_header<'a>(
     } else {
         section.title.to_uppercase()
     };
-    // Keep the tail of a long path: the leaf is what identifies it. Budget against
-    // the note that shares this line, plus a gap, so the two can never collide — and
-    // count the ellipsis itself, which is three characters wide in ASCII mode.
-    title = truncate_start(&title, width.saturating_sub(note.chars().count() + 3));
-    let pad = width.saturating_sub(title.chars().count() + note.chars().count() + 1);
+    let marker = if collapsed { g.collapsed } else { g.expanded };
+    // A collapsed section has to say what it is hiding, or it looks like nothing.
+    let count = if collapsed {
+        format!("  {matches}")
+    } else {
+        String::new()
+    };
+    let prefix_width = marker.chars().count() + count.chars().count();
+    title = truncate_start(
+        &title,
+        width.saturating_sub(note.chars().count() + prefix_width + 3),
+    );
+
+    // Filled, like the table's own header row — the same visual grammar, so the home
+    // screen reads as part of datui rather than a different program.
+    let fill = Style::default().bg(ctx.table_header_bg);
+    let title_style = if selected {
+        fill.fg(ctx.table_header)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else {
+        fill.fg(ctx.table_header).add_modifier(Modifier::BOLD)
+    };
+    let pad = width.saturating_sub(prefix_width + title.chars().count() + note.chars().count() + 1);
     Line::from(vec![
-        Span::styled(
-            title,
-            Style::default()
-                .fg(ctx.keybind_hints)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" ".repeat(pad)),
+        Span::styled(marker, fill.fg(ctx.keybind_hints)),
+        Span::styled(title, title_style),
+        Span::styled(count, fill.fg(ctx.text_secondary)),
+        Span::styled(" ".repeat(pad), fill),
         Span::styled(
             note,
-            Style::default().fg(if section.unavailable {
+            fill.fg(if section.unavailable {
                 ctx.warning
             } else {
-                ctx.dimmed
+                ctx.text_secondary
             }),
         ),
+        Span::styled(" ", fill),
     ])
 }
 
@@ -369,40 +397,38 @@ fn entry_line<'a>(
     }
     let pad = name_width.saturating_sub(2 + name.chars().count() + kind_cell.chars().count());
 
-    let name_style = if selected {
+    // The selected row reverses across its full width, the way the table marks its
+    // current row. It is the one thing that must be findable instantly.
+    let base = if selected {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
         Style::default()
-            .fg(ctx.text_primary)
-            .add_modifier(Modifier::BOLD)
+    };
+    let name_style = if selected {
+        base.fg(ctx.text_primary).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(ctx.text_primary)
     };
     let kind_style = match entry.kind {
-        EntryKind::Hive => Style::default().fg(ctx.temporal_col),
-        EntryKind::MultiFile => Style::default().fg(ctx.float_col),
-        _ => Style::default().fg(ctx.dimmed),
+        EntryKind::Hive => base.fg(ctx.temporal_col),
+        EntryKind::MultiFile => base.fg(ctx.float_col),
+        _ => base.fg(ctx.dimmed),
     };
 
     let mut spans = vec![
         Span::styled(
             marker,
-            Style::default()
-                .fg(ctx.keybind_hints)
-                .add_modifier(Modifier::BOLD),
+            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
         ),
         Span::styled(name, name_style),
         Span::styled(kind_cell, kind_style),
     ];
     if show_meta {
-        spans.push(Span::raw(" ".repeat(pad)));
-        spans.push(Span::styled(
-            meta_columns(entry),
-            Style::default().fg(if selected {
-                ctx.text_secondary
-            } else {
-                ctx.dimmed
-            }),
-        ));
+        spans.push(Span::styled(" ".repeat(pad), base));
+        spans.push(Span::styled(meta_columns(entry), base.fg(ctx.dimmed)));
     }
+    // Carry the reverse to the edge, so the bar is a bar and not a ragged highlight.
+    spans.push(Span::styled(" ", base));
     Line::from(spans)
 }
 
@@ -418,8 +444,10 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 .fg(ctx.text_primary)
                 .add_modifier(Modifier::BOLD),
         )),
+        // One line, tail kept: a wrapped path costs three rows to say what the leaf
+        // already said.
         Line::from(Span::styled(
-            crate::home::display_path(&entry.path),
+            truncate_start(&crate::home::display_path(&entry.path), area.width as usize),
             Style::default().fg(ctx.dimmed),
         )),
         Line::from(""),

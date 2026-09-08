@@ -1,165 +1,147 @@
 # The Home Screen
 
-Run `datui` with no arguments and you land on its home screen: a list of datasets
-you can open, with what each one contains shown before you open it.
-
-Press <kbd>Ctrl</kbd>+<kbd>O</kbd> from anywhere to come back to it. That is the
-point — datui is somewhere you stay while you work through several datasets, not a
-command you re-run for each one.
+Run `datui` with no arguments to open the home screen: a list of datasets, with
+what each contains shown before you open it. <kbd>Ctrl</kbd>+<kbd>O</kbd> returns
+here from anywhere.
 
 ```
-  datui                                                        ~/work/analysis
-
-  › ▏  type to filter
-
-  RECENT
-  ▸ sales                        hive       2.4M × 18    340 MB    2d
-    customers.parquet                         89k × 12     4 MB    1w
-
-  /mnt/data                                                    configured
-    events                       hive        1.1M × 9    120 MB    3h
-    lookup.parquet                             980 × 4     8 KB    2mo
-
-  ~/work/analysis                                       current directory
-    raw_export.csv                                       1.2 GB    3h
-    notes/                       dir
+ datui                                                         ~/work/analysis
+› ▏  type to filter
+▾ RECENT
+▸ sales                          hive      2.4M × 18    340 MB    2d
+  customers.parquet                          89k × 12     4 MB    1w
+▾ /mnt/data                                        network · configured
+  events                         hive       1.1M × 9    120 MB    3h
+  lookup.parquet                              980 × 4     8 KB    2mo
+▾ ~/work/analysis                                     current directory
+  raw_export.csv                                        1.2 GB    3h
+  notes/                         dir
+↑↓ Move  ⏎ Open  type Filter  ←→ Fold  ~ Path  Esc Quit
 ```
+
+## Keys
+
+| key | action |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> | move |
+| <kbd>←</kbd> <kbd>→</kbd> / <kbd>h</kbd> <kbd>l</kbd> | collapse / expand the section |
+| <kbd>Enter</kbd> | open the dataset, enter the directory, or fold the section |
+| type anything | filter by name (fuzzy: `sal` matches `sales`) |
+| <kbd>~</kbd> | type a path directly |
+| <kbd>Backspace</kbd> | delete a filter character, or leave a directory |
+| <kbd>Ctrl</kbd>+<kbd>U</kbd> | clear the filter |
+| <kbd>Esc</kbd> | back out one layer: clear filter, leave directory, return to your data, quit |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | quit |
+| <kbd>Ctrl</kbd>+<kbd>O</kbd> | return here from anywhere, including during a load |
+
+<kbd>q</kbd> does not quit here — plain characters go into the filter. The control
+bar shows what <kbd>Esc</kbd> will do next.
 
 ## Where the list comes from
 
-Datasets are gathered from three places, and datui needs no setup for two of them.
+The list is grouped by *root* — a directory datui looks in. Sections appear in this
+order:
 
-**Recent** — datasets you have opened before, most recent first. For data that lives
-on a mount this is usually what you want, so it leads.
+| # | section | source | shown when empty |
+|---|---|---|---|
+| 1 | `RECENT` | datasets you have opened, most recent first | no |
+| 2 | a configured directory | `[data] directories`, in the order you list them | yes |
+| 3 | directories of recent datasets | added when you open something | no |
+| 4 | the current directory | where you launched datui | yes |
+| 5 | `ELSEWHERE` | [desktop places](#desktop-places) | no |
 
-**Configured directories** — set in your config, for places you visit often:
+A directory reached more than one way appears once, under the earliest of these
+that names it. A root on a network filesystem is marked `network`; one that cannot
+be read is marked `unavailable` rather than hidden.
+
+Sections fold with <kbd>←</kbd> and <kbd>→</kbd>. A folded section shows how many
+rows it is hiding, and stays folded until you expand it or restart datui.
+
+Filtering keeps the grouping, so a match always shows which root it came from.
+
+### Adding a root
+
+Name it in your config. This is the only explicit way, and the only one that
+keeps a place listed when it is empty or its mount is down (it shows as
+`unavailable` rather than disappearing):
 
 ```toml
 [data]
-directories = ["/mnt/data", "~/datasets"]
+directories = ["/mnt/data", "~/datasets", "$WORK/warehouse"]
 ```
 
-Think of this like `PATH`: a short list of *places*. datui records nothing about what
-it finds in them.
+`~` and `$VAR` are expanded.
 
-**The current directory** — where you launched datui. Useful for local exports and
-fixtures, though the big datasets usually live elsewhere, which is why it comes last.
+Otherwise roots accumulate on their own: **opening a dataset adds the directory
+holding it**, so somewhere on a mount only has to be found by hand once. Press
+<kbd>~</kbd> to type a path, open something, and the place is listed from then on.
+Roots gathered this way disappear again when they hold nothing.
 
-**Elsewhere** — directories your desktop records you opening data files from. See
-below.
+### Desktop places
 
-### Opening something teaches datui where it lives
-
-Open a dataset on a mount and the directory holding it becomes somewhere datui
-looks from then on. You never configure the association between "my code is here"
-and "my data is over there" — you establish it by using it once.
-
-So a brand-new install starts empty, and the way out is <kbd>~</kbd>: type a path
-directly. After that the place is remembered.
-
-### Places your desktop knows about
-
-A fresh install has no recents of its own, so it has nowhere to point you. To help
-with that, datui reads `recently-used.xbel` — the freedesktop list your file manager
-and GTK applications write — and offers the **directories** it mentions.
-
-**Only the directories, never the file names.** That list holds whatever you last
-opened anywhere on the machine, and it is regularly something you would not want on
-a screen you are sharing: a bank export, a password vault dump. Every one of those
-is a perfectly valid CSV. So these places are listed unexpanded, under `ELSEWHERE`,
-and nothing inside one is shown until you press <kbd>Enter</kbd> on it:
+datui reads freedesktop's `recently-used.xbel` — written by file managers and GTK
+applications — and offers the **directories** it mentions. Never the file names:
+those places are listed unexpanded under `ELSEWHERE`, and their contents appear
+only after you press <kbd>Enter</kbd>.
 
 ```
   ELSEWHERE                        opened elsewhere · press Enter to look
     ~/Downloads/                 dir
 ```
 
-Turn it off entirely with:
+datui reads that file, never writes to it, and sends nothing anywhere. To ignore
+it:
 
 ```toml
 [data]
 use_desktop_recents = false
 ```
 
-datui reads this file and nothing else about your desktop, never writes to it, and
-never sends anything anywhere.
-
 ## What counts as a dataset
-
-The home screen lists datasets, not files. That means:
 
 | on disk | shown as |
 |---|---|
 | `customers.parquet` | one dataset |
 | `sales/year=2024/…`, `sales/year=2025/…` | one row, `sales · hive` |
 | `exports/` holding several matching Parquet files | one row, `exports · multi` |
-| a folder of source code with a stray CSV in it | a folder to look inside |
-
-Collapsing a hive dataset into a single row is the part that saves the most typing:
-its path is a directory tree, and tab-completion walks you down into the partitions
-rather than stopping at the dataset.
+| a directory of source code with a stray CSV in it | a directory to enter |
 
 ## Reading the columns
-
-Each row shows what can be known **without reading any data**:
 
 ```
 sales          hive     2.4M × 18     340 MB     2d
                         rows × cols   size       last modified
 ```
 
-Row and column counts come from Parquet footers, so they are free. A CSV's row count
-cannot be known without scanning the whole file, so datui leaves it blank rather than
-guessing. The preview pane on the right shows the full schema for Parquet datasets,
-with each type in the same colour the table will use once opened.
+Row and column counts come from Parquet footers, summed across at most 64 files for
+hive and multi-file datasets. A dataset larger than that shows `? × 39` — its width
+is known, its length is not. Formats that need a scan to count rows (CSV among them)
+show neither.
 
-For a hive or multi-file dataset, datui sums the footers of up to 64 files. Past that
-the row count is left blank rather than reported as a partial total — a home screen
-that stalls on your largest dataset would be worse than one that admits it does not
-know.
+Rows are measured a few per frame, and only those on screen, so a directory of large
+datasets appears immediately and the counts fill in. Measurements are kept for the
+session.
 
-## Keys
+The preview pane shows the full schema for Parquet datasets, each type in the colour
+the table will use.
 
-| key | does |
-|---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> | move |
-| <kbd>Enter</kbd> | open the dataset, or descend into a directory |
-| type anything | filter by name; matching is fuzzy, so `sal` finds `sales` |
-| <kbd>~</kbd> | type a path directly |
-| <kbd>Backspace</kbd> | delete a filter character, or leave a directory |
-| <kbd>Ctrl</kbd>+<kbd>U</kbd> | clear the filter |
-| <kbd>Esc</kbd> | back out one layer: clear the filter, leave a directory, return to your data — and quit once there is nothing left to back out of |
-| <kbd>Ctrl</kbd>+<kbd>C</kbd> | quit |
-| <kbd>Ctrl</kbd>+<kbd>O</kbd> | return here from anywhere, even mid-load |
+## Loading
 
-Note that <kbd>q</kbd> does **not** quit here, unlike the table view: every plain
-character goes into the filter, or you could never search for `quarterly`. The
-control bar always shows what <kbd>Esc</kbd> will do next.
+<kbd>Ctrl</kbd>+<kbd>O</kbd> works while a dataset is loading; scanning runs off
+the interface thread.
 
-<kbd>Ctrl</kbd>+<kbd>O</kbd> works while a dataset is still loading, so opening a
-large file by mistake costs one keystroke rather than a wait. Scanning happens off
-the interface thread, so the screen keeps responding throughout.
-
-Leaving a load **abandons** it rather than cancelling it: Polars has no way to stop
-a scan once it has started, so the work runs to completion in the background and its
-result is discarded. You stop waiting for it, and it can never overwrite whatever you
-opened instead — but it does keep using CPU until it finishes.
+Leaving a load abandons it rather than cancelling it. The scan runs to completion
+in the background and its result is discarded — it cannot overwrite whatever you
+open instead, but it does use CPU until it finishes.
 
 ## What datui remembers
 
-**One thing: a list of recently opened paths**, in your cache directory. Everything
-else on this screen — including the desktop places above — is read at draw time and
-forgotten when datui exits.
-
-This is deliberate. datui is not a data catalogue: there is nothing to register,
-nothing to curate, and no metadata store to go stale. Clearing the cache
-(`datui --clear-cache`) loses the ordering of that list and nothing else.
+A list of recently opened paths, in the cache directory. Everything else on this
+screen is read when the screen is drawn. `datui --clear-cache` removes the list.
 
 ## Plain terminals
 
-The screen above uses box-drawing and arrow characters. On a terminal that is not
-running a UTF-8 locale those would render as replacement boxes, so datui checks the
-locale and falls back to plain ASCII:
+On a terminal without a UTF-8 locale, datui falls back to ASCII:
 
 ```
   > _  type to filter
@@ -168,34 +150,27 @@ locale and falls back to plain ASCII:
   > sales                        hive       2.4M x 18    340 MB    2d
 ```
 
-Override the detection if it guesses wrong:
+Override the detection with:
 
 ```toml
 [display]
 unicode = "auto"    # "auto" (default), "always", or "never"
 ```
 
-datui's interface uses no Nerd Font characters anywhere, so no patched font is
-needed. (The Omarchy menu entry below does use one, because Omarchy provides it.)
+No Nerd Font characters are used anywhere, so no patched font is needed.
 
 ## Desktop launchers
 
-datui installs a freedesktop entry at `/usr/share/applications/datui.desktop`, so it
-appears in whatever launcher your desktop uses — GNOME, KDE, rofi, wofi, and
-Omarchy's menu under **Apps** — with no per-desktop configuration.
+datui installs `/usr/share/applications/datui.desktop`, so it appears in GNOME,
+KDE, rofi, wofi and Omarchy's menu under **Apps**. Its keywords include `data`,
+`parquet`, `dataframe` and `csv`.
 
-Launching it with no file opens the home screen. The entry also declares the formats
-datui reads, so a file manager offers "Open with datui" for a Parquet or CSV file.
-That makes datui *available* as a handler; whether it becomes the default stays your
-choice, in `mimeapps.list`.
-
-Searching works on the entry's keywords, so `data`, `parquet`, `dataframe` and
-`csv` all find it.
-
-On Omarchy specifically, see [Theming from Your System](system-theming.md) for making
-datui match your desktop theme.
+Launching with no file opens the home screen. The entry declares the formats datui
+reads, so a file manager offers "Open with datui" for them; which application is
+the *default* for a format stays your choice in `mimeapps.list`.
 
 ## See Also
 
-- [Configuration](configuration.md) — including `[data] directories`
+- [Configuration](configuration.md) — `[data] directories` and the rest
+- [Theming from Your System](system-theming.md)
 - [Loading Data](loading-data.md) — opening datasets from the command line

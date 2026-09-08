@@ -3,9 +3,11 @@ where Ctrl+O returns you from anywhere.
 
 NAVIGATION
   ↑ / ↓ / k / j     Move the selection
-  Enter             Open the selected dataset, or descend into a directory
+  ← / → / h / l     Collapse or expand a section
+  Enter             Open the dataset, enter the directory, or fold the section
   Backspace         Leave a directory you descended into
-  Esc               Return to the data you already had open
+  Esc               Back out one layer, and quit once there is nothing left
+  Ctrl+C            Quit
 
 FINDING
   (type)            Filter by name; matching is fuzzy, so "sal" finds "sales"
@@ -13,10 +15,14 @@ FINDING
   ~                 Type a path directly, for somewhere datui has not seen yet
   Ctrl+U            Clear the filter or path input
 
-WHERE THESE COME FROM
+WHERE THESE COME FROM, IN ORDER
   Recent            Datasets you have opened before, most recent first
-  Configured        Directories from [data] directories in your config
+  Configured        Directories from [data] directories, in the order listed
+  Recent dirs       Directories of datasets you have opened
   Current directory Where you launched datui
+  Elsewhere         Directories your desktop recorded, listed unexpanded
+
+  Filtering keeps this grouping, so a match shows which root it came from.
 
   Opening a dataset also teaches datui about the directory holding it, so a
   dataset on a mount only has to be found by hand once.

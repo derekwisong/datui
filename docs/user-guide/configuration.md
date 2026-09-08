@@ -29,10 +29,8 @@ Settings are applied in this order (later values override earlier ones):
 
 ## Importing Other Config Files
 
-The top-level `import` key names other TOML files to merge in *before* your own
-settings. It is the seam that lets an external theme system — Omarchy, chezmoi,
-home-manager, a dotfiles repo — restyle datui without datui knowing anything
-about that system.
+The top-level `import` key names TOML files to merge in before this file's own
+settings:
 
 ```toml
 # ~/.config/datui/config.toml
@@ -42,54 +40,33 @@ import = ["~/.local/state/omarchy/current/theme/datui.toml"]
 row_numbers = true
 ```
 
-Rules:
-
 - **Order is precedence.** Imports apply in the order listed, each overriding the
-  last. Your own file's values are applied last, so they always win over an
-  imported theme.
-- **Imports may nest.** An imported file can declare its own `import`; those are
-  merged before the file that pulled them in. Chains are capped at 8 files, and a
-  cycle is reported as an error rather than followed.
-- **Paths** may be absolute, relative to the importing file's directory, or use
-  `~` and `$VAR` / `${VAR}`.
-- **A missing file is skipped** with a warning on stderr, and datui starts
-  normally on the remaining layers. That is deliberate: a generated theme file
-  may not exist yet (or at all, on another machine), and that must not stop datui
-  from running.
-- **A file that exists but is broken is an error.** If an import cannot be read
-  or parsed, datui reports the file and exits, rather than quietly looking like
-  the theme failed to apply.
+  last; this file's own values are applied after all of them.
+- **Imports nest.** An imported file may declare its own `import`, merged before
+  it. Chains are capped at 8 files; a cycle is an error.
+- **Paths** may be absolute, relative to the importing file, or use `~` and
+  `$VAR` / `${VAR}`.
+- **A missing file is skipped** with a warning on stderr — datui starts on the
+  remaining layers.
+- **A file that exists but cannot be read or parsed is fatal**, and datui names
+  it.
 
-### Following your system theme
+To stop following an imported theme, delete the `import` line.
 
-> For a full walkthrough — including the Omarchy template and per-theme overrides —
-> see [Theming from Your System](system-theming.md).
-
-datui does not detect any particular desktop or theme manager. Point `import` at
-whatever file your system generates, exactly as Alacritty's `general.import` and
-btop's `color_theme` do. On [Omarchy](https://omarchy.org/), a template rendered
-to `~/.local/state/omarchy/current/theme/datui.toml` is picked up by the import
-line shown above, and `omarchy theme set <name>` restyles datui along with
-everything else.
-
-To stop following a system theme, delete the `import` line. datui has no opinion
-about it either way — with no `import`, you get datui's stock theme.
+See [Theming from Your System](system-theming.md) for the Omarchy template and
+per-theme overrides.
 
 ### A caveat when overriding an imported color
 
 datui decides whether you set a color by comparing it against the built-in
-default. A color you set *to the same value as datui's default* is
-indistinguishable from one you never set, so it will not override an imported
-theme.
+default, so a color set to *the same value as datui's default* looks unset and
+will not override an import.
 
-For example, datui's default `error` is `red`. Given an import that sets `error`
-to `#FF5345`, writing `error = "red"` in your own config has no effect — the
-imported value wins. Use an explicit form the default does not already use (for
-instance `#ff0000`, or `indexed(9)`) when you need to override an imported color
-back to something datui also uses by default.
+datui's default `error` is `red`. Given an import setting `error` to `#FF5345`,
+writing `error = "red"` has no effect. Use a form the default does not already
+use — `#ff0000`, or `indexed(9)`.
 
-This only affects colors you want to pin to one of datui's own default values;
-every other override behaves as expected.
+Colors set to any other value override imports normally.
 
 ## Configuration Sections
 
@@ -267,29 +244,21 @@ Default limit for how many rows are used when building chart data (display and e
 row_limit = 10000  # Max rows for chart data (1 to 10_000_000). Default 10000
 ```
 
-### Data Directories
-
-Places the [home screen](home-screen.md) looks for datasets:
+### Data
 
 ```toml
 [data]
-directories = ["/mnt/data", "~/datasets"]
+directories = ["/mnt/data", "~/datasets"]   # roots for the home screen
+use_desktop_recents = true                  # offer directories from the desktop's recent-files list
 ```
 
-Think of this like `PATH`: a short list of *places*, not a catalogue. datui records
-nothing about the datasets it finds there.
-
-You usually need this only for directories you have not visited yet — opening a
-dataset teaches datui about the directory holding it automatically.
-
-datui also offers directories your desktop records you opening data files from, as
-unexpanded places you can step into. Only the directories are used, never the file
-names. Turn it off with:
-
-```toml
-[data]
-use_desktop_recents = false
-```
+- **directories** — directories the [home screen](home-screen.md) lists datasets
+  from. `~` and `$VAR` are expanded; order is preserved. Directories you open
+  datasets from are added automatically, so this is for places you have not
+  visited yet, and for places you want listed even when empty.
+- **use_desktop_recents** — when `true` (default), directories named in
+  freedesktop's `recently-used.xbel` are offered as places to enter. Only the
+  directories are used, never the file names. Set `false` to ignore that file.
 
 ### Theme Mode (light and dark terminals)
 

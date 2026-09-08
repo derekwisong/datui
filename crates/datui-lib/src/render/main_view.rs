@@ -101,6 +101,7 @@ pub fn home_control_keys(
         keys.push(("Esc", "Cancel"));
     } else {
         keys.push(("type", "Filter"));
+        keys.push((g.updown_lr, "Fold"));
         keys.push(("~", "Path"));
         if browsing {
             keys.push((g.backspace, "Up"));
@@ -121,7 +122,11 @@ pub fn home_control_keys(
         ));
     }
 
-    keys.push(("^C", "Quit"));
+    // Esc already reads "Quit" when there is nothing left to back out of; saying it
+    // twice is noise.
+    if !keys.iter().any(|(_, label)| *label == "Quit") {
+        keys.push(("^C", "Quit"));
+    }
     keys
 }
 

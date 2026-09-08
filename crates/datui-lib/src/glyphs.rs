@@ -33,14 +33,11 @@ pub struct Glyphs {
     /// Section collapse markers; both must be the same display width.
     pub collapsed: &'static str,
     pub expanded: &'static str,
-    /// Keycap names for the control bar.
-    pub enter: &'static str,
-    pub backspace: &'static str,
+    /// Keycap names for the control bar. Named keys are spelled out there, matching
+    /// the rest of datui, so only the arrows need a fallback.
     pub updown: &'static str,
     /// Left/right pair, for the fold hint.
     pub updown_lr: &'static str,
-    /// Tab key, for the sort hint.
-    pub tab: &'static str,
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -53,11 +50,8 @@ const UNICODE: Glyphs = Glyphs {
     times: "×",
     collapsed: "▸ ",
     expanded: "▾ ",
-    enter: "⏎",
-    backspace: "⌫",
     updown: "↑↓",
     updown_lr: "←→",
-    tab: "⇥",
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -70,11 +64,8 @@ const ASCII: Glyphs = Glyphs {
     times: "x",
     collapsed: "+ ",
     expanded: "- ",
-    enter: "Enter",
-    backspace: "Bksp",
     updown: "Up/Dn",
     updown_lr: "Lt/Rt",
-    tab: "Tab",
 };
 
 /// What the user asked for, from `[display] unicode`.

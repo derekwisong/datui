@@ -16,7 +16,7 @@ here from anywhere.
 ▾ ~/work/analysis                                     current directory
   raw_export.csv                                        1.2 GB    3h
   notes/                         dir
-↑↓ Move  ⏎ Open  type Filter  ←→ Fold  ~ Path  Esc Quit
+Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
 ```
 
 ## Keys
@@ -271,6 +271,10 @@ Override the detection with:
 [display]
 unicode = "auto"    # "auto" (default), "always", or "never"
 ```
+
+Named keys are spelled out — `Enter`, `Tab`, `Bksp`, `Esc` — matching the rest of
+datui and avoiding symbols that many terminal fonts do not carry. Only the arrows are
+drawn as glyphs, and they fall back with everything else.
 
 No Nerd Font characters are used anywhere, so no patched font is needed.
 

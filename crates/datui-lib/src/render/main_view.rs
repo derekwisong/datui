@@ -58,8 +58,8 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
         MainViewContent::Analysis => {
             let mut pairs = vec![
                 ("Esc", "Back"),
-                ("↑↓", "Navigate"),
-                ("←→", "Scroll Columns"),
+                (crate::glyphs::get().updown, "Navigate"),
+                (crate::glyphs::get().updown_lr, "Scroll Columns"),
                 ("Tab", "Sidebar"),
                 ("Enter", "Select"),
             ];
@@ -94,15 +94,20 @@ pub fn home_control_keys(
     has_filter: bool,
     has_data: bool,
 ) -> Vec<(&'static str, &'static str)> {
+    // Named keys are spelled out — "Enter", "Tab", "Bksp" — matching the analysis and
+    // chart bars, and avoiding U+23CE and U+21E5, which plenty of terminal fonts do
+    // not carry. Only the arrows stay as glyphs: those are basic Arrows, present
+    // everywhere, and they have no compact spelling.
+    //
     // Ordered by what a narrow terminal can least afford to lose: the bar is cut from
     // the right, so the way out comes before the conveniences. At 70 columns this is
     // the difference between seeing "Esc Quit" and seeing nothing about leaving.
     let g = crate::glyphs::get();
-    let mut keys = vec![(g.enter, "Open"), (g.updown, "Move")];
+    let mut keys = vec![("Enter", "Open"), (g.updown, "Move")];
 
     if path_input_active {
         keys.push(("Esc", "Cancel"));
-        keys.push((g.tab, "Complete"));
+        keys.push(("Tab", "Complete"));
     } else {
         // Esc peels off one layer of context at a time, so label it with what it will
         // actually do next rather than a generic "Back".
@@ -121,13 +126,13 @@ pub fn home_control_keys(
         keys.push(("type", "Filter"));
         keys.push(("~", "Path"));
         if browsing {
-            keys.push((g.backspace, "Up"));
+            keys.push(("Bksp", "Up"));
         }
         keys.push((g.updown_lr, "Fold"));
         // The key is an action; which order is currently in effect is state, and it
         // belongs with the other state at the far end of the bar rather than dressed
         // up as something to press.
-        keys.push((g.tab, "Sort"));
+        keys.push(("Tab", "Sort"));
     }
 
     // Esc already reads "Quit" when there is nothing left to back out of; saying it

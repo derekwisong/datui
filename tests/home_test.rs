@@ -349,8 +349,6 @@ fn test_ascii_and_unicode_sets_cover_the_same_symbols() {
         ("rule", u.rule, a.rule),
         ("ellipsis", u.ellipsis, a.ellipsis),
         ("times", u.times, a.times),
-        ("enter", u.enter, a.enter),
-        ("backspace", u.backspace, a.backspace),
         ("updown", u.updown, a.updown),
     ] {
         assert!(!uv.is_empty(), "{name} unicode must not be empty");
@@ -371,8 +369,6 @@ fn test_ascii_set_is_actually_ascii() {
         ("rule", a.rule),
         ("ellipsis", a.ellipsis),
         ("times", a.times),
-        ("enter", a.enter),
-        ("backspace", a.backspace),
         ("updown", a.updown),
     ] {
         assert!(
@@ -406,8 +402,6 @@ fn test_no_nerd_font_glyphs_in_either_set() {
             set.rule,
             set.ellipsis,
             set.times,
-            set.enter,
-            set.backspace,
             set.updown,
         ] {
             for ch in value.chars() {

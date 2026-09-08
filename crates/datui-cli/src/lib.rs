@@ -208,6 +208,10 @@ pub struct Args {
     #[arg(long = "sheet", value_name = "SHEET")]
     pub excel_sheet: Option<String>,
 
+    /// Forget every recently opened dataset and exit; other caches are kept
+    #[arg(long = "clear-recents", action)]
+    pub clear_recents: bool,
+
     /// Clear all cache data and exit
     #[arg(long = "clear-cache", action)]
     pub clear_cache: bool,

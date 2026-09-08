@@ -78,7 +78,6 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             app.home.browsing.is_some(),
             !app.home.filter.is_empty(),
             app.data_table_state.is_some(),
-            app.home.sort,
         )),
     }
 }
@@ -94,7 +93,6 @@ pub fn home_control_keys(
     browsing: bool,
     has_filter: bool,
     has_data: bool,
-    sort: crate::home::SortMode,
 ) -> Vec<(&'static str, &'static str)> {
     // Ordered by what a narrow terminal can least afford to lose: the bar is cut from
     // the right, so the way out comes before the conveniences. At 70 columns this is
@@ -126,7 +124,10 @@ pub fn home_control_keys(
             keys.push((g.backspace, "Up"));
         }
         keys.push((g.updown_lr, "Fold"));
-        keys.push((g.tab, sort.label()));
+        // The key is an action; which order is currently in effect is state, and it
+        // belongs with the other state at the far end of the bar rather than dressed
+        // up as something to press.
+        keys.push((g.tab, "Sort"));
     }
 
     // Esc already reads "Quit" when there is nothing left to back out of; saying it
@@ -161,7 +162,7 @@ mod tests {
         // The bug this guards: the bar said "q Quit" while `q` typed into the filter,
         // so there was no discoverable way to leave the home screen.
         for (p, b, f, d) in all_states() {
-            for (key, _) in home_control_keys(p, b, f, d, crate::home::SortMode::Natural) {
+            for (key, _) in home_control_keys(p, b, f, d) {
                 assert_ne!(
                     key, "q",
                     "bare `q` advertised in state (path={p}, browsing={b}, filter={f}, data={d})"
@@ -173,7 +174,7 @@ mod tests {
     #[test]
     fn home_bar_always_offers_a_way_out() {
         for (p, b, f, d) in all_states() {
-            let keys = home_control_keys(p, b, f, d, crate::home::SortMode::Natural);
+            let keys = home_control_keys(p, b, f, d);
             assert!(
                 keys.iter().any(|(_, label)| *label == "Quit"),
                 "no quit offered in state (path={p}, browsing={b}, filter={f}, data={d})"
@@ -186,7 +187,7 @@ mod tests {
         // A narrow terminal cuts the bar from the right. Whatever survives has to
         // include how to leave.
         for (p, b, f, d) in all_states() {
-            let keys = home_control_keys(p, b, f, d, crate::home::SortMode::Natural);
+            let keys = home_control_keys(p, b, f, d);
             let escape_at = keys
                 .iter()
                 .position(|(key, _)| *key == "Esc")
@@ -203,7 +204,7 @@ mod tests {
     fn home_bar_labels_esc_with_what_it_will_do() {
         // Esc escalates, so the label has to track the state rather than say "Back".
         let esc = |p, b, f, d| {
-            home_control_keys(p, b, f, d, crate::home::SortMode::Natural)
+            home_control_keys(p, b, f, d)
                 .into_iter()
                 .find(|(key, _)| *key == "Esc")
                 .map(|(_, label)| label)
@@ -218,7 +219,7 @@ mod tests {
     #[test]
     fn home_bar_offers_up_only_while_browsing() {
         let has_up = |b| {
-            home_control_keys(false, b, false, false, crate::home::SortMode::Natural)
+            home_control_keys(false, b, false, false)
                 .iter()
                 .any(|(_, label)| *label == "Up")
         };

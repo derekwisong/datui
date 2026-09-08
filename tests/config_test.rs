@@ -1516,3 +1516,56 @@ fn test_recents_store_urls_verbatim() {
     let recents = cache.load_recents();
     assert_eq!(recents, vec![url], "a URL should round-trip unchanged");
 }
+
+#[test]
+fn test_a_single_recent_can_be_forgotten() {
+    // A recents list you cannot edit is one people stop trusting: an experiment, a
+    // file that would not open, something private — all land there, and clearing the
+    // whole cache to remove one is too blunt.
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let keep = temp_dir.path().join("keep.parquet");
+    let drop = temp_dir.path().join("private.csv");
+    fs::write(&keep, b"x").unwrap();
+    fs::write(&drop, b"x").unwrap();
+    cache.push_recent(&keep);
+    cache.push_recent(&drop);
+
+    cache.forget_recent(&drop.canonicalize().unwrap());
+
+    let recents = cache.load_recents();
+    assert!(recents.iter().any(|p| p.ends_with("keep.parquet")));
+    assert!(
+        !recents.iter().any(|p| p.ends_with("private.csv")),
+        "the forgotten entry should be gone: {recents:?}"
+    );
+}
+
+#[test]
+fn test_clearing_recents_leaves_other_caches_alone() {
+    // `--clear-cache` is too blunt for "forget where I have been": it would also
+    // discard query history and every measurement, costing speed for no reason.
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let dataset = temp_dir.path().join("a.parquet");
+    fs::write(&dataset, b"x").unwrap();
+    cache.push_recent(&dataset);
+    cache
+        .save_history_file("query", &["select 1".to_string()])
+        .unwrap();
+
+    cache.clear_recents();
+
+    assert!(cache.load_recents().is_empty(), "recents should be gone");
+    assert_eq!(
+        cache.load_history_file("query").unwrap(),
+        vec!["select 1".to_string()],
+        "query history should survive"
+    );
+}

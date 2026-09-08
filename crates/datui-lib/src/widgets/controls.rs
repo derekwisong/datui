@@ -333,7 +333,16 @@ impl Widget for &Controls {
 
         constraints.push(Constraint::Fill(1));
         if self.row_count.is_some() {
-            constraints.push(Constraint::Length(20));
+            // A row count fits in twenty columns; a view's own caption may not, and
+            // truncating it mid-word ("by recent · 78 dat") is worse than giving it
+            // the room it asked for.
+            let width = self
+                .caption
+                .as_ref()
+                .map(|c| c.chars().count() as u16 + 1)
+                .unwrap_or(20)
+                .max(20);
+            constraints.push(Constraint::Length(width));
         }
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);

@@ -225,6 +225,23 @@ impl CacheManager {
             .collect()
     }
 
+    /// Forget a single recently opened path.
+    ///
+    /// A recents list you cannot edit is one people stop trusting: an experiment, a
+    /// file that would not open, something private — all land there, and clearing the
+    /// whole cache to remove one is too blunt.
+    pub fn forget_recent(&self, path: &std::path::Path) {
+        let target = path.to_string_lossy().into_owned();
+        let _ = self.update_history_file("recents", |recents| {
+            recents.retain(|p| p != &target);
+        });
+    }
+
+    /// Forget every recently opened path, leaving other caches alone.
+    pub fn clear_recents(&self) {
+        let _ = self.update_history_file("recents", |recents| recents.clear());
+    }
+
     /// Record a path as most recently opened, de-duplicating and capping the list.
     ///
     /// Failures are ignored: not being able to write a convenience list must never

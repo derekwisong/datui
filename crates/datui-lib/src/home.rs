@@ -250,9 +250,16 @@ pub enum SortMode {
 }
 
 impl SortMode {
-    pub fn label(self) -> &'static str {
+    /// What this mode is doing *here*.
+    ///
+    /// The default orders each section by whatever suits it — recency for a list of
+    /// things you opened, name for a directory you are reading. Labelling that
+    /// "natural" names the idea rather than the behaviour, and leaves the user to
+    /// guess which of the two they are looking at. So the label follows the cursor.
+    pub fn label_in(self, section_is_recency_ordered: bool) -> &'static str {
         match self {
-            SortMode::Natural => "natural",
+            SortMode::Natural if section_is_recency_ordered => "recent",
+            SortMode::Natural => "name",
             SortMode::Size => "size",
             SortMode::Modified => "modified",
             SortMode::Rows => "rows",

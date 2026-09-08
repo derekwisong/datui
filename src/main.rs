@@ -29,6 +29,20 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
         }
     }
 
+    if args.clear_recents {
+        match datui::CacheManager::new(APP_NAME) {
+            Ok(cache) => {
+                cache.clear_recents();
+                println!("Recently opened datasets forgotten");
+                return Ok(Some(()));
+            }
+            Err(_e) => {
+                println!("No recents to clear");
+                return Ok(Some(()));
+            }
+        }
+    }
+
     if args.clear_cache {
         match datui::CacheManager::new(APP_NAME) {
             Ok(cache) => {
@@ -153,6 +167,7 @@ mod tests {
             debug: false,
             excel_sheet: None,
             clear_cache: false,
+            clear_recents: false,
             template: None,
             remove_templates: false,
             sampling_threshold: None,

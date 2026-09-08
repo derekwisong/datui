@@ -1026,6 +1026,8 @@ pub struct App {
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
     home_probes_inflight: Vec<PathBuf>,
+    /// Set while the confirmation modal is asking about forgetting every recent.
+    pending_clear_recents: bool,
     /// Why the last open failed, shown on the home screen when the error is dismissed
     /// and there is nothing to fall back to.
     last_load_error: Option<String>,
@@ -1483,6 +1485,7 @@ impl App {
             home_generation: 0,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
+            pending_clear_recents: false,
             home_schema_cache: HashMap::new(),
             original_file_format: None,
             original_file_delimiter: None,
@@ -1805,6 +1808,30 @@ impl App {
         Some(AppEvent::Exit)
     }
 
+    /// Drop the highlighted dataset from the recents list.
+    ///
+    /// Only from the Recent section: a row under a directory is a file on disk, and
+    /// forgetting it there would either do nothing or imply a deletion datui is not
+    /// going to perform.
+    fn home_forget_selected(&mut self) {
+        let in_recents = self
+            .home
+            .selected_section()
+            .and_then(|i| self.home.sections.get(i))
+            .map(|s| s.subtitle.is_none())
+            .unwrap_or(false);
+        if !in_recents {
+            self.home.status = Some("Only entries under Recent can be forgotten".into());
+            return;
+        }
+        let Some(entry) = self.home.selected_entry() else {
+            return;
+        };
+        self.cache.forget_recent(&entry.path);
+        self.home.status = Some(format!("Forgot {}", entry.name));
+        self.home_refresh();
+    }
+
     /// Collapse or expand the section the cursor is in.
     ///
     /// Collapsing moves the cursor to the header, so the section the user just folded
@@ -1973,6 +2000,22 @@ impl App {
                     self.home.select_first_entry();
                 }
             }
+            // Forget the highlighted entry. Only meaningful in Recent — elsewhere the
+            // row is a real directory listing, and datui does not delete files.
+            // Shift+Delete forgets the lot. It sits next to the key that forgets
+            // one, so it asks first — an accidental press should not silently throw
+            // away every place the user has been.
+            KeyCode::Delete if event.modifiers.contains(KeyModifiers::SHIFT) => {
+                let count = self.cache.load_recents().len();
+                if count == 0 {
+                    self.home.status = Some("Nothing to forget".into());
+                } else {
+                    self.pending_clear_recents = true;
+                    self.confirmation_modal
+                        .show(format!("Forget all {count} recently opened datasets?"));
+                }
+            }
+            KeyCode::Delete => self.home_forget_selected(),
             KeyCode::Char('~') if self.home.filter.is_empty() => {
                 self.home.path_input_active = true;
                 self.home.status = None;
@@ -3187,6 +3230,16 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
+                        // Forgetting every recent is checked first: it is the only
+                        // confirmation here that is not about overwriting a file.
+                        if self.pending_clear_recents {
+                            self.pending_clear_recents = false;
+                            self.confirmation_modal.hide();
+                            self.cache.clear_recents();
+                            self.home_refresh();
+                            self.home.status = Some("Recents forgotten".into());
+                            return None;
+                        }
                         // User confirmed overwrite: chart export first, then dataframe export
                         if let Some((path, format, title, width, height)) =
                             self.pending_chart_export.take()
@@ -3230,6 +3283,7 @@ impl App {
                             });
                         }
                     } else {
+                        self.pending_clear_recents = false;
                         // User cancelled: if chart export overwrite, reopen chart export modal with path pre-filled
                         if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
                             self.chart_export_modal.reopen_with_path(&path, format);
@@ -3244,6 +3298,9 @@ impl App {
                     }
                 }
                 KeyCode::Esc => {
+                    // Disarmed on every exit from the modal, so a declined confirmation
+                    // cannot fire against whatever the *next* one is asking about.
+                    self.pending_clear_recents = false;
                     // Cancel: if chart export overwrite, reopen chart export modal with path pre-filled
                     if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
                         self.chart_export_modal.reopen_with_path(&path, format);
@@ -9540,12 +9597,21 @@ impl Widget for &mut App {
                 .iter()
                 .filter(|r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_dataset()))
                 .count();
+            // State, not actions: how many datasets are listed and what order they
+            // are in. The Tab key that changes it lives with the other keys.
+            let in_recents = self
+                .home
+                .selected_section()
+                .and_then(|i| self.home.sections.get(i))
+                .map(|s| s.subtitle.is_none())
+                .unwrap_or(false);
+            let order = self.home.sort.label_in(in_recents);
             let caption = if self.home.listing_in_flight && datasets == 0 {
                 "Looking…".to_string()
             } else if datasets == 1 {
-                "1 dataset".to_string()
+                format!("by {order}  ·  1 dataset")
             } else {
-                format!("{datasets} datasets")
+                format!("by {order}  ·  {datasets} datasets")
             };
             controls = controls.with_caption(Some(caption));
         }

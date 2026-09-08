@@ -4,7 +4,9 @@ where Ctrl+O returns you from anywhere.
 NAVIGATION
   ↑ / ↓ / k / j     Move the selection
   ← / → / h / l     Collapse or expand a section
-  Tab               Cycle the sort: natural, size, modified, rows
+  Tab               Cycle the sort. The control bar names the order in effect
+                    where the cursor is: "recent" under Recent, "name" under a
+                    directory, or size / modified / rows once chosen.
   Enter             Open the dataset, enter the directory, or fold the section
   Backspace         Leave a directory you descended into
   Esc               Back out one layer, and quit once there is nothing left
@@ -16,6 +18,8 @@ FINDING
   Backspace         Delete a filter character
   ~                 Type a path directly, for somewhere datui has not seen yet
   Tab               (while typing a path) complete it
+  Delete            Forget the highlighted entry (under Recent only)
+  Shift+Delete      Forget every recent entry, after confirming
   Ctrl+U            Clear the filter or path input
 
 WHERE THESE COME FROM, IN ORDER

@@ -29,7 +29,9 @@ here from anywhere.
 | type anything | filter by name (fuzzy: `sal` matches `sales`) |
 | <kbd>~</kbd> | type a path directly; <kbd>Tab</kbd> completes it |
 | <kbd>Backspace</kbd> | delete a filter character, or leave a directory |
-| <kbd>Tab</kbd> | cycle the sort: natural, size, modified, rows |
+| <kbd>Tab</kbd> | cycle the sort: default, size, modified, rows |
+| <kbd>Delete</kbd> | forget the highlighted entry (under `RECENT` only) |
+| <kbd>Shift</kbd>+<kbd>Delete</kbd> | forget every recent entry, after confirming |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | clear the filter |
 | <kbd>Esc</kbd> | back out one layer: clear filter, leave directory, return to your data, quit |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | quit |
@@ -108,14 +110,14 @@ use_desktop_recents = false
 
 ## Sorting
 
-<kbd>Tab</kbd> cycles how rows are ordered inside each section, and the control bar
-shows which is active:
+<kbd>Tab</kbd> cycles how rows are ordered inside each section. The control bar names
+the order currently in effect where the cursor is:
 
-- **natural** — recency under `RECENT`, name under a directory
-- **size**, **modified**, **rows** — largest, most recently changed, most rows
+- the default suits each section — `recent` under `RECENT`, `name` under a directory
+- `size`, `modified` and `rows` order every section the same way
 
-Rows with nothing to sort by go last rather than counting as zero, so "largest
-first" does not open with datasets whose size has not been read yet.
+Rows with nothing to sort by go last rather than counting as zero, so `size` does not
+open with a page of datasets whose size has not been read yet.
 
 ## When a dataset will not open
 
@@ -234,6 +236,16 @@ Two things, both in the cache directory:
 - **What it measured** — row and column counts, and column names — each stamped
   with the size and modification time it was taken from, so a dataset that has
   changed invalidates itself.
+
+<kbd>Delete</kbd> forgets a single entry under `RECENT` — for an experiment, a file
+that would not open, or something you would rather not have on screen. Only under
+`RECENT`: a row inside a directory is a real file, and datui does not delete files.
+
+<kbd>Shift</kbd>+<kbd>Delete</kbd> forgets the whole list. It asks first — it sits
+next to the key that forgets one entry, and an accidental press should not silently
+discard every place you have been. `datui --clear-recents` does the same from the
+command line.
+`datui --clear-cache` clears everything, including measurements and query history.
 
 Both are caches, not a catalogue. There is nothing to register, nothing to curate,
 and nothing that cannot be rebuilt by looking again. `datui --clear-cache` removes

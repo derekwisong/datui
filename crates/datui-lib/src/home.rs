@@ -140,6 +140,19 @@ const NETWORK_FILESYSTEMS: &[&str] = &[
     "autofs",
 ];
 
+/// Whether `path` is somewhere reading it could block: an object-store or HTTP URL,
+/// or a directory on a network filesystem.
+///
+/// This is the predicate the home screen uses to decide what it may touch on the
+/// interface thread. It answers from the string and the mount table alone, never by
+/// reaching for the thing itself.
+pub fn is_remote_path(path: &Path) -> bool {
+    !matches!(
+        crate::source::input_source(path),
+        crate::source::InputSource::Local(_)
+    ) || is_network_path(path)
+}
+
 /// Whether `path` sits on a network filesystem, according to the mount table.
 ///
 /// Reads `/proc/self/mountinfo` and takes the longest mount point that is a prefix of
@@ -239,7 +252,7 @@ impl Row<'_> {
 }
 
 /// Home screen state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HomeState {
     pub sections: Vec<Section>,
     /// Fuzzy filter over every row in every section.
@@ -254,6 +267,15 @@ pub struct HomeState {
     pub browsing: Option<PathBuf>,
     /// Transient message (e.g. a path that does not exist).
     pub status: Option<String>,
+    /// How a path is judged to be network-backed. Swappable so the "never touch a
+    /// remote path on this thread" rule can be tested without a remote.
+    pub network_check: fn(&Path) -> bool,
+    /// Roots the current listing was built from, in order.
+    pub root_paths: Vec<PathBuf>,
+    /// Network roots whose listing has come back, keyed by path.
+    pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
+    /// Network roots that did not answer.
+    pub unreachable: std::collections::HashSet<PathBuf>,
     /// Set while rows on screen are still unmeasured, so the main loop knows to draw
     /// another frame and measure the next batch.
     pub pending_enrich: bool,
@@ -266,6 +288,28 @@ pub struct HomeState {
     /// Use [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`] rather
     /// than touching this directly.
     pub collapsed: std::collections::HashSet<String>,
+}
+
+impl Default for HomeState {
+    fn default() -> Self {
+        Self {
+            sections: Vec::new(),
+            filter: String::new(),
+            selected: 0,
+            scroll: 0,
+            path_input_active: false,
+            path_input: String::new(),
+            browsing: None,
+            status: None,
+            network_check: is_remote_path,
+            root_paths: Vec::new(),
+            probed: std::collections::HashMap::new(),
+            unreachable: std::collections::HashSet::new(),
+            pending_enrich: false,
+            enriched: std::collections::HashMap::new(),
+            collapsed: std::collections::HashSet::new(),
+        }
+    }
 }
 
 /// Case-insensitive subsequence match, the cheap half of fuzzy finding.
@@ -314,18 +358,45 @@ impl HomeState {
         recents: &[PathBuf],
         desktop_dirs: &[PathBuf],
     ) -> Vec<Root> {
+        Self::roots_with(config_dirs, recents, desktop_dirs, is_remote_path)
+    }
+
+    /// As [`HomeState::roots`], with the network test injected.
+    pub fn roots_with(
+        config_dirs: &[PathBuf],
+        recents: &[PathBuf],
+        desktop_dirs: &[PathBuf],
+        is_network: fn(&Path) -> bool,
+    ) -> Vec<Root> {
         let mut roots: Vec<Root> = Vec::new();
         let mut seen: Vec<PathBuf> = Vec::new();
 
         let push =
             |path: PathBuf, origin: RootOrigin, roots: &mut Vec<Root>, seen: &mut Vec<PathBuf>| {
-                let key = path.canonicalize().unwrap_or_else(|_| path.clone());
+                // The network test reads only the mount table, so it is safe on a
+                // path that would otherwise block.
+                let network = is_network(&path);
+
+                // Canonicalising and listing both touch the filesystem. On an
+                // unreachable NFS share those block — for seconds on a `soft` mount,
+                // and indefinitely and uninterruptibly on a `hard` one, which is the
+                // default. Nothing on the interface thread may do that, so a remote
+                // root is taken at face value and probed in the background instead.
+                let key = if network {
+                    path.clone()
+                } else {
+                    path.canonicalize().unwrap_or_else(|_| path.clone())
+                };
                 if seen.contains(&key) {
                     return;
                 }
                 seen.push(key);
-                let available = std::fs::read_dir(&path).is_ok();
-                let network = is_network_path(&path);
+
+                let available = if network {
+                    true // unknown until probed; assumed present so it is listed
+                } else {
+                    std::fs::read_dir(&path).is_ok()
+                };
                 roots.push(Root {
                     path,
                     origin,
@@ -343,9 +414,13 @@ impl HomeState {
         // than "recent" does. It is still listed last, because code is usually here
         // and data usually is not.
         let cwd = std::env::current_dir().ok();
-        let cwd_key = cwd
-            .as_ref()
-            .map(|c| c.canonicalize().unwrap_or_else(|_| c.clone()));
+        let cwd_key = cwd.as_ref().map(|c| {
+            if is_network(c) {
+                c.clone()
+            } else {
+                c.canonicalize().unwrap_or_else(|_| c.clone())
+            }
+        });
 
         // A recent dataset implies its containing directory is a place worth showing.
         for recent in recents {
@@ -353,9 +428,13 @@ impl HomeState {
                 if parent.as_os_str().is_empty() {
                     continue;
                 }
-                let key = parent
-                    .canonicalize()
-                    .unwrap_or_else(|_| parent.to_path_buf());
+                let key = if is_network(parent) {
+                    parent.to_path_buf()
+                } else {
+                    parent
+                        .canonicalize()
+                        .unwrap_or_else(|_| parent.to_path_buf())
+                };
                 if Some(&key) == cwd_key.as_ref() {
                     continue;
                 }
@@ -413,11 +492,22 @@ impl HomeState {
         }
 
         // Recents that still exist, most recent first.
+        let network_check = self.network_check;
         let recent_rows: Vec<Entry> = recents
             .iter()
-            .filter(|p| p.exists())
+            // `exists()` stats the path, so a remote entry is taken on trust and
+            // dropped later only if its probe says it is gone.
+            .filter(|p| network_check(p) || p.exists())
             .take(15)
-            .map(|p| entry_for_path(p))
+            .map(|p| {
+                // A probe of the containing root has already classified and measured
+                // this; reuse it, so the same dataset does not read as `hive` under
+                // its directory and `dir` under Recent.
+                if let Some(known) = self.probed_entry(p) {
+                    return known;
+                }
+                entry_for_path(p, network_check(p))
+            })
             .collect();
         if !recent_rows.is_empty() {
             self.sections.push(Section {
@@ -431,7 +521,9 @@ impl HomeState {
         // Desktop-derived places are collected rather than expanded — see below.
         let mut elsewhere: Vec<Entry> = Vec::new();
 
-        for root in Self::roots(config_dirs, recents, desktop_dirs) {
+        let roots = Self::roots_with(config_dirs, recents, desktop_dirs, network_check);
+        self.root_paths = roots.iter().map(|r| r.path.clone()).collect();
+        for root in roots {
             // A place the desktop mentioned is listed as a directory to step into,
             // never expanded. Its contents are whatever you last opened anywhere on
             // the machine, which is regularly something you would not want appearing
@@ -450,7 +542,12 @@ impl HomeState {
 
             // A derived root with nothing in it adds noise; keep configured and cwd
             // roots always, since the user named them or is standing in them.
-            let rows = if root.available {
+            // A remote root is listed from whatever its background probe returned,
+            // and left empty until then. Scanning it here is the thing that freezes
+            // datui on a slow or absent network.
+            let rows = if root.network {
+                self.probed.get(&root.path).cloned().unwrap_or_default()
+            } else if root.available {
                 discover::scan_dir(&root.path)
             } else {
                 Vec::new()
@@ -458,12 +555,20 @@ impl HomeState {
             // An empty derived root is noise and goes. One that cannot be *read* stays:
             // a network share that has stopped answering is the case the section
             // heading exists to report, and silently dropping it is the worst answer.
-            if rows.is_empty() && root.origin == RootOrigin::Recent && root.available {
+            let unreachable = root.network && self.unreachable.contains(&root.path);
+            let waiting = root.network && !unreachable && !self.probed.contains_key(&root.path);
+            if rows.is_empty()
+                && root.origin == RootOrigin::Recent
+                && root.available
+                && !root.network
+            {
                 continue;
             }
             // A network root is worth flagging: it is the one that will be slow, and
             // the one that can stop answering.
-            let subtitle = if root.network {
+            let subtitle = if waiting {
+                format!("network · checking · {}", root.origin.note())
+            } else if root.network {
                 format!("network · {}", root.origin.note())
             } else {
                 root.origin.note().to_string()
@@ -472,7 +577,7 @@ impl HomeState {
                 title: display_path(&root.path),
                 subtitle: Some(subtitle),
                 rows,
-                unavailable: !root.available,
+                unavailable: !root.available || unreachable,
             });
         }
 
@@ -585,6 +690,55 @@ impl HomeState {
         matches!(self.visible().get(self.selected), Some(Row::Header { .. }))
     }
 
+    /// Remote roots that have neither answered nor been written off.
+    ///
+    /// The caller probes these off the interface thread; nothing here may touch them.
+    pub fn pending_probes(&self) -> Vec<PathBuf> {
+        let check = self.network_check;
+        let mut out = Vec::new();
+        for section in &self.sections {
+            let Some(sub) = &section.subtitle else {
+                continue;
+            };
+            if !sub.starts_with("network") {
+                continue;
+            }
+            // The section title is a display path; recover the root it came from.
+            for root in &self.root_paths {
+                if display_path(root) == section.title
+                    && check(root)
+                    && !self.probed.contains_key(root)
+                    && !self.unreachable.contains(root)
+                    && !out.contains(root)
+                {
+                    out.push(root.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// A row a completed probe already produced for this exact path, if any.
+    fn probed_entry(&self, path: &Path) -> Option<Entry> {
+        self.probed
+            .values()
+            .flatten()
+            .find(|e| e.path == path)
+            .cloned()
+    }
+
+    /// Record what a probe found. An empty listing is still an answer.
+    pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>) {
+        self.unreachable.remove(&root);
+        self.probed.insert(root, rows);
+    }
+
+    /// Record that a probe could not read the root.
+    pub fn probe_failed(&mut self, root: PathBuf) {
+        self.probed.remove(&root);
+        self.unreachable.insert(root);
+    }
+
     /// Measure the rows about to be drawn, and only those.
     ///
     /// Enriching during `rebuild` meant every dataset under every root paid for a
@@ -612,6 +766,11 @@ impl HomeState {
             let measured = match self.enriched.get(&path) {
                 Some(cached) => *cached,
                 None => {
+                    // Reading a remote footer is exactly the call that hangs on a
+                    // network that has gone away. Remote rows simply show no counts.
+                    if (self.network_check)(&path) {
+                        continue;
+                    }
                     // Measuring a hive dataset walks its files. A directory holding a
                     // dozen of them is hundreds of reads, so only a few are done per
                     // frame and the rest fill in over the next ones.
@@ -680,8 +839,20 @@ impl HomeState {
 }
 
 /// Build an entry for a path that is already known (a recent), classifying it.
-fn entry_for_path(path: &Path) -> Entry {
-    let kind = if path.is_dir() {
+fn entry_for_path(path: &Path, remote: bool) -> Entry {
+    // Classifying reads the directory, and stat'ing gives size and mtime. Both touch
+    // the filesystem, so a remote entry is listed by name alone until its probe lands.
+    let kind = if remote {
+        // A name is all there is to go on without reading the path. An extension
+        // settles it; anything else stays Unknown rather than being called a plain
+        // directory, which would contradict the same dataset listed under its root as
+        // `hive` once that root's probe lands.
+        if discover::is_data_file(path) {
+            EntryKind::File
+        } else {
+            EntryKind::Unknown
+        }
+    } else if path.is_dir() {
         discover::classify_directory(path)
     } else {
         EntryKind::File
@@ -698,11 +869,13 @@ fn entry_for_path(path: &Path) -> Entry {
         rows: None,
         cols: None,
     };
-    if let Ok(meta) = std::fs::metadata(path) {
-        if meta.is_file() {
-            entry.size = Some(meta.len());
+    if !remote {
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.is_file() {
+                entry.size = Some(meta.len());
+            }
+            entry.modified = meta.modified().ok();
         }
-        entry.modified = meta.modified().ok();
     }
     entry
 }

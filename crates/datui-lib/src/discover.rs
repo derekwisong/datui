@@ -42,6 +42,10 @@ pub enum EntryKind {
     MultiFile,
     /// An ordinary directory, to descend into.
     Directory,
+    /// Somewhere remote that has not been looked at yet. Classifying it would mean
+    /// reading it, which is the call that blocks when the network is gone — so it is
+    /// offered as openable and left unlabelled rather than guessed at.
+    Unknown,
 }
 
 impl EntryKind {
@@ -52,10 +56,15 @@ impl EntryKind {
             EntryKind::Hive => "hive",
             EntryKind::MultiFile => "multi",
             EntryKind::Directory => "dir",
+            EntryKind::Unknown => "",
         }
     }
 
     /// Whether selecting this entry opens a dataset rather than navigating.
+    ///
+    /// An unexamined remote path counts: datui can open an object-store prefix or a
+    /// hive directory directly, and descending into one is not possible anyway
+    /// without the listing this deliberately has not fetched.
     pub fn is_dataset(self) -> bool {
         !matches!(self, EntryKind::Directory)
     }
@@ -273,7 +282,9 @@ pub fn enrich(entry: &mut Entry) {
     match entry.kind {
         EntryKind::File => enrich_parquet(entry),
         EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry),
-        EntryKind::Directory => {}
+        // Nothing to read for a plain directory, and nothing that *may* be read for
+        // one that has not been looked at.
+        EntryKind::Directory | EntryKind::Unknown => {}
     }
 }
 
@@ -474,7 +485,7 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
             entry.path.clone()
         }
         EntryKind::Hive | EntryKind::MultiFile => first_parquet_under(&entry.path, 0)?,
-        EntryKind::Directory => return None,
+        EntryKind::Directory | EntryKind::Unknown => return None,
     };
 
     let file = std::fs::File::open(&file_path).ok()?;

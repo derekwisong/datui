@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum InputSource {
+pub enum InputSource {
     Local(PathBuf),
     S3(String),
     Gcs(String),
@@ -11,7 +11,7 @@ pub(crate) enum InputSource {
 }
 
 /// Classifies the path as local, S3, GCS, or HTTP/HTTPS using string parsing only (no filesystem calls).
-pub(crate) fn input_source(path: &Path) -> InputSource {
+pub fn input_source(path: &Path) -> InputSource {
     let s = path.as_os_str().to_string_lossy();
     if let Some(after_scheme) = s.find("://") {
         let prefix = s[..after_scheme].to_lowercase();

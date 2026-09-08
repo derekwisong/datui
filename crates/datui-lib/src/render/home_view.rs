@@ -497,6 +497,10 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         _ => {
             let note: &[&str] = match entry.kind {
                 EntryKind::Directory => &["Directory.", "Enter to look inside."],
+                EntryKind::Unknown => &[
+                    "Not read yet — it is on a network location.",
+                    "Enter to open it.",
+                ],
                 _ => &[
                     "Schema needs a scan for this format.",
                     "datui shows it once opened.",

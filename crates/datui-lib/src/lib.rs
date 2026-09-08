@@ -40,7 +40,7 @@ mod query;
 mod render;
 pub mod sort_filter_modal;
 pub mod sort_modal;
-mod source;
+pub mod source;
 pub mod statistics;
 pub mod template;
 pub mod widgets;
@@ -552,6 +552,11 @@ pub enum AppEvent {
     /// HTTP, S3, or GCS download finished; temp path is ready. Scan it and continue load.
     #[cfg(any(feature = "http", feature = "cloud"))]
     DoLoadFromHttpTemp(PathBuf, OpenOptions),
+    /// A network root has been listed off-thread, or could not be.
+    HomeProbeReady {
+        root: PathBuf,
+        rows: Option<Vec<crate::discover::Entry>>,
+    },
     /// Background scan finished; the LazyFrame is waiting in `pending_lazyframe_result`.
     BackgroundLazyFrameReady {
         generation: u64,
@@ -981,6 +986,10 @@ pub(crate) struct ChartCacheHeatmap {
 
 pub struct App {
     pub data_table_state: Option<DataTableState>,
+    /// Network roots currently being listed off-thread, so a probe is not started
+    /// twice. Entries are never removed for a root that never answers — that thread
+    /// is unreclaimable, and retrying it would only block another one.
+    home_probes_inflight: Vec<PathBuf>,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -1427,6 +1436,7 @@ impl App {
             path: None,
             data_table_state: None,
             home: home::HomeState::default(),
+            home_probes_inflight: Vec::new(),
             home_schema_cache: HashMap::new(),
             original_file_format: None,
             original_file_delimiter: None,
@@ -1520,10 +1530,44 @@ impl App {
         if let Some(cached) = self.home_schema_cache.get(&entry.path) {
             return cached.clone();
         }
+        // Opening a remote file is the call that hangs when the network is gone.
+        if (self.home.network_check)(&entry.path) {
+            return None;
+        }
         let schema = discover::schema_preview(entry);
         self.home_schema_cache
             .insert(entry.path.clone(), schema.clone());
         schema
+    }
+
+    /// Start listing any network roots that have not answered yet.
+    ///
+    /// Nothing here waits on the result. A share that has gone away leaves its thread
+    /// blocked in the kernel — on a `hard` NFS mount that is uninterruptible and the
+    /// thread never returns — so the task is abandoned rather than joined, exactly as
+    /// an abandoned dataset load is.
+    fn spawn_home_probes(&mut self) {
+        for root in self.home.pending_probes() {
+            if self.home_probes_inflight.contains(&root) {
+                continue;
+            }
+            self.home_probes_inflight.push(root.clone());
+            let tx = self.events.clone();
+            self.runtime.spawn_blocking(move || {
+                let rows = if std::fs::read_dir(&root).is_ok() {
+                    let mut rows = crate::discover::scan_dir(&root);
+                    // Measuring happens here too: it is the same remote filesystem,
+                    // and this thread is already the one allowed to block on it.
+                    for row in rows.iter_mut().take(24) {
+                        crate::discover::enrich(row);
+                    }
+                    Some(rows)
+                } else {
+                    None
+                };
+                let _ = tx.send(AppEvent::HomeProbeReady { root, rows });
+            });
+        }
     }
 
     /// Rebuild the home listing from the filesystem.
@@ -1538,6 +1582,7 @@ impl App {
         let mut home = std::mem::take(&mut self.home);
         home.rebuild_with(&dirs, &recents, &desktop);
         self.home = home;
+        self.spawn_home_probes();
     }
 
     /// Enter the home screen, rebuilding it. Safe to call while a load is in flight.
@@ -6866,11 +6911,12 @@ impl App {
                 let first = &paths[0];
                 // Every open records a recent, not just those started from the home
                 // screen — most datasets are named on the command line, and those are
-                // exactly the ones worth being able to get back to. Remote URLs are
-                // skipped: `push_recent` canonicalises, which is meaningless for them.
-                if matches!(source::input_source(first), source::InputSource::Local(_))
-                    && first.exists()
-                {
+                // exactly the ones worth getting back to. An object-store URL counts
+                // doubly: `s3://bucket/warehouse/events/year=2024` is far more painful
+                // to retype than any local path, and it is recorded verbatim, since
+                // canonicalising a URL is meaningless.
+                let is_local = matches!(source::input_source(first), source::InputSource::Local(_));
+                if !is_local || first.exists() {
                     self.cache.push_recent(first);
                 }
                 let file_size = match source::input_source(first) {
@@ -7075,6 +7121,16 @@ impl App {
                     #[allow(clippy::needless_borrow)]
                     self.spawn_scan("Scanning input...", paths.clone(), options.clone())
                 }
+            }
+            AppEvent::HomeProbeReady { root, rows } => {
+                match rows {
+                    Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
+                    None => self.home.probe_failed(root.clone()),
+                }
+                // Rebuild so the listing picks the result up; the probe is the only
+                // thing that ever reads a remote root.
+                self.home_refresh();
+                None
             }
             AppEvent::BackgroundLazyFrameReady {
                 generation,

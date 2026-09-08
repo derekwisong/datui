@@ -51,8 +51,7 @@ order:
 | 5 | `ELSEWHERE` | [desktop places](#desktop-places) | no |
 
 A directory reached more than one way appears once, under the earliest of these
-that names it. A root on a network filesystem is marked `network`; one that cannot
-be read is marked `unavailable` rather than hidden.
+that names it.
 
 Sections fold with <kbd>←</kbd> and <kbd>→</kbd>. A folded section shows how many
 rows it is hiding, and stays folded until you expand it or restart datui.
@@ -97,6 +96,32 @@ it:
 use_desktop_recents = false
 ```
 
+## Network locations
+
+The home screen never reads a network location on the thread that draws it. An
+unreachable NFS share does not fail, it blocks — for seconds on a `soft` mount, and
+indefinitely on a `hard` one, which is the default and cannot be interrupted. So a
+root on a network filesystem, and any `s3://`, `gs://` or `https://` path, is
+recognised from its name and the mount table alone, without being reached for.
+
+The consequence is that datui starts at the same speed whether the network is there
+or not. A remote root appears immediately, marked `network · checking`, and is
+listed in the background:
+
+```
+▾ /mnt/data                                        network · configured
+  events                         hive       1.1M × 9    120 MB    3h
+▾ s3://bucket/warehouse                         network · checking
+```
+
+Until that listing arrives, a remote entry shows its name and nothing else — no
+size, no row counts, no type. Those all require reading it. A location that never
+answers is marked `unavailable` and not retried.
+
+Object-store and HTTP URLs are recorded in `RECENT` like any other path, and are
+worth having there: `s3://bucket/warehouse/events/year=2024` is the sort of path
+worth not retyping.
+
 ## What counts as a dataset
 
 | on disk | shown as |
@@ -105,6 +130,7 @@ use_desktop_recents = false
 | `sales/year=2024/…`, `sales/year=2025/…` | one row, `sales · hive` |
 | `exports/` holding several matching Parquet files | one row, `exports · multi` |
 | a directory of source code with a stray CSV in it | a directory to enter |
+| a network path not yet listed | openable, with no type shown until it is |
 
 ## Reading the columns
 

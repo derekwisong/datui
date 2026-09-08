@@ -230,8 +230,15 @@ impl CacheManager {
     /// Failures are ignored: not being able to write a convenience list must never
     /// interfere with opening data.
     pub fn push_recent(&self, path: &std::path::Path) {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let entry = canonical.to_string_lossy().into_owned();
+        // A URL is recorded exactly as given: canonicalising one is meaningless, and
+        // it would also stat a path that does not exist locally.
+        let looks_like_url = path.to_string_lossy().contains("://");
+        let stored = if looks_like_url {
+            path.to_path_buf()
+        } else {
+            path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+        };
+        let entry = stored.to_string_lossy().into_owned();
 
         let _ = self.update_history_file("recents", |recents| {
             recents.retain(|p| p != &entry);

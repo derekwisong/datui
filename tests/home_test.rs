@@ -956,3 +956,264 @@ fn test_an_empty_but_readable_derived_root_is_dropped() {
         "a readable root with nothing in it is noise"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Network paths are never touched on the interface thread
+//
+// An unreachable NFS share does not fail — it blocks. On a `soft` mount that is
+// seconds per call; on a `hard` mount, which is the default, it is indefinite and
+// uninterruptible, so datui cannot even be killed. Classifying a path as remote
+// reads only /proc/self/mountinfo, so the listing can be built without touching
+// the remote at all, and the actual reading happens on a thread that is allowed
+// to block forever.
+// ---------------------------------------------------------------------------
+
+/// Treat everything under a marker directory as if it were a network mount.
+fn pretend_remote(path: &std::path::Path) -> bool {
+    path.components()
+        .any(|c| c.as_os_str() == std::ffi::OsStr::new("PRETEND_REMOTE"))
+}
+
+#[test]
+fn test_a_remote_root_is_listed_without_being_read() {
+    let tmp = TempDir::new().unwrap();
+    let remote = tmp.path().join("PRETEND_REMOTE/data");
+    touch(&remote, "should_not_be_listed.parquet");
+
+    let mut home = HomeState {
+        network_check: pretend_remote,
+        ..Default::default()
+    };
+    home.rebuild(std::slice::from_ref(&remote), &[]);
+
+    // The root appears...
+    let section = home
+        .sections
+        .iter()
+        .find(|s| s.title.contains("PRETEND_REMOTE"))
+        .expect("a remote root should still be offered");
+    assert!(
+        section
+            .subtitle
+            .as_deref()
+            .unwrap_or("")
+            .contains("network"),
+        "it should be marked as network: {:?}",
+        section.subtitle
+    );
+
+    // ...but its contents were not read, even though they exist on disk.
+    assert!(
+        !visible_names(&home)
+            .iter()
+            .any(|n| n.contains("should_not_be_listed")),
+        "listing a remote root inline is what freezes datui on a dead network"
+    );
+    assert_eq!(
+        home.pending_probes(),
+        vec![remote],
+        "it should be queued for an off-thread probe instead"
+    );
+}
+
+#[test]
+fn test_a_probe_result_fills_the_remote_root_in() {
+    let tmp = TempDir::new().unwrap();
+    let remote = tmp.path().join("PRETEND_REMOTE/data");
+    touch(&remote, "sales.parquet");
+
+    let mut home = HomeState {
+        network_check: pretend_remote,
+        ..Default::default()
+    };
+    home.rebuild(std::slice::from_ref(&remote), &[]);
+
+    // Whatever the probe thread found is what gets shown.
+    let rows = discover::scan_dir(&remote);
+    home.probe_ready(remote.clone(), rows);
+    home.rebuild(std::slice::from_ref(&remote), &[]);
+
+    assert!(
+        visible_names(&home).iter().any(|n| n == "sales.parquet"),
+        "a completed probe should populate the section"
+    );
+    assert!(
+        home.pending_probes().is_empty(),
+        "an answered root should not be probed again"
+    );
+}
+
+#[test]
+fn test_a_root_that_never_answers_is_marked_unreachable() {
+    let tmp = TempDir::new().unwrap();
+    let remote = tmp.path().join("PRETEND_REMOTE/data");
+
+    let mut home = HomeState {
+        network_check: pretend_remote,
+        ..Default::default()
+    };
+    home.rebuild(std::slice::from_ref(&remote), &[]);
+    home.probe_failed(remote.clone());
+    home.rebuild(std::slice::from_ref(&remote), &[]);
+
+    let section = home
+        .sections
+        .iter()
+        .find(|s| s.title.contains("PRETEND_REMOTE"))
+        .expect("still listed");
+    assert!(section.unavailable, "a share that did not answer says so");
+    assert!(
+        home.pending_probes().is_empty(),
+        "a written-off root must not be retried; the thread is unreclaimable"
+    );
+}
+
+#[test]
+fn test_remote_rows_are_never_measured_on_this_thread() {
+    // Reading a Parquet footer opens the file, which is the call that hangs.
+    let tmp = TempDir::new().unwrap();
+    let remote = tmp.path().join("PRETEND_REMOTE/data");
+    touch(&remote, "a.parquet");
+
+    let mut home = HomeState {
+        network_check: pretend_remote,
+        browsing: Some(remote.clone()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    home.enrich_visible(100, 100);
+
+    assert!(
+        home.enriched.is_empty(),
+        "measuring a remote row would open a remote file"
+    );
+}
+
+#[test]
+fn test_a_remote_recent_is_shown_without_stat() {
+    // `exists()` and `metadata()` both stat, so a remote recent is taken on trust.
+    let tmp = TempDir::new().unwrap();
+    let remote = tmp.path().join("PRETEND_REMOTE/data/sales.parquet");
+
+    let mut home = HomeState {
+        network_check: pretend_remote,
+        ..Default::default()
+    };
+    home.rebuild(&[], std::slice::from_ref(&remote));
+
+    assert!(
+        visible_names(&home).iter().any(|n| n == "sales.parquet"),
+        "a remote recent should be listed even though it was never stat'ed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Object-store and HTTP URLs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_urls_are_treated_as_remote() {
+    use datui::home::is_remote_path;
+    for url in [
+        "s3://bucket/warehouse/events",
+        "s3a://bucket/x.parquet",
+        "gs://bucket/data",
+        "gcs://bucket/data",
+        "https://example.com/data.csv",
+        "http://example.com/data.csv",
+    ] {
+        assert!(
+            is_remote_path(std::path::Path::new(url)),
+            "{url} should never be touched on the interface thread"
+        );
+    }
+    assert!(!is_remote_path(std::path::Path::new("/tmp/local.parquet")));
+}
+
+#[test]
+fn test_a_recent_url_is_listed_without_being_reached_for() {
+    // `s3://bucket/warehouse/events/year=2024` is the path most worth remembering
+    // and the least practical to retype, so it belongs in recents — but resolving it
+    // means a network call, which the interface thread must never make.
+    let url = std::path::PathBuf::from("s3://bucket/warehouse/events.parquet");
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], std::slice::from_ref(&url));
+
+    let names = visible_names(&home);
+    assert!(
+        names.iter().any(|n| n == "events.parquet"),
+        "a recent URL should be listed: {names:?}"
+    );
+}
+
+#[test]
+fn test_a_url_is_classified_by_name_not_by_stat() {
+    let mut home = HomeState::default();
+    let file = std::path::PathBuf::from("s3://bucket/data/sales.parquet");
+    let prefix = std::path::PathBuf::from("s3://bucket/data/warehouse");
+    home.rebuild(&[], &[file, prefix]);
+
+    let kinds: Vec<_> = home
+        .visible()
+        .iter()
+        .filter_map(|r| match r {
+            Row::Entry { entry, .. } => Some((entry.name.clone(), entry.kind)),
+            Row::Header { .. } => None,
+        })
+        .collect();
+
+    assert!(
+        kinds.contains(&("sales.parquet".to_string(), EntryKind::File)),
+        "an extension marks a dataset: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&("warehouse".to_string(), EntryKind::Unknown)),
+        "a prefix without one stays unclassified rather than being called a plain \
+         directory, which would contradict how it reads once probed: {kinds:?}"
+    );
+}
+
+#[test]
+fn test_a_recent_adopts_the_classification_its_root_probe_found() {
+    // The reported bug: a hive directory opened from the command line showed as
+    // `hive` under its own root but `dir` under Recent, because the Recent row was
+    // guessed from the name to avoid reading a remote path. Once the root's probe
+    // has landed, that answer is authoritative and both rows must agree.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("PRETEND_REMOTE/quant");
+    let dataset = root.join("factors");
+    touch(&dataset, "year=2024/part-0.parquet");
+
+    let mut home = HomeState {
+        network_check: pretend_remote,
+        ..Default::default()
+    };
+    home.rebuild(std::slice::from_ref(&root), std::slice::from_ref(&dataset));
+
+    // Before the probe: unlabelled rather than wrong.
+    let kind_of = |h: &HomeState| {
+        h.visible().iter().find_map(|r| match r {
+            Row::Entry { entry, .. } if entry.name == "factors" => Some(entry.kind),
+            _ => None,
+        })
+    };
+    assert_eq!(kind_of(&home), Some(EntryKind::Unknown));
+
+    // After it: whatever the probe actually determined.
+    home.probe_ready(root.clone(), discover::scan_dir(&root));
+    home.rebuild(std::slice::from_ref(&root), std::slice::from_ref(&dataset));
+
+    let kinds: Vec<_> = home
+        .visible()
+        .iter()
+        .filter_map(|r| match r {
+            Row::Entry { entry, .. } if entry.name == "factors" => Some(entry.kind),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        kinds.iter().all(|k| *k == EntryKind::Hive),
+        "every row for the same dataset should agree: {kinds:?}"
+    );
+}

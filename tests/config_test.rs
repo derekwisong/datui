@@ -1500,3 +1500,19 @@ fn test_history_update_is_dropped_rather_than_blocking() {
         "the update should have been dropped"
     );
 }
+
+#[test]
+fn test_recents_store_urls_verbatim() {
+    // Canonicalising a URL is meaningless, and it would stat a path that does not
+    // exist locally.
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let url = std::path::PathBuf::from("s3://bucket/warehouse/events/year=2024");
+    cache.push_recent(&url);
+
+    let recents = cache.load_recents();
+    assert_eq!(recents, vec![url], "a URL should round-trip unchanged");
+}

@@ -14,7 +14,23 @@ pub struct CacheManager {
 
 impl CacheManager {
     /// Create a new CacheManager for the given app name
+    /// Create a CacheManager rooted at an explicit directory (primarily for testing).
+    pub fn with_dir(cache_dir: PathBuf) -> Self {
+        Self { cache_dir }
+    }
+
+    /// Create a CacheManager for the given app name.
+    ///
+    /// `DATUI_CACHE_DIR` overrides the location. The test suite sets it, because
+    /// opening a dataset records it as recent — without the override a test run
+    /// writes its fixtures into the developer's own recent-files list.
     pub fn new(app_name: &str) -> Result<Self> {
+        if let Some(dir) = std::env::var_os("DATUI_CACHE_DIR") {
+            return Ok(Self {
+                cache_dir: PathBuf::from(dir),
+            });
+        }
+
         let cache_dir = dirs::cache_dir()
             .ok_or_else(|| color_eyre::eyre::eyre!("Could not determine cache directory"))?
             .join(app_name);
@@ -90,22 +106,107 @@ impl CacheManager {
         Ok(history)
     }
 
+    /// Apply `update` to a history file, with the whole read-modify-write held under
+    /// an exclusive lock.
+    ///
+    /// Writing atomically stops two instances producing a *corrupt* file, but not a
+    /// lost one: both read `[x, y]`, one writes `[a, x, y]` and the other
+    /// `[b, x, y]`, and whichever lands second wins outright. Opening two datasets at
+    /// once is ordinary — a launcher, a file manager, two terminals — so the read and
+    /// the write have to be one operation.
+    ///
+    /// The lock is waited for, but only briefly. The critical section is reading and
+    /// rewriting a fifty-line file, so even a dozen contending instances clear in a
+    /// few milliseconds; a deadline well beyond that loses nothing in practice while
+    /// still guaranteeing an interactive action is never held up by a peer that has
+    /// wedged. Past the deadline the update is dropped — history is a convenience,
+    /// and it is never worth delaying what the user actually asked for.
+    ///
+    /// Giving up after a couple of quick attempts is *not* enough: with several opens
+    /// landing together, some are then dropped, which is the very loss this exists to
+    /// prevent.
+    pub fn update_history_file<F>(&self, history_id: &str, update: F) -> Result<()>
+    where
+        F: FnOnce(&mut Vec<String>),
+    {
+        use fs2::FileExt;
+
+        self.ensure_cache_dir()?;
+        let lock_path = self.cache_file(&format!("{}_history.lock", history_id));
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)?;
+
+        let deadline = std::time::Instant::now() + LOCK_TIMEOUT;
+        let mut held = false;
+        loop {
+            if lock.try_lock_exclusive().is_ok() {
+                held = true;
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        if !held {
+            return Ok(());
+        }
+
+        // Read, modify and write all inside the lock; the whole point is that another
+        // instance cannot land between the read and the write.
+        let mut entries = self.load_history_file(history_id).unwrap_or_default();
+        update(&mut entries);
+        let result = self.save_history_file(history_id, &entries);
+
+        // Released explicitly, though dropping the file would do it too.
+        let _ = FileExt::unlock(&lock);
+        result
+    }
+
     /// Save history to a history file
     /// History files are dynamic (`{id}_history.txt`) and are NOT included in `CACHE_FILES`
     pub fn save_history_file(&self, history_id: &str, history: &[String]) -> Result<()> {
         self.ensure_cache_dir()?;
         let history_file = self.cache_file(&format!("{}_history.txt", history_id));
 
-        let mut file = fs::File::create(&history_file)?;
+        // Write to a sibling and rename over the target. Truncating in place leaves the
+        // file readable in a half-written state, and two datui instances writing at
+        // once interleave into a single corrupt file — entries torn mid-path, or two
+        // paths concatenated onto one line. A rename is atomic on the same filesystem,
+        // so a reader sees either the old file or the new one, and the last writer
+        // wins cleanly instead of both losing.
+        let temp_file = self.cache_file(&format!(
+            "{}_history.{}.tmp",
+            history_id,
+            std::process::id()
+        ));
 
-        // Write history entries (oldest first, but we keep the most recent entries)
-        for entry in history {
-            writeln!(file, "{}", entry)?;
+        {
+            let mut file = fs::File::create(&temp_file)?;
+            // Oldest first, but we keep the most recent entries.
+            for entry in history {
+                writeln!(file, "{}", entry)?;
+            }
+            file.sync_all()?;
         }
+
+        fs::rename(&temp_file, &history_file).inspect_err(|_| {
+            let _ = fs::remove_file(&temp_file);
+        })?;
 
         Ok(())
     }
 }
+
+/// How long to wait for another instance to finish rewriting a history file.
+///
+/// The critical section is a read and an atomic rewrite of a small file, so this is
+/// orders of magnitude more than contention actually needs. It exists to bound the
+/// wait if a peer wedges, not to be reached.
+const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Maximum number of recently opened paths kept. Enough to span a few days of work;
 /// small enough that the home screen never has to paginate it.
@@ -130,15 +231,12 @@ impl CacheManager {
     /// interfere with opening data.
     pub fn push_recent(&self, path: &std::path::Path) {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let mut recents = self.load_recents();
-        recents.retain(|p| p != &canonical);
-        recents.insert(0, canonical);
-        recents.truncate(MAX_RECENTS);
+        let entry = canonical.to_string_lossy().into_owned();
 
-        let as_strings: Vec<String> = recents
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        let _ = self.save_history_file("recents", &as_strings);
+        let _ = self.update_history_file("recents", |recents| {
+            recents.retain(|p| p != &entry);
+            recents.insert(0, entry.clone());
+            recents.truncate(MAX_RECENTS);
+        });
     }
 }

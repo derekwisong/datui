@@ -883,3 +883,76 @@ fn test_network_detection_reads_the_mount_table() {
         "/definitely/not/mounted"
     )));
 }
+
+#[test]
+fn test_network_detection_prefers_the_deepest_and_last_mount() {
+    use datui::home::network_fs_for_test;
+
+    // Two entries can share a mount point: an NFS share automounted at a path is
+    // listed after the autofs entry covering the same path, and it is the NFS entry
+    // that describes what a read will actually do. Keeping the first match reports
+    // the automount and misses the network entirely.
+    let shadowed = "\
+25 1 0:22 / / rw - btrfs /dev/mapper/root rw
+30 25 0:44 / /mnt/gilead/data rw - autofs systemd-1 rw
+81 30 0:57 / /mnt/gilead/data rw - nfs4 192.168.2.68:/volume1/data rw
+";
+    assert!(network_fs_for_test(
+        shadowed,
+        std::path::Path::new("/mnt/gilead/data/sets/prices")
+    ));
+
+    // The parent of a network mount is whatever the parent actually is.
+    assert!(!network_fs_for_test(
+        shadowed,
+        std::path::Path::new("/mnt/gilead")
+    ));
+
+    // A local mount nested under a network one wins, being the closer answer.
+    let nested = "\
+25 1 0:22 / / rw - nfs4 server:/export rw
+30 25 0:44 / /scratch rw - ext4 /dev/sdb1 rw
+";
+    assert!(!network_fs_for_test(
+        nested,
+        std::path::Path::new("/scratch/work")
+    ));
+    assert!(network_fs_for_test(
+        nested,
+        std::path::Path::new("/elsewhere")
+    ));
+}
+
+#[test]
+fn test_an_unreadable_derived_root_is_shown_not_dropped() {
+    // A network share that has stopped answering is exactly what the section heading
+    // exists to report. Dropping it leaves the user wondering where their data went.
+    let tmp = TempDir::new().unwrap();
+    let gone = tmp.path().join("mount/data");
+    let dataset = touch(&gone, "sales.parquet");
+    fs::remove_dir_all(tmp.path().join("mount")).unwrap();
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], std::slice::from_ref(&dataset));
+
+    assert!(
+        home.sections.iter().any(|s| s.unavailable),
+        "an unreadable root should be listed as unavailable"
+    );
+}
+
+#[test]
+fn test_an_empty_but_readable_derived_root_is_dropped() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("empty");
+    let dataset = touch(&dir, "gone.parquet");
+    fs::remove_file(&dataset).unwrap();
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], std::slice::from_ref(&dataset));
+
+    assert!(
+        !home.sections.iter().any(|s| s.title.contains("empty")),
+        "a readable root with nothing in it is noise"
+    );
+}

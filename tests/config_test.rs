@@ -1347,3 +1347,156 @@ fn test_omarchy_template_covers_every_color_slot() {
         "template sets slots that do not exist in ColorConfig: {unknown:?}"
     );
 }
+
+// ============================================================================
+// History files (query history, recents)
+// ============================================================================
+
+#[test]
+fn test_history_write_is_atomic_and_exact() {
+    // A truncate-then-write leaves the file readable half-finished, and two datui
+    // instances writing at once interleave into one corrupt file — entries torn
+    // mid-path, or two paths concatenated onto a single line. Both were observed.
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let entries: Vec<String> = (0..200)
+        .map(|i| format!("/some/quite/long/path/number-{i:04}/dataset.parquet"))
+        .collect();
+    cache
+        .save_history_file("things", &entries)
+        .expect("save history");
+
+    let read_back = cache.load_history_file("things").expect("load history");
+    assert_eq!(read_back, entries);
+
+    // No stray temp files left behind.
+    let leftovers: Vec<_> = fs::read_dir(temp_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
+}
+
+#[test]
+fn test_recents_deduplicate_and_cap() {
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let a = temp_dir.path().join("a.parquet");
+    let b = temp_dir.path().join("b.parquet");
+    fs::write(&a, b"x").unwrap();
+    fs::write(&b, b"x").unwrap();
+
+    cache.push_recent(&a);
+    cache.push_recent(&b);
+    cache.push_recent(&a);
+
+    let recents = cache.load_recents();
+    assert_eq!(recents.len(), 2, "reopening moves rather than duplicates");
+    assert!(recents[0].ends_with("a.parquet"), "most recent leads");
+}
+
+#[test]
+fn test_concurrent_recents_do_not_lose_entries() {
+    // Opening two datasets at once is ordinary — a launcher, a file manager, two
+    // terminals. Writing atomically stops the file becoming corrupt, but not one
+    // instance's entry being overwritten by another's; the read and the write have
+    // to be a single locked operation.
+    use datui::CacheManager;
+    use std::sync::Arc;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = Arc::new(CacheManager::with_dir(temp_dir.path().to_path_buf()));
+
+    let paths: Vec<std::path::PathBuf> = (0..16)
+        .map(|i| {
+            let p = temp_dir.path().join(format!("dataset-{i:02}.parquet"));
+            fs::write(&p, b"x").unwrap();
+            p
+        })
+        .collect();
+
+    let handles: Vec<_> = paths
+        .iter()
+        .cloned()
+        .map(|path| {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || cache.push_recent(&path))
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("writer thread");
+    }
+
+    let recents = cache.load_recents();
+    assert_eq!(
+        recents.len(),
+        paths.len(),
+        "every concurrent open should survive; got {recents:#?}"
+    );
+
+    // And every line is a whole, valid path — never two concatenated or one torn.
+    for entry in &recents {
+        assert!(
+            entry.exists(),
+            "history holds a path that is not a real file: {entry:?}"
+        );
+    }
+}
+
+#[test]
+fn test_history_update_is_dropped_rather_than_blocking() {
+    // The lock is tried, not waited on: a stuck peer must never delay an open.
+    use datui::CacheManager;
+    use fs2::FileExt;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+    cache.ensure_cache_dir().unwrap();
+
+    let lock_path = temp_dir.path().join("held_history.lock");
+    let holder = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
+    holder.lock_exclusive().unwrap();
+
+    let started = std::time::Instant::now();
+    let result = cache.update_history_file("held", |entries| entries.push("nope".into()));
+    let elapsed = started.elapsed();
+
+    FileExt::unlock(&holder).unwrap();
+
+    assert!(
+        result.is_ok(),
+        "a contended update is skipped, not an error"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "gave up after {elapsed:?}; it should abandon the update quickly"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(100),
+        "gave up after only {elapsed:?}; too eager a deadline drops updates that \
+         several simultaneous opens would have completed fine"
+    );
+    assert!(
+        cache
+            .load_history_file("held")
+            .unwrap_or_default()
+            .is_empty(),
+        "the update should have been dropped"
+    );
+}

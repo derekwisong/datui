@@ -47,6 +47,7 @@ datui-cli = { path = "crates/datui-cli", version = "0.2.57-dev" }
 polars = { version = "0.52", features = ["lazy"] }
 tempfile = "3.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+fs2 = "0.4"
 toml = "0.8"
 
 # Packaging: deb, rpm, AUR.

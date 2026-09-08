@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
@@ -8,6 +9,9 @@ static INIT: Once = Once::new();
 /// Returns a tokio runtime handle for use in tests.
 #[allow(dead_code)]
 pub fn test_runtime() -> tokio::runtime::Handle {
+    // Every test that builds an App comes through here, so this is the one place
+    // that guarantees none of them writes to the developer's real cache.
+    isolate_cache();
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -18,6 +22,23 @@ pub fn test_runtime() -> tokio::runtime::Handle {
     })
     .handle()
     .clone()
+}
+
+/// Point the cache at a scratch directory for the whole test process.
+///
+/// Opening a dataset records it as recent, and tests open plenty. Without this a
+/// test run writes its fixtures into the developer's own recent-files list — and
+/// several tests running at once corrupt it, since they all rewrite the same file.
+///
+/// The variable is process-wide, so this is done once and as early as possible.
+#[allow(dead_code)]
+pub fn isolate_cache() {
+    static ISOLATE: Once = Once::new();
+    ISOLATE.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("datui-test-cache-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        std::env::set_var("DATUI_CACHE_DIR", &dir);
+    });
 }
 
 /// Ensures that sample data files are generated before tests run.

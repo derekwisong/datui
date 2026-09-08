@@ -134,6 +134,10 @@ const NETWORK_FILESYSTEMS: &[&str] = &[
     "fuse.davfs",
     "davfs",
     "ftpfs",
+    // An automount point that has not been triggered yet blocks on first access,
+    // which is exactly what the marker is warning about. Once it triggers, the real
+    // filesystem shadows it in the mount table and is judged on its own merits.
+    "autofs",
 ];
 
 /// Whether `path` sits on a network filesystem, according to the mount table.
@@ -145,6 +149,14 @@ pub fn is_network_path(path: &Path) -> bool {
     let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
         return false;
     };
+    network_fs_for_test(&mountinfo, path)
+}
+
+/// The mount-table logic, separated from reading `/proc` so it can be tested against
+/// a fixture — the interesting cases (an NFS share shadowing an autofs entry at the
+/// same path) are awkward to arrange on a real machine.
+#[doc(hidden)]
+pub fn network_fs_for_test(mountinfo: &str, path: &Path) -> bool {
     let mut best: Option<(usize, bool)> = None;
 
     for line in mountinfo.lines() {
@@ -162,8 +174,12 @@ pub fn is_network_path(path: &Path) -> bool {
         if !path.starts_with(mount_point) {
             continue;
         }
+        // Deepest mount wins, and among mounts at the same point the *last* one wins:
+        // mountinfo lists them in mount order, so a later entry shadows an earlier one.
+        // An NFS share automounted at a path appears after the autofs entry covering
+        // the same path, and it is the NFS entry that describes what a read will do.
         let len = mount_point.len();
-        if best.is_none_or(|(n, _)| len > n) {
+        if best.is_none_or(|(n, _)| len >= n) {
             best = Some((len, NETWORK_FILESYSTEMS.contains(&fstype)));
         }
     }
@@ -439,7 +455,10 @@ impl HomeState {
             } else {
                 Vec::new()
             };
-            if rows.is_empty() && root.origin == RootOrigin::Recent {
+            // An empty derived root is noise and goes. One that cannot be *read* stays:
+            // a network share that has stopped answering is the case the section
+            // heading exists to report, and silently dropping it is the worst answer.
+            if rows.is_empty() && root.origin == RootOrigin::Recent && root.available {
                 continue;
             }
             // A network root is worth flagging: it is the one that will be slow, and

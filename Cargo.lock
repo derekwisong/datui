@@ -1257,6 +1257,7 @@ dependencies = [
  "crossterm 0.29.0",
  "datui-cli",
  "datui-lib",
+ "fs2",
  "polars",
  "ratatui",
  "tempfile",

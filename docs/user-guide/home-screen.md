@@ -122,6 +122,12 @@ that filters the result in memory, so the search gets no slower as you narrow it
 Nothing is walked if you never type — launching datui, pressing <kbd>Enter</kbd> on a
 recent dataset and leaving costs nothing.
 
+The characters your filter matched are underlined in each row, so you can see why a
+result is there — useful when a fuzzy match lands somewhere you did not expect. A row
+that matched on a *column* rather than its name has the highlight on the column note
+instead, since marks scattered over an unrelated filename would read as the filter
+having gone wrong.
+
 Results are named by their path below the search root, because three files called
 `sales.parquet` are indistinguishable otherwise:
 

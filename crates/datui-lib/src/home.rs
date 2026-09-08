@@ -722,6 +722,60 @@ pub fn matching_column<'a>(filter: &str, entry: &'a Entry) -> Option<&'a str> {
         .map(|c| c.as_str())
 }
 
+/// Character positions in `haystack` that `needle` matched, for highlighting.
+///
+/// The same greedy left-to-right walk [`fuzzy_score`] does, so what gets highlighted
+/// is what actually matched rather than a second opinion about it.
+///
+/// Returns the positions found so far when the needle outlasts the haystack, instead
+/// of giving up: a name truncated to fit its column should still show the part of the
+/// match that survived the truncation.
+pub fn fuzzy_positions(needle: &str, haystack: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    if needle.is_empty() {
+        return out;
+    }
+    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    let mut hi = 0usize;
+
+    for nc in needle.to_lowercase().chars() {
+        while hi < hay.len() {
+            if hay[hi] == nc {
+                out.push(hi);
+                hi += 1;
+                break;
+            }
+            hi += 1;
+        }
+        if hi >= hay.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// Character positions of the first case-insensitive occurrence of `needle`.
+///
+/// Column matching is a substring test, not a subsequence one, so highlighting it
+/// has to be too — otherwise the marks land on letters that had nothing to do with
+/// why the row is on screen.
+pub fn substring_positions(needle: &str, haystack: &str) -> Vec<usize> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    let need: Vec<char> = needle.to_lowercase().chars().collect();
+    if need.len() > hay.len() {
+        return Vec::new();
+    }
+    for start in 0..=(hay.len() - need.len()) {
+        if hay[start..start + need.len()] == need[..] {
+            return (start..start + need.len()).collect();
+        }
+    }
+    Vec::new()
+}
+
 /// Case-insensitive subsequence match, the cheap half of fuzzy finding.
 ///
 /// Returns a score where lower is better: the span of the match in the haystack,

@@ -318,7 +318,15 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 } else {
                     crate::home::matching_column(&app.home.filter, entry)
                 };
-                lines.push(entry_line(entry, selected, name_width, show_meta, via, ctx));
+                lines.push(entry_line(
+                    entry,
+                    selected,
+                    name_width,
+                    show_meta,
+                    via,
+                    &app.home.filter,
+                    ctx,
+                ));
             }
         }
     }
@@ -399,12 +407,49 @@ fn section_header<'a>(
     ])
 }
 
+/// Split `text` into spans, styling the characters at `positions` differently.
+///
+/// Consecutive positions are merged into one span, so a run of matched characters is
+/// a single styled stretch rather than a stutter of one-character spans.
+fn highlight_spans(
+    text: &str,
+    positions: &[usize],
+    plain: Style,
+    hit: Style,
+) -> Vec<Span<'static>> {
+    if positions.is_empty() {
+        return vec![Span::styled(text.to_string(), plain)];
+    }
+    let marked: std::collections::HashSet<usize> = positions.iter().copied().collect();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_is_hit = false;
+
+    for (i, ch) in text.chars().enumerate() {
+        let is_hit = marked.contains(&i);
+        if !run.is_empty() && is_hit != run_is_hit {
+            spans.push(Span::styled(
+                std::mem::take(&mut run),
+                if run_is_hit { hit } else { plain },
+            ));
+        }
+        run_is_hit = is_hit;
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_is_hit { hit } else { plain }));
+    }
+    spans
+}
+
+#[allow(clippy::too_many_arguments)]
 fn entry_line<'a>(
     entry: &'a Entry,
     selected: bool,
     name_width: usize,
     show_meta: bool,
     matched_column: Option<&'a str>,
+    filter: &str,
     ctx: &RenderContext,
 ) -> Line<'a> {
     // The selection marker is the loudest thing on screen, and the only thing that
@@ -464,14 +509,41 @@ fn entry_line<'a>(
         }
     };
 
-    let mut spans = vec![
-        Span::styled(
-            marker,
-            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(name, name_style),
-        Span::styled(kind_cell, kind_style),
-    ];
+    // Mark the characters the filter actually matched. Computed against the name as
+    // rendered, not the original, so a truncated name highlights the part that
+    // survived rather than positions that have moved.
+    //
+    // Only when the name is *why* this row is here: a row matched by one of its
+    // columns would otherwise get marks scattered over letters that had nothing to
+    // do with it.
+    let hit_style = base
+        .fg(ctx.keybind_hints)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let name_positions = if matched_column.is_none() {
+        crate::home::fuzzy_positions(filter, &name)
+    } else {
+        Vec::new()
+    };
+
+    let mut spans = vec![Span::styled(
+        marker,
+        base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(highlight_spans(
+        &name,
+        &name_positions,
+        name_style,
+        hit_style,
+    ));
+    // The column note is a substring match, so its highlight has to be one too.
+    match matched_column {
+        Some(column) => {
+            spans.push(Span::styled(" ·".to_string(), kind_style));
+            let positions = crate::home::substring_positions(filter, column);
+            spans.extend(highlight_spans(column, &positions, kind_style, hit_style));
+        }
+        None => spans.push(Span::styled(kind_cell.clone(), kind_style)),
+    }
     if show_meta {
         spans.push(Span::styled(" ".repeat(pad), base));
         spans.push(Span::styled(meta_columns(entry), base.fg(ctx.dimmed)));
@@ -606,6 +678,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discover::Entry;
     use crate::home::Section;
 
     fn header_width(section: &Section, width: usize) -> usize {
@@ -635,6 +708,78 @@ mod tests {
                 "a {width}-wide screen produced a {rendered}-character header"
             );
         }
+    }
+
+    /// The row's spans, as (text, is_highlighted) pairs.
+    fn row_spans(name: &str, filter: &str, column: Option<&str>) -> Vec<(String, bool)> {
+        let ctx = RenderContext::for_test();
+        let entry = Entry::for_test(std::path::Path::new("/tmp/x"), name);
+        let line = entry_line(&entry, false, 60, false, column, filter, &ctx);
+        line.spans
+            .iter()
+            .skip(1) // the selection marker
+            .map(|s| {
+                (
+                    s.content.to_string(),
+                    s.style.add_modifier.contains(Modifier::UNDERLINED),
+                )
+            })
+            .collect()
+    }
+
+    fn highlighted_text(spans: &[(String, bool)]) -> String {
+        spans
+            .iter()
+            .filter(|(_, hit)| *hit)
+            .map(|(t, _)| t.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn the_matched_characters_are_the_highlighted_ones() {
+        let spans = row_spans("sales_2024.parquet", "sales", None);
+        assert_eq!(highlighted_text(&spans), "sales");
+        // Reassembling the spans must give back exactly the name; highlighting is a
+        // change of style, never of text.
+        let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(text.starts_with("sales_2024.parquet"), "got {text:?}");
+    }
+
+    #[test]
+    fn a_scattered_match_highlights_each_run_separately() {
+        let spans = row_spans("sales_by_region.parquet", "sreg", None);
+        assert_eq!(highlighted_text(&spans), "sreg");
+        let runs = spans.iter().filter(|(_, hit)| *hit).count();
+        assert!(
+            runs >= 2,
+            "a match spread across the name should be several runs, got {runs}"
+        );
+    }
+
+    #[test]
+    fn consecutive_matches_become_one_span_not_a_stutter() {
+        let spans = row_spans("sales.parquet", "sales", None);
+        let runs = spans.iter().filter(|(_, hit)| *hit).count();
+        assert_eq!(runs, 1, "five adjacent characters are one run, got {runs}");
+    }
+
+    #[test]
+    fn nothing_is_highlighted_without_a_filter() {
+        let spans = row_spans("sales.parquet", "", None);
+        assert_eq!(highlighted_text(&spans), "");
+    }
+
+    #[test]
+    fn a_row_matched_by_a_column_highlights_the_column_not_the_name() {
+        // Marks scattered over a name that had nothing to do with the match read as
+        // the filter having gone wrong.
+        let spans = row_spans("orders.parquet", "cust", Some("customer_id"));
+        assert_eq!(highlighted_text(&spans), "cust");
+        let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(
+            text.contains("·customer_id"),
+            "the column note should still read whole, got {text:?}"
+        );
     }
 
     #[test]

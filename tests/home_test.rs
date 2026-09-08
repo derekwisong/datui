@@ -2154,3 +2154,84 @@ fn test_clearing_the_filter_takes_the_search_section_away() {
         "with nothing typed there is no question to answer"
     );
 }
+
+// --- what the filter matched, for highlighting ----------------------------------
+
+#[test]
+fn test_matched_positions_are_the_ones_the_score_walked() {
+    // Highlighting has to agree with matching, or the marks land on letters that had
+    // nothing to do with why the row is on screen.
+    use datui::home::fuzzy_positions;
+
+    // "sal" against "sales.parquet": the first s, a, l.
+    assert_eq!(fuzzy_positions("sal", "sales.parquet"), vec![0, 1, 2]);
+
+    // Greedy and left-to-right: each needle character takes the earliest match after
+    // the one before it.
+    assert_eq!(fuzzy_positions("sp", "sales.parquet"), vec![0, 6]);
+    // q(0) u a r(3) t(4) -- each character takes the earliest slot still available.
+    assert_eq!(fuzzy_positions("qrt", "quarterly.csv"), vec![0, 3, 4]);
+}
+
+#[test]
+fn test_matching_ignores_case_but_reports_real_positions() {
+    use datui::home::fuzzy_positions;
+    assert_eq!(fuzzy_positions("SAL", "sales.parquet"), vec![0, 1, 2]);
+    assert_eq!(fuzzy_positions("sal", "SALES.PARQUET"), vec![0, 1, 2]);
+}
+
+#[test]
+fn test_an_empty_filter_highlights_nothing() {
+    use datui::home::fuzzy_positions;
+    assert!(fuzzy_positions("", "sales.parquet").is_empty());
+}
+
+#[test]
+fn test_a_truncated_name_highlights_what_survived() {
+    // A name is cut to fit its column, and the filter may no longer be a complete
+    // subsequence of what is left. Showing the part that still matches beats showing
+    // nothing.
+    use datui::home::fuzzy_positions;
+    let shown = "sales_by_re…"; // "sales_by_region_2024.parquet", truncated
+    let positions = fuzzy_positions("salesregion", shown);
+    assert_eq!(
+        positions,
+        vec![0, 1, 2, 3, 4, 9, 10],
+        "the visible part of the match should still be marked"
+    );
+}
+
+#[test]
+fn test_a_name_that_does_not_match_is_marked_only_where_it_does() {
+    use datui::home::fuzzy_positions;
+    // No 'z' anywhere: the walk stops, keeping what it found.
+    assert_eq!(fuzzy_positions("saz", "sales.parquet"), vec![0, 1]);
+}
+
+#[test]
+fn test_column_matches_highlight_a_substring_not_a_subsequence() {
+    // A column name is short and specific; a fuzzy match over it would mark most of
+    // its letters and mean nothing.
+    use datui::home::substring_positions;
+
+    assert_eq!(substring_positions("cust", "customer_id"), vec![0, 1, 2, 3]);
+    assert_eq!(substring_positions("id", "customer_id"), vec![9, 10]);
+    assert_eq!(
+        substring_positions("cid", "customer_id"),
+        Vec::<usize>::new(),
+        "a subsequence that is not a substring must not highlight"
+    );
+}
+
+#[test]
+fn test_substring_matching_is_case_insensitive() {
+    use datui::home::substring_positions;
+    assert_eq!(substring_positions("ID", "customer_id"), vec![9, 10]);
+    assert_eq!(substring_positions("cust", "CUSTOMER_ID"), vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn test_a_needle_longer_than_the_column_matches_nothing() {
+    use datui::home::substring_positions;
+    assert!(substring_positions("customer_identifier", "customer_id").is_empty());
+}

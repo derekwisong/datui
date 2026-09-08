@@ -1316,6 +1316,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
         probed: Default::default(),
         unreachable: Default::default(),
         network_check: |_| false,
+        known: Default::default(),
     };
 
     // Built on another thread entirely, then handed over.
@@ -1352,5 +1353,135 @@ fn test_applying_a_listing_keeps_the_cursor_where_it_was() {
         home.selected_entry().map(|e| e.path),
         held,
         "a refresh should not move the cursor"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Searching by column
+//
+// "Which of these has a customer_id?" is the question a data person actually has,
+// and the answer is already in the Parquet footer datui read to get the row count.
+// ---------------------------------------------------------------------------
+
+fn entry_with_columns(name: &str, columns: &[&str]) -> datui::discover::Entry {
+    datui::discover::Entry {
+        path: std::path::PathBuf::from(name),
+        kind: EntryKind::File,
+        name: name.to_string(),
+        size: None,
+        modified: None,
+        rows: None,
+        cols: Some(columns.len()),
+        columns: columns.iter().map(|c| c.to_string()).collect(),
+    }
+}
+
+#[test]
+fn test_a_filter_matches_column_names() {
+    use datui::home::{match_score, matching_column};
+
+    let sales = entry_with_columns("sales.parquet", &["order_id", "customer_id", "amount"]);
+    let weather = entry_with_columns("weather.parquet", &["station", "temp_c"]);
+
+    assert!(match_score("customer_id", &sales).is_some());
+    assert!(match_score("customer_id", &weather).is_none());
+    assert_eq!(matching_column("customer_id", &sales), Some("customer_id"));
+}
+
+#[test]
+fn test_column_matches_rank_below_name_matches() {
+    // Typing a dataset's name must still find the dataset first; columns are an
+    // addition to the filter, not a dilution of it.
+    use datui::home::match_score;
+
+    let by_name = entry_with_columns("customer_id.parquet", &["unrelated"]);
+    let by_column = entry_with_columns("sales.parquet", &["customer_id"]);
+
+    let name_score = match_score("customer_id", &by_name).expect("name match");
+    let column_score = match_score("customer_id", &by_column).expect("column match");
+    assert!(
+        name_score < column_score,
+        "name {name_score} should outrank column {column_score}"
+    );
+}
+
+#[test]
+fn test_column_search_is_case_insensitive_and_partial() {
+    use datui::home::matching_column;
+    let e = entry_with_columns("t.parquet", &["CustomerID", "ordered_at"]);
+    assert_eq!(matching_column("customerid", &e), Some("CustomerID"));
+    assert_eq!(matching_column("ORDERED", &e), Some("ordered_at"));
+    assert_eq!(matching_column("nope", &e), None);
+}
+
+#[test]
+fn test_an_empty_filter_matches_without_claiming_a_column() {
+    use datui::home::{match_score, matching_column};
+    let e = entry_with_columns("t.parquet", &["a"]);
+    assert!(match_score("", &e).is_some());
+    assert_eq!(
+        matching_column("", &e),
+        None,
+        "an empty filter should not annotate every row with a column"
+    );
+}
+
+#[test]
+fn test_remembered_facts_are_used_only_for_the_same_bytes() {
+    // The index is a cache: each entry carries the size and modification time it was
+    // taken from, so a dataset that has changed invalidates itself.
+    use datui::cache::{CacheManager, DatasetFacts};
+
+    let tmp = TempDir::new().unwrap();
+    let cache = CacheManager::with_dir(tmp.path().join("cache"));
+    let dataset = touch(tmp.path(), "sales.parquet");
+    let meta = fs::metadata(&dataset).unwrap();
+    let mtime = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    cache.record_dataset_facts(&[(
+        dataset.clone(),
+        DatasetFacts {
+            mtime,
+            size: meta.len(),
+            rows: Some(42),
+            cols: Some(3),
+            columns: vec!["customer_id".into()],
+        },
+    )]);
+
+    let known = cache.load_dataset_facts();
+    assert_eq!(known.len(), 1);
+    assert_eq!(known[&dataset].rows, Some(42));
+
+    // A different fingerprint must not be trusted.
+    let stale = DatasetFacts {
+        size: meta.len() + 1,
+        ..known[&dataset].clone()
+    };
+    assert_ne!(stale.size, meta.len(), "size is half the fingerprint");
+}
+
+#[test]
+fn test_the_dataset_index_is_disposable() {
+    // Deleting it must cost speed and nothing else.
+    use datui::cache::CacheManager;
+
+    let tmp = TempDir::new().unwrap();
+    let cache = CacheManager::with_dir(tmp.path().to_path_buf());
+    assert!(
+        cache.load_dataset_facts().is_empty(),
+        "a missing index reads as no knowledge, not an error"
+    );
+
+    fs::create_dir_all(tmp.path()).unwrap();
+    fs::write(tmp.path().join("datasets.json"), b"{ not json").unwrap();
+    assert!(
+        cache.load_dataset_facts().is_empty(),
+        "a corrupt index reads as no knowledge, not a crash"
     );
 }

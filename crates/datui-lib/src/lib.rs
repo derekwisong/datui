@@ -1636,6 +1636,7 @@ impl App {
             probed: self.home.probed.clone(),
             unreachable: self.home.unreachable.clone(),
             network_check: self.home.network_check,
+            known: self.cache.load_dataset_facts(),
         };
 
         self.home.listing_in_flight = true;
@@ -1668,18 +1669,31 @@ impl App {
         self.home.measure_in_flight = true;
         let generation = self.home_generation;
         let tx = self.events.clone();
+        let cache = self.cache.clone();
         self.runtime.spawn_blocking(move || {
             let measured = wanted
                 .into_iter()
                 .map(|entry| {
                     let mut probe = entry.clone();
                     discover::enrich(&mut probe);
+                    probe.size = probe.size.or(entry.size);
+                    probe.modified = probe.modified.or(entry.modified);
+                    let facts = home::facts_for(&probe);
                     (
                         entry.path.clone(),
-                        (probe.rows, probe.cols, probe.size.or(entry.size)),
+                        home::measured_from(&probe, &entry),
+                        facts,
                     )
                 })
-                .collect();
+                .collect::<Vec<_>>();
+
+            // Remember what was learned, so the next run has it before reading
+            // anything. Purely a cache: every entry carries the size and mtime it came
+            // from and invalidates itself when those change.
+            let facts: Vec<_> = measured.iter().filter_map(|(_, _, f)| f.clone()).collect();
+            cache.record_dataset_facts(&facts);
+
+            let measured = measured.into_iter().map(|(p, m, _)| (p, m)).collect();
             let _ = tx.send(AppEvent::HomeMeasured {
                 generation,
                 measured,
@@ -7250,7 +7264,7 @@ impl App {
                     return None;
                 }
                 for (path, m) in measured {
-                    self.home.enriched.insert(path.clone(), *m);
+                    self.home.enriched.insert(path.clone(), m.clone());
                 }
                 self.home.apply_measurements();
                 self.request_home_measurements();
@@ -9413,6 +9427,25 @@ impl Widget for &mut App {
             crate::render::main_view::ControlBarSpec::Custom(pairs) => {
                 controls = controls.with_custom_controls(pairs);
             }
+        }
+
+        // The trailing figure belongs to whatever view is showing. On the home screen
+        // that is how many datasets are listed, not the table's row count.
+        if main_view_content == MainViewContent::Home {
+            let datasets = self
+                .home
+                .visible()
+                .iter()
+                .filter(|r| matches!(r, home::Row::Entry { .. }))
+                .count();
+            let caption = if self.home.listing_in_flight && datasets == 0 {
+                "Looking…".to_string()
+            } else if datasets == 1 {
+                "1 dataset".to_string()
+            } else {
+                format!("{datasets} datasets")
+            };
+            controls = controls.with_caption(Some(caption));
         }
 
         controls = controls.with_busy(self.busy, self.throbber_frame);

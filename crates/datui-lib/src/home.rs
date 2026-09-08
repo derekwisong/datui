@@ -225,7 +225,14 @@ pub struct Section {
 
 /// What measuring a dataset yielded: rows, columns, and total size, each absent when
 /// it cannot be known without reading the data.
-pub type Measured = (Option<usize>, Option<usize>, Option<u64>);
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Measured {
+    pub rows: Option<usize>,
+    pub cols: Option<usize>,
+    pub size: Option<u64>,
+    /// Column names, when the format gave them up for free.
+    pub columns: Vec<String>,
+}
 
 /// One line of the home screen. Headers are selectable so a section can be
 /// collapsed and expanded from the keyboard.
@@ -330,6 +337,10 @@ pub struct ListingRequest {
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     pub unreachable: std::collections::HashSet<PathBuf>,
     pub network_check: fn(&Path) -> bool,
+    /// What datui measured on a previous run. A row whose size and modification time
+    /// still match is filled in from here, so the screen has counts and column names
+    /// before anything has been read this time.
+    pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
 }
 
 /// What a listing pass produced.
@@ -337,6 +348,16 @@ pub struct ListingRequest {
 pub struct Listing {
     pub sections: Vec<Section>,
     pub root_paths: Vec<PathBuf>,
+}
+
+/// Fold a measured probe into the record kept for a row.
+pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
+    Measured {
+        rows: probe.rows,
+        cols: probe.cols,
+        size: probe.size.or(original.size),
+        columns: probe.columns.clone(),
+    }
 }
 
 /// A row a completed probe already produced for this exact path, if any.
@@ -362,6 +383,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         probed,
         unreachable,
         network_check,
+        known,
     } = request;
     let network_check = *network_check;
     let mut sections: Vec<Section> = Vec::new();
@@ -476,10 +498,104 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         });
     }
 
+    // Fill in whatever was measured before and still matches. `scan_dir` already
+    // stat'ed every row, so verifying the fingerprint costs nothing.
+    for section in &mut sections {
+        for row in &mut section.rows {
+            apply_known_facts(row, known);
+        }
+    }
+
     Listing {
         sections,
         root_paths,
     }
+}
+
+/// Apply a cached measurement to a row, if it is still for the same bytes.
+fn apply_known_facts(
+    row: &mut Entry,
+    known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+) {
+    let Some(facts) = known.get(&row.path) else {
+        return;
+    };
+    // Both halves of the fingerprint must agree. A dataset rewritten to the same size
+    // will have a newer modification time; one appended to will have a different size.
+    let matches = row.size.map(|s| s == facts.size).unwrap_or(false)
+        && row
+            .modified
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() == facts.mtime)
+            .unwrap_or(false);
+    if !matches {
+        return;
+    }
+    row.rows = facts.rows;
+    row.cols = facts.cols;
+    if !facts.columns.is_empty() {
+        row.columns = facts.columns.clone();
+    }
+}
+
+/// The record to keep for a row that has just been measured.
+pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)> {
+    let size = entry.size?;
+    let mtime = entry
+        .modified?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    if entry.rows.is_none() && entry.columns.is_empty() {
+        return None; // Nothing learned worth keeping.
+    }
+    Some((
+        entry.path.clone(),
+        crate::cache::DatasetFacts {
+            mtime,
+            size,
+            rows: entry.rows,
+            cols: entry.cols,
+            columns: entry.columns.clone(),
+        },
+    ))
+}
+
+/// How well an entry answers the filter, by name or by column.
+///
+/// Searching column names is what turns a list of files into something you can ask a
+/// question of: "which of these has a `customer_id`?" is the question a data person
+/// actually has, and the answer is already in the Parquet footer datui read to get
+/// the row count. A name match always outranks a column match, so typing a dataset's
+/// name still finds the dataset.
+pub fn match_score(filter: &str, entry: &Entry) -> Option<usize> {
+    if let Some(score) = fuzzy_score(filter, &entry.name) {
+        return Some(score);
+    }
+    if filter.is_empty() {
+        return Some(0);
+    }
+    matching_column(filter, entry).map(|_| COLUMN_MATCH_PENALTY)
+}
+
+/// Rank column matches below every name match, so they are an addition rather than a
+/// dilution of what the filter already did.
+const COLUMN_MATCH_PENALTY: usize = 10_000;
+
+/// The first column of `entry` that contains `filter`, case-insensitively.
+///
+/// Substring rather than subsequence: a column name is short and specific, and a
+/// fuzzy match over dozens of them matches nearly everything.
+pub fn matching_column<'a>(filter: &str, entry: &'a Entry) -> Option<&'a str> {
+    if filter.is_empty() {
+        return None;
+    }
+    let needle = filter.to_lowercase();
+    entry
+        .columns
+        .iter()
+        .find(|c| c.to_lowercase().contains(&needle))
+        .map(|c| c.as_str())
 }
 
 /// Case-insensitive subsequence match, the cheap half of fuzzy finding.
@@ -654,6 +770,9 @@ impl HomeState {
             probed: self.probed.clone(),
             unreachable: self.unreachable.clone(),
             network_check: self.network_check,
+            // The synchronous path is for tests and library callers; it consults no
+            // cache, so what it produces is exactly what is on disk right now.
+            known: Default::default(),
         };
         let listing = build_listing(&request);
         self.apply_listing(listing);
@@ -721,7 +840,7 @@ impl HomeState {
             let mut matched: Vec<(&Entry, usize)> = section
                 .rows
                 .iter()
-                .filter_map(|row| fuzzy_score(&self.filter, &row.name).map(|s| (row, s)))
+                .filter_map(|row| match_score(&self.filter, row).map(|s| (row, s)))
                 .collect();
 
             // A section with nothing to show is dropped, unless it is standing in for
@@ -830,10 +949,8 @@ impl HomeState {
         for entry in wanted {
             let mut probe = entry.clone();
             discover::enrich(&mut probe);
-            self.enriched.insert(
-                entry.path.clone(),
-                (probe.rows, probe.cols, probe.size.or(entry.size)),
-            );
+            self.enriched
+                .insert(entry.path.clone(), measured_from(&probe, &entry));
         }
         self.apply_measurements();
         more
@@ -872,11 +989,14 @@ impl HomeState {
     pub fn apply_measurements(&mut self) {
         for section in &mut self.sections {
             for row in &mut section.rows {
-                if let Some((rows, cols, size)) = self.enriched.get(&row.path) {
-                    row.rows = *rows;
-                    row.cols = *cols;
-                    if size.is_some() {
-                        row.size = *size;
+                if let Some(m) = self.enriched.get(&row.path) {
+                    row.rows = m.rows;
+                    row.cols = m.cols;
+                    if m.size.is_some() {
+                        row.size = m.size;
+                    }
+                    if !m.columns.is_empty() {
+                        row.columns = m.columns.clone();
                     }
                 }
             }
@@ -943,6 +1063,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         modified: None,
         rows: None,
         cols: None,
+        columns: Vec::new(),
     };
     if !remote {
         if let Ok(meta) = std::fs::metadata(path) {

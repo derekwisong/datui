@@ -85,6 +85,10 @@ pub struct Entry {
     pub rows: Option<usize>,
     /// Column count, same caveat.
     pub cols: Option<usize>,
+    /// Column names, when they were free to obtain. A Parquet footer carries them
+    /// alongside the row count, so knowing what is *in* a dataset costs nothing
+    /// beyond knowing how big it is.
+    pub columns: Vec<String>,
 }
 
 impl Entry {
@@ -106,6 +110,7 @@ impl Entry {
             modified: None,
             rows: None,
             cols: None,
+            columns: Vec::new(),
         }
     }
 
@@ -299,6 +304,7 @@ fn enrich_dataset(entry: &mut Entry) {
         if let Some(first) = files.first() {
             if let Some(meta) = crate::widgets::info::read_parquet_metadata(first) {
                 entry.cols = Some(meta.schema_descr.columns().len());
+                entry.columns = column_names(&meta);
             }
         }
         return;
@@ -307,12 +313,16 @@ fn enrich_dataset(entry: &mut Entry) {
     let mut rows = 0usize;
     let mut cols = None;
     let mut bytes = 0u64;
+    let mut columns = Vec::new();
     for file in &files {
         let Some(meta) = crate::widgets::info::read_parquet_metadata(file) else {
             return; // A file we cannot read makes the total a guess; report nothing.
         };
         rows += meta.num_rows;
         cols.get_or_insert(meta.schema_descr.columns().len());
+        if columns.is_empty() {
+            columns = column_names(&meta);
+        }
         if let Ok(m) = std::fs::metadata(file) {
             bytes += m.len();
         }
@@ -320,6 +330,7 @@ fn enrich_dataset(entry: &mut Entry) {
     entry.rows = Some(rows);
     entry.cols = cols;
     entry.size = Some(bytes);
+    entry.columns = columns;
 }
 
 /// Collect Parquet files under `dir`, breadth-bounded and depth-bounded, stopping
@@ -382,6 +393,7 @@ pub fn enrich_parquet(entry: &mut Entry) {
     if let Some(meta) = crate::widgets::info::read_parquet_metadata(&entry.path) {
         entry.rows = Some(meta.num_rows);
         entry.cols = Some(meta.schema_descr.columns().len());
+        entry.columns = column_names(&meta);
     }
 }
 
@@ -467,6 +479,15 @@ fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
         .into_iter()
         .take(4)
         .find_map(|d| first_parquet_under(&d, depth + 1))
+}
+
+/// Column names from a Parquet footer.
+pub fn column_names(meta: &crate::widgets::info::ParquetMetadataCache) -> Vec<String> {
+    meta.schema_descr
+        .columns()
+        .iter()
+        .map(|c| c.path_in_schema.join("."))
+        .collect()
 }
 
 /// Whether `path` is a regular file that is safe to open.

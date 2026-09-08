@@ -21,11 +21,14 @@ pub struct Controls {
     pub status_message: Option<String>, // When Some, replaces keybindings with spinner + message
     pub row_count_pending: bool, // When true, the exact count is still being determined: show a spinner in place of the (provisional, possibly inaccurate) number
     pub row_count_unknown: bool, // When true, the count could not be determined: show "?" instead of a misleading provisional number (takes effect only when not pending)
+    /// Replaces the row count entirely, for views that are not showing a table.
+    pub caption: Option<String>,
 }
 
 impl Default for Controls {
     fn default() -> Self {
         Self {
+            caption: None,
             row_count: None,
             dimmed: false,
             query_active: false,
@@ -51,6 +54,7 @@ impl Controls {
 
     pub fn with_row_count(row_count: usize) -> Self {
         Self {
+            caption: None,
             row_count: Some(row_count),
             dimmed: false,
             query_active: false,
@@ -118,6 +122,15 @@ impl Controls {
         self
     }
 
+    /// Replace the trailing row count with a caption of the view's own.
+    ///
+    /// "Rows: 0" is the table's counter; on a screen that is not showing a table it
+    /// is at best meaningless and at worst looks like an empty dataset.
+    pub fn with_caption(mut self, caption: Option<String>) -> Self {
+        self.caption = caption;
+        self
+    }
+
     pub fn with_row_count_unknown(mut self, unknown: bool) -> Self {
         self.row_count_unknown = unknown;
         self
@@ -127,6 +140,7 @@ impl Controls {
     /// This is the preferred way to create Controls with proper theming.
     pub fn from_context(row_count: usize, ctx: &RenderContext) -> Self {
         Self {
+            caption: None,
             row_count: Some(row_count),
             dimmed: false,
             query_active: false,
@@ -152,6 +166,7 @@ impl Controls {
         throbber_color: Color,
     ) -> Self {
         Self {
+            caption: None,
             row_count: Some(row_count),
             dimmed: false,
             query_active: false,
@@ -209,6 +224,9 @@ impl Widget for &Controls {
         // the count couldn't be determined a "?" is shown — so the user never mistakes an
         // incomplete partial total for the final figure.
         let row_count_text = |count: usize| -> String {
+            if let Some(caption) = &self.caption {
+                return caption.clone();
+            }
             if self.row_count_pending {
                 format!("Rows: {}", spinner_ch())
             } else if self.row_count_unknown {

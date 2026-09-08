@@ -122,6 +122,29 @@ Object-store and HTTP URLs are recorded in `RECENT` like any other path, and are
 worth having there: `s3://bucket/warehouse/events/year=2024` is the sort of path
 worth not retyping.
 
+## Finding a dataset by its columns
+
+Typing into the filter matches dataset names **and column names**. Searching
+`customer_id` finds every dataset that has such a column, with the match shown
+against the row:
+
+```
+› customer_id▏
+▾ RECENT  2
+▸ sales                 ·customer_id      2.4M × 18    340 MB    2d
+  orders.parquet        ·customer_id        89k × 12     4 MB    1w
+```
+
+A name match always ranks above a column match, so typing a dataset's name still
+finds the dataset.
+
+Column names come from the Parquet footer datui already reads to get row counts,
+so this costs nothing extra — and they are remembered between runs, so a search
+works immediately on a cold start without reading anything.
+
+Columns are known for Parquet datasets that have been measured at least once.
+Formats that need a scan to read a schema are matched by name only.
+
 ## What counts as a dataset
 
 | on disk | shown as |
@@ -162,8 +185,19 @@ open instead, but it does use CPU until it finishes.
 
 ## What datui remembers
 
-A list of recently opened paths, in the cache directory. Everything else on this
-screen is read when the screen is drawn. `datui --clear-cache` removes the list.
+Two things, both in the cache directory:
+
+- **Recently opened paths**, so the list has somewhere to start.
+- **What it measured** — row and column counts, and column names — each stamped
+  with the size and modification time it was taken from, so a dataset that has
+  changed invalidates itself.
+
+Both are caches, not a catalogue. There is nothing to register, nothing to curate,
+and nothing that cannot be rebuilt by looking again. `datui --clear-cache` removes
+both, and costs only speed.
+
+Everything else on this screen is read fresh, on a background thread, never on the
+one drawing the screen.
 
 ## Plain terminals
 

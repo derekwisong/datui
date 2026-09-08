@@ -247,3 +247,113 @@ impl CacheManager {
         });
     }
 }
+
+/// What datui remembers about a dataset it has already measured.
+///
+/// This is a **cache, not a catalogue**. Every field is re-derivable by reading the
+/// dataset again, and each entry carries the size and modification time it was taken
+/// from, so a changed dataset invalidates itself. Deleting the file costs speed and
+/// nothing else — there is nothing here a user curated, and nothing that cannot be
+/// rebuilt by looking again.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct DatasetFacts {
+    /// Modification time in seconds since the epoch, as a fingerprint.
+    pub mtime: u64,
+    /// Size in bytes, the other half of the fingerprint.
+    pub size: u64,
+    pub rows: Option<usize>,
+    pub cols: Option<usize>,
+    /// Column names, which is what makes searching by column possible before
+    /// anything has been read this run.
+    #[serde(default)]
+    pub columns: Vec<String>,
+}
+
+/// Entries kept in the dataset index.
+///
+/// Large enough to cover everywhere someone actually works, small enough that the
+/// file stays trivial to read and rewrite.
+pub const MAX_DATASET_FACTS: usize = 4096;
+
+impl CacheManager {
+    fn dataset_index_path(&self) -> PathBuf {
+        self.cache_file("datasets.json")
+    }
+
+    /// What datui already knows about datasets it has measured before.
+    ///
+    /// A malformed or unreadable file yields an empty index: this is a cache, and
+    /// failing to read it must never be worse than not having it.
+    pub fn load_dataset_facts(&self) -> std::collections::HashMap<PathBuf, DatasetFacts> {
+        let Ok(text) = fs::read_to_string(self.dataset_index_path()) else {
+            return Default::default();
+        };
+        serde_json::from_str::<std::collections::HashMap<PathBuf, DatasetFacts>>(&text)
+            .unwrap_or_default()
+    }
+
+    /// Merge newly measured datasets into the index.
+    ///
+    /// Locked and written atomically for the same reason history is: two datui
+    /// instances measuring at once must not produce a torn file or lose each other's
+    /// work.
+    pub fn record_dataset_facts(&self, facts: &[(PathBuf, DatasetFacts)]) {
+        if facts.is_empty() {
+            return;
+        }
+        let _ = self.with_cache_lock("datasets", || {
+            let mut index = self.load_dataset_facts();
+            for (path, entry) in facts {
+                index.insert(path.clone(), entry.clone());
+            }
+
+            // Keep the newest by modification time; an index that grows without limit
+            // eventually costs more to read than the reads it saves.
+            if index.len() > MAX_DATASET_FACTS {
+                let mut kept: Vec<_> = index.into_iter().collect();
+                kept.sort_by_key(|(_, f)| std::cmp::Reverse(f.mtime));
+                kept.truncate(MAX_DATASET_FACTS);
+                index = kept.into_iter().collect();
+            }
+
+            let json = serde_json::to_string(&index)?;
+            let temp = self.cache_file(&format!("datasets.{}.tmp", std::process::id()));
+            fs::write(&temp, json)?;
+            fs::rename(&temp, self.dataset_index_path()).inspect_err(|_| {
+                let _ = fs::remove_file(&temp);
+            })?;
+            Ok(())
+        });
+    }
+
+    /// Run `work` holding the named cache lock, or skip it if the lock is contended
+    /// past the deadline.
+    fn with_cache_lock<F>(&self, name: &str, work: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        use fs2::FileExt;
+
+        self.ensure_cache_dir()?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(self.cache_file(&format!("{name}.lock")))?;
+
+        let deadline = std::time::Instant::now() + LOCK_TIMEOUT;
+        loop {
+            if lock.try_lock_exclusive().is_ok() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        let result = work();
+        let _ = FileExt::unlock(&lock);
+        result
+    }
+}

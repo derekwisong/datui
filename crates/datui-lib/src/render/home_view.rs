@@ -290,7 +290,14 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                 ));
             }
             crate::home::Row::Entry { entry, .. } => {
-                lines.push(entry_line(entry, selected, name_width, show_meta, ctx));
+                // When a row is here because of a column rather than its name, say so:
+                // otherwise it reads as the filter having gone wrong.
+                let via = if crate::home::fuzzy_score(&app.home.filter, &entry.name).is_some() {
+                    None
+                } else {
+                    crate::home::matching_column(&app.home.filter, entry)
+                };
+                lines.push(entry_line(entry, selected, name_width, show_meta, via, ctx));
             }
         }
     }
@@ -330,12 +337,9 @@ fn section_header<'a>(
         section.title.to_uppercase()
     };
     let marker = if collapsed { g.collapsed } else { g.expanded };
-    // A collapsed section has to say what it is hiding, or it looks like nothing.
-    let count = if collapsed {
-        format!("  {matches}")
-    } else {
-        String::new()
-    };
+    // Shown whether folded or not: how much is in a place is worth knowing before
+    // deciding to look in it, and a folded section would otherwise read as empty.
+    let count = format!("  {matches}");
     let prefix_width = marker.chars().count() + count.chars().count();
     title = truncate_start(
         &title,
@@ -374,6 +378,7 @@ fn entry_line<'a>(
     selected: bool,
     name_width: usize,
     show_meta: bool,
+    matched_column: Option<&'a str>,
     ctx: &RenderContext,
 ) -> Line<'a> {
     // The selection marker is the loudest thing on screen, and the only thing that
@@ -389,11 +394,13 @@ fn entry_line<'a>(
     if entry.kind == EntryKind::Directory {
         name.push('/');
     }
+    // A column hit takes the place of the kind label: both are a short note about
+    // what this row is, and two of them would crowd the name.
     let kind = entry.kind.label();
-    let kind_cell = if kind.is_empty() {
-        String::new()
-    } else {
-        format!(" {kind}")
+    let kind_cell = match matched_column {
+        Some(column) => format!(" ·{column}"),
+        None if kind.is_empty() => String::new(),
+        None => format!(" {kind}"),
     };
 
     // Truncate the name, never the metadata: the columns must stay aligned. A row
@@ -421,10 +428,14 @@ fn entry_line<'a>(
     } else {
         Style::default().fg(ctx.text_primary)
     };
-    let kind_style = match entry.kind {
-        EntryKind::Hive => base.fg(ctx.temporal_col),
-        EntryKind::MultiFile => base.fg(ctx.float_col),
-        _ => base.fg(ctx.dimmed),
+    let kind_style = if matched_column.is_some() {
+        base.fg(ctx.keybind_hints)
+    } else {
+        match entry.kind {
+            EntryKind::Hive => base.fg(ctx.temporal_col),
+            EntryKind::MultiFile => base.fg(ctx.float_col),
+            _ => base.fg(ctx.dimmed),
+        }
     };
 
     let mut spans = vec![
@@ -462,8 +473,41 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             truncate_start(&crate::home::display_path(&entry.path), area.width as usize),
             Style::default().fg(ctx.dimmed),
         )),
-        Line::from(""),
     ];
+
+    // Facts before schema. For a format whose schema needs a scan this is the whole
+    // of what the pane can honestly say, and an empty pane says nothing at all.
+    let mut facts: Vec<(&str, String)> = Vec::new();
+    let kind = entry.kind.label();
+    if !kind.is_empty() {
+        facts.push(("kind", kind.to_string()));
+    }
+    if let (Some(rows), Some(cols)) = (entry.rows, entry.cols) {
+        facts.push(("rows", discover::format_rows(rows)));
+        facts.push(("columns", cols.to_string()));
+    } else if let Some(cols) = entry.cols {
+        facts.push(("columns", cols.to_string()));
+    }
+    if let Some(size) = entry.size {
+        facts.push(("size", discover::format_size(size)));
+    }
+    if let Some(modified) = entry.modified {
+        let age = discover::format_age(modified);
+        if !age.is_empty() {
+            facts.push(("modified", format!("{age} ago")));
+        }
+    }
+    if !facts.is_empty() {
+        lines.push(Line::from(""));
+        let width = facts.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        for (key, value) in facts {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{key:<width$}  "), Style::default().fg(ctx.dimmed)),
+                Span::styled(value, Style::default().fg(ctx.text_secondary)),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
 
     match app.home_schema(&entry) {
         Some(schema) if !schema.is_empty() => {

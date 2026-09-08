@@ -764,14 +764,6 @@ impl HomeState {
                 });
             };
 
-        for dir in config_dirs {
-            push(dir.clone(), RootOrigin::Configured, &mut roots, &mut seen);
-        }
-
-        // The working directory is claimed up front so it keeps its own label even
-        // when a recent dataset also lives there — "current directory" tells you more
-        // than "recent" does. It is still listed last, because code is usually here
-        // and data usually is not.
         let cwd = std::env::current_dir().ok();
         let cwd_key = cwd.as_ref().map(|c| {
             if is_network(c) {
@@ -780,6 +772,22 @@ impl HomeState {
                 c.canonicalize().unwrap_or_else(|_| c.clone())
             }
         });
+
+        // Where you are comes first. Standing in a directory is the strongest
+        // statement of what you are working on right now — stronger than a directory
+        // configured months ago, and far stronger than one listed only because
+        // something in it was opened once. Ordering it last meant a recent root
+        // holding sixty files buried the very place the user had just cd'd into.
+        //
+        // Claiming it here also keeps its own label when a recent dataset lives there
+        // too: "current directory" tells you more than "recent" does.
+        if let Some(cwd) = cwd.clone() {
+            push(cwd, RootOrigin::Cwd, &mut roots, &mut seen);
+        }
+
+        for dir in config_dirs {
+            push(dir.clone(), RootOrigin::Configured, &mut roots, &mut seen);
+        }
 
         // A recent dataset implies its containing directory is a place worth showing.
         for recent in recents {
@@ -804,10 +812,6 @@ impl HomeState {
                     &mut seen,
                 );
             }
-        }
-
-        if let Some(cwd) = cwd {
-            push(cwd, RootOrigin::Cwd, &mut roots, &mut seen);
         }
 
         // Last, and weakest: places the desktop says you have opened data from. Only

@@ -199,9 +199,13 @@ fn test_configured_directories_become_roots() {
     let configured = tmp.path().join("datasets");
     fs::create_dir_all(&configured).unwrap();
 
+    // The working directory is always root 0, so look the configured one up by path.
     let roots = HomeState::roots(std::slice::from_ref(&configured), &[], &[]);
-    assert_eq!(roots[0].path, configured);
-    assert_eq!(roots[0].origin, RootOrigin::Configured);
+    let root = roots
+        .iter()
+        .find(|r| r.path == configured)
+        .expect("a configured directory should become a root");
+    assert_eq!(root.origin, RootOrigin::Configured);
 }
 
 #[test]
@@ -1835,4 +1839,48 @@ fn test_a_recent_that_no_longer_exists_is_dropped() {
         !names.iter().any(|n| n == "deleted.parquet"),
         "a path that is gone should not be offered: {names:?}"
     );
+}
+
+#[test]
+fn test_the_working_directory_outranks_incidental_roots() {
+    // Standing in a directory is the strongest statement of what you are working on.
+    // Ordered after recent-derived roots, a single recent root holding sixty files
+    // buried the very place the user had just cd'd into — the data was found, and
+    // unreachable.
+    let tmp = TempDir::new().unwrap();
+    let elsewhere = tmp.path().join("elsewhere");
+    let recent = touch(&elsewhere, "opened_once.parquet");
+
+    let roots = HomeState::roots(&[], std::slice::from_ref(&recent), &[]);
+    let cwd_at = roots.iter().position(|r| r.origin == RootOrigin::Cwd);
+    let derived_at = roots.iter().position(|r| r.origin == RootOrigin::Recent);
+
+    if let (Some(cwd_at), Some(derived_at)) = (cwd_at, derived_at) {
+        assert!(
+            cwd_at < derived_at,
+            "the working directory should come before a root that exists only \
+             because something in it was opened once"
+        );
+    }
+}
+
+#[test]
+fn test_cwd_datasets_are_listed_without_ever_having_been_opened() {
+    // Being in the directory is enough; nothing has to be in recents first.
+    let tmp = TempDir::new().unwrap();
+    let here = touch(tmp.path(), "never_opened.parquet");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    assert!(
+        visible_names(&home)
+            .iter()
+            .any(|n| n == "never_opened.parquet"),
+        "a dataset in the current directory should be listed on its own"
+    );
+    assert!(here.exists());
 }

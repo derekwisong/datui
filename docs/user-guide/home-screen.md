@@ -48,10 +48,13 @@ order:
 | # | section | source | shown when empty |
 |---|---|---|---|
 | 1 | `RECENT` | datasets you have opened, most recent first | no |
-| 2 | a configured directory | `[data] directories`, in the order you list them | yes |
-| 3 | directories of recent datasets | added when you open something | no |
-| 4 | the current directory | where you launched datui | yes |
+| 2 | the current directory | where you launched datui | yes |
+| 3 | a configured directory | `[data] directories`, in the order you list them | yes |
+| 4 | directories of recent datasets | added when you open something | no |
 | 5 | `ELSEWHERE` | [desktop places](#desktop-places) | no |
+
+Where you are comes first: a directory holding sixty recently-opened files would
+otherwise push the place you just `cd`'d into off the screen.
 
 A directory reached more than one way appears once, under the earliest of these
 that names it.

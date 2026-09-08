@@ -8,6 +8,10 @@ use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 #[cfg(feature = "cloud")]
 use polars::prelude::{PlPathRef, ScanArgsParquet};
 use std::collections::HashMap;
+
+/// Rows measured per background pass. Small enough that a slow filesystem shows
+/// progress rather than a long silence.
+const MEASURE_BATCH: usize = 12;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc, Mutex};
 use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
@@ -552,6 +556,22 @@ pub enum AppEvent {
     /// HTTP, S3, or GCS download finished; temp path is ready. Scan it and continue load.
     #[cfg(any(feature = "http", feature = "cloud"))]
     DoLoadFromHttpTemp(PathBuf, OpenOptions),
+    /// A home listing built off-thread is ready.
+    HomeListingReady {
+        generation: u64,
+        listing: Box<crate::home::Listing>,
+    },
+    /// A schema read off-thread for the highlighted dataset.
+    HomeSchemaReady {
+        generation: u64,
+        path: PathBuf,
+        preview: Option<crate::discover::SchemaPreview>,
+    },
+    /// Measurements for rows the home screen asked about.
+    HomeMeasured {
+        generation: u64,
+        measured: Vec<(PathBuf, crate::home::Measured)>,
+    },
     /// A network root has been listed off-thread, or could not be.
     HomeProbeReady {
         root: PathBuf,
@@ -990,6 +1010,10 @@ pub struct App {
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
     home_probes_inflight: Vec<PathBuf>,
+    /// Schema reads currently out, so the same one is not requested every frame.
+    home_schema_inflight: Vec<PathBuf>,
+    /// Invalidates listings and measurements from a request the user has moved past.
+    home_generation: u64,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -1437,6 +1461,8 @@ impl App {
             data_table_state: None,
             home: home::HomeState::default(),
             home_probes_inflight: Vec::new(),
+            home_generation: 0,
+            home_schema_inflight: Vec::new(),
             home_schema_cache: HashMap::new(),
             original_file_format: None,
             original_file_delimiter: None,
@@ -1530,14 +1556,34 @@ impl App {
         if let Some(cached) = self.home_schema_cache.get(&entry.path) {
             return cached.clone();
         }
-        // Opening a remote file is the call that hangs when the network is gone.
-        if (self.home.network_check)(&entry.path) {
-            return None;
+        // Reading a schema opens a file, so it is requested rather than done here.
+        // Until it arrives the preview says so; it never blocks the frame.
+        self.request_home_schema(entry.clone());
+        None
+    }
+
+    /// Whether a schema read is currently out for this path.
+    pub fn home_schema_pending(&self, path: &Path) -> bool {
+        self.home_schema_inflight.iter().any(|p| p == path)
+    }
+
+    /// Read the selected dataset's schema on a worker.
+    fn request_home_schema(&mut self, entry: discover::Entry) {
+        if self.home_schema_inflight.contains(&entry.path) {
+            return;
         }
-        let schema = discover::schema_preview(entry);
-        self.home_schema_cache
-            .insert(entry.path.clone(), schema.clone());
-        schema
+        self.home_schema_inflight.push(entry.path.clone());
+
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        self.runtime.spawn_blocking(move || {
+            let preview = discover::schema_preview(&entry);
+            let _ = tx.send(AppEvent::HomeSchemaReady {
+                generation,
+                path: entry.path,
+                preview,
+            });
+        });
     }
 
     /// Start listing any network roots that have not answered yet.
@@ -1572,17 +1618,73 @@ impl App {
 
     /// Rebuild the home listing from the filesystem.
     fn home_refresh(&mut self) {
-        let dirs = self.app_config.data.resolved_directories();
+        self.home_generation = self.home_generation.wrapping_add(1);
+        let generation = self.home_generation;
+
+        // Reading recents touches only the cache directory, which is local by
+        // definition; everything that might block happens on the worker.
         let recents = self.cache.load_recents();
-        let desktop = if self.app_config.data.use_desktop_recents {
-            home::desktop_recent_dirs()
-        } else {
-            Vec::new()
+        let request = home::ListingRequest {
+            config_dirs: self.app_config.data.resolved_directories(),
+            recents,
+            desktop_dirs: if self.app_config.data.use_desktop_recents {
+                home::desktop_recent_dirs()
+            } else {
+                Vec::new()
+            },
+            browsing: self.home.browsing.clone(),
+            probed: self.home.probed.clone(),
+            unreachable: self.home.unreachable.clone(),
+            network_check: self.home.network_check,
         };
-        let mut home = std::mem::take(&mut self.home);
-        home.rebuild_with(&dirs, &recents, &desktop);
-        self.home = home;
+
+        self.home.listing_in_flight = true;
+        let tx = self.events.clone();
+        self.runtime.spawn_blocking(move || {
+            let listing = home::build_listing(&request);
+            let _ = tx.send(AppEvent::HomeListingReady {
+                generation,
+                listing: Box::new(listing),
+            });
+        });
+
         self.spawn_home_probes();
+    }
+
+    /// Ask the worker to measure rows that are on screen and not yet known.
+    ///
+    /// Reading a Parquet footer opens a file. That is the call that blocks on a FIFO,
+    /// a device node, a wedged mount or a failing disk, so it never happens on the
+    /// thread that draws.
+    fn request_home_measurements(&mut self) {
+        if self.home.measure_in_flight {
+            return;
+        }
+        let wanted = self.home.unmeasured_visible(MEASURE_BATCH);
+        if wanted.is_empty() {
+            return;
+        }
+
+        self.home.measure_in_flight = true;
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        self.runtime.spawn_blocking(move || {
+            let measured = wanted
+                .into_iter()
+                .map(|entry| {
+                    let mut probe = entry.clone();
+                    discover::enrich(&mut probe);
+                    (
+                        entry.path.clone(),
+                        (probe.rows, probe.cols, probe.size.or(entry.size)),
+                    )
+                })
+                .collect();
+            let _ = tx.send(AppEvent::HomeMeasured {
+                generation,
+                measured,
+            });
+        });
     }
 
     /// Enter the home screen, rebuilding it. Safe to call while a load is in flight.
@@ -7122,6 +7224,49 @@ impl App {
                     self.spawn_scan("Scanning input...", paths.clone(), options.clone())
                 }
             }
+            AppEvent::HomeListingReady {
+                generation,
+                listing,
+            } => {
+                // Clear the flag first, whatever the generation: a stale result that
+                // returned early while still marked in flight would wedge the pipeline
+                // permanently, and nothing would ever be listed again.
+                self.home.listing_in_flight = false;
+                // A listing from a superseded request describes somewhere the user has
+                // already left.
+                if *generation != self.home_generation {
+                    return None;
+                }
+                self.home.apply_listing((**listing).clone());
+                self.request_home_measurements();
+                None
+            }
+            AppEvent::HomeMeasured {
+                generation,
+                measured,
+            } => {
+                self.home.measure_in_flight = false;
+                if *generation != self.home_generation {
+                    return None;
+                }
+                for (path, m) in measured {
+                    self.home.enriched.insert(path.clone(), *m);
+                }
+                self.home.apply_measurements();
+                self.request_home_measurements();
+                None
+            }
+            AppEvent::HomeSchemaReady {
+                generation,
+                path,
+                preview,
+            } => {
+                self.home_schema_inflight.retain(|p| p != path);
+                if *generation == self.home_generation {
+                    self.home_schema_cache.insert(path.clone(), preview.clone());
+                }
+                None
+            }
             AppEvent::HomeProbeReady { root, rows } => {
                 match rows {
                     Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
@@ -9470,11 +9615,12 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             updated = true;
         }
 
-        // The home screen measures a few rows per frame, so it needs another frame
-        // while any remain — without this it stops at whatever the first paint could
-        // afford, since an idle home screen has nothing else asking it to redraw.
+        // Scrolling brings new rows into view, so ask for those once the frame that
+        // revealed them has been drawn. The request is served by a worker; this thread
+        // only decides what is worth asking about.
         if app.home.pending_enrich && app.input_mode == InputMode::Home {
-            updated = true;
+            app.home.pending_enrich = false;
+            app.request_home_measurements();
         }
 
         if updated {

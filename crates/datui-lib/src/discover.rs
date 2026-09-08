@@ -238,10 +238,12 @@ pub fn scan_dir(dir: &Path) -> Vec<Entry> {
 
         let kind = if meta.is_dir() {
             classify_directory(&path)
-        } else if is_data_file(&path) {
+        } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
         } else {
-            continue; // Not data and not a directory: not interesting here.
+            // Not data, not a directory, or not a regular file. A FIFO named
+            // `x.parquet` is a listing entry datui must never offer to open.
+            continue;
         };
 
         entries.push(Entry::new(path, kind).with_fs_metadata(&meta));
@@ -339,6 +341,7 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
             .and_then(|e| e.to_str())
             .map(|e| e.eq_ignore_ascii_case("parquet"))
             .unwrap_or(false)
+            && is_regular_file(&path)
         {
             out.push(path);
             if out.len() > MAX_FOOTERS_PER_DATASET {
@@ -371,6 +374,9 @@ pub fn enrich_parquet(entry: &mut Entry) {
         .map(|e| e.eq_ignore_ascii_case("parquet"))
         .unwrap_or(false);
     if !is_parquet {
+        return;
+    }
+    if !is_regular_file(&entry.path) {
         return;
     }
     if let Some(meta) = crate::widgets::info::read_parquet_metadata(&entry.path) {
@@ -451,6 +457,7 @@ fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
             .and_then(|e| e.to_str())
             .map(|e| e.eq_ignore_ascii_case("parquet"))
             .unwrap_or(false)
+            && is_regular_file(&path)
         {
             return Some(path);
         }
@@ -460,6 +467,19 @@ fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
         .into_iter()
         .take(4)
         .find_map(|d| first_parquet_under(&d, depth + 1))
+}
+
+/// Whether `path` is a regular file that is safe to open.
+///
+/// Opening a FIFO blocks until a writer appears — indefinitely, for a named pipe
+/// nobody is writing to — and opening a device or a socket does something stranger
+/// still. A directory listing happily reports any of these with a `.parquet` name,
+/// so every read here is gated on the kind first. `symlink_metadata` follows nothing
+/// and `metadata` only stats, so neither can block the way an open can.
+fn is_regular_file(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.file_type().is_file())
+        .unwrap_or(false)
 }
 
 /// Read a dataset's column names and types without reading any data.
@@ -488,6 +508,9 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
         EntryKind::Directory | EntryKind::Unknown => return None,
     };
 
+    if !is_regular_file(&file_path) {
+        return None;
+    }
     let file = std::fs::File::open(&file_path).ok()?;
     let mut reader = ParquetReader::new(file);
     let arrow_schema = reader.schema().ok()?;

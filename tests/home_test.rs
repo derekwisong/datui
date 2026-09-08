@@ -807,18 +807,18 @@ fn test_enrichment_is_capped_per_pass_and_reports_more_work() {
     };
     home.rebuild(&[], &[]);
 
-    let more = home.enrich_visible(100, 2);
+    let more = home.measure_now(2);
     assert!(more, "with 6 rows and a budget of 2, work must remain");
     assert_eq!(home.enriched.len(), 2, "a pass spends only its budget");
 
-    home.enrich_visible(100, 2);
+    home.measure_now(2);
     assert_eq!(
         home.enriched.len(),
         4,
         "the next pass continues where it left off"
     );
 
-    let more = home.enrich_visible(100, 10);
+    let more = home.measure_now(10);
     assert_eq!(home.enriched.len(), 6);
     assert!(!more, "nothing left to measure");
 }
@@ -837,7 +837,7 @@ fn test_enrichment_only_touches_rows_that_are_on_screen() {
     home.rebuild(&[], &[]);
 
     // A short window measures a short list, however many datasets exist.
-    home.enrich_visible(3, 100);
+    home.measure_now(3);
     assert!(
         home.enriched.len() <= 3,
         "measured {} rows for a 3-row window",
@@ -863,7 +863,7 @@ fn test_collapsed_sections_are_not_measured() {
         .expect("section present");
     home.set_collapsed(section, true);
 
-    home.enrich_visible(100, 100);
+    home.measure_now(100);
     let measured_in_section = home.enriched.keys().filter(|p| p.starts_with(&dir)).count();
     assert_eq!(
         measured_in_section, 0,
@@ -1069,8 +1069,11 @@ fn test_a_root_that_never_answers_is_marked_unreachable() {
 }
 
 #[test]
-fn test_remote_rows_are_never_measured_on_this_thread() {
-    // Reading a Parquet footer opens the file, which is the call that hangs.
+fn test_remote_rows_are_left_to_their_root_probe() {
+    // Remote rows are measured by the probe that lists their root, which is already
+    // reading that filesystem. Measuring them again here would put a second thread on
+    // a share that may never answer, and a thread wedged on a `hard` mount is never
+    // reclaimed.
     let tmp = TempDir::new().unwrap();
     let remote = tmp.path().join("PRETEND_REMOTE/data");
     touch(&remote, "a.parquet");
@@ -1081,11 +1084,11 @@ fn test_remote_rows_are_never_measured_on_this_thread() {
         ..Default::default()
     };
     home.rebuild(&[], &[]);
-    home.enrich_visible(100, 100);
+    home.measure_now(100);
 
     assert!(
         home.enriched.is_empty(),
-        "measuring a remote row would open a remote file"
+        "a remote row should not be queued for the measurement pass"
     );
 }
 
@@ -1215,5 +1218,139 @@ fn test_a_recent_adopts_the_classification_its_root_probe_found() {
     assert!(
         kinds.iter().all(|k| *k == EntryKind::Hive),
         "every row for the same dataset should agree: {kinds:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Hazards that are not the network
+//
+// Guarding by category does not work, because the list of ways a filesystem call
+// can block is open-ended: a FIFO, a device node, a socket, a FUSE mount nobody
+// classified, a disk that has stopped answering. What follows pins the two
+// defences — refuse to read anything that is not a regular file, and never read
+// anything at all on the thread that draws.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn test_a_fifo_named_like_a_dataset_is_not_offered() {
+    // Opening a FIFO blocks until a writer appears — for a named pipe nobody is
+    // writing to, that is forever. A directory listing reports it as `x.parquet`
+    // like anything else, so it has to be rejected on kind, before any open.
+    use std::os::unix::fs::FileTypeExt;
+
+    let tmp = TempDir::new().unwrap();
+    let fifo = tmp.path().join("blocker.parquet");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+    assert!(status.success());
+    assert!(fs::metadata(&fifo).unwrap().file_type().is_fifo());
+    touch(tmp.path(), "real.parquet");
+
+    let names = discover::scan_dir(tmp.path())
+        .into_iter()
+        .map(|e| e.name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        vec!["real.parquet"],
+        "a pipe must never be offered as a dataset: {names:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_measuring_a_directory_holding_a_fifo_completes() {
+    // The regression: this hung forever, locally, with no network involved.
+    let tmp = TempDir::new().unwrap();
+    let fifo = tmp.path().join("blocker.parquet");
+    std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    home.measure_now(100); // completes, rather than blocking on the pipe
+}
+
+#[test]
+fn test_a_symlink_cycle_does_not_run_away() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("data");
+    fs::create_dir_all(&dir).unwrap();
+    touch(&dir, "a.parquet");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&dir, dir.join("self")).unwrap();
+
+    let mut home = HomeState {
+        browsing: Some(dir.clone()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    home.measure_now(100);
+    // Reaching here at all is the assertion: depth and breadth caps hold.
+    assert!(!home.visible().is_empty());
+}
+
+#[test]
+fn test_listing_can_be_built_away_from_the_state_it_updates() {
+    // The listing is produced by a free function taking a request, so it can run on
+    // a worker. If this ever needs `&HomeState`, the interface thread is doing the
+    // reading again.
+    use datui::home::{build_listing, ListingRequest};
+
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "sales.parquet");
+
+    let request = ListingRequest {
+        config_dirs: vec![tmp.path().to_path_buf()],
+        recents: Vec::new(),
+        desktop_dirs: Vec::new(),
+        browsing: None,
+        probed: Default::default(),
+        unreachable: Default::default(),
+        network_check: |_| false,
+    };
+
+    // Built on another thread entirely, then handed over.
+    let listing = std::thread::spawn(move || build_listing(&request))
+        .join()
+        .expect("listing thread");
+
+    let mut home = HomeState::default();
+    home.apply_listing(listing);
+    assert!(visible_names(&home).iter().any(|n| n == "sales.parquet"));
+}
+
+#[test]
+fn test_applying_a_listing_keeps_the_cursor_where_it_was() {
+    // Background results arrive continuously; landing back at the top each time
+    // would make the screen unusable.
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "a.parquet");
+    touch(tmp.path(), "b.parquet");
+    touch(tmp.path(), "c.parquet");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    home.move_selection(1);
+    home.move_selection(1);
+    let held = home.selected_entry().map(|e| e.path);
+    assert!(held.is_some());
+
+    home.rebuild(&[], &[]); // as if a worker delivered a fresh listing
+    assert_eq!(
+        home.selected_entry().map(|e| e.path),
+        held,
+        "a refresh should not move the cursor"
     );
 }

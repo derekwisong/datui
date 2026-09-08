@@ -32,8 +32,12 @@ use ratatui::widgets::{Clear, Paragraph, Widget};
 
 /// Width reserved for the right-aligned metadata columns in the list.
 const META_WIDTH: u16 = 34;
-/// Below this the preview pane crowds the list out; drop it.
-const PREVIEW_MIN_WIDTH: u16 = 92;
+/// Width given to the preview pane when there is room for it.
+const PREVIEW_WIDTH: u16 = 40;
+/// Below this, showing the preview would squeeze the list under [`META_MIN_WIDTH`]
+/// and cost every row its size and shape. The scent is what the list is *for*, so the
+/// preview yields first.
+const PREVIEW_MIN_WIDTH: u16 = META_MIN_WIDTH + PREVIEW_WIDTH + 6;
 /// Below this even the metadata columns have to go.
 const META_MIN_WIDTH: u16 = 56;
 
@@ -123,7 +127,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
             .constraints([
                 Constraint::Fill(1),
                 Constraint::Length(3), // the rule and its gutters
-                Constraint::Length(42),
+                Constraint::Length(PREVIEW_WIDTH),
             ])
             .split(rows[2]);
         render_list(body[0], buf, app, ctx);
@@ -220,12 +224,20 @@ fn render_rule(area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
 }
 
 fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
-    // Measure what this frame draws, a few rows per pass so the first frame is not
-    // held up by a directory full of large datasets.
-    app.home.pending_enrich = app.home.enrich_visible(area.height as usize, 6);
+    // Nothing is read here. Rows carry whatever a worker has measured so far, and
+    // the request for more is made after the frame, not during it.
+    app.home.pending_enrich = !app.home.unmeasured_visible(1).is_empty();
     let visible = app.home.visible();
 
     if visible.is_empty() {
+        if app.home.listing_in_flight {
+            Paragraph::new(Line::from(Span::styled(
+                "Looking…",
+                Style::default().fg(ctx.dimmed),
+            )))
+            .render(area, buf);
+            return;
+        }
         let lines = if app.home.filter.is_empty() {
             vec![
                 Line::from(Span::styled(
@@ -495,12 +507,13 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             }
         }
         _ => {
+            let reading = app.home_schema_pending(&entry.path);
             let note: &[&str] = match entry.kind {
                 EntryKind::Directory => &["Directory.", "Enter to look inside."],
-                EntryKind::Unknown => &[
-                    "Not read yet — it is on a network location.",
-                    "Enter to open it.",
-                ],
+                EntryKind::Unknown => {
+                    &["On a network location, not read yet.", "Enter to open it."]
+                }
+                _ if reading => &["Reading schema…"],
                 _ => &[
                     "Schema needs a scan for this format.",
                     "datui shows it once opened.",

@@ -276,6 +276,11 @@ pub struct HomeState {
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network roots that did not answer.
     pub unreachable: std::collections::HashSet<PathBuf>,
+    /// True while a listing is being built on a worker. The previous listing stays on
+    /// screen meanwhile, so a refresh never blanks the view.
+    pub listing_in_flight: bool,
+    /// True while a measurement batch is out, so only one is in flight at a time.
+    pub measure_in_flight: bool,
     /// Set while rows on screen are still unmeasured, so the main loop knows to draw
     /// another frame and measure the next batch.
     pub pending_enrich: bool,
@@ -302,6 +307,8 @@ impl Default for HomeState {
             browsing: None,
             status: None,
             network_check: is_remote_path,
+            listing_in_flight: false,
+            measure_in_flight: false,
             root_paths: Vec::new(),
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
@@ -309,6 +316,169 @@ impl Default for HomeState {
             enriched: std::collections::HashMap::new(),
             collapsed: std::collections::HashSet::new(),
         }
+    }
+}
+
+/// Everything [`build_listing`] needs, gathered on the interface thread from state it
+/// already has, so the worker never reaches back into the app.
+#[derive(Debug, Clone)]
+pub struct ListingRequest {
+    pub config_dirs: Vec<PathBuf>,
+    pub recents: Vec<PathBuf>,
+    pub desktop_dirs: Vec<PathBuf>,
+    pub browsing: Option<PathBuf>,
+    pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
+    pub unreachable: std::collections::HashSet<PathBuf>,
+    pub network_check: fn(&Path) -> bool,
+}
+
+/// What a listing pass produced.
+#[derive(Debug, Clone, Default)]
+pub struct Listing {
+    pub sections: Vec<Section>,
+    pub root_paths: Vec<PathBuf>,
+}
+
+/// A row a completed probe already produced for this exact path, if any.
+fn probed_entry(
+    probed: &std::collections::HashMap<PathBuf, Vec<Entry>>,
+    path: &Path,
+) -> Option<Entry> {
+    probed.values().flatten().find(|e| e.path == path).cloned()
+}
+
+/// Build the home listing.
+///
+/// A free function taking everything it needs, so it can run on a worker thread. It
+/// is the only place the home screen touches the filesystem, and it must never be
+/// called from the thread that draws — a directory on a wedged mount, a FIFO, a
+/// failing disk all block here, and none of them can be enumerated in advance.
+pub fn build_listing(request: &ListingRequest) -> Listing {
+    let ListingRequest {
+        config_dirs,
+        recents,
+        desktop_dirs,
+        browsing,
+        probed,
+        unreachable,
+        network_check,
+    } = request;
+    let network_check = *network_check;
+    let mut sections: Vec<Section> = Vec::new();
+    let mut root_paths: Vec<PathBuf> = Vec::new();
+
+    // Descended into a directory: show only that.
+    if let Some(dir) = browsing.clone() {
+        let rows = discover::scan_dir(&dir);
+        sections.push(Section {
+            title: display_path(&dir),
+            subtitle: None,
+            rows,
+            unavailable: false,
+        });
+        return Listing {
+            sections,
+            root_paths,
+        };
+    }
+
+    // Recents that still exist, most recent first.
+    let recent_rows: Vec<Entry> = recents
+        .iter()
+        // `exists()` stats the path, so a remote entry is taken on trust and
+        // dropped later only if its probe says it is gone.
+        .filter(|p| network_check(p) || p.exists())
+        .take(15)
+        .map(|p| {
+            // A probe of the containing root has already classified and measured
+            // this; reuse it, so the same dataset does not read as `hive` under
+            // its directory and `dir` under Recent.
+            if let Some(known) = probed_entry(probed, p) {
+                return known;
+            }
+            entry_for_path(p, network_check(p))
+        })
+        .collect();
+    if !recent_rows.is_empty() {
+        sections.push(Section {
+            title: "Recent".to_string(),
+            subtitle: None,
+            rows: recent_rows,
+            unavailable: false,
+        });
+    }
+
+    // Desktop-derived places are collected rather than expanded — see below.
+    let mut elsewhere: Vec<Entry> = Vec::new();
+
+    let roots = HomeState::roots_with(config_dirs, recents, desktop_dirs, network_check);
+    root_paths = roots.iter().map(|r| r.path.clone()).collect();
+    for root in roots {
+        // A place the desktop mentioned is listed as a directory to step into,
+        // never expanded. Its contents are whatever you last opened anywhere on
+        // the machine, which is regularly something you would not want appearing
+        // on a screen you are sharing. Naming the place is useful; showing what
+        // is in it, unasked, is not datui's business. Pressing Enter is the ask.
+        if root.origin == RootOrigin::Desktop {
+            if root.available {
+                let mut entry = Entry::directory(&root.path);
+                // Show the place, not just its leaf: "~/Downloads" says more
+                // than "Downloads" when the section has no path of its own.
+                entry.name = display_path(&root.path);
+                elsewhere.push(entry);
+            }
+            continue;
+        }
+
+        // A derived root with nothing in it adds noise; keep configured and cwd
+        // roots always, since the user named them or is standing in them.
+        // A remote root is listed from whatever its background probe returned,
+        // and left empty until then. Scanning it here is the thing that freezes
+        // datui on a slow or absent network.
+        let rows = if root.network {
+            probed.get(&root.path).cloned().unwrap_or_default()
+        } else if root.available {
+            discover::scan_dir(&root.path)
+        } else {
+            Vec::new()
+        };
+        // An empty derived root is noise and goes. One that cannot be *read* stays:
+        // a network share that has stopped answering is the case the section
+        // heading exists to report, and silently dropping it is the worst answer.
+        let unreachable = root.network && unreachable.contains(&root.path);
+        let waiting = root.network && !unreachable && !probed.contains_key(&root.path);
+        if rows.is_empty() && root.origin == RootOrigin::Recent && root.available && !root.network {
+            continue;
+        }
+        // A network root is worth flagging: it is the one that will be slow, and
+        // the one that can stop answering.
+        let subtitle = if waiting {
+            format!("network · checking · {}", root.origin.note())
+        } else if root.network {
+            format!("network · {}", root.origin.note())
+        } else {
+            root.origin.note().to_string()
+        };
+        sections.push(Section {
+            title: display_path(&root.path),
+            subtitle: Some(subtitle),
+            rows,
+            unavailable: !root.available || unreachable,
+        });
+    }
+
+    if !elsewhere.is_empty() {
+        sections.push(Section {
+            title: "Elsewhere".to_string(),
+            subtitle: Some("opened elsewhere · press Enter to look".to_string()),
+            rows: elsewhere,
+            unavailable: false,
+        });
+    }
+
+    Listing {
+        sections,
+        root_paths,
     }
 }
 
@@ -476,120 +646,37 @@ impl HomeState {
         recents: &[PathBuf],
         desktop_dirs: &[PathBuf],
     ) {
-        self.sections.clear();
+        let request = ListingRequest {
+            config_dirs: config_dirs.to_vec(),
+            recents: recents.to_vec(),
+            desktop_dirs: desktop_dirs.to_vec(),
+            browsing: self.browsing.clone(),
+            probed: self.probed.clone(),
+            unreachable: self.unreachable.clone(),
+            network_check: self.network_check,
+        };
+        let listing = build_listing(&request);
+        self.apply_listing(listing);
+    }
 
-        // Descended into a directory: show only that.
-        if let Some(dir) = self.browsing.clone() {
-            let rows = discover::scan_dir(&dir);
-            self.sections.push(Section {
-                title: display_path(&dir),
-                subtitle: None,
-                rows,
-                unavailable: false,
-            });
-            self.select_first_entry();
-            return;
-        }
+    /// Install a listing built elsewhere, keeping the cursor on whatever it was on.
+    pub fn apply_listing(&mut self, listing: Listing) {
+        let previous = self.selected_entry().map(|e| e.path);
+        self.sections = listing.sections;
+        self.root_paths = listing.root_paths;
 
-        // Recents that still exist, most recent first.
-        let network_check = self.network_check;
-        let recent_rows: Vec<Entry> = recents
-            .iter()
-            // `exists()` stats the path, so a remote entry is taken on trust and
-            // dropped later only if its probe says it is gone.
-            .filter(|p| network_check(p) || p.exists())
-            .take(15)
-            .map(|p| {
-                // A probe of the containing root has already classified and measured
-                // this; reuse it, so the same dataset does not read as `hive` under
-                // its directory and `dir` under Recent.
-                if let Some(known) = self.probed_entry(p) {
-                    return known;
-                }
-                entry_for_path(p, network_check(p))
-            })
-            .collect();
-        if !recent_rows.is_empty() {
-            self.sections.push(Section {
-                title: "Recent".to_string(),
-                subtitle: None,
-                rows: recent_rows,
-                unavailable: false,
-            });
-        }
-
-        // Desktop-derived places are collected rather than expanded — see below.
-        let mut elsewhere: Vec<Entry> = Vec::new();
-
-        let roots = Self::roots_with(config_dirs, recents, desktop_dirs, network_check);
-        self.root_paths = roots.iter().map(|r| r.path.clone()).collect();
-        for root in roots {
-            // A place the desktop mentioned is listed as a directory to step into,
-            // never expanded. Its contents are whatever you last opened anywhere on
-            // the machine, which is regularly something you would not want appearing
-            // on a screen you are sharing. Naming the place is useful; showing what
-            // is in it, unasked, is not datui's business. Pressing Enter is the ask.
-            if root.origin == RootOrigin::Desktop {
-                if root.available {
-                    let mut entry = Entry::directory(&root.path);
-                    // Show the place, not just its leaf: "~/Downloads" says more
-                    // than "Downloads" when the section has no path of its own.
-                    entry.name = display_path(&root.path);
-                    elsewhere.push(entry);
-                }
-                continue;
-            }
-
-            // A derived root with nothing in it adds noise; keep configured and cwd
-            // roots always, since the user named them or is standing in them.
-            // A remote root is listed from whatever its background probe returned,
-            // and left empty until then. Scanning it here is the thing that freezes
-            // datui on a slow or absent network.
-            let rows = if root.network {
-                self.probed.get(&root.path).cloned().unwrap_or_default()
-            } else if root.available {
-                discover::scan_dir(&root.path)
-            } else {
-                Vec::new()
-            };
-            // An empty derived root is noise and goes. One that cannot be *read* stays:
-            // a network share that has stopped answering is the case the section
-            // heading exists to report, and silently dropping it is the worst answer.
-            let unreachable = root.network && self.unreachable.contains(&root.path);
-            let waiting = root.network && !unreachable && !self.probed.contains_key(&root.path);
-            if rows.is_empty()
-                && root.origin == RootOrigin::Recent
-                && root.available
-                && !root.network
+        // Keep the cursor on the same dataset across a refresh; landing back at the
+        // top every time a background result arrives makes the screen unusable.
+        if let Some(path) = previous {
+            if let Some(idx) = self
+                .visible()
+                .iter()
+                .position(|r| matches!(r, Row::Entry { entry, .. } if entry.path == path))
             {
-                continue;
+                self.selected = idx;
+                return;
             }
-            // A network root is worth flagging: it is the one that will be slow, and
-            // the one that can stop answering.
-            let subtitle = if waiting {
-                format!("network · checking · {}", root.origin.note())
-            } else if root.network {
-                format!("network · {}", root.origin.note())
-            } else {
-                root.origin.note().to_string()
-            };
-            self.sections.push(Section {
-                title: display_path(&root.path),
-                subtitle: Some(subtitle),
-                rows,
-                unavailable: !root.available || unreachable,
-            });
         }
-
-        if !elsewhere.is_empty() {
-            self.sections.push(Section {
-                title: "Elsewhere".to_string(),
-                subtitle: Some("opened elsewhere · press Enter to look".to_string()),
-                rows: elsewhere,
-                unavailable: false,
-            });
-        }
-
         self.select_first_entry();
     }
 
@@ -718,15 +805,6 @@ impl HomeState {
         out
     }
 
-    /// A row a completed probe already produced for this exact path, if any.
-    fn probed_entry(&self, path: &Path) -> Option<Entry> {
-        self.probed
-            .values()
-            .flatten()
-            .find(|e| e.path == path)
-            .cloned()
-    }
-
     /// Record what a probe found. An empty listing is still an answer.
     pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>) {
         self.unreachable.remove(&root);
@@ -739,73 +817,70 @@ impl HomeState {
         self.unreachable.insert(root);
     }
 
-    /// Measure the rows about to be drawn, and only those.
+    /// Measure a batch of rows on the calling thread.
     ///
-    /// Enriching during `rebuild` meant every dataset under every root paid for a
-    /// footer walk before the first frame — on a directory holding a dozen datasets
-    /// that is hundreds of file reads, and the home screen simply does not appear
-    /// for tens of seconds. Bounded by what fits on screen, it is a handful of reads,
-    /// and the cache means scrolling back costs nothing.
-    /// Returns true when rows remain unmeasured, so the caller can schedule another
-    /// pass rather than paying for all of them before the first frame.
-    pub fn enrich_visible(&mut self, limit: usize, budget: usize) -> bool {
-        // Collect targets first: `visible()` borrows the sections immutably.
-        let targets: Vec<(usize, PathBuf)> = self
-            .visible()
-            .iter()
-            .filter_map(|r| match r {
-                Row::Entry { section, entry } => Some((*section, entry.path.clone())),
-                Row::Header { .. } => None,
-            })
-            .take(limit)
-            .collect();
+    /// For tests and library callers that know their paths are safe. **The application
+    /// never calls this**: reading a footer opens a file, which blocks on a FIFO, a
+    /// device node, a wedged mount or a failing disk. In the app the interface thread
+    /// only ever decides *what* to measure, via [`HomeState::unmeasured_visible`], and
+    /// a worker does the reading.
+    pub fn measure_now(&mut self, limit: usize) -> bool {
+        let wanted = self.unmeasured_visible(limit);
+        let more = self.unmeasured_visible(limit + 1).len() > wanted.len();
+        for entry in wanted {
+            let mut probe = entry.clone();
+            discover::enrich(&mut probe);
+            self.enriched.insert(
+                entry.path.clone(),
+                (probe.rows, probe.cols, probe.size.or(entry.size)),
+            );
+        }
+        self.apply_measurements();
+        more
+    }
 
-        let mut spent = 0usize;
-        let mut remaining = false;
-        for (section, path) in targets {
-            let measured = match self.enriched.get(&path) {
-                Some(cached) => *cached,
-                None => {
-                    // Reading a remote footer is exactly the call that hangs on a
-                    // network that has gone away. Remote rows simply show no counts.
-                    if (self.network_check)(&path) {
-                        continue;
-                    }
-                    // Measuring a hive dataset walks its files. A directory holding a
-                    // dozen of them is hundreds of reads, so only a few are done per
-                    // frame and the rest fill in over the next ones.
-                    if spent >= budget {
-                        remaining = true;
-                        continue;
-                    }
-                    spent += 1;
-                    let Some(row) = self
-                        .sections
-                        .get(section)
-                        .and_then(|s| s.rows.iter().find(|r| r.path == path))
-                    else {
-                        continue;
-                    };
-                    let mut probe = row.clone();
-                    discover::enrich(&mut probe);
-                    let measured = (probe.rows, probe.cols, probe.size.or(row.size));
-                    self.enriched.insert(path.clone(), measured);
-                    measured
-                }
+    /// Rows on screen that have not been measured yet, up to `limit`.
+    ///
+    /// The interface thread decides *what* is worth measuring — it knows what is
+    /// visible — and a worker does the reading.
+    pub fn unmeasured_visible(&self, limit: usize) -> Vec<Entry> {
+        let mut out = Vec::new();
+        for row in self.visible() {
+            let Row::Entry { entry, .. } = row else {
+                continue;
             };
-            if let Some(row) = self
-                .sections
-                .get_mut(section)
-                .and_then(|s| s.rows.iter_mut().find(|r| r.path == path))
-            {
-                row.rows = measured.0;
-                row.cols = measured.1;
-                if measured.2.is_some() {
-                    row.size = measured.2;
+            if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
+                continue;
+            }
+            // Remote rows are measured by their root's probe, which already reads that
+            // filesystem. Measuring them here too would put a second thread on a share
+            // that may never answer, and a wedged thread is never reclaimed.
+            if (self.network_check)(&entry.path) {
+                continue;
+            }
+            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
+                out.push(entry.clone());
+            }
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Fold known measurements into the rows currently listed.
+    pub fn apply_measurements(&mut self) {
+        for section in &mut self.sections {
+            for row in &mut section.rows {
+                if let Some((rows, cols, size)) = self.enriched.get(&row.path) {
+                    row.rows = *rows;
+                    row.cols = *cols;
+                    if size.is_some() {
+                        row.size = *size;
+                    }
                 }
             }
         }
-        remaining
     }
 
     /// Put the cursor on the first dataset rather than the first header, so the

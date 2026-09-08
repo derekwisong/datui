@@ -96,20 +96,16 @@ pub fn home_control_keys(
     has_data: bool,
     sort: crate::home::SortMode,
 ) -> Vec<(&'static str, &'static str)> {
+    // Ordered by what a narrow terminal can least afford to lose: the bar is cut from
+    // the right, so the way out comes before the conveniences. At 70 columns this is
+    // the difference between seeing "Esc Quit" and seeing nothing about leaving.
     let g = crate::glyphs::get();
-    let mut keys = vec![(g.updown, "Move"), (g.enter, "Open")];
+    let mut keys = vec![(g.enter, "Open"), (g.updown, "Move")];
 
     if path_input_active {
-        keys.push((g.tab, "Complete"));
         keys.push(("Esc", "Cancel"));
+        keys.push((g.tab, "Complete"));
     } else {
-        keys.push(("type", "Filter"));
-        keys.push((g.updown_lr, "Fold"));
-        keys.push((g.tab, sort.label()));
-        keys.push(("~", "Path"));
-        if browsing {
-            keys.push((g.backspace, "Up"));
-        }
         // Esc peels off one layer of context at a time, so label it with what it will
         // actually do next rather than a generic "Back".
         keys.push((
@@ -124,6 +120,13 @@ pub fn home_control_keys(
                 "Quit"
             },
         ));
+        keys.push(("type", "Filter"));
+        keys.push(("~", "Path"));
+        if browsing {
+            keys.push((g.backspace, "Up"));
+        }
+        keys.push((g.updown_lr, "Fold"));
+        keys.push((g.tab, sort.label()));
     }
 
     // Esc already reads "Quit" when there is nothing left to back out of; saying it
@@ -174,6 +177,24 @@ mod tests {
             assert!(
                 keys.iter().any(|(_, label)| *label == "Quit"),
                 "no quit offered in state (path={p}, browsing={b}, filter={f}, data={d})"
+            );
+        }
+    }
+
+    #[test]
+    fn home_bar_leads_with_the_way_out() {
+        // A narrow terminal cuts the bar from the right. Whatever survives has to
+        // include how to leave.
+        for (p, b, f, d) in all_states() {
+            let keys = home_control_keys(p, b, f, d, crate::home::SortMode::Natural);
+            let escape_at = keys
+                .iter()
+                .position(|(key, _)| *key == "Esc")
+                .expect("Esc is always offered");
+            assert!(
+                escape_at < 3,
+                "Esc is {escape_at} deep in state (path={p}, browsing={b}, filter={f}, data={d}); \
+                 a narrow bar would cut it"
             );
         }
     }

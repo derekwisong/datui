@@ -1800,3 +1800,45 @@ fn test_completion_of_an_unreadable_directory_is_harmless() {
     assert_eq!(candidates, 0);
     assert_eq!(completed, "/definitely/not/here/x");
 }
+
+#[test]
+fn test_every_surviving_recent_is_listed() {
+    // The store bounds how many are kept; the screen must not quietly bound it
+    // again. A recent that is held but never shown is worse than one not held.
+    let tmp = TempDir::new().unwrap();
+    let recents: Vec<std::path::PathBuf> = (0..30)
+        .map(|i| touch(tmp.path(), &format!("d{i:02}.parquet")))
+        .collect();
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], &recents);
+
+    let listed = home
+        .visible()
+        .iter()
+        .filter(|r| matches!(r, Row::Entry { section: 0, .. }))
+        .count();
+    assert_eq!(
+        listed,
+        recents.len(),
+        "all {} recents should be listed, saw {listed}",
+        recents.len()
+    );
+}
+
+#[test]
+fn test_a_recent_that_no_longer_exists_is_dropped() {
+    let tmp = TempDir::new().unwrap();
+    let gone = tmp.path().join("deleted.parquet");
+    let kept = touch(tmp.path(), "kept.parquet");
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], &[gone, kept]);
+
+    let names = visible_names(&home);
+    assert!(names.iter().any(|n| n == "kept.parquet"));
+    assert!(
+        !names.iter().any(|n| n == "deleted.parquet"),
+        "a path that is gone should not be offered: {names:?}"
+    );
+}

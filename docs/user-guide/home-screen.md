@@ -219,6 +219,13 @@ Leaving a load abandons it rather than cancelling it. The scan runs to completio
 in the background and its result is discarded — it cannot overwrite whatever you
 open instead, but it does use CPU until it finishes.
 
+## Narrow terminals
+
+The screen adapts rather than truncating. Below roughly 100 columns the preview
+pane yields so the list keeps its size and shape columns, and below about 56 those
+columns go too. The control bar is ordered so that if it has to be cut, what
+survives is how to open, move and leave.
+
 ## What datui remembers
 
 Two things, both in the cache directory:

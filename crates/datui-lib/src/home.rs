@@ -448,7 +448,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // `exists()` stats the path, so a remote entry is taken on trust and
         // dropped later only if its probe says it is gone.
         .filter(|p| network_check(p) || p.exists())
-        .take(15)
+        // No display cap. The store already bounds this, the header states the
+        // count, and the section folds — an invisible limit would just hide recents
+        // with nothing to say it had.
         .map(|p| {
             // A probe of the containing root has already classified and measured
             // this; reuse it, so the same dataset does not read as `hive` under

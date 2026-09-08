@@ -1607,3 +1607,105 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
     );
     assert!(row.columns.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Sorting
+// ---------------------------------------------------------------------------
+
+fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
+    datui::discover::Entry {
+        path: std::path::PathBuf::from(name),
+        kind: EntryKind::File,
+        name: name.to_string(),
+        size: Some(size),
+        modified: None,
+        rows: Some(rows),
+        cols: Some(1),
+        columns: Vec::new(),
+    }
+}
+
+fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
+    let mut home = HomeState::default();
+    home.apply_listing(datui::home::Listing {
+        sections: vec![datui::home::Section {
+            title: "TEST".into(),
+            subtitle: None,
+            rows,
+            unavailable: false,
+        }],
+        root_paths: Vec::new(),
+    });
+    home
+}
+
+#[test]
+fn test_sorting_by_size_and_rows() {
+    use datui::home::SortMode;
+
+    let mut home = home_with_rows(vec![
+        sized("small.parquet", 100, 9_000),
+        sized("huge.parquet", 9_000_000, 10),
+        sized("middling.parquet", 5_000, 500),
+    ]);
+
+    home.sort = SortMode::Size;
+    assert_eq!(
+        visible_names(&home),
+        vec!["huge.parquet", "middling.parquet", "small.parquet"]
+    );
+
+    home.sort = SortMode::Rows;
+    assert_eq!(
+        visible_names(&home),
+        vec!["small.parquet", "middling.parquet", "huge.parquet"]
+    );
+}
+
+#[test]
+fn test_rows_with_nothing_to_sort_by_go_last() {
+    // Treating unknown as zero would make "biggest first" open with a page of
+    // datasets whose size simply has not been read yet.
+    use datui::home::SortMode;
+
+    let mut unknown = sized("unmeasured.parquet", 0, 0);
+    unknown.size = None;
+    unknown.rows = None;
+
+    let mut home = home_with_rows(vec![unknown, sized("known.parquet", 10, 10)]);
+    home.sort = SortMode::Size;
+    assert_eq!(
+        visible_names(&home),
+        vec!["known.parquet", "unmeasured.parquet"]
+    );
+}
+
+#[test]
+fn test_sort_cycles_through_every_mode_and_returns() {
+    use datui::home::SortMode;
+    let mut mode = SortMode::default();
+    let mut seen = vec![mode];
+    for _ in 0..3 {
+        mode = mode.next();
+        seen.push(mode);
+    }
+    assert_eq!(mode.next(), SortMode::default(), "the cycle should close");
+    assert_eq!(
+        seen.len(),
+        seen.iter().collect::<std::collections::HashSet<_>>().len(),
+        "every step should be a different mode: {seen:?}"
+    );
+}
+
+#[test]
+fn test_the_filter_still_wins_over_the_sort() {
+    // Sorting reorders what matched; it must not resurrect what did not.
+    use datui::home::SortMode;
+    let mut home = home_with_rows(vec![
+        sized("alpha.parquet", 9_000_000, 1),
+        sized("beta.parquet", 1, 1),
+    ]);
+    home.sort = SortMode::Size;
+    home.filter = "beta".into();
+    assert_eq!(visible_names(&home), vec!["beta.parquet"]);
+}

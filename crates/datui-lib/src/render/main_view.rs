@@ -78,6 +78,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             app.home.browsing.is_some(),
             !app.home.filter.is_empty(),
             app.data_table_state.is_some(),
+            app.home.sort,
         )),
     }
 }
@@ -93,6 +94,7 @@ pub fn home_control_keys(
     browsing: bool,
     has_filter: bool,
     has_data: bool,
+    sort: crate::home::SortMode,
 ) -> Vec<(&'static str, &'static str)> {
     let g = crate::glyphs::get();
     let mut keys = vec![(g.updown, "Move"), (g.enter, "Open")];
@@ -102,6 +104,7 @@ pub fn home_control_keys(
     } else {
         keys.push(("type", "Filter"));
         keys.push((g.updown_lr, "Fold"));
+        keys.push((g.tab, sort.label()));
         keys.push(("~", "Path"));
         if browsing {
             keys.push((g.backspace, "Up"));
@@ -154,7 +157,7 @@ mod tests {
         // The bug this guards: the bar said "q Quit" while `q` typed into the filter,
         // so there was no discoverable way to leave the home screen.
         for (p, b, f, d) in all_states() {
-            for (key, _) in home_control_keys(p, b, f, d) {
+            for (key, _) in home_control_keys(p, b, f, d, crate::home::SortMode::Natural) {
                 assert_ne!(
                     key, "q",
                     "bare `q` advertised in state (path={p}, browsing={b}, filter={f}, data={d})"
@@ -166,7 +169,7 @@ mod tests {
     #[test]
     fn home_bar_always_offers_a_way_out() {
         for (p, b, f, d) in all_states() {
-            let keys = home_control_keys(p, b, f, d);
+            let keys = home_control_keys(p, b, f, d, crate::home::SortMode::Natural);
             assert!(
                 keys.iter().any(|(_, label)| *label == "Quit"),
                 "no quit offered in state (path={p}, browsing={b}, filter={f}, data={d})"
@@ -178,7 +181,7 @@ mod tests {
     fn home_bar_labels_esc_with_what_it_will_do() {
         // Esc escalates, so the label has to track the state rather than say "Back".
         let esc = |p, b, f, d| {
-            home_control_keys(p, b, f, d)
+            home_control_keys(p, b, f, d, crate::home::SortMode::Natural)
                 .into_iter()
                 .find(|(key, _)| *key == "Esc")
                 .map(|(_, label)| label)
@@ -193,7 +196,7 @@ mod tests {
     #[test]
     fn home_bar_offers_up_only_while_browsing() {
         let has_up = |b| {
-            home_control_keys(false, b, false, false)
+            home_control_keys(false, b, false, false, crate::home::SortMode::Natural)
                 .iter()
                 .any(|(_, label)| *label == "Up")
         };

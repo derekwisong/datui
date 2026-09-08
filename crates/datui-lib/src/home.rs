@@ -234,6 +234,41 @@ pub struct Measured {
     pub columns: Vec<String>,
 }
 
+/// How rows are ordered within each section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SortMode {
+    /// Recency under Recent, name under a directory — what each section is naturally
+    /// ordered by.
+    #[default]
+    Natural,
+    /// Largest first: the question is "what is big in here".
+    Size,
+    /// Most recently changed first: the question is "what moved".
+    Modified,
+    /// Most rows first.
+    Rows,
+}
+
+impl SortMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            SortMode::Natural => "natural",
+            SortMode::Size => "size",
+            SortMode::Modified => "modified",
+            SortMode::Rows => "rows",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            SortMode::Natural => SortMode::Size,
+            SortMode::Size => SortMode::Modified,
+            SortMode::Modified => SortMode::Rows,
+            SortMode::Rows => SortMode::Natural,
+        }
+    }
+}
+
 /// One line of the home screen. Headers are selectable so a section can be
 /// collapsed and expanded from the keyboard.
 #[derive(Debug, Clone, Copy)]
@@ -283,6 +318,8 @@ pub struct HomeState {
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network roots that did not answer.
     pub unreachable: std::collections::HashSet<PathBuf>,
+    /// How rows are ordered inside each section.
+    pub sort: SortMode,
     /// True while a listing is being built on a worker. The previous listing stays on
     /// screen meanwhile, so a refresh never blanks the view.
     pub listing_in_flight: bool,
@@ -314,6 +351,7 @@ impl Default for HomeState {
             browsing: None,
             status: None,
             network_check: is_remote_path,
+            sort: SortMode::default(),
             listing_in_flight: false,
             measure_in_flight: false,
             root_paths: Vec::new(),
@@ -885,6 +923,29 @@ impl HomeState {
             // equal and the curated order is preserved.
             if !self.filter.is_empty() {
                 matched.sort_by_key(|(_, score)| *score);
+            }
+
+            // An explicit sort overrides both. Rows with nothing to sort by go last
+            // rather than sorting as zero, so "biggest first" does not begin with a
+            // page of datasets whose size is simply unknown.
+            match self.sort {
+                SortMode::Natural => {}
+                SortMode::Size => {
+                    matched.sort_by_key(|(e, _)| std::cmp::Reverse(e.size.unwrap_or(0)));
+                }
+                SortMode::Rows => {
+                    matched.sort_by_key(|(e, _)| std::cmp::Reverse(e.rows.unwrap_or(0)));
+                }
+                SortMode::Modified => {
+                    matched.sort_by_key(|(e, _)| {
+                        std::cmp::Reverse(
+                            e.modified
+                                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                        )
+                    });
+                }
             }
 
             let collapsed = self.collapsed.contains(&section.title);

@@ -39,6 +39,8 @@ pub struct Glyphs {
     pub updown: &'static str,
     /// Left/right pair, for the fold hint.
     pub updown_lr: &'static str,
+    /// Tab key, for the sort hint.
+    pub tab: &'static str,
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -55,6 +57,7 @@ const UNICODE: Glyphs = Glyphs {
     backspace: "⌫",
     updown: "↑↓",
     updown_lr: "←→",
+    tab: "⇥",
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -71,6 +74,7 @@ const ASCII: Glyphs = Glyphs {
     backspace: "Bksp",
     updown: "Up/Dn",
     updown_lr: "Lt/Rt",
+    tab: "Tab",
 };
 
 /// What the user asked for, from `[display] unicode`.

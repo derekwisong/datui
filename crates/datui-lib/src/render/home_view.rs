@@ -201,8 +201,12 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
         ));
     }
     if let Some(status) = &home.status {
+        // Keep the tail: these read "Failed to load <long path>: <reason>", and the
+        // reason is the part worth the space. The name is already on the row.
+        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        let room = (area.width as usize).saturating_sub(used + 3);
         spans.push(Span::styled(
-            format!("   {status}"),
+            format!("   {}", truncate_start(status, room)),
             Style::default().fg(ctx.warning),
         ));
     }

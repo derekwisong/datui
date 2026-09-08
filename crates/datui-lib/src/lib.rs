@@ -1017,6 +1017,9 @@ pub struct App {
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
     home_probes_inflight: Vec<PathBuf>,
+    /// Why the last open failed, shown on the home screen when the error is dismissed
+    /// and there is nothing to fall back to.
+    last_load_error: Option<String>,
     /// Schema reads currently out, so the same one is not requested every frame.
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
@@ -1470,6 +1473,7 @@ impl App {
             home_probes_inflight: Vec::new(),
             home_generation: 0,
             home_schema_inflight: Vec::new(),
+            last_load_error: None,
             home_schema_cache: HashMap::new(),
             original_file_format: None,
             original_file_delimiter: None,
@@ -1909,6 +1913,12 @@ impl App {
             KeyCode::Down => self.home.move_selection(1),
             // Left/right fold the section the cursor is in, wherever in it the cursor
             // happens to be — so collapsing does not require first finding the header.
+            // Tab cycles the sort. Every plain key goes into the filter, so an
+            // ordinary letter is not available for this.
+            KeyCode::Tab => {
+                self.home.sort = self.home.sort.next();
+                self.home.select_first_entry();
+            }
             KeyCode::Left => self.home_collapse(true),
             KeyCode::Right => self.home_collapse(false),
             KeyCode::Char('h') if self.home.filter.is_empty() => self.home_collapse(true),
@@ -3231,6 +3241,15 @@ impl App {
             match event.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     self.error_modal.hide();
+                    // With nothing loaded, dismissing the error would otherwise leave
+                    // an empty table and no indication of what to do. Go back to the
+                    // list the dataset was chosen from, carrying the reason, so the
+                    // next choice is one keystroke away.
+                    if self.data_table_state.is_none() {
+                        let reason = self.last_load_error.take();
+                        self.enter_home();
+                        self.home.status = reason;
+                    }
                 }
                 _ => {}
             }
@@ -8234,6 +8253,9 @@ impl App {
                     self.status_message = None;
                     self.busy = false;
                     self.drain_keys_on_next_loop = true;
+                    // Kept so the home screen can say why, if that is where dismissing
+                    // the error lands the user.
+                    self.last_load_error = Some(message.clone());
                     self.error_modal.show(message.clone());
                 }
                 None

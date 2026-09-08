@@ -29,6 +29,7 @@ here from anywhere.
 | type anything | filter by name (fuzzy: `sal` matches `sales`) |
 | <kbd>~</kbd> | type a path directly |
 | <kbd>Backspace</kbd> | delete a filter character, or leave a directory |
+| <kbd>Tab</kbd> | cycle the sort: natural, size, modified, rows |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | clear the filter |
 | <kbd>Esc</kbd> | back out one layer: clear filter, leave directory, return to your data, quit |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | quit |
@@ -94,6 +95,26 @@ it:
 ```toml
 [data]
 use_desktop_recents = false
+```
+
+## Sorting
+
+<kbd>Tab</kbd> cycles how rows are ordered inside each section, and the control bar
+shows which is active:
+
+- **natural** — recency under `RECENT`, name under a directory
+- **size**, **modified**, **rows** — largest, most recently changed, most rows
+
+Rows with nothing to sort by go last rather than counting as zero, so "largest
+first" does not open with datasets whose size has not been read yet.
+
+## When a dataset will not open
+
+datui shows what went wrong and returns you to this screen with the reason, so the
+next choice is one keystroke away rather than a dead end:
+
+```
+› corrupt▏   …parquet: 'parquet scan': the file must end with PAR1
 ```
 
 ## Network locations

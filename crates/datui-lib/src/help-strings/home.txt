@@ -4,13 +4,15 @@ where Ctrl+O returns you from anywhere.
 NAVIGATION
   ↑ / ↓ / k / j     Move the selection
   ← / → / h / l     Collapse or expand a section
+  Tab               Cycle the sort: natural, size, modified, rows
   Enter             Open the dataset, enter the directory, or fold the section
   Backspace         Leave a directory you descended into
   Esc               Back out one layer, and quit once there is nothing left
   Ctrl+C            Quit
 
 FINDING
-  (type)            Filter by name; matching is fuzzy, so "sal" finds "sales"
+  (type)            Filter by name or column; matching is fuzzy, so "sal" finds
+                    "sales", and "customer_id" finds every dataset with that column
   Backspace         Delete a filter character
   ~                 Type a path directly, for somewhere datui has not seen yet
   Ctrl+U            Clear the filter or path input

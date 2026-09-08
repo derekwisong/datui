@@ -94,6 +94,11 @@ impl ConfigManager {
             comments.insert(format!("data.{}", field), comment.to_string());
         }
 
+        // Data search (recursive search below the working directory)
+        for (field, comment) in DATA_SEARCH_COMMENTS {
+            comments.insert(format!("data.search.{}", field), comment.to_string());
+        }
+
         // File loading fields
         for (field, comment) in FILE_LOADING_COMMENTS {
             comments.insert(format!("file_loading.{}", field), comment.to_string());
@@ -205,10 +210,21 @@ impl ConfigManager {
                     }
                 }
 
-                // Comment out the field line
+                // Comment out the field line, and every line it continues onto.
+                // `toml` renders a non-empty array across several lines, and
+                // commenting only the first leaves the elements behind as bare
+                // text — a generated config that does not parse.
                 result.push_str("# ");
                 result.push_str(line);
                 result.push('\n');
+                let mut depth = bracket_depth(line);
+                while depth > 0 && i + 1 < lines.len() {
+                    i += 1;
+                    result.push_str("# ");
+                    result.push_str(lines[i]);
+                    result.push('\n');
+                    depth += bracket_depth(lines[i]);
+                }
             } else {
                 // Empty line or other content - preserve as-is
                 result.push_str(line);
@@ -975,6 +991,125 @@ pub struct DataConfig {
     /// Whether to also offer directories the desktop records you opening data from.
     /// Only the directories are used, never the file names.
     pub use_desktop_recents: bool,
+    /// Recursive search of the working directory from the home screen's filter.
+    pub search: SearchConfig,
+}
+
+/// Recursive search under the working directory, driven by the home screen's filter.
+///
+/// The walk happens once, in the background, the first time you type; every keystroke
+/// after that filters the result in memory. The limits here bound that one walk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// Search below the working directory at all.
+    pub enabled: bool,
+    /// How deep to descend. Data is rarely twelve directories down, and the cost of
+    /// looking is paid on every branch.
+    pub max_depth: usize,
+    /// Stop after this many datasets. The list is a way to find something, not an
+    /// inventory.
+    pub max_results: usize,
+    /// Give up walking after this long and keep what was found. A cold or enormous
+    /// tree must degrade to partial results, never to a wait.
+    pub time_budget_ms: u64,
+    /// Descend into directories on a different filesystem than the one started in.
+    ///
+    /// Off by default, and the most important limit here: it is what stops a walk
+    /// from wandering onto a network share, and on a machine using autofs it is what
+    /// stops the walk from *mounting* one by looking at it.
+    pub cross_filesystems: bool,
+    /// Obey `.gitignore`.
+    ///
+    /// Off by default, and deliberately: people gitignore data directories precisely
+    /// because the data is too big to commit, which is the same reason they want to
+    /// open it in datui. In datui's own repository, honouring it hides 38 real test
+    /// datasets while hiding 69 files of virtualenv noise — wrong in both directions.
+    /// The skip list below is the mechanism for the noise.
+    pub follow_gitignore: bool,
+    /// Directory names never descended into. Replaces the defaults entirely.
+    pub skip: Vec<String>,
+    /// Directory names to skip *in addition* to the defaults, so adding one does not
+    /// mean restating the list.
+    pub skip_extra: Vec<String>,
+    /// File extensions searched for. Empty means every format datui can open, which
+    /// includes `json` and `txt` — noisy in a source tree, so narrow this if that
+    /// bothers you.
+    pub extensions: Vec<String>,
+}
+
+/// Directories that are never data, and are always expensive.
+///
+/// Hidden directories are already skipped, which covers `.git`, `.venv`, `.tox` and
+/// the various caches. What is left is the offenders that are not hidden — and they
+/// matter: `node_modules` and `site-packages` are full of `.json`, which datui can
+/// open, so without this every package manifest on the machine is a search result.
+pub const DEFAULT_SEARCH_SKIP: &[&str] = &[
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "vendor",
+    "site-packages",
+    "__pycache__",
+    "venv",
+    "env",
+];
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_depth: 8,
+            max_results: 20_000,
+            time_budget_ms: 1_500,
+            cross_filesystems: false,
+            follow_gitignore: false,
+            skip: DEFAULT_SEARCH_SKIP.iter().map(|s| s.to_string()).collect(),
+            skip_extra: Vec::new(),
+            extensions: Vec::new(),
+        }
+    }
+}
+
+impl SearchConfig {
+    pub fn merge(&mut self, other: Self) {
+        let d = SearchConfig::default();
+        if other.enabled != d.enabled {
+            self.enabled = other.enabled;
+        }
+        if other.max_depth != d.max_depth {
+            self.max_depth = other.max_depth;
+        }
+        if other.max_results != d.max_results {
+            self.max_results = other.max_results;
+        }
+        if other.time_budget_ms != d.time_budget_ms {
+            self.time_budget_ms = other.time_budget_ms;
+        }
+        if other.cross_filesystems != d.cross_filesystems {
+            self.cross_filesystems = other.cross_filesystems;
+        }
+        if other.follow_gitignore != d.follow_gitignore {
+            self.follow_gitignore = other.follow_gitignore;
+        }
+        if other.skip != d.skip {
+            self.skip = other.skip;
+        }
+        if !other.skip_extra.is_empty() {
+            self.skip_extra = other.skip_extra;
+        }
+        if !other.extensions.is_empty() {
+            self.extensions = other.extensions;
+        }
+    }
+
+    /// Every directory name to skip: the configured list plus the additions.
+    pub fn skipped_dirs(&self) -> Vec<String> {
+        let mut out = self.skip.clone();
+        out.extend(self.skip_extra.iter().cloned());
+        out
+    }
 }
 
 impl Default for DataConfig {
@@ -984,6 +1119,7 @@ impl Default for DataConfig {
             // On by default: it only ever contributes *places*, and it is the one
             // thing that gives a fresh install somewhere to point you.
             use_desktop_recents: true,
+            search: SearchConfig::default(),
         }
     }
 }
@@ -996,6 +1132,7 @@ impl DataConfig {
         if other.use_desktop_recents != DataConfig::default().use_desktop_recents {
             self.use_desktop_recents = other.use_desktop_recents;
         }
+        self.search.merge(other.search);
     }
 
     /// Configured directories with `~`/`$VAR` expanded. Non-existent paths are kept:
@@ -2522,4 +2659,75 @@ impl Theme {
     pub fn get_optional(&self, name: &str) -> Option<Color> {
         self.colors.get(name).copied()
     }
+}
+
+const DATA_SEARCH_COMMENTS: &[(&str, &str)] = &[
+    (
+        "enabled",
+        "Search below the working directory when you type on the home screen.\n\
+         The walk runs once, in the background, the first time you type; every\n\
+         keystroke after that filters the result in memory. Set false to list only\n\
+         the directories themselves.",
+    ),
+    (
+        "max_depth",
+        "How deep to descend. Data is rarely twelve directories down, and every\n\
+         extra level costs a listing on every branch.",
+    ),
+    (
+        "max_results",
+        "Stop after this many datasets. The list is a way to find something, not an\n\
+         inventory. Hitting the limit is reported on screen, never silent.",
+    ),
+    (
+        "time_budget_ms",
+        "Give up walking after this long and keep whatever was found. A cold or\n\
+         enormous tree must degrade to partial results, never to a wait.",
+    ),
+    (
+        "cross_filesystems",
+        "Descend into directories on a different filesystem than the one you started\n\
+         in. Off by default, and the most important limit here: it is what keeps a\n\
+         search from wandering onto a network share, and on autofs, from MOUNTING one\n\
+         merely by looking at it. Turn it on only if your data lives on a mount\n\
+         beneath your working directory and you know that mount is fast.",
+    ),
+    (
+        "follow_gitignore",
+        "Obey .gitignore. Off by default, and deliberately: people gitignore data\n\
+         directories precisely because the data is too big to commit, which is the\n\
+         same reason they want to open it in datui. In datui's own repository,\n\
+         honouring it hides 38 real test datasets while hiding 69 files of virtualenv\n\
+         noise -- wrong in both directions. Use skip/skip_extra for the noise.",
+    ),
+    (
+        "skip",
+        "Directory names never descended into. Setting this REPLACES the defaults:\n\
+         node_modules, target, build, dist, vendor, site-packages, __pycache__,\n\
+         venv, env. Hidden directories (.git, .venv, the caches) are always skipped.\n\
+         To add to the defaults rather than replace them, use skip_extra.",
+    ),
+    (
+        "skip_extra",
+        "Directory names to skip in addition to the defaults, so adding one does not\n\
+         mean restating the whole list. Example: skip_extra = [\"archive\", \"raw\"]",
+    ),
+    (
+        "extensions",
+        "File extensions to search for. Empty (default) means every format datui can\n\
+         open -- which includes json and txt, noisy in a source tree. Narrow it if\n\
+         that bothers you. Example: extensions = [\"parquet\", \"csv\"]",
+    ),
+];
+
+/// Net change in unclosed brackets across one line of TOML.
+///
+/// Enough to tell whether a rendered array is still open at the end of the line.
+/// Brackets inside strings would fool it, and none of the values here contain any.
+fn bracket_depth(line: &str) -> i32 {
+    line.chars().fold(0, |acc, c| match c {
+        '[' => acc + 1,
+        ']' => acc - 1,
+        _ => acc,
+    })
 }

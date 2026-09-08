@@ -352,6 +352,10 @@ fn section_header<'a>(
     } else {
         section.subtitle.clone().unwrap_or_default()
     };
+    // The note is trimmed before the title is, and never takes more than half the
+    // line. A note is context; the title is what the section *is*, and a search
+    // heading carrying a long path would otherwise crowd the title out entirely.
+    let note = truncate_start(&note, width / 2);
     let is_path = section.title.starts_with('/') || section.title.starts_with('~');
     let mut title = if is_path {
         section.title.clone()
@@ -597,4 +601,58 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
     Paragraph::new(lines)
         .wrap(ratatui::widgets::Wrap { trim: false })
         .render(area, buf);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::home::Section;
+
+    fn header_width(section: &Section, width: usize) -> usize {
+        let ctx = RenderContext::for_test();
+        let line = section_header(section, 3, false, false, width, &ctx);
+        line.spans.iter().map(|s| s.content.chars().count()).sum()
+    }
+
+    #[test]
+    fn a_long_note_never_pushes_the_header_past_the_screen() {
+        // A search heading carries the path it searched, which is easily longer than
+        // the terminal. The note is context; the title is what the section is.
+        let section = Section {
+            title: "Found below".to_string(),
+            subtitle: Some(
+                "/very/deeply/nested/path/that/goes/on/and/on/for/quite/a/while · 99999 searched"
+                    .to_string(),
+            ),
+            rows: Vec::new(),
+            unavailable: false,
+        };
+
+        for width in [20usize, 40, 80, 120] {
+            let rendered = header_width(&section, width);
+            assert!(
+                rendered <= width,
+                "a {width}-wide screen produced a {rendered}-character header"
+            );
+        }
+    }
+
+    #[test]
+    fn the_title_survives_a_note_that_wants_the_whole_line() {
+        // Trimming the note first is the point: a header that says only where it
+        // looked, and not what it is, has lost the more useful half.
+        let section = Section {
+            title: "Found below".to_string(),
+            subtitle: Some("x".repeat(200)),
+            rows: Vec::new(),
+            unavailable: false,
+        };
+        let ctx = RenderContext::for_test();
+        let line = section_header(&section, 3, false, false, 40, &ctx);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("FOUND BELOW") || text.contains("BELOW"),
+            "the title should still be readable, got {text:?}"
+        );
+    }
 }

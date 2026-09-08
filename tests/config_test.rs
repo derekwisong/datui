@@ -1569,3 +1569,71 @@ fn test_clearing_recents_leaves_other_caches_alone() {
         "query history should survive"
     );
 }
+
+#[test]
+fn test_the_generated_default_config_is_valid_toml() {
+    // It ships as the file people edit. A default config that does not parse is the
+    // worst possible first impression, and the only thing standing between the two is
+    // that every rendered line gets commented -- including the ones a multi-line array
+    // spills onto.
+    let manager = ConfigManager::new("datui").unwrap();
+    let generated = manager.generate_default_config();
+
+    toml::from_str::<toml::Value>(&generated)
+        .expect("the generated default config must parse as TOML");
+
+    // Uncommented content would be a bug; every line is either blank or a comment.
+    for (n, line) in generated.lines().enumerate() {
+        assert!(
+            line.trim().is_empty() || line.trim_start().starts_with('#'),
+            "line {} of the generated config is live rather than commented: {line:?}",
+            n + 1
+        );
+    }
+}
+
+#[test]
+fn test_a_multi_line_array_default_is_fully_commented() {
+    // `skip` renders across ten lines. Commenting only the first left the elements
+    // behind as bare text, which does not parse.
+    let manager = ConfigManager::new("datui").unwrap();
+    let generated = manager.generate_default_config();
+
+    assert!(
+        generated.contains("# skip = ["),
+        "the skip list should appear in the generated config"
+    );
+    assert!(
+        generated.contains("#     \"node_modules\","),
+        "array elements must be commented too"
+    );
+}
+
+#[test]
+fn test_search_settings_round_trip_through_toml() {
+    let toml = r#"
+[data.search]
+enabled = false
+max_depth = 3
+skip_extra = ["archive"]
+extensions = ["parquet"]
+"#;
+    let config: AppConfig = toml::from_str(toml).unwrap();
+    assert!(!config.data.search.enabled);
+    assert_eq!(config.data.search.max_depth, 3);
+    assert_eq!(config.data.search.skip_extra, vec!["archive".to_string()]);
+    assert_eq!(config.data.search.extensions, vec!["parquet".to_string()]);
+    // Untouched fields keep their defaults, and skip_extra adds to skip rather than
+    // replacing it.
+    assert!(!config.data.search.cross_filesystems);
+    assert!(config
+        .data
+        .search
+        .skipped_dirs()
+        .contains(&"node_modules".to_string()));
+    assert!(config
+        .data
+        .search
+        .skipped_dirs()
+        .contains(&"archive".to_string()));
+}

@@ -111,6 +111,81 @@ it:
 use_desktop_recents = false
 ```
 
+## Searching below where you are
+
+Typing filters the rows already on screen. It also starts a **recursive search of the
+working directory**, and datasets found below it appear in a `Found below` section
+under everything else.
+
+The walk runs once, in the background, the first time you type. Every keystroke after
+that filters the result in memory, so the search gets no slower as you narrow it.
+Nothing is walked if you never type — launching datui, pressing <kbd>Enter</kbd> on a
+recent dataset and leaving costs nothing.
+
+Results are named by their path below the search root, because three files called
+`sales.parquet` are indistinguishable otherwise:
+
+```
+Found below   ~/work/analysis · 954 searched
+  europe/q3/sales.parquet          12.4 MB   1.2M rows   3 days ago
+  americas/q3/sales.parquet         9.1 MB   890K rows   3 days ago
+```
+
+The heading says how much was searched, and says when the walk stopped early —
+`partial · out of time`, `partial · too many`, `partial · too deep`. A search that
+quietly returned less than the truth would be worse than no search, because "it is
+not here" is something you act on.
+
+### What is skipped, and why not .gitignore
+
+datui does **not** read `.gitignore`. People gitignore data directories precisely
+because the data is too big to commit — which is the same reason they want to open it
+in datui. Measured on datui's own repository, honouring `.gitignore` hides 38 real
+test datasets while hiding 69 files of virtualenv noise. Wrong in both directions.
+
+The noise is handled structurally instead:
+
+| rule | effect |
+|---|---|
+| hidden directories are skipped | `.git`, `.venv`, `.tox`, the caches |
+| a fixed name list | `node_modules`, `target`, `build`, `dist`, `vendor`, `site-packages`, `__pycache__`, `venv`, `env` |
+| filesystem boundaries are not crossed | a search never wanders onto a mount |
+| symlinks are not followed | no loops, no escaping the tree |
+
+The name list matters more than it looks: `node_modules` and `site-packages` are full
+of `.json`, which datui can open, so without it every package manifest on the machine
+is a search result. In datui's own tree the list cuts the entries examined from 15,177
+to 306 and finds exactly the same 80 datasets.
+
+Not crossing filesystems is the limit that keeps the home screen fast. It is what
+stops a walk from descending onto a network share, and on a machine using autofs, from
+*mounting* one merely by looking at it. The cost is that data on a mount beneath your
+working directory will not be found by the search — turn `cross_filesystems` on if
+that is where your data lives and you know the mount is fast.
+
+### Tuning it
+
+```toml
+[data.search]
+enabled           = true
+max_depth         = 8
+max_results       = 20000
+time_budget_ms    = 1500
+cross_filesystems = false
+follow_gitignore  = false
+skip       = ["node_modules", "target", "build", "dist", "vendor",
+              "site-packages", "__pycache__", "venv", "env"]
+skip_extra = []
+extensions = []
+```
+
+- **skip** replaces the default list entirely; **skip_extra** adds to it, so putting
+  one directory out of reach does not mean restating the other nine.
+- **extensions** empty means every format datui can open — which includes `json` and
+  `txt`. Narrow it to `["parquet", "csv"]` if a source tree is too noisy.
+- **time_budget_ms** is what makes a cold or enormous tree degrade to partial results
+  rather than to a wait.
+
 ## Sorting
 
 <kbd>Tab</kbd> cycles how rows are ordered inside each section. The control bar names
@@ -272,6 +347,9 @@ year. Every kind of work it does is capped:
 | files read to count the rows of a multi-file dataset | 64 |
 | datasets measured at once | 12, and only ones on screen |
 | network directories probed at once | 4 |
+| depth of the recursive search | 8 |
+| datasets a recursive search returns | 20,000 |
+| wall clock for one recursive search | 1.5 s |
 
 The caps that change what you see say so. A directory cut short reads `first 5000`
 beside its name. A subdirectory past the 64 is still listed — it just shows as a

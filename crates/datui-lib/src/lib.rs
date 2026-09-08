@@ -49,6 +49,7 @@ pub mod numfmt;
 pub mod pivot_melt_modal;
 mod query;
 mod render;
+pub mod search;
 pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod source;
@@ -588,6 +589,23 @@ pub enum AppEvent {
         generation: u64,
         measured: Vec<(PathBuf, crate::home::Measured)>,
     },
+    /// A batch of datasets found by the background search below the working
+    /// directory. Sent repeatedly while the walk runs, so a cold tree fills in
+    /// rather than arriving all at once at the end.
+    HomeSearchBatch {
+        generation: u64,
+        root: PathBuf,
+        found: Vec<crate::discover::Entry>,
+        scanned: usize,
+    },
+    /// The background search has stopped, with `limited` saying why if it stopped
+    /// short of walking everything.
+    HomeSearchDone {
+        generation: u64,
+        root: PathBuf,
+        scanned: usize,
+        limited: Option<String>,
+    },
     /// A network root has been listed off-thread, or could not be.
     HomeProbeReady {
         root: PathBuf,
@@ -1026,6 +1044,9 @@ pub struct App {
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
     home_probes_inflight: Vec<PathBuf>,
+    /// True while a recursive search below the working directory is out. One at a
+    /// time: the walk is bounded, and a second one would only compete for the disk.
+    home_search_inflight: bool,
     /// Set while the confirmation modal is asking about forgetting every recent.
     pending_clear_recents: bool,
     /// Why the last open failed, shown on the home screen when the error is dismissed
@@ -1482,6 +1503,7 @@ impl App {
             data_table_state: None,
             home: home::HomeState::default(),
             home_probes_inflight: Vec::new(),
+            home_search_inflight: false,
             home_generation: 0,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
@@ -1675,6 +1697,63 @@ impl App {
         }
     }
 
+    /// Start the recursive search below the working directory, if it is wanted and
+    /// not already running.
+    ///
+    /// Triggered by typing rather than by opening the home screen: typing is the
+    /// signal that someone is looking for something. Launching datui, pressing Enter
+    /// on a recent dataset and leaving costs no walk at all.
+    fn spawn_home_search(&mut self) {
+        if self.home_search_inflight || self.home.search.done {
+            return;
+        }
+        let config = self.app_config.data.search.clone();
+        if !config.enabled {
+            return;
+        }
+        let Some(root) =
+            crate::search::search_root(self.home.browsing.as_ref(), self.home.network_check)
+        else {
+            return;
+        };
+
+        self.home.search.reset();
+        self.home.search.root = Some(root.clone());
+        self.home.search.running = true;
+        self.home_search_inflight = true;
+
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        // A detached thread for the same reason the probes use one: the walk touches
+        // a filesystem, and nothing that touches a filesystem may run where a stall
+        // would stop the screen from drawing.
+        std::thread::spawn(move || {
+            let walk_root = root.clone();
+            let batch_tx = tx.clone();
+            let batch_gen = generation;
+            let batch_root = root.clone();
+            let outcome = crate::search::walk(&walk_root, &config, move |found, outcome| {
+                // Sent even when empty: it carries the progress count, and it is the
+                // only place the walk learns that nobody is listening any more.
+                batch_tx
+                    .send(AppEvent::HomeSearchBatch {
+                        generation: batch_gen,
+                        root: batch_root.clone(),
+                        found,
+                        scanned: outcome.scanned,
+                    })
+                    // A closed channel means the app is gone; stop walking.
+                    .is_ok()
+            });
+            let _ = tx.send(AppEvent::HomeSearchDone {
+                generation,
+                root,
+                scanned: outcome.scanned,
+                limited: outcome.note().map(str::to_string),
+            });
+        });
+    }
+
     /// Rebuild the home listing from the filesystem.
     fn home_refresh(&mut self) {
         self.home_generation = self.home_generation.wrapping_add(1);
@@ -1793,6 +1872,7 @@ impl App {
     fn home_escape(&mut self) -> Option<AppEvent> {
         if !self.home.filter.is_empty() {
             self.home.filter.clear();
+            self.home.sync_search_section();
             self.home.selected = 0;
             self.home.clamp_selection();
             return None;
@@ -1865,6 +1945,9 @@ impl App {
             .parent()
             .map(|p| p.to_path_buf())
             .filter(|p| !p.as_os_str().is_empty() && p != &current);
+        // Going up widens what a search would cover, so the previous one no longer
+        // answers the question being asked.
+        self.home.search.reset();
         self.home.selected = 0;
         self.home_refresh();
     }
@@ -1882,7 +1965,12 @@ impl App {
         let entry = self.home.selected_entry()?;
         if entry.kind == discover::EntryKind::Directory {
             self.home.browsing = Some(entry.path.clone());
+            // "Below here" now means somewhere else. Whatever the last walk found
+            // describes a different place, and a fresh one starts on the next
+            // keystroke.
+            self.home.search.reset();
             self.home.filter.clear();
+            self.home.sync_search_section();
             self.home.selected = 0;
             self.home_refresh();
             return None;
@@ -1943,7 +2031,9 @@ impl App {
                     {
                         // An ordinary directory: browse it rather than trying to load it.
                         self.home.browsing = Some(path);
+                        self.home.search.reset();
                         self.home.filter.clear();
+                        self.home.sync_search_section();
                         self.home.selected = 0;
                         self.home_refresh();
                         return None;
@@ -1990,6 +2080,7 @@ impl App {
             KeyCode::Char('j') if self.home.filter.is_empty() => self.home.move_selection(1),
             KeyCode::Char('u') if ctrl => {
                 self.home.filter.clear();
+                self.home.sync_search_section();
                 self.home.select_first_entry();
             }
             KeyCode::Backspace => {
@@ -1997,6 +2088,7 @@ impl App {
                     self.home_ascend();
                 } else {
                     self.home.filter.pop();
+                    self.home.sync_search_section();
                     self.home.select_first_entry();
                 }
             }
@@ -2022,6 +2114,11 @@ impl App {
             }
             KeyCode::Char(c) if !ctrl => {
                 self.home.filter.push(c);
+                // Typing is what asks for the recursive search. Starting it here and
+                // not on open means the walk is only ever paid for by someone who is
+                // actually looking for something.
+                self.spawn_home_search();
+                self.home.sync_search_section();
                 self.home.select_first_entry();
             }
             _ => {}
@@ -7433,6 +7530,32 @@ impl App {
                 if *generation == self.home_generation {
                     self.home_schema_cache.insert(path.clone(), preview.clone());
                 }
+                None
+            }
+            AppEvent::HomeSearchBatch {
+                generation,
+                root,
+                found,
+                scanned,
+            } => {
+                // Results from a walk that a later navigation superseded describe a
+                // place the user has left. The walk is abandoned, not cancelled, so
+                // late batches are expected rather than exceptional.
+                if *generation == self.home_generation {
+                    self.home.search_batch(root, found.clone(), *scanned);
+                }
+                None
+            }
+            AppEvent::HomeSearchDone {
+                generation,
+                root,
+                scanned,
+                limited,
+            } => {
+                if *generation == self.home_generation {
+                    self.home.search_finished(root, *scanned, limited.clone());
+                }
+                self.home_search_inflight = false;
                 None
             }
             AppEvent::HomeProbeReady { root, rows } => {

@@ -1980,3 +1980,177 @@ fn test_subdirectories_past_the_budget_are_listed_without_being_opened() {
         "the ones inside the budget should still be classified"
     );
 }
+
+// --- recursive search below the working directory -------------------------------
+
+#[test]
+fn test_search_results_only_appear_once_there_is_a_filter() {
+    // With no filter every row matches, and twenty thousand matches is not a home
+    // screen. The section exists to answer a question, so it waits for one.
+    let tmp = TempDir::new().unwrap();
+    let deep = touch(&tmp.path().join("a/b"), "buried.parquet");
+
+    let mut home = HomeState::default();
+    home.rebuild(&[], &[]);
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.results = vec![datui::discover::Entry::for_test(
+        &deep,
+        "a/b/buried.parquet",
+    )];
+    home.search.done = true;
+
+    home.sync_search_section();
+    assert!(
+        !home
+            .sections
+            .iter()
+            .any(|s| s.title == HomeState::SEARCH_SECTION),
+        "no filter, no search section"
+    );
+
+    home.filter = "buried".into();
+    home.sync_search_section();
+    let section = home
+        .sections
+        .iter()
+        .find(|s| s.title == HomeState::SEARCH_SECTION)
+        .expect("typing should surface the search section");
+    assert_eq!(section.rows.len(), 1);
+    assert!(visible_names(&home)
+        .iter()
+        .any(|n| n == "a/b/buried.parquet"));
+}
+
+#[test]
+fn test_search_results_survive_a_rebuild() {
+    // A listing is rebuilt whenever a probe answers or a measurement lands. Walking
+    // the tree again each time is exactly the per-keystroke cost this avoids.
+    let tmp = TempDir::new().unwrap();
+    let deep = touch(&tmp.path().join("a"), "found.parquet");
+
+    let mut home = HomeState {
+        filter: "found".into(),
+        ..Default::default()
+    };
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.results = vec![datui::discover::Entry::for_test(&deep, "a/found.parquet")];
+    home.search.done = true;
+    home.sync_search_section();
+
+    home.rebuild(&[], &[]);
+
+    assert!(
+        home.sections
+            .iter()
+            .any(|s| s.title == HomeState::SEARCH_SECTION),
+        "a rebuild must not discard results that came from a walk"
+    );
+}
+
+#[test]
+fn test_a_dataset_already_on_screen_is_not_listed_twice() {
+    // The search is for what you could not otherwise see.
+    let tmp = TempDir::new().unwrap();
+    let here = touch(tmp.path(), "visible.parquet");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        filter: "visible".into(),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.results = vec![datui::discover::Entry::for_test(&here, "visible.parquet")];
+    home.search.done = true;
+    home.sync_search_section();
+
+    let hits = visible_names(&home)
+        .iter()
+        .filter(|n| n.ends_with("visible.parquet"))
+        .count();
+    assert_eq!(hits, 1, "the same file must not appear under two headings");
+}
+
+#[test]
+fn test_a_late_batch_from_an_abandoned_walk_is_dropped() {
+    // Walks are abandoned rather than cancelled, so results for a place the user has
+    // already left are normal and must not be shown as if they were here.
+    let tmp = TempDir::new().unwrap();
+    let stale = touch(&tmp.path().join("old"), "stale.parquet");
+
+    let mut home = HomeState {
+        filter: "stale".into(),
+        ..Default::default()
+    };
+    home.search.root = Some(tmp.path().join("somewhere_else"));
+
+    home.search_batch(
+        &tmp.path().join("old"),
+        vec![datui::discover::Entry::for_test(&stale, "stale.parquet")],
+        1,
+    );
+    assert!(
+        home.search.results.is_empty(),
+        "a batch from a different root describes a place the user has left"
+    );
+}
+
+#[test]
+fn test_a_partial_search_says_so_rather_than_looking_finished() {
+    // "Not found here" is something people act on, so a truncated search must never
+    // look like a complete one.
+    let tmp = TempDir::new().unwrap();
+    let found = touch(tmp.path(), "one.parquet");
+
+    let mut home = HomeState {
+        filter: "one".into(),
+        ..Default::default()
+    };
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.results = vec![datui::discover::Entry::for_test(&found, "one.parquet")];
+    home.search_finished(tmp.path(), 4321, Some("partial · out of time".into()));
+
+    let section = home
+        .sections
+        .iter()
+        .find(|s| s.title == HomeState::SEARCH_SECTION)
+        .expect("section");
+    let subtitle = section.subtitle.clone().unwrap_or_default();
+    assert!(
+        subtitle.contains("out of time"),
+        "the reason it stopped must be on screen, got {subtitle:?}"
+    );
+    assert!(
+        subtitle.contains("4321"),
+        "how much was searched is the other half of the answer, got {subtitle:?}"
+    );
+}
+
+#[test]
+fn test_clearing_the_filter_takes_the_search_section_away() {
+    let tmp = TempDir::new().unwrap();
+    let deep = touch(&tmp.path().join("a"), "x.parquet");
+
+    let mut home = HomeState {
+        filter: "x".into(),
+        ..Default::default()
+    };
+    home.search.root = Some(tmp.path().to_path_buf());
+    home.search.results = vec![datui::discover::Entry::for_test(&deep, "a/x.parquet")];
+    home.search.done = true;
+    home.sync_search_section();
+    assert!(home
+        .sections
+        .iter()
+        .any(|s| s.title == HomeState::SEARCH_SECTION));
+
+    home.filter.clear();
+    home.sync_search_section();
+    assert!(
+        !home
+            .sections
+            .iter()
+            .any(|s| s.title == HomeState::SEARCH_SECTION),
+        "with nothing typed there is no question to answer"
+    );
+}

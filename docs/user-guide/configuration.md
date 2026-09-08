@@ -260,6 +260,34 @@ use_desktop_recents = true                  # offer directories from the desktop
   freedesktop's `recently-used.xbel` are offered as places to enter. Only the
   directories are used, never the file names. Set `false` to ignore that file.
 
+#### Searching below the working directory
+
+Typing on the home screen also searches recursively beneath it. The walk runs once, in
+the background, on the first keystroke; everything after that is filtered in memory.
+
+```toml
+[data.search]
+enabled           = true    # search below the working directory when you type
+max_depth         = 8       # how deep to descend
+max_results       = 20000   # stop after this many datasets
+time_budget_ms    = 1500    # give up and keep what was found
+cross_filesystems = false   # do not descend onto a different filesystem
+follow_gitignore  = false   # do not read .gitignore
+skip_extra        = []      # directory names to skip beyond the defaults
+extensions        = []      # empty = every format datui opens
+```
+
+- **cross_filesystems** — off by default, and the most important setting here: it is
+  what keeps a search from wandering onto a network share, and on autofs, from
+  *mounting* one merely by looking at it.
+- **follow_gitignore** — off by default and deliberately, because people gitignore
+  data directories precisely because the data is too big to commit. See
+  [the home screen guide](home-screen.md#what-is-skipped-and-why-not-gitignore).
+- **skip** / **skip_extra** — `skip` replaces the default list
+  (`node_modules`, `target`, `build`, `dist`, `vendor`, `site-packages`,
+  `__pycache__`, `venv`, `env`); `skip_extra` adds to it. Hidden directories are
+  always skipped.
+
 ### Theme Mode (light and dark terminals)
 
 Some of datui's colors — header fills, alternating row stripes, borders, dim text —

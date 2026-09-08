@@ -107,7 +107,15 @@ impl Entry {
         Self::new(path.to_path_buf(), EntryKind::Directory)
     }
 
-    fn new(path: PathBuf, kind: EntryKind) -> Self {
+    /// A file entry with a chosen display name, for tests that need a search result
+    /// without running a walk to produce one.
+    pub fn for_test(path: &Path, name: &str) -> Self {
+        let mut entry = Self::new(path.to_path_buf(), EntryKind::File);
+        entry.name = name.to_string();
+        entry
+    }
+
+    pub(crate) fn new(path: PathBuf, kind: EntryKind) -> Self {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -125,7 +133,7 @@ impl Entry {
     }
 
     /// Attach size and mtime from a directory entry's metadata.
-    fn with_fs_metadata(mut self, meta: &std::fs::Metadata) -> Self {
+    pub(crate) fn with_fs_metadata(mut self, meta: &std::fs::Metadata) -> Self {
         if meta.is_file() {
             self.size = Some(meta.len());
         }

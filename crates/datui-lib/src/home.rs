@@ -353,6 +353,36 @@ pub struct HomeState {
     /// Use [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`] rather
     /// than touching this directly.
     pub collapsed: std::collections::HashSet<String>,
+    /// Datasets found by walking below the working directory.
+    pub search: SearchState,
+}
+
+/// The result of one recursive walk below the working directory.
+///
+/// Held apart from `sections` because it outlives them: a listing is rebuilt whenever
+/// a probe answers or a measurement lands, and re-walking the tree each time would be
+/// exactly the per-keystroke cost this feature exists to avoid.
+#[derive(Debug, Clone, Default)]
+pub struct SearchState {
+    /// Where the walk started. `None` means no search has been asked for yet.
+    pub root: Option<PathBuf>,
+    /// Every dataset found so far, unfiltered. The filter runs over this in memory.
+    pub results: Vec<Entry>,
+    /// Directory entries examined, for the progress note.
+    pub scanned: usize,
+    /// A walk is out. Results may still be arriving.
+    pub running: bool,
+    /// The walk has finished, successfully or against a limit.
+    pub done: bool,
+    /// Why the walk stopped short, when it did.
+    pub limited: Option<String>,
+}
+
+impl SearchState {
+    /// Forget everything, because the place being searched has changed.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl Default for HomeState {
@@ -376,6 +406,7 @@ impl Default for HomeState {
             pending_enrich: false,
             enriched: std::collections::HashMap::new(),
             collapsed: std::collections::HashSet::new(),
+            search: SearchState::default(),
         }
     }
 }
@@ -892,6 +923,9 @@ impl HomeState {
         let previous = self.selected_entry().map(|e| e.path);
         self.sections = listing.sections;
         self.root_paths = listing.root_paths;
+        // A rebuild replaces every section, and search results outlive rebuilds —
+        // they came from a walk, not from this listing. Put them back.
+        self.sync_search_section();
 
         // Keep the cursor on the same dataset across a refresh; landing back at the
         // top every time a background result arrives makes the screen unusable.
@@ -943,6 +977,90 @@ impl HomeState {
     /// Results stay grouped even while filtering. Ranking them across sections would
     /// read better as a hit list, but it costs the one thing the grouping is for —
     /// seeing *where* a dataset lives — and a name on its own rarely says that.
+    /// Title of the section holding recursive search results.
+    ///
+    /// A constant because collapse state is keyed by title, and because the renderer
+    /// and the tests both need to name it.
+    pub const SEARCH_SECTION: &'static str = "Found below";
+
+    /// Put the current search results into `sections`, or take them out.
+    ///
+    /// Called after every rebuild and every batch of results. The section only exists
+    /// while there is a filter: with none, every row matches, and twenty thousand
+    /// matches is not a home screen.
+    pub fn sync_search_section(&mut self) {
+        self.sections.retain(|s| s.title != Self::SEARCH_SECTION);
+
+        if self.filter.is_empty() || self.search.root.is_none() {
+            return;
+        }
+        if self.search.results.is_empty() && !self.search.running {
+            return;
+        }
+
+        // A dataset already on screen under the directory it lives in should not
+        // appear a second time under the search. The search is for what you could
+        // not otherwise see.
+        let listed: std::collections::HashSet<&PathBuf> = self
+            .sections
+            .iter()
+            .flat_map(|s| s.rows.iter().map(|r| &r.path))
+            .collect();
+
+        let rows: Vec<Entry> = self
+            .search
+            .results
+            .iter()
+            .filter(|e| !listed.contains(&e.path))
+            .cloned()
+            .collect();
+
+        if rows.is_empty() && !self.search.running {
+            return;
+        }
+
+        let root = self.search.root.clone().unwrap_or_default();
+        let mut subtitle = display_path(&root);
+        if self.search.running {
+            subtitle = format!("{subtitle} · searching {} so far", self.search.scanned);
+        } else if let Some(limit) = &self.search.limited {
+            subtitle = format!("{subtitle} · {limit} · {} searched", self.search.scanned);
+        } else {
+            subtitle = format!("{subtitle} · {} searched", self.search.scanned);
+        }
+
+        self.sections.push(Section {
+            title: Self::SEARCH_SECTION.to_string(),
+            subtitle: Some(subtitle),
+            rows,
+            unavailable: false,
+        });
+    }
+
+    /// Fold a batch of search results in, keeping the list free of duplicates.
+    pub fn search_batch(&mut self, root: &Path, mut found: Vec<Entry>, scanned: usize) {
+        // A batch from a walk the user has already moved on from is dropped: the
+        // walk is abandoned rather than cancelled, so late results are normal.
+        if self.search.root.as_deref() != Some(root) {
+            return;
+        }
+        self.search.scanned = scanned;
+        self.search.results.append(&mut found);
+        self.sync_search_section();
+    }
+
+    /// Record that the walk under `root` has finished.
+    pub fn search_finished(&mut self, root: &Path, scanned: usize, limited: Option<String>) {
+        if self.search.root.as_deref() != Some(root) {
+            return;
+        }
+        self.search.running = false;
+        self.search.done = true;
+        self.search.scanned = scanned;
+        self.search.limited = limited;
+        self.sync_search_section();
+    }
+
     pub fn visible(&self) -> Vec<Row<'_>> {
         let mut out: Vec<Row<'_>> = Vec::new();
         for (si, section) in self.sections.iter().enumerate() {

@@ -29,7 +29,16 @@ const HIVE_PROBE_LIMIT: usize = 8;
 
 /// Upper bound on entries read from a single directory, so a pathological directory
 /// cannot hang the UI.
-const MAX_ENTRIES_PER_DIR: usize = 5_000;
+pub const MAX_ENTRIES_PER_DIR: usize = 5_000;
+
+/// Subdirectories looked inside during a single scan.
+///
+/// Classification is what separates a hive dataset from a plain folder, and it costs
+/// a `read_dir` plus a handful of stats *per subdirectory*. A directory holding
+/// thousands of them turns one listing into thousands of round trips — milliseconds
+/// locally, minutes on a network share. Past this many, a subdirectory is listed as
+/// a place to step into and classified when you actually step into it.
+const MAX_CLASSIFY_PER_DIR: usize = 64;
 
 /// What a home-screen row represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -226,12 +235,43 @@ pub fn classify_directory(path: &Path) -> EntryKind {
 /// empty listing rather than failing the home screen, and the caller reports
 /// availability separately.
 pub fn scan_dir(dir: &Path) -> Vec<Entry> {
+    scan_dir_bounded(dir).entries
+}
+
+/// What one directory listing produced, and whether it saw all of it.
+#[derive(Debug, Clone, Default)]
+pub struct Scan {
+    pub entries: Vec<Entry>,
+    /// The directory held more than `MAX_ENTRIES_PER_DIR`; `entries` is a prefix of
+    /// it. Worth saying out loud: a listing that silently stops at five thousand
+    /// looks identical to a directory that simply has five thousand things in it.
+    pub truncated: bool,
+}
+
+/// List one directory, doing a bounded amount of work regardless of what is in it.
+///
+/// Three separate limits apply, because a directory can be pathological in three
+/// different ways: too many entries (`MAX_ENTRIES_PER_DIR`), too many subdirectories
+/// worth looking inside (`MAX_CLASSIFY_PER_DIR`), and too many files inside any one
+/// of those (`HIVE_PROBE_LIMIT`). None of them opens a data file.
+pub fn scan_dir_bounded(dir: &Path) -> Scan {
     let Ok(iter) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return Scan::default();
     };
 
     let mut entries = Vec::new();
-    for dir_entry in iter.flatten().take(MAX_ENTRIES_PER_DIR) {
+    let mut classified = 0usize;
+    let mut seen = 0usize;
+    let mut truncated = false;
+
+    // One past the cap: enough to know more exists without paying to process it.
+    for dir_entry in iter.flatten().take(MAX_ENTRIES_PER_DIR + 1) {
+        seen += 1;
+        if seen > MAX_ENTRIES_PER_DIR {
+            truncated = true;
+            break;
+        }
+
         let path = dir_entry.path();
         let name = dir_entry.file_name();
         if name.to_string_lossy().starts_with('.') {
@@ -243,7 +283,15 @@ pub fn scan_dir(dir: &Path) -> Vec<Entry> {
         };
 
         let kind = if meta.is_dir() {
-            classify_directory(&path)
+            // Past the budget a subdirectory is still listed, just not looked into.
+            // Degrading to "a place to step into" costs a label; classifying every
+            // one of ten thousand costs the listing.
+            if classified < MAX_CLASSIFY_PER_DIR {
+                classified += 1;
+                classify_directory(&path)
+            } else {
+                EntryKind::Directory
+            }
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
         } else {
@@ -256,7 +304,7 @@ pub fn scan_dir(dir: &Path) -> Vec<Entry> {
     }
 
     sort_entries(&mut entries);
-    entries
+    Scan { entries, truncated }
 }
 
 /// Datasets first, then directories; each group alphabetical.

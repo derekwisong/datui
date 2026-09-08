@@ -1884,3 +1884,99 @@ fn test_cwd_datasets_are_listed_without_ever_having_been_opened() {
     );
     assert!(here.exists());
 }
+
+#[test]
+fn test_recent_directories_promoted_to_roots_are_capped() {
+    // Fifty recents scattered across fifty directories would be fifty directory
+    // listings on every rebuild. The newest few are where the work is.
+    let tmp = TempDir::new().unwrap();
+    let recents: Vec<std::path::PathBuf> = (0..30)
+        .map(|i| touch(&tmp.path().join(format!("place{i}")), "data.parquet"))
+        .collect();
+
+    let roots = HomeState::roots(&[], &recents, &[]);
+    let derived = roots
+        .iter()
+        .filter(|r| r.origin == RootOrigin::Recent)
+        .count();
+    assert!(
+        derived <= 8,
+        "thirty scattered recents produced {derived} roots; the cap is 8"
+    );
+    assert_eq!(derived, 8, "the budget should be spent, not left unused");
+
+    // Newest first: place0 is the most recent, so it must be one of the kept roots.
+    assert!(
+        roots.iter().any(|r| r.path == tmp.path().join("place0")),
+        "the most recently used directory must survive the cap"
+    );
+    assert!(
+        !roots.iter().any(|r| r.path == tmp.path().join("place29")),
+        "the oldest directory should fall off the end"
+    );
+}
+
+#[test]
+fn test_many_recents_in_one_directory_cost_one_root() {
+    // The cap counts directories, not recents. Opening thirty files from the same
+    // place must not exhaust a budget meant for thirty different places.
+    let tmp = TempDir::new().unwrap();
+    let one = tmp.path().join("shared");
+    let recents: Vec<std::path::PathBuf> = (0..30)
+        .map(|i| touch(&one, &format!("part{i}.parquet")))
+        .collect();
+    let elsewhere = touch(&tmp.path().join("other"), "data.parquet");
+
+    let mut all = recents;
+    all.push(elsewhere.clone());
+
+    let roots = HomeState::roots(&[], &all, &[]);
+    assert!(
+        roots.iter().any(|r| r.path == tmp.path().join("other")),
+        "a directory listed last must still become a root when the ones before it \
+         all resolved to the same place"
+    );
+}
+
+#[test]
+fn test_a_huge_directory_is_listed_as_a_bounded_prefix() {
+    // Nothing here opens a file; the cost being bounded is the entry count itself.
+    let tmp = TempDir::new().unwrap();
+    for i in 0..5_010 {
+        std::fs::write(tmp.path().join(format!("f{i:05}.parquet")), b"").unwrap();
+    }
+
+    let scan = discover::scan_dir_bounded(tmp.path());
+    assert!(scan.truncated, "a directory past the cap should say so");
+    assert!(
+        scan.entries.len() <= 5_000,
+        "listed {} entries; the cap is 5000",
+        scan.entries.len()
+    );
+}
+
+#[test]
+fn test_subdirectories_past_the_budget_are_listed_without_being_opened() {
+    // Classifying a subdirectory costs a read_dir and several stats. A directory of
+    // thousands of them must not turn one listing into thousands of round trips —
+    // the ones past the budget are still listed, just as places to step into.
+    let tmp = TempDir::new().unwrap();
+    for i in 0..200 {
+        let hive = tmp.path().join(format!("d{i:03}"));
+        std::fs::create_dir_all(hive.join("year=2024")).unwrap();
+        std::fs::write(hive.join("year=2024/part.parquet"), b"").unwrap();
+    }
+
+    let entries = discover::scan_dir(tmp.path());
+    assert_eq!(entries.len(), 200, "every subdirectory is still listed");
+
+    let hives = entries.iter().filter(|e| e.kind == EntryKind::Hive).count();
+    assert!(
+        hives <= 64,
+        "{hives} directories were opened to classify them; the budget is 64"
+    );
+    assert!(
+        hives > 0,
+        "the ones inside the budget should still be classified"
+    );
+}

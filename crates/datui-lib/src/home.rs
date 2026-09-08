@@ -118,6 +118,15 @@ fn percent_decode(raw: &str) -> String {
 /// Filesystem types that live over a network. Listing one can be slow, and it can
 /// stop working entirely when the link or the server goes away — worth saying so next
 /// to a root rather than leaving the user to wonder why a listing is empty or slow.
+/// Directories promoted to roots because something in them was opened recently.
+///
+/// Every root costs a directory listing on every rebuild. Recents are capped at
+/// fifty, so fifty scattered opens meant fifty listings — locally a stutter, on a
+/// network share the difference between instant and unusable. The most recent eight
+/// distinct directories cover where someone is actually working; older places stay
+/// in `RECENT` as individual datasets and remain reachable by typing a path.
+const MAX_RECENT_ROOTS: usize = 8;
+
 const NETWORK_FILESYSTEMS: &[&str] = &[
     "nfs",
     "nfs4",
@@ -504,10 +513,16 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // A remote root is listed from whatever its background probe returned,
         // and left empty until then. Scanning it here is the thing that freezes
         // datui on a slow or absent network.
+        // A local root is listed here; a remote one only reports what its background
+        // probe already returned. Truncation is knowable for the local scan, which is
+        // where a directory big enough to hit the cap realistically lives.
+        let mut truncated = false;
         let rows = if root.network {
             probed.get(&root.path).cloned().unwrap_or_default()
         } else if root.available {
-            discover::scan_dir(&root.path)
+            let scan = discover::scan_dir_bounded(&root.path);
+            truncated = scan.truncated;
+            scan.entries
         } else {
             Vec::new()
         };
@@ -521,13 +536,18 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         }
         // A network root is worth flagging: it is the one that will be slow, and
         // the one that can stop answering.
-        let subtitle = if waiting {
+        let mut subtitle = if waiting {
             format!("network · checking · {}", root.origin.note())
         } else if root.network {
             format!("network · {}", root.origin.note())
         } else {
             root.origin.note().to_string()
         };
+        // Say when the list is a prefix. A directory cut off at the cap otherwise
+        // looks exactly like one that happens to hold that many things.
+        if truncated {
+            subtitle = format!("first {} · {}", discover::MAX_ENTRIES_PER_DIR, subtitle);
+        }
         sections.push(Section {
             title: display_path(&root.path),
             subtitle: Some(subtitle),
@@ -790,7 +810,13 @@ impl HomeState {
         }
 
         // A recent dataset implies its containing directory is a place worth showing.
+        // `recents` is most-recent-first, so the newest distinct directories win the
+        // budget and the rest fall off the end.
+        let mut derived = 0usize;
         for recent in recents {
+            if derived >= MAX_RECENT_ROOTS {
+                break;
+            }
             if let Some(parent) = recent.parent() {
                 if parent.as_os_str().is_empty() {
                     continue;
@@ -805,12 +831,18 @@ impl HomeState {
                 if Some(&key) == cwd_key.as_ref() {
                     continue;
                 }
+                let before = roots.len();
                 push(
                     parent.to_path_buf(),
                     RootOrigin::Recent,
                     &mut roots,
                     &mut seen,
                 );
+                // Only a directory that was actually added spends budget; fifty
+                // recents from one directory still cost one root.
+                if roots.len() > before {
+                    derived += 1;
+                }
             }
         }
 

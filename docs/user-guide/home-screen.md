@@ -257,6 +257,36 @@ both, and costs only speed.
 Everything else on this screen is read fresh, on a background thread, never on the
 one drawing the screen.
 
+## Limits
+
+The home screen stays the same speed whether you have used datui for a day or a
+year. Every kind of work it does is capped:
+
+| work | limit |
+|---|---|
+| recently opened paths kept | 50 |
+| directories promoted to roots by a recent | the 8 most recent distinct ones |
+| entries listed from one directory | 5,000 |
+| subdirectories looked inside, per listing | 64 |
+| files looked at to tell whether a directory is a dataset | 8 |
+| files read to count the rows of a multi-file dataset | 64 |
+| datasets measured at once | 12, and only ones on screen |
+| network directories probed at once | 4 |
+
+The caps that change what you see say so. A directory cut short reads `first 5000`
+beside its name. A subdirectory past the 64 is still listed — it just shows as a
+directory rather than as a dataset until you step into it, at which point it is
+classified normally.
+
+The two that matter most are the root cap and the subdirectory cap, because both
+bound *round trips*, which is what costs time on a network share. Fifty scattered
+recents once meant fifty directory listings on every rebuild; a directory of two
+thousand subdirectories meant roughly eighteen thousand filesystem operations to
+list it once. Neither is possible now.
+
+Older places do not disappear — they stay under `RECENT` as individual datasets,
+and any path is still reachable by typing it.
+
 ## Plain terminals
 
 On a terminal without a UTF-8 locale, datui falls back to ASCII:

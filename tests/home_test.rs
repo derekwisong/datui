@@ -5,6 +5,8 @@ use datui::home::{fuzzy_score, HomeState, RootOrigin};
 use std::fs;
 use tempfile::TempDir;
 
+mod common;
+
 fn touch(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     if let Some(parent) = path.parent() {
@@ -586,5 +588,37 @@ fn test_desktop_place_already_covered_is_not_repeated() {
     assert_eq!(
         places, 0,
         "a configured root should not repeat as elsewhere"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Abandoning a load
+// ---------------------------------------------------------------------------
+
+/// A stale background result must be dropped rather than applied.
+///
+/// This is what makes leaving a slow load safe: the work keeps running (Polars has
+/// no cancellation), so the only thing standing between an abandoned load and a
+/// clobbered screen is the generation check.
+#[test]
+fn test_stale_background_scan_is_discarded() {
+    use datui::{App, AppEvent, OpenOptions};
+    use std::sync::mpsc;
+
+    let (tx, _rx) = mpsc::channel::<AppEvent>();
+    let theme = datui::config::Theme::from_config(&Default::default()).expect("theme");
+    let mut app = App::new_with_theme(tx, common::test_runtime(), theme);
+
+    let current = app.task_generation();
+
+    // A result from a generation the app has moved past produces no follow-up work.
+    let stale = AppEvent::BackgroundLazyFrameReady {
+        generation: current.wrapping_sub(1),
+        path: Some(std::path::PathBuf::from("whatever.parquet")),
+        options: OpenOptions::default(),
+    };
+    assert!(
+        app.event(&stale).is_none(),
+        "a superseded scan must not continue the load pipeline"
     );
 }

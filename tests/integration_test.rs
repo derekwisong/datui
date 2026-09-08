@@ -267,23 +267,38 @@ fn test_chart_view_render_with_cache() {
     assert_eq!(app.input_mode, InputMode::Normal);
 }
 
+/// Wait for the outcome of a background scan.
+///
+/// Scanning runs off the event thread so a slow one cannot freeze the interface, so
+/// its result arrives over the channel rather than as a return value.
+fn await_scan_outcome(rx: &mpsc::Receiver<AppEvent>) -> AppEvent {
+    rx.recv_timeout(std::time::Duration::from_secs(30))
+        .expect("background scan should report an outcome")
+}
+
 #[test]
 fn test_open_s3_url_returns_crash_or_loads() {
-    let (tx, _) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("s3://my-bucket/path/to/file.parquet");
     let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
     let ev = next.expect("Open should emit DoLoadScanPaths");
     assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
-    let next = app.event(&ev);
-    match next.as_ref() {
-        Some(AppEvent::Crash(m)) => {
-            assert!(m.contains("S3"), "error should mention S3: {}", m);
+
+    // The scan is spawned, so this returns nothing; the outcome comes over the channel.
+    assert!(
+        app.event(&ev).is_none(),
+        "scan should be spawned, not run inline"
+    );
+
+    match await_scan_outcome(&rx) {
+        AppEvent::BackgroundError { message, .. } => {
+            assert!(message.contains("S3"), "error should mention S3: {message}");
         }
-        Some(AppEvent::DoLoadSchema(..)) => {
-            // With cloud feature and valid credentials/bucket, load can succeed.
+        AppEvent::BackgroundLazyFrameReady { .. } => {
+            // With cloud feature and valid credentials/bucket, the scan can succeed.
         }
-        _ => panic!("expected Crash or DoLoadSchema when opening S3 URL"),
+        _ => panic!("expected a scan outcome for an S3 URL"),
     }
 }
 
@@ -369,23 +384,29 @@ fn test_multiple_remote_paths_returns_error() {
 
 #[test]
 fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
-    let (tx, _) = mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("gs://my-bucket/path/file.parquet");
     let next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
     let ev = next.expect("Open should emit DoLoadScanPaths");
     assert!(matches!(ev, AppEvent::DoLoadScanPaths(_, _)));
-    let next = app.event(&ev);
-    match next.as_ref() {
-        Some(AppEvent::Crash(m)) => {
+
+    assert!(
+        app.event(&ev).is_none(),
+        "scan should be spawned, not run inline"
+    );
+
+    match await_scan_outcome(&rx) {
+        AppEvent::BackgroundError { message, .. } => {
             assert!(
-                m.contains("GCS") || m.contains("gs://") || m.contains("not enabled"),
-                "error should mention GCS or gs:// or not enabled: {}",
-                m
+                message.contains("GCS")
+                    || message.contains("gs://")
+                    || message.contains("not enabled"),
+                "error should mention GCS or gs:// or not enabled: {message}"
             );
         }
-        Some(AppEvent::DoLoadSchema(..)) => {}
-        _ => panic!("expected Crash or DoLoadSchema when opening gs:// URL"),
+        AppEvent::BackgroundLazyFrameReady { .. } => {}
+        _ => panic!("expected a scan outcome for a gs:// URL"),
     }
 }
 

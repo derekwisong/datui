@@ -137,7 +137,13 @@ character goes into the filter, or you could never search for `quarterly`. The
 control bar always shows what <kbd>Esc</kbd> will do next.
 
 <kbd>Ctrl</kbd>+<kbd>O</kbd> works while a dataset is still loading, so opening a
-large file by mistake costs one keystroke rather than a wait.
+large file by mistake costs one keystroke rather than a wait. Scanning happens off
+the interface thread, so the screen keeps responding throughout.
+
+Leaving a load **abandons** it rather than cancelling it: Polars has no way to stop
+a scan once it has started, so the work runs to completion in the background and its
+result is discarded. You stop waiting for it, and it can never overwrite whatever you
+opened instead — but it does keep using CPU until it finishes.
 
 ## What datui remembers
 

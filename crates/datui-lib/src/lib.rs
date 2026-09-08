@@ -9,7 +9,7 @@ use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 use polars::prelude::{PlPathRef, ScanArgsParquet};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc::Sender, Arc};
+use std::sync::{mpsc::Sender, Arc, Mutex};
 use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
 
 use ratatui::style::{Color, Style};
@@ -552,6 +552,12 @@ pub enum AppEvent {
     /// HTTP, S3, or GCS download finished; temp path is ready. Scan it and continue load.
     #[cfg(any(feature = "http", feature = "cloud"))]
     DoLoadFromHttpTemp(PathBuf, OpenOptions),
+    /// Background scan finished; the LazyFrame is waiting in `pending_lazyframe_result`.
+    BackgroundLazyFrameReady {
+        generation: u64,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+    },
     /// Update phase to "Caching schema" and emit DoLoadSchemaBlocking so UI can draw before blocking.
     DoLoadSchema(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
     /// Actually run collect_schema() and create state; then emit DoLoadBuffer (phased loading).
@@ -1029,6 +1035,9 @@ pub struct App {
     number_format: NumberFormatSettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
     task_generation: u64,            // Incremented to invalidate stale background results
+    /// LazyFrame produced by a background scan, tagged with the generation that
+    /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
+    pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
     // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
     // the (potentially minutes-long) count on every scroll while it's still running.
     len_count_inflight: Option<u64>,
@@ -1482,6 +1491,7 @@ impl App {
                 }),
             runtime,
             task_generation: 0,
+            pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             len_count_inflight: None,
             len_count_failed: None,
@@ -2521,8 +2531,71 @@ impl App {
     }
 
     /// Build LazyFrame from paths for phased loading (non-compressed only). Caller must not use for compressed CSV.
+    /// Run the LazyFrame scan for `paths` on a background thread.
+    ///
+    /// Scanning is where the wall-clock time goes — CSV schema inference, and hive
+    /// directories with many files — so doing it on the event thread freezes the UI
+    /// for its whole duration: no repaint, no throbber, no way out. Both CSV entry
+    /// points funnel through here.
+    fn spawn_scan(
+        &mut self,
+        status: &str,
+        paths: Vec<PathBuf>,
+        options: OpenOptions,
+    ) -> Option<AppEvent> {
+        let cloud = self.app_config.cloud.clone();
+        let path_for_event = paths.first().cloned();
+        let slot = self.pending_lazyframe_result.clone();
+        self.spawn_bg(status, move |gen, tx| {
+            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options) {
+                Ok(lf) => {
+                    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    // A newer scan already landed; this result is obsolete.
+                    let dominated = guard.as_ref().is_some_and(|(g, _)| *g > gen);
+                    if !dominated {
+                        *guard = Some((gen, lf));
+                    }
+                    drop(guard);
+                    let _ = tx.send(AppEvent::BackgroundLazyFrameReady {
+                        generation: gen,
+                        path: path_for_event,
+                        options,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::BackgroundError {
+                        generation: gen,
+                        message: crate::error_display::user_message_from_report(
+                            &e,
+                            paths.first().map(|p| p.as_path()),
+                        ),
+                    });
+                }
+            }
+        });
+        None
+    }
+
+    /// Build the LazyFrame for `paths`, on the calling thread.
+    ///
+    /// Only for paths already known to be cheap; the general case goes through
+    /// [`App::build_lazyframe_from_paths_with`] on a background thread.
     fn build_lazyframe_from_paths(
         &mut self,
+        paths: &[PathBuf],
+        options: &OpenOptions,
+    ) -> Result<LazyFrame> {
+        let cloud = self.app_config.cloud.clone();
+        Self::build_lazyframe_from_paths_with(&cloud, paths, options)
+    }
+
+    /// Build the LazyFrame for `paths`.
+    ///
+    /// Takes the cloud config by reference rather than reading `self`, so the same
+    /// code can run on a background thread — scanning is where the wall-clock time
+    /// goes for CSV (schema inference) and for hive directories with many files.
+    fn build_lazyframe_from_paths_with(
+        cloud: &crate::config::CloudConfig,
         paths: &[PathBuf],
         options: &OpenOptions,
     ) -> Result<LazyFrame> {
@@ -2546,7 +2619,7 @@ impl App {
                 #[cfg(feature = "cloud")]
                 {
                     let full = format!("s3://{url}");
-                    let cloud_opts = Self::build_s3_cloud_options(&self.app_config.cloud, options);
+                    let cloud_opts = Self::build_s3_cloud_options(cloud, options);
                     let pl_path = PlPathRef::new(&full).into_owned();
                     let is_glob = full.contains('*') || full.ends_with('/');
                     let hive_options = if is_glob {
@@ -6929,7 +7002,6 @@ impl App {
                             return None;
                         }
                     }
-                    let first = paths[0].clone();
                     // When CSV with --parse-strings, set "Scanning string columns" and defer build so UI can show it before blocking.
                     if paths.len() == 1 && is_csv && options.parse_strings.is_some() {
                         if let LoadingState::Loading {
@@ -6951,75 +7023,49 @@ impl App {
                         ));
                     }
                     #[allow(clippy::needless_borrow)]
-                    match self.build_lazyframe_from_paths(&paths, options) {
-                        Ok(lf) => {
-                            if let LoadingState::Loading {
-                                file_path,
-                                file_size,
-                                ..
-                            } = &self.loading_state
-                            {
-                                self.loading_state = LoadingState::Loading {
-                                    file_path: file_path.clone(),
-                                    file_size: *file_size,
-                                    current_phase: "Caching schema".to_string(),
-                                    progress_percent: 40,
-                                };
-                            }
-                            Some(AppEvent::DoLoadSchema(
-                                Box::new(lf),
-                                Some(first),
-                                options.clone(),
-                            ))
-                        }
-                        Err(e) => {
-                            self.loading_state = LoadingState::Idle;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            let msg = crate::error_display::user_message_from_report(
-                                &e,
-                                paths.first().map(|p| p.as_path()),
-                            );
-                            Some(AppEvent::Crash(msg))
-                        }
-                    }
+                    self.spawn_scan("Scanning input...", paths.clone(), options.clone())
                 }
             }
-            AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
-                let first = paths[0].clone();
-                #[allow(clippy::needless_borrow)]
-                match self.build_lazyframe_from_paths(&paths, options) {
-                    Ok(lf) => {
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Caching schema".to_string(),
-                                progress_percent: 40,
-                            };
-                        }
-                        Some(AppEvent::DoLoadSchema(
-                            Box::new(lf),
-                            Some(first),
-                            options.clone(),
-                        ))
-                    }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(
-                            &e,
-                            paths.first().map(|p| p.as_path()),
-                        );
-                        Some(AppEvent::Crash(msg))
-                    }
+            AppEvent::BackgroundLazyFrameReady {
+                generation,
+                path,
+                options,
+            } => {
+                // A scan that a newer open has already superseded is dropped on the
+                // floor: its LazyFrame describes data nobody is looking at any more.
+                if *generation != self.task_generation {
+                    return None;
                 }
+                let (slot_gen, lf) = self
+                    .pending_lazyframe_result
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()?;
+                if slot_gen != self.task_generation {
+                    return None;
+                }
+
+                if let LoadingState::Loading {
+                    file_path,
+                    file_size,
+                    ..
+                } = &self.loading_state
+                {
+                    self.loading_state = LoadingState::Loading {
+                        file_path: file_path.clone(),
+                        file_size: *file_size,
+                        current_phase: "Caching schema".to_string(),
+                        progress_percent: 40,
+                    };
+                }
+                Some(AppEvent::DoLoadSchema(
+                    Box::new(lf),
+                    path.clone(),
+                    options.clone(),
+                ))
+            }
+            AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
+                self.spawn_scan("Scanning string columns...", paths.clone(), options.clone())
             }
             #[cfg(feature = "http")]
             AppEvent::DoDownloadHttp(url, options) => {
@@ -9291,10 +9337,17 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
                     return Err(color_eyre::eyre::eyre!(msg));
                 }
                 Ok(event) => {
+                    updated = true;
                     if let Some(next) = app.event(&event) {
                         tx.send(next)?;
+                        // A handler that returns a follow-up event is deferring work so
+                        // the UI can show the current phase first — the `Do*` events all
+                        // rely on this. Draining the follow-up in the same pass defeats
+                        // that: the phase label never renders and the throbber never
+                        // moves. Break so a frame is drawn and keys are polled first.
+                        // Order is unaffected; the follow-up was appended to the queue.
+                        break;
                     }
-                    updated = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -9321,8 +9374,26 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
                 }
             }
             if app.should_drain_keys() {
+                // Keys typed *at* a busy screen are usually accidental — a held arrow
+                // key, an impatient double-tap — so they get dropped. But the two keys
+                // that mean "get me out of here" must survive: discarding those is
+                // exactly the moment a user needs them to work.
+                let mut escape: Option<crossterm::event::KeyEvent> = None;
                 while crossterm::event::poll(std::time::Duration::from_millis(0))? {
-                    let _ = crossterm::event::read();
+                    if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
+                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                        if ctrl
+                            && matches!(
+                                key.code,
+                                KeyCode::Char('c') | KeyCode::Char('q') | KeyCode::Char('o')
+                            )
+                        {
+                            escape = Some(key);
+                        }
+                    }
+                }
+                if let Some(key) = escape {
+                    tx.send(AppEvent::Key(key))?;
                 }
                 app.clear_drain_keys_request();
             }

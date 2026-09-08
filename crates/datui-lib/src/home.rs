@@ -502,7 +502,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // stat'ed every row, so verifying the fingerprint costs nothing.
     for section in &mut sections {
         for row in &mut section.rows {
-            apply_known_facts(row, known);
+            apply_known_facts(row, known, network_check(&row.path));
         }
     }
 
@@ -512,29 +512,54 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     }
 }
 
-/// Apply a cached measurement to a row, if it is still for the same bytes.
+/// Apply a cached measurement to a row.
+///
+/// For a local row the fingerprint is checked: both size and modification time must
+/// still agree, so a dataset that has changed invalidates itself. `scan_dir` already
+/// stat'ed the row, so this costs nothing.
+///
+/// A remote row has no fingerprint to check, because checking it means a `stat` on a
+/// path that may not answer. Its cached facts are used as-is. That is the right
+/// trade: this is a cache of what a dataset looked like, the entry was written from a
+/// real read, and a stale row count is a far better answer than an empty one for the
+/// datasets that are hardest to reach and most worth remembering.
 fn apply_known_facts(
     row: &mut Entry,
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    remote: bool,
 ) {
     let Some(facts) = known.get(&row.path) else {
         return;
     };
-    // Both halves of the fingerprint must agree. A dataset rewritten to the same size
-    // will have a newer modification time; one appended to will have a different size.
-    let matches = row.size.map(|s| s == facts.size).unwrap_or(false)
-        && row
-            .modified
-            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() == facts.mtime)
-            .unwrap_or(false);
-    if !matches {
-        return;
+
+    if !remote {
+        let same_bytes = row.size.map(|s| s == facts.size).unwrap_or(false)
+            && row
+                .modified
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() == facts.mtime)
+                .unwrap_or(false);
+        if !same_bytes {
+            return;
+        }
     }
+
     row.rows = facts.rows;
     row.cols = facts.cols;
     if !facts.columns.is_empty() {
         row.columns = facts.columns.clone();
+    }
+    if remote {
+        // A remote row was never stat'ed, so these are all it has.
+        row.size = row.size.or(Some(facts.size));
+        // What it was last seen to be, rather than what its name suggests. Guessing
+        // here is how the same dataset ends up reading `hive` in one section and
+        // something else in another.
+        if row.kind == EntryKind::Unknown {
+            if let Some(kind) = facts.kind {
+                row.kind = kind;
+            }
+        }
     }
 }
 
@@ -557,6 +582,7 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
             rows: entry.rows,
             cols: entry.cols,
             columns: entry.columns.clone(),
+            kind: Some(entry.kind),
         },
     ))
 }

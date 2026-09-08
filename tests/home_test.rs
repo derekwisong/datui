@@ -1451,6 +1451,7 @@ fn test_remembered_facts_are_used_only_for_the_same_bytes() {
             rows: Some(42),
             cols: Some(3),
             columns: vec!["customer_id".into()],
+            kind: Some(EntryKind::File),
         },
     )]);
 
@@ -1484,4 +1485,125 @@ fn test_the_dataset_index_is_disposable() {
         cache.load_dataset_facts().is_empty(),
         "a corrupt index reads as no knowledge, not a crash"
     );
+}
+
+#[test]
+fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
+    // Verifying a fingerprint means stat'ing the path, which is the call that blocks
+    // on a share that has gone away. A remote row therefore trusts what was recorded
+    // from a real read — a stale row count beats an empty one, and these are the
+    // datasets that are hardest to reach and most worth remembering.
+    use datui::cache::{CacheManager, DatasetFacts};
+    use datui::home::{build_listing, ListingRequest};
+
+    let tmp = TempDir::new().unwrap();
+    let remote_root = tmp.path().join("PRETEND_REMOTE/quant");
+    let dataset = remote_root.join("prices");
+    let cache_dir = tmp.path().join("cache");
+    let cache = CacheManager::with_dir(cache_dir);
+
+    cache.record_dataset_facts(&[(
+        dataset.clone(),
+        DatasetFacts {
+            mtime: 0,
+            size: 1_600_000_000,
+            rows: Some(17_399_008),
+            cols: Some(39),
+            columns: vec!["vwap".into(), "ticker".into()],
+            kind: Some(EntryKind::Hive),
+        },
+    )]);
+
+    let listing = build_listing(&ListingRequest {
+        config_dirs: Vec::new(),
+        recents: vec![dataset.clone()],
+        desktop_dirs: Vec::new(),
+        browsing: None,
+        probed: Default::default(),
+        unreachable: Default::default(),
+        network_check: pretend_remote,
+        known: cache.load_dataset_facts(),
+    });
+
+    let mut home = HomeState {
+        network_check: pretend_remote,
+        ..Default::default()
+    };
+    home.apply_listing(listing);
+
+    let row = home
+        .visible()
+        .into_iter()
+        .find_map(|r| match r {
+            Row::Entry { entry, .. } if entry.name == "prices" => Some(entry.clone()),
+            _ => None,
+        })
+        .expect("the remote dataset should be listed");
+
+    assert_eq!(
+        row.rows,
+        Some(17_399_008),
+        "counts come from what was recorded"
+    );
+    assert_eq!(
+        row.kind,
+        EntryKind::Hive,
+        "and so does the kind, rather than a guess"
+    );
+    assert!(
+        row.columns.iter().any(|c| c == "vwap"),
+        "so a column search works before anything is read"
+    );
+}
+
+#[test]
+fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
+    // The local half of the same rule: a fingerprint that no longer matches is not
+    // trusted, so a dataset that has been rewritten is measured again.
+    use datui::cache::{CacheManager, DatasetFacts};
+    use datui::home::{build_listing, ListingRequest};
+
+    let tmp = TempDir::new().unwrap();
+    let dataset = touch(tmp.path(), "sales.parquet");
+    let cache = CacheManager::with_dir(tmp.path().join("cache"));
+
+    cache.record_dataset_facts(&[(
+        dataset.clone(),
+        DatasetFacts {
+            mtime: 1, // deliberately not the file's real mtime
+            size: 999_999,
+            rows: Some(1_000_000),
+            cols: Some(9),
+            columns: vec!["stale".into()],
+            kind: Some(EntryKind::File),
+        },
+    )]);
+
+    let listing = build_listing(&ListingRequest {
+        config_dirs: Vec::new(),
+        recents: Vec::new(),
+        desktop_dirs: Vec::new(),
+        browsing: Some(tmp.path().to_path_buf()),
+        probed: Default::default(),
+        unreachable: Default::default(),
+        network_check: |_| false,
+        known: cache.load_dataset_facts(),
+    });
+
+    let mut home = HomeState::default();
+    home.apply_listing(listing);
+
+    let row = home
+        .visible()
+        .into_iter()
+        .find_map(|r| match r {
+            Row::Entry { entry, .. } if entry.name == "sales.parquet" => Some(entry.clone()),
+            _ => None,
+        })
+        .expect("listed");
+    assert_eq!(
+        row.rows, None,
+        "a mismatched fingerprint must not be trusted"
+    );
+    assert!(row.columns.is_empty());
 }

@@ -114,9 +114,15 @@ listed in the background:
 ▾ s3://bucket/warehouse                         network · checking
 ```
 
-Until that listing arrives, a remote entry shows its name and nothing else — no
-size, no row counts, no type. Those all require reading it. A location that never
-answers is marked `unavailable` and not retried.
+A remote dataset datui has measured before shows its counts and columns straight
+away, from the cache. One it has not shows its name and nothing else until the
+listing arrives — size, counts and type all require reading it. A location that
+never answers is marked `unavailable` and not retried.
+
+Remembered facts for a remote dataset are used without re-checking, since checking
+means a `stat` on a path that may not answer. A stale row count is a better answer
+than an empty one for the datasets that are hardest to reach. Local datasets are
+verified against size and modification time, and re-measured when either changes.
 
 Object-store and HTTP URLs are recorded in `RECENT` like any other path, and are
 worth having there: `s3://bucket/warehouse/events/year=2024` is the sort of path

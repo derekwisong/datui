@@ -32,7 +32,8 @@ const HIVE_PROBE_LIMIT: usize = 8;
 const MAX_ENTRIES_PER_DIR: usize = 5_000;
 
 /// What a home-screen row represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum EntryKind {
     /// A single data file.
     File,

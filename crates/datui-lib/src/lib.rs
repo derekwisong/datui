@@ -12,6 +12,13 @@ use std::collections::HashMap;
 /// Rows measured per background pass. Small enough that a slow filesystem shows
 /// progress rather than a long silence.
 const MEASURE_BATCH: usize = 12;
+
+/// Rows a probe measures while it is already reading a remote directory.
+const PROBE_MEASURE_LIMIT: usize = 24;
+
+/// Probes allowed at once. A probe of a share that has gone away holds its thread
+/// until the process exits, so the number of them has to be bounded.
+const MAX_CONCURRENT_PROBES: usize = 4;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc, Mutex};
 use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
@@ -1597,16 +1604,33 @@ impl App {
             if self.home_probes_inflight.contains(&root) {
                 continue;
             }
+            // Each probe of an unreachable share costs a thread that will never come
+            // back. A handful is a rounding error; an unbounded number, on a machine
+            // with a page of dead mounts, is not.
+            if self.home_probes_inflight.len() >= MAX_CONCURRENT_PROBES {
+                break;
+            }
             self.home_probes_inflight.push(root.clone());
             let tx = self.events.clone();
-            self.runtime.spawn_blocking(move || {
+            let cache = self.cache.clone();
+            // A detached OS thread, not the runtime's blocking pool. A thread wedged
+            // on an unreachable `hard` mount never returns, and the pool is shared with
+            // the work that actually loads data — a few dead shares must not eat into
+            // the capacity that opening a dataset depends on.
+            std::thread::spawn(move || {
                 let rows = if std::fs::read_dir(&root).is_ok() {
                     let mut rows = crate::discover::scan_dir(&root);
                     // Measuring happens here too: it is the same remote filesystem,
                     // and this thread is already the one allowed to block on it.
-                    for row in rows.iter_mut().take(24) {
+                    for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
                         crate::discover::enrich(row);
                     }
+                    // Remote datasets are measured nowhere else, so this is the only
+                    // chance to remember them. Without it a remote row is blank on
+                    // every run, which is exactly backwards: the hardest things to
+                    // reach are the ones most worth remembering.
+                    let facts: Vec<_> = rows.iter().filter_map(home::facts_for).collect();
+                    cache.record_dataset_facts(&facts);
                     Some(rows)
                 } else {
                     None
@@ -1648,8 +1672,6 @@ impl App {
                 listing: Box::new(listing),
             });
         });
-
-        self.spawn_home_probes();
     }
 
     /// Ask the worker to measure rows that are on screen and not yet known.
@@ -7252,6 +7274,9 @@ impl App {
                     return None;
                 }
                 self.home.apply_listing((**listing).clone());
+                // Probes are chosen from the sections, so they can only be started
+                // once those exist — asking before the listing lands finds nothing.
+                self.spawn_home_probes();
                 self.request_home_measurements();
                 None
             }

@@ -267,6 +267,11 @@ pub struct DatasetFacts {
     /// anything has been read this run.
     #[serde(default)]
     pub columns: Vec<String>,
+    /// What the dataset turned out to be. Recorded rather than re-derived, because a
+    /// remote path cannot be classified without reading it, and a row that says
+    /// `hive` under its own directory should not say something else under Recent.
+    #[serde(default)]
+    pub kind: Option<crate::discover::EntryKind>,
 }
 
 /// Entries kept in the dataset index.

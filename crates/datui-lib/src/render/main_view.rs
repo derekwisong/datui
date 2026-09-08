@@ -100,6 +100,7 @@ pub fn home_control_keys(
     let mut keys = vec![(g.updown, "Move"), (g.enter, "Open")];
 
     if path_input_active {
+        keys.push((g.tab, "Complete"));
         keys.push(("Esc", "Cancel"));
     } else {
         keys.push(("type", "Filter"));

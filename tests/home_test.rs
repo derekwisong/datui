@@ -1709,3 +1709,94 @@ fn test_the_filter_still_wins_over_the_sort() {
     home.filter = "beta".into();
     assert_eq!(visible_names(&home), vec!["beta.parquet"]);
 }
+
+// ---------------------------------------------------------------------------
+// Path completion
+//
+// The path input is the way to reach somewhere datui has never seen. Typing a full
+// path unaided is the kind of friction that stops people using an escape hatch at
+// all.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_completion_extends_to_an_unambiguous_prefix() {
+    use datui::home::complete_path;
+
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("warehouse_eu")).unwrap();
+    fs::create_dir_all(tmp.path().join("warehouse_us")).unwrap();
+    fs::create_dir_all(tmp.path().join("other")).unwrap();
+
+    // Both candidates agree as far as "warehouse_", so completion goes that far and
+    // stops: choosing between them would be guessing.
+    let typed = format!("{}/war", tmp.path().display());
+    let (completed, candidates) = complete_path(&typed);
+    assert_eq!(candidates, 2);
+    assert!(
+        completed.ends_with("/warehouse_"),
+        "should extend to where the candidates diverge, got {completed}"
+    );
+
+    // And no further: a second press adds nothing rather than picking one.
+    let (again, _) = complete_path(&completed);
+    assert_eq!(again, completed, "an ambiguous completion is idempotent");
+}
+
+#[test]
+fn test_a_single_directory_completes_with_its_separator() {
+    // So a second Tab descends rather than needing a slash typed by hand.
+    use datui::home::complete_path;
+
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("datasets")).unwrap();
+
+    let typed = format!("{}/data", tmp.path().display());
+    let (completed, candidates) = complete_path(&typed);
+    assert_eq!(candidates, 1);
+    assert!(
+        completed.ends_with("datasets/"),
+        "a lone directory should gain its separator, got {completed}"
+    );
+}
+
+#[test]
+fn test_completion_leaves_an_unmatched_path_alone() {
+    use datui::home::complete_path;
+
+    let tmp = TempDir::new().unwrap();
+    let typed = format!("{}/nothing_like_this", tmp.path().display());
+    let (completed, candidates) = complete_path(&typed);
+    assert_eq!(candidates, 0);
+    assert_eq!(
+        completed, typed,
+        "nothing to complete means nothing changes"
+    );
+}
+
+#[test]
+fn test_completion_hides_dotfiles_unless_asked_for() {
+    // Otherwise every completion in a home directory is dotfiles.
+    use datui::home::complete_path;
+
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join(".hidden")).unwrap();
+    fs::create_dir_all(tmp.path().join("visible")).unwrap();
+
+    let (_, all) = complete_path(&format!("{}/", tmp.path().display()));
+    assert_eq!(
+        all, 1,
+        "a bare directory should offer only the visible entry"
+    );
+
+    let (completed, dotted) = complete_path(&format!("{}/.h", tmp.path().display()));
+    assert_eq!(dotted, 1, "asking for a dot should find it");
+    assert!(completed.ends_with(".hidden/"));
+}
+
+#[test]
+fn test_completion_of_an_unreadable_directory_is_harmless() {
+    use datui::home::complete_path;
+    let (completed, candidates) = complete_path("/definitely/not/here/x");
+    assert_eq!(candidates, 0);
+    assert_eq!(completed, "/definitely/not/here/x");
+}

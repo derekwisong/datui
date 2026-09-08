@@ -1176,6 +1176,73 @@ pub fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
 
+/// Complete a partially typed path against the directory it names.
+///
+/// Returns the longest unambiguous extension of `typed`, and how many candidates
+/// there were. Reading a directory can block, so this is only ever called from a
+/// worker — never in response to a keystroke on the interface thread.
+pub fn complete_path(typed: &str) -> (String, usize) {
+    let expanded = expand_user_path(typed);
+    let typed_ends_in_sep = typed.ends_with('/');
+
+    let (dir, prefix) = if typed_ends_in_sep {
+        (expanded.clone(), String::new())
+    } else {
+        match (expanded.parent(), expanded.file_name()) {
+            (Some(parent), Some(name)) => {
+                (parent.to_path_buf(), name.to_string_lossy().into_owned())
+            }
+            _ => (expanded.clone(), String::new()),
+        }
+    };
+
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return (typed.to_string(), 0);
+    };
+
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // A leading dot is only offered when it was asked for; otherwise every
+            // completion in a home directory is dotfiles.
+            if name.starts_with('.') && !prefix.starts_with('.') {
+                return None;
+            }
+            name.starts_with(&prefix).then_some(name)
+        })
+        .collect();
+    if names.is_empty() {
+        return (typed.to_string(), 0);
+    }
+    names.sort();
+
+    // The longest prefix every candidate agrees on: completing further would be
+    // guessing between them.
+    let shared = names
+        .iter()
+        .skip(1)
+        .fold(names[0].clone(), |acc, name| common_prefix(&acc, name));
+
+    let mut completed = typed.to_string();
+    completed.truncate(typed.len() - prefix.len());
+    completed.push_str(&shared);
+
+    // A single directory gets its separator, so the next Tab descends into it.
+    if names.len() == 1 && dir.join(&shared).is_dir() && !completed.ends_with('/') {
+        completed.push('/');
+    }
+    (completed, names.len())
+}
+
+fn common_prefix(a: &str, b: &str) -> String {
+    a.chars()
+        .zip(b.chars())
+        .take_while(|(x, y)| x == y)
+        .map(|(x, _)| x)
+        .collect()
+}
+
 /// Expand `~` and `$VAR` in a path the user typed.
 pub fn expand_user_path(raw: &str) -> PathBuf {
     crate::config::expand_config_path(raw)

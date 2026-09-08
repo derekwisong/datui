@@ -15,6 +15,7 @@ FINDING
                     "sales", and "customer_id" finds every dataset with that column
   Backspace         Delete a filter character
   ~                 Type a path directly, for somewhere datui has not seen yet
+  Tab               (while typing a path) complete it
   Ctrl+U            Clear the filter or path input
 
 WHERE THESE COME FROM, IN ORDER

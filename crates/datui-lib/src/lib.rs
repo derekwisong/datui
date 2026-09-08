@@ -568,6 +568,15 @@ pub enum AppEvent {
         generation: u64,
         listing: Box<crate::home::Listing>,
     },
+    /// A completed path, worked out off-thread.
+    HomePathCompleted {
+        generation: u64,
+        /// What was typed when completion was asked for; a later keystroke makes the
+        /// answer stale.
+        typed: String,
+        completed: String,
+        candidates: usize,
+    },
     /// A schema read off-thread for the highlighted dataset.
     HomeSchemaReady {
         generation: u64,
@@ -1573,6 +1582,25 @@ impl App {
         None
     }
 
+    /// Complete the path being typed, on a worker.
+    fn request_path_completion(&mut self) {
+        let typed = self.home.path_input.clone();
+        if typed.is_empty() {
+            return;
+        }
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        std::thread::spawn(move || {
+            let (completed, candidates) = home::complete_path(&typed);
+            let _ = tx.send(AppEvent::HomePathCompleted {
+                generation,
+                typed,
+                completed,
+                candidates,
+            });
+        });
+    }
+
     /// Whether a schema read is currently out for this path.
     pub fn home_schema_pending(&self, path: &Path) -> bool {
         self.home_schema_inflight.iter().any(|p| p == path)
@@ -1900,7 +1928,13 @@ impl App {
                     self.home.status = None;
                 }
                 KeyCode::Char('u') if ctrl => self.home.path_input.clear(),
-                KeyCode::Char(c) => self.home.path_input.push(c),
+                // Completion reads a directory, which can block, so it is worked out
+                // on a worker and applied when it comes back.
+                KeyCode::Tab => self.request_path_completion(),
+                KeyCode::Char(c) => {
+                    self.home.path_input.push(c);
+                    self.home.status = None;
+                }
                 _ => {}
             }
             return None;
@@ -7314,6 +7348,25 @@ impl App {
                 self.request_home_measurements();
                 None
             }
+            AppEvent::HomePathCompleted {
+                generation,
+                typed,
+                completed,
+                candidates,
+            } => {
+                // Discard if the user has typed since asking: completing onto a
+                // different string would scramble what they are in the middle of.
+                if *generation != self.home_generation || &self.home.path_input != typed {
+                    return None;
+                }
+                if *candidates == 0 {
+                    self.home.status = Some("No such path".to_string());
+                } else {
+                    self.home.status = (*candidates > 1).then(|| format!("{candidates} matches"));
+                    self.home.path_input = completed.clone();
+                }
+                None
+            }
             AppEvent::HomeSchemaReady {
                 generation,
                 path,
@@ -9479,11 +9532,13 @@ impl Widget for &mut App {
         // The trailing figure belongs to whatever view is showing. On the home screen
         // that is how many datasets are listed, not the table's row count.
         if main_view_content == MainViewContent::Home {
+            // Only things that can actually be opened. A directory is somewhere to
+            // look, not a dataset, and counting it makes the figure a lie.
             let datasets = self
                 .home
                 .visible()
                 .iter()
-                .filter(|r| matches!(r, home::Row::Entry { .. }))
+                .filter(|r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_dataset()))
                 .count();
             let caption = if self.home.listing_in_flight && datasets == 0 {
                 "Looking…".to_string()

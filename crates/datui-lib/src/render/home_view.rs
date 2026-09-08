@@ -233,40 +233,57 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     app.home.pending_enrich = !app.home.unmeasured_visible(1).is_empty();
     let visible = app.home.visible();
 
-    if visible.is_empty() {
-        if app.home.listing_in_flight {
-            Paragraph::new(Line::from(Span::styled(
-                "Looking…",
-                Style::default().fg(ctx.dimmed),
-            )))
-            .render(area, buf);
-            return;
-        }
-        let lines = if app.home.filter.is_empty() {
-            vec![
-                Line::from(Span::styled(
-                    "Nothing here yet.",
-                    Style::default().fg(ctx.text_secondary),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "Press ~ to open a path directly — datui remembers where it leads.",
-                    Style::default().fg(ctx.dimmed),
-                )),
-                Line::from(Span::styled(
-                    "Or set [data] directories in your config for places you visit often.",
-                    Style::default().fg(ctx.dimmed),
-                )),
-            ]
-        } else {
-            vec![Line::from(Span::styled(
-                "No match.",
-                Style::default().fg(ctx.dimmed),
-            ))]
-        };
-        Paragraph::new(lines).render(area, buf);
+    if app.home.listing_in_flight && visible.is_empty() {
+        Paragraph::new(Line::from(Span::styled(
+            "Looking…",
+            Style::default().fg(ctx.dimmed),
+        )))
+        .render(area, buf);
         return;
     }
+
+    if visible.is_empty() && !app.home.filter.is_empty() {
+        Paragraph::new(Line::from(Span::styled(
+            "No match.",
+            Style::default().fg(ctx.dimmed),
+        )))
+        .render(area, buf);
+        return;
+    }
+
+    // Guidance shows whenever there is nothing openable — not only when the list is
+    // literally empty. A first run in a directory holding one folder would otherwise
+    // present a bare listing with no hint of what datui is for, which is the worst
+    // possible first impression for a screen meant to be the way in.
+    let has_dataset = visible
+        .iter()
+        .any(|r| matches!(r, crate::home::Row::Entry { entry, .. } if entry.kind.is_dataset()));
+    let guidance = if has_dataset || !app.home.filter.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No datasets here yet.",
+                Style::default().fg(ctx.text_secondary),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  ~  ", Style::default().fg(ctx.keybind_hints)),
+                Span::styled(
+                    "type a path to open one — the place is remembered afterwards",
+                    Style::default().fg(ctx.dimmed),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("     ", Style::default()),
+                Span::styled(
+                    "or set [data] directories in your config, for places you use often",
+                    Style::default().fg(ctx.dimmed),
+                ),
+            ]),
+        ]
+    };
 
     let show_meta = area.width >= META_MIN_WIDTH;
     let name_width = if show_meta {
@@ -314,7 +331,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         .selected
         .saturating_sub(height.saturating_sub(3).max(1));
 
-    let body: Vec<Line> = lines.into_iter().skip(scroll).collect();
+    let mut body: Vec<Line> = lines.into_iter().skip(scroll).collect();
+    body.extend(guidance);
     Paragraph::new(body).render(area, buf);
 }
 

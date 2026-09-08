@@ -27,7 +27,7 @@ here from anywhere.
 | <kbd>←</kbd> <kbd>→</kbd> / <kbd>h</kbd> <kbd>l</kbd> | collapse / expand the section |
 | <kbd>Enter</kbd> | open the dataset, enter the directory, or fold the section |
 | type anything | filter by name (fuzzy: `sal` matches `sales`) |
-| <kbd>~</kbd> | type a path directly |
+| <kbd>~</kbd> | type a path directly; <kbd>Tab</kbd> completes it |
 | <kbd>Backspace</kbd> | delete a filter character, or leave a directory |
 | <kbd>Tab</kbd> | cycle the sort: natural, size, modified, rows |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | clear the filter |
@@ -58,6 +58,15 @@ Sections fold with <kbd>←</kbd> and <kbd>→</kbd>. A folded section shows how
 rows it is hiding, and stays folded until you expand it or restart datui.
 
 Filtering keeps the grouping, so a match always shows which root it came from.
+
+### Reaching somewhere new
+
+<kbd>~</kbd> opens a path input, and <kbd>Tab</kbd> completes what you type — as far
+as the candidates agree, and no further. A lone directory gains its trailing slash,
+so a second <kbd>Tab</kbd> steps into it. When several match, the count is shown.
+
+Opening something this way adds the directory holding it to the list, so a place
+only has to be found by hand once.
 
 ### Adding a root
 

@@ -14,6 +14,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Incremental compilation only pays off across repeated local edits. In CI every
+  # job starts from a restored cache and builds once, so it is pure overhead: it
+  # slows compilation and inflates target/ (and therefore the cache) for nothing.
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -61,18 +67,6 @@ jobs:
       RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v5
-
-      - name: Free disk space (Ubuntu)
-        # SHA-pinned to defend against upstream takeover; bump deliberately.
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2023-10-18
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
 
       - name: Show disk space before build
         run: df -h
@@ -130,11 +124,6 @@ jobs:
           if ! find target/debug/build -name "datui.1" -type f | head -1 >/dev/null; then
             echo "Manpage not found" && exit 1
           fi
-
-      - name: Prune target to save disk space
-        run: |
-          rm -rf target/debug/deps target/debug/build target/debug/incremental target/debug/.fingerprint
-          df -h
 
       - name: Bundle CLI for wheel
         run: |
@@ -291,11 +280,6 @@ jobs:
           if ! find target/debug/build -name "datui.1" -type f | head -1 >/dev/null; then
             echo "Manpage not found" && exit 1
           fi
-
-      - name: Prune target to save disk space
-        run: |
-          rm -rf target/debug/deps target/debug/build target/debug/incremental target/debug/.fingerprint
-          df -h
 
       - name: Bundle CLI for wheel
         run: |

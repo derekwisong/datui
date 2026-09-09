@@ -98,6 +98,17 @@ files = [
     ["scripts/packaging/datui.desktop", "/usr/share/applications/datui.desktop"],
 ]
 
+# Dev-loop build speed. A full-debuginfo build produced a 1.9 GB binary, of which
+# 1.5 GB was DWARF (.debug_str alone was 1.09 GB). Linking that into the binary
+# plus every integration test at once exhausted RAM and drove the machine into
+# swap. Dependencies get no debuginfo; our own crates keep line tables, which is
+# what color-eyre needs to print file:line in backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # improve the performance of color-eyre for debug builds
 [profile.dev.package.backtrace]
 opt-level = 3

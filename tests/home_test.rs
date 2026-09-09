@@ -2389,11 +2389,24 @@ fn test_every_row_is_told_which_filesystem_it_is_on() {
     };
     home.rebuild(&[], &[]);
 
-    let sourced = home.sections.iter().flat_map(|s| s.rows.iter()).any(|r| {
-        r.cost
-            .source
-            .as_deref()
-            .is_some_and(|s| s != "unknown" && !s.is_empty())
-    });
-    assert!(sourced, "a listed row should know what filesystem it is on");
+    let rows: Vec<_> = home.sections.iter().flat_map(|s| s.rows.iter()).collect();
+    assert!(!rows.is_empty(), "the directory should have been listed");
+
+    // Asked on every platform: the field is always populated, so a missing answer is
+    // a bug rather than a silent None.
+    assert!(
+        rows.iter().all(|r| r.cost.source.is_some()),
+        "every row should have been asked what it is on"
+    );
+
+    // Naming the filesystem needs a mount table, and /proc/self/mountinfo is Linux's.
+    // Elsewhere the honest answer is "unknown" -- which is what the code reports and
+    // what the details pane then shows -- so assert a real answer only where one
+    // can exist.
+    #[cfg(target_os = "linux")]
+    assert!(
+        rows.iter()
+            .any(|r| r.cost.source.as_deref() != Some("unknown")),
+        "on Linux a listed row should know which filesystem it is on"
+    );
 }

@@ -7268,7 +7268,13 @@ impl App {
                 // canonicalising a URL is meaningless.
                 let is_local = matches!(source::input_source(first), source::InputSource::Local(_));
                 if !is_local || first.exists() {
-                    self.cache.push_recent(first);
+                    // Off the opening path. Recording a recent is a convenience that
+                    // nothing waits on, and it takes a lock several instances may be
+                    // contending for -- opening a dataset must not queue behind
+                    // another instance's bookkeeping.
+                    let cache = self.cache.clone();
+                    let path = first.clone();
+                    std::thread::spawn(move || cache.push_recent(&path));
                 }
                 let file_size = match source::input_source(first) {
                     source::InputSource::Local(_) => {

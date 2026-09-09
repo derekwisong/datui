@@ -1456,7 +1456,12 @@ fn test_concurrent_recents_do_not_lose_entries() {
 
 #[test]
 fn test_history_update_is_dropped_rather_than_blocking() {
-    // The lock is tried, not waited on: a stuck peer must never delay an open.
+    // A stuck peer must never wedge a writer forever. It used to also have to never
+    // delay an *open*, which is why the deadline was a quarter of a second -- but
+    // recording a recent now happens off the opening path, so nothing is waiting on
+    // this and the deadline is free to clear real contention by a wide margin.
+    // Sixteen writers on a Windows runner did not clear 250ms, and giving up means
+    // silently dropping somebody's entry.
     use datui::CacheManager;
     use fs2::FileExt;
 
@@ -1484,13 +1489,14 @@ fn test_history_update_is_dropped_rather_than_blocking() {
         "a contended update is skipped, not an error"
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(1),
-        "gave up after {elapsed:?}; it should abandon the update quickly"
+        elapsed < std::time::Duration::from_secs(6),
+        "gave up after {elapsed:?}; a held lock must be abandoned, never waited on \
+         forever"
     );
     assert!(
-        elapsed >= std::time::Duration::from_millis(100),
-        "gave up after only {elapsed:?}; too eager a deadline drops updates that \
-         several simultaneous opens would have completed fine"
+        elapsed >= std::time::Duration::from_secs(1),
+        "gave up after only {elapsed:?}; too eager a deadline silently drops entries \
+         that a handful of simultaneous opens would have written fine"
     );
     assert!(
         cache

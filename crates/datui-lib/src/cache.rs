@@ -203,10 +203,17 @@ impl CacheManager {
 
 /// How long to wait for another instance to finish rewriting a history file.
 ///
-/// The critical section is a read and an atomic rewrite of a small file, so this is
-/// orders of magnitude more than contention actually needs. It exists to bound the
-/// wait if a peer wedges, not to be reached.
-const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+/// The critical section is a read and an atomic rewrite of a small file, so under any
+/// realistic number of concurrent datui instances this is never approached. It exists
+/// to bound the wait if a peer wedges, not to be reached.
+///
+/// It was 250ms, which is ample on Linux and not on Windows: sixteen writers
+/// contending, each paying a slower `LockFileEx` and a slower rename, serialised past
+/// the deadline and the last one gave up. Giving up means silently dropping someone's
+/// entry, so the deadline has to clear realistic contention by a wide margin. Nothing
+/// waits on this write -- see `push_recent`'s caller -- so a longer bound costs no
+/// latency anywhere.
+const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Maximum number of recently opened paths kept. Enough to span a few days of work;
 /// small enough that the home screen never has to paginate it.

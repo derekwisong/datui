@@ -42,8 +42,8 @@ flate2 = "1.0"
 zstd = "0.14"
 plotters = "0.3"
 calamine = { version = "0.36", features = ["chrono"] }
-orc-rust = "0.7"
-arrow = "57"
+orc-rust = "0.9"
+arrow = "59"
 tempfile = "3.14"
 ureq = { version = "2.11", optional = true }
 object_store = { version = "0.12", optional = true, default-features = false, features = ["aws", "gcp"] }

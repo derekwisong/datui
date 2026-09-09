@@ -23,8 +23,50 @@ This creates `~/.config/datui/config.toml` with all available options and helpfu
 Settings are applied in this order (later values override earlier ones):
 
 1. **Default values** (hardcoded)
-2. **Config file** (`~/.config/datui/config.toml`)
-3. **Command-line arguments** (highest priority)
+2. **Imported files** (each entry of `import`, in the order listed — see below)
+3. **Config file** (`~/.config/datui/config.toml`)
+4. **Command-line arguments** (highest priority)
+
+## Importing Other Config Files
+
+The top-level `import` key names TOML files to merge in before this file's own
+settings:
+
+```toml
+# ~/.config/datui/config.toml
+import = ["~/.local/state/omarchy/current/theme/datui.toml"]
+
+[display]
+row_numbers = true
+```
+
+- **Order is precedence.** Imports apply in the order listed, each overriding the
+  last; this file's own values are applied after all of them.
+- **Imports nest.** An imported file may declare its own `import`, merged before
+  it. Chains are capped at 8 files; a cycle is an error.
+- **Paths** may be absolute, relative to the importing file, or use `~` and
+  `$VAR` / `${VAR}`.
+- **A missing file is skipped** with a warning on stderr — datui starts on the
+  remaining layers.
+- **A file that exists but cannot be read or parsed is fatal**, and datui names
+  it.
+
+To stop following an imported theme, delete the `import` line.
+
+See [Theming from Your System](system-theming.md) for the Omarchy template and
+per-theme overrides.
+
+### A caveat when overriding an imported color
+
+datui decides whether you set a color by comparing it against the built-in
+default, so a color set to *the same value as datui's default* looks unset and
+will not override an import.
+
+datui's default `error` is `red`. Given an import setting `error` to `#FF5345`,
+writing `error = "red"` has no effect. Use a form the default does not already
+use — `#ff0000`, or `indexed(9)`.
+
+Colors set to any other value override imports normally.
 
 ## Configuration Sections
 
@@ -201,6 +243,74 @@ Default limit for how many rows are used when building chart data (display and e
 [chart]
 row_limit = 10000  # Max rows for chart data (1 to 10_000_000). Default 10000
 ```
+
+### Data
+
+```toml
+[data]
+directories = ["/mnt/data", "~/datasets"]   # roots for the home screen
+use_desktop_recents = true                  # offer directories from the desktop's recent-files list
+```
+
+- **directories** — directories the [home screen](home-screen.md) lists datasets
+  from. `~` and `$VAR` are expanded; order is preserved. Directories you open
+  datasets from are added automatically, so this is for places you have not
+  visited yet, and for places you want listed even when empty.
+- **use_desktop_recents** — when `true` (default), directories named in
+  freedesktop's `recently-used.xbel` are offered as places to enter. Only the
+  directories are used, never the file names. Set `false` to ignore that file.
+
+#### Searching below the working directory
+
+Typing on the home screen also searches recursively beneath it. The walk runs once, in
+the background, on the first keystroke; everything after that is filtered in memory.
+
+```toml
+[data.search]
+enabled           = true    # search below the working directory when you type
+max_depth         = 8       # how deep to descend
+max_results       = 20000   # stop after this many datasets
+time_budget_ms    = 1500    # give up and keep what was found
+cross_filesystems = false   # do not descend onto a different filesystem
+follow_gitignore  = false   # do not read .gitignore
+skip_extra        = []      # directory names to skip beyond the defaults
+extensions        = []      # empty = every format datui opens
+```
+
+- **cross_filesystems** — off by default, and the most important setting here: it is
+  what keeps a search from wandering onto a network share, and on autofs, from
+  *mounting* one merely by looking at it.
+- **follow_gitignore** — off by default and deliberately, because people gitignore
+  data directories precisely because the data is too big to commit. See
+  [the home screen guide](home-screen.md#what-is-skipped-and-why-not-gitignore).
+- **skip** / **skip_extra** — `skip` replaces the default list
+  (`node_modules`, `target`, `build`, `dist`, `vendor`, `site-packages`,
+  `__pycache__`, `venv`, `env`); `skip_extra` adds to it. Hidden directories are
+  always skipped.
+
+### Theme Mode (light and dark terminals)
+
+Some of datui's colors — header fills, alternating row stripes, borders, dim text —
+need to sit *near* the terminal background without matching it. No ANSI color means
+"slightly off from the background", so those slots resolve to fixed shades, and a
+set tuned for a dark terminal is unreadable on a light one.
+
+```toml
+[theme]
+mode = "auto"   # "auto" (default), "dark", or "light"
+```
+
+- **auto** — reads the `COLORFGBG` environment variable, falling back to `dark`.
+- **dark** / **light** — pick a set explicitly.
+
+Alacritty, Kitty and Ghostty do not set `COLORFGBG`. **If you use a light terminal
+color scheme in one of those, set `mode = "light"`** — otherwise the header bar and
+row striping will render as near-black blocks on your light background.
+
+`mode` only chooses the starting point; any color you set under `[theme.colors]`
+overrides it. An imported theme can also declare `mode`, which is how a generated
+light theme gets light chrome automatically — see
+[Theming from Your System](system-theming.md).
 
 ### Color Themes
 
@@ -537,6 +647,21 @@ If your config isn't being used:
 2. **Check syntax**: TOML must be valid. Run `datui <file>` and check for warnings
 3. **Check version**: Config must start with `version = "0.2"`
 4. **Check validation**: Ensure values are in valid ranges (e.g., if set, `sampling_threshold > 0`)
+5. **Check imports**: If you use `import`, a missing file is reported on stderr —
+   run `datui <file> 2>/tmp/datui.log` and read the log after quitting
+
+### Imported Theme Not Applying
+
+If an `import` does not seem to take effect:
+
+1. **Confirm the file exists** at the resolved path. A missing import is skipped
+   with a warning on stderr, which the TUI hides while it is running — redirect
+   stderr to a file to see it.
+2. **Confirm the value differs from datui's default.** A color set to the same
+   string as datui's default cannot override an import — see
+   [the caveat above](#a-caveat-when-overriding-an-imported-color).
+3. **Confirm nothing later overrides it.** Your own config file and any
+   command-line flags both win over an imported file.
 
 ### Invalid Color
 

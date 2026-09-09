@@ -20,7 +20,6 @@ Uses Polars for most formats; fastavro for Avro; openpyxl for Excel.
 import os
 import sys
 from pathlib import Path
-from tkinter import W
 import polars as pl
 import numpy as np
 from datetime import date, datetime, timedelta

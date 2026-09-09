@@ -15,6 +15,27 @@ the data must be generated before the tests can be run.
 
 ## Generating Sample Data
 
+The quickest path, from a fresh checkout:
+
+```bash
+./scripts/dev/setup-test-data.sh
+cargo test --workspace
+```
+
+That creates `.venv`, installs `scripts/requirements.txt`, and generates the
+fixtures — the same steps CI runs. It uses [uv](https://github.com/astral-sh/uv)
+when available, otherwise `python -m venv`. Re-running is safe; `--force`
+regenerates the fixtures from scratch.
+
+Activating the virtualenv is not necessary: the test harness looks for
+`.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) before falling back to a
+system Python.
+
+Without the fixtures, the statistics, distribution-detection and pivot/melt tests
+fail. The generator requires Polars, NumPy, pyarrow, fastavro and openpyxl.
+
+The rest of this section describes the same steps done by hand.
+
 > If you used the [Setup Script](setup-script.md), the sample data has already
 > been generated. To regenerate the data, see the [instructions](tests.md#regenerating-or-updating-the-sample-data)
 

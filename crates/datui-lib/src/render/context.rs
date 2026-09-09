@@ -47,6 +47,14 @@ pub struct RenderContext {
 }
 
 impl RenderContext {
+    /// A context with default colors, for tests about layout rather than colour.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default())
+            .expect("default theme colors must resolve");
+        Self::from_theme_and_config(&theme, 2, true, NumberFormatSettings::default())
+    }
+
     /// Build render context from app theme and config.
     /// This is a snapshot; changes to theme won't affect this instance.
     pub fn from_theme_and_config(

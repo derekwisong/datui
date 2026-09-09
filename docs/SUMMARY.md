@@ -9,7 +9,9 @@
   - [Quick Start](getting-started/quick-start.md)
 
 - [User Guide](user-guide.md)
+  - [The Home Screen](user-guide/home-screen.md)
   - [Configuration](user-guide/configuration.md)
+  - [Theming from Your System](user-guide/system-theming.md)
   - [Loading Data](user-guide/loading-data.md)
   - [Querying Data](user-guide/querying-data.md)
   - [Filtering and Sorting](user-guide/filtering-sorting.md)

@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=datui
+GenericName=Data Explorer
+Comment=Explore and analyse tabular data in the terminal
+# With no arguments datui opens its home screen, which is what a launcher wants.
+# %F passes selected files through, so a file manager can "Open with datui".
+Exec=datui %F
+Terminal=true
+# datui ships no icon of its own yet; this is a stock freedesktop name that every
+# icon theme provides, so launchers show something sensible rather than a blank.
+Icon=utilities-terminal
+Categories=Utility;Development;ConsoleOnly;
+Keywords=data;dataset;dataframe;table;parquet;csv;json;arrow;analysis;polars;sql;
+# Formats datui can open. Listing them makes datui *available* as a handler; it does
+# not make it the default, which stays the user's choice via mimeapps.list.
+MimeType=text/csv;text/tab-separated-values;application/json;application/vnd.apache.parquet;application/vnd.apache.arrow.file;application/vnd.ms-excel;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;
+StartupNotify=false

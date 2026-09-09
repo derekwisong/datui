@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
@@ -8,6 +9,9 @@ static INIT: Once = Once::new();
 /// Returns a tokio runtime handle for use in tests.
 #[allow(dead_code)]
 pub fn test_runtime() -> tokio::runtime::Handle {
+    // Every test that builds an App comes through here, so this is the one place
+    // that guarantees none of them writes to the developer's real cache.
+    isolate_cache();
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -18,6 +22,23 @@ pub fn test_runtime() -> tokio::runtime::Handle {
     })
     .handle()
     .clone()
+}
+
+/// Point the cache at a scratch directory for the whole test process.
+///
+/// Opening a dataset records it as recent, and tests open plenty. Without this a
+/// test run writes its fixtures into the developer's own recent-files list — and
+/// several tests running at once corrupt it, since they all rewrite the same file.
+///
+/// The variable is process-wide, so this is done once and as early as possible.
+#[allow(dead_code)]
+pub fn isolate_cache() {
+    static ISOLATE: Once = Once::new();
+    ISOLATE.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("datui-test-cache-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        std::env::set_var("DATUI_CACHE_DIR", &dir);
+    });
 }
 
 /// Ensures that sample data files are generated before tests run.
@@ -57,15 +78,27 @@ pub fn ensure_sample_data() {
                 );
             }
 
-            // Try to find Python (python3 or python)
-            let python_cmd = if Command::new("python3").arg("--version").output().is_ok() {
-                "python3"
+            // Prefer the project virtualenv: the generator needs Polars and friends,
+            // which a system Python almost never has. Falling straight through to
+            // `python3` produces a bare ImportError that tells nobody what to do.
+            let venv_python = if cfg!(windows) {
+                Path::new(".venv/Scripts/python.exe")
+            } else {
+                Path::new(".venv/bin/python")
+            };
+
+            let python_cmd = if venv_python.exists() {
+                venv_python.to_string_lossy().into_owned()
+            } else if Command::new("python3").arg("--version").output().is_ok() {
+                "python3".to_string()
             } else if Command::new("python").arg("--version").output().is_ok() {
-                "python"
+                "python".to_string()
             } else {
                 panic!(
-                    "Python not found. Please install Python 3 to generate test data. \
-                    The script requires: polars>=0.20.0 and numpy>=1.24.0"
+                    "Python not found, and no project virtualenv at {}.\n\
+                     Run ./scripts/dev/setup-test-data.sh to create one and generate \
+                     the fixtures these tests read.",
+                    venv_python.display()
                 );
             };
 
@@ -84,14 +117,25 @@ pub fn ensure_sample_data() {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let stdout = String::from_utf8_lossy(&output.stdout);
+                let hint = if venv_python.exists() {
+                    String::new()
+                } else {
+                    format!(
+                        "\n\nNo virtualenv at {}. This usually means the generator's \
+                         dependencies (Polars, NumPy, pyarrow, fastavro, openpyxl) are \
+                         missing.\nRun ./scripts/dev/setup-test-data.sh to set it up.",
+                        venv_python.display()
+                    )
+                };
                 panic!(
                     "Sample data generation failed!\n\
                     Exit code: {:?}\n\
                     stdout:\n{}\n\
-                    stderr:\n{}",
+                    stderr:\n{}{}",
                     output.status.code(),
                     stdout,
-                    stderr
+                    stderr,
+                    hint
                 );
             }
 

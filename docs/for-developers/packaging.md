@@ -52,6 +52,10 @@ All packages include the MIT license as required:
 - **deb**: `[package.metadata.deb]` sets `license-file = ["LICENSE", "0"]`; cargo-deb installs it in the package.
 - **rpm**: `[[package.metadata.generate-rpm.assets]]` includes `LICENSE` at `/usr/share/licenses/datui/LICENSE`.
 - **aur**: `[package.metadata.aur]` `files` includes `["LICENSE", "/usr/share/licenses/datui/LICENSE"]`.
+- **desktop entry**: `scripts/packaging/datui.desktop` installs to
+  `/usr/share/applications/datui.desktop` in all three package formats, putting
+  datui in desktop launchers. `tests/desktop_entry_test.rs` validates the file and
+  checks it is wired into every packager.
 - **Python wheel**: `python/pyproject.toml` uses `license = { file = "LICENSE" }` and `sdist-include = ["LICENSE"]`. CI and release workflows copy the root `LICENSE` into `python/LICENSE`.
 
 ## Output Locations

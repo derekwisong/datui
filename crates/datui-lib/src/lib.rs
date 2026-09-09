@@ -7,8 +7,20 @@ use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
 use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 #[cfg(feature = "cloud")]
 use polars::prelude::{PlPathRef, ScanArgsParquet};
+use std::collections::HashMap;
+
+/// Rows measured per background pass. Small enough that a slow filesystem shows
+/// progress rather than a long silence.
+const MEASURE_BATCH: usize = 12;
+
+/// Rows a probe measures while it is already reading a remote directory.
+const PROBE_MEASURE_LIMIT: usize = 24;
+
+/// Probes allowed at once. A probe of a share that has gone away holds its thread
+/// until the process exits, so the number of them has to be bounded.
+const MAX_CONCURRENT_PROBES: usize = 4;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc::Sender, Arc};
+use std::sync::{mpsc::Sender, Arc, Mutex};
 use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
 
 use ratatui::style::{Color, Style};
@@ -26,17 +38,23 @@ pub mod cli;
 #[cfg(feature = "cloud")]
 mod cloud_hive;
 pub mod config;
+pub mod discover;
 pub mod error_display;
 pub mod export_modal;
 pub mod filter_modal;
+pub mod fuzzy;
+pub mod glyphs;
 pub(crate) mod help_strings;
+pub mod home;
+pub mod locality;
 pub mod numfmt;
 pub mod pivot_melt_modal;
 mod query;
 mod render;
+pub mod search;
 pub mod sort_filter_modal;
 pub mod sort_modal;
-mod source;
+pub mod source;
 pub mod statistics;
 pub mod template;
 pub mod widgets;
@@ -548,6 +566,59 @@ pub enum AppEvent {
     /// HTTP, S3, or GCS download finished; temp path is ready. Scan it and continue load.
     #[cfg(any(feature = "http", feature = "cloud"))]
     DoLoadFromHttpTemp(PathBuf, OpenOptions),
+    /// A home listing built off-thread is ready.
+    HomeListingReady {
+        generation: u64,
+        listing: Box<crate::home::Listing>,
+    },
+    /// A completed path, worked out off-thread.
+    HomePathCompleted {
+        generation: u64,
+        /// What was typed when completion was asked for; a later keystroke makes the
+        /// answer stale.
+        typed: String,
+        completed: String,
+        candidates: usize,
+    },
+    /// A schema read off-thread for the highlighted dataset.
+    HomeSchemaReady {
+        generation: u64,
+        path: PathBuf,
+        preview: Option<crate::discover::SchemaPreview>,
+    },
+    /// Measurements for rows the home screen asked about.
+    HomeMeasured {
+        generation: u64,
+        measured: Vec<(PathBuf, crate::home::Measured)>,
+    },
+    /// A batch of datasets found by the background search below the working
+    /// directory. Sent repeatedly while the walk runs, so a cold tree fills in
+    /// rather than arriving all at once at the end.
+    HomeSearchBatch {
+        generation: u64,
+        root: PathBuf,
+        found: Vec<crate::discover::Entry>,
+        scanned: usize,
+    },
+    /// The background search has stopped, with `limited` saying why if it stopped
+    /// short of walking everything.
+    HomeSearchDone {
+        generation: u64,
+        root: PathBuf,
+        scanned: usize,
+        limited: Option<String>,
+    },
+    /// A network root has been listed off-thread, or could not be.
+    HomeProbeReady {
+        root: PathBuf,
+        rows: Option<Vec<crate::discover::Entry>>,
+    },
+    /// Background scan finished; the LazyFrame is waiting in `pending_lazyframe_result`.
+    BackgroundLazyFrameReady {
+        generation: u64,
+        path: Option<PathBuf>,
+        options: OpenOptions,
+    },
     /// Update phase to "Caching schema" and emit DoLoadSchemaBlocking so UI can draw before blocking.
     DoLoadSchema(Box<LazyFrame>, Option<PathBuf>, OpenOptions),
     /// Actually run collect_schema() and create state; then emit DoLoadBuffer (phased loading).
@@ -680,6 +751,10 @@ pub struct ExportOptions {
 pub enum InputMode {
     #[default]
     Normal,
+    /// The home screen: pick a dataset to open. Reachable at startup with no
+    /// arguments, and from inside a session, which is what makes datui a place you
+    /// stay rather than a command you re-run.
+    Home,
     SortFilter,
     PivotMelt,
     Editing,
@@ -967,6 +1042,28 @@ pub(crate) struct ChartCacheHeatmap {
 
 pub struct App {
     pub data_table_state: Option<DataTableState>,
+    /// Network roots currently being listed off-thread, so a probe is not started
+    /// twice. Entries are never removed for a root that never answers — that thread
+    /// is unreclaimable, and retrying it would only block another one.
+    home_probes_inflight: Vec<PathBuf>,
+    /// True while a recursive search below the working directory is out. One at a
+    /// time: the walk is bounded, and a second one would only compete for the disk.
+    home_search_inflight: bool,
+    /// Set while the confirmation modal is asking about forgetting every recent.
+    pending_clear_recents: bool,
+    /// Why the last open failed, shown on the home screen when the error is dismissed
+    /// and there is nothing to fall back to.
+    last_load_error: Option<String>,
+    /// Schema reads currently out, so the same one is not requested every frame.
+    home_schema_inflight: Vec<PathBuf>,
+    /// Invalidates listings and measurements from a request the user has moved past.
+    home_generation: u64,
+    /// Home screen state. Rebuilt from the filesystem whenever home is entered;
+    /// nothing here is persisted beyond the recents list.
+    pub home: home::HomeState,
+    /// Schema previews, memoised for the session only. Persisting these would be a
+    /// catalogue by another name, and it would go stale.
+    home_schema_cache: HashMap<PathBuf, Option<discover::SchemaPreview>>,
     path: Option<PathBuf>,
     original_file_format: Option<ExportFormat>, // Track original file format for default export
     original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
@@ -1015,6 +1112,9 @@ pub struct App {
     number_format: NumberFormatSettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
     task_generation: u64,            // Incremented to invalidate stale background results
+    /// LazyFrame produced by a background scan, tagged with the generation that
+    /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
+    pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
     // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
     // the (potentially minutes-long) count on every scroll while it's still running.
     len_count_inflight: Option<u64>,
@@ -1403,6 +1503,14 @@ impl App {
         App {
             path: None,
             data_table_state: None,
+            home: home::HomeState::default(),
+            home_probes_inflight: Vec::new(),
+            home_search_inflight: false,
+            home_generation: 0,
+            home_schema_inflight: Vec::new(),
+            last_load_error: None,
+            pending_clear_recents: false,
+            home_schema_cache: HashMap::new(),
             original_file_format: None,
             original_file_delimiter: None,
             events,
@@ -1466,6 +1574,7 @@ impl App {
                 }),
             runtime,
             task_generation: 0,
+            pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             len_count_inflight: None,
             len_count_failed: None,
@@ -1483,6 +1592,544 @@ impl App {
 
     pub fn enable_debug(&mut self) {
         self.debug.enabled = true;
+    }
+
+    // ---- Home screen -----------------------------------------------------
+
+    /// Schema for a home-screen entry, read from Parquet metadata and memoised for
+    /// the session. `None` means "not knowable without a scan", which the UI reports
+    /// rather than papering over.
+    pub fn home_schema(&mut self, entry: &discover::Entry) -> Option<discover::SchemaPreview> {
+        if let Some(cached) = self.home_schema_cache.get(&entry.path) {
+            return cached.clone();
+        }
+        // Reading a schema opens a file, so it is requested rather than done here.
+        // Until it arrives the preview says so; it never blocks the frame.
+        self.request_home_schema(entry.clone());
+        None
+    }
+
+    /// Complete the path being typed, on a worker.
+    fn request_path_completion(&mut self) {
+        let typed = self.home.path_input.clone();
+        if typed.is_empty() {
+            return;
+        }
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        std::thread::spawn(move || {
+            let (completed, candidates) = home::complete_path(&typed);
+            let _ = tx.send(AppEvent::HomePathCompleted {
+                generation,
+                typed,
+                completed,
+                candidates,
+            });
+        });
+    }
+
+    /// Whether a schema read is currently out for this path.
+    pub fn home_schema_pending(&self, path: &Path) -> bool {
+        self.home_schema_inflight.iter().any(|p| p == path)
+    }
+
+    /// Read the selected dataset's schema on a worker.
+    fn request_home_schema(&mut self, entry: discover::Entry) {
+        if self.home_schema_inflight.contains(&entry.path) {
+            return;
+        }
+        self.home_schema_inflight.push(entry.path.clone());
+
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        self.runtime.spawn_blocking(move || {
+            let preview = discover::schema_preview(&entry);
+            let _ = tx.send(AppEvent::HomeSchemaReady {
+                generation,
+                path: entry.path,
+                preview,
+            });
+        });
+    }
+
+    /// Start listing any network roots that have not answered yet.
+    ///
+    /// Nothing here waits on the result. A share that has gone away leaves its thread
+    /// blocked in the kernel — on a `hard` NFS mount that is uninterruptible and the
+    /// thread never returns — so the task is abandoned rather than joined, exactly as
+    /// an abandoned dataset load is.
+    fn spawn_home_probes(&mut self) {
+        for root in self.home.pending_probes() {
+            if self.home_probes_inflight.contains(&root) {
+                continue;
+            }
+            // Each probe of an unreachable share costs a thread that will never come
+            // back. A handful is a rounding error; an unbounded number, on a machine
+            // with a page of dead mounts, is not.
+            if self.home_probes_inflight.len() >= MAX_CONCURRENT_PROBES {
+                break;
+            }
+            self.home_probes_inflight.push(root.clone());
+            let tx = self.events.clone();
+            let cache = self.cache.clone();
+            // A detached OS thread, not the runtime's blocking pool. A thread wedged
+            // on an unreachable `hard` mount never returns, and the pool is shared with
+            // the work that actually loads data — a few dead shares must not eat into
+            // the capacity that opening a dataset depends on.
+            std::thread::spawn(move || {
+                let rows = if std::fs::read_dir(&root).is_ok() {
+                    let mut rows = crate::discover::scan_dir(&root);
+                    // Measuring happens here too: it is the same remote filesystem,
+                    // and this thread is already the one allowed to block on it.
+                    for row in rows.iter_mut().take(PROBE_MEASURE_LIMIT) {
+                        crate::discover::enrich(row);
+                    }
+                    // Remote datasets are measured nowhere else, so this is the only
+                    // chance to remember them. Without it a remote row is blank on
+                    // every run, which is exactly backwards: the hardest things to
+                    // reach are the ones most worth remembering.
+                    let mounts = crate::locality::Mounts::current();
+                    for row in rows.iter_mut() {
+                        row.cost.source = Some(mounts.describe(&row.path).fstype);
+                    }
+                    let facts: Vec<_> = rows.iter().filter_map(home::facts_for).collect();
+                    cache.record_dataset_facts(&facts);
+                    Some(rows)
+                } else {
+                    None
+                };
+                let _ = tx.send(AppEvent::HomeProbeReady { root, rows });
+            });
+        }
+    }
+
+    /// Start the recursive search below the working directory, if it is wanted and
+    /// not already running.
+    ///
+    /// Triggered by typing rather than by opening the home screen: typing is the
+    /// signal that someone is looking for something. Launching datui, pressing Enter
+    /// on a recent dataset and leaving costs no walk at all.
+    fn spawn_home_search(&mut self) {
+        if self.home_search_inflight || self.home.search.done {
+            return;
+        }
+        let config = self.app_config.data.search.clone();
+        if !config.enabled {
+            return;
+        }
+        let Some(root) =
+            crate::search::search_root(self.home.browsing.as_ref(), self.home.network_check)
+        else {
+            return;
+        };
+
+        self.home.search.reset();
+        self.home.search.root = Some(root.clone());
+        self.home.search.running = true;
+        self.home_search_inflight = true;
+
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        // A detached thread for the same reason the probes use one: the walk touches
+        // a filesystem, and nothing that touches a filesystem may run where a stall
+        // would stop the screen from drawing.
+        std::thread::spawn(move || {
+            let walk_root = root.clone();
+            let batch_tx = tx.clone();
+            let batch_gen = generation;
+            let batch_root = root.clone();
+            let outcome = crate::search::walk(&walk_root, &config, move |found, outcome| {
+                // Sent even when empty: it carries the progress count, and it is the
+                // only place the walk learns that nobody is listening any more.
+                batch_tx
+                    .send(AppEvent::HomeSearchBatch {
+                        generation: batch_gen,
+                        root: batch_root.clone(),
+                        found,
+                        scanned: outcome.scanned,
+                    })
+                    // A closed channel means the app is gone; stop walking.
+                    .is_ok()
+            });
+            let _ = tx.send(AppEvent::HomeSearchDone {
+                generation,
+                root,
+                scanned: outcome.scanned,
+                limited: outcome.note().map(str::to_string),
+            });
+        });
+    }
+
+    /// Rebuild the home listing from the filesystem.
+    fn home_refresh(&mut self) {
+        self.home_generation = self.home_generation.wrapping_add(1);
+        let generation = self.home_generation;
+
+        // Reading recents touches only the cache directory, which is local by
+        // definition; everything that might block happens on the worker.
+        let recents = self.cache.load_recents();
+        let request = home::ListingRequest {
+            config_dirs: self.app_config.data.resolved_directories(),
+            recents,
+            desktop_dirs: if self.app_config.data.use_desktop_recents {
+                home::desktop_recent_dirs()
+            } else {
+                Vec::new()
+            },
+            browsing: self.home.browsing.clone(),
+            probed: self.home.probed.clone(),
+            unreachable: self.home.unreachable.clone(),
+            network_check: self.home.network_check,
+            known: self.cache.load_dataset_facts(),
+        };
+
+        self.home.listing_in_flight = true;
+        let tx = self.events.clone();
+        self.runtime.spawn_blocking(move || {
+            let listing = home::build_listing(&request);
+            let _ = tx.send(AppEvent::HomeListingReady {
+                generation,
+                listing: Box::new(listing),
+            });
+        });
+    }
+
+    /// Ask the worker to measure rows that are on screen and not yet known.
+    ///
+    /// Reading a Parquet footer opens a file. That is the call that blocks on a FIFO,
+    /// a device node, a wedged mount or a failing disk, so it never happens on the
+    /// thread that draws.
+    fn request_home_measurements(&mut self) {
+        if self.home.measure_in_flight {
+            return;
+        }
+        let wanted = self.home.unmeasured_visible(MEASURE_BATCH);
+        if wanted.is_empty() {
+            return;
+        }
+
+        self.home.measure_in_flight = true;
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        let cache = self.cache.clone();
+        self.runtime.spawn_blocking(move || {
+            let measured = wanted
+                .into_iter()
+                .map(|entry| {
+                    let mut probe = entry.clone();
+                    discover::enrich(&mut probe);
+                    probe.size = probe.size.or(entry.size);
+                    probe.modified = probe.modified.or(entry.modified);
+                    let facts = home::facts_for(&probe);
+                    (
+                        entry.path.clone(),
+                        home::measured_from(&probe, &entry),
+                        facts,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            // Remember what was learned, so the next run has it before reading
+            // anything. Purely a cache: every entry carries the size and mtime it came
+            // from and invalidates itself when those change.
+            let facts: Vec<_> = measured.iter().filter_map(|(_, _, f)| f.clone()).collect();
+            cache.record_dataset_facts(&facts);
+
+            let measured = measured.into_iter().map(|(p, m, _)| (p, m)).collect();
+            let _ = tx.send(AppEvent::HomeMeasured {
+                generation,
+                measured,
+            });
+        });
+    }
+
+    /// Enter the home screen, rebuilding it. Safe to call while a load is in flight.
+    ///
+    /// Returning home puts the cursor on whatever you currently have open, so the
+    /// round trip out and back lands where you left rather than at the top.
+    pub fn enter_home(&mut self) {
+        self.home.status = None;
+        self.home_refresh();
+        if let Some(open_path) = self.path.clone() {
+            let target = open_path
+                .canonicalize()
+                .unwrap_or_else(|_| open_path.clone());
+            if let Some(idx) = self.home.visible().iter().position(|row| match row {
+                home::Row::Entry { entry, .. } => {
+                    entry
+                        .path
+                        .canonicalize()
+                        .unwrap_or_else(|_| entry.path.clone())
+                        == target
+                }
+                home::Row::Header { .. } => false,
+            }) {
+                self.home.selected = idx;
+            }
+        }
+        self.input_mode = InputMode::Home;
+    }
+
+    /// Esc backs out one layer of context at a time, and quits once there is none.
+    ///
+    /// Escalating rather than doing one fixed thing keeps Esc as the "get me out of
+    /// this" key whatever "this" currently is — and it is the only way out when
+    /// nothing is loaded, since `q` has to remain typeable into the filter.
+    fn home_escape(&mut self) -> Option<AppEvent> {
+        if !self.home.filter.is_empty() {
+            self.home.filter.clear();
+            self.home.sync_search_section();
+            self.home.selected = 0;
+            self.home.clamp_selection();
+            return None;
+        }
+        if self.home.browsing.is_some() {
+            self.home_ascend();
+            return None;
+        }
+        if self.data_table_state.is_some() {
+            self.input_mode = InputMode::Normal;
+            return None;
+        }
+        Some(AppEvent::Exit)
+    }
+
+    /// Drop the highlighted dataset from the recents list.
+    ///
+    /// Only from the Recent section: a row under a directory is a file on disk, and
+    /// forgetting it there would either do nothing or imply a deletion datui is not
+    /// going to perform.
+    fn home_forget_selected(&mut self) {
+        let in_recents = self
+            .home
+            .selected_section()
+            .and_then(|i| self.home.sections.get(i))
+            .map(|s| s.subtitle.is_none())
+            .unwrap_or(false);
+        if !in_recents {
+            self.home.status = Some("Only entries under Recent can be forgotten".into());
+            return;
+        }
+        let Some(entry) = self.home.selected_entry() else {
+            return;
+        };
+        self.cache.forget_recent(&entry.path);
+        self.home.status = Some(format!("Forgot {}", entry.name));
+        self.home_refresh();
+    }
+
+    /// Collapse or expand the section the cursor is in.
+    ///
+    /// Collapsing moves the cursor to the header, so the section the user just folded
+    /// is what stays selected rather than whatever row happens to fall into place.
+    fn home_collapse(&mut self, collapse: bool) {
+        let Some(section) = self.home.selected_section() else {
+            return;
+        };
+        if collapse && !self.home.is_collapsed(section) {
+            self.home.set_collapsed(section, true);
+            if let Some(idx) = self
+                .home
+                .visible()
+                .iter()
+                .position(|row| row.section() == section)
+            {
+                self.home.selected = idx;
+            }
+        } else if !collapse {
+            self.home.set_collapsed(section, false);
+        }
+        self.home.clamp_selection();
+    }
+
+    /// Step out of a directory that was descended into.
+    fn home_ascend(&mut self) {
+        let Some(current) = self.home.browsing.clone() else {
+            return;
+        };
+        self.home.browsing = current
+            .parent()
+            .map(|p| p.to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty() && p != &current);
+        // Going up widens what a search would cover, so the previous one no longer
+        // answers the question being asked.
+        self.home.search.reset();
+        self.home.selected = 0;
+        self.home_refresh();
+    }
+
+    /// Open the highlighted entry: toggle a section, descend into a directory, or
+    /// load a dataset.
+    fn home_open_selected(&mut self) -> Option<AppEvent> {
+        if self.home.selection_is_header() {
+            if let Some(section) = self.home.selected_section() {
+                self.home.toggle_collapsed(section);
+                self.home.clamp_selection();
+            }
+            return None;
+        }
+        let entry = self.home.selected_entry()?;
+        if entry.kind == discover::EntryKind::Directory {
+            self.home.browsing = Some(entry.path.clone());
+            // "Below here" now means somewhere else. Whatever the last walk found
+            // describes a different place, and a fresh one starts on the next
+            // keystroke.
+            self.home.search.reset();
+            self.home.filter.clear();
+            self.home.sync_search_section();
+            self.home.selected = 0;
+            self.home_refresh();
+            return None;
+        }
+        Some(self.home_open_path(entry.path))
+    }
+
+    /// Load a path from the home screen.
+    ///
+    /// The recent entry is recorded by the `Open` handler, which every open goes
+    /// through, so this does not record one itself.
+    fn home_open_path(&mut self, path: PathBuf) -> AppEvent {
+        let mut options = OpenOptions::default();
+        // A directory of partitions is only meaningful read as one hive dataset.
+        if path.is_dir() {
+            options.hive = true;
+        }
+        self.input_mode = InputMode::Normal;
+        self.set_loading_phase("Scanning input", 10);
+        self.busy = true;
+        AppEvent::Open(vec![path], options)
+    }
+
+    /// Key handling for the home screen.
+    fn home_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+
+        // The home screen puts every plain character into the filter — `q` has to
+        // type a `q`, or you could never search for "quarterly". So quitting is
+        // Ctrl+C, checked before anything else can swallow it, and Esc once there is
+        // no context left to back out of.
+        if ctrl && matches!(event.code, KeyCode::Char('c') | KeyCode::Char('q')) {
+            return Some(AppEvent::Exit);
+        }
+
+        if self.home.path_input_active {
+            match event.code {
+                KeyCode::Esc => {
+                    self.home.path_input_active = false;
+                    self.home.path_input.clear();
+                    self.home.status = None;
+                }
+                KeyCode::Enter => {
+                    let raw = self.home.path_input.trim().to_string();
+                    if raw.is_empty() {
+                        self.home.path_input_active = false;
+                        return None;
+                    }
+                    let path = home::expand_user_path(&raw);
+                    if !path.exists() {
+                        self.home.status = Some(format!("No such path: {}", path.display()));
+                        return None;
+                    }
+                    self.home.path_input.clear();
+                    self.home.path_input_active = false;
+                    if path.is_dir()
+                        && discover::classify_directory(&path) == discover::EntryKind::Directory
+                    {
+                        // An ordinary directory: browse it rather than trying to load it.
+                        self.home.browsing = Some(path);
+                        self.home.search.reset();
+                        self.home.filter.clear();
+                        self.home.sync_search_section();
+                        self.home.selected = 0;
+                        self.home_refresh();
+                        return None;
+                    }
+                    return Some(self.home_open_path(path));
+                }
+                KeyCode::Backspace => {
+                    self.home.path_input.pop();
+                    self.home.status = None;
+                }
+                KeyCode::Char('u') if ctrl => self.home.path_input.clear(),
+                // Completion reads a directory, which can block, so it is worked out
+                // on a worker and applied when it comes back.
+                KeyCode::Tab => self.request_path_completion(),
+                KeyCode::Char(c) => {
+                    self.home.path_input.push(c);
+                    self.home.status = None;
+                }
+                _ => {}
+            }
+            return None;
+        }
+
+        match event.code {
+            KeyCode::Esc => return self.home_escape(),
+            KeyCode::Enter => return self.home_open_selected(),
+            KeyCode::Up => self.home.move_selection(-1),
+            KeyCode::Down => self.home.move_selection(1),
+            // Left/right fold the section the cursor is in, wherever in it the cursor
+            // happens to be — so collapsing does not require first finding the header.
+            // Tab cycles the sort. Every plain key goes into the filter, so an
+            // ordinary letter is not available for this.
+            KeyCode::Tab => {
+                self.home.sort = self.home.sort.next();
+                self.home.select_first_entry();
+            }
+            KeyCode::Left => self.home_collapse(true),
+            KeyCode::Right => self.home_collapse(false),
+            KeyCode::Char('h') if self.home.filter.is_empty() => self.home_collapse(true),
+            KeyCode::Char('l') if self.home.filter.is_empty() => self.home_collapse(false),
+            KeyCode::PageUp => self.home.move_selection(-10),
+            KeyCode::PageDown => self.home.move_selection(10),
+            KeyCode::Char('k') if self.home.filter.is_empty() => self.home.move_selection(-1),
+            KeyCode::Char('j') if self.home.filter.is_empty() => self.home.move_selection(1),
+            KeyCode::Char('u') if ctrl => {
+                self.home.filter.clear();
+                self.home.sync_search_section();
+                self.home.select_first_entry();
+            }
+            KeyCode::Backspace => {
+                if self.home.filter.is_empty() {
+                    self.home_ascend();
+                } else {
+                    self.home.filter.pop();
+                    self.home.sync_search_section();
+                    self.home.select_first_entry();
+                }
+            }
+            // Forget the highlighted entry. Only meaningful in Recent — elsewhere the
+            // row is a real directory listing, and datui does not delete files.
+            // Shift+Delete forgets the lot. It sits next to the key that forgets
+            // one, so it asks first — an accidental press should not silently throw
+            // away every place the user has been.
+            KeyCode::Delete if event.modifiers.contains(KeyModifiers::SHIFT) => {
+                let count = self.cache.load_recents().len();
+                if count == 0 {
+                    self.home.status = Some("Nothing to forget".into());
+                } else {
+                    self.pending_clear_recents = true;
+                    self.confirmation_modal
+                        .show(format!("Forget all {count} recently opened datasets?"));
+                }
+            }
+            KeyCode::Delete => self.home_forget_selected(),
+            KeyCode::Char('~') if self.home.filter.is_empty() => {
+                self.home.path_input_active = true;
+                self.home.status = None;
+            }
+            KeyCode::Char(c) if !ctrl => {
+                self.home.filter.push(c);
+                // Typing is what asks for the recursive search. Starting it here and
+                // not on open means the walk is only ever paid for by someone who is
+                // actually looking for something.
+                self.spawn_home_search();
+                self.home.sync_search_section();
+                self.home.select_first_entry();
+            }
+            _ => {}
+        }
+        None
     }
 
     /// Get a color from the theme by name
@@ -2298,8 +2945,71 @@ impl App {
     }
 
     /// Build LazyFrame from paths for phased loading (non-compressed only). Caller must not use for compressed CSV.
+    /// Run the LazyFrame scan for `paths` on a background thread.
+    ///
+    /// Scanning is where the wall-clock time goes — CSV schema inference, and hive
+    /// directories with many files — so doing it on the event thread freezes the UI
+    /// for its whole duration: no repaint, no throbber, no way out. Both CSV entry
+    /// points funnel through here.
+    fn spawn_scan(
+        &mut self,
+        status: &str,
+        paths: Vec<PathBuf>,
+        options: OpenOptions,
+    ) -> Option<AppEvent> {
+        let cloud = self.app_config.cloud.clone();
+        let path_for_event = paths.first().cloned();
+        let slot = self.pending_lazyframe_result.clone();
+        self.spawn_bg(status, move |gen, tx| {
+            match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options) {
+                Ok(lf) => {
+                    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    // A newer scan already landed; this result is obsolete.
+                    let dominated = guard.as_ref().is_some_and(|(g, _)| *g > gen);
+                    if !dominated {
+                        *guard = Some((gen, lf));
+                    }
+                    drop(guard);
+                    let _ = tx.send(AppEvent::BackgroundLazyFrameReady {
+                        generation: gen,
+                        path: path_for_event,
+                        options,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::BackgroundError {
+                        generation: gen,
+                        message: crate::error_display::user_message_from_report(
+                            &e,
+                            paths.first().map(|p| p.as_path()),
+                        ),
+                    });
+                }
+            }
+        });
+        None
+    }
+
+    /// Build the LazyFrame for `paths`, on the calling thread.
+    ///
+    /// Only for paths already known to be cheap; the general case goes through
+    /// [`App::build_lazyframe_from_paths_with`] on a background thread.
     fn build_lazyframe_from_paths(
         &mut self,
+        paths: &[PathBuf],
+        options: &OpenOptions,
+    ) -> Result<LazyFrame> {
+        let cloud = self.app_config.cloud.clone();
+        Self::build_lazyframe_from_paths_with(&cloud, paths, options)
+    }
+
+    /// Build the LazyFrame for `paths`.
+    ///
+    /// Takes the cloud config by reference rather than reading `self`, so the same
+    /// code can run on a background thread — scanning is where the wall-clock time
+    /// goes for CSV (schema inference) and for hive directories with many files.
+    fn build_lazyframe_from_paths_with(
+        cloud: &crate::config::CloudConfig,
         paths: &[PathBuf],
         options: &OpenOptions,
     ) -> Result<LazyFrame> {
@@ -2323,7 +3033,7 @@ impl App {
                 #[cfg(feature = "cloud")]
                 {
                     let full = format!("s3://{url}");
-                    let cloud_opts = Self::build_s3_cloud_options(&self.app_config.cloud, options);
+                    let cloud_opts = Self::build_s3_cloud_options(cloud, options);
                     let pl_path = PlPathRef::new(&full).into_owned();
                     let is_glob = full.contains('*') || full.ends_with('/');
                     let hive_options = if is_glob {
@@ -2591,6 +3301,22 @@ impl App {
             return None;
         }
 
+        // Home owns the whole screen and every key while it is up.
+        if self.input_mode == InputMode::Home && !self.confirmation_modal.active {
+            return self.home_key(event);
+        }
+
+        // Ctrl+O goes home from anywhere, including mid-load. That is what makes
+        // browsing cheap: opening the wrong 300 MB file costs one keystroke to leave,
+        // not a wait for it to finish.
+        if event.code == KeyCode::Char('o')
+            && event.modifiers.contains(KeyModifiers::CONTROL)
+            && !self.confirmation_modal.active
+        {
+            self.enter_home();
+            return None;
+        }
+
         // Handle modals first - they have highest priority
         // Confirmation modal (for overwrite)
         if self.confirmation_modal.active {
@@ -2607,6 +3333,16 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if self.confirmation_modal.focus_yes {
+                        // Forgetting every recent is checked first: it is the only
+                        // confirmation here that is not about overwriting a file.
+                        if self.pending_clear_recents {
+                            self.pending_clear_recents = false;
+                            self.confirmation_modal.hide();
+                            self.cache.clear_recents();
+                            self.home_refresh();
+                            self.home.status = Some("Recents forgotten".into());
+                            return None;
+                        }
                         // User confirmed overwrite: chart export first, then dataframe export
                         if let Some((path, format, title, width, height)) =
                             self.pending_chart_export.take()
@@ -2650,6 +3386,7 @@ impl App {
                             });
                         }
                     } else {
+                        self.pending_clear_recents = false;
                         // User cancelled: if chart export overwrite, reopen chart export modal with path pre-filled
                         if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
                             self.chart_export_modal.reopen_with_path(&path, format);
@@ -2664,6 +3401,9 @@ impl App {
                     }
                 }
                 KeyCode::Esc => {
+                    // Disarmed on every exit from the modal, so a declined confirmation
+                    // cannot fire against whatever the *next* one is asking about.
+                    self.pending_clear_recents = false;
                     // Cancel: if chart export overwrite, reopen chart export modal with path pre-filled
                     if let Some((path, format, _, _, _)) = self.pending_chart_export.take() {
                         self.chart_export_modal.reopen_with_path(&path, format);
@@ -2695,6 +3435,15 @@ impl App {
             match event.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     self.error_modal.hide();
+                    // With nothing loaded, dismissing the error would otherwise leave
+                    // an empty table and no indication of what to do. Go back to the
+                    // list the dataset was chosen from, carrying the reason, so the
+                    // next choice is one keystroke away.
+                    if self.data_table_state.is_none() {
+                        let reason = self.last_load_error.take();
+                        self.enter_home();
+                        self.home.status = reason;
+                    }
                 }
                 _ => {}
             }
@@ -2791,6 +3540,9 @@ impl App {
             let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
             let in_text_input = match self.input_mode {
                 InputMode::Editing => true,
+                // The home screen is always accepting characters, into either the
+                // filter or the path input.
+                InputMode::Home => true,
                 InputMode::Export => matches!(
                     self.export_modal.focus,
                     ExportFocus::PathInput | ExportFocus::CsvDelimiter
@@ -6479,11 +7231,18 @@ impl App {
                 let is_quit_key = matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
                     || (key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL));
-                // When busy (e.g. loading), still process quit, column scroll, help, and confirmation modal keys.
+                // Going home must work mid-load too, or a slow dataset traps you in it
+                // and browsing stops being cheap.
+                let is_home_key = (key.code == KeyCode::Char('o')
+                    && key.modifiers.contains(KeyModifiers::CONTROL))
+                    || self.input_mode == InputMode::Home;
+                // When busy (e.g. loading), still process quit, column scroll, help,
+                // home, and confirmation modal keys.
                 if self.busy
                     && !is_column_scroll
                     && !is_help_key
                     && !is_quit_key
+                    && !is_home_key
                     && !self.confirmation_modal.active
                 {
                     return None;
@@ -6501,6 +7260,16 @@ impl App {
                 self.task_generation = self.task_generation.wrapping_add(1);
                 self.busy = true;
                 let first = &paths[0];
+                // Every open records a recent, not just those started from the home
+                // screen — most datasets are named on the command line, and those are
+                // exactly the ones worth getting back to. An object-store URL counts
+                // doubly: `s3://bucket/warehouse/events/year=2024` is far more painful
+                // to retype than any local path, and it is recorded verbatim, since
+                // canonicalising a URL is meaningless.
+                let is_local = matches!(source::input_source(first), source::InputSource::Local(_));
+                if !is_local || first.exists() {
+                    self.cache.push_recent(first);
+                }
                 let file_size = match source::input_source(first) {
                     source::InputSource::Local(_) => {
                         std::fs::metadata(first).map(|m| m.len()).unwrap_or(0)
@@ -6680,7 +7449,6 @@ impl App {
                             return None;
                         }
                     }
-                    let first = paths[0].clone();
                     // When CSV with --parse-strings, set "Scanning string columns" and defer build so UI can show it before blocking.
                     if paths.len() == 1 && is_csv && options.parse_strings.is_some() {
                         if let LoadingState::Loading {
@@ -6702,75 +7470,150 @@ impl App {
                         ));
                     }
                     #[allow(clippy::needless_borrow)]
-                    match self.build_lazyframe_from_paths(&paths, options) {
-                        Ok(lf) => {
-                            if let LoadingState::Loading {
-                                file_path,
-                                file_size,
-                                ..
-                            } = &self.loading_state
-                            {
-                                self.loading_state = LoadingState::Loading {
-                                    file_path: file_path.clone(),
-                                    file_size: *file_size,
-                                    current_phase: "Caching schema".to_string(),
-                                    progress_percent: 40,
-                                };
-                            }
-                            Some(AppEvent::DoLoadSchema(
-                                Box::new(lf),
-                                Some(first),
-                                options.clone(),
-                            ))
-                        }
-                        Err(e) => {
-                            self.loading_state = LoadingState::Idle;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            let msg = crate::error_display::user_message_from_report(
-                                &e,
-                                paths.first().map(|p| p.as_path()),
-                            );
-                            Some(AppEvent::Crash(msg))
-                        }
-                    }
+                    self.spawn_scan("Scanning input...", paths.clone(), options.clone())
                 }
             }
-            AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
-                let first = paths[0].clone();
-                #[allow(clippy::needless_borrow)]
-                match self.build_lazyframe_from_paths(&paths, options) {
-                    Ok(lf) => {
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Caching schema".to_string(),
-                                progress_percent: 40,
-                            };
-                        }
-                        Some(AppEvent::DoLoadSchema(
-                            Box::new(lf),
-                            Some(first),
-                            options.clone(),
-                        ))
-                    }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(
-                            &e,
-                            paths.first().map(|p| p.as_path()),
-                        );
-                        Some(AppEvent::Crash(msg))
-                    }
+            AppEvent::HomeListingReady {
+                generation,
+                listing,
+            } => {
+                // Clear the flag first, whatever the generation: a stale result that
+                // returned early while still marked in flight would wedge the pipeline
+                // permanently, and nothing would ever be listed again.
+                self.home.listing_in_flight = false;
+                // A listing from a superseded request describes somewhere the user has
+                // already left.
+                if *generation != self.home_generation {
+                    return None;
                 }
+                self.home.apply_listing((**listing).clone());
+                // Probes are chosen from the sections, so they can only be started
+                // once those exist — asking before the listing lands finds nothing.
+                self.spawn_home_probes();
+                self.request_home_measurements();
+                None
+            }
+            AppEvent::HomeMeasured {
+                generation,
+                measured,
+            } => {
+                self.home.measure_in_flight = false;
+                if *generation != self.home_generation {
+                    return None;
+                }
+                for (path, m) in measured {
+                    self.home.enriched.insert(path.clone(), m.clone());
+                }
+                self.home.apply_measurements();
+                self.request_home_measurements();
+                None
+            }
+            AppEvent::HomePathCompleted {
+                generation,
+                typed,
+                completed,
+                candidates,
+            } => {
+                // Discard if the user has typed since asking: completing onto a
+                // different string would scramble what they are in the middle of.
+                if *generation != self.home_generation || &self.home.path_input != typed {
+                    return None;
+                }
+                if *candidates == 0 {
+                    self.home.status = Some("No such path".to_string());
+                } else {
+                    self.home.status = (*candidates > 1).then(|| format!("{candidates} matches"));
+                    self.home.path_input = completed.clone();
+                }
+                None
+            }
+            AppEvent::HomeSchemaReady {
+                generation,
+                path,
+                preview,
+            } => {
+                self.home_schema_inflight.retain(|p| p != path);
+                if *generation == self.home_generation {
+                    self.home_schema_cache.insert(path.clone(), preview.clone());
+                }
+                None
+            }
+            AppEvent::HomeSearchBatch {
+                generation,
+                root,
+                found,
+                scanned,
+            } => {
+                // Results from a walk that a later navigation superseded describe a
+                // place the user has left. The walk is abandoned, not cancelled, so
+                // late batches are expected rather than exceptional.
+                if *generation == self.home_generation {
+                    self.home.search_batch(root, found.clone(), *scanned);
+                }
+                None
+            }
+            AppEvent::HomeSearchDone {
+                generation,
+                root,
+                scanned,
+                limited,
+            } => {
+                if *generation == self.home_generation {
+                    self.home.search_finished(root, *scanned, limited.clone());
+                }
+                self.home_search_inflight = false;
+                None
+            }
+            AppEvent::HomeProbeReady { root, rows } => {
+                match rows {
+                    Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
+                    None => self.home.probe_failed(root.clone()),
+                }
+                // Rebuild so the listing picks the result up; the probe is the only
+                // thing that ever reads a remote root.
+                self.home_refresh();
+                None
+            }
+            AppEvent::BackgroundLazyFrameReady {
+                generation,
+                path,
+                options,
+            } => {
+                // A scan that a newer open has already superseded is dropped on the
+                // floor: its LazyFrame describes data nobody is looking at any more.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                let (slot_gen, lf) = self
+                    .pending_lazyframe_result
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()?;
+                if slot_gen != self.task_generation {
+                    return None;
+                }
+
+                if let LoadingState::Loading {
+                    file_path,
+                    file_size,
+                    ..
+                } = &self.loading_state
+                {
+                    self.loading_state = LoadingState::Loading {
+                        file_path: file_path.clone(),
+                        file_size: *file_size,
+                        current_phase: "Caching schema".to_string(),
+                        progress_percent: 40,
+                    };
+                }
+                Some(AppEvent::DoLoadSchema(
+                    Box::new(lf),
+                    path.clone(),
+                    options.clone(),
+                ))
+            }
+            AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
+                self.spawn_scan("Scanning string columns...", paths.clone(), options.clone())
             }
             #[cfg(feature = "http")]
             AppEvent::DoDownloadHttp(url, options) => {
@@ -7649,6 +8492,9 @@ impl App {
                     self.status_message = None;
                     self.busy = false;
                     self.drain_keys_on_next_loop = true;
+                    // Kept so the home screen can say why, if that is where dismissing
+                    // the error lands the user.
+                    self.last_load_error = Some(message.clone());
                     self.error_modal.show(message.clone());
                 }
                 None
@@ -8723,6 +9569,7 @@ impl App {
             InputMode::Export => ("Export Help", help_strings::export()),
             InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
             InputMode::Chart => ("Chart Help", help_strings::chart()),
+            InputMode::Home => ("Home Help", help_strings::home()),
         };
         (title.to_string(), content.to_string())
     }
@@ -8746,10 +9593,16 @@ impl Widget for &mut App {
             self.number_format.clone(),
         );
 
-        let main_view_content = MainViewContent::from_app_state(
-            self.analysis_modal.active,
-            self.input_mode == InputMode::Chart,
-        );
+        // Must match the dispatch in `render_main_view`: home takes precedence, so the
+        // control bar shows home's keys rather than the table's.
+        let main_view_content = if self.input_mode == InputMode::Home {
+            MainViewContent::Home
+        } else {
+            MainViewContent::from_app_state(
+                self.analysis_modal.active,
+                self.input_mode == InputMode::Chart,
+            )
+        };
 
         Clear.render(area, buf);
         let background_color = self.color("background");
@@ -8862,6 +9715,36 @@ impl Widget for &mut App {
             }
         }
 
+        // The trailing figure belongs to whatever view is showing. On the home screen
+        // that is how many datasets are listed, not the table's row count.
+        if main_view_content == MainViewContent::Home {
+            // Only things that can actually be opened. A directory is somewhere to
+            // look, not a dataset, and counting it makes the figure a lie.
+            let datasets = self
+                .home
+                .visible()
+                .iter()
+                .filter(|r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_dataset()))
+                .count();
+            // State, not actions: how many datasets are listed and what order they
+            // are in. The Tab key that changes it lives with the other keys.
+            let in_recents = self
+                .home
+                .selected_section()
+                .and_then(|i| self.home.sections.get(i))
+                .map(|s| s.subtitle.is_none())
+                .unwrap_or(false);
+            let order = self.home.sort.label_in(in_recents);
+            let caption = if self.home.listing_in_flight && datasets == 0 {
+                "Looking…".to_string()
+            } else if datasets == 1 {
+                format!("by {order}  ·  1 dataset")
+            } else {
+                format!("by {order}  ·  {datasets} datasets")
+            };
+            controls = controls.with_caption(Some(caption));
+        }
+
         controls = controls.with_busy(self.busy, self.throbber_frame);
         // Reflect the row-count's determinacy in the control bar:
         //  - in flight   -> spinner (still being computed)
@@ -8914,11 +9797,9 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     {
         return Err(color_eyre::eyre::eyre!(e.to_string()));
     }
-    // Require at least one path so event handlers can safely use paths[0].
+    // No paths is no longer an error: it means "start at home". Validation below
+    // still applies to any paths that were given.
     if let RunInput::Paths(ref paths, _) = input {
-        if paths.is_empty() {
-            return Err(color_eyre::eyre::eyre!("At least one path is required"));
-        }
         for path in paths {
             let s = path.to_string_lossy();
             let is_remote = s.starts_with("s3://")
@@ -8963,6 +9844,11 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         .handle()
         .clone();
 
+    // Choose the glyph alphabet before the first frame: on a terminal that is not
+    // doing UTF-8, box-drawing characters render as replacement boxes and make the
+    // UI harder to read rather than prettier.
+    glyphs::init(config.display.unicode);
+
     let mut terminal = ratatui::try_init().map_err(|e| {
         color_eyre::eyre::eyre!(
             "datui requires an interactive terminal (TTY). No terminal detected: {}. \
@@ -8977,7 +9863,13 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     }
 
     // Send initial event and show the first frame immediately.
+    let mut starting_at_home = false;
     match input {
+        // No paths: open the home screen instead of loading anything.
+        RunInput::Paths(paths, _) if paths.is_empty() => {
+            app.enter_home();
+            starting_at_home = true;
+        }
         RunInput::Paths(paths, opts) => {
             app.set_loading_phase("Scanning input", 10);
             tx.send(AppEvent::Open(paths, opts))?;
@@ -8987,7 +9879,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             tx.send(AppEvent::OpenLazyFrame(lf, opts))?;
         }
     }
-    app.busy = true;
+    app.busy = !starting_at_home;
     terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
     let _ = std::io::stdout().flush();
 
@@ -9026,10 +9918,17 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
                     return Err(color_eyre::eyre::eyre!(msg));
                 }
                 Ok(event) => {
+                    updated = true;
                     if let Some(next) = app.event(&event) {
                         tx.send(next)?;
+                        // A handler that returns a follow-up event is deferring work so
+                        // the UI can show the current phase first — the `Do*` events all
+                        // rely on this. Draining the follow-up in the same pass defeats
+                        // that: the phase label never renders and the throbber never
+                        // moves. Break so a frame is drawn and keys are polled first.
+                        // Order is unaffected; the follow-up was appended to the queue.
+                        break;
                     }
-                    updated = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -9046,8 +9945,19 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             updated = true;
         }
 
+        // Scrolling brings new rows into view, so ask for those once the frame that
+        // revealed them has been drawn. The request is served by a worker; this thread
+        // only decides what is worth asking about.
+        if app.home.pending_enrich && app.input_mode == InputMode::Home {
+            app.home.pending_enrich = false;
+            app.request_home_measurements();
+        }
+
         if updated {
             terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+            // Rows on the home screen are measured a few per frame; ask for another
+            // frame while any remain, so the columns fill in rather than stalling the
+            // first paint.
             // After render, check if visible_rows changed and trigger async buffer re-collect.
             if let Some(state) = &mut app.data_table_state {
                 if state.needs_recollect {
@@ -9056,8 +9966,26 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
                 }
             }
             if app.should_drain_keys() {
+                // Keys typed *at* a busy screen are usually accidental — a held arrow
+                // key, an impatient double-tap — so they get dropped. But the two keys
+                // that mean "get me out of here" must survive: discarding those is
+                // exactly the moment a user needs them to work.
+                let mut escape: Option<crossterm::event::KeyEvent> = None;
                 while crossterm::event::poll(std::time::Duration::from_millis(0))? {
-                    let _ = crossterm::event::read();
+                    if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
+                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                        if ctrl
+                            && matches!(
+                                key.code,
+                                KeyCode::Char('c') | KeyCode::Char('q') | KeyCode::Char('o')
+                            )
+                        {
+                            escape = Some(key);
+                        }
+                    }
+                }
+                if let Some(key) = escape {
+                    tx.send(AppEvent::Key(key))?;
                 }
                 app.clear_drain_keys_request();
             }

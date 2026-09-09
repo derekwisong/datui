@@ -29,6 +29,20 @@ fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
         }
     }
 
+    if args.clear_recents {
+        match datui::CacheManager::new(APP_NAME) {
+            Ok(cache) => {
+                cache.clear_recents();
+                println!("Recently opened datasets forgotten");
+                return Ok(Some(()));
+            }
+            Err(_e) => {
+                println!("No recents to clear");
+                return Ok(Some(()));
+            }
+        }
+    }
+
     if args.clear_cache {
         match datui::CacheManager::new(APP_NAME) {
             Ok(cache) => {
@@ -153,6 +167,7 @@ mod tests {
             debug: false,
             excel_sheet: None,
             clear_cache: false,
+            clear_recents: false,
             template: None,
             remove_templates: false,
             sampling_threshold: None,
@@ -189,15 +204,13 @@ mod tests {
     }
 
     #[test]
-    fn test_path_required_for_normal_operation() {
+    fn test_no_path_opens_home_screen() {
         use clap::Parser;
 
-        let result = Args::try_parse_from(vec!["datui"]);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
-        assert!(err.to_string().contains("PATH"));
+        // No PATH is no longer an error: datui starts at its home screen so you can
+        // pick a dataset without having to name one on the command line first.
+        let args = Args::try_parse_from(vec!["datui"]).expect("no-path invocation is valid");
+        assert!(args.paths.is_empty());
     }
 
     #[test]

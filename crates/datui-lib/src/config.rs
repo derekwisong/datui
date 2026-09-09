@@ -84,6 +84,21 @@ impl ConfigManager {
             comments.insert(format!("cloud.{}", field), comment.to_string());
         }
 
+        comments.insert(
+            "display.unicode".to_string(),
+            DISPLAY_UNICODE_COMMENT.to_string(),
+        );
+
+        // Data (home screen roots)
+        for (field, comment) in DATA_COMMENTS {
+            comments.insert(format!("data.{}", field), comment.to_string());
+        }
+
+        // Data search (recursive search below the working directory)
+        for (field, comment) in DATA_SEARCH_COMMENTS {
+            comments.insert(format!("data.search.{}", field), comment.to_string());
+        }
+
         // File loading fields
         for (field, comment) in FILE_LOADING_COMMENTS {
             comments.insert(format!("file_loading.{}", field), comment.to_string());
@@ -195,10 +210,21 @@ impl ConfigManager {
                     }
                 }
 
-                // Comment out the field line
+                // Comment out the field line, and every line it continues onto.
+                // `toml` renders a non-empty array across several lines, and
+                // commenting only the first leaves the elements behind as bare
+                // text — a generated config that does not parse.
                 result.push_str("# ");
                 result.push_str(line);
                 result.push('\n');
+                let mut depth = bracket_depth(line);
+                while depth > 0 && i + 1 < lines.len() {
+                    i += 1;
+                    result.push_str("# ");
+                    result.push_str(lines[i]);
+                    result.push('\n');
+                    depth += bracket_depth(lines[i]);
+                }
             } else {
                 // Empty line or other content - preserve as-is
                 result.push_str(line);
@@ -341,6 +367,9 @@ impl ConfigManager {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    /// Additional config files merged in before this file's own values.
+    /// See `APP_COMMENTS` for the user-facing description.
+    pub import: Vec<String>,
     /// Configuration format version (for future compatibility)
     pub version: String,
     pub cloud: CloudConfig,
@@ -349,6 +378,7 @@ pub struct AppConfig {
     pub performance: PerformanceConfig,
     pub chart: ChartConfig,
     pub theme: ThemeConfig,
+    pub data: DataConfig,
     pub ui: UiConfig,
     pub query: QueryConfig,
     pub templates: TemplateConfig,
@@ -356,10 +386,22 @@ pub struct AppConfig {
 }
 
 // Field comments for AppConfig (top-level fields)
-const APP_COMMENTS: &[(&str, &str)] = &[(
-    "version",
-    "Configuration format version (for future compatibility)",
-)];
+const APP_COMMENTS: &[(&str, &str)] = &[
+    (
+        "import",
+        "Config files to merge in before this file's own values.\n\
+         Precedence, lowest first: datui defaults -> each import in order -> this file.\n\
+         So an imported theme restyles datui, but anything you set here still wins.\n\
+         Paths may be absolute, relative to this file, or use ~ and $VAR.\n\
+         An import that does not exist is skipped with a warning on stderr.\n\
+         To follow the active Omarchy theme:\n\
+         import = [\"~/.local/state/omarchy/current/theme/datui.toml\"]",
+    ),
+    (
+        "version",
+        "Configuration format version (for future compatibility)",
+    ),
+];
 
 // Section header comments
 const SECTION_HEADERS: &[(&str, &str)] = &[
@@ -546,6 +588,8 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
+    /// Whether to draw box-drawing and arrow characters, or fall back to ASCII.
+    pub unicode: crate::glyphs::UnicodeMode,
     pub pages_lookahead: usize,
     pub pages_lookback: usize,
     /// Max rows in scroll buffer (0 = no limit).
@@ -886,20 +930,270 @@ impl ChartConfig {
     }
 }
 
+/// Which set of built-in colour defaults to start from.
+///
+/// datui's stock chrome (header fills, row striping, borders, secondary text) has
+/// to sit *near* the terminal background without matching it. There is no ANSI
+/// colour that means "slightly off from the background", so those slots resolve to
+/// fixed values — and a set tuned for a dark terminal is unreadable on a light one.
+/// This selects which set to use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    /// Detect from the environment, falling back to `Dark`.
+    #[default]
+    Auto,
+    Dark,
+    Light,
+}
+
+impl ThemeMode {
+    /// Resolve `Auto` against the environment. `Dark` and `Light` pass through.
+    ///
+    /// Detection reads `COLORFGBG`, which several terminals set to `fg;bg` using
+    /// ANSI colour numbers — a background of 7 or 15 (white) means a light terminal.
+    /// Terminals that do not set it (Alacritty, Kitty and Ghostty among them) fall
+    /// back to `Dark`, which is why `mode` can also be set explicitly.
+    pub fn resolve(self) -> Self {
+        match self {
+            Self::Auto => detect_terminal_mode(),
+            other => other,
+        }
+    }
+}
+
+/// Best-effort light/dark detection from `COLORFGBG`. Defaults to `Dark`.
+fn detect_terminal_mode() -> ThemeMode {
+    let Ok(raw) = std::env::var("COLORFGBG") else {
+        return ThemeMode::Dark;
+    };
+    // Format is "fg;bg" or "fg;default;bg" — the background is the last field.
+    match raw
+        .rsplit(';')
+        .next()
+        .and_then(|b| b.trim().parse::<u8>().ok())
+    {
+        Some(7) | Some(15) => ThemeMode::Light,
+        _ => ThemeMode::Dark,
+    }
+}
+
+/// Where datui looks for datasets on the home screen.
+///
+/// This is `PATH`-shaped: a short, stable list of *places*, not per-dataset
+/// metadata. datui records nothing about the datasets it finds there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DataConfig {
+    /// Directories to offer as roots on the home screen, in order.
+    /// Supports `~` and `$VAR`.
+    pub directories: Vec<String>,
+    /// Whether to also offer directories the desktop records you opening data from.
+    /// Only the directories are used, never the file names.
+    pub use_desktop_recents: bool,
+    /// Recursive search of the working directory from the home screen's filter.
+    pub search: SearchConfig,
+}
+
+/// Recursive search under the working directory, driven by the home screen's filter.
+///
+/// The walk happens once, in the background, the first time you type; every keystroke
+/// after that filters the result in memory. The limits here bound that one walk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// Search below the working directory at all.
+    pub enabled: bool,
+    /// How deep to descend. Data is rarely twelve directories down, and the cost of
+    /// looking is paid on every branch.
+    pub max_depth: usize,
+    /// Stop after this many datasets. The list is a way to find something, not an
+    /// inventory.
+    pub max_results: usize,
+    /// Give up walking after this long and keep what was found. A cold or enormous
+    /// tree must degrade to partial results, never to a wait.
+    pub time_budget_ms: u64,
+    /// Descend into directories on a different filesystem than the one started in.
+    ///
+    /// Off by default, and the most important limit here: it is what stops a walk
+    /// from wandering onto a network share, and on a machine using autofs it is what
+    /// stops the walk from *mounting* one by looking at it.
+    pub cross_filesystems: bool,
+    /// Obey `.gitignore`.
+    ///
+    /// Off by default, and deliberately: people gitignore data directories precisely
+    /// because the data is too big to commit, which is the same reason they want to
+    /// open it in datui. In datui's own repository, honouring it hides 38 real test
+    /// datasets while hiding 69 files of virtualenv noise — wrong in both directions.
+    /// The skip list below is the mechanism for the noise.
+    pub follow_gitignore: bool,
+    /// Directory names never descended into. Replaces the defaults entirely.
+    pub skip: Vec<String>,
+    /// Directory names to skip *in addition* to the defaults, so adding one does not
+    /// mean restating the list.
+    pub skip_extra: Vec<String>,
+    /// File extensions searched for. Empty means every format datui can open, which
+    /// includes `json` and `txt` — noisy in a source tree, so narrow this if that
+    /// bothers you.
+    pub extensions: Vec<String>,
+}
+
+/// Directories that are never data, and are always expensive.
+///
+/// Hidden directories are already skipped, which covers `.git`, `.venv`, `.tox` and
+/// the various caches. What is left is the offenders that are not hidden — and they
+/// matter: `node_modules` and `site-packages` are full of `.json`, which datui can
+/// open, so without this every package manifest on the machine is a search result.
+pub const DEFAULT_SEARCH_SKIP: &[&str] = &[
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "vendor",
+    "site-packages",
+    "__pycache__",
+    "venv",
+    "env",
+];
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_depth: 8,
+            max_results: 20_000,
+            time_budget_ms: 1_500,
+            cross_filesystems: false,
+            follow_gitignore: false,
+            skip: DEFAULT_SEARCH_SKIP.iter().map(|s| s.to_string()).collect(),
+            skip_extra: Vec::new(),
+            extensions: Vec::new(),
+        }
+    }
+}
+
+impl SearchConfig {
+    pub fn merge(&mut self, other: Self) {
+        let d = SearchConfig::default();
+        if other.enabled != d.enabled {
+            self.enabled = other.enabled;
+        }
+        if other.max_depth != d.max_depth {
+            self.max_depth = other.max_depth;
+        }
+        if other.max_results != d.max_results {
+            self.max_results = other.max_results;
+        }
+        if other.time_budget_ms != d.time_budget_ms {
+            self.time_budget_ms = other.time_budget_ms;
+        }
+        if other.cross_filesystems != d.cross_filesystems {
+            self.cross_filesystems = other.cross_filesystems;
+        }
+        if other.follow_gitignore != d.follow_gitignore {
+            self.follow_gitignore = other.follow_gitignore;
+        }
+        if other.skip != d.skip {
+            self.skip = other.skip;
+        }
+        if !other.skip_extra.is_empty() {
+            self.skip_extra = other.skip_extra;
+        }
+        if !other.extensions.is_empty() {
+            self.extensions = other.extensions;
+        }
+    }
+
+    /// Every directory name to skip: the configured list plus the additions.
+    pub fn skipped_dirs(&self) -> Vec<String> {
+        let mut out = self.skip.clone();
+        out.extend(self.skip_extra.iter().cloned());
+        out
+    }
+}
+
+impl Default for DataConfig {
+    fn default() -> Self {
+        Self {
+            directories: Vec::new(),
+            // On by default: it only ever contributes *places*, and it is the one
+            // thing that gives a fresh install somewhere to point you.
+            use_desktop_recents: true,
+            search: SearchConfig::default(),
+        }
+    }
+}
+
+impl DataConfig {
+    pub fn merge(&mut self, other: Self) {
+        if !other.directories.is_empty() {
+            self.directories = other.directories;
+        }
+        if other.use_desktop_recents != DataConfig::default().use_desktop_recents {
+            self.use_desktop_recents = other.use_desktop_recents;
+        }
+        self.search.merge(other.search);
+    }
+
+    /// Configured directories with `~`/`$VAR` expanded. Non-existent paths are kept:
+    /// the home screen shows an unavailable root rather than hiding it, because
+    /// "the mount is down" is information.
+    pub fn resolved_directories(&self) -> Vec<PathBuf> {
+        self.directories.iter().map(|d| expand_path(d)).collect()
+    }
+}
+
+const DISPLAY_UNICODE_COMMENT: &str =
+    "Draw box-drawing and arrow characters: \"auto\" (default), \"always\", or \"never\".\n\
+     \"auto\" uses them when the locale is UTF-8. Set \"never\" on a terminal that shows\n\
+     replacement boxes instead — datui falls back to plain ASCII throughout.";
+
+const DATA_COMMENTS: &[(&str, &str)] = &[
+    (
+        "directories",
+        "Directories to offer as roots on the datui home screen (opened with no arguments).\n\
+     Think of this like PATH: a list of places, not a catalogue. datui stores nothing\n\
+     about what it finds. Supports ~ and $VAR.\n\
+     Directories of datasets you opened recently are offered automatically, so this is\n\
+     only needed for places you have not visited yet.\n\
+     Example: directories = [\"/mnt/data\", \"~/datasets\"]",
+    ),
+    (
+        "use_desktop_recents",
+        "Also offer directories your desktop records you opening data files from\n\
+         (freedesktop's recently-used list, written by file managers and GTK apps).\n\
+         Only the DIRECTORIES are used, never the file names: that list often holds\n\
+         things you would not want on a screen you are sharing.\n\
+         Set false to ignore it entirely.",
+    ),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ThemeConfig {
+    /// Which built-in palette to start from. `None` means the key was absent, which
+    /// is treated as `Auto`; keeping it optional is what lets the layer chain tell
+    /// "unset" from "explicitly dark".
+    pub mode: Option<ThemeMode>,
     pub colors: ColorConfig,
 }
 
 // Field comments for ThemeConfig
-const THEME_COMMENTS: &[(&str, &str)] = &[];
+const THEME_COMMENTS: &[(&str, &str)] = &[(
+    "mode",
+    "Which built-in colour set to start from: \"auto\" (default), \"dark\" or \"light\".\n\
+     datui's stock chrome (header fills, row striping, borders, dim text) uses fixed\n\
+     shades, and a set tuned for a dark terminal is unreadable on a light one.\n\
+     \"auto\" reads COLORFGBG and falls back to dark; Alacritty, Kitty and Ghostty do\n\
+     not set it, so on a light background in those terminals set this to \"light\".\n\
+     Individual colours below always override whichever set is chosen.",
+)];
 
 fn default_row_numbers_color() -> String {
     "dark_gray".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 /// Color configuration for the application theme.
 ///
@@ -1142,6 +1436,7 @@ const DEBUG_COMMENTS: &[(&str, &str)] = &[
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            import: Vec::new(),
             version: "0.2".to_string(),
             cloud: CloudConfig::default(),
             file_loading: FileLoadingConfig::default(),
@@ -1149,6 +1444,7 @@ impl Default for AppConfig {
             performance: PerformanceConfig::default(),
             chart: ChartConfig::default(),
             theme: ThemeConfig::default(),
+            data: DataConfig::default(),
             ui: UiConfig::default(),
             query: QueryConfig::default(),
             templates: TemplateConfig::default(),
@@ -1160,6 +1456,7 @@ impl Default for AppConfig {
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
+            unicode: crate::glyphs::UnicodeMode::default(),
             pages_lookahead: 3,
             pages_lookback: 3,
             max_buffered_rows: 100_000,
@@ -1186,7 +1483,24 @@ impl Default for PerformanceConfig {
 }
 
 impl Default for ColorConfig {
+    /// Dark, preserving datui's historical defaults. Light is opt-in via
+    /// `theme.mode`, so no existing config changes appearance.
     fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl ColorConfig {
+    /// The built-in set for whichever mode is in effect.
+    pub fn for_mode(mode: ThemeMode) -> Self {
+        match mode.resolve() {
+            ThemeMode::Light => Self::light(),
+            _ => Self::dark(),
+        }
+    }
+
+    /// Defaults tuned for a dark terminal background.
+    pub fn dark() -> Self {
         Self {
             keybind_hints: "cyan".to_string(),
             keybind_labels: "indexed(252)".to_string(),
@@ -1233,6 +1547,63 @@ impl Default for ColorConfig {
             chart_series_color_7: "bright_cyan".to_string(),
         }
     }
+
+    /// Defaults tuned for a light terminal background.
+    ///
+    /// The chrome shades are inverted rather than merely lightened: on a light
+    /// terminal the "slightly off from background" shades must be *darker* than the
+    /// background, where on a dark terminal they are lighter. Hues that are legible
+    /// on black and not on white (plain `cyan`, plain `yellow`) are replaced with
+    /// darker equivalents from the 256-colour cube.
+    pub fn light() -> Self {
+        Self {
+            keybind_hints: "blue".to_string(),
+            keybind_labels: "indexed(238)".to_string(),
+            throbber: "blue".to_string(),
+            primary_chart_series_color: "blue".to_string(),
+            secondary_chart_series_color: "indexed(244)".to_string(),
+            success: "green".to_string(),
+            error: "red".to_string(),
+            // Plain yellow is unreadable on white; 94 is a dark amber (5.7:1).
+            warning: "indexed(94)".to_string(),
+            dimmed: "indexed(243)".to_string(),
+            background: "default".to_string(),
+            surface: "default".to_string(),
+            controls_bg: "indexed(254)".to_string(),
+            text_primary: "default".to_string(),
+            text_secondary: "indexed(240)".to_string(),
+            text_inverse: "white".to_string(),
+            table_header: "black".to_string(),
+            table_header_bg: "indexed(253)".to_string(),
+            row_numbers: "indexed(243)".to_string(),
+            column_separator: "indexed(250)".to_string(),
+            table_selected: "reversed".to_string(),
+            sidebar_border: "indexed(250)".to_string(),
+            modal_border_active: "blue".to_string(),
+            modal_border_error: "red".to_string(),
+            distribution_normal: "green".to_string(),
+            distribution_skewed: "indexed(94)".to_string(),
+            distribution_other: "black".to_string(),
+            outlier_marker: "red".to_string(),
+            cursor_focused: "default".to_string(),
+            cursor_dimmed: "default".to_string(),
+            alternate_row_color: "indexed(254)".to_string(),
+            str_col: "green".to_string(),
+            // Plain cyan washes out on white; 23 is a dark teal (7.5:1).
+            int_col: "indexed(23)".to_string(),
+            float_col: "blue".to_string(),
+            bool_col: "indexed(94)".to_string(),
+            temporal_col: "magenta".to_string(),
+            binary_col: "indexed(243)".to_string(),
+            chart_series_color_1: "blue".to_string(),
+            chart_series_color_2: "green".to_string(),
+            chart_series_color_3: "magenta".to_string(),
+            chart_series_color_4: "indexed(94)".to_string(),
+            chart_series_color_5: "indexed(23)".to_string(),
+            chart_series_color_6: "red".to_string(),
+            chart_series_color_7: "indexed(54)".to_string(),
+        }
+    }
 }
 
 impl Default for ControlsConfig {
@@ -1264,59 +1635,233 @@ impl Default for DebugConfig {
     }
 }
 
-// Configuration loading and merging
-impl AppConfig {
-    /// Load configuration from all layers (default → user)
-    pub fn load(app_name: &str) -> Result<Self> {
-        let mut config = AppConfig::default();
+/// Maximum number of config files an `import` chain may stack up.
+///
+/// Chains this deep are a mistake rather than a use case; the cap turns a
+/// runaway (or merely confusing) graph into a clear error.
+const MAX_IMPORT_DEPTH: usize = 8;
 
-        // Try to load user config (if exists)
-        let config_path = ConfigManager::new(app_name)
-            .ok()
-            .map(|m| m.config_path("config.toml"));
-        if let Ok(user_config) = Self::load_user_config(app_name) {
-            config.merge(user_config);
+/// Expand a leading `~` and any `$VAR` / `${VAR}` reference in a config path.
+///
+/// Unset variables expand to nothing, as in a shell. This is what lets a config
+/// name a path such as `~/.local/state/omarchy/current/theme/datui.toml` without
+/// hardcoding a home directory.
+pub fn expand_config_path(raw: &str) -> PathBuf {
+    expand_path(raw)
+}
+
+fn expand_path(raw: &str) -> PathBuf {
+    let mut expanded = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            expanded.push(c);
+            continue;
         }
 
+        let braced = chars.peek() == Some(&'{');
+        if braced {
+            chars.next();
+        }
+
+        let mut name = String::new();
+        while let Some(&next) = chars.peek() {
+            if braced && next == '}' {
+                chars.next();
+                break;
+            }
+            if !next.is_ascii_alphanumeric() && next != '_' {
+                break;
+            }
+            name.push(next);
+            chars.next();
+        }
+
+        if name.is_empty() {
+            // A bare `$`, or `${}` — leave it as written rather than guessing.
+            expanded.push('$');
+        } else if let Ok(value) = std::env::var(&name) {
+            expanded.push_str(&value);
+        }
+    }
+
+    // `~` expands only at the start of the path, as in a shell.
+    if expanded == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    } else if let Some(rest) = expanded.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+
+    PathBuf::from(expanded)
+}
+
+// Configuration loading and merging
+impl AppConfig {
+    /// Load configuration from all layers (default → imports → user config)
+    pub fn load(app_name: &str) -> Result<Self> {
+        match ConfigManager::new(app_name) {
+            Ok(manager) => Self::load_from_file(&manager.config_path("config.toml")),
+            // No config directory on this platform: defaults are all there is.
+            Err(_) => {
+                let config = AppConfig::default();
+                config
+                    .validate()
+                    .map_err(|e| eyre!("Invalid configuration: {}", e))?;
+                Ok(config)
+            }
+        }
+    }
+
+    /// Load configuration rooted at `config_path`, resolving its `import` chain.
+    ///
+    /// Layers apply lowest precedence first: datui's defaults, then every file named
+    /// by `import` in declaration order (depth-first, so an imported file's own
+    /// imports land before it), then `config_path`'s own values. An imported theme
+    /// therefore restyles datui while the user's explicit settings still win.
+    ///
+    /// A missing import is skipped with a warning — the file is often generated by a
+    /// theme system that may not have run yet, and datui must still start. An import
+    /// that exists but cannot be read or parsed is an error: the user named that file
+    /// explicitly, so failing quietly would just look like the theme not applying.
+    pub fn load_from_file(config_path: &Path) -> Result<Self> {
+        let mut layers: Vec<AppConfig> = Vec::new();
+        let mut imports: Vec<String> = Vec::new();
+
+        if config_path.exists() {
+            // A user config that fails to parse falls back to defaults rather than
+            // blocking startup. Long-standing behaviour, preserved deliberately.
+            if let Ok(layer) = Self::read_layer(config_path) {
+                let root = config_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| config_path.to_path_buf());
+                let mut stack = vec![root];
+                imports = layer.import.clone();
+
+                Self::collect_imports(&imports, config_path, &mut stack, &mut layers)?;
+                layers.push(layer);
+            }
+        }
+
+        // Which built-in palette the layers merge *onto* depends on the mode, and the
+        // mode itself is declared in those layers — so resolve it before building the
+        // base. Last explicit declaration wins; `mode` is Option, so "absent" and
+        // "explicitly auto" stay distinguishable.
+        let declared = layers
+            .iter()
+            .rev()
+            .find_map(|l| l.theme.mode)
+            .unwrap_or_default();
+        let resolved = declared.resolve();
+
+        let mut config = AppConfig::default();
+        config.theme.colors = ColorConfig::for_mode(resolved);
+
+        for layer in layers {
+            config.merge(layer);
+        }
+
+        // `merge` deliberately ignores `import` (a load-time directive, already
+        // resolved above); restore the declared list so the loaded config still
+        // reports what it was built from. Record the resolved mode for the same
+        // reason — after the merge, so a layer's raw "auto" cannot overwrite it.
+        config.import = imports;
+        config.theme.mode = Some(resolved);
+
         // Validate configuration (e.g. color names); report config file path on error
-        config.validate().map_err(|e| {
-            let path_hint = config_path
-                .as_ref()
-                .map(|p| format!(" in {}", p.display()))
-                .unwrap_or_default();
-            eyre!("Invalid configuration{}: {}", path_hint, e)
-        })?;
+        config
+            .validate()
+            .map_err(|e| eyre!("Invalid configuration in {}: {}", config_path.display(), e))?;
 
         Ok(config)
     }
 
-    /// Load user configuration from ~/.config/datui/config.toml
-    fn load_user_config(app_name: &str) -> Result<AppConfig> {
-        let config_manager = ConfigManager::new(app_name)?;
-        let config_path = config_manager.config_path("config.toml");
-
-        if !config_path.exists() {
-            return Ok(AppConfig::default());
+    /// Append every file named by `imports` to `out`, depth-first, in order.
+    ///
+    /// Collecting rather than merging in place lets the caller inspect the whole
+    /// chain (to resolve `theme.mode`) before choosing the base to merge onto.
+    ///
+    /// `origin` is the file that declared them; relative paths resolve against its
+    /// directory. `stack` holds the canonical paths currently being loaded, so a
+    /// cycle is reported instead of followed.
+    fn collect_imports(
+        imports: &[String],
+        origin: &Path,
+        stack: &mut Vec<PathBuf>,
+        out: &mut Vec<AppConfig>,
+    ) -> Result<()> {
+        if imports.is_empty() {
+            return Ok(());
         }
 
-        let content = std::fs::read_to_string(&config_path).map_err(|e| {
-            eyre!(
-                "Failed to read config file at {}: {}",
-                config_path.display(),
-                e
-            )
-        })?;
+        if stack.len() >= MAX_IMPORT_DEPTH {
+            return Err(eyre!(
+                "config import chain is more than {} files deep (at {}); \
+                 flatten the chain or remove the extra levels",
+                MAX_IMPORT_DEPTH,
+                origin.display()
+            ));
+        }
 
-        toml::from_str(&content).map_err(|e| {
-            eyre!(
-                "Failed to parse config file at {}: {}",
-                config_path.display(),
-                e
-            )
-        })
+        let origin_dir = origin.parent().unwrap_or_else(|| Path::new("."));
+
+        for entry in imports {
+            let expanded = expand_path(entry);
+            let path = if expanded.is_absolute() {
+                expanded
+            } else {
+                origin_dir.join(expanded)
+            };
+
+            if !path.exists() {
+                eprintln!(
+                    "datui: warning: config import not found, skipping: {} (imported by {})",
+                    path.display(),
+                    origin.display()
+                );
+                continue;
+            }
+
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if stack.contains(&canonical) {
+                return Err(eyre!(
+                    "circular config import: {} is already being loaded (imported by {})",
+                    canonical.display(),
+                    origin.display()
+                ));
+            }
+
+            let layer = Self::read_layer(&path)
+                .map_err(|e| eyre!("{} (imported by {})", e, origin.display()))?;
+            let nested = layer.import.clone();
+
+            stack.push(canonical);
+            Self::collect_imports(&nested, &path, stack, out)?;
+            stack.pop();
+
+            out.push(layer);
+        }
+
+        Ok(())
+    }
+
+    /// Read and parse a single config file. No import resolution, no merging.
+    fn read_layer(path: &Path) -> Result<AppConfig> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| eyre!("Failed to read config file at {}: {}", path.display(), e))?;
+
+        toml::from_str(&content)
+            .map_err(|e| eyre!("Failed to parse config file at {}: {}", path.display(), e))
     }
 
     /// Merge another config into this one (other takes precedence)
+    ///
+    /// `import` is intentionally not merged: it is a load-time directive resolved by
+    /// `load_from_file`, not a setting a lower layer should be able to hand upward.
     pub fn merge(&mut self, other: AppConfig) {
         // Version: take other's version if present and different from default
         if other.version != AppConfig::default().version {
@@ -1330,6 +1875,7 @@ impl AppConfig {
         self.performance.merge(other.performance);
         self.chart.merge(other.chart);
         self.theme.merge(other.theme);
+        self.data.merge(other.data);
         self.ui.merge(other.ui);
         self.query.merge(other.query);
         self.templates.merge(other.templates);
@@ -1431,6 +1977,9 @@ impl FileLoadingConfig {
 
 impl DisplayConfig {
     pub fn merge(&mut self, other: Self) {
+        if other.unicode != crate::glyphs::UnicodeMode::default() {
+            self.unicode = other.unicode;
+        }
         let default = DisplayConfig::default();
         if other.pages_lookahead != default.pages_lookahead {
             self.pages_lookahead = other.pages_lookahead;
@@ -1485,6 +2034,10 @@ impl PerformanceConfig {
 
 impl ThemeConfig {
     pub fn merge(&mut self, other: Self) {
+        // `mode` is Option, so presence is unambiguous: a later layer that names it wins.
+        if other.mode.is_some() {
+            self.mode = other.mode;
+        }
         self.colors.merge(other.colors);
     }
 }
@@ -2106,4 +2659,75 @@ impl Theme {
     pub fn get_optional(&self, name: &str) -> Option<Color> {
         self.colors.get(name).copied()
     }
+}
+
+const DATA_SEARCH_COMMENTS: &[(&str, &str)] = &[
+    (
+        "enabled",
+        "Search below the working directory when you type on the home screen.\n\
+         The walk runs once, in the background, the first time you type; every\n\
+         keystroke after that filters the result in memory. Set false to list only\n\
+         the directories themselves.",
+    ),
+    (
+        "max_depth",
+        "How deep to descend. Data is rarely twelve directories down, and every\n\
+         extra level costs a listing on every branch.",
+    ),
+    (
+        "max_results",
+        "Stop after this many datasets. The list is a way to find something, not an\n\
+         inventory. Hitting the limit is reported on screen, never silent.",
+    ),
+    (
+        "time_budget_ms",
+        "Give up walking after this long and keep whatever was found. A cold or\n\
+         enormous tree must degrade to partial results, never to a wait.",
+    ),
+    (
+        "cross_filesystems",
+        "Descend into directories on a different filesystem than the one you started\n\
+         in. Off by default, and the most important limit here: it is what keeps a\n\
+         search from wandering onto a network share, and on autofs, from MOUNTING one\n\
+         merely by looking at it. Turn it on only if your data lives on a mount\n\
+         beneath your working directory and you know that mount is fast.",
+    ),
+    (
+        "follow_gitignore",
+        "Obey .gitignore. Off by default, and deliberately: people gitignore data\n\
+         directories precisely because the data is too big to commit, which is the\n\
+         same reason they want to open it in datui. In datui's own repository,\n\
+         honouring it hides 38 real test datasets while hiding 69 files of virtualenv\n\
+         noise -- wrong in both directions. Use skip/skip_extra for the noise.",
+    ),
+    (
+        "skip",
+        "Directory names never descended into. Setting this REPLACES the defaults:\n\
+         node_modules, target, build, dist, vendor, site-packages, __pycache__,\n\
+         venv, env. Hidden directories (.git, .venv, the caches) are always skipped.\n\
+         To add to the defaults rather than replace them, use skip_extra.",
+    ),
+    (
+        "skip_extra",
+        "Directory names to skip in addition to the defaults, so adding one does not\n\
+         mean restating the whole list. Example: skip_extra = [\"archive\", \"raw\"]",
+    ),
+    (
+        "extensions",
+        "File extensions to search for. Empty (default) means every format datui can\n\
+         open -- which includes json and txt, noisy in a source tree. Narrow it if\n\
+         that bothers you. Example: extensions = [\"parquet\", \"csv\"]",
+    ),
+];
+
+/// Net change in unclosed brackets across one line of TOML.
+///
+/// Enough to tell whether a rendered array is still open at the end of the line.
+/// Brackets inside strings would fool it, and none of the values here contain any.
+fn bracket_depth(line: &str) -> i32 {
+    line.chars().fold(0, |acc, c| match c {
+        '[' => acc + 1,
+        ']' => acc - 1,
+        _ => acc,
+    })
 }

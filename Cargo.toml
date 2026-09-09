@@ -47,6 +47,7 @@ datui-cli = { path = "crates/datui-cli", version = "0.2.57-dev" }
 polars = { version = "0.52", features = ["lazy"] }
 tempfile = "3.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+fs2 = "0.4"
 toml = "0.8"
 
 # Packaging: deb, rpm, AUR.
@@ -57,6 +58,7 @@ depends = ["libfontconfig1"]
 assets = [
     "$auto",
     ["target/release/datui.1.gz", "usr/share/man/man1/datui.1.gz", "0644"],
+    ["scripts/packaging/datui.desktop", "usr/share/applications/datui.desktop", "0644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -68,6 +70,11 @@ mode = "0755"
 [[package.metadata.generate-rpm.assets]]
 source = "target/release/datui.1.gz"
 dest = "/usr/share/man/man1/datui.1.gz"
+mode = "0644"
+
+[[package.metadata.generate-rpm.assets]]
+source = "scripts/packaging/datui.desktop"
+dest = "/usr/share/applications/datui.desktop"
 mode = "0644"
 
 [[package.metadata.generate-rpm.assets]]
@@ -86,6 +93,9 @@ depends = ["fontconfig"]
 # which caused "Can't create 'LICENSE'" when bsdtar extracted on the AUR.
 files = [
     ["target/release/datui.1.gz", "/usr/share/man/man1/datui.1.gz"],
+    # Puts datui in desktop launchers. On Omarchy that means it appears under the
+    # menu's Apps section automatically, with no Omarchy-specific integration.
+    ["scripts/packaging/datui.desktop", "/usr/share/applications/datui.desktop"],
 ]
 
 # improve the performance of color-eyre for debug builds

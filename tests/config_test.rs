@@ -363,6 +363,7 @@ fn test_merge_does_not_override_with_defaults() {
     use datui::config::DisplayConfig;
 
     let mut base = DisplayConfig {
+        unicode: Default::default(),
         pages_lookahead: 5,
         pages_lookback: 5,
         max_buffered_rows: 100_000,
@@ -888,4 +889,751 @@ fn test_number_format_wrong_types_still_fail_at_parse_time() {
         let parsed = toml::from_str::<AppConfig>(&src);
         assert!(parsed.is_err(), "should fail to parse: {bad}");
     }
+}
+
+// ============================================================================
+// Config `import` layering
+//
+// `import` is what lets an external theme system (Omarchy, chezmoi, a dotfiles
+// repo) drop a generated file into place and have datui pick it up, without
+// datui knowing anything about that system.
+// ============================================================================
+
+/// Write `contents` to `dir/name` and return the path.
+fn write_config(dir: &TempDir, name: &str, contents: &str) -> std::path::PathBuf {
+    let path = dir.path().join(name);
+    fs::write(&path, contents).expect("Failed to write config");
+    path
+}
+
+#[test]
+fn test_import_applies_theme_colors() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "theme.toml",
+        "[theme.colors]\nsuccess = \"#00ff00\"\nerror = \"#ff0000\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.success, "#00ff00");
+    assert_eq!(config.theme.colors.error, "#ff0000");
+}
+
+#[test]
+fn test_import_is_overridden_by_importing_file() {
+    // The whole point of the precedence order: a user keeps their own tweaks
+    // even while following a generated theme.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "theme.toml",
+        "[theme.colors]\nsuccess = \"#00ff00\"\nerror = \"#ff0000\"\n",
+    );
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"theme.toml\"]\n\n[theme.colors]\nerror = \"#123456\"\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.error, "#123456", "user value must win");
+    assert_eq!(
+        config.theme.colors.success, "#00ff00",
+        "untouched imported value must survive"
+    );
+}
+
+#[test]
+fn test_imports_apply_in_declaration_order() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "first.toml",
+        "[theme.colors]\nsuccess = \"#111111\"\nerror = \"#aaaaaa\"\n",
+    );
+    write_config(
+        &temp_dir,
+        "second.toml",
+        "[theme.colors]\nsuccess = \"#222222\"\n",
+    );
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"first.toml\", \"second.toml\"]\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.success, "#222222", "later import wins");
+    assert_eq!(config.theme.colors.error, "#aaaaaa");
+}
+
+#[test]
+fn test_nested_import_is_merged_before_its_importer() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "base.toml",
+        "[theme.colors]\nsuccess = \"#111111\"\nerror = \"#aaaaaa\"\n",
+    );
+    write_config(
+        &temp_dir,
+        "mid.toml",
+        "import = [\"base.toml\"]\n\n[theme.colors]\nsuccess = \"#222222\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"mid.toml\"]\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(
+        config.theme.colors.success, "#222222",
+        "importer beats importee"
+    );
+    assert_eq!(
+        config.theme.colors.error, "#aaaaaa",
+        "nested value reaches the top"
+    );
+}
+
+#[test]
+fn test_missing_import_is_skipped_not_fatal() {
+    // The Omarchy state directory does not exist on a machine that has never
+    // set a theme. datui must still start.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"nope.toml\"]\n\n[display]\nrow_numbers = true\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Missing import must not be fatal");
+
+    assert!(
+        config.display.row_numbers,
+        "rest of the config still applies"
+    );
+    assert_eq!(
+        config.theme.colors.success,
+        AppConfig::default().theme.colors.success
+    );
+}
+
+#[test]
+fn test_import_relative_path_resolves_against_importing_file() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let nested = temp_dir.path().join("themes");
+    fs::create_dir(&nested).expect("Failed to create dir");
+    fs::write(
+        nested.join("dark.toml"),
+        "[theme.colors]\nsuccess = \"#00ff00\"\n",
+    )
+    .expect("Failed to write theme");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"themes/dark.toml\"]\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.success, "#00ff00");
+}
+
+#[test]
+fn test_import_expands_env_var() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let theme = write_config(
+        &temp_dir,
+        "theme.toml",
+        "[theme.colors]\nsuccess = \"#00ff00\"\n",
+    );
+    // Unique name: tests in a binary share one process environment.
+    std::env::set_var("DATUI_TEST_IMPORT_DIR", temp_dir.path());
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"$DATUI_TEST_IMPORT_DIR/theme.toml\"]\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+    std::env::remove_var("DATUI_TEST_IMPORT_DIR");
+
+    assert!(theme.exists());
+    assert_eq!(config.theme.colors.success, "#00ff00");
+}
+
+#[test]
+fn test_circular_import_is_an_error() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(&temp_dir, "a.toml", "import = [\"b.toml\"]\n");
+    write_config(&temp_dir, "b.toml", "import = [\"a.toml\"]\n");
+    let root = write_config(&temp_dir, "config.toml", "import = [\"a.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("cycle must be reported");
+
+    assert!(
+        err.to_string().contains("circular config import"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_self_import_is_an_error() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(&temp_dir, "config.toml", "import = [\"config.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("self-import must be reported");
+
+    assert!(
+        err.to_string().contains("circular config import"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_deep_import_chain_is_capped() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    // 20 files, each importing the next: past any legitimate use.
+    for i in 0..20 {
+        write_config(
+            &temp_dir,
+            &format!("l{i}.toml"),
+            &format!("import = [\"l{}.toml\"]\n", i + 1),
+        );
+    }
+    write_config(
+        &temp_dir,
+        "l20.toml",
+        "[theme.colors]\nsuccess = \"#00ff00\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"l0.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("depth cap must trigger");
+
+    assert!(err.to_string().contains("deep"), "unexpected error: {err}");
+}
+
+#[test]
+fn test_unparseable_import_is_an_error() {
+    // Unlike a missing file, a file the user named that is actually broken must
+    // be loud — otherwise it just looks like the theme silently not applying.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(&temp_dir, "theme.toml", "this is not toml =\n");
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("broken import must be reported");
+    let msg = err.to_string();
+
+    assert!(msg.contains("Failed to parse"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("theme.toml"),
+        "error must name the file: {msg}"
+    );
+}
+
+#[test]
+fn test_imported_invalid_color_is_reported() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(
+        &temp_dir,
+        "theme.toml",
+        "[theme.colors]\nsuccess = \"#not-a-color\"\n",
+    );
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let err = AppConfig::load_from_file(&root).expect_err("invalid color must be reported");
+
+    assert!(
+        err.to_string().contains("theme.colors.success"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_config_without_import_is_unchanged() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(&temp_dir, "config.toml", "[display]\nrow_numbers = true\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert!(config.display.row_numbers);
+    assert!(config.import.is_empty());
+}
+
+#[test]
+fn test_load_from_missing_config_file_yields_defaults() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = temp_dir.path().join("config.toml");
+
+    let config = AppConfig::load_from_file(&root).expect("Missing config is not an error");
+
+    assert_eq!(config.version, AppConfig::default().version);
+    assert!(config.import.is_empty());
+}
+
+#[test]
+fn test_generated_config_documents_import() {
+    // The generated config is the discovery surface for this feature.
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template = config_manager.generate_default_config();
+
+    assert!(template.contains("import"));
+    assert!(template.contains("omarchy/current/theme/datui.toml"));
+
+    // Still valid TOML with the new key present.
+    let parsed: AppConfig = toml::from_str(&template).expect("Template should be valid TOML");
+    assert!(parsed.import.is_empty());
+}
+
+// ============================================================================
+// Theme mode (light / dark chrome defaults)
+//
+// datui's chrome slots (header fills, row striping, borders, dim text) resolve
+// to fixed shades because no ANSI colour means "slightly off from the
+// background". A set tuned for a dark terminal is unreadable on a light one.
+// ============================================================================
+
+use datui::config::{ColorConfig, ThemeMode};
+
+#[test]
+fn test_default_mode_is_dark_chrome() {
+    // Existing configs must not change appearance: the stock palette stays dark.
+    let config = AppConfig::default();
+    assert_eq!(config.theme.colors, ColorConfig::dark());
+    assert_eq!(config.theme.colors.table_header_bg, "indexed(235)");
+}
+
+#[test]
+fn test_light_mode_selects_light_chrome() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(&temp_dir, "config.toml", "[theme]\nmode = \"light\"\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.mode, Some(ThemeMode::Light));
+    assert_eq!(config.theme.colors, ColorConfig::light());
+}
+
+#[test]
+fn test_light_chrome_inverts_rather_than_lightens() {
+    // The bug this fixes: fixed dark shades on a light terminal. The light set's
+    // fills must be near-white, not near-black.
+    let light = ColorConfig::light();
+    for (name, value) in [
+        ("table_header_bg", &light.table_header_bg),
+        ("alternate_row_color", &light.alternate_row_color),
+        ("controls_bg", &light.controls_bg),
+    ] {
+        let n: u8 = value
+            .trim_start_matches("indexed(")
+            .trim_end_matches(')')
+            .parse()
+            .unwrap_or_else(|_| panic!("{name} should be an indexed colour, got {value}"));
+        assert!(
+            n >= 250,
+            "{name} must be a near-white fill on a light terminal, got indexed({n})"
+        );
+    }
+    assert_eq!(ColorConfig::dark().table_header_bg, "indexed(235)");
+}
+
+#[test]
+fn test_explicit_colors_override_light_mode() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "[theme]\nmode = \"light\"\n\n[theme.colors]\ntable_header_bg = \"#123456\"\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.colors.table_header_bg, "#123456");
+    // Untouched slots still come from the light set.
+    assert_eq!(
+        config.theme.colors.alternate_row_color,
+        ColorConfig::light().alternate_row_color
+    );
+}
+
+#[test]
+fn test_mode_can_come_from_an_import() {
+    // A theme file can declare the polarity it was built for.
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(&temp_dir, "theme.toml", "[theme]\nmode = \"light\"\n");
+    let root = write_config(&temp_dir, "config.toml", "import = [\"theme.toml\"]\n");
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.mode, Some(ThemeMode::Light));
+    assert_eq!(config.theme.colors, ColorConfig::light());
+}
+
+#[test]
+fn test_own_mode_beats_imported_mode() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    write_config(&temp_dir, "theme.toml", "[theme]\nmode = \"light\"\n");
+    let root = write_config(
+        &temp_dir,
+        "config.toml",
+        "import = [\"theme.toml\"]\n\n[theme]\nmode = \"dark\"\n",
+    );
+
+    let config = AppConfig::load_from_file(&root).expect("Config should load");
+
+    assert_eq!(config.theme.mode, Some(ThemeMode::Dark));
+    assert_eq!(config.theme.colors, ColorConfig::dark());
+}
+
+#[test]
+fn test_light_palette_is_valid_and_complete() {
+    // Every light value must parse, and none may be left at its dark counterpart
+    // by accident where the two sets are meant to differ.
+    let mut config = AppConfig::default();
+    config.theme.colors = ColorConfig::light();
+    config.validate().expect("light palette must validate");
+
+    let dark = ColorConfig::dark();
+    let light = ColorConfig::light();
+    assert_ne!(light.table_header_bg, dark.table_header_bg);
+    assert_ne!(light.controls_bg, dark.controls_bg);
+    assert_ne!(light.alternate_row_color, dark.alternate_row_color);
+    assert_ne!(light.keybind_labels, dark.keybind_labels);
+}
+
+// ============================================================================
+// Shipped Omarchy template
+// ============================================================================
+
+#[test]
+fn test_omarchy_template_covers_every_color_slot() {
+    // The template maps datui's colour slots onto an Omarchy palette. If a slot is
+    // added to ColorConfig and not to the template, the generated theme silently
+    // leaves that slot at datui's default — which is exactly the kind of drift a
+    // human reviewer will not catch. Fail here instead.
+    let template = fs::read_to_string("contrib/omarchy/datui.toml.tpl")
+        .expect("contrib/omarchy/datui.toml.tpl should exist");
+
+    let serialized = toml::to_string(&ColorConfig::default()).expect("serialize");
+    let expected: std::collections::BTreeSet<String> = serialized
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, _)| k.trim().to_string())
+        .collect();
+
+    let found: std::collections::BTreeSet<String> = template
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, _)| k.trim().to_string())
+        .collect();
+
+    let missing: Vec<_> = expected.difference(&found).collect();
+    assert!(
+        missing.is_empty(),
+        "template is missing colour slots: {missing:?}"
+    );
+
+    let unknown: Vec<_> = found
+        .difference(&expected)
+        .filter(|k| *k != "mode")
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "template sets slots that do not exist in ColorConfig: {unknown:?}"
+    );
+}
+
+// ============================================================================
+// History files (query history, recents)
+// ============================================================================
+
+#[test]
+fn test_history_write_is_atomic_and_exact() {
+    // A truncate-then-write leaves the file readable half-finished, and two datui
+    // instances writing at once interleave into one corrupt file — entries torn
+    // mid-path, or two paths concatenated onto a single line. Both were observed.
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let entries: Vec<String> = (0..200)
+        .map(|i| format!("/some/quite/long/path/number-{i:04}/dataset.parquet"))
+        .collect();
+    cache
+        .save_history_file("things", &entries)
+        .expect("save history");
+
+    let read_back = cache.load_history_file("things").expect("load history");
+    assert_eq!(read_back, entries);
+
+    // No stray temp files left behind.
+    let leftovers: Vec<_> = fs::read_dir(temp_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
+}
+
+#[test]
+fn test_recents_deduplicate_and_cap() {
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let a = temp_dir.path().join("a.parquet");
+    let b = temp_dir.path().join("b.parquet");
+    fs::write(&a, b"x").unwrap();
+    fs::write(&b, b"x").unwrap();
+
+    cache.push_recent(&a);
+    cache.push_recent(&b);
+    cache.push_recent(&a);
+
+    let recents = cache.load_recents();
+    assert_eq!(recents.len(), 2, "reopening moves rather than duplicates");
+    assert!(recents[0].ends_with("a.parquet"), "most recent leads");
+}
+
+#[test]
+fn test_concurrent_recents_do_not_lose_entries() {
+    // Opening two datasets at once is ordinary — a launcher, a file manager, two
+    // terminals. Writing atomically stops the file becoming corrupt, but not one
+    // instance's entry being overwritten by another's; the read and the write have
+    // to be a single locked operation.
+    use datui::CacheManager;
+    use std::sync::Arc;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = Arc::new(CacheManager::with_dir(temp_dir.path().to_path_buf()));
+
+    let paths: Vec<std::path::PathBuf> = (0..16)
+        .map(|i| {
+            let p = temp_dir.path().join(format!("dataset-{i:02}.parquet"));
+            fs::write(&p, b"x").unwrap();
+            p
+        })
+        .collect();
+
+    let handles: Vec<_> = paths
+        .iter()
+        .cloned()
+        .map(|path| {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || cache.push_recent(&path))
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("writer thread");
+    }
+
+    let recents = cache.load_recents();
+    assert_eq!(
+        recents.len(),
+        paths.len(),
+        "every concurrent open should survive; got {recents:#?}"
+    );
+
+    // And every line is a whole, valid path — never two concatenated or one torn.
+    for entry in &recents {
+        assert!(
+            entry.exists(),
+            "history holds a path that is not a real file: {entry:?}"
+        );
+    }
+}
+
+#[test]
+fn test_history_update_is_dropped_rather_than_blocking() {
+    // The lock is tried, not waited on: a stuck peer must never delay an open.
+    use datui::CacheManager;
+    use fs2::FileExt;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+    cache.ensure_cache_dir().unwrap();
+
+    let lock_path = temp_dir.path().join("held_history.lock");
+    let holder = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .unwrap();
+    holder.lock_exclusive().unwrap();
+
+    let started = std::time::Instant::now();
+    let result = cache.update_history_file("held", |entries| entries.push("nope".into()));
+    let elapsed = started.elapsed();
+
+    FileExt::unlock(&holder).unwrap();
+
+    assert!(
+        result.is_ok(),
+        "a contended update is skipped, not an error"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "gave up after {elapsed:?}; it should abandon the update quickly"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(100),
+        "gave up after only {elapsed:?}; too eager a deadline drops updates that \
+         several simultaneous opens would have completed fine"
+    );
+    assert!(
+        cache
+            .load_history_file("held")
+            .unwrap_or_default()
+            .is_empty(),
+        "the update should have been dropped"
+    );
+}
+
+#[test]
+fn test_recents_store_urls_verbatim() {
+    // Canonicalising a URL is meaningless, and it would stat a path that does not
+    // exist locally.
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let url = std::path::PathBuf::from("s3://bucket/warehouse/events/year=2024");
+    cache.push_recent(&url);
+
+    let recents = cache.load_recents();
+    assert_eq!(recents, vec![url], "a URL should round-trip unchanged");
+}
+
+#[test]
+fn test_a_single_recent_can_be_forgotten() {
+    // A recents list you cannot edit is one people stop trusting: an experiment, a
+    // file that would not open, something private — all land there, and clearing the
+    // whole cache to remove one is too blunt.
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let keep = temp_dir.path().join("keep.parquet");
+    let drop = temp_dir.path().join("private.csv");
+    fs::write(&keep, b"x").unwrap();
+    fs::write(&drop, b"x").unwrap();
+    cache.push_recent(&keep);
+    cache.push_recent(&drop);
+
+    cache.forget_recent(&drop.canonicalize().unwrap());
+
+    let recents = cache.load_recents();
+    assert!(recents.iter().any(|p| p.ends_with("keep.parquet")));
+    assert!(
+        !recents.iter().any(|p| p.ends_with("private.csv")),
+        "the forgotten entry should be gone: {recents:?}"
+    );
+}
+
+#[test]
+fn test_clearing_recents_leaves_other_caches_alone() {
+    // `--clear-cache` is too blunt for "forget where I have been": it would also
+    // discard query history and every measurement, costing speed for no reason.
+    use datui::CacheManager;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+
+    let dataset = temp_dir.path().join("a.parquet");
+    fs::write(&dataset, b"x").unwrap();
+    cache.push_recent(&dataset);
+    cache
+        .save_history_file("query", &["select 1".to_string()])
+        .unwrap();
+
+    cache.clear_recents();
+
+    assert!(cache.load_recents().is_empty(), "recents should be gone");
+    assert_eq!(
+        cache.load_history_file("query").unwrap(),
+        vec!["select 1".to_string()],
+        "query history should survive"
+    );
+}
+
+#[test]
+fn test_the_generated_default_config_is_valid_toml() {
+    // It ships as the file people edit. A default config that does not parse is the
+    // worst possible first impression, and the only thing standing between the two is
+    // that every rendered line gets commented -- including the ones a multi-line array
+    // spills onto.
+    let manager = ConfigManager::new("datui").unwrap();
+    let generated = manager.generate_default_config();
+
+    toml::from_str::<toml::Value>(&generated)
+        .expect("the generated default config must parse as TOML");
+
+    // Uncommented content would be a bug; every line is either blank or a comment.
+    for (n, line) in generated.lines().enumerate() {
+        assert!(
+            line.trim().is_empty() || line.trim_start().starts_with('#'),
+            "line {} of the generated config is live rather than commented: {line:?}",
+            n + 1
+        );
+    }
+}
+
+#[test]
+fn test_a_multi_line_array_default_is_fully_commented() {
+    // `skip` renders across ten lines. Commenting only the first left the elements
+    // behind as bare text, which does not parse.
+    let manager = ConfigManager::new("datui").unwrap();
+    let generated = manager.generate_default_config();
+
+    assert!(
+        generated.contains("# skip = ["),
+        "the skip list should appear in the generated config"
+    );
+    assert!(
+        generated.contains("#     \"node_modules\","),
+        "array elements must be commented too"
+    );
+}
+
+#[test]
+fn test_search_settings_round_trip_through_toml() {
+    let toml = r#"
+[data.search]
+enabled = false
+max_depth = 3
+skip_extra = ["archive"]
+extensions = ["parquet"]
+"#;
+    let config: AppConfig = toml::from_str(toml).unwrap();
+    assert!(!config.data.search.enabled);
+    assert_eq!(config.data.search.max_depth, 3);
+    assert_eq!(config.data.search.skip_extra, vec!["archive".to_string()]);
+    assert_eq!(config.data.search.extensions, vec!["parquet".to_string()]);
+    // Untouched fields keep their defaults, and skip_extra adds to skip rather than
+    // replacing it.
+    assert!(!config.data.search.cross_filesystems);
+    assert!(config
+        .data
+        .search
+        .skipped_dirs()
+        .contains(&"node_modules".to_string()));
+    assert!(config
+        .data
+        .search
+        .skipped_dirs()
+        .contains(&"archive".to_string()));
 }

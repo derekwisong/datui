@@ -1,0 +1,41 @@
+The home screen is where datui starts when you launch it without a path, and
+where Ctrl+O returns you from anywhere.
+
+NAVIGATION
+  ↑ / ↓ / k / j     Move the selection
+  ← / → / h / l     Collapse or expand a section
+  Tab               Cycle the sort. The control bar names the order in effect
+                    where the cursor is: "recent" under Recent, "name" under a
+                    directory, or size / modified / rows once chosen.
+  Enter             Open the dataset, enter the directory, or fold the section
+  Backspace         Leave a directory you descended into
+  Esc               Back out one layer, and quit once there is nothing left
+  Ctrl+C            Quit
+
+FINDING
+  (type)            Filter by name or column; matching is fuzzy, so "sal" finds
+                    "sales", and "customer_id" finds every dataset with that column
+                    Typing also searches below the working directory; what it
+                    finds appears under "Found"
+  Backspace         Delete a filter character
+  ~                 Type a path directly, for somewhere datui has not seen yet
+  Tab               (while typing a path) complete it
+  Delete            Forget the highlighted entry (under Recent only)
+  Shift+Delete      Forget every recent entry, after confirming
+  Ctrl+U            Clear the filter or path input
+
+WHERE THESE COME FROM, IN ORDER
+  Recent            Datasets you have opened before, most recent first
+  Current directory Where you launched datui
+  Configured        Directories from [data] directories, in the order listed
+  Recent dirs       Directories of datasets you have opened, 8 most recent
+  Elsewhere         Directories your desktop recorded, listed unexpanded
+  Found             Datasets under the working directory, from the search that
+                    typing starts. Shown only while you are typing.
+
+  Filtering keeps this grouping, so a match shows which root it came from.
+
+  Opening a dataset also teaches datui about the directory holding it, so a
+  dataset on a mount only has to be found by hand once.
+
+  datui stores nothing about your data except this list of recent paths.

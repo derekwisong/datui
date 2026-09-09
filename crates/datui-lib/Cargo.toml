@@ -49,6 +49,7 @@ ureq = { version = "2.11", optional = true }
 object_store = { version = "0.12", optional = true, default-features = false, features = ["aws", "gcp"] }
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "io-util"] }
 polars-sql = { version = "0.52", optional = true }
+ignore = "0.4.33"
 
 [dependencies.polars]
 version = "0.52"

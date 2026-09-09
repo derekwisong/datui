@@ -1643,3 +1643,78 @@ extensions = ["parquet"]
         .skipped_dirs()
         .contains(&"archive".to_string()));
 }
+
+/// The generated config invites an S3 access key and secret in its `[cloud]`
+/// section. datui creates that file, so datui decides who can read it: a plain
+/// write lands at 0644 under a typical umask, which hands the user's
+/// credentials to every other account on the machine.
+#[cfg(unix)]
+#[test]
+fn generated_config_is_not_readable_by_other_users() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let path = config_manager
+        .write_default_config(false)
+        .expect("write default config");
+
+    let mode = fs::metadata(&path)
+        .expect("stat config")
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "config should be owner-only, got {:o}",
+        mode & 0o777
+    );
+}
+
+/// `--generate-config --force` overwrites a file that already exists, and
+/// `OpenOptions::mode` only applies when creating. Without an explicit
+/// `set_permissions`, a config first written by an older datui would keep its
+/// 0644 forever.
+#[cfg(unix)]
+#[test]
+fn regenerating_over_a_world_readable_config_tightens_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let path = config_manager
+        .write_default_config(false)
+        .expect("write default config");
+
+    // Simulate a config left behind by a version that wrote 0644.
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("loosen");
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+
+    config_manager
+        .write_default_config(true)
+        .expect("regenerate with force");
+
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "regenerating should tighten an existing world-readable config"
+    );
+}
+
+/// The template is what steers people toward putting a secret in this file at
+/// all, so it should say where the secret is better kept.
+#[test]
+fn cloud_secret_comment_points_at_the_environment() {
+    let (_temp_dir, config_manager) = setup_test_config_dir();
+    let template = config_manager.generate_default_config();
+
+    assert!(
+        template.contains("s3_secret_access_key"),
+        "template should carry the cloud credential fields"
+    );
+    assert!(
+        template.contains("AWS_SECRET_ACCESS_KEY"),
+        "template should name the environment variable as the better home for a secret"
+    );
+}

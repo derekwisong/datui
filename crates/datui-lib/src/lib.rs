@@ -9785,6 +9785,27 @@ impl Widget for &mut App {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        // Opening a remote file downloads it to a temp file so Polars can scan
+        // it lazily. Opening a *different* file removes the previous one, which
+        // is what `AppEvent::Open` does, but quitting removed nothing: the last
+        // dataset someone viewed stayed in the temp directory until something
+        // else cleared it. The file is mode 0600, so this is disk hygiene
+        // rather than exposure, but the contents are the user's data and they
+        // did not ask for a copy to be left behind.
+        //
+        // Drop rather than the end of `run`, because it is the one place that
+        // covers every exit: a normal quit, an error return, an unwind from a
+        // panic, and the Python binding calling `run` again in the same
+        // process.
+        #[cfg(feature = "http")]
+        if let Some(path) = self.http_temp_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.
 pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     use std::io::Write;

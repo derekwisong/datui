@@ -205,11 +205,18 @@ fn matches_extension(path: &Path, extensions: &[String]) -> bool {
 }
 
 /// A label naming the dataset by where it sits under the search root.
+///
+/// Always with forward slashes. The separator here is a display choice, not a path:
+/// the row carries its real `path` for opening, and a list mixing `a/b/c.parquet`
+/// with `a\b\c.parquet` depending on the platform is worse to read and worse to
+/// write tests against.
 fn relative_label(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned()
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Where a search should start, given where the user is.

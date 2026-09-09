@@ -108,9 +108,15 @@ fn test_a_path_no_mount_covers_is_unknown_rather_than_wrong() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn test_a_relative_path_resolves_against_the_working_directory() {
     // Mount points are absolute. Without joining, a file sitting on the disk under
     // the caller's feet reports "unknown".
+    //
+    // Linux only, because it needs a real mount table to resolve against, and
+    // /proc/self/mountinfo is Linux's. Elsewhere every path is "unknown" and there is
+    // nothing here to test -- the platform-independent half, that a rooted path is
+    // never mangled by the joining, is covered by the synthetic-mountinfo tests above.
     let m = Mounts::current();
     let here = m.describe(Path::new("Cargo.toml"));
     assert_ne!(
@@ -118,6 +124,20 @@ fn test_a_relative_path_resolves_against_the_working_directory() {
         Locality::Unknown,
         "a file in the working directory should resolve to a real filesystem"
     );
+}
+
+#[test]
+fn test_a_rooted_unix_path_is_never_treated_as_relative() {
+    // Windows calls "/mnt/gilead/data" relative, because absolute there means a drive
+    // or UNC prefix. Joining the working directory onto it produced a path matching no
+    // mount at all.
+    let m = mounts();
+    assert_eq!(
+        m.fstype_for(Path::new("/mnt/gilead/data/sets/prices.parquet")),
+        Some("nfs4"),
+        "a rooted path must resolve against the mount table as given"
+    );
+    assert_eq!(m.fstype_for(Path::new("/home/derek/x")), Some("btrfs"));
 }
 
 #[test]

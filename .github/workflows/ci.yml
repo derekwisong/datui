@@ -117,7 +117,10 @@ jobs:
         run: cargo build --workspace --tests --locked
 
       - name: Run tests
-        run: cargo test --workspace --locked
+        # --no-fail-fast so one failing test binary does not hide the others. The
+        # macOS and Windows jobs only run on a release version, so a round trip here
+        # costs a re-tag, not a re-push -- finding every failure in one run matters.
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Verify binary exists
         run: test -f target/debug/datui || (echo "Binary not found" && exit 1)
@@ -199,7 +202,10 @@ jobs:
         run: cargo build --workspace --tests --locked
 
       - name: Run tests
-        run: cargo test --workspace --locked
+        # --no-fail-fast so one failing test binary does not hide the others. The
+        # macOS and Windows jobs only run on a release version, so a round trip here
+        # costs a re-tag, not a re-push -- finding every failure in one run matters.
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Verify binary exists
         run: |
@@ -272,7 +278,10 @@ jobs:
         run: cargo build --workspace --tests --locked
 
       - name: Run tests
-        run: cargo test --workspace --locked
+        # --no-fail-fast so one failing test binary does not hide the others. The
+        # macOS and Windows jobs only run on a release version, so a round trip here
+        # costs a re-tag, not a re-push -- finding every failure in one run matters.
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Verify binary exists
         run: test -f target/debug/datui || (echo "Binary not found" && exit 1)

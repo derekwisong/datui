@@ -80,7 +80,7 @@ features = [
 # "sql" enabled via optional feature sql = ["polars/sql", "dep:polars-sql"]
 
 [dependencies.polars-parquet]
-version = "0.52"
+version = "0.55"
 default-features = false
 
 [dev-dependencies]

@@ -5,7 +5,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 mod common;
@@ -848,5 +848,295 @@ fn test_hive_dir_loads_and_counts_via_footers() {
     assert!(
         state.display_slice_df().is_some(),
         "first buffer should be populated"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Abandoning an in-flight load (Ctrl+O to the home screen)
+// ---------------------------------------------------------------------------
+
+/// Drains like the real main loop does: a handler that returns a follow-up event
+/// queues it and *ends the pass*, so one frame is drawn between chain steps.
+///
+/// `pump_open_until_loaded` above chases the chain without breaking, which cannot
+/// reproduce a keypress landing between two steps — exactly the window abandonment
+/// has to survive. Returns the number of chain steps taken this pass.
+fn drain_like_main_loop(
+    app: &mut App,
+    tx: &mpsc::Sender<AppEvent>,
+    rx: &mpsc::Receiver<AppEvent>,
+) -> usize {
+    let mut steps = 0;
+    loop {
+        match rx.try_recv() {
+            Ok(AppEvent::Crash(msg)) => panic!("Crash during load: {msg}"),
+            Ok(event) => {
+                if let Some(next) = app.event(&event) {
+                    tx.send(next).unwrap();
+                    steps += 1;
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    steps
+}
+
+fn ctrl_o() -> AppEvent {
+    AppEvent::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+}
+
+/// Ctrl+O at any point during a load must abandon it: whatever is on screen when the
+/// user goes home is what is still there afterwards. The load runs to completion in
+/// the background and its results are dropped.
+///
+/// Parameterised over how many chain steps have run, because the pipeline has many
+/// interstitial frames and each one is a place the user can press the key.
+#[test]
+fn test_abandoned_load_never_installs_itself_afterwards() {
+    common::ensure_sample_data();
+    let path = PathBuf::from("tests/sample-data/large_dataset.parquet");
+    let area = Rect::new(0, 0, 120, 50);
+
+    for abandon_after in 0..8 {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), common::test_runtime());
+        tx.send(AppEvent::Open(vec![path.clone()], OpenOptions::default()))
+            .unwrap();
+
+        let mut steps = 0usize;
+        let mut abandoned_at: Option<(Option<PathBuf>, bool)> = None;
+        let mut ticks_since_abandon = 0usize;
+
+        for _tick in 0..200 {
+            steps += drain_like_main_loop(&mut app, &tx, &rx);
+
+            // Abandon once the chain has taken `abandon_after` steps, or as soon as it
+            // has finished if it was shorter than that — going home after a completed
+            // load must be just as inert.
+            let chain_done = !app.is_busy() && app.data_table_state.is_some();
+            if abandoned_at.is_none() && (steps >= abandon_after || chain_done) {
+                app.event(&ctrl_o());
+                abandoned_at = Some((
+                    app.open_path().map(Path::to_path_buf),
+                    app.data_table_state.is_some(),
+                ));
+            }
+
+            let mut buf = Buffer::empty(area);
+            app.render(area, &mut buf);
+
+            // Long enough for the abandoned scan, schema and count to finish and be
+            // dropped; running the full 200 ticks on a million rows is pure wall clock.
+            if abandoned_at.is_some() {
+                ticks_since_abandon += 1;
+                if ticks_since_abandon >= 40 {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let (path_at_abandon, had_state) = abandoned_at.expect("never reached the abandon point");
+
+        assert_eq!(
+            app.input_mode,
+            InputMode::Home,
+            "abandon_after {abandon_after}: should still be at home"
+        );
+        assert!(
+            !app.is_busy(),
+            "abandon_after {abandon_after}: abandoning a load must clear busy"
+        );
+        assert_eq!(
+            app.open_path().map(Path::to_path_buf),
+            path_at_abandon,
+            "abandon_after {abandon_after}: the abandoned load swapped its dataset in afterwards"
+        );
+        assert_eq!(
+            app.data_table_state.is_some(),
+            had_state,
+            "abandon_after {abandon_after}: data_table_state changed after abandonment"
+        );
+    }
+}
+
+/// The regression this whole change exists for: abandon a slow load, open something
+/// else, and the abandoned load must not overwrite the dataset you actually asked
+/// for — including its row count, which is counted by a separate background task.
+#[test]
+fn test_abandoned_load_does_not_corrupt_the_next_open() {
+    common::ensure_sample_data();
+    let big = PathBuf::from("tests/sample-data/large_dataset.parquet");
+    let small = PathBuf::from("tests/sample-data/sales.parquet");
+    let area = Rect::new(0, 0, 120, 50);
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    tx.send(AppEvent::Open(vec![big], OpenOptions::default()))
+        .unwrap();
+
+    // Let the big load get underway, then leave.
+    for _tick in 0..3 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+    }
+    app.event(&ctrl_o());
+    assert_eq!(app.input_mode, InputMode::Home);
+
+    tx.send(AppEvent::Open(vec![small.clone()], OpenOptions::default()))
+        .unwrap();
+
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let needs = app
+            .data_table_state
+            .as_mut()
+            .map(|s| {
+                let n = s.needs_recollect;
+                s.needs_recollect = false;
+                n
+            })
+            .unwrap_or(false);
+        if needs {
+            app.spawn_async_collect("Loading buffer...");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert_eq!(
+        app.open_path(),
+        Some(small.as_path()),
+        "the dataset opened after abandoning should be the one on screen"
+    );
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("second open should have installed a dataset");
+    assert_eq!(
+        state.num_rows_if_valid(),
+        Some(5000),
+        "row count belongs to the dataset that is open, not the abandoned one"
+    );
+}
+
+/// Abandoning drops the incoming dataset, not the one already on screen. Esc from
+/// home has to put the user back where they were.
+#[test]
+fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
+    common::ensure_sample_data();
+    let open_first = PathBuf::from("tests/sample-data/people.parquet");
+    let abandoned = PathBuf::from("tests/sample-data/large_dataset.parquet");
+
+    let area = Rect::new(0, 0, 120, 50);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    tx.send(AppEvent::Open(
+        vec![open_first.clone()],
+        OpenOptions::default(),
+    ))
+    .unwrap();
+
+    // Render as we go: `visible_rows` is set by the render, and without it there is
+    // no display slice to assert on later.
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let needs = app
+            .data_table_state
+            .as_mut()
+            .map(|s| {
+                let n = s.needs_recollect;
+                s.needs_recollect = false;
+                n
+            })
+            .unwrap_or(false);
+        if needs {
+            app.spawn_async_collect("Loading buffer...");
+        }
+        if app.data_table_state.is_some() && !app.is_busy() && !needs {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(app.open_path(), Some(open_first.as_path()));
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .is_some_and(|s| s.display_slice_df().is_some()),
+        "first dataset should be displayable before we abandon anything"
+    );
+
+    // Start a second load and leave before it can install.
+    tx.send(AppEvent::Open(vec![abandoned], OpenOptions::default()))
+        .unwrap();
+    drain_like_main_loop(&mut app, &tx, &rx);
+    app.event(&ctrl_o());
+
+    for _tick in 0..100 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+
+    assert_eq!(
+        app.input_mode,
+        InputMode::Normal,
+        "Esc from home should return to the open dataset"
+    );
+    assert_eq!(
+        app.open_path(),
+        Some(open_first.as_path()),
+        "the abandoned load must not have replaced what was open"
+    );
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .is_some_and(|s| s.display_slice_df().is_some()),
+        "the dataset we returned to should still have its buffer"
+    );
+}
+
+/// Going home clears the *load's* busy state, and leaves `task_generation` alone —
+/// that counter also gates analysis and export results, which keep running.
+#[test]
+fn test_entering_home_clears_load_state_but_not_task_generation() {
+    common::ensure_sample_data();
+    let path = PathBuf::from("tests/sample-data/large_dataset.parquet");
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    tx.send(AppEvent::Open(vec![path], OpenOptions::default()))
+        .unwrap();
+    drain_like_main_loop(&mut app, &tx, &rx);
+    assert!(app.is_busy(), "a load in flight should be busy");
+
+    let generation_before = app.task_generation();
+    app.enter_home();
+
+    assert_eq!(app.input_mode, InputMode::Home);
+    assert!(
+        !app.is_busy(),
+        "abandoning should clear the load's busy flag"
+    );
+    assert!(
+        app.should_drain_keys(),
+        "keys typed at the frozen screen were meant for the load"
+    );
+    assert_eq!(
+        app.task_generation(),
+        generation_before,
+        "going home must not cancel an in-flight export or analysis"
     );
 }

@@ -1112,6 +1112,12 @@ pub struct App {
     number_format: NumberFormatSettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
     task_generation: u64,            // Incremented to invalidate stale background results
+    /// True while the load started by the most recent `Open`/`OpenLazyFrame` is still
+    /// wanted. Going home clears it, which is what abandons an in-flight load: the
+    /// remaining `Do*` chain events and the results that would install a dataset all
+    /// check this and bail. Deliberately separate from `task_generation`, which also
+    /// gates analysis and export results — going home must not cancel an export.
+    load_active: bool,
     /// LazyFrame produced by a background scan, tagged with the generation that
     /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
     pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
@@ -1149,6 +1155,12 @@ impl App {
         self.task_generation
     }
 
+    /// Path of the dataset currently installed, if any. Exposed for tests that need to
+    /// assert an abandoned load did not swap a dataset in after the fact.
+    pub fn open_path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
     /// Returns true when the main loop should drain the crossterm key buffer after render.
     pub fn should_drain_keys(&self) -> bool {
         self.drain_keys_on_next_loop
@@ -1184,6 +1196,13 @@ impl App {
         options: &OpenOptions,
         debug_label: Option<String>,
     ) {
+        // Installing a dataset is the point of no return for abandonment, so every
+        // caller has to have checked. A new one that forgets swaps a dataset in
+        // underneath the home screen.
+        debug_assert!(
+            self.load_active,
+            "apply_schema_ready called for an abandoned load"
+        );
         self.debug.schema_load = debug_label;
         self.parquet_metadata_cache = None;
         self.export_df = None;
@@ -1574,6 +1593,7 @@ impl App {
                 }),
             runtime,
             task_generation: 0,
+            load_active: false,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             len_count_inflight: None,
@@ -1843,11 +1863,35 @@ impl App {
         });
     }
 
-    /// Enter the home screen, rebuilding it. Safe to call while a load is in flight.
+    /// Enter the home screen, rebuilding it, abandoning any in-flight load.
     ///
     /// Returning home puts the cursor on whatever you currently have open, so the
     /// round trip out and back lands where you left rather than at the top.
+    ///
+    /// Abandoning is `load_active = false` plus clearing the load's own UI state.
+    /// Nothing is cancelled: the background work runs to completion and its results
+    /// are dropped on arrival. Work that is not a load — an export, an analysis — is
+    /// deliberately left alone, so its progress indicator and its completion modal
+    /// must survive this.
+    pub fn abandon_load(&mut self) {
+        self.load_active = false;
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        {
+            self.pending_download = None;
+        }
+        // Only a load's own busy state is cleared. An export sets `busy` and owns
+        // `loading_state` too, and it keeps running.
+        if matches!(self.loading_state, LoadingState::Loading { .. }) {
+            self.loading_state = LoadingState::Idle;
+            self.busy = false;
+            self.status_message = None;
+        }
+        // Keys typed at the frozen screen were meant for the load, not for home.
+        self.drain_keys_on_next_loop = true;
+    }
+
     pub fn enter_home(&mut self) {
+        self.abandon_load();
         self.home.status = None;
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
@@ -7258,6 +7302,7 @@ impl App {
                     let _ = std::fs::remove_file(p);
                 }
                 self.task_generation = self.task_generation.wrapping_add(1);
+                self.load_active = true;
                 self.busy = true;
                 let first = &paths[0];
                 // Every open records a recent, not just those started from the home
@@ -7301,6 +7346,7 @@ impl App {
             }
             AppEvent::OpenLazyFrame(lf, options) => {
                 self.task_generation = self.task_generation.wrapping_add(1);
+                self.load_active = true;
                 self.busy = true;
                 self.loading_state = LoadingState::Loading {
                     file_path: None,
@@ -7311,6 +7357,11 @@ impl App {
                 Some(AppEvent::DoLoadSchema(lf.clone(), None, options.clone()))
             }
             AppEvent::DoLoadScanPaths(paths, options) => {
+                // The user went home while this load was in flight. The chain stops
+                // here; whatever is already running finishes and is discarded.
+                if !self.load_active {
+                    return None;
+                }
                 let first = &paths[0];
                 let src = source::input_source(first);
                 if paths.len() > 1 {
@@ -7587,7 +7638,9 @@ impl App {
             } => {
                 // A scan that a newer open has already superseded is dropped on the
                 // floor: its LazyFrame describes data nobody is looking at any more.
-                if *generation != self.task_generation {
+                // The slot is deliberately left alone here — a newer task may already
+                // have written its result into it, and taking would discard that.
+                if *generation != self.task_generation || !self.load_active {
                     return None;
                 }
                 let (slot_gen, lf) = self
@@ -7619,10 +7672,16 @@ impl App {
                 ))
             }
             AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 self.spawn_scan("Scanning string columns...", paths.clone(), options.clone())
             }
             #[cfg(feature = "http")]
             AppEvent::DoDownloadHttp(url, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 let url = url.clone();
                 let options = options.clone();
                 self.spawn_bg("Downloading...", move |gen, tx| {
@@ -7651,6 +7710,9 @@ impl App {
             }
             #[cfg(feature = "cloud")]
             AppEvent::DoDownloadS3ToTemp(s3_url, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 let s3_url = s3_url.clone();
                 let cloud_config = self.app_config.cloud.clone();
                 let options = options.clone();
@@ -7676,6 +7738,9 @@ impl App {
             }
             #[cfg(feature = "cloud")]
             AppEvent::DoDownloadGcsToTemp(gs_url, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 let gs_url = gs_url.clone();
                 let options = options.clone();
                 let rt = self.runtime.clone();
@@ -7704,32 +7769,42 @@ impl App {
                 temp_path,
                 options,
             } => {
-                if *generation == self.task_generation {
-                    self.http_temp_path = Some(temp_path.clone());
-                    if let LoadingState::Loading {
-                        file_path,
-                        file_size,
-                        ..
-                    } = &self.loading_state
-                    {
-                        self.loading_state = LoadingState::Loading {
-                            file_path: file_path.clone(),
-                            file_size: *file_size,
-                            current_phase: "Scanning".to_string(),
-                            progress_percent: 30,
-                        };
-                    }
-                    self.status_message = Some("Scanning...".to_string());
-                    return Some(AppEvent::DoLoadFromHttpTemp(
-                        temp_path.clone(),
-                        options.clone(),
-                    ));
+                // `http_temp_path` below is the only thing that ever records this file
+                // for cleanup, so a download we are not going to use has to remove it
+                // here or it sits in the temp directory for good — and an abandoned
+                // one can be gigabytes.
+                if *generation != self.task_generation || !self.load_active {
+                    let _ = std::fs::remove_file(temp_path);
+                    return None;
                 }
-                // Stale download result — ignore.
-                None
+                self.http_temp_path = Some(temp_path.clone());
+                if let LoadingState::Loading {
+                    file_path,
+                    file_size,
+                    ..
+                } = &self.loading_state
+                {
+                    self.loading_state = LoadingState::Loading {
+                        file_path: file_path.clone(),
+                        file_size: *file_size,
+                        current_phase: "Scanning".to_string(),
+                        progress_percent: 30,
+                    };
+                }
+                self.status_message = Some("Scanning...".to_string());
+                Some(AppEvent::DoLoadFromHttpTemp(
+                    temp_path.clone(),
+                    options.clone(),
+                ))
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             AppEvent::DoLoadFromHttpTemp(temp_path, options) => {
+                // Ahead of the `http_temp_path` assignment: an abandoned download is
+                // ours to clean up, and nothing else records this file for removal.
+                if !self.load_active {
+                    let _ = std::fs::remove_file(temp_path);
+                    return None;
+                }
                 self.http_temp_path = Some(temp_path.clone());
                 let display_path = match &self.loading_state {
                     LoadingState::Loading { file_path, .. } => file_path.clone(),
@@ -7783,6 +7858,9 @@ impl App {
                 }
             }
             AppEvent::DoLoadSchema(lf, path, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 // Set "Caching schema" and return so the UI draws this phase before we block in DoLoadSchemaBlocking
                 if let LoadingState::Loading {
                     file_path,
@@ -7804,6 +7882,9 @@ impl App {
                 ))
             }
             AppEvent::DoLoadSchemaBlocking(lf, path, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 self.debug.schema_load = None;
                 // Fast path for hive directory: infer schema from one parquet file instead of collect_schema() over all files.
                 if options.single_spine_schema
@@ -8062,6 +8143,9 @@ impl App {
                 None
             }
             AppEvent::DoLoadBuffer => {
+                if !self.load_active {
+                    return None;
+                }
                 if !self.spawn_async_collect("Loading buffer...") {
                     self.loading_state = LoadingState::Idle;
                     self.busy = false;
@@ -8070,6 +8154,9 @@ impl App {
                 None
             }
             AppEvent::DoLoad(paths, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 let first = &paths[0];
                 // Check if file is compressed (only single-file compressed CSV supported for now)
                 let compression = options
@@ -8128,6 +8215,9 @@ impl App {
                 }
             }
             AppEvent::DoDecompress(paths, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 // Actually perform decompression now (after UI has rendered "Decompressing")
                 match self.load(paths, options) {
                     Ok(_) => Some(AppEvent::DoLoadBuffer),
@@ -8366,7 +8456,10 @@ impl App {
                 options,
                 debug_label,
             } => {
-                if *generation == self.task_generation {
+                // `load_active` also gates the "loading failed silently" reset below:
+                // an abandoned load must not clear busy/loading state that a newer
+                // load, or an export, may already own.
+                if *generation == self.task_generation && self.load_active {
                     let taken = self
                         .pending_schema_result
                         .lock()

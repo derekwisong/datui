@@ -71,6 +71,26 @@ TAPE_ACTIONS[10] = {
 }
 
 
+def _build_home_fixture(repo_root: Path, _tape_number: int) -> None:
+    """Build the isolated workspace, cache and config the home-screen demo records.
+
+    The home screen shows what is around you, so recording one on a developer's
+    machine would put their recents and their desktop's recently-used list on screen.
+    The fixture is the whole answer: its own everything, generated fresh each run.
+    """
+    script = repo_root / "scripts" / "demos" / "make-home-fixture.py"
+    python = repo_root / ".venv" / "bin" / "python"
+    interpreter = str(python) if python.exists() else sys.executable
+    subprocess.run([interpreter, str(script)], cwd=repo_root, check=True, capture_output=True)
+
+
+# Tape 12 (home screen): needs an isolated workspace, cache and config -- see the
+# function above for why. Left in place afterwards so the tape can be re-run by hand.
+TAPE_ACTIONS[12] = {
+    "pre": [_build_home_fixture],
+}
+
+
 class VHSTapeDemo:
     """
     Represents a single VHS tape demo: applies the header template and runs

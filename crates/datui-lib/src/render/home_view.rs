@@ -713,8 +713,11 @@ fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'s
         }
     }
     if let Some(modified) = entry.modified {
+        // "now" already reads as a time; "now ago" does not.
         let age = discover::format_age(modified);
-        if !age.is_empty() {
+        if age == "now" {
+            facts.push(("modified", age, plain));
+        } else if !age.is_empty() {
             facts.push(("modified", format!("{age} ago"), plain));
         }
     }

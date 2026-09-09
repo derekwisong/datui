@@ -1,5 +1,7 @@
 # The Home Screen
 
+![Home Screen Demo](../demos/12-home-screen.gif)
+
 Run `datui` with no arguments to open the home screen: a list of datasets, with
 what each contains shown before you open it. <kbd>Ctrl</kbd>+<kbd>O</kbd> returns
 here from anywhere.

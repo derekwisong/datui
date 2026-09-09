@@ -2410,3 +2410,82 @@ fn test_every_row_is_told_which_filesystem_it_is_on() {
         "on Linux a listed row should know which filesystem it is on"
     );
 }
+
+#[test]
+fn test_measuring_a_row_keeps_what_the_footer_said_beyond_the_row_count() {
+    // Everything a Parquet footer gives up beyond rows and columns -- codec,
+    // uncompressed size, row groups, partition layout -- used to be read, cached, and
+    // then dropped on the way to the screen, because the measurement record did not
+    // carry it. A hive dataset measured the ordinary way showed no partitions.
+    use datui::discover::{Cost, Partitions};
+    use datui::home::measured_from;
+
+    let mut probe = datui::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");
+    probe.rows = Some(1_000);
+    probe.cols = Some(4);
+    probe.cost = Cost {
+        source: Some("nfs4".into()),
+        uncompressed: Some(2_000_000),
+        codec: Some("zstd".into()),
+        row_groups: Some(8),
+        partitions: Some(Partitions {
+            keys: vec!["year".into()],
+            first_key_values: vec!["2024".into()],
+            count: 1,
+            more: false,
+        }),
+    };
+    let original = datui::discover::Entry::for_test(std::path::Path::new("/tmp/events"), "events");
+
+    let measured = measured_from(&probe, &original);
+    assert_eq!(measured.cost.codec.as_deref(), Some("zstd"));
+    assert_eq!(measured.cost.row_groups, Some(8));
+    assert_eq!(measured.cost.uncompressed, Some(2_000_000));
+    assert!(measured.cost.partitions.is_some());
+    assert_eq!(
+        measured.cost.source, None,
+        "the source is resolved from the live mount table, not carried from a probe"
+    );
+}
+
+#[test]
+fn test_applying_a_measurement_puts_the_layout_on_the_row() {
+    use datui::discover::Cost;
+
+    let tmp = TempDir::new().unwrap();
+    let path = touch(tmp.path(), "events.parquet");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+    home.enriched.insert(
+        path.clone(),
+        datui::home::Measured {
+            rows: Some(10),
+            cols: Some(2),
+            size: Some(100),
+            columns: vec!["a".into()],
+            cost: Cost {
+                codec: Some("snappy".into()),
+                row_groups: Some(3),
+                ..Default::default()
+            },
+        },
+    );
+    home.apply_measurements();
+
+    let row = home
+        .sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .find(|r| r.path == path)
+        .expect("the row should still be listed");
+    assert_eq!(row.cost.codec.as_deref(), Some("snappy"));
+    assert_eq!(row.cost.row_groups, Some(3));
+    assert!(
+        row.cost.source.is_some(),
+        "the live source must survive the measurement being folded in"
+    );
+}

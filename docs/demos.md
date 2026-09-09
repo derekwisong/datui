@@ -6,6 +6,22 @@ This page showcases interactive demonstrations of Datui's features.
 
 ![Overview Demo](demos/11-overview.gif)
 
+## Home Screen
+
+![Home Screen Demo](demos/12-home-screen.gif)
+
+**What it shows:**
+- Running `datui` with no arguments
+- Recents, the current directory, and directories of datasets opened before
+- The details pane: source filesystem, rows, columns, size on disk, size once
+  decompressed with its codec and ratio, row groups, and hive partition layout
+- Typing to filter, with the matched characters underlined
+- `Found`, the recursive search of the working directory that typing starts
+- Matching on a *column* (`tic` finds every dataset with a `ticker` column)
+- Opening a dataset with `Enter`
+
+See [The Home Screen](user-guide/home-screen.md) for the full guide.
+
 ## Navigation
 
 ![Basic Navigation Demo](demos/01-basic-navigation.gif)

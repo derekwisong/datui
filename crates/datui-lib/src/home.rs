@@ -192,6 +192,13 @@ pub struct Measured {
     pub size: Option<u64>,
     /// Column names, when the format gave them up for free.
     pub columns: Vec<String>,
+    /// What opening it costs: compression, layout, partitioning.
+    ///
+    /// Carried here for the same reason the row count is. Without it, everything a
+    /// footer said beyond `rows` and `cols` was read, recorded in the cache, and then
+    /// dropped on the way to the screen -- so a hive dataset measured the ordinary
+    /// way showed no partitions, and a compressed file no codec.
+    pub cost: crate::discover::Cost,
 }
 
 /// How rows are ordered within each section.
@@ -393,6 +400,12 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
         cols: probe.cols,
         size: probe.size.or(original.size),
         columns: probe.columns.clone(),
+        // The source is resolved from the live mount table on every listing, so only
+        // what the file said about itself is carried forward.
+        cost: crate::discover::Cost {
+            source: None,
+            ..probe.cost.clone()
+        },
     }
 }
 
@@ -1264,6 +1277,11 @@ impl HomeState {
                     if !m.columns.is_empty() {
                         row.columns = m.columns.clone();
                     }
+                    // Keep the source, which came from the mount table just now; take
+                    // everything else, which came from the file.
+                    let source = row.cost.source.take();
+                    row.cost = m.cost.clone();
+                    row.cost.source = source;
                 }
             }
         }

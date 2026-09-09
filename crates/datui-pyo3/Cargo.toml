@@ -1,8 +1,16 @@
+# Its own workspace root. The root Cargo.toml already excludes this crate, but
+# that only works when the repository sits at the top of the directory tree.
+# Declaring the table here makes the crate independent of whatever is above it,
+# so `cargo deny --manifest-path crates/datui-pyo3/Cargo.toml` and `maturin`
+# work from a git worktree or a nested checkout too.
+[workspace]
+
 [package]
 name = "datui-pyo3"
 version = "0.3.2-dev"
 edition = "2021"
 description = "Python bindings for datui (view LazyFrame in the TUI)"
+license = "MIT"
 
 [lib]
 name = "_datui"
@@ -10,7 +18,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 bincode = { version = "2", features = ["serde"] }
-datui = { path = "../datui-lib", package = "datui-lib" }
+datui = { path = "../datui-lib", package = "datui-lib", version = "0.3.2-dev" }
 polars = { version = "0.52", features = ["lazy", "serde-lazy"] }
 polars-plan = { version = "0.52", features = ["serde"] }
 pyo3 = { version = "0.26", features = ["extension-module", "auto-initialize", "abi3-py38"] }

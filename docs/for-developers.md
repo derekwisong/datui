@@ -58,6 +58,7 @@ cargo build --release
 
 - The [Setup Script](for-developers/setup-script.md) will help you get your environment ready
 - Learn how to [run the tests](for-developers/tests.md)
+- Run the [security checks](for-developers/security-checks.md) before touching dependencies or workflows
 - [Python Bindings](for-developers/python-bindings.md) — build, test, and run the Python extension
 - Build OS packages (deb, rpm, AUR) with [Building Packages](for-developers/packaging.md)
 - See the [Contributing Guide](for-developers/contributing.md)

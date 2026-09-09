@@ -1,0 +1,58 @@
+# Dependabot keeps dependencies current so that a published advisory turns into a
+# pull request instead of a surprise. github-actions is the most important
+# ecosystem here: actions are pinned to commit SHAs, and Dependabot is what moves
+# a pin forward when the upstream action releases a fix.
+version: 2
+
+updates:
+  # Rust: the root workspace (datui, datui-lib, datui-cli).
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine patch/minor bumps keeps the noise down. Major bumps
+      # still arrive as individual PRs, because those need real review.
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, rust]
+
+  # datui-pyo3 is excluded from the root workspace and has its own lockfile, so
+  # Dependabot has to be pointed at it separately.
+  - package-ecosystem: cargo
+    directory: "/crates/datui-pyo3"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, rust, python-bindings]
+
+  # GitHub Actions: SHA pins do not update themselves. This is the job that
+  # keeps a pinned action from silently rotting on a version with a known bug.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, ci]
+
+  # The Python package and the build/release helper scripts.
+  - package-ecosystem: pip
+    directory: "/python"
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, python]
+
+  - package-ecosystem: pip
+    directory: "/scripts"
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, python, ci]

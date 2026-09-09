@@ -1,0 +1,93 @@
+# Supply-chain and CI-hygiene checks.
+#
+# Two things run here:
+#   cargo-deny  - RustSec advisories, licenses, banned/duplicate crates, and
+#                 crate sources, checked against Cargo.lock. Config: deny.toml.
+#   zizmor      - static analysis of these workflow files themselves, for the
+#                 patterns that let a pull request steal secrets or poison a
+#                 build.
+#
+# The schedule matters as much as the pull_request trigger: a new advisory can
+# land against a dependency that has not changed, and nothing but a timer will
+# notice that.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 06:00 UTC, a few hours after Dependabot's weekly run.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+# Least privilege by default. A job that needs more asks for it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (${{ matrix.checks }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Split so that an expired license exception cannot mask a live
+        # advisory, and so the failing job name says which check failed.
+        checks:
+          - advisories
+          - bans licenses sources
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check workspace
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check ${{ matrix.checks }}
+
+      # datui-pyo3 is excluded from the root workspace and has its own lockfile,
+      # so the check above does not see it. It is also the crate that
+      # deserializes caller-supplied query plans, so it gets audited too.
+      - name: Check datui-pyo3
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: crates/datui-pyo3/Cargo.toml
+          command: check ${{ matrix.checks }}
+
+  zizmor:
+    name: zizmor (workflow analysis)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Findings go to the Security tab rather than dying in a log line, so they
+      # can be triaged, and dismissed with a recorded reason.
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: true
+          persona: regular
+          config: zizmor.yml
+          # Blocking at high severity. The unpinned actions, over-broad tokens
+          # and shell interpolations that made up the original backlog are
+          # fixed, so a new high-severity finding means a workflow edit
+          # introduced one. Two known high findings are suppressed in
+          # zizmor.yml with the reasoning; everything below high is reported to
+          # the Security tab without failing the build.
+          min-severity: high

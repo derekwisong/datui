@@ -12,6 +12,32 @@ on:
         description: 'Release tag name (e.g. v1.0.0)'
         required: true
         type: string
+    # Declared one by one rather than taking `secrets: inherit` from the caller.
+    # inherit hands this workflow every secret in the repository, including any
+    # added later for something unrelated. Naming them keeps the blast radius of
+    # a bug in any step here to the credentials that step actually needs, and
+    # makes the publishing surface readable in one place.
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: false
+      HOMEBREW_TAP_TOKEN:
+        required: false
+      PYPI_API_TOKEN:
+        required: false
+      AUR_USERNAME:
+        required: false
+      AUR_EMAIL:
+        required: false
+      AUR_SSH_PRIVATE_KEY:
+        required: false
+      WINGET_TOKEN:
+        required: false
+      GPG_PRIVATE_KEY:
+        required: false
+      GPG_EMAIL:
+        required: false
+      DATUI_APT_TOKEN:
+        required: false
   workflow_dispatch:
     inputs:
       tag_name:
@@ -33,32 +59,42 @@ jobs:
         id: resolve_tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed through the environment rather than interpolated into the
+          # script. workflow_dispatch inputs are free text, so an interpolated
+          # `${{ inputs.tag_name }}` would let anyone who can run this workflow
+          # inject shell into a job that holds every publishing token.
+          INPUT_TAG: ${{ inputs.tag_name }}
+          REPO: ${{ github.repository }}
         run: |
-          if [ -n "${{ inputs.tag_name }}" ]; then
-            TAG="${{ inputs.tag_name }}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
           else
-            TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName -q '.[0].tagName')
+            TAG=$(gh release list --repo "$REPO" --limit 1 --json tagName -q '.[0].tagName')
           fi
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved release tag: $TAG"
 
       - name: Export tag for job output
         id: export_tag
-        run: echo "tag_name=${{ steps.resolve_tag.outputs.tag_name }}" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ steps.resolve_tag.outputs.tag_name }}
+        run: echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
 
   publish-crates-io:
     needs: resolve-release
     runs-on: ubuntu-latest
     steps:
       - name: Checkout at release tag
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           ref: ${{ needs.resolve-release.outputs.tag_name }}
           fetch-depth: 0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev
 

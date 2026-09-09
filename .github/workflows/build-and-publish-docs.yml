@@ -4,10 +4,10 @@
 
 name: Build and publish docs
 
+# Read-only by default. The `deploy-pages` job grants itself pages/id-token;
+# the build job that runs mdbook and the docs scripts does not need them.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 on:
   workflow_dispatch: {}
@@ -19,13 +19,14 @@ jobs:
   build-docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.x'
           cache: 'pip'
@@ -37,11 +38,12 @@ jobs:
           pip install -r scripts/requirements.txt
 
       - name: Install Rust (for mdbook when not cached)
-        uses: dtolnay/rust-toolchain@stable
-
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
       - name: Cache mdbook
         id: cache-mdbook
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.cargo/bin/mdbook
           key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
@@ -59,7 +61,7 @@ jobs:
           echo "version_sha=$VERSION_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore docs cache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: book
           key: docs-book-${{ runner.os }}-${{ steps.compute-docs-key.outputs.version_sha }}
@@ -113,7 +115,7 @@ jobs:
           find book-deploy -name .built_sha -delete
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ./book-deploy
 
@@ -128,8 +130,8 @@ jobs:
       id-token: write
     steps:
       - name: Setup Pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

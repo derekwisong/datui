@@ -1,0 +1,58 @@
+# OpenSSF Scorecard.
+#
+# Scores the repository's supply-chain posture (branch protection, action
+# pinning, signed releases, token permissions, dependency update tooling) and
+# writes each check to the Security tab with a specific remediation.
+#
+# It is a checklist generator, not a gate. Nothing here can fail the build.
+name: Scorecard
+
+on:
+  branch_protection_rule:
+  schedule:
+    # Mondays 07:00 UTC, after the Security workflow.
+    - cron: "0 7 * * 1"
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload the result to the Security tab.
+      security-events: write
+      # Required for Scorecard's own provenance publishing.
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # publish_results makes the score visible on the OpenSSF public
+          # dashboard and enables the README badge. Set to false to keep the
+          # score private to this repository's Security tab.
+          publish_results: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 7
+
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: results.sarif

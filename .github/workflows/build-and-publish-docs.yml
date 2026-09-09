@@ -43,7 +43,7 @@ jobs:
           toolchain: stable
       - name: Cache mdbook
         id: cache-mdbook
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/mdbook
           key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
@@ -61,7 +61,7 @@ jobs:
           echo "version_sha=$VERSION_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore docs cache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: book
           key: docs-book-${{ runner.os }}-${{ steps.compute-docs-key.outputs.version_sha }}

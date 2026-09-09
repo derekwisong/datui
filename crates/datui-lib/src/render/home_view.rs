@@ -474,16 +474,42 @@ fn entry_line<'a>(
         None => format!(" {kind}"),
     };
 
+    // Positions are taken from the untruncated name, because that is what matched.
+    // Truncation then shifts them, and dropping the ones that fall outside is exactly
+    // right: a character no longer on screen cannot be highlighted.
+    //
+    // Only when the name is *why* this row is here — a row matched by one of its
+    // columns would otherwise get marks scattered over letters that had nothing to do
+    // with it.
+    let mut name_positions = if matched_column.is_none() {
+        crate::home::fuzzy_positions(filter, &name)
+    } else {
+        Vec::new()
+    };
+
     // Truncate the name, never the metadata: the columns must stay aligned. A row
     // whose name is a path keeps its tail, since the leaf is what identifies it;
     // an ordinary filename keeps its head, where the distinguishing part usually is.
     let budget = name_width.saturating_sub(2 + kind_cell.chars().count() + 1);
     if name.chars().count() > budget && budget > 1 {
-        name = if name.starts_with('/') || name.starts_with('~') {
-            truncate_start(&name, budget)
+        let original_len = name.chars().count();
+        if name.starts_with('/') || name.starts_with('~') {
+            name = truncate_start(&name, budget);
+            // The tail survived: shift every position left by what was dropped, and
+            // right by the ellipsis now standing in for it.
+            let kept = name.chars().count();
+            let ellipsis = g.ellipsis.chars().count();
+            let dropped = original_len + ellipsis - kept;
+            name_positions.retain(|p| *p >= dropped);
+            for p in &mut name_positions {
+                *p = *p - dropped + ellipsis;
+            }
         } else {
-            name.chars().take(budget - 1).collect::<String>() + g.ellipsis
-        };
+            let kept = budget - 1;
+            name = name.chars().take(kept).collect::<String>() + g.ellipsis;
+            // The head survived, so surviving positions keep their index.
+            name_positions.retain(|p| *p < kept);
+        }
     }
     let pad = name_width.saturating_sub(2 + name.chars().count() + kind_cell.chars().count());
 
@@ -509,21 +535,9 @@ fn entry_line<'a>(
         }
     };
 
-    // Mark the characters the filter actually matched. Computed against the name as
-    // rendered, not the original, so a truncated name highlights the part that
-    // survived rather than positions that have moved.
-    //
-    // Only when the name is *why* this row is here: a row matched by one of its
-    // columns would otherwise get marks scattered over letters that had nothing to
-    // do with it.
     let hit_style = base
         .fg(ctx.keybind_hints)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    let name_positions = if matched_column.is_none() {
-        crate::home::fuzzy_positions(filter, &name)
-    } else {
-        Vec::new()
-    };
 
     let mut spans = vec![Span::styled(
         marker,

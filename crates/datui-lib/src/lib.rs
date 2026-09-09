@@ -42,6 +42,7 @@ pub mod discover;
 pub mod error_display;
 pub mod export_modal;
 pub mod filter_modal;
+pub mod fuzzy;
 pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;

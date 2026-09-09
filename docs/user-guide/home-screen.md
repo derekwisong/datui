@@ -122,6 +122,28 @@ that filters the result in memory, so the search gets no slower as you narrow it
 Nothing is walked if you never type — launching datui, pressing <kbd>Enter</kbd> on a
 recent dataset and leaving costs nothing.
 
+### How matching works
+
+datui scores fuzzy matches the way **fzf** does, using fzf's own constants and its
+path scheme. That is deliberate: anyone reaching for a fuzzy filter already has one
+calibrated in their fingers, and a finder that ranks differently feels broken rather
+than different. It is the same scoring `fzf`, `fzf-lua`, Telescope with
+`telescope-fzf-native`, and neovim's `snacks.picker` all use.
+
+What that means in practice:
+
+| behaviour | example |
+|---|---|
+| a match after `/` or `_` beats one mid-word | `sales` prefers `a/b/sales.csv` to `zzsalesz.csv` |
+| consecutive beats scattered | `abc` prefers `abc.csv` to `a_b_c.csv` to `axbxc.csv` |
+| a match in the file name beats one in a directory | `sales` prefers `archive/old/sales.csv` to `sales/2024/report.csv` |
+| the *best* alignment wins, not the first found | `revdetail` marks `revenue_detail`, not the `re` in `warehouse` |
+| ties go to the shorter name | `sales` prefers `sales.csv` to `sales_by_region_and_quarter.csv` |
+
+That last-but-one row is the one people notice. A left-to-right greedy matcher would
+underline `re` inside *ware*house; every mainstream finder tries every starting
+position and keeps the best-scoring one, and so does datui.
+
 The characters your filter matched are underlined in each row, so you can see why a
 result is there — useful when a fuzzy match lands somewhere you did not expect. A row
 that matched on a *column* rather than its name has the highlight on the column note

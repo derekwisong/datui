@@ -245,7 +245,10 @@ fn test_fuzzy_matches_subsequences() {
 fn test_fuzzy_prefers_tighter_matches() {
     let tight = fuzzy_score("sale", "sales.parquet").unwrap();
     let loose = fuzzy_score("sale", "s_a_l_zzzzzzzz_e.parquet").unwrap();
-    assert!(tight < loose, "tight {tight} should beat loose {loose}");
+    assert!(
+        tight > loose,
+        "tight {tight} should beat loose {loose}; higher is better, as in fzf"
+    );
 }
 
 #[test]
@@ -1398,7 +1401,7 @@ fn test_column_matches_rank_below_name_matches() {
     let name_score = match_score("customer_id", &by_name).expect("name match");
     let column_score = match_score("customer_id", &by_column).expect("column match");
     assert!(
-        name_score < column_score,
+        name_score > column_score,
         "name {name_score} should outrank column {column_score}"
     );
 }
@@ -2187,28 +2190,6 @@ fn test_an_empty_filter_highlights_nothing() {
 }
 
 #[test]
-fn test_a_truncated_name_highlights_what_survived() {
-    // A name is cut to fit its column, and the filter may no longer be a complete
-    // subsequence of what is left. Showing the part that still matches beats showing
-    // nothing.
-    use datui::home::fuzzy_positions;
-    let shown = "sales_by_re…"; // "sales_by_region_2024.parquet", truncated
-    let positions = fuzzy_positions("salesregion", shown);
-    assert_eq!(
-        positions,
-        vec![0, 1, 2, 3, 4, 9, 10],
-        "the visible part of the match should still be marked"
-    );
-}
-
-#[test]
-fn test_a_name_that_does_not_match_is_marked_only_where_it_does() {
-    use datui::home::fuzzy_positions;
-    // No 'z' anywhere: the walk stops, keeping what it found.
-    assert_eq!(fuzzy_positions("saz", "sales.parquet"), vec![0, 1]);
-}
-
-#[test]
 fn test_column_matches_highlight_a_substring_not_a_subsequence() {
     // A column name is short and specific; a fuzzy match over it would mark most of
     // its letters and mean nothing.
@@ -2234,4 +2215,65 @@ fn test_substring_matching_is_case_insensitive() {
 fn test_a_needle_longer_than_the_column_matches_nothing() {
     use datui::home::substring_positions;
     assert!(substring_positions("customer_identifier", "customer_id").is_empty());
+}
+
+#[test]
+fn test_a_name_that_does_not_match_highlights_nothing() {
+    // Ranking and highlighting come from one function now, so a name that does not
+    // match has no positions rather than a partial set of them.
+    use datui::home::fuzzy_positions;
+    assert!(fuzzy_positions("saz", "sales.parquet").is_empty());
+    assert!(fuzzy_positions("zzz", "sales.parquet").is_empty());
+}
+
+#[test]
+fn test_the_best_alignment_wins_not_the_first_one() {
+    // The property people arrive with. Greedily, "re" lands inside "warehouse";
+    // every mainstream finder puts it on "revenue", because it tries every start.
+    use datui::home::fuzzy_positions;
+    let name = "warehouse/2024/q3/revenue_detail.parquet";
+    let positions = fuzzy_positions("revdetail", name);
+    let first = positions[0];
+    assert!(
+        name[..first].ends_with('/'),
+        "the match should start at a path boundary, not mid-word; started at {first}"
+    );
+    let marked: String = name
+        .chars()
+        .enumerate()
+        .filter(|(i, _)| positions.contains(i))
+        .map(|(_, c)| c)
+        .collect();
+    assert_eq!(marked, "revdetail");
+}
+
+#[test]
+fn test_a_match_at_a_word_boundary_outranks_one_inside_a_word() {
+    use datui::home::fuzzy_score;
+    let boundary = fuzzy_score("sales", "my_sales_report.csv").unwrap();
+    let inside = fuzzy_score("sales", "zzsalesz.csv").unwrap();
+    assert!(boundary > inside, "{boundary} should beat {inside}");
+}
+
+#[test]
+fn test_consecutive_characters_outrank_scattered_ones() {
+    use datui::home::fuzzy_score;
+    let solid = fuzzy_score("abc", "abc.csv").unwrap();
+    let spaced = fuzzy_score("abc", "a_b_c.csv").unwrap();
+    let scattered = fuzzy_score("abc", "axbxc.csv").unwrap();
+    assert!(solid > spaced, "{solid} should beat {spaced}");
+    assert!(spaced > scattered, "{spaced} should beat {scattered}");
+}
+
+#[test]
+fn test_a_match_in_the_file_name_outranks_one_in_a_directory() {
+    // Search results are named by their path below the search root, so this is the
+    // difference between finding the dataset and finding the folder it is under.
+    use datui::home::fuzzy_score;
+    let in_name = fuzzy_score("report", "archive/old/report.csv").unwrap();
+    let in_dir = fuzzy_score("report", "report/2024/summary.csv").unwrap();
+    assert!(
+        in_name > in_dir,
+        "a basename match ({in_name}) should beat a directory match ({in_dir})"
+    );
 }

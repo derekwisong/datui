@@ -692,19 +692,26 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
 /// actually has, and the answer is already in the Parquet footer datui read to get
 /// the row count. A name match always outranks a column match, so typing a dataset's
 /// name still finds the dataset.
-pub fn match_score(filter: &str, entry: &Entry) -> Option<usize> {
-    if let Some(score) = fuzzy_score(filter, &entry.name) {
-        return Some(score);
+///
+/// Higher is better, as in fzf — see [`crate::fuzzy`] for why datui scores the way
+/// that program does.
+pub fn match_score(filter: &str, entry: &Entry) -> Option<i32> {
+    if let Some(m) = crate::fuzzy::best_match(filter, &entry.name) {
+        return Some(m.score);
     }
     if filter.is_empty() {
         return Some(0);
     }
-    matching_column(filter, entry).map(|_| COLUMN_MATCH_PENALTY)
+    // Ranked below every name match, so column hits are an addition to what the
+    // filter did rather than a dilution of it. Column matching is a substring test,
+    // which has no score of its own worth comparing.
+    matching_column(filter, entry).map(|_| -COLUMN_MATCH_PENALTY)
 }
 
-/// Rank column matches below every name match, so they are an addition rather than a
-/// dilution of what the filter already did.
-const COLUMN_MATCH_PENALTY: usize = 10_000;
+/// Distance by which a column match sits below any name match.
+///
+/// Larger than any score a name match can reach, so the two never interleave.
+const COLUMN_MATCH_PENALTY: i32 = 1_000_000;
 
 /// The first column of `entry` that contains `filter`, case-insensitively.
 ///
@@ -724,41 +731,19 @@ pub fn matching_column<'a>(filter: &str, entry: &'a Entry) -> Option<&'a str> {
 
 /// Character positions in `haystack` that `needle` matched, for highlighting.
 ///
-/// The same greedy left-to-right walk [`fuzzy_score`] does, so what gets highlighted
-/// is what actually matched rather than a second opinion about it.
-///
-/// Returns the positions found so far when the needle outlasts the haystack, instead
-/// of giving up: a name truncated to fit its column should still show the part of the
-/// match that survived the truncation.
+/// Taken from the same alignment that produced the score, so the marks are always on
+/// the characters that were actually scored.
 pub fn fuzzy_positions(needle: &str, haystack: &str) -> Vec<usize> {
-    let mut out = Vec::new();
-    if needle.is_empty() {
-        return out;
-    }
-    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
-    let mut hi = 0usize;
-
-    for nc in needle.to_lowercase().chars() {
-        while hi < hay.len() {
-            if hay[hi] == nc {
-                out.push(hi);
-                hi += 1;
-                break;
-            }
-            hi += 1;
-        }
-        if hi >= hay.len() {
-            break;
-        }
-    }
-    out
+    crate::fuzzy::best_match(needle, haystack)
+        .map(|m| m.positions)
+        .unwrap_or_default()
 }
 
 /// Character positions of the first case-insensitive occurrence of `needle`.
 ///
-/// Column matching is a substring test, not a subsequence one, so highlighting it
-/// has to be too — otherwise the marks land on letters that had nothing to do with
-/// why the row is on screen.
+/// Column matching is a substring test, not a subsequence one, so highlighting it has
+/// to be too — otherwise the marks land on letters that had nothing to do with why
+/// the row is on screen.
 pub fn substring_positions(needle: &str, haystack: &str) -> Vec<usize> {
     if needle.is_empty() {
         return Vec::new();
@@ -776,39 +761,12 @@ pub fn substring_positions(needle: &str, haystack: &str) -> Vec<usize> {
     Vec::new()
 }
 
-/// Case-insensitive subsequence match, the cheap half of fuzzy finding.
+/// Whether and how well `needle` matches `haystack`, higher being better.
 ///
-/// Returns a score where lower is better: the span of the match in the haystack,
-/// so tighter and earlier matches sort first. `None` when the needle is not a
-/// subsequence at all.
-pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
-    let mut first = None;
-    let mut last = 0usize;
-    let mut hi = 0usize;
-
-    for nc in needle.to_lowercase().chars() {
-        let mut found = false;
-        while hi < hay.len() {
-            if hay[hi] == nc {
-                if first.is_none() {
-                    first = Some(hi);
-                }
-                last = hi;
-                hi += 1;
-                found = true;
-                break;
-            }
-            hi += 1;
-        }
-        if !found {
-            return None;
-        }
-    }
-    Some(last - first.unwrap_or(0) + first.unwrap_or(0) / 4)
+/// A thin name over [`crate::fuzzy::best_match`]. Everything that ranks or highlights
+/// goes through that one function, which is what keeps the two from drifting apart.
+pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
+    crate::fuzzy::best_match(needle, haystack).map(|m| m.score)
 }
 
 impl HomeState {
@@ -1118,7 +1076,7 @@ impl HomeState {
     pub fn visible(&self) -> Vec<Row<'_>> {
         let mut out: Vec<Row<'_>> = Vec::new();
         for (si, section) in self.sections.iter().enumerate() {
-            let mut matched: Vec<(&Entry, usize)> = section
+            let mut matched: Vec<(&Entry, i32)> = section
                 .rows
                 .iter()
                 .filter_map(|row| match_score(&self.filter, row).map(|s| (row, s)))
@@ -1137,9 +1095,13 @@ impl HomeState {
             }
 
             // Within a section, rank by match quality; without a filter every score is
-            // equal and the curated order is preserved.
+            // equal and the curated order is preserved. Ties go to the shorter name,
+            // which is fzf's default tiebreak and the reason `sales` prefers
+            // `sales.csv` over `sales_by_region_and_quarter.csv`.
             if !self.filter.is_empty() {
-                matched.sort_by_key(|(_, score)| *score);
+                matched.sort_by(|(a, sa), (b, sb)| {
+                    sb.cmp(sa).then_with(|| a.name.len().cmp(&b.name.len()))
+                });
             }
 
             // An explicit sort overrides both. Rows with nothing to sort by go last

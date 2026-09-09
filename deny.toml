@@ -33,6 +33,17 @@ ignore = [
     { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS via calamine (.xlsx); blocked on the calamine 0.36 upgrade" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS via calamine (.xlsx); blocked on the calamine 0.36 upgrade" },
 
+    # pyo3 0.26, in crates/datui-pyo3. Both are memory-safety bugs, patched in
+    # pyo3 0.29. Neither is reachable from this crate: the out-of-bounds read is
+    # in `nth` / `nth_back` on PyList and PyTuple iterators, and the missing
+    # Sync bound is on `PyCFunction::new_closure`. datui-pyo3 uses none of those
+    # APIs, which was checked against its source rather than assumed.
+    # Clears when: datui-pyo3 moves to pyo3 0.29, a breaking upgrade of the
+    # binding framework that needs the extension rebuilt and tested on every
+    # supported Python.
+    { id = "RUSTSEC-2026-0176", reason = "pyo3 OOB read in PyList/PyTuple nth; API not used by datui-pyo3" },
+    { id = "RUSTSEC-2026-0177", reason = "pyo3 missing Sync bound on new_closure; API not used by datui-pyo3" },
+
     # --- Unmaintained, no known vulnerability ---
 
     # ttf-parser, via plotters, used to lay out text when exporting a chart to

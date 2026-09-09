@@ -39,7 +39,7 @@ ratatui = { version = "0.29.0", features = ["all-widgets"] }
 
 [build-dependencies]
 clap = { version = "4.5.54", features = ["derive"] }
-clap_mangen = "0.2"
+clap_mangen = "0.3"
 datui-cli = { path = "crates/datui-cli", version = "0.3.2-dev" }
 
 [dev-dependencies]

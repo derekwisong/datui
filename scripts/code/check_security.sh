@@ -15,4 +15,5 @@ echo "==> cargo-deny (datui-pyo3)"
 cargo deny --manifest-path crates/datui-pyo3/Cargo.toml check
 
 echo "==> zizmor (workflow analysis)"
-zizmor .github/workflows/
+# --min-severity high matches the CI gate. Drop the flag to see everything.
+zizmor --config zizmor.yml --min-severity high .github/workflows/

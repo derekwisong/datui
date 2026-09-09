@@ -15,7 +15,9 @@ root.
 **zizmor** analyses the GitHub Actions workflow files for the patterns that let
 a pull request steal a secret or poison a build: unpinned actions, over-broad
 token permissions, expressions interpolated straight into shell, and cache
-poisoning. Findings are reported to the repository's Security tab.
+poisoning. It fails the build on a high-severity finding and reports everything
+else to the Security tab. Suppressions live in `zizmor.yml`, and each one has to
+say what the risk is and what would clear it.
 
 A third check, [OpenSSF Scorecard][scorecard], runs on a schedule in its own
 workflow. It scores the repository's supply-chain posture and writes each check

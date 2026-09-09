@@ -1,0 +1,25 @@
+# zizmor configuration. See https://docs.zizmor.sh/configuration/
+#
+# Everything suppressed here is a decision that is still open, not a finding
+# that was judged wrong. Each entry says what the risk is and what would clear
+# it. The Security workflow gates on high severity, so an empty file is the
+# goal.
+
+rules:
+  cache-poisoning:
+    ignore:
+      # The release workflow restores four caches: sccache, the cargo registry
+      # and target dir via rust-cache, the cargo packaging tools, and the built
+      # mdbook output. zizmor's point is sound: a cache entry written from a
+      # lower-trust context can be restored into the job that produces the
+      # binary people install, so a poisoned cache becomes a poisoned release.
+      #
+      # Not suppressed because the risk is imaginary. Suppressed because the
+      # fix, building releases with no cache at all, trades a large amount of
+      # release wall-clock time for it, and that is a decision to make
+      # deliberately rather than as a side effect of turning on a linter.
+      #
+      # Clears when: release.yml either drops caching for the jobs that produce
+      # published artifacts, or the release build is moved to a workflow that
+      # never shares a cache scope with pull request builds.
+      - release.yml

@@ -19,10 +19,14 @@ updates:
         update-types: [minor, patch]
     labels: [dependencies, rust]
     ignore:
-      # polars-sql has to be the same version as polars. Bumped on its own it
-      # pulls a second polars-core into the tree and does not compile. It moves
-      # when polars moves, as one deliberate upgrade.
-      - dependency-name: "polars-sql"
+      # The polars-* crates are one release train and have to move together
+      # with polars itself. Bumped individually they either fail to compile
+      # (polars-sql pulls a second polars-core) or quietly fork the stack:
+      # polars-parquet 0.55 added a complete second set of polars-arrow,
+      # polars-buffer, polars-compute, polars-config and polars-error at 0.55
+      # beside the 0.52 ones, which datui never uses but still has to build and
+      # audit. polars moves as one deliberate upgrade.
+      - dependency-name: "polars-*"
 
   # datui-pyo3 is excluded from the root workspace and has its own lockfile, so
   # Dependabot has to be pointed at it separately.
@@ -37,8 +41,8 @@ updates:
         update-types: [minor, patch]
     labels: [dependencies, rust, python-bindings]
     ignore:
-      # Same coupling as the root workspace: polars-sql tracks polars.
-      - dependency-name: "polars-sql"
+      # Same coupling as the root workspace: the polars-* crates track polars.
+      - dependency-name: "polars-*"
 
   # GitHub Actions: SHA pins do not update themselves. This is the job that
   # keeps a pinned action from silently rotting on a version with a known bug.

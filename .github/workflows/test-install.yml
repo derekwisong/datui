@@ -6,6 +6,10 @@ name: Test Install
 on:
   workflow_dispatch: {}
 
+# Nothing here touches the repository: every job installs a published artifact
+# and runs `datui --version`.
+permissions: {}
+
 jobs:
   install-macos-oneline-homebrew:
     name: macOS ${{ matrix.arch }} (one-line + Homebrew)
@@ -54,7 +58,10 @@ jobs:
     name: RPM-based Linux
     runs-on: ubuntu-latest
     container:
-      image: fedora:40
+      # Deliberately a floating tag. This workflow exists to prove the
+      # documented install path still works on today's distro image; a
+      # digest pin would freeze it and quietly stop testing what users get.
+      image: fedora:40  # zizmor: ignore[unpinned-images]
       options: --privileged --user 0
     steps:
       - name: One-line install
@@ -68,7 +75,10 @@ jobs:
     name: Arch Linux
     runs-on: ubuntu-latest
     container:
-      image: archlinux:latest
+      # Deliberately a floating tag. This workflow exists to prove the
+      # documented install path still works on today's distro image; a
+      # digest pin would freeze it and quietly stop testing what users get.
+      image: archlinux:latest  # zizmor: ignore[unpinned-images]
       options: --privileged --user 0
     steps:
       - name: Install runtime dependency (fontconfig)
@@ -84,7 +94,10 @@ jobs:
     name: Arch Linux (AUR datui-bin)
     runs-on: ubuntu-latest
     container:
-      image: archlinux:latest
+      # Deliberately a floating tag. This workflow exists to prove the
+      # documented install path still works on today's distro image; a
+      # digest pin would freeze it and quietly stop testing what users get.
+      image: archlinux:latest  # zizmor: ignore[unpinned-images]
       options: --privileged --user 0
     steps:
       - name: Bootstrap Arch for AUR

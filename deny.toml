@@ -100,6 +100,12 @@ allow = [
     # webpki-roots: the Mozilla CA certificate bundle. A permissive data
     # license, not a code license, and unavoidable for anything doing TLS.
     "CDLA-Permissive-2.0",
+    # libbz2-rs-sys, reached through bzip2 0.6. The original bzip2 licence:
+    # BSD-style, permissive, and the same terms the C libbz2 always shipped
+    # under. It appears in the tree now only because bzip2 0.6 replaced the C
+    # library with a pure-Rust implementation, which is a straight improvement
+    # on a path that parses untrusted input.
+    "bzip2-1.0.6",
 ]
 confidence-threshold = 0.8
 

@@ -1,0 +1,100 @@
+# cargo-deny configuration for datui.
+# Run locally with: cargo deny check
+# CI runs the same checks in .github/workflows/security.yml.
+
+[graph]
+# Only audit the platforms we actually ship binaries for. Without this,
+# cargo-deny pulls in advisories and licenses for crates that never get
+# compiled into a datui release (e.g. redox, wasm).
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-unknown-linux-gnu" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-pc-windows-msvc" },
+]
+all-features = true
+
+[advisories]
+version = 2
+# Every entry below is a debt, not a decision. Each one records why it is not
+# fixed today and what event should clear it. Review this list whenever
+# Dependabot lands a dependency bump.
+ignore = [
+    # --- Reachable from untrusted input: fix these first ---
+
+    # quick-xml, both reachable through calamine when datui opens an .xlsx file,
+    # which is attacker-controlled data by definition. Both are denial of
+    # service (quadratic parse, unbounded namespace allocation), not memory
+    # corruption: the process hangs or is OOM-killed. Patched in quick-xml
+    # >= 0.41, but calamine 0.32 requires 0.38.
+    # Clears when: datui upgrades calamine 0.32 -> 0.36, which is a breaking API
+    # change and needs its own pull request.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS via calamine (.xlsx); blocked on the calamine 0.36 upgrade" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS via calamine (.xlsx); blocked on the calamine 0.36 upgrade" },
+
+    # --- Unmaintained, no known vulnerability ---
+
+    # ttf-parser, via plotters, used to lay out text when exporting a chart to
+    # an image. It parses font files from the system, not from the dataset, so
+    # it is not on the untrusted-data path. No safe upgrade exists: plotters
+    # would have to move to skrifa.
+    # Clears when: plotters releases a version off ttf-parser.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; via plotters, parses system fonts only, no upgrade available" },
+
+    # bincode 2, via polars-utils. Unmaintained, no advisory against the code.
+    # Note that datui-pyo3 also uses bincode directly to decode LazyFrame plans;
+    # that is tracked as a trust-boundary question, not as this advisory.
+    # Clears when: polars moves off bincode, or bincode finds a maintainer.
+    { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained; transitive via polars-utils" },
+
+    # paste, via ratatui. A build-time proc-macro. It does not ship in the
+    # binary and never sees runtime input.
+    # Clears when: ratatui drops paste.
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; build-time proc-macro via ratatui, not in the shipped binary" },
+
+    # rustls-pemfile, via object_store, on the S3/GCS path. Unmaintained, no
+    # advisory against the code; the functionality moved into rustls-pki-types.
+    # Clears when: object_store updates.
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained; transitive via object_store" },
+]
+
+[licenses]
+version = 2
+# Licenses accepted in the dependency tree. datui itself is MIT.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    # webpki-roots: the Mozilla CA certificate bundle. A permissive data
+    # license, not a code license, and unavoidable for anything doing TLS.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Two copies of one crate is a smell, not a vulnerability: it means some path is
+# pinned to an old version that has stopped getting security fixes. Warn.
+multiple-versions = "warn"
+# A wildcard version requirement means whoever takes over that crate can ship us
+# anything on the next `cargo update`.
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = []
+
+[sources]
+# Everything must come from crates.io. An unknown registry or a git dependency
+# is code entering the build from outside the audited supply chain.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

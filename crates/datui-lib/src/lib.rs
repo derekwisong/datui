@@ -2678,14 +2678,34 @@ impl App {
         }
     }
 
+    /// Build an HTTP agent with a total time budget.
+    ///
+    /// ureq 3 moved timeouts off the request and onto agent configuration, so
+    /// every request has to come from an agent to be bounded at all. Leaving a
+    /// request unbounded would mean a remote that accepts a connection and then
+    /// dribbles bytes forever hangs the whole TUI, and the user's only way out
+    /// is to kill the process.
+    ///
+    /// `timeout_global` covers the entire exchange rather than individual
+    /// socket operations, which is the property that matters here: a server
+    /// that sends one byte every 29 seconds defeats a per-read timeout but not
+    /// this one.
+    #[cfg(feature = "http")]
+    fn http_agent(total: std::time::Duration) -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(total))
+            .build()
+            .into()
+    }
+
     #[cfg(feature = "http")]
     fn fetch_remote_size_http(url: &str) -> Result<Option<u64>> {
-        let response = ureq::request("HEAD", url)
-            .timeout(std::time::Duration::from_secs(15))
-            .call();
-        match response {
+        let agent = Self::http_agent(std::time::Duration::from_secs(15));
+        match agent.head(url).call() {
             Ok(r) => Ok(r
-                .header("Content-Length")
+                .headers()
+                .get("Content-Length")
+                .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())),
             Err(_) => Ok(None),
         }
@@ -2793,21 +2813,19 @@ impl App {
             .suffix(&suffix)
             .tempfile_in(&dir)
             .map_err(|_| color_eyre::eyre::eyre!("Could not create a temporary file."))?;
-        let response = ureq::get(url)
-            .timeout(std::time::Duration::from_secs(300))
-            .call()
-            .map_err(|e| {
-                color_eyre::eyre::eyre!("Download failed. Check the URL and your connection: {}", e)
-            })?;
+        let agent = Self::http_agent(std::time::Duration::from_secs(300));
+        let mut response = agent.get(url).call().map_err(|e| {
+            color_eyre::eyre::eyre!("Download failed. Check the URL and your connection: {}", e)
+        })?;
         let status = response.status();
-        if status >= 400 {
+        if status.is_client_error() || status.is_server_error() {
             return Err(color_eyre::eyre::eyre!(
                 "Server returned {} {}. Check the URL.",
-                status,
-                response.status_text()
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("Unknown")
             ));
         }
-        std::io::copy(&mut response.into_reader(), &mut temp)
+        std::io::copy(&mut response.body_mut().as_reader(), &mut temp)
             .map_err(|_| color_eyre::eyre::eyre!("Download failed while saving the file."))?;
         let (_file, path) = temp
             .keep()

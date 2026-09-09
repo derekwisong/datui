@@ -75,6 +75,11 @@ pub struct DataTableState {
     /// count carries the generation it was spawned under; a result whose generation no
     /// longer matches is stale (the data changed) and is dropped. Decoupled from
     /// `task_generation` so a mere scroll doesn't invalidate / restart an in-flight count.
+    ///
+    /// Seeded from a process-wide counter rather than zero, so the value is unique
+    /// across datasets as well as across mutations of one. Starting every state at
+    /// zero meant a count still running for the dataset you just closed matched the
+    /// one you just opened, and set its row count to the wrong number.
     len_generation: u64,
     /// When set, the current `lf` is a pristine scan of this local Parquet hive directory,
     /// so the exact row count equals the sum of per-file footer counts — far cheaper than
@@ -165,6 +170,14 @@ pub struct CollectResult {
     pub count_known: bool,
 }
 
+/// Seeds `DataTableState::len_generation`. Unique per state, so a row count spawned
+/// for one dataset can never be mistaken for a valid result for another.
+static NEXT_LEN_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_len_generation() -> u64 {
+    NEXT_LEN_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl DataTableState {
     pub fn new(
         lf: LazyFrame,
@@ -191,7 +204,7 @@ impl DataTableState {
             schema,
             num_rows: 0,
             num_rows_valid: false,
-            len_generation: 0,
+            len_generation: next_len_generation(),
             parquet_count_dir: None,
             filters: Vec::new(),
             sort_columns: Vec::new(),
@@ -277,7 +290,7 @@ impl DataTableState {
             schema,
             num_rows: 0,
             num_rows_valid: false,
-            len_generation: 0,
+            len_generation: next_len_generation(),
             parquet_count_dir: None,
             filters: Vec::new(),
             sort_columns: Vec::new(),
@@ -3058,13 +3071,16 @@ impl DataTableState {
         }
     }
 
-    /// Invalidate num_rows cache when lf is mutated. Bumps `len_generation` so any
+    /// Invalidate num_rows cache when lf is mutated. Takes a fresh `len_generation` so any
     /// in-flight background count for the previous `lf` is recognized as stale. Also drops
     /// the cheap Parquet-footer count source: once `lf` carries a filter/query/group, the
     /// row count no longer equals the sum of file footers.
+    ///
+    /// Draws from the shared counter rather than incrementing, so a mutation here can
+    /// never land on the value a later dataset is about to be seeded with.
     fn invalidate_num_rows(&mut self) {
         self.num_rows_valid = false;
-        self.len_generation = self.len_generation.wrapping_add(1);
+        self.len_generation = next_len_generation();
         self.parquet_count_dir = None;
     }
 

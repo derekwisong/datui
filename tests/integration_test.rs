@@ -1204,3 +1204,42 @@ fn test_ctrl_o_escapes_the_download_confirmation() {
         "leaving should clear the pending download, not leave it armed"
     );
 }
+
+/// Every `DataTableState` must get its own `len_generation`. They used to all start at
+/// zero, so an exact row count still running for the dataset you just closed matched
+/// the one you just opened and set its row count to the wrong number.
+#[test]
+fn test_len_generations_are_unique_across_datasets() {
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/people.parquet")],
+        OpenOptions::default(),
+    );
+    let first = app
+        .data_table_state
+        .as_ref()
+        .expect("first dataset should load")
+        .len_generation();
+
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/sales.parquet")],
+        OpenOptions::default(),
+    );
+    let second = app
+        .data_table_state
+        .as_ref()
+        .expect("second dataset should load")
+        .len_generation();
+
+    assert_ne!(
+        first, second,
+        "two datasets must not share a row-count generation"
+    );
+}

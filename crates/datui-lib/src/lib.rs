@@ -1876,8 +1876,8 @@ impl App {
     pub fn abandon_load(&mut self) {
         self.load_active = false;
         #[cfg(any(feature = "http", feature = "cloud"))]
-        {
-            self.pending_download = None;
+        if self.pending_download.take().is_some() {
+            self.confirmation_modal.hide();
         }
         // Only a load's own busy state is cleared. An export sets `busy` and owns
         // `loading_state` too, and it keeps running.
@@ -3336,6 +3336,22 @@ impl App {
         }
     }
 
+    /// True while the confirmation modal is asking whether to download a remote file.
+    ///
+    /// That is the one confirmation the user has to be able to walk away from: the
+    /// size probe behind it can take fifteen seconds, and the answer to "actually,
+    /// never mind" is the home screen, not the exit.
+    pub fn awaiting_download_confirmation(&self) -> bool {
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        {
+            self.confirmation_modal.active && self.pending_download.is_some()
+        }
+        #[cfg(not(any(feature = "http", feature = "cloud")))]
+        {
+            false
+        }
+    }
+
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
@@ -3355,7 +3371,7 @@ impl App {
         // not a wait for it to finish.
         if event.code == KeyCode::Char('o')
             && event.modifiers.contains(KeyModifiers::CONTROL)
-            && !self.confirmation_modal.active
+            && (!self.confirmation_modal.active || self.awaiting_download_confirmation())
         {
             self.enter_home();
             return None;
@@ -3437,9 +3453,9 @@ impl App {
                         }
                         self.pending_export = None;
                         #[cfg(any(feature = "http", feature = "cloud"))]
-                        if self.pending_download.take().is_some() {
-                            self.confirmation_modal.hide();
-                            return Some(AppEvent::Exit);
+                        if self.pending_download.is_some() {
+                            self.enter_home();
+                            return None;
                         }
                         self.confirmation_modal.hide();
                     }
@@ -3454,9 +3470,12 @@ impl App {
                     }
                     self.pending_export = None;
                     #[cfg(any(feature = "http", feature = "cloud"))]
-                    if self.pending_download.take().is_some() {
-                        self.confirmation_modal.hide();
-                        return Some(AppEvent::Exit);
+                    if self.pending_download.is_some() {
+                        // Declining a download used to quit datui outright, which made
+                        // a remote open the one thing in the app you could not back out
+                        // of. `enter_home` clears the pending download and hides this.
+                        self.enter_home();
+                        return None;
                     }
                     self.confirmation_modal.hide();
                 }

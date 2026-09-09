@@ -1140,3 +1140,67 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
         "going home must not cancel an in-flight export or analysis"
     );
 }
+
+/// Opening a remote URL raises a "Continue with download?" confirmation. Declining it
+/// used to quit datui, and Ctrl+O was swallowed while it was up, which made a remote
+/// open the one thing in the app you could not back out of.
+#[cfg(feature = "http")]
+fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    // Refused immediately, so the size probe does not sit on its timeout.
+    let url = PathBuf::from("http://127.0.0.1:1/data.csv");
+    let mut next = app.event(&AppEvent::Open(vec![url], OpenOptions::default()));
+    while let Some(ev) = next {
+        if matches!(ev, AppEvent::Crash(_)) {
+            break;
+        }
+        next = app.event(&ev);
+    }
+    (app, rx)
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn test_declining_a_download_goes_home_instead_of_quitting() {
+    let (mut app, _rx) = app_awaiting_download_confirmation();
+    assert!(
+        app.awaiting_download_confirmation(),
+        "opening a remote URL should ask before downloading"
+    );
+
+    let out = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+
+    assert!(
+        !matches!(out, Some(AppEvent::Exit)),
+        "declining a download must not quit datui"
+    );
+    assert_eq!(
+        app.input_mode,
+        InputMode::Home,
+        "declining a download should leave the user at home"
+    );
+    assert!(!app.awaiting_download_confirmation());
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn test_ctrl_o_escapes_the_download_confirmation() {
+    let (mut app, _rx) = app_awaiting_download_confirmation();
+    assert!(app.awaiting_download_confirmation());
+
+    app.event(&ctrl_o());
+
+    assert_eq!(
+        app.input_mode,
+        InputMode::Home,
+        "Ctrl+O should work while the download confirmation is up"
+    );
+    assert!(
+        !app.awaiting_download_confirmation(),
+        "leaving should clear the pending download, not leave it armed"
+    );
+}

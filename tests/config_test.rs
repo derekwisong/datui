@@ -1412,6 +1412,7 @@ fn test_concurrent_recents_do_not_lose_entries() {
     // terminals. Writing atomically stops the file becoming corrupt, but not one
     // instance's entry being overwritten by another's; the read and the write have
     // to be a single locked operation.
+    use datui::cache::HistoryUpdate;
     use datui::CacheManager;
     use std::sync::Arc;
 
@@ -1431,25 +1432,66 @@ fn test_concurrent_recents_do_not_lose_entries() {
         .cloned()
         .map(|path| {
             let cache = Arc::clone(&cache);
-            std::thread::spawn(move || cache.push_recent(&path))
+            std::thread::spawn(move || {
+                let outcome = cache.push_recent(&path);
+                (path, outcome)
+            })
         })
         .collect();
+
+    let mut written = Vec::new();
+    let mut skipped = Vec::new();
     for h in handles {
-        h.join().expect("writer thread");
+        let (path, outcome) = h.join().expect("writer thread");
+        match outcome {
+            HistoryUpdate::Written => written.push(path),
+            HistoryUpdate::SkippedBusy => skipped.push(path),
+        }
     }
 
     let recents = cache.load_recents();
+
+    // The real invariant, and the one worth defending: the lock makes each
+    // read-modify-write atomic, so no writer that got the lock can have its entry
+    // clobbered by another that came after. Every push that reported success is
+    // therefore still in the file.
+    //
+    // This used to assert that all sixteen survived, which is a different and
+    // weaker-founded claim: a contended update is abandoned by design, so whether
+    // all sixteen land depends on how the scheduler happened to interleave them.
+    // That is why it failed on CI roughly one run in twenty while passing locally
+    // every time. Raising LOCK_TIMEOUT from 250ms to 2s made it rarer without
+    // making it impossible, because no timeout can make a timing assumption true.
+    for path in &written {
+        assert!(
+            recents.contains(path),
+            "push_recent reported Written for {path:?} but it is not in the file; \
+             a locked read-modify-write lost an update. Skipped: {skipped:?}"
+        );
+    }
     assert_eq!(
         recents.len(),
-        paths.len(),
-        "every concurrent open should survive; got {recents:#?}"
+        written.len(),
+        "the file holds entries nobody reported writing; got {recents:#?}"
     );
 
-    // And every line is a whole, valid path — never two concatenated or one torn.
+    // Every line is a whole, valid path — never two concatenated or one torn.
     for entry in &recents {
         assert!(
             entry.exists(),
             "history holds a path that is not a real file: {entry:?}"
+        );
+    }
+
+    // Not an assertion, because contention is legitimate and machine-dependent.
+    // A note in the output is enough to notice if the deadline ever starts
+    // dropping most of them, which would mean LOCK_TIMEOUT had become too tight
+    // again rather than that this test is wrong.
+    if !skipped.is_empty() {
+        eprintln!(
+            "note: {} of {} concurrent pushes were skipped on a busy lock",
+            skipped.len(),
+            paths.len()
         );
     }
 }
@@ -1484,9 +1526,10 @@ fn test_history_update_is_dropped_rather_than_blocking() {
 
     FileExt::unlock(&holder).unwrap();
 
-    assert!(
-        result.is_ok(),
-        "a contended update is skipped, not an error"
+    assert_eq!(
+        result.expect("a contended update is skipped, not an error"),
+        datui::cache::HistoryUpdate::SkippedBusy,
+        "a held lock must report the skip, not claim the write happened"
     );
     assert!(
         elapsed < std::time::Duration::from_secs(6),

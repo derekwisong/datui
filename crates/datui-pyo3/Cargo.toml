@@ -15,3 +15,19 @@ polars = { version = "0.52", features = ["lazy", "serde-lazy"] }
 polars-plan = { version = "0.52", features = ["serde"] }
 pyo3 = { version = "0.26", features = ["extension-module", "auto-initialize", "abi3-py38"] }
 serde_json = "1.0"
+
+# Dev-loop build speed. This crate is excluded from the root workspace, so it is
+# its own build root and does not inherit the root Cargo.toml's [profile.dev].
+# Keep the two in sync. Without this, `maturin develop` links a multi-gigabyte
+# extension module: the DWARF for polars dwarfs the actual code.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# datui-lib is our own code even though it is a path dependency here, so it gets
+# line tables back: a panic surfacing through the Python bindings should still
+# report file:line.
+[profile.dev.package.datui-lib]
+debug = "line-tables-only"

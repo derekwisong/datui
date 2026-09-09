@@ -125,7 +125,7 @@ impl CacheManager {
     /// Giving up after a couple of quick attempts is *not* enough: with several opens
     /// landing together, some are then dropped, which is the very loss this exists to
     /// prevent.
-    pub fn update_history_file<F>(&self, history_id: &str, update: F) -> Result<()>
+    pub fn update_history_file<F>(&self, history_id: &str, update: F) -> Result<HistoryUpdate>
     where
         F: FnOnce(&mut Vec<String>),
     {
@@ -152,7 +152,7 @@ impl CacheManager {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         if !held {
-            return Ok(());
+            return Ok(HistoryUpdate::SkippedBusy);
         }
 
         // Read, modify and write all inside the lock; the whole point is that another
@@ -163,7 +163,7 @@ impl CacheManager {
 
         // Released explicitly, though dropping the file would do it too.
         let _ = FileExt::unlock(&lock);
-        result
+        result.map(|()| HistoryUpdate::Written)
     }
 
     /// Save history to a history file
@@ -219,6 +219,24 @@ const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// small enough that the home screen never has to paginate it.
 pub const MAX_RECENTS: usize = 50;
 
+/// Whether a history update actually happened.
+///
+/// A contended update is abandoned rather than waited on, because nothing should
+/// delay what the user asked for in order to record that they asked for it. That
+/// is the right trade, but it means "no error" and "it was written" are different
+/// claims, and for a long time the API could only make the weaker one.
+///
+/// Saying which happened is worth the extra type. A caller that cares can retry
+/// or report, and a test can assert something exact instead of hoping the
+/// scheduler was kind: every update that reported `Written` is in the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryUpdate {
+    /// The lock was taken and the new contents are on disk.
+    Written,
+    /// The lock stayed busy past the deadline, so nothing was written.
+    SkippedBusy,
+}
+
 impl CacheManager {
     /// Recently opened dataset paths, most recent first.
     ///
@@ -252,8 +270,9 @@ impl CacheManager {
     /// Record a path as most recently opened, de-duplicating and capping the list.
     ///
     /// Failures are ignored: not being able to write a convenience list must never
-    /// interfere with opening data.
-    pub fn push_recent(&self, path: &std::path::Path) {
+    /// interfere with opening data. The return value distinguishes a write from a
+    /// contended skip for callers and tests that care; the normal caller does not.
+    pub fn push_recent(&self, path: &std::path::Path) -> HistoryUpdate {
         // A URL is recorded exactly as given: canonicalising one is meaningless, and
         // it would also stat a path that does not exist locally.
         let looks_like_url = path.to_string_lossy().contains("://");
@@ -264,11 +283,12 @@ impl CacheManager {
         };
         let entry = stored.to_string_lossy().into_owned();
 
-        let _ = self.update_history_file("recents", |recents| {
+        self.update_history_file("recents", |recents| {
             recents.retain(|p| p != &entry);
             recents.insert(0, entry.clone());
             recents.truncate(MAX_RECENTS);
-        });
+        })
+        .unwrap_or(HistoryUpdate::SkippedBusy)
     }
 }
 

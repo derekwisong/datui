@@ -1,5 +1,9 @@
 # Security Checks
 
+> Reporting a vulnerability, rather than running the checks? See
+> [SECURITY.md](https://github.com/derekwisong/datui/blob/main/SECURITY.md),
+> which also states what datui does and does not defend against.
+
 Datui runs two automated security checks alongside the usual format and clippy
 gates. Both are in the `Security` workflow, and both can be run locally.
 

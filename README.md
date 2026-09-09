@@ -145,6 +145,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 > If you encounter any issues or have feature requests, please
 > [open an issue on  GitHub](https://github.com/derekwisong/datui/issues).
+>
+> Found a security problem? Please report it privately instead. See
+> [SECURITY.md](SECURITY.md).
 
 [docs]: https://derekwisong.github.io/datui/
 [config-guide]: https://derekwisong.github.io/datui/latest/user-guide/configuration.html

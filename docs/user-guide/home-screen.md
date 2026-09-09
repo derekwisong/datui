@@ -114,7 +114,7 @@ use_desktop_recents = false
 ## Searching below where you are
 
 Typing filters the rows already on screen. It also starts a **recursive search of the
-working directory**, and datasets found below it appear in a `Found below` section
+working directory**, and datasets found below it appear in a `Found` section
 under everything else.
 
 The walk runs once, in the background, the first time you type. Every keystroke after
@@ -154,7 +154,7 @@ Results are named by their path below the search root, because three files calle
 `sales.parquet` are indistinguishable otherwise:
 
 ```
-Found below   ~/work/analysis · 954 searched
+Found   ~/work/analysis · 954 searched
   europe/q3/sales.parquet          12.4 MB   1.2M rows   3 days ago
   americas/q3/sales.parquet         9.1 MB   890K rows   3 days ago
 ```
@@ -214,28 +214,27 @@ extensions = []
 - **time_budget_ms** is what makes a cold or enormous tree degrade to partial results
   rather than to a wait.
 
-## What opening a dataset will cost
+## Details
 
 `rows`, `columns` and `size` say what a dataset *is*. None of them say what reading it
 will do, and the difference is large: 200 MB of zstd-compressed Parquet is two
 gigabytes once open, and two gigabytes over a hotel-wifi NFS mount is a different
 afternoon than two gigabytes on tmpfs.
 
-The preview pane leads with that:
+The preview pane shows both, in one list:
 
 ```
- OPENING THIS
-source      nfs4 · reads cross a network
+ DETAILS
+source      nfs4
+kind        hive
+rows        412M
+columns     38
 on disk     184 MB
 in memory   1.4 GB  zstd 7.6×
 row groups  12
 partitions  1,460 by date, region
             date 2021-01-01 to 2024-12-31
-
- SHAPE
-rows      412M
-columns   38
-modified  3 days ago
+modified    3 days ago
 ```
 
 | line | where it comes from | why it matters |
@@ -251,9 +250,10 @@ to ask about a share that has stopped answering. The compression and layout figu
 come out of the same footer datui already reads for the row count. The partition
 layout is directory names.
 
-Sections name the filesystem too, so `nfs4 · recent` replaces a bare `network`. A
-source is only called out when it changes what pressing <kbd>Enter</kbd> means —
-ordinary local disk says its name and nothing more.
+`source` is the filesystem's own name and nothing else — colour carries the warning,
+so a remote or object-store source stands out without a sentence explaining that a
+network is a network. Sections name the filesystem too, so `nfs4 · recent` replaces a
+bare `network`.
 
 A dataset directory reports no size rather than the size of its own inode. Two hundred
 bytes is what `stat` says about a directory holding a terabyte, and printing it reads

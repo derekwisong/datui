@@ -559,7 +559,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     if !elsewhere.is_empty() {
         sections.push(Section {
             title: "Elsewhere".to_string(),
-            subtitle: Some("opened elsewhere · press Enter to look".to_string()),
+            subtitle: Some("opened elsewhere".to_string()),
             rows: elsewhere,
             unavailable: false,
         });
@@ -993,7 +993,7 @@ impl HomeState {
     ///
     /// A constant because collapse state is keyed by title, and because the renderer
     /// and the tests both need to name it.
-    pub const SEARCH_SECTION: &'static str = "Found below";
+    pub const SEARCH_SECTION: &'static str = "Found";
 
     /// Put the current search results into `sections`, or take them out.
     ///
@@ -1034,7 +1034,7 @@ impl HomeState {
         let root = self.search.root.clone().unwrap_or_default();
         let mut subtitle = display_path(&root);
         if self.search.running {
-            subtitle = format!("{subtitle} · searching {} so far", self.search.scanned);
+            subtitle = format!("{subtitle} · searching {}", self.search.scanned);
         } else if let Some(limit) = &self.search.limited {
             subtitle = format!("{subtitle} · {limit} · {} searched", self.search.scanned);
         } else {

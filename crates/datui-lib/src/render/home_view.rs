@@ -173,14 +173,13 @@ fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &Render
 fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
     let home = &app.home;
     let g = glyphs::get();
+    // Placeholders name what the field takes, rather than instructing you to type
+    // in the box the cursor is already sitting in. The filter one earns its space by
+    // saying the part that is not obvious: typing searches below here as well.
     let (glyph, value, hint) = if home.path_input_active {
-        (
-            "~ ",
-            home.path_input.as_str(),
-            "path to a file or directory",
-        )
+        (" ~ ", home.path_input.as_str(), "file or directory")
     } else {
-        (g.prompt, home.filter.as_str(), "type to filter")
+        (g.prompt, home.filter.as_str(), "filter and search")
     };
 
     let mut spans = vec![Span::styled(
@@ -264,21 +263,18 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         vec![
             Line::from(""),
             Line::from(Span::styled(
-                "No datasets here yet.",
+                "No datasets here.",
                 Style::default().fg(ctx.text_secondary),
             )),
             Line::from(""),
             Line::from(vec![
                 Span::styled("  ~  ", Style::default().fg(ctx.keybind_hints)),
-                Span::styled(
-                    "type a path to open one — the place is remembered afterwards",
-                    Style::default().fg(ctx.dimmed),
-                ),
+                Span::styled("type a path", Style::default().fg(ctx.dimmed)),
             ]),
             Line::from(vec![
                 Span::styled("     ", Style::default()),
                 Span::styled(
-                    "or set [data] directories in your config, for places you use often",
+                    "or set [data] directories in your config",
                     Style::default().fg(ctx.dimmed),
                 ),
             ]),
@@ -611,11 +607,7 @@ fn ratio_of(size: Option<u64>, uncompressed: Option<u64>) -> Option<f64> {
     (ratio >= 1.2).then_some(ratio)
 }
 
-/// Identity, then what opening it costs, then what it is.
-///
-/// The cost block sits above the shape deliberately. `rows` and `size` answer "what
-/// is this"; someone looking at this pane is deciding whether to press Enter, and
-/// that is a different question.
+/// The name, the path, and everything known about the dataset.
 ///
 /// Split out from the pane so it can be checked without an application behind it.
 fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'static>> {
@@ -635,41 +627,49 @@ fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'s
         )),
     ];
 
-    let source = entry
+    // One list. The split into "what it costs" and "what it is" was a distinction
+    // the reader has to be told about; these are all just details of the same thing,
+    // and a person scanning them does not need them sorted into camps.
+    //
+    // Ordered by what decides whether to press Enter: where it lives, what it holds,
+    // what reading it will take, and when it last changed.
+    let mut facts: Vec<(&str, String, Style)> = Vec::new();
+    let plain = Style::default().fg(ctx.text_secondary);
+
+    if let Some(source) = entry
         .cost
         .source
         .as_deref()
-        .map(crate::locality::Source::from_fstype);
-
-    let mut cost: Vec<(&str, String, Style)> = Vec::new();
-    if let Some(source) = &source {
-        let (note, style) = match source.locality {
-            crate::locality::Locality::Network => {
-                (" · reads cross a network", Style::default().fg(ctx.warning))
+        .map(crate::locality::Source::from_fstype)
+    {
+        // The filesystem's own name and nothing else. Colour carries the warning:
+        // a sentence explaining that a network is a network is a sentence the
+        // reader has to skip on every row they look at.
+        let style = match source.locality {
+            crate::locality::Locality::Network | crate::locality::Locality::Object => {
+                Style::default().fg(ctx.warning)
             }
-            crate::locality::Locality::Object => (
-                " · object store, fetched on open",
-                Style::default().fg(ctx.warning),
-            ),
-            crate::locality::Locality::Memory => (" · in RAM", Style::default().fg(ctx.success)),
-            // Ordinary disk is the unremarkable case. It says its name and stops;
-            // a reassurance on every row is just noise on every row.
-            crate::locality::Locality::Local | crate::locality::Locality::Unknown => {
-                ("", Style::default().fg(ctx.text_secondary))
-            }
+            crate::locality::Locality::Memory => Style::default().fg(ctx.success),
+            _ => plain,
         };
-        cost.push(("source", format!("{}{note}", source.label()), style));
+        facts.push(("source", source.label().to_string(), style));
+    }
+    let kind = entry.kind.label();
+    if !kind.is_empty() {
+        facts.push(("kind", kind.to_string(), plain));
+    }
+    if let Some(rows) = entry.rows {
+        facts.push(("rows", discover::format_rows(rows), plain));
+    }
+    if let Some(cols) = entry.cols {
+        facts.push(("columns", cols.to_string(), plain));
     }
     if let Some(size) = entry.size {
-        cost.push((
-            "on disk",
-            discover::format_size(size),
-            Style::default().fg(ctx.text_secondary),
-        ));
+        facts.push(("on disk", discover::format_size(size), plain));
     }
     if let Some(uncompressed) = entry.cost.uncompressed {
-        // The single most useful number here, and the one nothing else on screen
-        // implies: 200 MB of zstd Parquet is two gigabytes once it is open.
+        // The one number nothing else here implies: 200 MB of zstd Parquet is two
+        // gigabytes once it is open.
         let mut text = discover::format_size(uncompressed);
         match (ratio_of(entry.size, Some(uncompressed)), &entry.cost.codec) {
             (Some(r), Some(codec)) => text.push_str(&format!("  {codec} {r:.1}{}", g.times)),
@@ -677,22 +677,14 @@ fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'s
             (Some(r), None) => text.push_str(&format!("  {r:.1}{}", g.times)),
             (None, None) => {}
         }
-        cost.push(("in memory", text, Style::default().fg(ctx.float_col)));
+        facts.push(("in memory", text, Style::default().fg(ctx.float_col)));
     } else if let Some(codec) = &entry.cost.codec {
-        cost.push((
-            "codec",
-            codec.clone(),
-            Style::default().fg(ctx.text_secondary),
-        ));
+        facts.push(("codec", codec.clone(), plain));
     }
     if let Some(groups) = entry.cost.row_groups {
         // One enormous row group cannot be read in parallel or skipped through; a
         // thousand tiny ones cost more in overhead than they save.
-        cost.push((
-            "row groups",
-            groups.to_string(),
-            Style::default().fg(ctx.text_secondary),
-        ));
+        facts.push(("row groups", groups.to_string(), plain));
     }
     if let Some(parts) = &entry.cost.partitions {
         let count = if parts.more {
@@ -700,7 +692,7 @@ fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'s
         } else {
             parts.count.to_string()
         };
-        cost.push((
+        facts.push((
             "partitions",
             format!("{count} by {}", parts.keys.join(", ")),
             Style::default().fg(ctx.temporal_col),
@@ -710,59 +702,29 @@ fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'s
             parts.first_key_values.last(),
         ) {
             let key = parts.keys.first().map(String::as_str).unwrap_or("");
-            // Spelled rather than drawn: an arrow glyph here would be the only one on
-            // the screen, and "to" reads the same on every terminal.
+            // Spelled rather than drawn: an arrow glyph here would be the only one
+            // on the screen, and "to" reads the same on every terminal.
             let range = if first == last {
                 first.clone()
             } else {
                 format!("{first} to {last}")
             };
-            cost.push((
-                "",
-                format!("{key} {range}"),
-                Style::default().fg(ctx.text_secondary),
-            ));
+            facts.push(("", format!("{key} {range}"), plain));
         }
-    }
-
-    if !cost.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(pane_heading("OPENING THIS", width, ctx));
-        let key_w = cost.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
-        for (key, value, style) in cost {
-            lines.push(fact_line(key, value, key_w, style, ctx));
-        }
-    }
-
-    let mut facts: Vec<(&str, String)> = Vec::new();
-    let kind = entry.kind.label();
-    if !kind.is_empty() {
-        facts.push(("kind", kind.to_string()));
-    }
-    if let Some(rows) = entry.rows {
-        facts.push(("rows", discover::format_rows(rows)));
-    }
-    if let Some(cols) = entry.cols {
-        facts.push(("columns", cols.to_string()));
     }
     if let Some(modified) = entry.modified {
         let age = discover::format_age(modified);
         if !age.is_empty() {
-            facts.push(("modified", format!("{age} ago")));
+            facts.push(("modified", format!("{age} ago"), plain));
         }
     }
+
     if !facts.is_empty() {
         lines.push(Line::from(""));
-        lines.push(pane_heading("SHAPE", width, ctx));
-        let key_w = facts.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-        for (key, value) in facts {
-            lines.push(fact_line(
-                key,
-                value,
-                key_w,
-                Style::default().fg(ctx.text_secondary),
-                ctx,
-            ));
+        lines.push(pane_heading("DETAILS", width, ctx));
+        let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+        for (key, value, style) in facts {
+            lines.push(fact_line(key, value, key_w, style, ctx));
         }
     }
 
@@ -818,21 +780,20 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             }
         }
         _ => {
+            // One fragment, or none. The details list above already says what this
+            // is, and the control bar already says what Enter does; a sentence
+            // repeating either is a sentence to read past on every row.
             let reading = app.home_schema_pending(&entry.path);
-            let note: &[&str] = match entry.kind {
-                EntryKind::Directory => &["Directory.", "Enter to look inside."],
-                EntryKind::Unknown => {
-                    &["On a network location, not read yet.", "Enter to open it."]
-                }
-                _ if reading => &["Reading schema…"],
-                _ => &[
-                    "Schema needs a scan for this format.",
-                    "datui shows it once opened.",
-                ],
+            let note = match entry.kind {
+                // Nothing to add: "kind directory" is directly above.
+                EntryKind::Directory => "",
+                EntryKind::Unknown => "Not read yet.",
+                _ if reading => "Reading…",
+                _ => "Schema needs a full read.",
             };
-            for part in note {
+            if !note.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    *part,
+                    note,
                     Style::default().fg(ctx.dimmed),
                 )));
             }
@@ -861,7 +822,7 @@ mod tests {
         // A search heading carries the path it searched, which is easily longer than
         // the terminal. The note is context; the title is what the section is.
         let section = Section {
-            title: "Found below".to_string(),
+            title: "Found".to_string(),
             subtitle: Some(
                 "/very/deeply/nested/path/that/goes/on/and/on/for/quite/a/while · 99999 searched"
                     .to_string(),
@@ -926,8 +887,9 @@ mod tests {
     }
 
     #[test]
-    fn a_network_source_is_called_out_by_name() {
-        // "network" covers three filesystems that fail three different ways.
+    fn a_network_source_is_named_rather_than_described() {
+        // The filesystem's own name and nothing else. A sentence explaining that a
+        // network is a network is a sentence to skip on every row.
         let e = costed(
             "prices.parquet",
             crate::discover::Cost {
@@ -938,7 +900,6 @@ mod tests {
         );
         let text = preview_text(&e, 44);
         assert!(text.contains("nfs4"), "{text}");
-        assert!(text.contains("reads cross a network"), "{text}");
     }
 
     #[test]
@@ -1060,9 +1021,7 @@ mod tests {
                 // The pane wraps rather than clips, so a long value is allowed to run
                 // on; what must not happen is a *heading* bar overrunning its width.
                 let text: String = l_text(&line);
-                if text.trim_start().starts_with("OPENING")
-                    || text.trim_start().starts_with("SHAPE")
-                {
+                if text.trim_start().starts_with("OPENING") {
                     assert!(
                         text.chars().count() <= width,
                         "a {width}-wide pane drew a {}-character heading",
@@ -1129,7 +1088,7 @@ mod tests {
         // Trimming the note first is the point: a header that says only where it
         // looked, and not what it is, has lost the more useful half.
         let section = Section {
-            title: "Found below".to_string(),
+            title: "Found".to_string(),
             subtitle: Some("x".repeat(200)),
             rows: Vec::new(),
             unavailable: false,
@@ -1138,7 +1097,7 @@ mod tests {
         let line = section_header(&section, 3, false, false, 40, &ctx);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
-            text.contains("FOUND BELOW") || text.contains("BELOW"),
+            text.contains("FOUND"),
             "the title should still be readable, got {text:?}"
         );
     }

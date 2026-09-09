@@ -415,11 +415,73 @@ jobs:
           name: datui-macos-x86_64-apple-darwin-artifacts
           path: macos-x86_64
 
+      # The release body has to exist at the instant the release is created.
+      # publish-packages starts about a minute later and komac copies the body
+      # into the winget manifest as ReleaseNotes; notes typed onto the release
+      # page afterwards arrive too late, which is how 0.3.1 reached winget with
+      # none. Editing the release later fixes what humans read and nothing else.
+      #
+      # So the body is always composed here, and is never empty. Hand-written
+      # notes are preferred and live at release-notes/<tag>.md, committed with
+      # the release. When that file is absent the body is generated from the
+      # commit subjects since the previous tag, which is worse prose but is
+      # accurate, present on time, and still editable afterwards.
+      - name: Compose release body
+        id: release_body
+        env:
+          TAG: ${{ github.ref_name }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release-body.md"
+          notes="release-notes/$TAG.md"
+          if [ -s "$notes" ]; then
+            cp "$notes" "$out"
+            echo "Using hand-written notes from $notes"
+          else
+            previous=$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)
+            if [ -n "$previous" ]; then
+              range="$previous..$TAG"
+            else
+              range="$TAG"
+            fi
+            # Drop bump_version.py's own commits. "Release 0.3.1" and "Bump
+            # version to 0.3.2-dev" tell a reader nothing, and would otherwise be
+            # two of the three lines in a small release.
+            changes=$(git log --no-merges -E --invert-grep \
+              --grep='^Release [0-9]' --grep='^Bump version to ' \
+              --format='- %s' "$range")
+            # A release carrying nothing but version commits still needs a body.
+            if [ -z "$changes" ]; then
+              changes=$(git log --no-merges --format='- %s' "$range")
+            fi
+            {
+              echo "## What's changed"
+              echo
+              echo "$changes"
+              if [ -n "$previous" ]; then
+                echo
+                echo "**Full changelog**: $SERVER_URL/$REPOSITORY/compare/$previous...$TAG"
+              fi
+            } > "$out"
+            echo "No $notes found; generated the body from commits since ${previous:-the start of history}."
+            echo "Edit the release afterwards if you want better prose; winget already has this text."
+          fi
+          if [ ! -s "$out" ]; then
+            echo "::error title=Release body is empty::Refusing to create $TAG with an empty body, which would publish to winget with no ReleaseNotes. Add release-notes/$TAG.md and re-run."
+            exit 1
+          fi
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+          echo "--- release body ---"
+          cat "$out"
+
       - name: Create GitHub Release
         # SHA-pinned to defend against upstream takeover; bump deliberately.
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ github.ref_name }}
+          body_path: ${{ steps.release_body.outputs.path }}
           files: |
             target/debian/*.deb
             target/generate-rpm/*.rpm

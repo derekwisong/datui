@@ -260,6 +260,31 @@ jobs:
           # provably fatal -- komac may still succeed, and it retries 3x below.
           echo "::warning title=winget fork sync failed::Could not fast-forward the fork (see log above). Continuing anyway; winget-releaser may still succeed."
 
+      # Second preflight, for a different failure. komac reads the GitHub release
+      # body and copies it into the manifest as ReleaseNotes. When the body is
+      # empty it quietly omits ReleaseNotes and ReleaseNotesUrl, the new version
+      # is inconsistent with the published one, and winget-pkgs labels the PR
+      # Manifest-Metadata-Consistency -- after the PR is open, which is the
+      # expensive moment to find out. 0.3.1 shipped that way: the notes were
+      # written on the release page six minutes after komac had already run.
+      #
+      # release.yml now builds the body from release-notes/<tag>.md at release
+      # creation, so an empty body here means that wiring came undone. Fail
+      # before opening a PR that a moderator would have to chase.
+      - name: Check the release body is populated (preflight)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve-release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          body=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
+          if [ -z "${body//[[:space:]]/}" ]; then
+            echo "::error title=Release body is empty::komac would submit $TAG to winget with no ReleaseNotes. RECOVER: add release-notes/$TAG.md on main, run 'gh release edit $TAG --notes-file release-notes/$TAG.md', then re-run the failed job with 'gh run rerun ${GITHUB_RUN_ID} --failed'. Details: release-notes/README.md"
+            exit 1
+          fi
+          echo "Release body is ${#body} characters; komac will carry it into ReleaseNotes."
+
       # Retried up to 3x: komac's GitHub GraphQL mutations intermittently fail
       # with "Ref cannot be created" or "Something went wrong while executing
       # your query" (transient server-side / secondary-rate-limit hiccups, not

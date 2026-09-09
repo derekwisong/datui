@@ -15,10 +15,24 @@ With -dev suffix workflow:
   2. Prepare release: "X.Y.Z-dev" -> "X.Y.Z" (remove -dev, commit, tag)
   3. Start next cycle: "X.Y.Z" -> "X.Y.Z+1-dev" (bump + add -dev, commit)
 
+Release notes are optional. The Release workflow always composes a body: it uses
+release-notes/vX.Y.Z.md when that file is committed, and otherwise generates one
+from the commit subjects since the last tag. Either way the body exists the
+moment the release is created, which is what matters, because publishing copies
+it into the winget manifest about a minute later and editing the release page
+afterwards never reaches winget.
+
+So write notes when a release deserves them and skip it when it does not:
+  bump_version.py notes    scaffolds release-notes/vX.Y.Z.md from the commit log
+The release commands only stop you for a file that exists but is unfinished, or
+one written but left uncommitted at tag time. See release-notes/README.md.
+
 Best practice (release): CI must pass for the release commit before the Release
 workflow will build. The script walks you through; use --tag-only to create and
 push the tag (no manual git tag commands). Recommended flow:
-  1. bump_version.py release --commit   (commits release version, no tag yet)
+  0. bump_version.py notes              (optional; write release-notes/vX.Y.Z.md)
+  1. bump_version.py release --commit   (commits release version and any notes,
+                                         no tag yet)
   2. git push                           (push to main only)
   3. Wait for CI to pass on that commit
   4. bump_version.py release --tag-only (creates vX.Y.Z from Cargo.toml, pushes tag)
@@ -291,6 +305,11 @@ def commit_version_changes(project_root: Path, version: str, script_name: str, i
         # Only include README.md for releases (badge only updated for releases)
         if is_release:
             files_to_add.append("README.md")
+            # The notes have to be in the release commit: the Release workflow
+            # reads them out of the tagged commit to build the release body.
+            notes_rel = release_notes_relpath(version)
+            if (project_root / notes_rel).exists():
+                files_to_add.append(notes_rel)
         if (project_root / "crates" / "datui-cli" / "Cargo.toml").exists():
             files_to_add.append("crates/datui-cli/Cargo.toml")
         if (project_root / "crates" / "datui-lib" / "Cargo.toml").exists():
@@ -354,6 +373,170 @@ def push_tag(project_root: Path, version: str) -> None:
         raise RuntimeError(f"Git push tag failed: {e}")
 
 
+# Optional hand-written release notes, one file per tag. release.yml prefers
+# this file and falls back to the commit log, so the release body is never empty
+# and never late. That timing is the whole point: publishing runs about a minute
+# after the release is created and komac copies the body into the winget
+# manifest, so notes typed onto the release page afterwards arrive too late.
+# 0.3.1 shipped to winget with no ReleaseNotes that way.
+RELEASE_NOTES_DIR = "release-notes"
+
+# A scaffolded file still carrying this has not been written yet. Shipping that
+# text would be worse than shipping the generated body, so the release commands
+# stop for it.
+NOTES_TODO_SENTINEL = "TODO: write the release notes"
+
+
+def release_notes_relpath(version: str) -> str:
+    """Repo-relative path to the notes for a version (release-notes/v0.3.2.md)."""
+    return f"{RELEASE_NOTES_DIR}/v{version}.md"
+
+
+def release_notes_path(project_root: Path, version: str) -> Path:
+    """Absolute path to the notes for a version."""
+    return project_root / release_notes_relpath(version)
+
+
+def previous_release_tag(project_root: Path) -> str | None:
+    """Most recent vX.Y.Z tag reachable from HEAD, or None on the first release."""
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0", "--match", "v*"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    return result.stdout.strip() or None
+
+
+def commit_subjects_since(project_root: Path, since_tag: str | None) -> list[str]:
+    """Commit subjects since a tag, newest first, for scaffolding the notes."""
+    rev_range = f"{since_tag}..HEAD" if since_tag else "HEAD"
+    try:
+        result = subprocess.run(
+            ["git", "log", "--no-merges", "--format=%h %s", rev_range],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return []
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def scaffold_release_notes(project_root: Path, version: str) -> Path:
+    """Write a starter notes file for a version. Never overwrites an existing one."""
+    path = release_notes_path(project_root, version)
+    if path.exists():
+        return path
+
+    previous = previous_release_tag(project_root)
+    commits = commit_subjects_since(project_root, previous)
+    repo = "https://github.com/derekwisong/datui"
+
+    lines = [
+        "## What's changed",
+        "",
+        f"{NOTES_TODO_SENTINEL} for v{version}, then delete this line.",
+        "",
+        "<!--",
+        "This file becomes the GitHub release body verbatim, and komac copies it",
+        "into the winget manifest. Write it for someone deciding whether to",
+        "upgrade, not as a commit log. Delete the file to release without it; the",
+        "body is then generated from the commits below.",
+        "",
+    ]
+    if commits:
+        since = previous or "the start of the project"
+        lines.append(f"Commits since {since}, for reference. Delete what you do not use:")
+        lines.extend(f"  {commit}" for commit in commits)
+    else:
+        lines.append("No commits found since the last tag.")
+    lines.extend(["-->", ""])
+    if previous:
+        lines.append(f"**Full changelog**: {repo}/compare/{previous}...v{version}")
+        lines.append("")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def _describe_notes_problems(
+    text: str | None, rel_path: str, location: str, required: bool
+) -> list[str]:
+    """Reasons the given notes content is not fit to ship.
+
+    Absence is fine when the notes are optional: the workflow falls back to the
+    commit log. Content that exists but is unfinished never is.
+    """
+    if text is None:
+        return [f"{rel_path} does not exist {location}"] if required else []
+    if not text.strip():
+        return [f"{rel_path} is empty"]
+    if NOTES_TODO_SENTINEL in text:
+        return [f"{rel_path} still has the scaffolded '{NOTES_TODO_SENTINEL}' line"]
+    return []
+
+
+def check_release_notes_worktree(
+    project_root: Path, version: str, required: bool = False
+) -> list[str]:
+    """Problems with the notes on disk. An empty list means there is nothing to fix."""
+    path = release_notes_path(project_root, version)
+    text = path.read_text(encoding="utf-8") if path.exists() else None
+    return _describe_notes_problems(text, release_notes_relpath(version), "on disk", required)
+
+
+def check_release_notes_committed(project_root: Path, version: str) -> list[str]:
+    """Problems with the notes about to be tagged.
+
+    The workflow reads the file out of the tagged commit, so what is on disk is
+    not what ships. Notes sitting uncommitted at tag time are the trap this
+    catches: the release would silently fall back to the generated body while
+    the good text stays on the author's machine.
+    """
+    rel_path = release_notes_relpath(version)
+    on_disk = release_notes_path(project_root, version).exists()
+    try:
+        result = subprocess.run(
+            ["git", "show", f"HEAD:{rel_path}"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        if on_disk:
+            return [
+                f"{rel_path} exists but is not committed, so the tag would fall back "
+                f"to the generated body and ignore it"
+            ]
+        return []
+    return _describe_notes_problems(result.stdout, rel_path, "at HEAD", required=False)
+
+
+def report_notes_problems(problems: list[str], version: str) -> None:
+    """Print what is wrong with the notes, and how to move on."""
+    # Keep the two streams in order when the run is piped to a log.
+    sys.stdout.flush()
+    print("Error: the release notes are not ready to ship.", file=sys.stderr)
+    for problem in problems:
+        print(f"  - {problem}", file=sys.stderr)
+    print(file=sys.stderr)
+    print(f"Finish {release_notes_relpath(version)} and commit it, or delete it to", file=sys.stderr)
+    print("let the release generate its body from the commit log instead.", file=sys.stderr)
+    print(file=sys.stderr)
+    print("Whichever you pick, the body has to be right before the tag is pushed:", file=sys.stderr)
+    print("publishing copies it into the winget manifest about a minute later, and", file=sys.stderr)
+    print("editing the release afterwards does not reach winget. See", file=sys.stderr)
+    print("release-notes/README.md.", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Bump version number in Cargo.toml and README.md",
@@ -364,6 +547,10 @@ Commands:
   major           Bump major version and add -dev (0.2.11 -> 1.0.0-dev)
   minor           Bump minor version and add -dev (0.2.11 -> 0.3.0-dev)
   patch           Bump patch version and add -dev (0.2.11 -> 0.2.12-dev)
+
+Release notes are optional; the release generates a body from the commit log
+when there is no file. Write them when a release deserves it:
+  python scripts/bump_version.py notes
 
 Best practice (release): Push main first, wait for CI, then run --tag-only.
   python scripts/bump_version.py release --commit
@@ -378,8 +565,9 @@ Start next dev cycle:
     )
     parser.add_argument(
         "command",
-        choices=["release", "major", "minor", "patch"],
-        help="Version operation: 'release' removes -dev, others bump and add -dev",
+        choices=["release", "major", "minor", "patch", "notes"],
+        help="Version operation: 'release' removes -dev, others bump and add -dev; "
+             "'notes' scaffolds the release notes for the upcoming release",
     )
     parser.add_argument(
         "--commit",
@@ -403,6 +591,11 @@ Start next dev cycle:
     # --tag and --tag-only only valid for release
     if (args.tag or args.tag_only) and args.command != "release":
         print("Error: --tag and --tag-only can only be used with 'release' command", file=sys.stderr)
+        sys.exit(1)
+
+    # 'notes' writes one file and changes no version, so the git flags are meaningless
+    if args.command == "notes" and args.commit:
+        print("Error: 'notes' only writes the notes file; commit it with 'release --commit'", file=sys.stderr)
         sys.exit(1)
     
     # --tag-only and --commit/--tag are mutually exclusive
@@ -437,6 +630,28 @@ Start next dev cycle:
     current_version = get_current_version(cargo_toml_path)
     print(f"Current version (from main Cargo.toml): {current_version}")
 
+    # 'notes' only writes the notes file; it touches no version at all.
+    if command == "notes":
+        # Works both before the release commit (X.Y.Z-dev) and after it (X.Y.Z),
+        # so the notes can still be written once the version has been bumped.
+        _, _, _, suffix = parse_version(current_version)
+        release_version = prepare_release(current_version) if suffix == "-dev" else current_version
+        path = release_notes_path(project_root, release_version)
+        existed = path.exists()
+        scaffold_release_notes(project_root, release_version)
+        rel_path = release_notes_relpath(release_version)
+        if existed:
+            print(f"{rel_path} already exists; leaving it alone.")
+        else:
+            print(f"Scaffolded {rel_path} from the commits since the last tag.")
+        print()
+        print("Write it, then commit it with the release:")
+        print(f"  python scripts/{script_name} release --commit")
+        print()
+        print("Skipping it is fine too. Delete the file and the release body will be")
+        print("generated from the commit log instead.")
+        return
+
     # --tag-only: create and push tag for current commit (run after CI passes)
     if is_release and args.tag_only:
         _, _, _, suffix = parse_version(current_version)
@@ -445,6 +660,12 @@ Start next dev cycle:
                 "Error: Current version has -dev suffix. Run 'release --commit' first, push, wait for CI, then run --tag-only.",
                 file=sys.stderr,
             )
+            sys.exit(1)
+        # Last gate before the Release workflow fires. Check the committed file,
+        # not the working tree: the workflow reads it out of the tagged commit.
+        problems = check_release_notes_committed(project_root, current_version)
+        if problems:
+            report_notes_problems(problems, current_version)
             sys.exit(1)
         tag_name = f"v{current_version}"
         try:
@@ -473,6 +694,23 @@ Start next dev cycle:
     
     print(f"New version: {new_version}")
     print()
+
+    # Notes are optional: the Release workflow generates a body from the commit
+    # log when there is no file. A half-written file is the one case worth
+    # stopping for, since that is what would ship. Checked before anything is
+    # modified, so a stopped run leaves the tree clean and can just be re-run.
+    if is_release:
+        problems = check_release_notes_worktree(project_root, new_version, required=False)
+        if problems:
+            report_notes_problems(problems, new_version)
+            sys.exit(1)
+        rel_path = release_notes_relpath(new_version)
+        if (project_root / rel_path).exists():
+            print(f"Release notes ready: {rel_path}")
+        else:
+            print(f"No {rel_path}; the release body will be generated from the commit log.")
+            print(f"  To write them yourself: python scripts/{script_name} notes")
+        print()
 
     # All Cargo.toml package versions to keep in sync (main is source of truth; others set to new_version)
     cargo_toml_files = [

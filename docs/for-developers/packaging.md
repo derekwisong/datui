@@ -72,6 +72,25 @@ The same script is used in GitHub Actions:
 - **CI** (`ci.yml`): Builds and uploads dev packages (`.deb`, `.rpm`, `.tar.gz`) on push to `main`
 - **Release** (`release.yml`): Attaches `.deb`, `.rpm`, and Arch `.tar.gz` to GitHub releases
 
+### Release notes
+
+`release.yml` composes the release body before creating the release. It uses
+`release-notes/v<version>.md` when that file is committed, and otherwise
+generates a body from the commit subjects since the previous tag. The body is
+therefore never empty, and hand-written notes are always optional.
+
+The timing is the point. `publish-packages.yml` starts about a minute after the
+release is created, and komac copies the release body into the winget manifest
+as `ReleaseNotes`. Notes typed onto the release page afterwards fix what people
+read on GitHub and nothing else, because winget already has whatever the body
+said. Version 0.3.1 shipped to winget with no release notes that way.
+
+To write notes for a release, run `python scripts/bump_version.py notes` and
+commit the file with the release. `tests/release_notes_test.rs` checks the
+wiring in CI, which runs on the release commit before the tag is pushed, and the
+winget job refuses to run komac against an empty release body. See
+`release-notes/README.md`.
+
 ### Arch Linux Installation
 
 Arch users can install from the release tarball:

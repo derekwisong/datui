@@ -45,7 +45,7 @@ calamine = { version = "0.36", features = ["chrono"] }
 orc-rust = "0.9"
 arrow = "59"
 tempfile = "3.14"
-ureq = { version = "2.11", optional = true }
+ureq = { version = "3.4", optional = true }
 object_store = { version = "0.12", optional = true, default-features = false, features = ["aws", "gcp"] }
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "io-util"] }
 polars-sql = { version = "0.52", optional = true }

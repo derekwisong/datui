@@ -1077,4 +1077,107 @@ mod tests {
         assert!(content.contains("setrgbcolor"), "series color");
         assert!(content.contains("lineto"), "line series");
     }
+
+    /// Walks a PostScript line and returns the text that sits *outside* string
+    /// literals, which is the part a interpreter executes as code.
+    ///
+    /// Deliberately a real scanner rather than a substring search: the whole
+    /// question is whether a `)` in the data terminates a literal early, and
+    /// only tracking `\` escaping answers that.
+    fn code_outside_strings(line: &str) -> String {
+        let mut out = String::new();
+        let mut chars = line.chars();
+        let mut in_string = false;
+        while let Some(c) = chars.next() {
+            match c {
+                // A backslash escapes the next character, inside a string or not.
+                '\\' => {
+                    chars.next();
+                }
+                '(' if !in_string => in_string = true,
+                ')' if in_string => in_string = false,
+                _ if !in_string => out.push(c),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Chart labels come from column names and cell values, so they are
+    /// untrusted. PostScript is a programming language, and an exported chart
+    /// gets opened by other people in a viewer, so a label that escapes its
+    /// string literal becomes code running on someone else's machine.
+    ///
+    /// `ps_escape` handles this today. This test exists so that a future `show`
+    /// call added without it fails here rather than shipping.
+    #[test]
+    fn chart_labels_cannot_escape_postscript_string_literals() {
+        // Each payload closes the literal and leaves the marker as a bare
+        // token, which is where an interpreter would read it as code. The
+        // marker deliberately sits *outside* any parentheses: text inside a
+        // literal is inert no matter what surrounds it, so a payload shaped
+        // like `) (INJECTED) show (` would pass this test while still being a
+        // real injection.
+        let payloads = [
+            ") INJECTED 0 0 moveto (",
+            "\\) INJECTED (",
+            "a) INJECTED (b",
+            "trailing backslash \\",
+            "unbalanced ( open",
+            "unbalanced ) close",
+        ];
+
+        for payload in payloads {
+            let series = vec![ChartExportSeries {
+                name: payload.to_string(),
+                points: vec![(0.0, 1.0), (1.0, 2.0)],
+            }];
+            let bounds = ChartExportBounds {
+                x_min: 0.0,
+                x_max: 2.0,
+                y_min: 0.0,
+                y_max: 2.5,
+                x_label: payload.to_string(),
+                y_label: payload.to_string(),
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                log_scale: false,
+                chart_title: Some(payload.to_string()),
+            };
+
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = dir.path().join("chart.eps");
+            write_chart_eps(&path, &series, ChartType::Line, &bounds).expect("write_chart_eps");
+
+            let mut content = String::new();
+            std::fs::File::open(&path)
+                .expect("open")
+                .read_to_string(&mut content)
+                .expect("read");
+
+            for (i, line) in content.lines().enumerate() {
+                // DSC comments are not executed, and carry no data anyway.
+                if line.starts_with('%') {
+                    continue;
+                }
+                let code = code_outside_strings(line);
+                assert!(
+                    !code.contains("INJECTED"),
+                    "payload {:?} escaped its string literal on line {}: {:?}",
+                    payload,
+                    i + 1,
+                    line
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ps_escape_neutralises_literal_delimiters() {
+        // Backslash must be escaped first, or escaping the parens would
+        // introduce backslashes that then get doubled and stop escaping.
+        assert_eq!(ps_escape("a(b)c"), "a\\(b\\)c");
+        assert_eq!(ps_escape("back\\slash"), "back\\\\slash");
+        assert_eq!(ps_escape("\\)"), "\\\\\\)");
+        assert_eq!(ps_escape("plain"), "plain");
+    }
 }

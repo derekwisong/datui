@@ -51,6 +51,7 @@ pub mod numfmt;
 pub mod pivot_melt_modal;
 mod query;
 mod render;
+pub mod sanitize;
 pub mod search;
 pub mod sort_filter_modal;
 pub mod sort_modal;
@@ -9768,6 +9769,19 @@ impl Widget for &mut App {
         if let Some(debug_area) = app_layout.debug {
             self.debug.render(debug_area, buf);
         }
+
+        // Last line of defence, and deliberately the last statement here.
+        //
+        // Everything above draws untrusted text: cell values, column names,
+        // filenames, parser messages. ratatui strips control characters in
+        // `Buffer::set_stringn` but not in `Span`/`Line` rendering, which is
+        // what these widgets use, and the crossterm backend then prints each
+        // cell symbol unfiltered. Without this sweep a cell containing
+        // `\x1b]52;c;...\x07` writes to the user's clipboard.
+        //
+        // Doing it here rather than at each of the ~200 `Span` construction
+        // sites means a new widget cannot forget to. See `crate::sanitize`.
+        crate::sanitize::sanitize_buffer(buf);
     }
 }
 

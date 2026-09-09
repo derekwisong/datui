@@ -39,7 +39,7 @@ toml = "0.8"
 bzip2 = "0.4"
 xz2 = "0.1"
 flate2 = "1.0"
-zstd = "0.13"
+zstd = "0.14"
 plotters = "0.3"
 calamine = { version = "0.36", features = ["chrono"] }
 orc-rust = "0.7"

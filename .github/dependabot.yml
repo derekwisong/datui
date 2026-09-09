@@ -18,6 +18,11 @@ updates:
       cargo-minor-and-patch:
         update-types: [minor, patch]
     labels: [dependencies, rust]
+    ignore:
+      # polars-sql has to be the same version as polars. Bumped on its own it
+      # pulls a second polars-core into the tree and does not compile. It moves
+      # when polars moves, as one deliberate upgrade.
+      - dependency-name: "polars-sql"
 
   # datui-pyo3 is excluded from the root workspace and has its own lockfile, so
   # Dependabot has to be pointed at it separately.
@@ -31,6 +36,9 @@ updates:
       cargo-minor-and-patch:
         update-types: [minor, patch]
     labels: [dependencies, rust, python-bindings]
+    ignore:
+      # Same coupling as the root workspace: polars-sql tracks polars.
+      - dependency-name: "polars-sql"
 
   # GitHub Actions: SHA pins do not update themselves. This is the job that
   # keeps a pinned action from silently rotting on a version with a known bug.
@@ -43,12 +51,21 @@ updates:
     labels: [dependencies, ci]
 
   # The Python package and the build/release helper scripts.
+  #
+  # Python polars is pinned to match the Rust polars version in both places.
+  # `datui.view(lazyframe)` serializes a query plan in Python and deserializes
+  # it in Rust, so the two sides have to agree on the plan format. A one-sided
+  # bump breaks that at runtime for users rather than at compile time in CI,
+  # which is the worst place to find out. Python polars moves when Rust polars
+  # moves.
   - package-ecosystem: pip
     directory: "/python"
     schedule:
       interval: weekly
       day: monday
     labels: [dependencies, python]
+    ignore:
+      - dependency-name: "polars"
 
   - package-ecosystem: pip
     directory: "/scripts"
@@ -56,3 +73,5 @@ updates:
       interval: weekly
       day: monday
     labels: [dependencies, python, ci]
+    ignore:
+      - dependency-name: "polars"

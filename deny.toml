@@ -21,17 +21,28 @@ version = 2
 # fixed today and what event should clear it. Review this list whenever
 # Dependabot lands a dependency bump.
 ignore = [
-    # --- Reachable from untrusted input: fix these first ---
-
-    # quick-xml, both reachable through calamine when datui opens an .xlsx file,
-    # which is attacker-controlled data by definition. Both are denial of
-    # service (quadratic parse, unbounded namespace allocation), not memory
-    # corruption: the process hangs or is OOM-killed. Patched in quick-xml
-    # >= 0.41, but calamine 0.32 requires 0.38.
-    # Clears when: datui upgrades calamine 0.32 -> 0.36, which is a breaking API
-    # change and needs its own pull request.
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS via calamine (.xlsx); blocked on the calamine 0.36 upgrade" },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS via calamine (.xlsx); blocked on the calamine 0.36 upgrade" },
+    # quick-xml 0.38, two denial-of-service bugs: quadratic parsing of duplicate
+    # attribute names, and unbounded namespace allocation. Patched in 0.41.
+    #
+    # These were the highest-priority entries in this file while calamine held
+    # quick-xml at 0.38, because that put them on the .xlsx path, where the
+    # input is whatever spreadsheet the user opened. calamine 0.36 moved to
+    # quick-xml 0.41 and closed that path.
+    #
+    # What is left is a second copy of 0.38 pulled in by object_store, which
+    # uses it to parse the XML that S3 and GCS return. Reaching it means
+    # pointing datui at an object-store endpoint that answers with hostile XML,
+    # so it needs a malicious or compromised endpoint the user chose, rather
+    # than a file they opened. Worst case is still a hang or an OOM kill, not
+    # memory corruption.
+    #
+    # No upgrade is available: polars 0.52 pins object_store 0.12, so raising
+    # datui's own object_store dependency would add a second copy and leave the
+    # vulnerable one in the tree behind polars.
+    # Clears when: polars bumps object_store to a release built on quick-xml
+    # 0.41 or later.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS; xlsx path fixed by calamine 0.36, remaining copy is object_store S3/GCS XML, pinned by polars" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS; xlsx path fixed by calamine 0.36, remaining copy is object_store S3/GCS XML, pinned by polars" },
 
     # pyo3 0.26, in crates/datui-pyo3. Both are memory-safety bugs, patched in
     # pyo3 0.29. Neither is reachable from this crate: the out-of-bounds read is

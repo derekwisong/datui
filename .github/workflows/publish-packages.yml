@@ -96,7 +96,13 @@ jobs:
         with:
           toolchain: stable
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev
+        run: |
+          # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
+          # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
+          # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
+          # indexes did not fetch, it fails there, for the right reason.
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
 
       - name: Publish to crates.io
         env:
@@ -377,7 +383,11 @@ jobs:
     steps:
       - name: Install APT tools
         run: |
-          sudo apt-get update
+          # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
+          # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
+          # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
+          # indexes did not fetch, it fails there, for the right reason.
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           sudo apt-get install -y dpkg-dev apt-utils gpg
 
       - name: Import GPG key

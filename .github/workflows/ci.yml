@@ -47,7 +47,13 @@ jobs:
         with:
           toolchain: stable
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev
+        run: |
+          # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
+          # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
+          # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
+          # indexes did not fetch, it fails there, for the right reason.
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -84,7 +90,13 @@ jobs:
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
+        run: |
+          # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
+          # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
+          # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
+          # indexes did not fetch, it fails there, for the right reason.
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0

@@ -3361,8 +3361,14 @@ impl App {
             return None;
         }
 
-        // Home owns the whole screen and every key while it is up.
-        if self.input_mode == InputMode::Home && !self.confirmation_modal.active {
+        // Home owns the whole screen and every key while it is up — except under a
+        // modal. Modals render over home unconditionally, so if home also ate their
+        // keys they would be undismissable, and Esc would try to leave home instead.
+        if self.input_mode == InputMode::Home
+            && !self.confirmation_modal.active
+            && !self.error_modal.active
+            && !self.success_modal.active
+        {
             return self.home_key(event);
         }
 

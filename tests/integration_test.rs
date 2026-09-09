@@ -1243,3 +1243,39 @@ fn test_len_generations_are_unique_across_datasets() {
         "two datasets must not share a row-count generation"
     );
 }
+
+/// Modals render over the home screen, but home used to consume every key, so one
+/// raised while the user was at home could not be dismissed: Esc went to home_escape,
+/// which with nothing loaded quits. The only way past an error was to leave datui.
+#[test]
+fn test_error_modal_over_home_is_dismissable() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    assert_eq!(app.input_mode, InputMode::Home);
+
+    app.event(&AppEvent::BackgroundError {
+        generation: app.task_generation(),
+        message: "could not read the file".to_string(),
+    });
+
+    let out = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        !matches!(out, Some(AppEvent::Exit)),
+        "Esc should dismiss the modal, not quit out from under it"
+    );
+
+    // With the modal gone, Esc is home's again, and an empty home has nowhere left
+    // to back out to.
+    let out = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        matches!(out, Some(AppEvent::Exit)),
+        "once the modal is dismissed Esc should behave as home's Esc again"
+    );
+}

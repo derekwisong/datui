@@ -289,6 +289,11 @@ pub struct DatasetFacts {
     /// `hive` under its own directory should not say something else under Recent.
     #[serde(default)]
     pub kind: Option<crate::discover::EntryKind>,
+    /// What opening it will cost: compression, layout, partitioning. Worth keeping
+    /// for the same reason the row count is — it came from a footer read that a
+    /// remote dataset may not get a second chance at.
+    #[serde(default)]
+    pub cost: crate::discover::Cost,
 }
 
 /// Entries kept in the dataset index.

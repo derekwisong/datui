@@ -567,11 +567,59 @@ fn entry_line<'a>(
     Line::from(spans)
 }
 
-fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
-    let Some(entry) = app.home.selected_entry() else {
-        return;
-    };
+/// A filled heading inside the preview pane.
+///
+/// The same grammar as the list's section headers — a filled bar, not a box — so the
+/// two halves of the screen read as one program.
+fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> {
+    let fill = Style::default().bg(ctx.table_header_bg);
+    let label = format!(" {text}");
+    let pad = width.saturating_sub(label.chars().count());
+    Line::from(vec![
+        Span::styled(
+            label,
+            fill.fg(ctx.table_header).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ".repeat(pad), fill),
+    ])
+}
 
+/// One `key   value` line, with the value carrying the emphasis.
+fn fact_line(
+    key: &str,
+    value: String,
+    key_w: usize,
+    style: Style,
+    ctx: &RenderContext,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{key:<key_w$}  "), Style::default().fg(ctx.dimmed)),
+        Span::styled(value, style),
+    ])
+}
+
+/// A compression ratio, when it is worth stating.
+///
+/// Below about 1.2x the number is noise; above it, it is the difference between what
+/// a file weighs and what it will weigh once open.
+fn ratio_of(size: Option<u64>, uncompressed: Option<u64>) -> Option<f64> {
+    let (on_disk, in_memory) = (size?, uncompressed?);
+    if on_disk == 0 {
+        return None;
+    }
+    let ratio = in_memory as f64 / on_disk as f64;
+    (ratio >= 1.2).then_some(ratio)
+}
+
+/// Identity, then what opening it costs, then what it is.
+///
+/// The cost block sits above the shape deliberately. `rows` and `size` answer "what
+/// is this"; someone looking at this pane is deciding whether to press Enter, and
+/// that is a different question.
+///
+/// Split out from the pane so it can be checked without an application behind it.
+fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'static>> {
+    let g = glyphs::get();
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             entry.name.clone(),
@@ -582,26 +630,120 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         // One line, tail kept: a wrapped path costs three rows to say what the leaf
         // already said.
         Line::from(Span::styled(
-            truncate_start(&crate::home::display_path(&entry.path), area.width as usize),
+            truncate_start(&crate::home::display_path(&entry.path), width),
             Style::default().fg(ctx.dimmed),
         )),
     ];
 
-    // Facts before schema. For a format whose schema needs a scan this is the whole
-    // of what the pane can honestly say, and an empty pane says nothing at all.
+    let source = entry
+        .cost
+        .source
+        .as_deref()
+        .map(crate::locality::Source::from_fstype);
+
+    let mut cost: Vec<(&str, String, Style)> = Vec::new();
+    if let Some(source) = &source {
+        let (note, style) = match source.locality {
+            crate::locality::Locality::Network => {
+                (" · reads cross a network", Style::default().fg(ctx.warning))
+            }
+            crate::locality::Locality::Object => (
+                " · object store, fetched on open",
+                Style::default().fg(ctx.warning),
+            ),
+            crate::locality::Locality::Memory => (" · in RAM", Style::default().fg(ctx.success)),
+            // Ordinary disk is the unremarkable case. It says its name and stops;
+            // a reassurance on every row is just noise on every row.
+            crate::locality::Locality::Local | crate::locality::Locality::Unknown => {
+                ("", Style::default().fg(ctx.text_secondary))
+            }
+        };
+        cost.push(("source", format!("{}{note}", source.label()), style));
+    }
+    if let Some(size) = entry.size {
+        cost.push((
+            "on disk",
+            discover::format_size(size),
+            Style::default().fg(ctx.text_secondary),
+        ));
+    }
+    if let Some(uncompressed) = entry.cost.uncompressed {
+        // The single most useful number here, and the one nothing else on screen
+        // implies: 200 MB of zstd Parquet is two gigabytes once it is open.
+        let mut text = discover::format_size(uncompressed);
+        match (ratio_of(entry.size, Some(uncompressed)), &entry.cost.codec) {
+            (Some(r), Some(codec)) => text.push_str(&format!("  {codec} {r:.1}{}", g.times)),
+            (None, Some(codec)) => text.push_str(&format!("  {codec}")),
+            (Some(r), None) => text.push_str(&format!("  {r:.1}{}", g.times)),
+            (None, None) => {}
+        }
+        cost.push(("in memory", text, Style::default().fg(ctx.float_col)));
+    } else if let Some(codec) = &entry.cost.codec {
+        cost.push((
+            "codec",
+            codec.clone(),
+            Style::default().fg(ctx.text_secondary),
+        ));
+    }
+    if let Some(groups) = entry.cost.row_groups {
+        // One enormous row group cannot be read in parallel or skipped through; a
+        // thousand tiny ones cost more in overhead than they save.
+        cost.push((
+            "row groups",
+            groups.to_string(),
+            Style::default().fg(ctx.text_secondary),
+        ));
+    }
+    if let Some(parts) = &entry.cost.partitions {
+        let count = if parts.more {
+            format!("{}+", parts.count)
+        } else {
+            parts.count.to_string()
+        };
+        cost.push((
+            "partitions",
+            format!("{count} by {}", parts.keys.join(", ")),
+            Style::default().fg(ctx.temporal_col),
+        ));
+        if let (Some(first), Some(last)) = (
+            parts.first_key_values.first(),
+            parts.first_key_values.last(),
+        ) {
+            let key = parts.keys.first().map(String::as_str).unwrap_or("");
+            // Spelled rather than drawn: an arrow glyph here would be the only one on
+            // the screen, and "to" reads the same on every terminal.
+            let range = if first == last {
+                first.clone()
+            } else {
+                format!("{first} to {last}")
+            };
+            cost.push((
+                "",
+                format!("{key} {range}"),
+                Style::default().fg(ctx.text_secondary),
+            ));
+        }
+    }
+
+    if !cost.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(pane_heading("OPENING THIS", width, ctx));
+        let key_w = cost.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+        for (key, value, style) in cost {
+            lines.push(fact_line(key, value, key_w, style, ctx));
+        }
+    }
+
     let mut facts: Vec<(&str, String)> = Vec::new();
     let kind = entry.kind.label();
     if !kind.is_empty() {
         facts.push(("kind", kind.to_string()));
     }
-    if let (Some(rows), Some(cols)) = (entry.rows, entry.cols) {
+    if let Some(rows) = entry.rows {
         facts.push(("rows", discover::format_rows(rows)));
-        facts.push(("columns", cols.to_string()));
-    } else if let Some(cols) = entry.cols {
-        facts.push(("columns", cols.to_string()));
     }
-    if let Some(size) = entry.size {
-        facts.push(("size", discover::format_size(size)));
+    if let Some(cols) = entry.cols {
+        facts.push(("columns", cols.to_string()));
     }
     if let Some(modified) = entry.modified {
         let age = discover::format_age(modified);
@@ -611,25 +753,39 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
     }
     if !facts.is_empty() {
         lines.push(Line::from(""));
-        let width = facts.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        lines.push(pane_heading("SHAPE", width, ctx));
+        let key_w = facts.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
         for (key, value) in facts {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{key:<width$}  "), Style::default().fg(ctx.dimmed)),
-                Span::styled(value, Style::default().fg(ctx.text_secondary)),
-            ]));
+            lines.push(fact_line(
+                key,
+                value,
+                key_w,
+                Style::default().fg(ctx.text_secondary),
+                ctx,
+            ));
         }
     }
-    lines.push(Line::from(""));
 
+    lines
+}
+
+fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
+    let Some(entry) = app.home.selected_entry() else {
+        return;
+    };
+    let width = area.width as usize;
+    let g = glyphs::get();
+    let mut lines = preview_head(&entry, width, ctx);
+
+    // ---- Schema ------------------------------------------------------------------
+    lines.push(Line::from(""));
     match app.home_schema(&entry) {
         Some(schema) if !schema.is_empty() => {
-            lines.push(Line::from(Span::styled(
-                format!("{} COLUMNS", schema.len()),
-                Style::default()
-                    .fg(ctx.keybind_hints)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
+            lines.push(pane_heading(
+                &format!("{} COLUMNS", schema.len()),
+                width,
+                ctx,
+            ));
 
             let name_w = schema
                 .iter()
@@ -641,8 +797,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             for (name, dtype) in schema.iter().take(room) {
                 let mut display = name.clone();
                 if display.chars().count() > name_w {
-                    display = display.chars().take(name_w - 1).collect::<String>()
-                        + glyphs::get().ellipsis;
+                    display = display.chars().take(name_w - 1).collect::<String>() + g.ellipsis;
                 }
                 lines.push(Line::from(vec![
                     Span::styled(
@@ -657,7 +812,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
             }
             if schema.len() > room {
                 lines.push(Line::from(Span::styled(
-                    format!("{} {} more", glyphs::get().ellipsis, schema.len() - room),
+                    format!("{} {} more", g.ellipsis, schema.len() - room),
                     Style::default().fg(ctx.dimmed),
                 )));
             }
@@ -747,6 +902,179 @@ mod tests {
             .filter(|(_, hit)| *hit)
             .map(|(t, _)| t.as_str())
             .collect()
+    }
+
+    fn preview_text(entry: &Entry, width: usize) -> String {
+        let ctx = RenderContext::for_test();
+        preview_head(entry, width, &ctx)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn costed(name: &str, cost: crate::discover::Cost, size: Option<u64>) -> Entry {
+        let mut e = Entry::for_test(std::path::Path::new("/tmp/x"), name);
+        e.size = size;
+        e.cost = cost;
+        e
+    }
+
+    #[test]
+    fn a_network_source_is_called_out_by_name() {
+        // "network" covers three filesystems that fail three different ways.
+        let e = costed(
+            "prices.parquet",
+            crate::discover::Cost {
+                source: Some("nfs4".into()),
+                ..Default::default()
+            },
+            None,
+        );
+        let text = preview_text(&e, 44);
+        assert!(text.contains("nfs4"), "{text}");
+        assert!(text.contains("reads cross a network"), "{text}");
+    }
+
+    #[test]
+    fn local_disk_gets_no_warning() {
+        let e = costed(
+            "prices.parquet",
+            crate::discover::Cost {
+                source: Some("ext4".into()),
+                ..Default::default()
+            },
+            None,
+        );
+        let text = preview_text(&e, 44);
+        assert!(text.contains("ext4"), "{text}");
+        assert!(
+            !text.contains("network"),
+            "an ordinary disk should say nothing alarming: {text}"
+        );
+    }
+
+    #[test]
+    fn what_a_file_weighs_open_is_stated_with_its_ratio() {
+        // The number nothing else on screen implies.
+        let e = costed(
+            "prices.parquet",
+            crate::discover::Cost {
+                source: Some("ext4".into()),
+                uncompressed: Some(2_000_000_000),
+                codec: Some("zstd".into()),
+                row_groups: Some(12),
+                ..Default::default()
+            },
+            Some(200_000_000),
+        );
+        let text = preview_text(&e, 44);
+        assert!(text.contains("in memory"), "{text}");
+        assert!(text.contains("zstd"), "{text}");
+        assert!(text.contains("10.0"), "the ratio should be stated: {text}");
+        assert!(text.contains("row groups"), "{text}");
+    }
+
+    #[test]
+    fn a_ratio_too_small_to_matter_is_left_out() {
+        // Below about 1.2x the number is noise dressed as insight.
+        let e = costed(
+            "prices.parquet",
+            crate::discover::Cost {
+                source: Some("ext4".into()),
+                uncompressed: Some(1_050_000),
+                codec: Some("uncompressed".into()),
+                ..Default::default()
+            },
+            Some(1_000_000),
+        );
+        let text = preview_text(&e, 44);
+        assert!(!text.contains("1.0×") && !text.contains("1.1×"), "{text}");
+    }
+
+    #[test]
+    fn a_partition_layout_names_its_keys_and_its_range() {
+        let e = costed(
+            "events",
+            crate::discover::Cost {
+                source: Some("nfs4".into()),
+                partitions: Some(crate::discover::Partitions {
+                    keys: vec!["year".into(), "region".into()],
+                    first_key_values: vec!["2023".into(), "2024".into(), "2025".into()],
+                    count: 3,
+                    more: false,
+                }),
+                ..Default::default()
+            },
+            None,
+        );
+        let text = preview_text(&e, 44);
+        assert!(text.contains("3 by year, region"), "{text}");
+        assert!(text.contains("year 2023 to 2025"), "{text}");
+    }
+
+    #[test]
+    fn a_bounded_partition_count_says_it_is_a_floor() {
+        let e = costed(
+            "daily",
+            crate::discover::Cost {
+                partitions: Some(crate::discover::Partitions {
+                    keys: vec!["day".into()],
+                    first_key_values: vec!["0001".into()],
+                    count: 512,
+                    more: true,
+                }),
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(preview_text(&e, 44).contains("512+"));
+    }
+
+    #[test]
+    fn the_preview_never_draws_past_its_pane() {
+        let e = costed(
+            "a_dataset_with_a_very_long_name_indeed.parquet",
+            crate::discover::Cost {
+                source: Some("fuse.sshfs".into()),
+                uncompressed: Some(9_000_000_000),
+                codec: Some("zstd".into()),
+                row_groups: Some(1024),
+                partitions: Some(crate::discover::Partitions {
+                    keys: vec!["year".into(), "month".into(), "day".into()],
+                    first_key_values: vec!["2001".into(), "2025".into()],
+                    count: 9999,
+                    more: true,
+                }),
+            },
+            Some(400_000_000),
+        );
+        for width in [24usize, 40, 80] {
+            let ctx = RenderContext::for_test();
+            for line in preview_head(&e, width, &ctx) {
+                // The pane wraps rather than clips, so a long value is allowed to run
+                // on; what must not happen is a *heading* bar overrunning its width.
+                let text: String = l_text(&line);
+                if text.trim_start().starts_with("OPENING")
+                    || text.trim_start().starts_with("SHAPE")
+                {
+                    assert!(
+                        text.chars().count() <= width,
+                        "a {width}-wide pane drew a {}-character heading",
+                        text.chars().count()
+                    );
+                }
+            }
+        }
+    }
+
+    fn l_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     #[test]

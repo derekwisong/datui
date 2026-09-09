@@ -1374,6 +1374,7 @@ fn entry_with_columns(name: &str, columns: &[&str]) -> datui::discover::Entry {
         rows: None,
         cols: Some(columns.len()),
         columns: columns.iter().map(|c| c.to_string()).collect(),
+        cost: Default::default(),
     }
 }
 
@@ -1453,6 +1454,7 @@ fn test_remembered_facts_are_used_only_for_the_same_bytes() {
             cols: Some(3),
             columns: vec!["customer_id".into()],
             kind: Some(EntryKind::File),
+            cost: Default::default(),
         },
     )]);
 
@@ -1512,6 +1514,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
             cols: Some(39),
             columns: vec!["vwap".into(), "ticker".into()],
             kind: Some(EntryKind::Hive),
+            cost: Default::default(),
         },
     )]);
 
@@ -1577,6 +1580,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
             cols: Some(9),
             columns: vec!["stale".into()],
             kind: Some(EntryKind::File),
+            cost: Default::default(),
         },
     )]);
 
@@ -1623,6 +1627,7 @@ fn sized(name: &str, size: u64, rows: usize) -> datui::discover::Entry {
         rows: Some(rows),
         cols: Some(1),
         columns: Vec::new(),
+        cost: Default::default(),
     }
 }
 
@@ -2276,4 +2281,119 @@ fn test_a_match_in_the_file_name_outranks_one_in_a_directory() {
         in_name > in_dir,
         "a basename match ({in_name}) should beat a directory match ({in_dir})"
     );
+}
+
+// --- what opening a dataset will cost -------------------------------------------
+
+#[test]
+fn test_a_parquet_footer_yields_what_the_file_will_weigh_open() {
+    // The single most useful number the footer carries, and the one nothing else on
+    // screen implies: compressed bytes on disk say nothing about bytes in memory.
+    let path = std::path::Path::new("tests/sample-data/charting_demo.parquet");
+    if !path.exists() {
+        return; // sample data is generated; skip rather than fail a fresh checkout
+    }
+    let mut entry = datui::discover::Entry::for_test(path, "charting_demo.parquet");
+    entry.size = std::fs::metadata(path).ok().map(|m| m.len());
+    datui::discover::enrich(&mut entry);
+
+    let uncompressed = entry.cost.uncompressed.expect("uncompressed size");
+    let on_disk = entry.size.expect("size on disk");
+    assert!(
+        uncompressed > on_disk,
+        "a compressed file weighs more open ({uncompressed}) than closed ({on_disk})"
+    );
+    assert!(entry.cost.codec.is_some(), "the codec is in the footer");
+    assert!(entry.cost.row_groups.unwrap_or(0) >= 1);
+}
+
+#[test]
+fn test_a_hive_layout_is_read_from_directory_names_alone() {
+    // No file is opened. That is what makes this knowable for a dataset far too
+    // large to count -- which is exactly the dataset whose shape you want described.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("events");
+    for year in ["2023", "2024", "2025"] {
+        for region in ["emea", "amer"] {
+            let dir = root
+                .join(format!("year={year}"))
+                .join(format!("region={region}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("part-0.parquet"), b"").unwrap();
+        }
+    }
+
+    let layout = discover::partition_layout(&root).expect("a hive layout");
+    assert_eq!(layout.keys, vec!["year", "region"], "keys, outermost first");
+    assert_eq!(layout.count, 3);
+    assert_eq!(layout.first_key_values, vec!["2023", "2024", "2025"]);
+    assert!(!layout.more);
+}
+
+#[test]
+fn test_a_directory_that_is_not_partitioned_reports_no_layout() {
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "a.parquet");
+    touch(tmp.path(), "b.parquet");
+    assert!(discover::partition_layout(tmp.path()).is_none());
+}
+
+#[test]
+fn test_a_dataset_directory_does_not_report_its_inode_as_its_size() {
+    // A stat of a dataset directory returns a couple of hundred bytes that have
+    // nothing to do with the terabyte inside it. Showing that reads as an answer.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("big");
+    let dir = root.join("year=2024");
+    fs::create_dir_all(&dir).unwrap();
+    // Not valid Parquet, so enrichment cannot total them and takes the early path.
+    fs::write(dir.join("part-0.parquet"), b"not parquet").unwrap();
+
+    let mut entry = datui::discover::Entry::for_test(&root, "big");
+    entry.kind = EntryKind::Hive;
+    entry.size = Some(198); // what stat'ing the directory would have given
+    datui::discover::enrich(&mut entry);
+
+    assert_eq!(
+        entry.size, None,
+        "an unmeasurable dataset should say nothing rather than say 198 bytes"
+    );
+    assert!(
+        entry.cost.partitions.is_some(),
+        "the layout is still knowable when the size is not"
+    );
+}
+
+#[test]
+fn test_the_partition_scan_is_bounded() {
+    // A dataset partitioned by day over a decade has thousands of directories, and
+    // counting all of them to print an exact number is not worth a second on a share.
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().join("daily");
+    for i in 0..600 {
+        fs::create_dir_all(root.join(format!("day={i:04}"))).unwrap();
+    }
+    let layout = discover::partition_layout(&root).expect("layout");
+    assert!(layout.count <= 512, "counted {}", layout.count);
+    assert!(layout.more, "stopping short must be visible, not silent");
+}
+
+#[test]
+fn test_every_row_is_told_which_filesystem_it_is_on() {
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "local.parquet");
+
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        ..Default::default()
+    };
+    home.rebuild(&[], &[]);
+
+    let sourced = home.sections.iter().flat_map(|s| s.rows.iter()).any(|r| {
+        r.cost
+            .source
+            .as_deref()
+            .is_some_and(|s| s != "unknown" && !s.is_empty())
+    });
+    assert!(sourced, "a listed row should know what filesystem it is on");
 }

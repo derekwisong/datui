@@ -214,6 +214,51 @@ extensions = []
 - **time_budget_ms** is what makes a cold or enormous tree degrade to partial results
   rather than to a wait.
 
+## What opening a dataset will cost
+
+`rows`, `columns` and `size` say what a dataset *is*. None of them say what reading it
+will do, and the difference is large: 200 MB of zstd-compressed Parquet is two
+gigabytes once open, and two gigabytes over a hotel-wifi NFS mount is a different
+afternoon than two gigabytes on tmpfs.
+
+The preview pane leads with that:
+
+```
+ OPENING THIS
+source      nfs4 · reads cross a network
+on disk     184 MB
+in memory   1.4 GB  zstd 7.6×
+row groups  12
+partitions  1,460 by date, region
+            date 2021-01-01 to 2024-12-31
+
+ SHAPE
+rows      412M
+columns   38
+modified  3 days ago
+```
+
+| line | where it comes from | why it matters |
+|---|---|---|
+| `source` | the kernel's mount table | `nfs4`, `cifs` and `fuse.sshfs` fail in three different ways, and none behaves like `tmpfs` |
+| `in memory` | the Parquet footer | what it will occupy, as against what it occupies on disk |
+| `row groups` | the Parquet footer | one enormous group cannot be read in parallel or skipped through; a thousand tiny ones cost more overhead than they save |
+| `partitions` | directory names | the shape of a partitioned dataset, knowable without opening a single file |
+
+None of it costs an extra byte of the dataset. The mount table is a kernel-generated
+file — reading it cannot block on the filesystem it describes, which is why it is safe
+to ask about a share that has stopped answering. The compression and layout figures
+come out of the same footer datui already reads for the row count. The partition
+layout is directory names.
+
+Sections name the filesystem too, so `nfs4 · recent` replaces a bare `network`. A
+source is only called out when it changes what pressing <kbd>Enter</kbd> means —
+ordinary local disk says its name and nothing more.
+
+A dataset directory reports no size rather than the size of its own inode. Two hundred
+bytes is what `stat` says about a directory holding a terabyte, and printing it reads
+as an answer.
+
 ## Sorting
 
 <kbd>Tab</kbd> cycles how rows are ordered inside each section. The control bar names

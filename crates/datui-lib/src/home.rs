@@ -127,28 +127,6 @@ fn percent_decode(raw: &str) -> String {
 /// in `RECENT` as individual datasets and remain reachable by typing a path.
 const MAX_RECENT_ROOTS: usize = 8;
 
-const NETWORK_FILESYSTEMS: &[&str] = &[
-    "nfs",
-    "nfs4",
-    "cifs",
-    "smb3",
-    "smbfs",
-    "afs",
-    "9p",
-    "ceph",
-    "glusterfs",
-    "fuse.sshfs",
-    "fuse.rclone",
-    "fuse.s3fs",
-    "fuse.davfs",
-    "davfs",
-    "ftpfs",
-    // An automount point that has not been triggered yet blocks on first access,
-    // which is exactly what the marker is warning about. Once it triggers, the real
-    // filesystem shadows it in the mount table and is judged on its own merits.
-    "autofs",
-];
-
 /// Whether `path` is somewhere reading it could block: an object-store or HTTP URL,
 /// or a directory on a network filesystem.
 ///
@@ -179,34 +157,7 @@ pub fn is_network_path(path: &Path) -> bool {
 /// same path) are awkward to arrange on a real machine.
 #[doc(hidden)]
 pub fn network_fs_for_test(mountinfo: &str, path: &Path) -> bool {
-    let mut best: Option<(usize, bool)> = None;
-
-    for line in mountinfo.lines() {
-        // Fields before the separator end with the mount point at index 4; the
-        // filesystem type is the first field after it.
-        let Some((before, after)) = line.split_once(" - ") else {
-            continue;
-        };
-        let Some(mount_point) = before.split_whitespace().nth(4) else {
-            continue;
-        };
-        let Some(fstype) = after.split_whitespace().next() else {
-            continue;
-        };
-        if !path.starts_with(mount_point) {
-            continue;
-        }
-        // Deepest mount wins, and among mounts at the same point the *last* one wins:
-        // mountinfo lists them in mount order, so a later entry shadows an earlier one.
-        // An NFS share automounted at a path appears after the autofs entry covering
-        // the same path, and it is the NFS entry that describes what a read will do.
-        let len = mount_point.len();
-        if best.is_none_or(|(n, _)| len >= n) {
-            best = Some((len, NETWORK_FILESYSTEMS.contains(&fstype)));
-        }
-    }
-
-    best.map(|(_, network)| network).unwrap_or(false)
+    crate::locality::Mounts::parse(mountinfo).is_network(path)
 }
 
 /// A place datui will look, and whether it can currently be read.
@@ -471,6 +422,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         known,
     } = request;
     let network_check = *network_check;
+    // One read of the mount table for the whole listing. It is a kernel-generated
+    // file, so consulting it cannot block on the filesystem it describes -- which is
+    // the entire reason it is safe to ask about a share that has stopped answering.
+    let mounts = crate::locality::Mounts::current();
     let mut sections: Vec<Section> = Vec::new();
     let mut root_paths: Vec<PathBuf> = Vec::new();
 
@@ -483,6 +438,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             rows,
             unavailable: false,
         });
+        annotate(&mut sections, known, network_check, &mounts);
         return Listing {
             sections,
             root_paths,
@@ -567,10 +523,23 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         }
         // A network root is worth flagging: it is the one that will be slow, and
         // the one that can stop answering.
+        // Naming the filesystem rather than saying "network" costs one word and says
+        // considerably more: nfs4, cifs and fuse.sshfs fail in different ways, and
+        // none of them behaves like the tmpfs someone staged a dataset on.
+        // Name the filesystem when the mount table agrees this is remote. When it
+        // does not -- an unmounted automount, a path judged remote some other way --
+        // fall back to the plain word, because losing the warning to gain a more
+        // precise label is the wrong trade.
+        let described = mounts.describe(&root.path);
+        let fstype = if described.network() {
+            described.fstype
+        } else {
+            "network".to_string()
+        };
         let mut subtitle = if waiting {
-            format!("network · checking · {}", root.origin.note())
+            format!("{fstype} · checking · {}", root.origin.note())
         } else if root.network {
-            format!("network · {}", root.origin.note())
+            format!("{fstype} · {}", root.origin.note())
         } else {
             root.origin.note().to_string()
         };
@@ -598,11 +567,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     // Fill in whatever was measured before and still matches. `scan_dir` already
     // stat'ed every row, so verifying the fingerprint costs nothing.
-    for section in &mut sections {
-        for row in &mut section.rows {
-            apply_known_facts(row, known, network_check(&row.path));
-        }
-    }
+    //
+    // The mount table is read once for the whole listing rather than per row.
+    // Resolving a path against it is string work, and it is a kernel-generated file,
+    // so nothing here can block on a filesystem that has stopped answering.
+    annotate(&mut sections, known, network_check, &mounts);
 
     Listing {
         sections,
@@ -621,6 +590,25 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 /// trade: this is a cache of what a dataset looked like, the entry was written from a
 /// real read, and a stale row count is a far better answer than an empty one for the
 /// datasets that are hardest to reach and most worth remembering.
+/// Fill every row in with what is already known about it, and with where it lives.
+///
+/// Called from each of `build_listing`'s exits. Having one function rather than a
+/// loop at each return is the difference between adding a new exit and adding a new
+/// exit whose rows silently lack half their facts.
+fn annotate(
+    sections: &mut [Section],
+    known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    network_check: fn(&Path) -> bool,
+    mounts: &crate::locality::Mounts,
+) {
+    for section in sections {
+        for row in &mut section.rows {
+            apply_known_facts(row, known, network_check(&row.path));
+            row.cost.source = Some(mounts.describe(&row.path).fstype);
+        }
+    }
+}
+
 fn apply_known_facts(
     row: &mut Entry,
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
@@ -647,6 +635,11 @@ fn apply_known_facts(
     if !facts.columns.is_empty() {
         row.columns = facts.columns.clone();
     }
+    // The source is filled in from the live mount table afterwards, so what is
+    // restored here is only what the file itself said about itself.
+    let source = row.cost.source.take();
+    row.cost = facts.cost.clone();
+    row.cost.source = source;
     if remote {
         // A remote row was never stat'ed, so these are all it has.
         row.size = row.size.or(Some(facts.size));
@@ -669,7 +662,7 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    if entry.rows.is_none() && entry.columns.is_empty() {
+    if entry.rows.is_none() && entry.columns.is_empty() && entry.cost == Default::default() {
         return None; // Nothing learned worth keeping.
     }
     Some((
@@ -681,6 +674,13 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
             cols: entry.cols,
             columns: entry.columns.clone(),
             kind: Some(entry.kind),
+            // The source is where it is *now*, not where it was when measured: a
+            // path can move between mounts, and a stale answer to "will this be
+            // slow" is worse than no answer.
+            cost: crate::discover::Cost {
+                source: None,
+                ..entry.cost.clone()
+            },
         },
     ))
 }
@@ -1330,6 +1330,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         rows: None,
         cols: None,
         columns: Vec::new(),
+        cost: Default::default(),
     };
     if !remote {
         if let Ok(meta) = std::fs::metadata(path) {

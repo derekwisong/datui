@@ -99,6 +99,57 @@ pub struct Entry {
     /// alongside the row count, so knowing what is *in* a dataset costs nothing
     /// beyond knowing how big it is.
     pub columns: Vec<String>,
+    /// What opening this will cost: where it lives, how it is stored, how it is laid
+    /// out. All of it derived from bytes datui already reads.
+    pub cost: Cost,
+}
+
+/// What pressing Enter on a dataset will actually cost.
+///
+/// `rows`, `cols` and `size` say what a dataset *is*. None of them say what reading
+/// it will do, and the difference is large: 200 MB of zstd-compressed Parquet is two
+/// gigabytes in memory, and two gigabytes on a hotel-wifi NFS mount is a different
+/// afternoon than two gigabytes on tmpfs.
+///
+/// Every field here comes from something datui already reads — the mount table, and
+/// the same Parquet footer that yields the row count. Nothing here costs an extra
+/// byte of the dataset itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Cost {
+    /// Filesystem or URL scheme: `nfs4`, `ext4`, `tmpfs`, `fuse.sshfs`, `s3`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Bytes once decompressed — what this will occupy, as against what it occupies
+    /// on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncompressed: Option<u64>,
+    /// Compression codec, as the file itself names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    /// Row groups. One enormous row group cannot be read in parallel or skipped
+    /// through; a thousand tiny ones cost more in overhead than they save.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_groups: Option<usize>,
+    /// Partition layout, for a hive dataset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partitions: Option<Partitions>,
+}
+
+/// How a hive dataset is laid out on disk.
+///
+/// The shape of a partitioned dataset is the first thing anyone asks about it, and
+/// the answer is in the directory names — no file needs opening to know it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Partitions {
+    /// Partition keys, outermost first: `["year", "month"]`.
+    pub keys: Vec<String>,
+    /// Distinct values seen for the outermost key, in sorted order. Bounded, so this
+    /// is what was seen rather than necessarily all there is.
+    pub first_key_values: Vec<String>,
+    /// Directories counted at the outermost level.
+    pub count: usize,
+    /// The count stopped at a limit; there are more.
+    pub more: bool,
 }
 
 impl Entry {
@@ -129,6 +180,7 @@ impl Entry {
             rows: None,
             cols: None,
             columns: Vec::new(),
+            cost: Cost::default(),
         }
     }
 
@@ -354,6 +406,19 @@ pub fn enrich(entry: &mut Entry) {
 
 /// Sum footers across a bounded set of Parquet files under `entry`.
 fn enrich_dataset(entry: &mut Entry) {
+    // The partition layout comes from directory names, so it is knowable even for a
+    // dataset far too large to count the rows of — which is exactly the dataset whose
+    // shape you most want described before opening it.
+    if entry.kind == EntryKind::Hive {
+        entry.cost.partitions = partition_layout(&entry.path);
+    }
+
+    // The stat'ed size of a dataset directory is its own inode: a couple of hundred
+    // bytes that have nothing to do with the terabyte inside it. Dropped up front and
+    // restored only if the files are actually totalled, so no path out of here can
+    // leave it behind to be read as an answer.
+    entry.size = None;
+
     let mut files = Vec::new();
     collect_parquet_files(&entry.path, 0, &mut files);
     if files.is_empty() || files.len() > MAX_FOOTERS_PER_DATASET {
@@ -362,6 +427,11 @@ fn enrich_dataset(entry: &mut Entry) {
             if let Some(meta) = crate::widgets::info::read_parquet_metadata(first) {
                 entry.cols = Some(meta.schema_descr.columns().len());
                 entry.columns = column_names(&meta);
+                // From one file, so it describes how the dataset is written rather
+                // than its total: codec and row-group sizing are a property of the
+                // writer and are uniform in practice.
+                physical_facts(&meta, &mut entry.cost);
+                entry.cost.uncompressed = None;
             }
         }
         return;
@@ -371,6 +441,9 @@ fn enrich_dataset(entry: &mut Entry) {
     let mut cols = None;
     let mut bytes = 0u64;
     let mut columns = Vec::new();
+    let mut cost = Cost::default();
+    let mut uncompressed = 0u64;
+    let mut row_groups = 0usize;
     for file in &files {
         let Some(meta) = crate::widgets::info::read_parquet_metadata(file) else {
             return; // A file we cannot read makes the total a guess; report nothing.
@@ -380,6 +453,13 @@ fn enrich_dataset(entry: &mut Entry) {
         if columns.is_empty() {
             columns = column_names(&meta);
         }
+        let mut per_file = Cost::default();
+        physical_facts(&meta, &mut per_file);
+        uncompressed += per_file.uncompressed.unwrap_or(0);
+        row_groups += per_file.row_groups.unwrap_or(0);
+        if cost.codec.is_none() {
+            cost.codec = per_file.codec;
+        }
         if let Ok(m) = std::fs::metadata(file) {
             bytes += m.len();
         }
@@ -388,6 +468,10 @@ fn enrich_dataset(entry: &mut Entry) {
     entry.cols = cols;
     entry.size = Some(bytes);
     entry.columns = columns;
+    cost.uncompressed = (uncompressed > 0).then_some(uncompressed);
+    cost.row_groups = (row_groups > 0).then_some(row_groups);
+    cost.partitions = entry.cost.partitions.take();
+    entry.cost = cost;
 }
 
 /// Collect Parquet files under `dir`, breadth-bounded and depth-bounded, stopping
@@ -451,7 +535,118 @@ pub fn enrich_parquet(entry: &mut Entry) {
         entry.rows = Some(meta.num_rows);
         entry.cols = Some(meta.schema_descr.columns().len());
         entry.columns = column_names(&meta);
+        physical_facts(&meta, &mut entry.cost);
     }
+}
+
+/// Pull layout and compression out of a footer that has already been read.
+///
+/// Every one of these was being parsed and thrown away. They are the difference
+/// between knowing how big a file is and knowing what reading it will do.
+pub fn physical_facts(meta: &crate::widgets::info::ParquetMetadataCache, cost: &mut Cost) {
+    if meta.row_groups.is_empty() {
+        return;
+    }
+    cost.row_groups = Some(meta.row_groups.len());
+
+    let mut uncompressed: u64 = 0;
+    let mut codecs: Vec<String> = Vec::new();
+    for rg in &meta.row_groups {
+        uncompressed = uncompressed.saturating_add(rg.total_byte_size() as u64);
+        for cc in rg.parquet_columns() {
+            let codec = format!("{:?}", cc.compression()).to_lowercase();
+            if !codecs.contains(&codec) {
+                codecs.push(codec);
+            }
+        }
+    }
+    if uncompressed > 0 {
+        cost.uncompressed = Some(uncompressed);
+    }
+    // A file usually uses one codec throughout. When it does not, say so rather than
+    // picking one and implying uniformity that is not there.
+    cost.codec = match codecs.len() {
+        0 => None,
+        1 => Some(codecs.remove(0)),
+        n => Some(format!("mixed ({n})")),
+    };
+}
+
+/// Outermost directories to look at when describing a hive dataset's partitioning.
+///
+/// Enough to name the keys and show the shape of the first one; bounded because a
+/// dataset partitioned by day over a decade has thousands, and counting all of them
+/// to print "3,653" is not worth a second of anyone's time on a network share.
+const MAX_PARTITION_DIRS: usize = 512;
+
+/// Describe how a hive dataset is partitioned, from directory names alone.
+pub fn partition_layout(dir: &Path) -> Option<Partitions> {
+    let iter = std::fs::read_dir(dir).ok()?;
+    let mut values: Vec<String> = Vec::new();
+    let mut keys: Vec<String> = Vec::new();
+    let mut count = 0usize;
+    let mut more = false;
+
+    for entry in iter.flatten() {
+        if count >= MAX_PARTITION_DIRS {
+            more = true;
+            break;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some((key, value)) = name.split_once('=') else {
+            continue;
+        };
+        if !entry.path().is_dir() {
+            continue;
+        }
+        if keys.is_empty() {
+            keys.push(key.to_string());
+            // Only the first partition directory is descended into, for the nested
+            // key names. One is representative, and a hive dataset that disagrees
+            // with itself about its own schema is not a dataset datui can help with.
+            keys.extend(nested_keys(&entry.path()));
+        }
+        values.push(value.to_string());
+        count += 1;
+    }
+
+    if keys.is_empty() {
+        return None;
+    }
+    values.sort();
+    values.dedup();
+    Some(Partitions {
+        keys,
+        first_key_values: values,
+        count,
+        more,
+    })
+}
+
+/// Partition keys below `dir`, following the first child at each level.
+fn nested_keys(dir: &Path) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut current = dir.to_path_buf();
+    // Bounded: a hive path deeper than this is pathological, and each level costs a
+    // directory read.
+    for _ in 0..6 {
+        let Ok(iter) = std::fs::read_dir(&current) else {
+            break;
+        };
+        let Some(child) = iter
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().contains('=') && e.path().is_dir())
+        else {
+            break;
+        };
+        let name = child.file_name().to_string_lossy().into_owned();
+        let Some((key, _)) = name.split_once('=') else {
+            break;
+        };
+        keys.push(key.to_string());
+        current = child.path();
+    }
+    keys
 }
 
 /// Render a byte count compactly for a listing (`340 MB`).
@@ -479,8 +674,20 @@ pub fn format_rows(rows: usize) -> String {
         format!("{:.1}B", r / 1e9)
     } else if rows >= 1_000_000 {
         format!("{:.1}M", r / 1e6)
-    } else if rows >= 1_000 {
+    } else if rows >= 10_000 {
         format!("{:.0}k", r / 1e3)
+    } else if rows >= 1_000 {
+        // Below ten thousand the exact count fits and rounding actively misleads:
+        // 3,653 daily observations is ten years of data, and "4k" is not.
+        let mut out = String::new();
+        let digits = rows.to_string();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
     } else {
         rows.to_string()
     }

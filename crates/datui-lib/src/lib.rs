@@ -46,6 +46,7 @@ pub mod fuzzy;
 pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
+pub mod locality;
 pub mod numfmt;
 pub mod pivot_melt_modal;
 mod query;
@@ -1687,6 +1688,10 @@ impl App {
                     // chance to remember them. Without it a remote row is blank on
                     // every run, which is exactly backwards: the hardest things to
                     // reach are the ones most worth remembering.
+                    let mounts = crate::locality::Mounts::current();
+                    for row in rows.iter_mut() {
+                        row.cost.source = Some(mounts.describe(&row.path).fstype);
+                    }
                     let facts: Vec<_> = rows.iter().filter_map(home::facts_for).collect();
                     cache.record_dataset_facts(&facts);
                     Some(rows)

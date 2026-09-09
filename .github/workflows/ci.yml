@@ -9,7 +9,11 @@ on:
 # This kills redundant builds if you push multiple times to the same PR
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on a pull request, never on main. Pushing twice to a
+  # branch should not build it twice; merging twice in quick succession leaves
+  # main with cancelled runs, and a cancelled run reads as a failed one on the
+  # README badge and in the branch history.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

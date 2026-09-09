@@ -357,7 +357,7 @@ impl ConfigManager {
 
         // Generate and write default template
         let template = self.generate_default_config();
-        std::fs::write(&config_path, template)?;
+        write_private(&config_path, &template)?;
 
         Ok(config_path)
     }
@@ -465,6 +465,45 @@ pub struct CloudConfig {
     pub s3_region: Option<String>,
 }
 
+/// Write `contents` to `path`, readable only by the owner.
+///
+/// The generated config carries a `[cloud]` section inviting an S3 access key
+/// and secret. A plain `fs::write` creates the file at 0666 minus the umask,
+/// which on most systems is 0644: world-readable. On a machine with more than
+/// one account that hands the user's credentials to everybody, and it is not a
+/// choice the user made knowingly, since datui is the one that wrote the file.
+///
+/// The mode is applied twice on purpose. `OpenOptions::mode` only takes effect
+/// when the file is created, so it does nothing for `--generate-config --force`
+/// over a config that already exists at 0644; `set_permissions` fixes that
+/// case. Creating with the mode still matters, because it closes the window
+/// where a new file exists at 0644 before the permissions are corrected.
+///
+/// Non-Unix platforms fall back to a plain write: Windows inherits ACLs from
+/// the containing directory, which is already per-user.
+fn write_private(path: &Path, contents: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)?;
+    }
+    Ok(())
+}
+
 const CLOUD_COMMENTS: &[(&str, &str)] = &[
     (
         "s3_endpoint_url",
@@ -476,7 +515,7 @@ const CLOUD_COMMENTS: &[(&str, &str)] = &[
     ),
     (
         "s3_secret_access_key",
-        "Secret key when using custom endpoint (or set AWS_SECRET_ACCESS_KEY).",
+        "Secret key when using custom endpoint. Prefer AWS_SECRET_ACCESS_KEY, or the usual AWS credential chain: a secret written here sits in a plain file that backups and dotfile repos will happily copy.",
     ),
     (
         "s3_region",

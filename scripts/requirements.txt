@@ -1,5 +1,5 @@
 # Match Rust polars 0.52 (required for datui Python bindings / LazyFrame DSL_SCHEMA_HASH)
-polars>=1.35,<1.36
+polars>=1.44.1,<1.45
 
 # for building sample data
 numpy

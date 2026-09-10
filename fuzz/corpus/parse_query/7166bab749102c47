@@ -1,0 +1,1 @@
+select date, stock_market, high_temp where stock_market > 1200

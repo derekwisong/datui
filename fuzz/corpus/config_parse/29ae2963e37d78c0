@@ -1,0 +1,8 @@
+[display]
+pages_lookahead = 3   # Pages to buffer ahead (smoother scrolling)
+pages_lookback = 3    # Pages to buffer behind
+row_numbers = false   # Show row numbers on left side
+row_start_index = 1   # Starting index for row numbers (0 or 1)
+table_cell_padding = 1   # Spaces between columns in the main table (>= 0)
+align_numeric_right = true   # Right-align numeric columns and their headers
+number_format = "none"       # Digit grouping — see below

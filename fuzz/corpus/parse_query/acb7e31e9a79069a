@@ -1,0 +1,1 @@
+select col["Event Time"].date, col["Event Time"].year

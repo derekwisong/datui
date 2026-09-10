@@ -1,0 +1,4 @@
+# ~/.config/omarchy/themes/osaka-jade/datui.override.toml
+[theme.colors]
+int_col   = "#ff8800"
+float_col = "#ff00ff"

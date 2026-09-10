@@ -1,0 +1,3 @@
+[data]
+directories = ["/mnt/data", "~/datasets"]   # roots for the home screen
+use_desktop_recents = true                  # offer directories from the desktop's recent-files list

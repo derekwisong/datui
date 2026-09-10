@@ -1,0 +1,3 @@
+[query]
+history_limit = 1000      # Max queries to remember
+enable_history = true     # Enable query history

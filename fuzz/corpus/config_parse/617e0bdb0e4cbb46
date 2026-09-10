@@ -1,0 +1,5 @@
+[debug]
+enabled = false             # Show debug overlay by default
+show_performance = true     # Show performance metrics
+show_query = true           # Show LazyFrame query
+show_transformations = true # Show transformation state

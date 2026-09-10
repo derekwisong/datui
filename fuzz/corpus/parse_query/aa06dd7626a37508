@@ -1,0 +1,1 @@
+select col["name with space"]: no_spaces

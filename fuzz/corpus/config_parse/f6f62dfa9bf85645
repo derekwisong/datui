@@ -1,0 +1,11 @@
+[data.search]
+enabled           = true
+max_depth         = 8
+max_results       = 20000
+time_budget_ms    = 1500
+cross_filesystems = false
+follow_gitignore  = false
+skip       = ["node_modules", "target", "build", "dist", "vendor",
+              "site-packages", "__pycache__", "venv", "env"]
+skip_extra = []
+extensions = []

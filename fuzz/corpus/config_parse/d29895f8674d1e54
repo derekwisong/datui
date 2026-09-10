@@ -1,0 +1,6 @@
+[cloud]
+# MinIO example
+s3_endpoint_url = "http://localhost:9000"
+s3_access_key_id = "minioadmin"
+s3_secret_access_key = "minioadmin"
+s3_region = "us-east-1"

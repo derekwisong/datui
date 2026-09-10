@@ -1,0 +1,7 @@
+[display.number_format]
+grouping = "thousands"     # none | thousands | indian | system | any preset above
+group_separator = ","
+decimal_separator = "."
+floats = true              # group float columns too
+float_precision = 2        # omit to keep the file's own decimal rendering
+exclude_columns = ["*_id", "year"]   # never format these (globs: * and ?)

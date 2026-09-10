@@ -1,0 +1,2 @@
+controls_bg = "indexed(236)"  # Example: specific palette entry
+surface = "indexed(239)"

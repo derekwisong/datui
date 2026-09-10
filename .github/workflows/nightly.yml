@@ -266,3 +266,93 @@ jobs:
             python/dist/*.whl
             target/${{ matrix.target }}/release/datui
             target/${{ matrix.target }}/release/datui.1
+
+  # The fuzzers proper: each target gets a timed run that generates new input, rather
+  # than the corpus replay CI does on every pull request. Targets run as a matrix so a
+  # slow or failing one does not eat the others' budget, and `fail-fast: false` keeps a
+  # crash in one from hiding results in the rest.
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - parse_query
+          - number_format
+          - fuzzy_match
+          - glob_match
+          - config_parse
+    env:
+      # The deep configuration. AddressSanitizer can reach the unsafe code inside polars
+      # and arrow that these targets feed, which the pull request job deliberately skips
+      # because it doubles build size and slows execution. See scripts/code/fuzz.sh.
+      DATUI_FUZZ_SANITIZER: address
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A sanitizer build of the polars dependency tree runs to roughly 12 GB of build
+      # output, which does not fit alongside the runner image.
+      - name: Free disk space (Ubuntu)
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2023-10-18
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      # Only ~/.cargo (registry and cargo-fuzz itself) is cached, not fuzz/target: a
+      # sanitizer build is far too large for the Actions cache, and restoring it would
+      # cost more than rebuilding.
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: fuzz-asan
+          workspaces: fuzz
+          cache-targets: false
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # -max_total_time bounds the run; -rss_limit_mb catches a target that starts
+      # allocating without bound, which is a finding in its own right. The corpus is
+      # seeded from the repository and any new inputs are uploaded below, so a run that
+      # finds new coverage is not thrown away. The matrix value reaches the script
+      # through the environment rather than being interpolated into it, which is the
+      # pattern zizmor wants for every expression that lands in a shell.
+      - name: Fuzz
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: |
+          ./scripts/code/fuzz.sh run "$FUZZ_TARGET" "fuzz/corpus/$FUZZ_TARGET" \
+            -- -max_total_time=600 -rss_limit_mb=4096
+
+      # Uploaded whether or not the run failed: on failure this carries the crashing
+      # input needed to reproduce, and on success it carries any new corpus entries
+      # worth committing.
+      - name: Upload fuzz findings
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/
+            fuzz/corpus/
+          if-no-files-found: ignore
+          retention-days: 14

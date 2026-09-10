@@ -384,3 +384,30 @@ fn test_parse_hex_component_extraction() {
         Color::Rgb(_, _, _) | Color::Indexed(_) | Color::Blue | Color::Reset
     ));
 }
+
+#[test]
+fn test_parse_rejects_non_ascii_seven_byte_strings() {
+    // Found by the `config_parse` fuzz target. `#` plus a four-byte emoji plus two
+    // ASCII characters is seven *bytes*, which is what the hex guard measured, so the
+    // parser went on to slice at fixed byte offsets and split the emoji in half.
+    // Every one of these must be a clean error, not a panic.
+    ensure_colors_enabled();
+    let parser = ColorParser::new();
+
+    for input in [
+        "#\u{1f600}xy",
+        "#x\u{1f600}y",
+        "#xy\u{1f600}",
+        "#\u{e9}\u{1f600}",
+        "#\u{e9}\u{e9}\u{e9}",
+    ] {
+        assert_eq!(input.len(), 7, "{input:?} should be seven bytes");
+        assert!(
+            parser.parse(input).is_err(),
+            "{input:?} should be rejected as a colour"
+        );
+    }
+
+    // The valid form still works.
+    assert!(parser.parse("#ff0000").is_ok());
+}

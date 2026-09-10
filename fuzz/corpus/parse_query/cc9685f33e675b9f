@@ -1,0 +1,1 @@
+select where dt_col.date > 2021.01.01

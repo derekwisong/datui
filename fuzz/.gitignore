@@ -1,0 +1,7 @@
+# Build output.
+target/
+# Crashing inputs libFuzzer writes when a target fails. Reproducers worth keeping
+# get promoted into corpus/ (or into a unit test) by hand.
+artifacts/
+# Coverage profiles from `cargo fuzz coverage`.
+coverage/

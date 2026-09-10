@@ -2450,18 +2450,24 @@ impl Default for ColorParser {
 
 /// Parse hex color string (#ff0000) to RGB components
 fn parse_hex(s: &str) -> Result<(u8, u8, u8)> {
-    if !s.starts_with('#') || s.len() != 7 {
-        return Err(eyre!(
-            "Invalid hex color format: '{}'. Expected format: #rrggbb",
-            s
-        ));
-    }
+    // `len()` counts bytes, so a seven-byte length is not seven characters and the
+    // fixed offsets below are only safe once the rest is known to be ASCII. "#\u{1f600}xy"
+    // is also seven bytes, and slicing it at 3 lands inside the emoji.
+    let hex = s
+        .strip_prefix('#')
+        .filter(|hex| hex.len() == 6 && hex.is_ascii())
+        .ok_or_else(|| {
+            eyre!(
+                "Invalid hex color format: '{}'. Expected format: #rrggbb",
+                s
+            )
+        })?;
 
-    let r = u8::from_str_radix(&s[1..3], 16)
+    let r = u8::from_str_radix(&hex[0..2], 16)
         .map_err(|_| eyre!("Invalid red component in hex color: {}", s))?;
-    let g = u8::from_str_radix(&s[3..5], 16)
+    let g = u8::from_str_radix(&hex[2..4], 16)
         .map_err(|_| eyre!("Invalid green component in hex color: {}", s))?;
-    let b = u8::from_str_radix(&s[5..7], 16)
+    let b = u8::from_str_radix(&hex[4..6], 16)
         .map_err(|_| eyre!("Invalid blue component in hex color: {}", s))?;
 
     Ok((r, g, b))

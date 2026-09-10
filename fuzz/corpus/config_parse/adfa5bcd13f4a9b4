@@ -1,0 +1,3 @@
+[display.number_format]
+grouping = "thousands"
+exclude_columns = ["year", "*_id", "zip"]

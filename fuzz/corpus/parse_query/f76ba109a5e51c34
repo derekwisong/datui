@@ -1,0 +1,1 @@
+select order_date, order_date.month, order_date.dow by order_date.year

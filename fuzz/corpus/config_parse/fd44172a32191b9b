@@ -1,0 +1,17 @@
+[theme.colors]
+keybind_hints = "cyan"              # Keybind hints
+keybind_labels = "yellow"           # Action labels
+primary_chart_series_color = "cyan" # Chart data
+secondary_chart_series_color = "dark_gray" # Chart theory
+chart_series_color_1 = "cyan"       # Chart view: first series
+chart_series_color_2 = "magenta"    # Chart view: second series
+chart_series_color_3 = "green"      # Chart view: third series
+chart_series_color_4 = "yellow"    # Chart view: fourth series
+chart_series_color_5 = "blue"      # Chart view: fifth series
+chart_series_color_6 = "red"       # Chart view: sixth series
+chart_series_color_7 = "bright_cyan" # Chart view: seventh series
+error = "red"                       # Error messages
+success = "green"                   # Success indicators
+warning = "yellow"                  # Warnings
+dimmed = "dark_gray"                # Dimmed elements
+alternate_row_color = "default"    # Background for every other row ("default" = off, or a color name)

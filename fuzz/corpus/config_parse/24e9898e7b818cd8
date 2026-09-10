@@ -1,0 +1,2 @@
+[data]
+directories = ["/mnt/data", "~/datasets", "$WORK/warehouse"]

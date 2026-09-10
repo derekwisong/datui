@@ -36,5 +36,15 @@ Out of scope:
   tracked in `deny.toml`.
 - Anything needing an attacker who can already write to your home directory.
 
+## Proactive testing
+
+The parsers and matchers that run on untrusted input are fuzzed with
+[cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz): the query language, the number
+renderer, the fuzzy matcher, the config glob matcher, and config loading. Every pull
+request replays the committed corpus as a regression gate, and the Nightly workflow
+fuzzes for new findings. See
+[Fuzzing](https://derekwisong.github.io/datui/latest/for-developers/fuzzing.html) for how to
+run them, and `fuzz/` for the targets.
+
 Releases publish `SHA256SUMS`, and the install script checks it. There are no
 signatures yet, so a checksum proves the file arrived intact, not who built it.

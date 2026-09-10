@@ -1,0 +1,1 @@
+select min_salary: min salary, avg_salary: avg salary, max_salary: max salary by department

@@ -1,0 +1,3 @@
+[performance]
+# sampling_threshold = 10000   # Optional: when set, sample datasets >= this size for analysis
+event_poll_interval_ms = 25  # UI polling interval (lower = more responsive)

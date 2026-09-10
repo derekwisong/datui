@@ -1,0 +1,1 @@
+select first_name, last_name, city, salary where salary > 80000

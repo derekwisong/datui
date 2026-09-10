@@ -1,0 +1,9 @@
+[data.search]
+enabled           = true    # search below the working directory when you type
+max_depth         = 8       # how deep to descend
+max_results       = 20000   # stop after this many datasets
+time_budget_ms    = 1500    # give up and keep what was found
+cross_filesystems = false   # do not descend onto a different filesystem
+follow_gitignore  = false   # do not read .gitignore
+skip_extra        = []      # directory names to skip beyond the defaults
+extensions        = []      # empty = every format datui opens

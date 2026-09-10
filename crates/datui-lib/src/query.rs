@@ -641,9 +641,64 @@ fn parse_term(tokens: &[Token]) -> Result<(Expr, &[Token]), String> {
     }
 }
 
+/// Deepest chain of nested subexpressions the parser will follow.
+///
+/// Parsing is recursive descent, so nesting in the query becomes nesting on the stack:
+/// `select ------x` recurses once per sign and `select ((((x))))` once per parenthesis.
+/// Without a ceiling a long enough chain overflows the stack and takes the process with
+/// it, which is a crash rather than the error message a mistyped query deserves. Found
+/// by the `parse_query` fuzz target.
+///
+/// The ceiling is set by the smallest stack this runs on, not by what is expressible.
+/// One level of nesting costs a `parse_expr` frame and a `parse_term` frame, and in an
+/// unoptimised build those come to roughly 10 KiB together — enough that a 2 MiB worker
+/// thread runs out somewhere around 200. 64 leaves a wide margin there and a far wider
+/// one in a release build, while staying far past any expression written by hand:
+/// commas and `where` are split off before this runs, so the count is nesting within a
+/// single expression.
+const MAX_EXPR_DEPTH: u32 = 64;
+
+thread_local! {
+    static EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Holds the recursion counter up for as long as it is alive.
+///
+/// Every recursive path in this module passes back through `parse_expr`, so counting
+/// there alone bounds the whole cycle. `parse_expr` returns from a dozen places, most
+/// of them through `?`, so the decrement is tied to the scope rather than written out
+/// at each exit.
+struct DepthGuard;
+
+impl DepthGuard {
+    /// `None` once the limit is reached, leaving the counter untouched.
+    fn enter() -> Option<Self> {
+        EXPR_DEPTH.with(|depth| {
+            let next = depth.get() + 1;
+            if next > MAX_EXPR_DEPTH {
+                return None;
+            }
+            depth.set(next);
+            Some(DepthGuard)
+        })
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EXPR_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 // Parse expression with right-to-left operator precedence
 // This means operators are evaluated from right to left: a+b*c is parsed as a+(b*c)
 fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
+    let Some(_depth_guard) = DepthGuard::enter() else {
+        return Err(
+            "Expression is nested too deeply. Simplify it or split it into steps.".to_string(),
+        );
+    };
+
     if tokens.is_empty() {
         return Err("Empty expression".to_string());
     }
@@ -1584,6 +1639,28 @@ mod tests {
         assert_eq!(
             group_by_cols[0],
             col("order_date").dt().year().alias("order_date_year")
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_expression_is_rejected_not_crashed() {
+        // Found by the `parse_query` fuzz target: the parser is recursive descent, so a
+        // long enough chain of unary operators or parentheses recursed until the stack
+        // ran out and the process died. These must come back as errors.
+        let unary = format!("select {}x", "-".repeat(5_000));
+        assert!(
+            parse_query(&unary).is_err(),
+            "deep unary chain should error"
+        );
+
+        let parens = format!("select {}x{}", "(".repeat(5_000), ")".repeat(5_000));
+        assert!(parse_query(&parens).is_err(), "deep nesting should error");
+
+        // The counter has to come back down, or the first deep query would poison every
+        // later one on the same thread.
+        assert!(
+            parse_query("select a + b * c").is_ok(),
+            "an ordinary query must still parse after a rejected one"
         );
     }
 }

@@ -1,0 +1,1 @@
+SELECT category, COUNT(*) AS n FROM df GROUP BY category ORDER BY n DESC

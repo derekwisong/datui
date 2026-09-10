@@ -550,13 +550,17 @@ impl Glob {
         let (mut pi, mut ni) = (0usize, 0usize);
         let (mut star, mut mark) = (usize::MAX, 0usize);
         while ni < n.len() {
-            if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
-                pi += 1;
-                ni += 1;
-            } else if pi < p.len() && p[pi] == '*' {
+            // `*` is tested before the literal comparison, not after. With the order
+            // reversed a `*` in the pattern matched a literal `*` in the name and then
+            // stopped being a wildcard, so `*` failed to match a name like "a*b".
+            // Found by the `glob_match` fuzz target.
+            if pi < p.len() && p[pi] == '*' {
                 star = pi;
                 mark = ni;
                 pi += 1;
+            } else if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+                pi += 1;
+                ni += 1;
             } else if star != usize::MAX {
                 pi = star + 1;
                 mark += 1;
@@ -829,6 +833,17 @@ mod tests {
         assert!(!Glob::new("c?rom").matches("chhrom"));
         assert!(Glob::new("a*b*c").matches("axxbyyc"));
         assert!(!Glob::new("a*b*c").matches("axxbyy"));
+
+        // Wildcard characters appearing literally in the *name*. Found by the
+        // `glob_match` fuzz target: the matcher compared for equality before testing
+        // for `*`, so a `*` in the name consumed the pattern's wildcard and stopped it
+        // wildcarding anything further.
+        assert!(Glob::new("*").matches("*]"));
+        assert!(Glob::new("*").matches("a*b"));
+        assert!(Glob::new("*").matches("?"));
+        assert!(Glob::new("a*c").matches("a*c"));
+        assert!(Glob::new("a*c").matches("a*x*c"));
+        assert!(Glob::new("?").matches("*"));
     }
 
     #[test]

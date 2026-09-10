@@ -1,0 +1,8 @@
+version = "0.2"
+
+[display]
+row_numbers = true
+row_start_index = 0
+
+[theme.colors]
+keybind_hints = "blue"

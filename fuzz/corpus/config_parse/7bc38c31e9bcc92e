@@ -1,0 +1,4 @@
+import = ["~/.local/state/omarchy/current/theme/datui.toml"]
+
+[theme.colors]
+int_col = "#ff8800"     # applies on every theme

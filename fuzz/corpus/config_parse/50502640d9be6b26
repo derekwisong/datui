@@ -1,0 +1,10 @@
+[file_loading]
+delimiter = 44        # CSV delimiter (44 = comma). null = auto-detect
+has_header = true     # Whether files have headers. null = auto-detect
+skip_lines = 0        # Lines to skip at file start
+skip_rows = 0         # Rows to skip when reading
+parse_dates = true    # When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)
+decompress_in_memory = false  # When true, decompress compressed CSV into memory; when false (default), decompress to a temp file so scan can be used
+temp_dir = null       # Directory for temp files when decompressing compressed CSV. null = system default (e.g. /tmp)
+infer_schema_length = 1000   # Rows to use when inferring CSV column types. Default 1000; higher reduces risk of wrong type (e.g. int then N/A)
+ignore_errors = false # When true, CSV reader skips rows that fail to parse instead of failing the load

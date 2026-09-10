@@ -374,7 +374,7 @@ cargo test --test integration_test  # Integration tests
 **Pre-commit Hooks**:
 - Using the [pre-commit](https://pre-commit.com/) framework
 - For details see config file `.pre-commit-config.yaml`
-- Runs checks for formatting (`cargo fmt`) and linter 
+- Runs checks for formatting (`cargo fmt`) and linter
   (`cargo clippy --workspace --all-targets --locked -- -D warnings`) warnings before commit
   - Prevents the need for spurious format commits since all code is formatted before commit
   - CI builds run these checks, using the pre-commit hooks will prevent their failure
@@ -384,6 +384,21 @@ cargo fmt --check       # Check formatting (without modifying files)
 cargo fmt               # Format code
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy --workspace --all-targets --locked --fix      # Auto-fix clippy suggestions where possible
+```
+
+**Fuzzing**:
+- Targets live in `fuzz/` and are driven by `scripts/code/fuzz.sh` (see `docs/for-developers/fuzzing.md`)
+- Covers the hand-written parsers and matchers: `query::parse_query`, `numfmt::NumberFormat`,
+  `numfmt::Glob`, `fuzzy::best_match`, and config loading
+- `fuzz/` is its own Cargo workspace, so `cargo build`, `cargo test` and the clippy
+  pre-commit hook never touch it. Lint it explicitly if you change a target
+- Runs on stable via `RUSTC_BOOTSTRAP=1`, not nightly — `polars-ops` auto-enables a
+  `nightly` feature that current nightly cannot compile
+- CI replays the committed corpus on every PR; the Nightly workflow fuzzes for real
+
+```bash
+./scripts/code/fuzz.sh replay                     # regression gate, seconds
+./scripts/code/fuzz.sh run parse_query -- -max_total_time=60
 ```
 
 **Test Structure**:
@@ -500,10 +515,10 @@ See `plans/` directory for detailed implementation plans:
   - Avoid linter suppression flags
 - **Error Handling**: Use `Result<T>` for fallible operations
 - **Naming**: Use descriptive names, avoid abbreviations where unclear
-- **Comments**: 
+- **Comments**:
   - Comment complex logic, especially Polars operations
   - Be brief, no redundant comments, do not comment obvious code
-  - Do not add comments when the code is self describing 
+  - Do not add comments when the code is self describing
 
 ### Testing Strategy
 

@@ -1,0 +1,1 @@
+select event_date: timestamp.date, year: timestamp.year

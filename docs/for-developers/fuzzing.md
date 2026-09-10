@@ -77,7 +77,9 @@ is reachable in one sitting, so the deep chains never form. With the corpus rest
 each night begins where the last one left off.
 
 A cache entry cannot be updated in place, so the key carries the run id and
-`restore-keys` picks up the most recent previous entry. `cargo fuzz cmin` runs before the
+`restore-keys` picks up the most recent previous entry. Restore and save are separate
+steps because the combined action only writes its cache when the job succeeds, and the
+night a target crashes is the night its corpus is most worth keeping. `cargo fuzz cmin` runs before the
 corpus is stored, dropping inputs that no longer reach anything the rest does — otherwise
 it grows until restoring it costs more than the fuzzing.
 

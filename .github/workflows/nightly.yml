@@ -339,8 +339,12 @@ jobs:
       # A cache entry cannot be updated in place, so the key carries the run id to write
       # a fresh entry each night while restore-keys picks up the most recent previous
       # one. Restoring merges on top of the committed seeds rather than replacing them.
+      # Restore and save are split rather than using the combined action, because the
+      # combined one only writes its cache when the job succeeds. The night a target
+      # actually crashes is the night its corpus is most worth keeping, and that is
+      # exactly the night the job fails.
       - name: Restore accumulated corpus
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
@@ -370,6 +374,16 @@ jobs:
           FUZZ_TARGET: ${{ matrix.target }}
         run: ./scripts/code/fuzz.sh cmin "$FUZZ_TARGET"
 
+      # A cache entry cannot be updated in place, so the key carries the run id to write
+      # a fresh entry each night; the restore step's restore-keys picks up the most
+      # recent previous one.
+      - name: Save accumulated corpus
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
       # Uploaded whether or not the run failed: on failure this carries the crashing
       # input needed to reproduce, and on success it carries any new corpus entries
       # worth committing.
@@ -383,3 +397,52 @@ jobs:
             fuzz/corpus/
           if-no-files-found: ignore
           retention-days: 14
+
+  # datui-lib's optional features are not exercised by the ordinary build, which always
+  # uses the default set, so a missing dependency in one of them stays invisible.
+  # `dtype-decimal` reached the library only through `polars/sql` for a while, and every
+  # build without that feature failed to compile without anyone noticing.
+  #
+  # Nightly rather than on pull requests: each combination is a fresh polars build, and
+  # a regression here is a packaging problem rather than something that breaks a merge.
+  features:
+    name: Feature combinations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: features
+
+      # Every feature alone and none at all. The full powerset would be sixteen polars
+      # builds to catch interactions that have never actually broken; each feature on its
+      # own is where the missing dependencies show up.
+      - name: Check each feature in isolation
+        run: |
+          set -euo pipefail
+          failed=0
+          for f in "" cloud http sql streaming; do
+            echo "::group::datui-lib [${f:-no features}]"
+            if [ -z "$f" ]; then
+              cargo check -p datui-lib --no-default-features || failed=1
+            else
+              cargo check -p datui-lib --no-default-features --features "$f" || failed=1
+            fi
+            echo "::endgroup::"
+          done
+          cargo check --no-default-features || failed=1
+          exit $failed

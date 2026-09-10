@@ -115,11 +115,59 @@ esac
 
 # --- Helper functions ---
 
+# Check a downloaded file against the release's SHA256SUMS.
+#
+# This catches a truncated or corrupted download, and a mirror serving something
+# other than what was released. It does not prove the file came from datui:
+# whoever could replace the asset could replace SHA256SUMS beside it. Signing is
+# the next step and a separate one.
+#
+# Releases before SHA256SUMS existed have no such file, and a missing one is not
+# treated as failure — otherwise this script stops working for older versions.
+# A checksum that is present and wrong always fails.
+verify_checksum() {
+    file="$1"
+    name="$2"
+
+    if command -v sha256sum > /dev/null 2>&1; then
+        sum_cmd="sha256sum"
+    elif command -v shasum > /dev/null 2>&1; then
+        sum_cmd="shasum -a 256"
+    else
+        echo "Note: no sha256sum or shasum found; skipping checksum verification."
+        return 0
+    fi
+
+    sums="$TMP_DIR/SHA256SUMS"
+    if ! curl -fsSL "$GITHUB_URL/SHA256SUMS" -o "$sums" 2> /dev/null; then
+        echo "Note: this release publishes no SHA256SUMS; skipping verification."
+        return 0
+    fi
+
+    expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$sums")
+    if [ -z "$expected" ]; then
+        echo "Note: $name is not listed in SHA256SUMS; skipping verification."
+        return 0
+    fi
+
+    actual=$($sum_cmd "$file" | awk '{print $1}')
+    if [ "$actual" != "$expected" ]; then
+        echo "Checksum mismatch for $name."
+        echo "  expected: $expected"
+        echo "  actual:   $actual"
+        echo "Refusing to install. Try again, and report it if it persists:"
+        echo "  https://github.com/$REPO/security/advisories/new"
+        exit 1
+    fi
+    echo "Checksum OK."
+}
+
 download_tarball() {
     FILENAME="$1"
     TMP_DIR=$(mktemp -d)
     echo "Downloading $FILENAME... ($TMP_DIR)"
     curl -sSL "$GITHUB_URL/$FILENAME" -o "$TMP_DIR/$FILENAME"
+    verify_checksum "$TMP_DIR/$FILENAME" "$FILENAME"
 }
 
 install_tarball() {

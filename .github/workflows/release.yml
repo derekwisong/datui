@@ -496,6 +496,41 @@ jobs:
           echo "--- release body ---"
           cat "$out"
 
+      - name: Compute SHA256SUMS
+        # Everything a user can download gets a checksum, in the standard
+        # `sha256sum -c` format so no special tooling is needed to check one.
+        #
+        # This does not prove the artifacts came from datui: whoever could
+        # replace a release asset could replace this file alongside it. What it
+        # does give is integrity against a truncated or corrupted download, a
+        # stable value to compare against when a mirror or a package repository
+        # republishes a binary, and something for the installer to verify. A
+        # signature is the next step and a separate one.
+        run: |
+          shopt -s nullglob
+          mkdir -p release-assets
+          cp target/debian/*.deb \
+             target/generate-rpm/*.rpm \
+             target/cargo-aur/*.tar.gz \
+             target/cargo-aur/PKGBUILD \
+             python/dist/*.whl \
+             "windows-artifacts/datui-${REF_NAME}-windows-x86_64.zip" \
+             windows-artifacts/python/dist/*.whl \
+             macos-aarch64/datui-*.tar.gz \
+             macos-aarch64/python/dist/*.whl \
+             macos-x86_64/datui-*.tar.gz \
+             macos-x86_64/python/dist/*.whl \
+             release-assets/
+          cd release-assets
+          # Basenames only, so `sha256sum -c` works from whatever directory the
+          # user downloaded into.
+          sha256sum -- * > ../SHA256SUMS
+          cd ..
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+        env:
+          REF_NAME: ${{ github.ref_name }}
+
       - name: Create GitHub Release
         # SHA-pinned to defend against upstream takeover; bump deliberately.
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -503,6 +538,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           body_path: ${{ steps.release_body.outputs.path }}
           files: |
+            SHA256SUMS
             target/debian/*.deb
             target/generate-rpm/*.rpm
             target/cargo-aur/*.tar.gz

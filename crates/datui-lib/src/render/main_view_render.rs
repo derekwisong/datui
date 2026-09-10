@@ -1,8 +1,8 @@
-//! Main view dispatcher: datatable, analysis, or chart.
+//! Main view dispatcher: home, loading, datatable, analysis, or chart.
 
 use crate::render::main_view::MainViewContent;
 
-/// Renders the main view based on content mode: datatable (table + sidebars), analysis, or chart.
+/// Renders whichever view [`MainViewContent::current`] says is showing.
 pub fn render_main_view(
     area: ratatui::layout::Rect,
     main_area: ratatui::layout::Rect,
@@ -10,15 +10,7 @@ pub fn render_main_view(
     app: &mut crate::App,
     ctx: &crate::render::context::RenderContext,
 ) {
-    // Home takes precedence over everything: it is where you are, not an overlay.
-    let content = if app.input_mode == crate::InputMode::Home {
-        MainViewContent::Home
-    } else {
-        MainViewContent::from_app_state(
-            app.analysis_modal.active,
-            app.input_mode == crate::InputMode::Chart,
-        )
-    };
+    let content = MainViewContent::current(app);
     match content {
         MainViewContent::Datatable => {
             crate::render::datatable_main::render(area, main_area, buf, app, ctx);
@@ -31,6 +23,9 @@ pub fn render_main_view(
         }
         MainViewContent::Home => {
             crate::render::home_view::render(main_area, buf, app, ctx);
+        }
+        MainViewContent::Loading => {
+            crate::render::loading_view::render(main_area, buf, app, ctx);
         }
     }
 }

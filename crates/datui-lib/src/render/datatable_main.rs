@@ -152,7 +152,9 @@ pub fn render(
             }
         }
         None => {
-            // Show nothing while loading — the status bar spinner communicates progress.
+            // No dataset at all: a first load that failed, leaving its error modal over
+            // an empty screen. A load still in flight never reaches here — it draws
+            // `loading_view` instead.
         }
     }
 

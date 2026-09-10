@@ -38,6 +38,9 @@ pub struct Glyphs {
     pub updown: &'static str,
     /// Left/right pair, for the fold hint.
     pub updown_lr: &'static str,
+    /// Spinner frames, cycled while something is loading. Every frame must be the
+    /// same display width, or the text beside it jitters.
+    pub spinner: &'static [&'static str],
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -52,6 +55,7 @@ const UNICODE: Glyphs = Glyphs {
     expanded: "▾ ",
     updown: "↑↓",
     updown_lr: "←→",
+    spinner: &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"],
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -66,6 +70,7 @@ const ASCII: Glyphs = Glyphs {
     expanded: "- ",
     updown: "Up/Dn",
     updown_lr: "Lt/Rt",
+    spinner: &["|", "/", "-", "\\"],
 };
 
 /// What the user asked for, from `[display] unicode`.

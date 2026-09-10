@@ -1273,6 +1273,14 @@ pub struct App {
     /// check this and bail. Deliberately separate from `task_generation`, which also
     /// gates analysis and export results — going home must not cancel an export.
     load_active: bool,
+    /// True from the moment a load starts until it installs its dataset, fails, or is
+    /// abandoned. While it is set, whatever `data_table_state` holds belongs to the
+    /// *previous* dataset, so the main view shows the load's progress instead of it —
+    /// otherwise the old table sits under the new file's name for the whole load.
+    ///
+    /// Separate from `load_active`, which stays set through the buffer collect that
+    /// follows installation: by then the table on screen is the right one.
+    awaiting_dataset: bool,
     /// LazyFrame produced by a background scan, tagged with the generation that
     /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
     pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
@@ -1335,6 +1343,10 @@ impl App {
     /// loading UI immediately when launching from LazyFrame (e.g. Python) before sending the open event.
     pub fn set_loading_phase(&mut self, phase: impl Into<String>, progress_percent: u16) {
         self.busy = true;
+        // A frame is drawn between the keypress that starts a load and the `Open` that
+        // carries it out, so the handover has to happen here too or that frame still
+        // shows the outgoing dataset.
+        self.awaiting_dataset = true;
         self.loading_state = LoadingState::Loading {
             file_path: None,
             file_size: 0,
@@ -1359,6 +1371,7 @@ impl App {
             "apply_schema_ready called for an abandoned load"
         );
         self.debug.schema_load = debug_label;
+        self.awaiting_dataset = false;
         self.parquet_metadata_cache = None;
         self.export_df = None;
         self.data_table_state = Some(state);
@@ -1730,6 +1743,7 @@ impl App {
             runtime,
             task_generation: 0,
             load_active: false,
+            awaiting_dataset: false,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             len_count_inflight: None,
@@ -2011,6 +2025,9 @@ impl App {
     /// must survive this.
     pub fn abandon_load(&mut self) {
         self.load_active = false;
+        // Nothing is arriving to replace it, so the dataset already on screen is the
+        // current one again — Esc from home goes straight back to it.
+        self.awaiting_dataset = false;
         #[cfg(any(feature = "http", feature = "cloud"))]
         if self.pending_download.take().is_some() {
             self.confirmation_modal.hide();
@@ -2176,6 +2193,13 @@ impl App {
         }
         self.input_mode = InputMode::Normal;
         self.set_loading_phase("Scanning input", 10);
+        // A frame is drawn between this keypress and the `Open` that carries it out,
+        // and it is the one the user is looking at when they press Enter — so it says
+        // which file, not just that something is happening. `Open` fills in the size a
+        // frame later; stat'ing here would put a possibly-dead mount on this thread.
+        if let LoadingState::Loading { file_path, .. } = &mut self.loading_state {
+            *file_path = Some(path.clone());
+        }
         self.busy = true;
         AppEvent::Open(vec![path], options)
     }
@@ -7301,6 +7325,7 @@ impl App {
                 }
                 self.task_generation = self.task_generation.wrapping_add(1);
                 self.load_active = true;
+                self.awaiting_dataset = true;
                 self.busy = true;
                 let first = &paths[0];
                 // Every open records a recent, not just those started from the home
@@ -7345,6 +7370,7 @@ impl App {
             AppEvent::OpenLazyFrame(lf, options) => {
                 self.task_generation = self.task_generation.wrapping_add(1);
                 self.load_active = true;
+                self.awaiting_dataset = true;
                 self.busy = true;
                 self.loading_state = LoadingState::Loading {
                     file_path: None,
@@ -8159,6 +8185,7 @@ impl App {
                         }
                     }
                     // Generation matched but slot was empty or stale — loading failed silently.
+                    self.awaiting_dataset = false;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
@@ -8269,6 +8296,9 @@ impl App {
             } => {
                 if *generation == self.task_generation {
                     self.analysis_modal.computing = None;
+                    // The load is over and installed nothing, so the previous dataset is
+                    // the current one again — and it is what the error modal sits over.
+                    self.awaiting_dataset = false;
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
@@ -9374,16 +9404,7 @@ impl Widget for &mut App {
             self.number_format.clone(),
         );
 
-        // Must match the dispatch in `render_main_view`: home takes precedence, so the
-        // control bar shows home's keys rather than the table's.
-        let main_view_content = if self.input_mode == InputMode::Home {
-            MainViewContent::Home
-        } else {
-            MainViewContent::from_app_state(
-                self.analysis_modal.active,
-                self.input_mode == InputMode::Chart,
-            )
-        };
+        let main_view_content = MainViewContent::current(self);
 
         Clear.render(area, buf);
         let background_color = self.color("background");
@@ -9531,7 +9552,10 @@ impl Widget for &mut App {
         //  - in flight   -> spinner (still being computed)
         //  - failed       -> "?" (computation gave up; don't show a misleading partial total)
         //  - otherwise    -> the number
-        let count_pending = self.len_count_inflight.is_some();
+        // A load in flight counts as pending: the number `data_table_state` still holds
+        // belongs to the dataset being replaced, and printing it beside the incoming
+        // file's name would read as the new one's.
+        let count_pending = self.len_count_inflight.is_some() || self.awaiting_dataset;
         let count_unknown = !count_pending
             && self.data_table_state.as_ref().is_some_and(|s| {
                 !s.is_num_rows_valid() && self.len_count_failed == Some(s.len_generation())

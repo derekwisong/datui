@@ -887,6 +887,27 @@ fn ctrl_o() -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
 }
 
+fn key(code: KeyCode) -> AppEvent {
+    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// Every glyph in the buffer, in row order — enough to ask whether some text is on
+/// screen, which is all these tests need.
+fn rendered_text(buf: &Buffer) -> String {
+    buf.content().iter().map(|cell| cell.symbol()).collect()
+}
+
+/// The same, without the control bar on the last row. The bar reports a load on its
+/// own; assertions about what the *view* shows have to exclude it.
+fn main_area_text(buf: &Buffer, area: Rect) -> String {
+    let cells = (area.width as usize) * (area.height as usize - 1);
+    buf.content()
+        .iter()
+        .take(cells)
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
 /// Ctrl+O at any point during a load must abandon it: whatever is on screen when the
 /// user goes home is what is still there afterwards. The load runs to completion in
 /// the background and its results are dropped.
@@ -1290,5 +1311,110 @@ fn test_error_modal_over_home_is_dismissable() {
     assert!(
         matches!(out, Some(AppEvent::Exit)),
         "once the modal is dismissed Esc should behave as home's Esc again"
+    );
+}
+
+/// Opening a second dataset from the home screen must not show the first one's rows
+/// while the second is still loading. Between the keypress and the new dataset being
+/// installed, the old table was still on screen — a page of one file's data under the
+/// filename of another, for as long as the load took.
+#[test]
+fn test_opening_from_home_does_not_show_the_previous_dataset() {
+    common::ensure_sample_data();
+    let first = PathBuf::from("tests/sample-data/people.parquet");
+    let second = PathBuf::from("tests/sample-data/large_dataset.parquet");
+
+    let area = Rect::new(0, 0, 120, 50);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    tx.send(AppEvent::Open(vec![first.clone()], OpenOptions::default()))
+        .unwrap();
+
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let needs = app
+            .data_table_state
+            .as_mut()
+            .map(|s| {
+                let n = s.needs_recollect;
+                s.needs_recollect = false;
+                n
+            })
+            .unwrap_or(false);
+        if needs {
+            app.spawn_async_collect("Loading buffer...");
+        }
+        if app.data_table_state.is_some() && !app.is_busy() && !needs {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    assert!(
+        rendered_text(&buf).contains("first_name"),
+        "the first dataset should be on screen before we go home"
+    );
+
+    // Home, then open the second dataset the way a user does: through the path
+    // prompt, so the real key path runs rather than a synthesised event.
+    app.event(&ctrl_o());
+    assert_eq!(app.input_mode, InputMode::Home);
+    app.event(&key(KeyCode::Char('~')));
+    for c in second.to_str().unwrap().chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+    if let Some(next) = app.event(&key(KeyCode::Enter)) {
+        tx.send(next).unwrap();
+    }
+    assert_eq!(
+        app.input_mode,
+        InputMode::Normal,
+        "opening from home should leave the home screen"
+    );
+
+    // Every frame from here until the second dataset is installed.
+    let mut frames = 0usize;
+    for _tick in 0..200 {
+        drain_like_main_loop(&mut app, &tx, &rx);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        frames += 1;
+        let text = main_area_text(&buf, area);
+        assert!(
+            !text.contains("first_name") && !text.contains("job_title"),
+            "frame {frames} showed the previous dataset while the next one was loading"
+        );
+        assert!(
+            text.contains("large_dataset.parquet") || text.contains("dist_normal"),
+            "frame {frames} named neither the dataset being loaded nor the one that arrived"
+        );
+        let needs = app
+            .data_table_state
+            .as_mut()
+            .map(|s| {
+                let n = s.needs_recollect;
+                s.needs_recollect = false;
+                n
+            })
+            .unwrap_or(false);
+        if needs {
+            app.spawn_async_collect("Loading buffer...");
+        }
+        if app.open_path() == Some(second.as_path()) && !app.is_busy() && !needs {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        app.open_path(),
+        Some(second.as_path()),
+        "the second dataset should have loaded"
+    );
+    assert!(
+        frames > 1,
+        "the load finished in one frame; nothing was tested"
     );
 }

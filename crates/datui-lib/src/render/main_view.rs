@@ -9,9 +9,31 @@ pub enum MainViewContent {
     Chart,
     /// Full-screen home screen: pick a dataset.
     Home,
+    /// Full-screen progress for a dataset that is still loading. Whatever table state
+    /// exists belongs to the dataset being replaced, so none of it is shown.
+    Loading,
 }
 
 impl MainViewContent {
+    /// Which view is showing. The one place that decides, so the main area and the
+    /// control bar at the foot of it cannot disagree about what the user is looking at.
+    ///
+    /// Home first: it is where you are, not an overlay. Then a load in flight, which
+    /// owns the screen until it has a dataset to hand over — every other view would be
+    /// drawing the dataset it is replacing.
+    pub fn current(app: &crate::App) -> Self {
+        if app.input_mode == crate::InputMode::Home {
+            MainViewContent::Home
+        } else if app.awaiting_dataset {
+            MainViewContent::Loading
+        } else {
+            MainViewContent::from_app_state(
+                app.analysis_modal.active,
+                app.input_mode == crate::InputMode::Chart,
+            )
+        }
+    }
+
     /// Determine active main-view content from app state.
     pub fn from_app_state(analysis_active: bool, input_mode_chart: bool) -> Self {
         if analysis_active {
@@ -73,6 +95,11 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             ControlBarSpec::Custom(pairs)
         }
         MainViewContent::Chart => ControlBarSpec::Custom(vec![("Esc", "Back"), ("e", "Export")]),
+        // Only the keys that survive the busy gate in `App::key`. Offering anything
+        // else would be advertising something that does nothing.
+        MainViewContent::Loading => {
+            ControlBarSpec::Custom(vec![("^O", "Home"), ("?", "Help"), ("q", "Quit")])
+        }
         MainViewContent::Home => ControlBarSpec::Custom(home_control_keys(
             app.home.path_input_active,
             app.home.browsing.is_some(),

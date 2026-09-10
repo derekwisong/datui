@@ -272,6 +272,23 @@ the order currently in effect where the cursor is:
 Rows with nothing to sort by go last rather than counting as zero, so `size` does not
 open with a page of datasets whose size has not been read yet.
 
+## While a dataset is loading
+
+Pressing <kbd>Enter</kbd> leaves this screen immediately, and what replaces it is the
+load in progress, not the dataset you had open before:
+
+```
+                            ⣷  Caching schema…
+
+                              events.parquet
+                       ~/data/events.parquet   120 MB
+```
+
+The phase names a real step — scanning the input, caching the schema, filling the
+first buffer — so a load that is slow still shows where it has got to.
+<kbd>Ctrl</kbd>+<kbd>O</kbd> abandons it and comes back here; <kbd>Esc</kbd> from here
+then returns you to whatever was open before, which is untouched.
+
 ## When a dataset will not open
 
 datui shows what went wrong and returns you to this screen with the reason, so the

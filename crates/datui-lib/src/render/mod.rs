@@ -6,6 +6,7 @@ pub mod datatable_view;
 pub mod home_view;
 pub mod input_strip;
 pub mod layout;
+pub mod loading_view;
 pub mod main_view;
 pub mod main_view_render;
 pub mod overlays;

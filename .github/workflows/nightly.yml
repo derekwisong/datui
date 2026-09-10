@@ -266,3 +266,183 @@ jobs:
             python/dist/*.whl
             target/${{ matrix.target }}/release/datui
             target/${{ matrix.target }}/release/datui.1
+
+  # The fuzzers proper: each target gets a timed run that generates new input, rather
+  # than the corpus replay CI does on every pull request. Targets run as a matrix so a
+  # slow or failing one does not eat the others' budget, and `fail-fast: false` keeps a
+  # crash in one from hiding results in the rest.
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - parse_query
+          - number_format
+          - fuzzy_match
+          - glob_match
+          - config_parse
+    env:
+      # The deep configuration. AddressSanitizer can reach the unsafe code inside polars
+      # and arrow that these targets feed, which the pull request job deliberately skips
+      # because it doubles build size and slows execution. See scripts/code/fuzz.sh.
+      DATUI_FUZZ_SANITIZER: address
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # A sanitizer build of the polars dependency tree runs to roughly 12 GB of build
+      # output, which does not fit alongside the runner image.
+      - name: Free disk space (Ubuntu)
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2023-10-18
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      # Only ~/.cargo (registry and cargo-fuzz itself) is cached, not fuzz/target: a
+      # sanitizer build is far too large for the Actions cache, and restoring it would
+      # cost more than rebuilding.
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: fuzz-asan
+          workspaces: fuzz
+          cache-targets: false
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # Fuzzing is cumulative: the corpus is the set of inputs found to reach somewhere
+      # new, and each one is a starting point the mutator builds on. Without this the
+      # run would begin from the seed corpus in git every night and re-derive the same
+      # shallow ground forever, so anything needing a chain of discoveries would stay
+      # out of reach.
+      #
+      # A cache entry cannot be updated in place, so the key carries the run id to write
+      # a fresh entry each night while restore-keys picks up the most recent previous
+      # one. Restoring merges on top of the committed seeds rather than replacing them.
+      # Restore and save are split rather than using the combined action, because the
+      # combined one only writes its cache when the job succeeds. The night a target
+      # actually crashes is the night its corpus is most worth keeping, and that is
+      # exactly the night the job fails.
+      - name: Restore accumulated corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      # -max_total_time bounds the run; -rss_limit_mb catches a target that starts
+      # allocating without bound, which is a finding in its own right. The corpus is
+      # seeded from the repository and any new inputs are uploaded below, so a run that
+      # finds new coverage is not thrown away. The matrix value reaches the script
+      # through the environment rather than being interpolated into it, which is the
+      # pattern zizmor wants for every expression that lands in a shell.
+      - name: Fuzz
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: |
+          ./scripts/code/fuzz.sh run "$FUZZ_TARGET" "fuzz/corpus/$FUZZ_TARGET" \
+            -- -max_total_time=600 -rss_limit_mb=4096
+
+      # Before the corpus is cached, drop every input that no longer reaches anything
+      # the rest does not. Without this it accumulates redundant entries night after
+      # night until restoring it costs more than the fuzzing does. Runs even when
+      # fuzzing failed, so a crash does not also throw away the night's corpus.
+      - name: Minimise corpus
+        if: always()
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: ./scripts/code/fuzz.sh cmin "$FUZZ_TARGET"
+
+      # A cache entry cannot be updated in place, so the key carries the run id to write
+      # a fresh entry each night; the restore step's restore-keys picks up the most
+      # recent previous one.
+      - name: Save accumulated corpus
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
+      # Uploaded whether or not the run failed: on failure this carries the crashing
+      # input needed to reproduce, and on success it carries any new corpus entries
+      # worth committing.
+      - name: Upload fuzz findings
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/
+            fuzz/corpus/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # datui-lib's optional features are not exercised by the ordinary build, which always
+  # uses the default set, so a missing dependency in one of them stays invisible.
+  # `dtype-decimal` reached the library only through `polars/sql` for a while, and every
+  # build without that feature failed to compile without anyone noticing.
+  #
+  # Nightly rather than on pull requests: each combination is a fresh polars build, and
+  # a regression here is a packaging problem rather than something that breaks a merge.
+  features:
+    name: Feature combinations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: features
+
+      # Every feature alone and none at all. The full powerset would be sixteen polars
+      # builds to catch interactions that have never actually broken; each feature on its
+      # own is where the missing dependencies show up.
+      - name: Check each feature in isolation
+        run: |
+          set -euo pipefail
+          failed=0
+          for f in "" cloud http sql streaming; do
+            echo "::group::datui-lib [${f:-no features}]"
+            if [ -z "$f" ]; then
+              cargo check -p datui-lib --no-default-features || failed=1
+            else
+              cargo check -p datui-lib --no-default-features --features "$f" || failed=1
+            fi
+            echo "::endgroup::"
+          done
+          cargo check --no-default-features || failed=1
+          exit $failed

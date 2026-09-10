@@ -1,0 +1,72 @@
+# Fuzz targets for datui.
+#
+# Deliberately its own workspace: the root workspace lists members explicitly, and
+# keeping this crate out of it means `cargo build`, `cargo test` and the clippy
+# pre-commit hook never try to build a crate that needs nightly. Run these with
+# `cargo +nightly fuzz run <target>` from the repository root.
+[package]
+name = "datui-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Keeps this crate out of the root workspace, which lists its members explicitly.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+toml = "1.1"
+
+# Default features, deliberately. None of the fuzzed surfaces touch cloud, http, sql or
+# streaming, so trimming them would be the obvious saving — but datui-lib does not
+# currently compile with them off (`render/home_view.rs` uses `DataType::Decimal`, which
+# only exists because one of those features pulls in polars' `dtype-decimal`). Fuzzing
+# the configuration people actually ship is the right default anyway.
+[dependencies.datui-lib]
+path = "../crates/datui-lib"
+
+# Fuzzing without optimisation is pointlessly slow, and libFuzzer's own guidance is
+# to keep debug assertions on so arithmetic overflow and slice misuse trap loudly.
+[profile.release]
+debug = true
+debug-assertions = true
+overflow-checks = true
+
+[[bin]]
+name = "parse_query"
+path = "fuzz_targets/parse_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "number_format"
+path = "fuzz_targets/number_format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzzy_match"
+path = "fuzz_targets/fuzzy_match.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glob_match"
+path = "fuzz_targets/glob_match.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false

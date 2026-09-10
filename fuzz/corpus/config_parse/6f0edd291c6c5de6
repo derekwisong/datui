@@ -1,0 +1,2 @@
+[chart]
+row_limit = 10000  # Max rows for chart data (1 to 10_000_000). Default 10000

@@ -1,0 +1,5 @@
+# ~/.config/datui/config.toml
+import = ["~/.local/state/omarchy/current/theme/datui.toml"]
+
+[display]
+row_numbers = true

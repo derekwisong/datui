@@ -1,0 +1,9 @@
+version = "0.2"
+
+[display]
+pages_lookahead = 5   # More buffering for smoother scrolling
+pages_lookback = 5
+
+[performance]
+sampling_threshold = 50000  # Optional: sample only datasets >= 50k rows (omit to use full data)
+event_poll_interval_ms = 16 # ~60 FPS polling (more responsive)

@@ -1,0 +1,1 @@
+select [cols] [by groups] [where conditions]

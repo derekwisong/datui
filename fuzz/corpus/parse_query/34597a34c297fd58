@@ -1,0 +1,1 @@
+select t, v where c>c%n

@@ -1,0 +1,5 @@
+keybind_hints = "cyan"
+error = "bright_red"
+dimmed = "dark_gray"
+background = "default"  # Use terminal default background
+text_primary = "default"  # Use terminal default text color

@@ -1,0 +1,1 @@
+select avg 5+a by category

@@ -1,0 +1,1 @@
+select avg[price] by category

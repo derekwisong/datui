@@ -1,0 +1,1 @@
+select where event_ts.month = 12, event_ts.dow = 1

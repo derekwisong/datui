@@ -1,0 +1,22 @@
+# Build output.
+target/
+# Crashing inputs libFuzzer writes when a target fails. Reproducers worth keeping
+# get promoted into corpus/ (or into a unit test) by hand.
+artifacts/
+# Coverage profiles from `cargo fuzz coverage`.
+coverage/
+
+# Locally discovered corpus inputs.
+#
+# A fuzzer writes every interesting input it finds straight into corpus/<target>/, so a
+# few minutes of local fuzzing leaves thousands of files there — 9,973 of them while
+# these targets were being written. None of that belongs in the repository, and
+# `check-added-large-files` will not catch it because the problem is the file count, not
+# the file size.
+#
+# The seeds and regression cases already committed are unaffected: git keeps tracking a
+# file it already tracks, ignore rule or not. This only hides *new* files from `git add`.
+# To add one deliberately, which is what you want for a crash reproducer, force it:
+#
+#     git add -f fuzz/corpus/parse_query/regression-some-crash
+corpus/

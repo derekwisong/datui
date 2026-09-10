@@ -1,0 +1,2 @@
+[templates]
+auto_apply = false  # Auto-apply most relevant template on file open

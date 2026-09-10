@@ -58,6 +58,11 @@ features = [
     "avro",
     "csv",
     "decompress",
+    # Not optional despite looking it: render/home_view.rs matches on
+    # `DataType::Decimal` unconditionally. It used to arrive only as a transitive
+    # dependency of `polars/sql`, so every build without the `sql` feature failed to
+    # compile.
+    "dtype-decimal",
     "dtype-datetime",
     "dtype-time",
     "dtype-duration",

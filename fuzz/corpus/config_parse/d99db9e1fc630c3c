@@ -1,0 +1,15 @@
+version = "0.2"
+
+[theme.colors]
+keybind_hints = "bright_cyan"
+keybind_labels = "bright_yellow"
+primary_chart_series_color = "bright_cyan"
+secondary_chart_series_color = "dark_gray"
+error = "bright_red"
+success = "bright_green"
+warning = "bright_yellow"
+dimmed = "dark_gray"
+
+background = "black"
+controls_bg = "dark_gray"
+text_primary = "bright_white"

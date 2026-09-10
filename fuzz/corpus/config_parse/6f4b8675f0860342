@@ -1,0 +1,2 @@
+[display]
+unicode = "auto"    # "auto" (default), "always", or "never"

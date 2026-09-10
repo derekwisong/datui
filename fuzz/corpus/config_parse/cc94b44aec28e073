@@ -1,0 +1,2 @@
+[display.number_format]
+grouping = "system"   # reads LC_ALL / LC_NUMERIC / LANG, falls back to "thousands"

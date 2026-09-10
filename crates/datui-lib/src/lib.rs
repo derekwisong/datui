@@ -49,7 +49,9 @@ pub mod home;
 pub mod locality;
 pub mod numfmt;
 pub mod pivot_melt_modal;
-mod query;
+// Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
+// hand-written and runs on whatever the user types, so it is fuzzed directly.
+pub mod query;
 mod render;
 pub mod sanitize;
 pub mod search;
@@ -1301,7 +1303,10 @@ pub struct App {
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
     /// Temp file path for HTTP-downloaded data; removed when user opens different data or exits.
-    #[cfg(feature = "http")]
+    // Gated to match the events that write it, below. A cloud object is downloaded to
+    // a temp file exactly as an HTTP URL is, so a build with `cloud` but not `http`
+    // still needs somewhere to record the file and still has to delete it.
+    #[cfg(any(feature = "http", feature = "cloud"))]
     http_temp_path: Option<PathBuf>,
 }
 
@@ -1755,7 +1760,7 @@ impl App {
             status_message: None,
             analysis_computation: None,
             app_config,
-            #[cfg(feature = "http")]
+            #[cfg(any(feature = "http", feature = "cloud"))]
             http_temp_path: None,
         }
     }
@@ -7319,7 +7324,7 @@ impl App {
                 if paths.is_empty() {
                     return Some(AppEvent::Crash("No paths provided".to_string()));
                 }
-                #[cfg(feature = "http")]
+                #[cfg(any(feature = "http", feature = "cloud"))]
                 if let Some(ref p) = self.http_temp_path.take() {
                     let _ = std::fs::remove_file(p);
                 }
@@ -9597,7 +9602,7 @@ impl Drop for App {
         // covers every exit: a normal quit, an error return, an unwind from a
         // panic, and the Python binding calling `run` again in the same
         // process.
-        #[cfg(feature = "http")]
+        #[cfg(any(feature = "http", feature = "cloud"))]
         if let Some(path) = self.http_temp_path.take() {
             let _ = std::fs::remove_file(path);
         }

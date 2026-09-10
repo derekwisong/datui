@@ -26,3 +26,7 @@ repos:
       - id: trailing-whitespace
         name: trailing whitespace
         args: [--markdown-linebreak-ext=md]
+        # Fuzzing corpus entries are opaque input, not text. Several are raw bytes
+        # that `arbitrary` decodes, and rewriting one to strip a trailing 0x20
+        # silently changes the test case it represents.
+        exclude: ^fuzz/corpus/

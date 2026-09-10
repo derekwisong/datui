@@ -108,6 +108,64 @@ fn file_format_to_export_format(f: FileFormat) -> Option<ExportFormat> {
 }
 
 #[cfg(test)]
+mod export_format_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn opts() -> OpenOptions {
+        OpenOptions::default()
+    }
+
+    #[test]
+    fn compressed_csv_still_defaults_to_csv() {
+        // `sales.csv.gz` has extension `gz`; the `.csv` that decides this is in the
+        // stem. Reading the extension alone offered no export default at all.
+        assert_eq!(
+            App::export_format_for(Path::new("sales.csv.gz"), &opts()),
+            Some(ExportFormat::Csv)
+        );
+        assert_eq!(
+            App::export_format_for(Path::new("sales.csv.zst"), &opts()),
+            Some(ExportFormat::Csv)
+        );
+    }
+
+    #[test]
+    fn plain_extensions_map_to_their_formats() {
+        for (name, expected) in [
+            ("a.parquet", Some(ExportFormat::Parquet)),
+            ("a.csv", Some(ExportFormat::Csv)),
+            ("a.tsv", Some(ExportFormat::Csv)),
+            ("a.json", Some(ExportFormat::Json)),
+            ("a.ndjson", Some(ExportFormat::Ndjson)),
+            ("a.jsonl", Some(ExportFormat::Ndjson)),
+            ("a.arrow", Some(ExportFormat::Ipc)),
+            ("a.feather", Some(ExportFormat::Ipc)),
+            ("a.avro", Some(ExportFormat::Avro)),
+            ("a.xlsx", None),
+            ("a.orc", None),
+            ("a.unknown", None),
+        ] {
+            assert_eq!(
+                App::export_format_for(Path::new(name), &opts()),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_format_beats_the_extension() {
+        let mut options = opts();
+        options.format = Some(FileFormat::Parquet);
+        assert_eq!(
+            App::export_format_for(Path::new("mislabelled.csv"), &options),
+            Some(ExportFormat::Parquet)
+        );
+    }
+}
+
+#[cfg(test)]
 pub mod tests {
     use std::path::Path;
     use std::process::Command;
@@ -550,7 +608,6 @@ pub enum AppEvent {
     Open(Vec<PathBuf>, OpenOptions),
     /// Open with an existing LazyFrame (e.g. from Python binding); no file load.
     OpenLazyFrame(Box<LazyFrame>, OpenOptions),
-    DoLoad(Vec<PathBuf>, OpenOptions), // Internal event to actually perform loading after UI update
     /// Scan paths and build LazyFrame; then emit DoLoadSchema (phased loading).
     DoLoadScanPaths(Vec<PathBuf>, OpenOptions),
     /// Build LazyFrame for CSV with --parse-strings (phase already set to "Scanning string columns" so UI shows it).
@@ -716,6 +773,14 @@ pub enum AppEvent {
         generation: u64,
         path: PathBuf,
         result: Result<(), String>,
+    },
+    /// Background task completed: the remote file's size is known, so the download can
+    /// be put to the user. The probe is a network round trip and the HTTP one waits up
+    /// to fifteen seconds, so it cannot be done on the event thread.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    BackgroundRemoteSizeReady {
+        generation: u64,
+        pending: Box<PendingDownload>,
     },
     /// Background task completed: remote file downloaded to temp path.
     #[cfg(any(feature = "http", feature = "cloud"))]
@@ -903,6 +968,35 @@ pub enum PendingDownload {
         size: Option<u64>,
         options: OpenOptions,
     },
+}
+
+#[cfg(any(feature = "http", feature = "cloud"))]
+impl PendingDownload {
+    /// The url, the size the probe found, and the open options — the same three
+    /// fields whichever store this came from.
+    fn parts(&self) -> (&str, Option<u64>, &OpenOptions) {
+        match self {
+            #[cfg(feature = "http")]
+            PendingDownload::Http { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::S3 { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::Gcs { url, size, options } => (url, *size, options),
+        }
+    }
+
+    /// Replace the placeholder size with what the probe actually found.
+    fn with_size(mut self, found: Option<u64>) -> Self {
+        match &mut self {
+            #[cfg(feature = "http")]
+            PendingDownload::Http { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::S3 { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::Gcs { size, .. } => *size = found,
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1113,6 +1207,12 @@ pub struct App {
     number_format: NumberFormatSettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
     task_generation: u64,            // Incremented to invalidate stale background results
+    /// True while the load started by the most recent `Open`/`OpenLazyFrame` is still
+    /// wanted. Going home clears it, which is what abandons an in-flight load: the
+    /// remaining `Do*` chain events and the results that would install a dataset all
+    /// check this and bail. Deliberately separate from `task_generation`, which also
+    /// gates analysis and export results — going home must not cancel an export.
+    load_active: bool,
     /// LazyFrame produced by a background scan, tagged with the generation that
     /// asked for it. Mirrors `pending_schema_result`; a stale entry is discarded.
     pending_lazyframe_result: Arc<Mutex<Option<(u64, LazyFrame)>>>,
@@ -1150,6 +1250,12 @@ impl App {
         self.task_generation
     }
 
+    /// Path of the dataset currently installed, if any. Exposed for tests that need to
+    /// assert an abandoned load did not swap a dataset in after the fact.
+    pub fn open_path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
     /// Returns true when the main loop should drain the crossterm key buffer after render.
     pub fn should_drain_keys(&self) -> bool {
         self.drain_keys_on_next_loop
@@ -1185,32 +1291,20 @@ impl App {
         options: &OpenOptions,
         debug_label: Option<String>,
     ) {
+        // Installing a dataset is the point of no return for abandonment, so every
+        // caller has to have checked. A new one that forgets swaps a dataset in
+        // underneath the home screen.
+        debug_assert!(
+            self.load_active,
+            "apply_schema_ready called for an abandoned load"
+        );
         self.debug.schema_load = debug_label;
         self.parquet_metadata_cache = None;
         self.export_df = None;
         self.data_table_state = Some(state);
         self.path = path.clone();
         if let Some(ref p) = path {
-            self.original_file_format = p.extension().and_then(|e| e.to_str()).and_then(|ext| {
-                if ext.eq_ignore_ascii_case("parquet") {
-                    Some(ExportFormat::Parquet)
-                } else if ext.eq_ignore_ascii_case("csv") {
-                    Some(ExportFormat::Csv)
-                } else if ext.eq_ignore_ascii_case("json") {
-                    Some(ExportFormat::Json)
-                } else if ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("ndjson") {
-                    Some(ExportFormat::Ndjson)
-                } else if ext.eq_ignore_ascii_case("arrow")
-                    || ext.eq_ignore_ascii_case("ipc")
-                    || ext.eq_ignore_ascii_case("feather")
-                {
-                    Some(ExportFormat::Ipc)
-                } else if ext.eq_ignore_ascii_case("avro") {
-                    Some(ExportFormat::Avro)
-                } else {
-                    None
-                }
-            });
+            self.original_file_format = Self::export_format_for(p, options);
             self.original_file_delimiter = Some(options.delimiter.unwrap_or(b','));
         } else {
             self.original_file_format = None;
@@ -1575,6 +1669,7 @@ impl App {
                 }),
             runtime,
             task_generation: 0,
+            load_active: false,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             len_count_inflight: None,
@@ -1844,11 +1939,35 @@ impl App {
         });
     }
 
-    /// Enter the home screen, rebuilding it. Safe to call while a load is in flight.
+    /// Enter the home screen, rebuilding it, abandoning any in-flight load.
     ///
     /// Returning home puts the cursor on whatever you currently have open, so the
     /// round trip out and back lands where you left rather than at the top.
+    ///
+    /// Abandoning is `load_active = false` plus clearing the load's own UI state.
+    /// Nothing is cancelled: the background work runs to completion and its results
+    /// are dropped on arrival. Work that is not a load — an export, an analysis — is
+    /// deliberately left alone, so its progress indicator and its completion modal
+    /// must survive this.
+    pub fn abandon_load(&mut self) {
+        self.load_active = false;
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        if self.pending_download.take().is_some() {
+            self.confirmation_modal.hide();
+        }
+        // Only a load's own busy state is cleared. An export sets `busy` and owns
+        // `loading_state` too, and it keeps running.
+        if matches!(self.loading_state, LoadingState::Loading { .. }) {
+            self.loading_state = LoadingState::Idle;
+            self.busy = false;
+            self.status_message = None;
+        }
+        // Keys typed at the frozen screen were meant for the load, not for home.
+        self.drain_keys_on_next_loop = true;
+    }
+
     pub fn enter_home(&mut self) {
+        self.abandon_load();
         self.home.status = None;
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
@@ -2138,423 +2257,31 @@ impl App {
         self.theme.get(name)
     }
 
-    fn load(&mut self, paths: &[PathBuf], options: &OpenOptions) -> Result<()> {
-        self.parquet_metadata_cache = None;
-        self.export_df = None;
-        let path = &paths[0]; // Primary path for format detection and single-path logic
-                              // Check for compressed CSV files (e.g., file.csv.gz, file.csv.zst, etc.) — only single-file
-        let compression = options
-            .compression
-            .or_else(|| CompressionFormat::from_extension(path));
-        let is_csv = options.format == Some(FileFormat::Csv)
-            || path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(|stem| {
-                    stem.ends_with(".csv")
-                        || path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|e| e.eq_ignore_ascii_case("csv"))
-                            .unwrap_or(false)
-                })
-                .unwrap_or(false);
-        let is_compressed_csv = paths.len() == 1 && compression.is_some() && is_csv;
-
-        // For compressed files, decompression phase is already set in DoLoad handler
-        // Now actually perform decompression and CSV reading (this is the slow part)
-        if is_compressed_csv {
-            // Phase: Reading data or Scanning string columns (decompressing + parsing CSV; user may see "Decompressing" until we return)
-            if let LoadingState::Loading {
-                file_path,
-                file_size,
-                ..
-            } = &self.loading_state
-            {
-                self.loading_state = LoadingState::Loading {
-                    file_path: file_path.clone(),
-                    file_size: *file_size,
-                    current_phase: if options.parse_strings.is_some() {
-                        "Scanning string columns".to_string()
-                    } else {
-                        "Reading data".to_string()
-                    },
-                    progress_percent: if options.parse_strings.is_some() {
-                        55
-                    } else {
-                        50
-                    },
-                };
-            }
-            let lf = DataTableState::from_csv(path, options)?; // Already passes pages_lookahead/lookback via options
-
-            // Phase: Building lazyframe (after decompression, before rendering)
-            if let LoadingState::Loading {
-                file_path,
-                file_size,
-                ..
-            } = &self.loading_state
-            {
-                self.loading_state = LoadingState::Loading {
-                    file_path: file_path.clone(),
-                    file_size: *file_size,
-                    current_phase: "Building lazyframe".to_string(),
-                    progress_percent: 60,
-                };
-            }
-
-            // Phased loading: set "Loading buffer" so UI can show progress; caller (DoDecompress) will send DoLoadBuffer
-            if let LoadingState::Loading {
-                file_path,
-                file_size,
-                ..
-            } = &self.loading_state
-            {
-                self.loading_state = LoadingState::Loading {
-                    file_path: file_path.clone(),
-                    file_size: *file_size,
-                    current_phase: "Loading buffer".to_string(),
-                    progress_percent: 70,
-                };
-            }
-
-            self.data_table_state = Some(lf);
-            self.path = Some(path.clone());
-            let original_format =
-                path.file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .and_then(|stem| {
-                        if stem.ends_with(".csv") {
-                            Some(ExportFormat::Csv)
-                        } else {
-                            None
-                        }
-                    });
-            self.original_file_format = original_format;
-            self.original_file_delimiter = Some(options.delimiter.unwrap_or(b','));
-            self.sort_filter_modal = SortFilterModal::new();
-            self.pivot_melt_modal = PivotMeltModal::new();
-            return Ok(());
-        }
-
-        // Hive path: when --hive and single path is directory or glob (not a single file), use hive load.
-        // Multiple paths or single file with --hive use the normal path below.
-        if paths.len() == 1 && options.hive {
-            let path_str = path.as_os_str().to_string_lossy();
-            let is_single_file = path.exists()
-                && path.is_file()
-                && !path_str.contains('*')
-                && !path_str.contains("**");
-            if !is_single_file {
-                // Directory or glob: only Parquet supported for hive in this implementation
-                let use_parquet_hive = path.is_dir()
-                    || path_str.contains(".parquet")
-                    || path_str.contains("*.parquet");
-                if use_parquet_hive {
-                    if let LoadingState::Loading {
-                        file_path,
-                        file_size,
-                        ..
-                    } = &self.loading_state
-                    {
-                        self.loading_state = LoadingState::Loading {
-                            file_path: file_path.clone(),
-                            file_size: *file_size,
-                            current_phase: "Scanning partitioned dataset".to_string(),
-                            progress_percent: 60,
-                        };
-                    }
-                    let lf = DataTableState::from_parquet_hive(
-                        path,
-                        options.pages_lookahead,
-                        options.pages_lookback,
-                        options.max_buffered_rows,
-                        options.max_buffered_mb,
-                        options.row_numbers,
-                        options.row_start_index,
-                    )?;
-                    if let LoadingState::Loading {
-                        file_path,
-                        file_size,
-                        ..
-                    } = &self.loading_state
-                    {
-                        self.loading_state = LoadingState::Loading {
-                            file_path: file_path.clone(),
-                            file_size: *file_size,
-                            current_phase: "Rendering data".to_string(),
-                            progress_percent: 90,
-                        };
-                    }
-                    self.loading_state = LoadingState::Idle;
-                    self.data_table_state = Some(lf);
-                    self.path = Some(path.clone());
-                    self.original_file_format = Some(ExportFormat::Parquet);
-                    self.original_file_delimiter = None;
-                    // Enable the cheap footer-sum row count for a local hive directory
-                    // (globs go through the same constructor but aren't a single dir).
-                    if path.is_dir() {
-                        if let Some(state) = self.data_table_state.as_mut() {
-                            state.set_parquet_count_dir(path.clone());
-                        }
-                    }
-                    self.sort_filter_modal = SortFilterModal::new();
-                    self.pivot_melt_modal = PivotMeltModal::new();
-                    return Ok(());
-                }
-                self.loading_state = LoadingState::Idle;
-                return Err(color_eyre::eyre::eyre!(
-                    "With --hive use a directory or a glob pattern for Parquet (e.g. path/to/dir or path/**/*.parquet)"
-                ));
-            }
-        }
-
-        // For non-gzipped files, proceed with normal loading
-        // Phase 2: Building lazyframe (or Scanning string columns for CSV when --parse-strings)
-        let effective_format = options.format.or_else(|| FileFormat::from_path(path));
-        let csv_parse_strings =
-            effective_format == Some(FileFormat::Csv) && options.parse_strings.is_some();
-        if let LoadingState::Loading {
-            file_path,
-            file_size,
-            ..
-        } = &self.loading_state
-        {
-            self.loading_state = LoadingState::Loading {
-                file_path: file_path.clone(),
-                file_size: *file_size,
-                current_phase: if csv_parse_strings {
-                    "Scanning string columns".to_string()
-                } else {
-                    "Building lazyframe".to_string()
-                },
-                progress_percent: if csv_parse_strings { 55 } else { 60 },
-            };
-        }
-
-        // Determine and store original file format (from explicit format or first path)
-        let original_format = effective_format
+    /// The export format to offer by default for a dataset opened from `path`.
+    ///
+    /// An explicit `--format` wins, then the extension. A compressed CSV keeps its CSV
+    /// identity: `sales.csv.gz` has extension `gz`, and the `.csv` that matters is in
+    /// the stem, so reading the extension alone offered no default at all.
+    fn export_format_for(path: &Path, options: &OpenOptions) -> Option<ExportFormat> {
+        options
+            .format
+            .or_else(|| FileFormat::from_path(path))
             .and_then(file_format_to_export_format)
             .or_else(|| {
-                path.extension().and_then(|e| e.to_str()).and_then(|ext| {
-                    if ext.eq_ignore_ascii_case("parquet") {
-                        Some(ExportFormat::Parquet)
-                    } else if ext.eq_ignore_ascii_case("csv") {
-                        Some(ExportFormat::Csv)
-                    } else if ext.eq_ignore_ascii_case("json") {
-                        Some(ExportFormat::Json)
-                    } else if ext.eq_ignore_ascii_case("jsonl")
-                        || ext.eq_ignore_ascii_case("ndjson")
-                    {
-                        Some(ExportFormat::Ndjson)
-                    } else if ext.eq_ignore_ascii_case("arrow")
-                        || ext.eq_ignore_ascii_case("ipc")
-                        || ext.eq_ignore_ascii_case("feather")
-                    {
-                        Some(ExportFormat::Ipc)
-                    } else if ext.eq_ignore_ascii_case("avro") {
-                        Some(ExportFormat::Avro)
-                    } else {
-                        None
-                    }
-                })
-            });
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .filter(|s| s.ends_with(".csv"))
+                    .map(|_| ExportFormat::Csv)
+            })
+    }
 
-        let lf = if paths.len() > 1 {
-            // Multiple files: same format assumed (from first path or --format), concatenated into one LazyFrame
-            match effective_format {
-                Some(FileFormat::Parquet) => DataTableState::from_parquet_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Csv) => DataTableState::from_csv_paths(paths, options)?,
-                Some(FileFormat::Json) => DataTableState::from_json_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Jsonl) => DataTableState::from_json_lines_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Arrow) => DataTableState::from_ipc_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Avro) => DataTableState::from_avro_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Orc) => DataTableState::from_orc_paths(
-                    paths,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Tsv) | Some(FileFormat::Psv) | Some(FileFormat::Excel) | None => {
-                    self.loading_state = LoadingState::Idle;
-                    if !paths.is_empty() && !path.exists() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("File not found: {}", path.display()),
-                        )
-                        .into());
-                    }
-                    return Err(color_eyre::eyre::eyre!(
-                        "Unsupported file type for multiple files (parquet, csv, json, jsonl, ndjson, arrow/ipc/feather, avro, orc only)"
-                    ));
-                }
-            }
-        } else {
-            match effective_format {
-                Some(FileFormat::Parquet) => DataTableState::from_parquet(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Csv) => DataTableState::from_csv(path, options)?,
-                Some(FileFormat::Tsv) => DataTableState::from_delimited(path, b'\t', options)?,
-                Some(FileFormat::Psv) => DataTableState::from_delimited(path, b'|', options)?,
-                Some(FileFormat::Json) => DataTableState::from_json(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Jsonl) => DataTableState::from_json_lines(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Arrow) => DataTableState::from_ipc(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Avro) => DataTableState::from_avro(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                Some(FileFormat::Excel) => DataTableState::from_excel(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                    options.excel_sheet.as_deref(),
-                )?,
-                Some(FileFormat::Orc) => DataTableState::from_orc(
-                    path,
-                    options.pages_lookahead,
-                    options.pages_lookback,
-                    options.max_buffered_rows,
-                    options.max_buffered_mb,
-                    options.row_numbers,
-                    options.row_start_index,
-                )?,
-                None => {
-                    self.loading_state = LoadingState::Idle;
-                    if paths.len() == 1 && !path.exists() {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("File not found: {}", path.display()),
-                        )
-                        .into());
-                    }
-                    return Err(color_eyre::eyre::eyre!("Unsupported file type"));
-                }
-            }
-        };
-
-        // Phase 3: Rendering data
-        if let LoadingState::Loading {
-            file_path,
-            file_size,
-            ..
-        } = &self.loading_state
-        {
-            self.loading_state = LoadingState::Loading {
-                file_path: file_path.clone(),
-                file_size: *file_size,
-                current_phase: "Rendering data".to_string(),
-                progress_percent: 90,
-            };
-        }
-
-        // Clear loading state after successful load
-        self.loading_state = LoadingState::Idle;
-        self.data_table_state = Some(lf);
-        self.path = Some(path.clone());
-        self.original_file_format = original_format;
-        // Store delimiter based on file type (use effective format when set)
-        self.original_file_delimiter = match effective_format {
-            Some(FileFormat::Csv) => Some(options.delimiter.unwrap_or(b',')),
-            Some(FileFormat::Tsv) => Some(b'\t'),
-            Some(FileFormat::Psv) => Some(b'|'),
-            _ => path.extension().and_then(|e| e.to_str()).and_then(|ext| {
-                if ext.eq_ignore_ascii_case("csv") {
-                    Some(options.delimiter.unwrap_or(b','))
-                } else if ext.eq_ignore_ascii_case("tsv") {
-                    Some(b'\t')
-                } else if ext.eq_ignore_ascii_case("psv") {
-                    Some(b'|')
-                } else {
-                    None
-                }
-            }),
-        };
-        self.sort_filter_modal = SortFilterModal::new();
-        self.pivot_melt_modal = PivotMeltModal::new();
-        Ok(())
+    /// Read a compressed CSV into a table state.
+    ///
+    /// This is the one input datui cannot scan lazily: the file has to be
+    /// decompressed and parsed before anything can be shown, which for a large export
+    /// is minutes. It takes no `&self` so it can run on a background thread.
+    fn decompressed_csv_state(path: &Path, options: &OpenOptions) -> Result<DataTableState> {
+        DataTableState::from_csv(path, options)
     }
 
     #[cfg(feature = "cloud")]
@@ -2964,6 +2691,56 @@ impl App {
     }
 
     /// Build LazyFrame from paths for phased loading (non-compressed only). Caller must not use for compressed CSV.
+    /// Ask the store how big a remote file is, off the event thread.
+    ///
+    /// The answer only feeds a confirmation message, but getting it means a HEAD
+    /// request: fifteen seconds of timeout for HTTP, unbounded for S3 and GCS. Doing
+    /// that inline froze the UI, and froze it precisely where the user is most likely
+    /// to want out.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    fn spawn_remote_size_probe(&mut self, pending: PendingDownload) -> Option<AppEvent> {
+        let cloud = self.app_config.cloud.clone();
+        let runtime = self.runtime.clone();
+        self.spawn_bg("Checking size...", move |gen, tx| {
+            let size = match &pending {
+                #[cfg(feature = "http")]
+                PendingDownload::Http { url, .. } => {
+                    Self::fetch_remote_size_http(url).unwrap_or(None)
+                }
+                #[cfg(feature = "cloud")]
+                PendingDownload::S3 { url, options, .. } => {
+                    Self::fetch_remote_size_s3(url, &cloud, options, &runtime).unwrap_or(None)
+                }
+                #[cfg(feature = "cloud")]
+                PendingDownload::Gcs { url, options, .. } => {
+                    Self::fetch_remote_size_gcs(url, options, &runtime).unwrap_or(None)
+                }
+            };
+            let _ = tx.send(AppEvent::BackgroundRemoteSizeReady {
+                generation: gen,
+                pending: Box::new(pending.with_size(size)),
+            });
+        });
+        None
+    }
+
+    /// What the user is being asked to agree to before a remote file is downloaded.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    fn download_confirmation_message(pending: &PendingDownload) -> String {
+        let (url, size, options) = pending.parts();
+        let size_str = size
+            .map(Self::format_bytes)
+            .unwrap_or_else(|| "unknown".to_string());
+        let dest_dir = options
+            .temp_dir
+            .as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| std::env::temp_dir().display().to_string());
+        format!(
+            "URL: {url}\nFile size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
+        )
+    }
+
     /// Run the LazyFrame scan for `paths` on a background thread.
     ///
     /// Scanning is where the wall-clock time goes — CSV schema inference, and hive
@@ -2976,8 +2753,22 @@ impl App {
         paths: Vec<PathBuf>,
         options: OpenOptions,
     ) -> Option<AppEvent> {
+        self.spawn_scan_as(status, paths, options, None)
+    }
+
+    /// As [`App::spawn_scan`], but reporting `display_path` as the dataset's identity.
+    ///
+    /// A downloaded remote file is scanned from a temp path the user never typed and
+    /// would not recognise; the URL they did type is what belongs on screen.
+    fn spawn_scan_as(
+        &mut self,
+        status: &str,
+        paths: Vec<PathBuf>,
+        options: OpenOptions,
+        display_path: Option<PathBuf>,
+    ) -> Option<AppEvent> {
         let cloud = self.app_config.cloud.clone();
-        let path_for_event = paths.first().cloned();
+        let path_for_event = display_path.or_else(|| paths.first().cloned());
         let slot = self.pending_lazyframe_result.clone();
         self.spawn_bg(status, move |gen, tx| {
             match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options) {
@@ -3009,17 +2800,164 @@ impl App {
         None
     }
 
-    /// Build the LazyFrame for `paths`, on the calling thread.
+    /// Put hive partition columns first, ahead of the file's own columns.
+    fn hoist_partition_columns(
+        lf: LazyFrame,
+        schema: &Schema,
+        partition_columns: &[String],
+    ) -> LazyFrame {
+        if partition_columns.is_empty() {
+            return lf;
+        }
+        let exprs: Vec<_> = partition_columns
+            .iter()
+            .map(|s| col(s.as_str()))
+            .chain(
+                schema
+                    .iter_names()
+                    .map(|s| s.to_string())
+                    .filter(|c| !partition_columns.contains(c))
+                    .map(|s| col(s.as_str())),
+            )
+            .collect();
+        lf.select(exprs)
+    }
+
+    /// Schema for a local hive dataset read from one file's footer, instead of
+    /// `collect_schema()` over every file in the set.
     ///
-    /// Only for paths already known to be cheap; the general case goes through
-    /// [`App::build_lazyframe_from_paths_with`] on a background thread.
-    fn build_lazyframe_from_paths(
-        &mut self,
-        paths: &[PathBuf],
+    /// `None` when the path is not that shape, or when the read fails — either way
+    /// the caller falls back to the general scan, which will report the error properly
+    /// if there is one.
+    fn schema_state_from_local_hive(
+        path: Option<&Path>,
         options: &OpenOptions,
-    ) -> Result<LazyFrame> {
-        let cloud = self.app_config.cloud.clone();
-        Self::build_lazyframe_from_paths_with(&cloud, paths, options)
+    ) -> Option<DataTableState> {
+        if !options.single_spine_schema {
+            return None;
+        }
+        let p = path.filter(|p| p.is_dir() && options.hive)?;
+        let (merged_schema, partition_columns) =
+            DataTableState::schema_from_one_hive_parquet(p).ok()?;
+        let lf = DataTableState::scan_parquet_hive_with_schema(p, merged_schema.clone()).ok()?;
+        DataTableState::from_schema_and_lazyframe(
+            merged_schema,
+            lf,
+            options,
+            Some(partition_columns),
+        )
+        .ok()
+    }
+
+    /// The same one-file trick against an object store. This is the route that used to
+    /// block the UI thread on a network round trip.
+    #[cfg(feature = "cloud")]
+    fn schema_state_from_cloud_hive(
+        path: Option<&Path>,
+        options: &OpenOptions,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+    ) -> Option<DataTableState> {
+        if !options.single_spine_schema {
+            return None;
+        }
+        // Unlike the local path this does not require --hive: a directory or glob URL
+        // is already a hive scan by shape.
+        let p = path.filter(|p| {
+            let s = p.as_os_str().to_string_lossy();
+            let is_cloud = s.starts_with("s3://") || s.starts_with("gs://");
+            let looks_like_hive = s.ends_with('/') || s.contains('*');
+            is_cloud && (options.hive || looks_like_hive)
+        })?;
+
+        let (full, cloud_opts, store) = match source::input_source(p) {
+            source::InputSource::S3(url) => {
+                let full = format!("s3://{url}");
+                let opts = Self::build_s3_cloud_options(cloud, options);
+                let store = Self::build_s3_object_store(&full, cloud, options).ok()?;
+                (full, opts, store)
+            }
+            source::InputSource::Gcs(url) => {
+                let full = format!("gs://{url}");
+                let store = Self::build_gcs_object_store(&full).ok()?;
+                (full, CloudOptions::default(), store)
+            }
+            _ => return None,
+        };
+
+        let (path_part, _) = source::url_path_extension(&full);
+        let key = path_part
+            .split_once('/')
+            .map(|(_, k)| k.trim_end_matches('/'))
+            .unwrap_or("");
+        let (merged_schema, partition_columns) = runtime
+            .block_on(cloud_hive::schema_from_one_cloud_hive(store, key))
+            .ok()?;
+        let args = ScanArgsParquet {
+            schema: Some(merged_schema.clone()),
+            cloud_options: Some(cloud_opts),
+            hive_options: polars::io::HiveOptions::new_enabled(),
+            glob: true,
+            ..Default::default()
+        };
+        let lf = LazyFrame::scan_parquet(PlPathRef::new(&full).into_owned(), args).ok()?;
+        let lf = Self::hoist_partition_columns(lf, &merged_schema, &partition_columns);
+        DataTableState::from_schema_and_lazyframe(
+            merged_schema,
+            lf,
+            options,
+            Some(partition_columns),
+        )
+        .ok()
+    }
+
+    /// General schema route: ask the frame itself. Slow for a wide hive dataset, which
+    /// is the reason this whole phase belongs on a background thread.
+    fn schema_state_from_full_scan(
+        mut lf: LazyFrame,
+        path: Option<&Path>,
+        options: &OpenOptions,
+    ) -> Result<DataTableState> {
+        let schema = lf
+            .collect_schema()
+            .map_err(color_eyre::eyre::Report::from)?;
+        let partition_columns = match path.filter(|p| {
+            options.hive && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
+        }) {
+            Some(p) => DataTableState::discover_hive_partition_columns(p)
+                .into_iter()
+                .filter(|c| schema.contains(c.as_str()))
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns);
+        let part_cols = (!partition_columns.is_empty()).then_some(partition_columns);
+        DataTableState::from_schema_and_lazyframe(schema, lf, options, part_cols)
+    }
+
+    /// Build the table state for a loaded frame, by the cheapest route that applies.
+    ///
+    /// Returns the state and a label naming the route it came from, for the debug
+    /// overlay. Takes its config by value so all of it can run off the UI thread.
+    fn build_schema_state(
+        lf: LazyFrame,
+        path: Option<&Path>,
+        options: &OpenOptions,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<(DataTableState, String)> {
+        #[cfg(not(feature = "cloud"))]
+        let _ = (cloud, runtime);
+
+        if let Some(state) = Self::schema_state_from_local_hive(path, options) {
+            return Ok((state, "one-file (local)".to_string()));
+        }
+        #[cfg(feature = "cloud")]
+        if let Some(state) = Self::schema_state_from_cloud_hive(path, options, cloud, runtime) {
+            return Ok((state, "one-file (cloud)".to_string()));
+        }
+        Self::schema_state_from_full_scan(lf, path, options)
+            .map(|state| (state, "full scan".to_string()))
     }
 
     /// Build the LazyFrame for `paths`.
@@ -3311,6 +3249,22 @@ impl App {
         }
     }
 
+    /// True while the confirmation modal is asking whether to download a remote file.
+    ///
+    /// That is the one confirmation the user has to be able to walk away from: the
+    /// size probe behind it can take fifteen seconds, and the answer to "actually,
+    /// never mind" is the home screen, not the exit.
+    pub fn awaiting_download_confirmation(&self) -> bool {
+        #[cfg(any(feature = "http", feature = "cloud"))]
+        {
+            self.confirmation_modal.active && self.pending_download.is_some()
+        }
+        #[cfg(not(any(feature = "http", feature = "cloud")))]
+        {
+            false
+        }
+    }
+
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
@@ -3320,8 +3274,14 @@ impl App {
             return None;
         }
 
-        // Home owns the whole screen and every key while it is up.
-        if self.input_mode == InputMode::Home && !self.confirmation_modal.active {
+        // Home owns the whole screen and every key while it is up — except under a
+        // modal. Modals render over home unconditionally, so if home also ate their
+        // keys they would be undismissable, and Esc would try to leave home instead.
+        if self.input_mode == InputMode::Home
+            && !self.confirmation_modal.active
+            && !self.error_modal.active
+            && !self.success_modal.active
+        {
             return self.home_key(event);
         }
 
@@ -3330,7 +3290,7 @@ impl App {
         // not a wait for it to finish.
         if event.code == KeyCode::Char('o')
             && event.modifiers.contains(KeyModifiers::CONTROL)
-            && !self.confirmation_modal.active
+            && (!self.confirmation_modal.active || self.awaiting_download_confirmation())
         {
             self.enter_home();
             return None;
@@ -3412,9 +3372,9 @@ impl App {
                         }
                         self.pending_export = None;
                         #[cfg(any(feature = "http", feature = "cloud"))]
-                        if self.pending_download.take().is_some() {
-                            self.confirmation_modal.hide();
-                            return Some(AppEvent::Exit);
+                        if self.pending_download.is_some() {
+                            self.enter_home();
+                            return None;
                         }
                         self.confirmation_modal.hide();
                     }
@@ -3429,9 +3389,12 @@ impl App {
                     }
                     self.pending_export = None;
                     #[cfg(any(feature = "http", feature = "cloud"))]
-                    if self.pending_download.take().is_some() {
-                        self.confirmation_modal.hide();
-                        return Some(AppEvent::Exit);
+                    if self.pending_download.is_some() {
+                        // Declining a download used to quit datui outright, which made
+                        // a remote open the one thing in the app you could not back out
+                        // of. `enter_home` clears the pending download and hides this.
+                        self.enter_home();
+                        return None;
                     }
                     self.confirmation_modal.hide();
                 }
@@ -7277,6 +7240,7 @@ impl App {
                     let _ = std::fs::remove_file(p);
                 }
                 self.task_generation = self.task_generation.wrapping_add(1);
+                self.load_active = true;
                 self.busy = true;
                 let first = &paths[0];
                 // Every open records a recent, not just those started from the home
@@ -7320,6 +7284,7 @@ impl App {
             }
             AppEvent::OpenLazyFrame(lf, options) => {
                 self.task_generation = self.task_generation.wrapping_add(1);
+                self.load_active = true;
                 self.busy = true;
                 self.loading_state = LoadingState::Loading {
                     file_path: None,
@@ -7330,6 +7295,11 @@ impl App {
                 Some(AppEvent::DoLoadSchema(lf.clone(), None, options.clone()))
             }
             AppEvent::DoLoadScanPaths(paths, options) => {
+                // The user went home while this load was in flight. The chain stops
+                // here; whatever is already running finishes and is discarded.
+                if !self.load_active {
+                    return None;
+                }
                 let first = &paths[0];
                 let src = source::input_source(first);
                 if paths.len() > 1 {
@@ -7386,30 +7356,17 @@ impl App {
                             progress_percent: 30,
                         };
                     }
-                    Some(AppEvent::DoLoad(paths.clone(), options.clone()))
+                    Some(AppEvent::DoDecompress(paths.clone(), options.clone()))
                 } else {
+                    // The size probe is a network round trip, so it runs off the event
+                    // thread and the confirmation modal is raised when it answers.
                     #[cfg(feature = "http")]
                     if let source::InputSource::Http(ref url) = src {
-                        let size = Self::fetch_remote_size_http(url).unwrap_or(None);
-                        let size_str = size
-                            .map(Self::format_bytes)
-                            .unwrap_or_else(|| "unknown".to_string());
-                        let dest_dir = options
-                            .temp_dir
-                            .as_deref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| std::env::temp_dir().display().to_string());
-                        let message = format!(
-                            "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
-                            url, size_str, dest_dir
-                        );
-                        self.pending_download = Some(PendingDownload::Http {
+                        return self.spawn_remote_size_probe(PendingDownload::Http {
                             url: url.clone(),
-                            size,
+                            size: None,
                             options: options.clone(),
                         });
-                        self.confirmation_modal.show(message);
-                        return None;
                     }
                     #[cfg(feature = "cloud")]
                     if let source::InputSource::S3(ref url) = src {
@@ -7417,32 +7374,11 @@ impl App {
                         let (_, ext) = source::url_path_extension(&full);
                         let is_glob = full.contains('*') || full.ends_with('/');
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            let size = Self::fetch_remote_size_s3(
-                                &full,
-                                &self.app_config.cloud,
-                                options,
-                                &self.runtime,
-                            )
-                            .unwrap_or(None);
-                            let size_str = size
-                                .map(Self::format_bytes)
-                                .unwrap_or_else(|| "unknown".to_string());
-                            let dest_dir = options
-                                .temp_dir
-                                .as_deref()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_else(|| std::env::temp_dir().display().to_string());
-                            let message = format!(
-                                "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
-                                full, size_str, dest_dir
-                            );
-                            self.pending_download = Some(PendingDownload::S3 {
+                            return self.spawn_remote_size_probe(PendingDownload::S3 {
                                 url: full,
-                                size,
+                                size: None,
                                 options: options.clone(),
                             });
-                            self.confirmation_modal.show(message);
-                            return None;
                         }
                     }
                     #[cfg(feature = "cloud")]
@@ -7451,27 +7387,11 @@ impl App {
                         let (_, ext) = source::url_path_extension(&full);
                         let is_glob = full.contains('*') || full.ends_with('/');
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            let size = Self::fetch_remote_size_gcs(&full, options, &self.runtime)
-                                .unwrap_or(None);
-                            let size_str = size
-                                .map(Self::format_bytes)
-                                .unwrap_or_else(|| "unknown".to_string());
-                            let dest_dir = options
-                                .temp_dir
-                                .as_deref()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_else(|| std::env::temp_dir().display().to_string());
-                            let message = format!(
-                                "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
-                                full, size_str, dest_dir
-                            );
-                            self.pending_download = Some(PendingDownload::Gcs {
+                            return self.spawn_remote_size_probe(PendingDownload::Gcs {
                                 url: full,
-                                size,
+                                size: None,
                                 options: options.clone(),
                             });
-                            self.confirmation_modal.show(message);
-                            return None;
                         }
                     }
                     // When CSV with --parse-strings, set "Scanning string columns" and defer build so UI can show it before blocking.
@@ -7606,7 +7526,9 @@ impl App {
             } => {
                 // A scan that a newer open has already superseded is dropped on the
                 // floor: its LazyFrame describes data nobody is looking at any more.
-                if *generation != self.task_generation {
+                // The slot is deliberately left alone here — a newer task may already
+                // have written its result into it, and taking would discard that.
+                if *generation != self.task_generation || !self.load_active {
                     return None;
                 }
                 let (slot_gen, lf) = self
@@ -7638,10 +7560,16 @@ impl App {
                 ))
             }
             AppEvent::DoLoadCsvWithParseStrings(paths, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 self.spawn_scan("Scanning string columns...", paths.clone(), options.clone())
             }
             #[cfg(feature = "http")]
             AppEvent::DoDownloadHttp(url, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 let url = url.clone();
                 let options = options.clone();
                 self.spawn_bg("Downloading...", move |gen, tx| {
@@ -7670,6 +7598,9 @@ impl App {
             }
             #[cfg(feature = "cloud")]
             AppEvent::DoDownloadS3ToTemp(s3_url, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 let s3_url = s3_url.clone();
                 let cloud_config = self.app_config.cloud.clone();
                 let options = options.clone();
@@ -7695,6 +7626,9 @@ impl App {
             }
             #[cfg(feature = "cloud")]
             AppEvent::DoDownloadGcsToTemp(gs_url, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 let gs_url = gs_url.clone();
                 let options = options.clone();
                 let rt = self.runtime.clone();
@@ -7718,38 +7652,63 @@ impl App {
                 None
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
+            AppEvent::BackgroundRemoteSizeReady {
+                generation,
+                pending,
+            } => {
+                if *generation != self.task_generation || !self.load_active {
+                    return None;
+                }
+                self.status_message = None;
+                self.confirmation_modal
+                    .show(Self::download_confirmation_message(pending));
+                self.pending_download = Some((**pending).clone());
+                None
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
             AppEvent::BackgroundDownloadReady {
                 generation,
                 temp_path,
                 options,
             } => {
-                if *generation == self.task_generation {
-                    self.http_temp_path = Some(temp_path.clone());
-                    if let LoadingState::Loading {
-                        file_path,
-                        file_size,
-                        ..
-                    } = &self.loading_state
-                    {
-                        self.loading_state = LoadingState::Loading {
-                            file_path: file_path.clone(),
-                            file_size: *file_size,
-                            current_phase: "Scanning".to_string(),
-                            progress_percent: 30,
-                        };
-                    }
-                    self.status_message = Some("Scanning...".to_string());
-                    return Some(AppEvent::DoLoadFromHttpTemp(
-                        temp_path.clone(),
-                        options.clone(),
-                    ));
+                // `http_temp_path` below is the only thing that ever records this file
+                // for cleanup, so a download we are not going to use has to remove it
+                // here or it sits in the temp directory for good — and an abandoned
+                // one can be gigabytes.
+                if *generation != self.task_generation || !self.load_active {
+                    let _ = std::fs::remove_file(temp_path);
+                    return None;
                 }
-                // Stale download result — ignore.
-                None
+                self.http_temp_path = Some(temp_path.clone());
+                if let LoadingState::Loading {
+                    file_path,
+                    file_size,
+                    ..
+                } = &self.loading_state
+                {
+                    self.loading_state = LoadingState::Loading {
+                        file_path: file_path.clone(),
+                        file_size: *file_size,
+                        current_phase: "Scanning".to_string(),
+                        progress_percent: 30,
+                    };
+                }
+                self.status_message = Some("Scanning...".to_string());
+                Some(AppEvent::DoLoadFromHttpTemp(
+                    temp_path.clone(),
+                    options.clone(),
+                ))
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
             AppEvent::DoLoadFromHttpTemp(temp_path, options) => {
+                // Ahead of the `http_temp_path` assignment: an abandoned download is
+                // ours to clean up, and nothing else records this file for removal.
+                if !self.load_active {
+                    let _ = std::fs::remove_file(temp_path);
+                    return None;
+                }
                 self.http_temp_path = Some(temp_path.clone());
+                // The URL the user typed, not the temp file it landed in.
                 let display_path = match &self.loading_state {
                     LoadingState::Loading { file_path, .. } => file_path.clone(),
                     _ => None,
@@ -7767,41 +7726,17 @@ impl App {
                         progress_percent: 30,
                     };
                 }
-                #[allow(clippy::cloned_ref_to_slice_refs)]
-                match self.build_lazyframe_from_paths(&[temp_path.clone()], options) {
-                    Ok(lf) => {
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Caching schema".to_string(),
-                                progress_percent: 40,
-                            };
-                        }
-                        Some(AppEvent::DoLoadSchema(
-                            Box::new(lf),
-                            display_path,
-                            options.clone(),
-                        ))
-                    }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(
-                            &e,
-                            Some(temp_path.as_path()),
-                        );
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
+                self.spawn_scan_as(
+                    "Scanning...",
+                    vec![temp_path.clone()],
+                    options.clone(),
+                    display_path,
+                )
             }
             AppEvent::DoLoadSchema(lf, path, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 // Set "Caching schema" and return so the UI draws this phase before we block in DoLoadSchemaBlocking
                 if let LoadingState::Loading {
                     file_path,
@@ -7823,239 +7758,70 @@ impl App {
                 ))
             }
             AppEvent::DoLoadSchemaBlocking(lf, path, options) => {
+                if !self.load_active {
+                    return None;
+                }
                 self.debug.schema_load = None;
-                // Fast path for hive directory: infer schema from one parquet file instead of collect_schema() over all files.
-                if options.single_spine_schema
-                    && path.as_ref().is_some_and(|p| p.is_dir() && options.hive)
-                {
-                    let p = path.as_ref().expect("path set by caller");
-                    if let Ok((merged_schema, partition_columns)) =
-                        DataTableState::schema_from_one_hive_parquet(p)
-                    {
-                        if let Ok(lf_owned) =
-                            DataTableState::scan_parquet_hive_with_schema(p, merged_schema.clone())
-                        {
-                            match DataTableState::from_schema_and_lazyframe(
-                                merged_schema,
-                                lf_owned,
-                                options,
-                                Some(partition_columns),
-                            ) {
-                                Ok(state) => {
-                                    self.apply_schema_ready(
-                                        state,
-                                        path.clone(),
-                                        options,
-                                        Some("one-file (local)".to_string()),
-                                    );
-                                    return Some(AppEvent::DoLoadBuffer);
-                                }
-                                Err(e) => {
-                                    self.loading_state = LoadingState::Idle;
-                                    self.busy = false;
-                                    self.drain_keys_on_next_loop = true;
-                                    let msg =
-                                        crate::error_display::user_message_from_report(&e, None);
-                                    return Some(AppEvent::Crash(msg));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                #[cfg(feature = "cloud")]
-                {
-                    // Use fast path for directory/glob cloud URLs (same as build_lazyframe_from_paths).
-                    // Don't require --hive: path shape already implies hive scan.
-                    if options.single_spine_schema
-                        && path.as_ref().is_some_and(|p| {
-                            let s = p.as_os_str().to_string_lossy();
-                            let is_cloud = s.starts_with("s3://") || s.starts_with("gs://");
-                            let looks_like_hive = s.ends_with('/') || s.contains('*');
-                            is_cloud && (options.hive || looks_like_hive)
-                        })
-                    {
-                        self.debug.schema_load = Some("trying one-file (cloud)".to_string());
-                        let src = source::input_source(path.as_ref().expect("path set by caller"));
-                        let try_cloud = match &src {
-                            source::InputSource::S3(url) => {
-                                let full = format!("s3://{url}");
-                                let (path_part, _) = source::url_path_extension(&full);
-                                let key = path_part
-                                    .split_once('/')
-                                    .map(|(_, k)| k.trim_end_matches('/'))
-                                    .unwrap_or("");
-                                let cloud_opts =
-                                    Self::build_s3_cloud_options(&self.app_config.cloud, options);
-                                Self::build_s3_object_store(&full, &self.app_config.cloud, options)
-                                    .ok()
-                                    .and_then(|store| {
-                                        let (merged_schema, partition_columns) = self
-                                            .runtime
-                                            .block_on(cloud_hive::schema_from_one_cloud_hive(
-                                                store, key,
-                                            ))
-                                            .ok()?;
-                                        let pl_path = PlPathRef::new(&full).into_owned();
-                                        let args = ScanArgsParquet {
-                                            schema: Some(merged_schema.clone()),
-                                            cloud_options: Some(cloud_opts),
-                                            hive_options: polars::io::HiveOptions::new_enabled(),
-                                            glob: true,
-                                            ..Default::default()
-                                        };
-                                        let mut lf_owned =
-                                            LazyFrame::scan_parquet(pl_path, args).ok()?;
-                                        if !partition_columns.is_empty() {
-                                            let exprs: Vec<_> = partition_columns
-                                                .iter()
-                                                .map(|s| col(s.as_str()))
-                                                .chain(
-                                                    merged_schema
-                                                        .iter_names()
-                                                        .map(|s| s.to_string())
-                                                        .filter(|c| !partition_columns.contains(c))
-                                                        .map(|s| col(s.as_str())),
-                                                )
-                                                .collect();
-                                            lf_owned = lf_owned.select(exprs);
-                                        }
-                                        DataTableState::from_schema_and_lazyframe(
-                                            merged_schema,
-                                            lf_owned,
-                                            options,
-                                            Some(partition_columns),
-                                        )
-                                        .ok()
-                                    })
-                            }
-                            source::InputSource::Gcs(url) => {
-                                let full = format!("gs://{url}");
-                                let (path_part, _) = source::url_path_extension(&full);
-                                let key = path_part
-                                    .split_once('/')
-                                    .map(|(_, k)| k.trim_end_matches('/'))
-                                    .unwrap_or("");
-                                Self::build_gcs_object_store(&full).ok().and_then(|store| {
-                                    let (merged_schema, partition_columns) = self
-                                        .runtime
-                                        .block_on(cloud_hive::schema_from_one_cloud_hive(
-                                            store, key,
-                                        ))
-                                        .ok()?;
-                                    let pl_path = PlPathRef::new(&full).into_owned();
-                                    let args = ScanArgsParquet {
-                                        schema: Some(merged_schema.clone()),
-                                        cloud_options: Some(CloudOptions::default()),
-                                        hive_options: polars::io::HiveOptions::new_enabled(),
-                                        glob: true,
-                                        ..Default::default()
-                                    };
-                                    let mut lf_owned =
-                                        LazyFrame::scan_parquet(pl_path, args).ok()?;
-                                    if !partition_columns.is_empty() {
-                                        let exprs: Vec<_> = partition_columns
-                                            .iter()
-                                            .map(|s| col(s.as_str()))
-                                            .chain(
-                                                merged_schema
-                                                    .iter_names()
-                                                    .map(|s| s.to_string())
-                                                    .filter(|c| !partition_columns.contains(c))
-                                                    .map(|s| col(s.as_str())),
-                                            )
-                                            .collect();
-                                        lf_owned = lf_owned.select(exprs);
-                                    }
-                                    DataTableState::from_schema_and_lazyframe(
-                                        merged_schema,
-                                        lf_owned,
-                                        options,
-                                        Some(partition_columns),
-                                    )
-                                    .ok()
-                                })
-                            }
-                            _ => None,
-                        };
-                        if let Some(state) = try_cloud {
-                            self.apply_schema_ready(
-                                state,
-                                path.clone(),
-                                options,
-                                Some("one-file (cloud)".to_string()),
-                            );
-                            return Some(AppEvent::DoLoadBuffer);
-                        } else {
-                            self.debug.schema_load = Some("fallback (cloud)".to_string());
-                        }
-                    }
-                }
-
-                // General path: collect_schema() may be slow. Spawn to background.
-                let debug_label = if self.debug.schema_load.is_none() {
-                    Some("full scan".to_string())
-                } else {
-                    self.debug.schema_load.clone()
-                };
-                let lf_clone = (**lf).clone();
-                let path_clone = path.clone();
-                let options_clone = options.clone();
+                let lf_owned = (**lf).clone();
+                let path_owned = path.clone();
+                let options_owned = options.clone();
                 let schema_slot = self.pending_schema_result.clone();
-                self.spawn_bg("Caching schema...", move |gen, tx| {
-                    let mut lf_owned = lf_clone;
-                    let schema = match lf_owned.collect_schema() {
-                        Ok(s) => s,
+                let cloud = self.app_config.cloud.clone();
+                let runtime = self.runtime.clone();
+                self.spawn_bg(
+                    "Caching schema...",
+                    move |gen, tx| match Self::build_schema_state(
+                        lf_owned,
+                        path_owned.as_deref(),
+                        &options_owned,
+                        &cloud,
+                        &runtime,
+                    ) {
+                        Ok((state, debug_label)) => {
+                            let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
+                            let dominated = slot.as_ref().is_some_and(|(g, _)| *g > gen);
+                            if !dominated {
+                                *slot = Some((gen, state));
+                            }
+                            drop(slot);
+                            let _ = tx.send(AppEvent::BackgroundSchemaReady {
+                                generation: gen,
+                                path: path_owned,
+                                options: options_owned,
+                                debug_label: Some(debug_label),
+                            });
+                        }
                         Err(e) => {
-                            let report = color_eyre::eyre::Report::from(e);
                             let _ = tx.send(AppEvent::BackgroundError {
                                 generation: gen,
-                                message: crate::error_display::user_message_from_report(
-                                    &report, None,
-                                ),
+                                message: crate::error_display::user_message_from_report(&e, None),
                             });
-                            return;
                         }
-                    };
-                    let partition_columns = if path_clone.as_ref().is_some_and(|p| {
-                        options_clone.hive
-                            && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
-                    }) {
-                        let discovered = DataTableState::discover_hive_partition_columns(
-                            path_clone.as_ref().expect("path set by caller"),
-                        );
-                        discovered
-                            .into_iter()
-                            .filter(|c| schema.contains(c.as_str()))
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    };
-                    if !partition_columns.is_empty() {
-                        let exprs: Vec<_> = partition_columns
-                            .iter()
-                            .map(|s| col(s.as_str()))
-                            .chain(
-                                schema
-                                    .iter_names()
-                                    .map(|s| s.to_string())
-                                    .filter(|c| !partition_columns.contains(c))
-                                    .map(|s| col(s.as_str())),
-                            )
-                            .collect();
-                        lf_owned = lf_owned.select(exprs);
-                    }
-                    let part_cols_opt = if partition_columns.is_empty() {
-                        None
-                    } else {
-                        Some(partition_columns)
-                    };
-                    match DataTableState::from_schema_and_lazyframe(
-                        schema,
-                        lf_owned,
-                        &options_clone,
-                        part_cols_opt,
-                    ) {
+                    },
+                );
+                None
+            }
+            AppEvent::DoLoadBuffer => {
+                if !self.load_active {
+                    return None;
+                }
+                if !self.spawn_async_collect("Loading buffer...") {
+                    self.loading_state = LoadingState::Idle;
+                    self.busy = false;
+                    self.drain_keys_on_next_loop = true;
+                }
+                None
+            }
+            AppEvent::DoDecompress(paths, options) => {
+                if !self.load_active {
+                    return None;
+                }
+                let path = paths[0].clone();
+                let options_owned = options.clone();
+                let schema_slot = self.pending_schema_result.clone();
+                self.spawn_bg(
+                    "Decompressing...",
+                    move |gen, tx| match Self::decompressed_csv_state(&path, &options_owned) {
                         Ok(state) => {
                             let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
                             let dominated = slot.as_ref().is_some_and(|(g, _)| *g > gen);
@@ -8065,102 +7831,23 @@ impl App {
                             drop(slot);
                             let _ = tx.send(AppEvent::BackgroundSchemaReady {
                                 generation: gen,
-                                path: path_clone,
-                                options: options_clone,
-                                debug_label,
+                                path: Some(path),
+                                options: options_owned,
+                                debug_label: Some("decompressed csv".to_string()),
                             });
                         }
                         Err(e) => {
                             let _ = tx.send(AppEvent::BackgroundError {
                                 generation: gen,
-                                message: crate::error_display::user_message_from_report(&e, None),
+                                message: crate::error_display::user_message_from_report(
+                                    &e,
+                                    Some(path.as_path()),
+                                ),
                             });
                         }
-                    }
-                });
+                    },
+                );
                 None
-            }
-            AppEvent::DoLoadBuffer => {
-                if !self.spawn_async_collect("Loading buffer...") {
-                    self.loading_state = LoadingState::Idle;
-                    self.busy = false;
-                    self.drain_keys_on_next_loop = true;
-                }
-                None
-            }
-            AppEvent::DoLoad(paths, options) => {
-                let first = &paths[0];
-                // Check if file is compressed (only single-file compressed CSV supported for now)
-                let compression = options
-                    .compression
-                    .or_else(|| CompressionFormat::from_extension(first));
-                let is_csv = first
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .map(|stem| {
-                        stem.ends_with(".csv")
-                            || first
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|e| e.eq_ignore_ascii_case("csv"))
-                                .unwrap_or(false)
-                    })
-                    .unwrap_or(false);
-                let is_compressed_csv = paths.len() == 1 && compression.is_some() && is_csv;
-
-                if is_compressed_csv {
-                    // Set "Decompressing" phase and return event to trigger render
-                    if let LoadingState::Loading {
-                        file_path,
-                        file_size,
-                        ..
-                    } = &self.loading_state
-                    {
-                        self.loading_state = LoadingState::Loading {
-                            file_path: file_path.clone(),
-                            file_size: *file_size,
-                            current_phase: "Decompressing".to_string(),
-                            progress_percent: 30,
-                        };
-                    }
-                    // Return DoDecompress to allow UI to render "Decompressing" before blocking
-                    Some(AppEvent::DoDecompress(paths.clone(), options.clone()))
-                } else {
-                    // For non-compressed files, proceed with normal loading
-                    match self.load(paths, options) {
-                        Ok(_) => {
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            Some(AppEvent::Collect)
-                        }
-                        Err(e) => {
-                            self.loading_state = LoadingState::Idle;
-                            self.busy = false;
-                            self.drain_keys_on_next_loop = true;
-                            let msg = crate::error_display::user_message_from_report(
-                                &e,
-                                paths.first().map(|p| p.as_path()),
-                            );
-                            Some(AppEvent::Crash(msg))
-                        }
-                    }
-                }
-            }
-            AppEvent::DoDecompress(paths, options) => {
-                // Actually perform decompression now (after UI has rendered "Decompressing")
-                match self.load(paths, options) {
-                    Ok(_) => Some(AppEvent::DoLoadBuffer),
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(
-                            &e,
-                            paths.first().map(|p| p.as_path()),
-                        );
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
             }
             AppEvent::Resize(_cols, _rows) => {
                 // No work here: the next render sets visible_rows and flips needs_recollect,
@@ -8385,7 +8072,10 @@ impl App {
                 options,
                 debug_label,
             } => {
-                if *generation == self.task_generation {
+                // `load_active` also gates the "loading failed silently" reset below:
+                // an abandoned load must not clear busy/loading state that a newer
+                // load, or an export, may already own.
+                if *generation == self.task_generation && self.load_active {
                     let taken = self
                         .pending_schema_result
                         .lock()

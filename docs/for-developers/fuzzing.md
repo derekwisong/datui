@@ -67,7 +67,19 @@ crashing again. It does not look for new bugs.
 
 **The Nightly workflow** runs each target for ten minutes against fresh input, with
 AddressSanitizer on, as a matrix so one slow target does not consume another's budget.
-Crashing inputs and any newly discovered corpus entries are uploaded as build artifacts.
+Crashing inputs are uploaded as build artifacts.
+
+Each target's corpus is cached between runs, and this matters more than the ten minutes
+does. Fuzzing is cumulative: reaching a bug often takes a chain of discoveries, where one
+input gets as far as the tokeniser, a mutation of it reaches the parser, and a mutation
+of *that* crashes. Starting from the seed corpus every night caps the search at whatever
+is reachable in one sitting, so the deep chains never form. With the corpus restored,
+each night begins where the last one left off.
+
+A cache entry cannot be updated in place, so the key carries the run id and
+`restore-keys` picks up the most recent previous entry. `cargo fuzz cmin` runs before the
+corpus is stored, dropping inputs that no longer reach anything the rest does — otherwise
+it grows until restoring it costs more than the fuzzing.
 
 ## The corpus
 
@@ -93,7 +105,7 @@ So: contribute a `regression-*` file for anything that crashed, and leave the re
 fuzzer. If you do want to add coverage seeds, minimise first:
 
 ```bash
-cargo fuzz cmin parse_query
+./scripts/code/fuzz.sh cmin parse_query
 ```
 
 ## When a target fails

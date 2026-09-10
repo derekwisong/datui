@@ -8,6 +8,7 @@
 #   scripts/code/fuzz.sh build                       build every target
 #   scripts/code/fuzz.sh replay                      replay every committed corpus and exit
 #   scripts/code/fuzz.sh run <target> [args...]      fuzz one target
+#   scripts/code/fuzz.sh cmin <target>               drop inputs that add no coverage
 #   scripts/code/fuzz.sh list                        list the targets
 #
 # Set DATUI_FUZZ_SANITIZER=address for a deeper (much slower, much larger) run. See
@@ -57,6 +58,14 @@ case "${1:-}" in
             echo "==> replaying $t corpus (sanitizer: $SANITIZER)"
             cargo fuzz run --sanitizer "$SANITIZER" "$t" "fuzz/corpus/$t" -- -runs=0
         done
+        ;;
+    cmin)
+        shift
+        [ $# -ge 1 ] || { echo "usage: $0 cmin <target>" >&2; exit 2; }
+        # Rewrites corpus/<target> in place, keeping the smallest set of inputs that
+        # still reaches everything the whole set reached. Worth running before a corpus
+        # is stored anywhere, or it grows without bound.
+        cargo fuzz cmin --sanitizer "$SANITIZER" "$1" "fuzz/corpus/$1"
         ;;
     run)
         shift

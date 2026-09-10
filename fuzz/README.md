@@ -21,7 +21,12 @@ scripts/code/fuzz.sh run parse_query          # fuzz until you stop it
 scripts/code/fuzz.sh run parse_query -- -max_total_time=60
 scripts/code/fuzz.sh replay                   # replay every committed corpus, no new input
 scripts/code/fuzz.sh build                    # build all targets
+scripts/code/fuzz.sh cmin parse_query         # drop inputs that add no coverage
 ```
+
+The Nightly workflow caches each target's corpus between runs, so a night's fuzzing
+starts where the last one finished rather than from these seeds. `cmin` runs before it is
+stored, to stop it growing without bound.
 
 `replay` is what CI runs on every pull request. It is deterministic and finishes in
 seconds, and it fails if a previously fixed crash comes back.

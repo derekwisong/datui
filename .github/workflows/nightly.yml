@@ -330,6 +330,23 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
+      # Fuzzing is cumulative: the corpus is the set of inputs found to reach somewhere
+      # new, and each one is a starting point the mutator builds on. Without this the
+      # run would begin from the seed corpus in git every night and re-derive the same
+      # shallow ground forever, so anything needing a chain of discoveries would stay
+      # out of reach.
+      #
+      # A cache entry cannot be updated in place, so the key carries the run id to write
+      # a fresh entry each night while restore-keys picks up the most recent previous
+      # one. Restoring merges on top of the committed seeds rather than replacing them.
+      - name: Restore accumulated corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
       # -max_total_time bounds the run; -rss_limit_mb catches a target that starts
       # allocating without bound, which is a finding in its own right. The corpus is
       # seeded from the repository and any new inputs are uploaded below, so a run that
@@ -342,6 +359,16 @@ jobs:
         run: |
           ./scripts/code/fuzz.sh run "$FUZZ_TARGET" "fuzz/corpus/$FUZZ_TARGET" \
             -- -max_total_time=600 -rss_limit_mb=4096
+
+      # Before the corpus is cached, drop every input that no longer reaches anything
+      # the rest does not. Without this it accumulates redundant entries night after
+      # night until restoring it costs more than the fuzzing does. Runs even when
+      # fuzzing failed, so a crash does not also throw away the night's corpus.
+      - name: Minimise corpus
+        if: always()
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: ./scripts/code/fuzz.sh cmin "$FUZZ_TARGET"
 
       # Uploaded whether or not the run failed: on failure this carries the crashing
       # input needed to reproduce, and on success it carries any new corpus entries

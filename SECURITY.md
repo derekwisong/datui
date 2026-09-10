@@ -36,5 +36,5 @@ Out of scope:
   tracked in `deny.toml`.
 - Anything needing an attacker who can already write to your home directory.
 
-Release binaries ship without checksums or signatures. Build from source if you
-want more than HTTPS and GitHub.
+Releases publish `SHA256SUMS`, and the install script checks it. There are no
+signatures yet, so a checksum proves the file arrived intact, not who built it.

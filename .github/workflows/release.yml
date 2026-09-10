@@ -504,8 +504,10 @@ jobs:
         # replace a release asset could replace this file alongside it. What it
         # does give is integrity against a truncated or corrupted download, a
         # stable value to compare against when a mirror or a package repository
-        # republishes a binary, and something for the installer to verify. A
-        # signature is the next step and a separate one.
+        # republishes a binary, and something for the installer to verify.
+        #
+        # The signature that does prove origin is applied to this file below, which is
+        # why signing one file is enough to cover every artifact listed in it.
         run: |
           shopt -s nullglob
           mkdir -p release-assets
@@ -531,6 +533,27 @@ jobs:
         env:
           REF_NAME: ${{ github.ref_name }}
 
+      - name: Install cosign
+        # SHA-pinned to defend against upstream takeover; bump deliberately.
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign SHA256SUMS
+        # Signing the checksum file rather than each artifact is deliberate: it already
+        # covers every downloadable by hash, so one signature carries the whole release,
+        # and there is one thing for a user to verify rather than a dozen.
+        #
+        # Keyless, via Sigstore. There is no private key here to store as a secret, to
+        # protect, to rotate, or to lose; the signing identity is this workflow's own
+        # OIDC token, which is why the job needs `id-token: write` (it already has it,
+        # for Pages). The signature therefore attests that this repository's release
+        # workflow produced the file at this tag, which is a stronger and more checkable
+        # claim than "someone holding a key did".
+        #
+        # The certificate is recorded in Rekor, Sigstore's public transparency log. That
+        # is public information about a public release, and it is what lets anyone verify
+        # without trusting us to serve them the right key.
+        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+
       - name: Create GitHub Release
         # SHA-pinned to defend against upstream takeover; bump deliberately.
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -539,6 +562,7 @@ jobs:
           body_path: ${{ steps.release_body.outputs.path }}
           files: |
             SHA256SUMS
+            SHA256SUMS.sigstore.json
             target/debian/*.deb
             target/generate-rpm/*.rpm
             target/cargo-aur/*.tar.gz

@@ -9,6 +9,9 @@ name = "datui-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
+# Never published, but cargo-deny audits this tree and an unlicensed crate fails the
+# licence check.
+license = "MIT"
 
 [package.metadata]
 cargo-fuzz = true

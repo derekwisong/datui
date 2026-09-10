@@ -68,6 +68,16 @@ jobs:
           manifest-path: crates/datui-pyo3/Cargo.toml
           command: check ${{ matrix.checks }}
 
+      # fuzz/ is its own workspace for the same reason, with its own lockfile the
+      # check above does not see. Nothing in it ships in a binary, but it is a
+      # lockfile committed to this repository and an advisory in it still matters
+      # to anyone running the fuzzers.
+      - name: Check fuzz
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: fuzz/Cargo.toml
+          command: check ${{ matrix.checks }}
+
   zizmor:
     name: zizmor (workflow analysis)
     runs-on: ubuntu-latest

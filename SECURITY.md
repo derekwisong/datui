@@ -46,5 +46,36 @@ fuzzes for new findings. See
 [Fuzzing](https://derekwisong.github.io/datui/latest/for-developers/fuzzing.html) for how to
 run them, and `fuzz/` for the targets.
 
-Releases publish `SHA256SUMS`, and the install script checks it. There are no
-signatures yet, so a checksum proves the file arrived intact, not who built it.
+## Verifying a release
+
+Releases publish `SHA256SUMS`, and the install script checks it. That proves a
+download arrived intact, but not who produced it: anyone who could replace an
+artifact could replace the checksum file beside it.
+
+`SHA256SUMS.sigstore.json` is what proves origin. It is a [Sigstore][sigstore]
+signature over the checksum file, made by the release workflow itself rather than
+by a key any person holds, so verifying it tells you the file was produced by this
+repository's release workflow at this tag. Because every artifact is listed in
+`SHA256SUMS`, verifying that one signature covers the whole release.
+
+With [cosign][cosign] installed:
+
+```bash
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/derekwisong/datui/\.github/workflows/release\.yml@refs/tags/' \
+  SHA256SUMS
+```
+
+Then check the artifacts against the file it just vouched for:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+The signing certificate is recorded in Rekor, Sigstore's public transparency log,
+which is what lets you verify without having to trust us to hand you the right key.
+
+[sigstore]: https://www.sigstore.dev/
+[cosign]: https://github.com/sigstore/cosign

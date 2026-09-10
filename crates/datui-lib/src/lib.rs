@@ -716,6 +716,14 @@ pub enum AppEvent {
         path: PathBuf,
         result: Result<(), String>,
     },
+    /// Background task completed: the remote file's size is known, so the download can
+    /// be put to the user. The probe is a network round trip and the HTTP one waits up
+    /// to fifteen seconds, so it cannot be done on the event thread.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    BackgroundRemoteSizeReady {
+        generation: u64,
+        pending: Box<PendingDownload>,
+    },
     /// Background task completed: remote file downloaded to temp path.
     #[cfg(any(feature = "http", feature = "cloud"))]
     BackgroundDownloadReady {
@@ -902,6 +910,35 @@ pub enum PendingDownload {
         size: Option<u64>,
         options: OpenOptions,
     },
+}
+
+#[cfg(any(feature = "http", feature = "cloud"))]
+impl PendingDownload {
+    /// The url, the size the probe found, and the open options — the same three
+    /// fields whichever store this came from.
+    fn parts(&self) -> (&str, Option<u64>, &OpenOptions) {
+        match self {
+            #[cfg(feature = "http")]
+            PendingDownload::Http { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::S3 { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::Gcs { url, size, options } => (url, *size, options),
+        }
+    }
+
+    /// Replace the placeholder size with what the probe actually found.
+    fn with_size(mut self, found: Option<u64>) -> Self {
+        match &mut self {
+            #[cfg(feature = "http")]
+            PendingDownload::Http { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::S3 { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::Gcs { size, .. } => *size = found,
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2989,6 +3026,56 @@ impl App {
     }
 
     /// Build LazyFrame from paths for phased loading (non-compressed only). Caller must not use for compressed CSV.
+    /// Ask the store how big a remote file is, off the event thread.
+    ///
+    /// The answer only feeds a confirmation message, but getting it means a HEAD
+    /// request: fifteen seconds of timeout for HTTP, unbounded for S3 and GCS. Doing
+    /// that inline froze the UI, and froze it precisely where the user is most likely
+    /// to want out.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    fn spawn_remote_size_probe(&mut self, pending: PendingDownload) -> Option<AppEvent> {
+        let cloud = self.app_config.cloud.clone();
+        let runtime = self.runtime.clone();
+        self.spawn_bg("Checking size...", move |gen, tx| {
+            let size = match &pending {
+                #[cfg(feature = "http")]
+                PendingDownload::Http { url, .. } => {
+                    Self::fetch_remote_size_http(url).unwrap_or(None)
+                }
+                #[cfg(feature = "cloud")]
+                PendingDownload::S3 { url, options, .. } => {
+                    Self::fetch_remote_size_s3(url, &cloud, options, &runtime).unwrap_or(None)
+                }
+                #[cfg(feature = "cloud")]
+                PendingDownload::Gcs { url, options, .. } => {
+                    Self::fetch_remote_size_gcs(url, options, &runtime).unwrap_or(None)
+                }
+            };
+            let _ = tx.send(AppEvent::BackgroundRemoteSizeReady {
+                generation: gen,
+                pending: Box::new(pending.with_size(size)),
+            });
+        });
+        None
+    }
+
+    /// What the user is being asked to agree to before a remote file is downloaded.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    fn download_confirmation_message(pending: &PendingDownload) -> String {
+        let (url, size, options) = pending.parts();
+        let size_str = size
+            .map(Self::format_bytes)
+            .unwrap_or_else(|| "unknown".to_string());
+        let dest_dir = options
+            .temp_dir
+            .as_deref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| std::env::temp_dir().display().to_string());
+        format!(
+            "URL: {url}\nFile size: {size_str}\nDestination: {dest_dir} (temporary file)\n\nContinue with download?"
+        )
+    }
+
     /// Run the LazyFrame scan for `paths` on a background thread.
     ///
     /// Scanning is where the wall-clock time goes — CSV schema inference, and hive
@@ -3001,8 +3088,22 @@ impl App {
         paths: Vec<PathBuf>,
         options: OpenOptions,
     ) -> Option<AppEvent> {
+        self.spawn_scan_as(status, paths, options, None)
+    }
+
+    /// As [`App::spawn_scan`], but reporting `display_path` as the dataset's identity.
+    ///
+    /// A downloaded remote file is scanned from a temp path the user never typed and
+    /// would not recognise; the URL they did type is what belongs on screen.
+    fn spawn_scan_as(
+        &mut self,
+        status: &str,
+        paths: Vec<PathBuf>,
+        options: OpenOptions,
+        display_path: Option<PathBuf>,
+    ) -> Option<AppEvent> {
         let cloud = self.app_config.cloud.clone();
-        let path_for_event = paths.first().cloned();
+        let path_for_event = display_path.or_else(|| paths.first().cloned());
         let slot = self.pending_lazyframe_result.clone();
         self.spawn_bg(status, move |gen, tx| {
             match Self::build_lazyframe_from_paths_with(&cloud, &paths, &options) {
@@ -3034,17 +3135,164 @@ impl App {
         None
     }
 
-    /// Build the LazyFrame for `paths`, on the calling thread.
+    /// Put hive partition columns first, ahead of the file's own columns.
+    fn hoist_partition_columns(
+        lf: LazyFrame,
+        schema: &Schema,
+        partition_columns: &[String],
+    ) -> LazyFrame {
+        if partition_columns.is_empty() {
+            return lf;
+        }
+        let exprs: Vec<_> = partition_columns
+            .iter()
+            .map(|s| col(s.as_str()))
+            .chain(
+                schema
+                    .iter_names()
+                    .map(|s| s.to_string())
+                    .filter(|c| !partition_columns.contains(c))
+                    .map(|s| col(s.as_str())),
+            )
+            .collect();
+        lf.select(exprs)
+    }
+
+    /// Schema for a local hive dataset read from one file's footer, instead of
+    /// `collect_schema()` over every file in the set.
     ///
-    /// Only for paths already known to be cheap; the general case goes through
-    /// [`App::build_lazyframe_from_paths_with`] on a background thread.
-    fn build_lazyframe_from_paths(
-        &mut self,
-        paths: &[PathBuf],
+    /// `None` when the path is not that shape, or when the read fails — either way
+    /// the caller falls back to the general scan, which will report the error properly
+    /// if there is one.
+    fn schema_state_from_local_hive(
+        path: Option<&Path>,
         options: &OpenOptions,
-    ) -> Result<LazyFrame> {
-        let cloud = self.app_config.cloud.clone();
-        Self::build_lazyframe_from_paths_with(&cloud, paths, options)
+    ) -> Option<DataTableState> {
+        if !options.single_spine_schema {
+            return None;
+        }
+        let p = path.filter(|p| p.is_dir() && options.hive)?;
+        let (merged_schema, partition_columns) =
+            DataTableState::schema_from_one_hive_parquet(p).ok()?;
+        let lf = DataTableState::scan_parquet_hive_with_schema(p, merged_schema.clone()).ok()?;
+        DataTableState::from_schema_and_lazyframe(
+            merged_schema,
+            lf,
+            options,
+            Some(partition_columns),
+        )
+        .ok()
+    }
+
+    /// The same one-file trick against an object store. This is the route that used to
+    /// block the UI thread on a network round trip.
+    #[cfg(feature = "cloud")]
+    fn schema_state_from_cloud_hive(
+        path: Option<&Path>,
+        options: &OpenOptions,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+    ) -> Option<DataTableState> {
+        if !options.single_spine_schema {
+            return None;
+        }
+        // Unlike the local path this does not require --hive: a directory or glob URL
+        // is already a hive scan by shape.
+        let p = path.filter(|p| {
+            let s = p.as_os_str().to_string_lossy();
+            let is_cloud = s.starts_with("s3://") || s.starts_with("gs://");
+            let looks_like_hive = s.ends_with('/') || s.contains('*');
+            is_cloud && (options.hive || looks_like_hive)
+        })?;
+
+        let (full, cloud_opts, store) = match source::input_source(p) {
+            source::InputSource::S3(url) => {
+                let full = format!("s3://{url}");
+                let opts = Self::build_s3_cloud_options(cloud, options);
+                let store = Self::build_s3_object_store(&full, cloud, options).ok()?;
+                (full, opts, store)
+            }
+            source::InputSource::Gcs(url) => {
+                let full = format!("gs://{url}");
+                let store = Self::build_gcs_object_store(&full).ok()?;
+                (full, CloudOptions::default(), store)
+            }
+            _ => return None,
+        };
+
+        let (path_part, _) = source::url_path_extension(&full);
+        let key = path_part
+            .split_once('/')
+            .map(|(_, k)| k.trim_end_matches('/'))
+            .unwrap_or("");
+        let (merged_schema, partition_columns) = runtime
+            .block_on(cloud_hive::schema_from_one_cloud_hive(store, key))
+            .ok()?;
+        let args = ScanArgsParquet {
+            schema: Some(merged_schema.clone()),
+            cloud_options: Some(cloud_opts),
+            hive_options: polars::io::HiveOptions::new_enabled(),
+            glob: true,
+            ..Default::default()
+        };
+        let lf = LazyFrame::scan_parquet(PlPathRef::new(&full).into_owned(), args).ok()?;
+        let lf = Self::hoist_partition_columns(lf, &merged_schema, &partition_columns);
+        DataTableState::from_schema_and_lazyframe(
+            merged_schema,
+            lf,
+            options,
+            Some(partition_columns),
+        )
+        .ok()
+    }
+
+    /// General schema route: ask the frame itself. Slow for a wide hive dataset, which
+    /// is the reason this whole phase belongs on a background thread.
+    fn schema_state_from_full_scan(
+        mut lf: LazyFrame,
+        path: Option<&Path>,
+        options: &OpenOptions,
+    ) -> Result<DataTableState> {
+        let schema = lf
+            .collect_schema()
+            .map_err(color_eyre::eyre::Report::from)?;
+        let partition_columns = match path.filter(|p| {
+            options.hive && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
+        }) {
+            Some(p) => DataTableState::discover_hive_partition_columns(p)
+                .into_iter()
+                .filter(|c| schema.contains(c.as_str()))
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns);
+        let part_cols = (!partition_columns.is_empty()).then_some(partition_columns);
+        DataTableState::from_schema_and_lazyframe(schema, lf, options, part_cols)
+    }
+
+    /// Build the table state for a loaded frame, by the cheapest route that applies.
+    ///
+    /// Returns the state and a label naming the route it came from, for the debug
+    /// overlay. Takes its config by value so all of it can run off the UI thread.
+    fn build_schema_state(
+        lf: LazyFrame,
+        path: Option<&Path>,
+        options: &OpenOptions,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<(DataTableState, String)> {
+        #[cfg(not(feature = "cloud"))]
+        let _ = (cloud, runtime);
+
+        if let Some(state) = Self::schema_state_from_local_hive(path, options) {
+            return Ok((state, "one-file (local)".to_string()));
+        }
+        #[cfg(feature = "cloud")]
+        if let Some(state) = Self::schema_state_from_cloud_hive(path, options, cloud, runtime) {
+            return Ok((state, "one-file (cloud)".to_string()));
+        }
+        Self::schema_state_from_full_scan(lf, path, options)
+            .map(|state| (state, "full scan".to_string()))
     }
 
     /// Build the LazyFrame for `paths`.
@@ -7445,28 +7693,15 @@ impl App {
                     }
                     Some(AppEvent::DoLoad(paths.clone(), options.clone()))
                 } else {
+                    // The size probe is a network round trip, so it runs off the event
+                    // thread and the confirmation modal is raised when it answers.
                     #[cfg(feature = "http")]
                     if let source::InputSource::Http(ref url) = src {
-                        let size = Self::fetch_remote_size_http(url).unwrap_or(None);
-                        let size_str = size
-                            .map(Self::format_bytes)
-                            .unwrap_or_else(|| "unknown".to_string());
-                        let dest_dir = options
-                            .temp_dir
-                            .as_deref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| std::env::temp_dir().display().to_string());
-                        let message = format!(
-                            "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
-                            url, size_str, dest_dir
-                        );
-                        self.pending_download = Some(PendingDownload::Http {
+                        return self.spawn_remote_size_probe(PendingDownload::Http {
                             url: url.clone(),
-                            size,
+                            size: None,
                             options: options.clone(),
                         });
-                        self.confirmation_modal.show(message);
-                        return None;
                     }
                     #[cfg(feature = "cloud")]
                     if let source::InputSource::S3(ref url) = src {
@@ -7474,32 +7709,11 @@ impl App {
                         let (_, ext) = source::url_path_extension(&full);
                         let is_glob = full.contains('*') || full.ends_with('/');
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            let size = Self::fetch_remote_size_s3(
-                                &full,
-                                &self.app_config.cloud,
-                                options,
-                                &self.runtime,
-                            )
-                            .unwrap_or(None);
-                            let size_str = size
-                                .map(Self::format_bytes)
-                                .unwrap_or_else(|| "unknown".to_string());
-                            let dest_dir = options
-                                .temp_dir
-                                .as_deref()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_else(|| std::env::temp_dir().display().to_string());
-                            let message = format!(
-                                "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
-                                full, size_str, dest_dir
-                            );
-                            self.pending_download = Some(PendingDownload::S3 {
+                            return self.spawn_remote_size_probe(PendingDownload::S3 {
                                 url: full,
-                                size,
+                                size: None,
                                 options: options.clone(),
                             });
-                            self.confirmation_modal.show(message);
-                            return None;
                         }
                     }
                     #[cfg(feature = "cloud")]
@@ -7508,27 +7722,11 @@ impl App {
                         let (_, ext) = source::url_path_extension(&full);
                         let is_glob = full.contains('*') || full.ends_with('/');
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
-                            let size = Self::fetch_remote_size_gcs(&full, options, &self.runtime)
-                                .unwrap_or(None);
-                            let size_str = size
-                                .map(Self::format_bytes)
-                                .unwrap_or_else(|| "unknown".to_string());
-                            let dest_dir = options
-                                .temp_dir
-                                .as_deref()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_else(|| std::env::temp_dir().display().to_string());
-                            let message = format!(
-                                "URL: {}\nFile size: {}\nDestination: {} (temporary file)\n\nContinue with download?",
-                                full, size_str, dest_dir
-                            );
-                            self.pending_download = Some(PendingDownload::Gcs {
+                            return self.spawn_remote_size_probe(PendingDownload::Gcs {
                                 url: full,
-                                size,
+                                size: None,
                                 options: options.clone(),
                             });
-                            self.confirmation_modal.show(message);
-                            return None;
                         }
                     }
                     // When CSV with --parse-strings, set "Scanning string columns" and defer build so UI can show it before blocking.
@@ -7789,6 +7987,20 @@ impl App {
                 None
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
+            AppEvent::BackgroundRemoteSizeReady {
+                generation,
+                pending,
+            } => {
+                if *generation != self.task_generation || !self.load_active {
+                    return None;
+                }
+                self.status_message = None;
+                self.confirmation_modal
+                    .show(Self::download_confirmation_message(pending));
+                self.pending_download = Some((**pending).clone());
+                None
+            }
+            #[cfg(any(feature = "http", feature = "cloud"))]
             AppEvent::BackgroundDownloadReady {
                 generation,
                 temp_path,
@@ -7831,6 +8043,7 @@ impl App {
                     return None;
                 }
                 self.http_temp_path = Some(temp_path.clone());
+                // The URL the user typed, not the temp file it landed in.
                 let display_path = match &self.loading_state {
                     LoadingState::Loading { file_path, .. } => file_path.clone(),
                     _ => None,
@@ -7848,39 +8061,12 @@ impl App {
                         progress_percent: 30,
                     };
                 }
-                #[allow(clippy::cloned_ref_to_slice_refs)]
-                match self.build_lazyframe_from_paths(&[temp_path.clone()], options) {
-                    Ok(lf) => {
-                        if let LoadingState::Loading {
-                            file_path,
-                            file_size,
-                            ..
-                        } = &self.loading_state
-                        {
-                            self.loading_state = LoadingState::Loading {
-                                file_path: file_path.clone(),
-                                file_size: *file_size,
-                                current_phase: "Caching schema".to_string(),
-                                progress_percent: 40,
-                            };
-                        }
-                        Some(AppEvent::DoLoadSchema(
-                            Box::new(lf),
-                            display_path,
-                            options.clone(),
-                        ))
-                    }
-                    Err(e) => {
-                        self.loading_state = LoadingState::Idle;
-                        self.busy = false;
-                        self.drain_keys_on_next_loop = true;
-                        let msg = crate::error_display::user_message_from_report(
-                            &e,
-                            Some(temp_path.as_path()),
-                        );
-                        Some(AppEvent::Crash(msg))
-                    }
-                }
+                self.spawn_scan_as(
+                    "Scanning...",
+                    vec![temp_path.clone()],
+                    options.clone(),
+                    display_path,
+                )
             }
             AppEvent::DoLoadSchema(lf, path, options) => {
                 if !self.load_active {
@@ -7911,239 +8097,22 @@ impl App {
                     return None;
                 }
                 self.debug.schema_load = None;
-                // Fast path for hive directory: infer schema from one parquet file instead of collect_schema() over all files.
-                if options.single_spine_schema
-                    && path.as_ref().is_some_and(|p| p.is_dir() && options.hive)
-                {
-                    let p = path.as_ref().expect("path set by caller");
-                    if let Ok((merged_schema, partition_columns)) =
-                        DataTableState::schema_from_one_hive_parquet(p)
-                    {
-                        if let Ok(lf_owned) =
-                            DataTableState::scan_parquet_hive_with_schema(p, merged_schema.clone())
-                        {
-                            match DataTableState::from_schema_and_lazyframe(
-                                merged_schema,
-                                lf_owned,
-                                options,
-                                Some(partition_columns),
-                            ) {
-                                Ok(state) => {
-                                    self.apply_schema_ready(
-                                        state,
-                                        path.clone(),
-                                        options,
-                                        Some("one-file (local)".to_string()),
-                                    );
-                                    return Some(AppEvent::DoLoadBuffer);
-                                }
-                                Err(e) => {
-                                    self.loading_state = LoadingState::Idle;
-                                    self.busy = false;
-                                    self.drain_keys_on_next_loop = true;
-                                    let msg =
-                                        crate::error_display::user_message_from_report(&e, None);
-                                    return Some(AppEvent::Crash(msg));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                #[cfg(feature = "cloud")]
-                {
-                    // Use fast path for directory/glob cloud URLs (same as build_lazyframe_from_paths).
-                    // Don't require --hive: path shape already implies hive scan.
-                    if options.single_spine_schema
-                        && path.as_ref().is_some_and(|p| {
-                            let s = p.as_os_str().to_string_lossy();
-                            let is_cloud = s.starts_with("s3://") || s.starts_with("gs://");
-                            let looks_like_hive = s.ends_with('/') || s.contains('*');
-                            is_cloud && (options.hive || looks_like_hive)
-                        })
-                    {
-                        self.debug.schema_load = Some("trying one-file (cloud)".to_string());
-                        let src = source::input_source(path.as_ref().expect("path set by caller"));
-                        let try_cloud = match &src {
-                            source::InputSource::S3(url) => {
-                                let full = format!("s3://{url}");
-                                let (path_part, _) = source::url_path_extension(&full);
-                                let key = path_part
-                                    .split_once('/')
-                                    .map(|(_, k)| k.trim_end_matches('/'))
-                                    .unwrap_or("");
-                                let cloud_opts =
-                                    Self::build_s3_cloud_options(&self.app_config.cloud, options);
-                                Self::build_s3_object_store(&full, &self.app_config.cloud, options)
-                                    .ok()
-                                    .and_then(|store| {
-                                        let (merged_schema, partition_columns) = self
-                                            .runtime
-                                            .block_on(cloud_hive::schema_from_one_cloud_hive(
-                                                store, key,
-                                            ))
-                                            .ok()?;
-                                        let pl_path = PlPathRef::new(&full).into_owned();
-                                        let args = ScanArgsParquet {
-                                            schema: Some(merged_schema.clone()),
-                                            cloud_options: Some(cloud_opts),
-                                            hive_options: polars::io::HiveOptions::new_enabled(),
-                                            glob: true,
-                                            ..Default::default()
-                                        };
-                                        let mut lf_owned =
-                                            LazyFrame::scan_parquet(pl_path, args).ok()?;
-                                        if !partition_columns.is_empty() {
-                                            let exprs: Vec<_> = partition_columns
-                                                .iter()
-                                                .map(|s| col(s.as_str()))
-                                                .chain(
-                                                    merged_schema
-                                                        .iter_names()
-                                                        .map(|s| s.to_string())
-                                                        .filter(|c| !partition_columns.contains(c))
-                                                        .map(|s| col(s.as_str())),
-                                                )
-                                                .collect();
-                                            lf_owned = lf_owned.select(exprs);
-                                        }
-                                        DataTableState::from_schema_and_lazyframe(
-                                            merged_schema,
-                                            lf_owned,
-                                            options,
-                                            Some(partition_columns),
-                                        )
-                                        .ok()
-                                    })
-                            }
-                            source::InputSource::Gcs(url) => {
-                                let full = format!("gs://{url}");
-                                let (path_part, _) = source::url_path_extension(&full);
-                                let key = path_part
-                                    .split_once('/')
-                                    .map(|(_, k)| k.trim_end_matches('/'))
-                                    .unwrap_or("");
-                                Self::build_gcs_object_store(&full).ok().and_then(|store| {
-                                    let (merged_schema, partition_columns) = self
-                                        .runtime
-                                        .block_on(cloud_hive::schema_from_one_cloud_hive(
-                                            store, key,
-                                        ))
-                                        .ok()?;
-                                    let pl_path = PlPathRef::new(&full).into_owned();
-                                    let args = ScanArgsParquet {
-                                        schema: Some(merged_schema.clone()),
-                                        cloud_options: Some(CloudOptions::default()),
-                                        hive_options: polars::io::HiveOptions::new_enabled(),
-                                        glob: true,
-                                        ..Default::default()
-                                    };
-                                    let mut lf_owned =
-                                        LazyFrame::scan_parquet(pl_path, args).ok()?;
-                                    if !partition_columns.is_empty() {
-                                        let exprs: Vec<_> = partition_columns
-                                            .iter()
-                                            .map(|s| col(s.as_str()))
-                                            .chain(
-                                                merged_schema
-                                                    .iter_names()
-                                                    .map(|s| s.to_string())
-                                                    .filter(|c| !partition_columns.contains(c))
-                                                    .map(|s| col(s.as_str())),
-                                            )
-                                            .collect();
-                                        lf_owned = lf_owned.select(exprs);
-                                    }
-                                    DataTableState::from_schema_and_lazyframe(
-                                        merged_schema,
-                                        lf_owned,
-                                        options,
-                                        Some(partition_columns),
-                                    )
-                                    .ok()
-                                })
-                            }
-                            _ => None,
-                        };
-                        if let Some(state) = try_cloud {
-                            self.apply_schema_ready(
-                                state,
-                                path.clone(),
-                                options,
-                                Some("one-file (cloud)".to_string()),
-                            );
-                            return Some(AppEvent::DoLoadBuffer);
-                        } else {
-                            self.debug.schema_load = Some("fallback (cloud)".to_string());
-                        }
-                    }
-                }
-
-                // General path: collect_schema() may be slow. Spawn to background.
-                let debug_label = if self.debug.schema_load.is_none() {
-                    Some("full scan".to_string())
-                } else {
-                    self.debug.schema_load.clone()
-                };
-                let lf_clone = (**lf).clone();
-                let path_clone = path.clone();
-                let options_clone = options.clone();
+                let lf_owned = (**lf).clone();
+                let path_owned = path.clone();
+                let options_owned = options.clone();
                 let schema_slot = self.pending_schema_result.clone();
-                self.spawn_bg("Caching schema...", move |gen, tx| {
-                    let mut lf_owned = lf_clone;
-                    let schema = match lf_owned.collect_schema() {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let report = color_eyre::eyre::Report::from(e);
-                            let _ = tx.send(AppEvent::BackgroundError {
-                                generation: gen,
-                                message: crate::error_display::user_message_from_report(
-                                    &report, None,
-                                ),
-                            });
-                            return;
-                        }
-                    };
-                    let partition_columns = if path_clone.as_ref().is_some_and(|p| {
-                        options_clone.hive
-                            && (p.is_dir() || p.as_os_str().to_string_lossy().contains('*'))
-                    }) {
-                        let discovered = DataTableState::discover_hive_partition_columns(
-                            path_clone.as_ref().expect("path set by caller"),
-                        );
-                        discovered
-                            .into_iter()
-                            .filter(|c| schema.contains(c.as_str()))
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    };
-                    if !partition_columns.is_empty() {
-                        let exprs: Vec<_> = partition_columns
-                            .iter()
-                            .map(|s| col(s.as_str()))
-                            .chain(
-                                schema
-                                    .iter_names()
-                                    .map(|s| s.to_string())
-                                    .filter(|c| !partition_columns.contains(c))
-                                    .map(|s| col(s.as_str())),
-                            )
-                            .collect();
-                        lf_owned = lf_owned.select(exprs);
-                    }
-                    let part_cols_opt = if partition_columns.is_empty() {
-                        None
-                    } else {
-                        Some(partition_columns)
-                    };
-                    match DataTableState::from_schema_and_lazyframe(
-                        schema,
+                let cloud = self.app_config.cloud.clone();
+                let runtime = self.runtime.clone();
+                self.spawn_bg(
+                    "Caching schema...",
+                    move |gen, tx| match Self::build_schema_state(
                         lf_owned,
-                        &options_clone,
-                        part_cols_opt,
+                        path_owned.as_deref(),
+                        &options_owned,
+                        &cloud,
+                        &runtime,
                     ) {
-                        Ok(state) => {
+                        Ok((state, debug_label)) => {
                             let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
                             let dominated = slot.as_ref().is_some_and(|(g, _)| *g > gen);
                             if !dominated {
@@ -8152,9 +8121,9 @@ impl App {
                             drop(slot);
                             let _ = tx.send(AppEvent::BackgroundSchemaReady {
                                 generation: gen,
-                                path: path_clone,
-                                options: options_clone,
-                                debug_label,
+                                path: path_owned,
+                                options: options_owned,
+                                debug_label: Some(debug_label),
                             });
                         }
                         Err(e) => {
@@ -8163,8 +8132,8 @@ impl App {
                                 message: crate::error_display::user_message_from_report(&e, None),
                             });
                         }
-                    }
-                });
+                    },
+                );
                 None
             }
             AppEvent::DoLoadBuffer => {

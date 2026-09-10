@@ -1157,6 +1157,19 @@ fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
         }
         next = app.event(&ev);
     }
+    // The size probe runs on a background thread now, so the modal arrives by event
+    // rather than before the open call returns.
+    for _tick in 0..200 {
+        if app.awaiting_download_confirmation() {
+            break;
+        }
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(follow_up) = app.event(&ev) {
+                app.event(&follow_up);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     (app, rx)
 }
 

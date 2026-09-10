@@ -95,6 +95,12 @@ allow = [
     # library with a pure-Rust implementation, which is a straight improvement
     # on a path that parses untrusted input.
     "bzip2-1.0.6",
+    # libfuzzer-sys, in the fuzz/ workspace. NCSA is the University of
+    # Illinois/NCSA Open Source License, which LLVM used before relicensing;
+    # libFuzzer itself is still under it. Permissive and BSD-shaped. It reaches
+    # only the fuzz targets, which are a development tool and are never
+    # published or shipped in a binary.
+    "NCSA",
 ]
 confidence-threshold = 0.8
 

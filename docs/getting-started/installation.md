@@ -24,8 +24,11 @@ Install via the [derekwisong/datui](https://github.com/derekwisong/homebrew-datu
 
 ```bash
 brew tap derekwisong/datui
+brew trust derekwisong/datui
 brew install datui
 ```
+
+Homebrew requires `brew trust` before it will install from a third-party tap.
 
 ### Windows (WinGet)
 

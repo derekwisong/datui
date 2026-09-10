@@ -38,6 +38,7 @@ jobs:
       - name: Homebrew tap install
         run: |
           brew tap derekwisong/datui
+          brew trust derekwisong/datui
           brew install datui
 
       - name: Verify Homebrew install

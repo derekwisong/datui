@@ -60,6 +60,7 @@ Get the pre-built binary for your platform from the [Latest Release](https://git
 - **macOS (Homebrew)**:
   ```bash
   brew tap derekwisong/datui
+  brew trust derekwisong/datui
   brew install datui
   ```
 - **Windows (WinGet)**:

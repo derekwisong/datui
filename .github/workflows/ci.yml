@@ -365,3 +365,32 @@ jobs:
 
       - name: Run Python tests
         run: . .venv/bin/activate && pytest python/tests/ -v
+
+  # One context for the branch ruleset to require. The jobs above cannot be required
+  # directly: windows and macos are skipped on a -dev version, and a required check
+  # that never reports blocks the pull request forever rather than failing it. This
+  # job always runs, so it always reports, and it fails if anything it waits on
+  # failed or was cancelled. Skipped is not a failure -- that is the conditional
+  # platforms doing exactly what they were told.
+  #
+  # Note this gates the CI workflow only. A job cannot wait on another workflow's
+  # jobs, so Security's contexts (cargo-deny, zizmor) are required separately.
+  ci-passed:
+    name: CI passed
+    runs-on: ubuntu-latest
+    needs: [check, fuzz, linux, windows, macos]
+    if: always()
+    steps:
+      - name: Check that every job passed or was skipped
+        # Through env, not interpolated into the script: every expansion in a `run:`
+        # block is one zizmor flags, and the habit is worth more than the exception.
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::A CI job reported '$result'"; exit 1 ;;
+            esac
+          done

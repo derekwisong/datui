@@ -166,6 +166,66 @@ mod export_format_tests {
 }
 
 #[cfg(test)]
+mod probe_slot_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// A probe that answers must give its slot back. The cap is there to bound threads
+    /// wedged on a dead mount, and those never answer at all; counting completed probes
+    /// against it meant that after MAX_CONCURRENT_PROBES roots, no root was ever probed
+    /// again for the rest of the session. Roots accumulate as datasets are opened on
+    /// different mounts, so this is reached by ordinary use, and it shows as a network
+    /// section that stays empty with no error.
+    #[test]
+    fn an_answered_probe_frees_its_slot() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+
+        let roots: Vec<PathBuf> = (0..MAX_CONCURRENT_PROBES)
+            .map(|i| PathBuf::from(format!("/pretend/remote{i}")))
+            .collect();
+        app.home_probes_inflight = roots.clone();
+
+        for (i, root) in roots.iter().enumerate() {
+            // Alternate the two ways a probe can answer; both are answers.
+            let rows = if i % 2 == 0 { Some(Vec::new()) } else { None };
+            app.event(&AppEvent::HomeProbeReady {
+                root: root.clone(),
+                rows,
+            });
+        }
+
+        assert!(
+            app.home_probes_inflight.is_empty(),
+            "every probe answered, so nothing should still hold a slot: {:?}",
+            app.home_probes_inflight
+        );
+    }
+
+    /// A root that never answers keeps its slot, which is the whole point of the cap.
+    #[test]
+    fn an_unanswered_probe_keeps_its_slot() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+
+        let wedged = PathBuf::from("/pretend/dead-mount");
+        let answered = PathBuf::from("/pretend/live-mount");
+        app.home_probes_inflight = vec![wedged.clone(), answered.clone()];
+
+        app.event(&AppEvent::HomeProbeReady {
+            root: answered,
+            rows: Some(Vec::new()),
+        });
+
+        assert_eq!(
+            app.home_probes_inflight,
+            vec![wedged],
+            "a thread still stuck on a dead mount must keep costing a slot"
+        );
+    }
+}
+
+#[cfg(test)]
 pub mod tests {
     use std::path::Path;
     use std::process::Command;
@@ -7510,6 +7570,12 @@ impl App {
                 None
             }
             AppEvent::HomeProbeReady { root, rows } => {
+                // Give the slot back. The cap exists to bound threads wedged on a dead
+                // `hard` mount, which never send this event and so keep their slot for
+                // good — a probe that answered is not one of those. Without this the
+                // list only grows, and after MAX_CONCURRENT_PROBES roots no further
+                // root is ever probed for the rest of the session.
+                self.home_probes_inflight.retain(|p| p != root);
                 match rows {
                     Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
                     None => self.home.probe_failed(root.clone()),

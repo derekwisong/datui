@@ -228,6 +228,9 @@ mod probe_slot_tests {
 }
 
 #[cfg(test)]
+mod text_input_flows;
+
+#[cfg(test)]
 pub mod tests {
     use std::path::Path;
     use std::process::Command;
@@ -4178,7 +4181,7 @@ impl App {
                     match self.export_modal.focus {
                         ExportFocus::PathInput => {
                             // Enter from path input triggers export (same as Export button)
-                            let path_str = self.export_modal.path_input.value.trim();
+                            let path_str = self.export_modal.path_input.value().trim();
                             if !path_str.is_empty() {
                                 let mut path = PathBuf::from(path_str);
                                 let format = self.export_modal.selected_format;
@@ -4204,7 +4207,7 @@ impl App {
                                 let delimiter =
                                     self.export_modal
                                         .csv_delimiter_input
-                                        .value
+                                        .value()
                                         .chars()
                                         .next()
                                         .unwrap_or(',') as u8;
@@ -4235,9 +4238,9 @@ impl App {
                             }
                         }
                         ExportFocus::ExportButton
-                            if !self.export_modal.path_input.value.is_empty() =>
+                            if !self.export_modal.path_input.value().is_empty() =>
                         {
-                            let mut path = PathBuf::from(&self.export_modal.path_input.value);
+                            let mut path = PathBuf::from(self.export_modal.path_input.value());
                             let format = self.export_modal.selected_format;
                             // Get compression format for this export format
                             let compression = match format {
@@ -4261,7 +4264,7 @@ impl App {
                             let delimiter = self
                                 .export_modal
                                 .csv_delimiter_input
-                                .value
+                                .value()
                                 .chars()
                                 .next()
                                 .unwrap_or(',') as u8;
@@ -4869,10 +4872,14 @@ impl App {
                     }
                     KeyCode::Enter if event.is_press() => match self.chart_export_modal.focus {
                         ChartExportFocus::PathInput | ChartExportFocus::ExportButton => {
-                            let path_str = self.chart_export_modal.path_input.value.trim();
+                            let path_str = self.chart_export_modal.path_input.value().trim();
                             if !path_str.is_empty() {
-                                let title =
-                                    self.chart_export_modal.title_input.value.trim().to_string();
+                                let title = self
+                                    .chart_export_modal
+                                    .title_input
+                                    .value()
+                                    .trim()
+                                    .to_string();
                                 let (width, height) = self.chart_export_modal.export_dimensions();
                                 let mut path = PathBuf::from(path_str);
                                 let format = self.chart_export_modal.selected_format;
@@ -5681,10 +5688,9 @@ impl App {
                     // Auto-populate fields
                     if let Some(ref path) = self.path {
                         // Auto-populate name
-                        self.template_modal.create_name_input.value =
-                            self.template_manager.generate_next_template_name();
-                        self.template_modal.create_name_input.cursor =
-                            self.template_modal.create_name_input.value.chars().count();
+                        self.template_modal
+                            .create_name_input
+                            .set_value(self.template_manager.generate_next_template_name());
 
                         // Auto-populate exact_path (absolute) - canonicalize to ensure absolute path
                         let absolute_path = if path.is_absolute() {
@@ -5698,14 +5704,9 @@ impl App {
                                 path.to_path_buf()
                             }
                         };
-                        self.template_modal.create_exact_path_input.value =
-                            absolute_path.to_string_lossy().to_string();
-                        self.template_modal.create_exact_path_input.cursor = self
-                            .template_modal
+                        self.template_modal
                             .create_exact_path_input
-                            .value
-                            .chars()
-                            .count();
+                            .set_value(absolute_path.to_string_lossy());
 
                         // Auto-populate relative_path from current working directory
                         if let Ok(cwd) = std::env::current_dir() {
@@ -5719,14 +5720,9 @@ impl App {
                                 if let Ok(rel_path) = abs_path.strip_prefix(&canonical_cwd) {
                                     // Ensure relative path starts with ./ or just the path
                                     let rel_str = rel_path.to_string_lossy().to_string();
-                                    self.template_modal.create_relative_path_input.value =
-                                        rel_str.strip_prefix('/').unwrap_or(&rel_str).to_string();
-                                    self.template_modal.create_relative_path_input.cursor = self
-                                        .template_modal
+                                    self.template_modal
                                         .create_relative_path_input
-                                        .value
-                                        .chars()
-                                        .count();
+                                        .set_value(rel_str.strip_prefix('/').unwrap_or(&rel_str));
                                 } else {
                                     // Path is not under CWD, leave empty or use full path
                                     self.template_modal.create_relative_path_input.clear();
@@ -5735,14 +5731,9 @@ impl App {
                                 // Fallback: try without canonicalization
                                 if let Ok(rel_path) = abs_path.strip_prefix(&cwd) {
                                     let rel_str = rel_path.to_string_lossy().to_string();
-                                    self.template_modal.create_relative_path_input.value =
-                                        rel_str.strip_prefix('/').unwrap_or(&rel_str).to_string();
-                                    self.template_modal.create_relative_path_input.cursor = self
-                                        .template_modal
+                                    self.template_modal
                                         .create_relative_path_input
-                                        .value
-                                        .chars()
-                                        .count();
+                                        .set_value(rel_str.strip_prefix('/').unwrap_or(&rel_str));
                                 } else {
                                     self.template_modal.create_relative_path_input.clear();
                                 }
@@ -5756,14 +5747,13 @@ impl App {
                             if let Some(parent_str) = parent.to_str() {
                                 if path.file_name().is_some() {
                                     if let Some(ext) = path.extension() {
-                                        self.template_modal.create_path_pattern_input.value =
-                                            format!("{}/*.{}", parent_str, ext.to_string_lossy());
-                                        self.template_modal.create_path_pattern_input.cursor = self
-                                            .template_modal
+                                        self.template_modal
                                             .create_path_pattern_input
-                                            .value
-                                            .chars()
-                                            .count();
+                                            .set_value(format!(
+                                                "{}/*.{}",
+                                                parent_str,
+                                                ext.to_string_lossy()
+                                            ));
                                     }
                                 }
                             }
@@ -5779,13 +5769,9 @@ impl App {
                                 if let Ok(re) = Regex::new(r"\d+") {
                                     pattern = re.replace_all(&pattern, "*").to_string();
                                 }
-                                self.template_modal.create_filename_pattern_input.value = pattern;
-                                self.template_modal.create_filename_pattern_input.cursor = self
-                                    .template_modal
+                                self.template_modal
                                     .create_filename_pattern_input
-                                    .value
-                                    .chars()
-                                    .count();
+                                    .set_value(pattern);
                             }
                         }
                     }
@@ -5950,11 +5936,6 @@ impl App {
                                 self.template_modal
                                     .create_description_input
                                     .handle_key(&event, None);
-                                // Auto-scroll to keep cursor visible
-                                let area_height = 10; // Estimate, will be adjusted in rendering
-                                self.template_modal
-                                    .create_description_input
-                                    .ensure_cursor_visible(area_height, 80);
                                 return None;
                             }
                             match self.template_modal.create_focus {
@@ -5964,7 +5945,7 @@ impl App {
                                     if self
                                         .template_modal
                                         .create_name_input
-                                        .value
+                                        .value()
                                         .trim()
                                         .is_empty()
                                     {
@@ -5977,7 +5958,7 @@ impl App {
                                     // Check for duplicate name (only if creating new, not editing)
                                     if self.template_modal.editing_template_id.is_none()
                                         && self.template_manager.template_exists(
-                                            self.template_modal.create_name_input.value.trim(),
+                                            self.template_modal.create_name_input.value().trim(),
                                         )
                                     {
                                         self.template_modal.name_error =
@@ -5991,14 +5972,14 @@ impl App {
                                         exact_path: if !self
                                             .template_modal
                                             .create_exact_path_input
-                                            .value
+                                            .value()
                                             .trim()
                                             .is_empty()
                                         {
                                             Some(std::path::PathBuf::from(
                                                 self.template_modal
                                                     .create_exact_path_input
-                                                    .value
+                                                    .value()
                                                     .trim(),
                                             ))
                                         } else {
@@ -6007,14 +5988,14 @@ impl App {
                                         relative_path: if !self
                                             .template_modal
                                             .create_relative_path_input
-                                            .value
+                                            .value()
                                             .trim()
                                             .is_empty()
                                         {
                                             Some(
                                                 self.template_modal
                                                     .create_relative_path_input
-                                                    .value
+                                                    .value()
                                                     .trim()
                                                     .to_string(),
                                             )
@@ -6024,14 +6005,14 @@ impl App {
                                         path_pattern: if !self
                                             .template_modal
                                             .create_path_pattern_input
-                                            .value
+                                            .value()
                                             .is_empty()
                                         {
                                             Some(
                                                 self.template_modal
                                                     .create_path_pattern_input
-                                                    .value
-                                                    .clone(),
+                                                    .value()
+                                                    .to_string(),
                                             )
                                         } else {
                                             None
@@ -6039,14 +6020,14 @@ impl App {
                                         filename_pattern: if !self
                                             .template_modal
                                             .create_filename_pattern_input
-                                            .value
+                                            .value()
                                             .is_empty()
                                         {
                                             Some(
                                                 self.template_modal
                                                     .create_filename_pattern_input
-                                                    .value
-                                                    .clone(),
+                                                    .value()
+                                                    .to_string(),
                                             )
                                         } else {
                                             None
@@ -6071,14 +6052,14 @@ impl App {
                                     let description = if !self
                                         .template_modal
                                         .create_description_input
-                                        .value
+                                        .value()
                                         .is_empty()
                                     {
                                         Some(
                                             self.template_modal
                                                 .create_description_input
-                                                .value
-                                                .clone(),
+                                                .value()
+                                                .to_string(),
                                         )
                                     } else {
                                         None
@@ -6096,7 +6077,7 @@ impl App {
                                             template.name = self
                                                 .template_modal
                                                 .create_name_input
-                                                .value
+                                                .value()
                                                 .trim()
                                                 .to_string();
                                             template.description = description;
@@ -6164,7 +6145,7 @@ impl App {
                                         match self.create_template_from_current_state(
                                             self.template_modal
                                                 .create_name_input
-                                                .value
+                                                .value()
                                                 .trim()
                                                 .to_string(),
                                             description,
@@ -6240,11 +6221,6 @@ impl App {
                                 self.template_modal
                                     .create_description_input
                                     .handle_key(&event, None);
-                                // Auto-scroll to keep cursor visible
-                                let area_height = 10; // Estimate, will be adjusted in rendering
-                                self.template_modal
-                                    .create_description_input
-                                    .ensure_cursor_visible(area_height, 80);
                             } else {
                                 // Move to previous field (works for all fields)
                                 self.template_modal.prev_focus();
@@ -6281,11 +6257,6 @@ impl App {
                                 self.template_modal
                                     .create_description_input
                                     .handle_key(&event, None);
-                                // Auto-scroll to keep cursor visible
-                                let area_height = 10; // Estimate, will be adjusted in rendering
-                                self.template_modal
-                                    .create_description_input
-                                    .ensure_cursor_visible(area_height, 80);
                             } else {
                                 // Move to next field (works for all fields)
                                 self.template_modal.next_focus();
@@ -6345,11 +6316,6 @@ impl App {
                             self.template_modal
                                 .create_description_input
                                 .handle_key(&event, None);
-                            // Auto-scroll to keep cursor visible
-                            let area_height = 10; // Estimate, will be adjusted in rendering
-                            self.template_modal
-                                .create_description_input
-                                .ensure_cursor_visible(area_height, 80);
                         }
                         CreateFocus::ExactPath => {
                             let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
@@ -6397,11 +6363,6 @@ impl App {
                             self.template_modal
                                 .create_description_input
                                 .handle_key(event, None);
-                            // Auto-scroll to keep cursor visible
-                            let area_height = 10;
-                            self.template_modal
-                                .create_description_input
-                                .ensure_cursor_visible(area_height, 80);
                         }
                         CreateFocus::ExactPath => {
                             self.template_modal
@@ -6427,43 +6388,20 @@ impl App {
                     }
                 }
                 KeyCode::PageUp | KeyCode::PageDown
-                    // PageUp/PageDown for description field - move cursor up/down by 5 lines
-                    // This is handled manually since MultiLineTextInput doesn't have built-in PageUp/PageDown
+                    // PageUp/PageDown move through the description five lines at a time.
                     if (self.template_modal.mode == TemplateModalMode::Create
                         || self.template_modal.mode == TemplateModalMode::Edit)
                         && self.template_modal.create_focus == CreateFocus::Description =>
                 {
-                    let lines: Vec<&str> = self
-                        .template_modal
-                        .create_description_input
-                        .value
-                        .lines()
-                        .collect();
-                    let current_line = self.template_modal.create_description_input.cursor_line;
-                    let current_col = self.template_modal.create_description_input.cursor_col;
-
-                    let target_line = if event.code == KeyCode::PageUp {
-                        current_line.saturating_sub(5)
+                    const DESCRIPTION_PAGE_LINES: isize = 5;
+                    let delta = if event.code == KeyCode::PageUp {
+                        -DESCRIPTION_PAGE_LINES
                     } else {
-                        (current_line + 5).min(lines.len().saturating_sub(1))
+                        DESCRIPTION_PAGE_LINES
                     };
-
-                    if target_line < lines.len() {
-                        let target_line_str = lines.get(target_line).unwrap_or(&"");
-                        let new_col = current_col.min(target_line_str.chars().count());
-                        self.template_modal.create_description_input.cursor = self
-                            .template_modal
-                            .create_description_input
-                            .line_col_to_cursor(target_line, new_col);
-                        self.template_modal
-                            .create_description_input
-                            .update_line_col_from_cursor();
-                        // Auto-scroll
-                        let area_height = 10;
-                        self.template_modal
-                            .create_description_input
-                            .ensure_cursor_visible(area_height, 80);
-                    }
+                    self.template_modal
+                        .create_description_input
+                        .move_cursor_by_lines(delta);
                 }
                 KeyCode::Backspace
                 | KeyCode::Delete
@@ -6484,11 +6422,6 @@ impl App {
                             self.template_modal
                                 .create_description_input
                                 .handle_key(event, None);
-                            // Auto-scroll to keep cursor visible
-                            let area_height = 10;
-                            self.template_modal
-                                .create_description_input
-                                .ensure_cursor_visible(area_height, 80);
                         }
                         CreateFocus::ExactPath => {
                             self.template_modal
@@ -6531,20 +6464,17 @@ impl App {
                         self.query_focus = QueryFocus::Input;
                         if let Some(state) = &self.data_table_state {
                             if self.query_tab == QueryTab::SqlLike {
-                                self.query_input.value = state.get_active_query().to_string();
-                                self.query_input.cursor = self.query_input.value.chars().count();
+                                self.query_input.set_value(state.get_active_query());
                                 self.sql_input.set_focused(false);
                                 self.fuzzy_input.set_focused(false);
                                 self.query_input.set_focused(true);
                             } else if self.query_tab == QueryTab::Fuzzy {
-                                self.fuzzy_input.value = state.get_active_fuzzy_query().to_string();
-                                self.fuzzy_input.cursor = self.fuzzy_input.value.chars().count();
+                                self.fuzzy_input.set_value(state.get_active_fuzzy_query());
                                 self.query_input.set_focused(false);
                                 self.sql_input.set_focused(false);
                                 self.fuzzy_input.set_focused(true);
                             } else if self.query_tab == QueryTab::Sql {
-                                self.sql_input.value = state.get_active_sql_query().to_string();
-                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                                self.sql_input.set_value(state.get_active_sql_query());
                                 self.query_input.set_focused(false);
                                 self.fuzzy_input.set_focused(false);
                                 self.sql_input.set_focused(true);
@@ -6556,14 +6486,11 @@ impl App {
                         self.query_tab = self.query_tab.next();
                         if let Some(state) = &self.data_table_state {
                             if self.query_tab == QueryTab::SqlLike {
-                                self.query_input.value = state.get_active_query().to_string();
-                                self.query_input.cursor = self.query_input.value.chars().count();
+                                self.query_input.set_value(state.get_active_query());
                             } else if self.query_tab == QueryTab::Fuzzy {
-                                self.fuzzy_input.value = state.get_active_fuzzy_query().to_string();
-                                self.fuzzy_input.cursor = self.fuzzy_input.value.chars().count();
+                                self.fuzzy_input.set_value(state.get_active_fuzzy_query());
                             } else if self.query_tab == QueryTab::Sql {
-                                self.sql_input.value = state.get_active_sql_query().to_string();
-                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                                self.sql_input.set_value(state.get_active_sql_query());
                             }
                         }
                         self.query_input.set_focused(false);
@@ -6575,14 +6502,11 @@ impl App {
                         self.query_tab = self.query_tab.prev();
                         if let Some(state) = &self.data_table_state {
                             if self.query_tab == QueryTab::SqlLike {
-                                self.query_input.value = state.get_active_query().to_string();
-                                self.query_input.cursor = self.query_input.value.chars().count();
+                                self.query_input.set_value(state.get_active_query());
                             } else if self.query_tab == QueryTab::Fuzzy {
-                                self.fuzzy_input.value = state.get_active_fuzzy_query().to_string();
-                                self.fuzzy_input.cursor = self.fuzzy_input.value.chars().count();
+                                self.fuzzy_input.set_value(state.get_active_fuzzy_query());
                             } else if self.query_tab == QueryTab::Sql {
-                                self.sql_input.value = state.get_active_sql_query().to_string();
-                                self.sql_input.cursor = self.sql_input.value.chars().count();
+                                self.sql_input.set_value(state.get_active_sql_query());
                             }
                         }
                         self.query_input.set_focused(false);
@@ -6631,7 +6555,7 @@ impl App {
                     match result {
                         TextInputEvent::Submit => {
                             let _ = self.sql_input.save_to_history(&self.cache);
-                            let sql = self.sql_input.value.clone();
+                            let sql = self.sql_input.value().to_string();
                             self.sql_input.set_focused(false);
                             return Some(AppEvent::SqlSearch(sql));
                         }
@@ -6658,7 +6582,7 @@ impl App {
                     match result {
                         TextInputEvent::Submit => {
                             let _ = self.fuzzy_input.save_to_history(&self.cache);
-                            let query = self.fuzzy_input.value.clone();
+                            let query = self.fuzzy_input.value().to_string();
                             self.fuzzy_input.set_focused(false);
                             return Some(AppEvent::FuzzySearch(query));
                         }
@@ -6690,7 +6614,7 @@ impl App {
                     TextInputEvent::Submit => {
                         // Save to history and execute query
                         let _ = self.query_input.save_to_history(&self.cache);
-                        let query = self.query_input.value.clone();
+                        let query = self.query_input.value().to_string();
                         self.query_input.set_focused(false);
                         return Some(AppEvent::Search(query));
                     }
@@ -6721,7 +6645,7 @@ impl App {
                 let result = self.query_input.handle_key(event, None);
                 match result {
                     TextInputEvent::Submit => {
-                        let value = self.query_input.value.trim().to_string();
+                        let value = self.query_input.value().trim().to_string();
                         self.query_input.clear();
                         self.query_input.set_focused(false);
                         self.input_mode = InputMode::Normal;
@@ -7062,12 +6986,9 @@ impl App {
                 self.query_tab = QueryTab::SqlLike;
                 self.query_focus = QueryFocus::Input;
                 if let Some(state) = &mut self.data_table_state {
-                    self.query_input.value = state.active_query.clone();
-                    self.query_input.cursor = self.query_input.value.chars().count();
-                    self.sql_input.value = state.get_active_sql_query().to_string();
-                    self.fuzzy_input.value = state.get_active_fuzzy_query().to_string();
-                    self.fuzzy_input.cursor = self.fuzzy_input.value.chars().count();
-                    self.sql_input.cursor = self.sql_input.value.chars().count();
+                    self.query_input.set_value(state.active_query.clone());
+                    self.sql_input.set_value(state.get_active_sql_query());
+                    self.fuzzy_input.set_value(state.get_active_fuzzy_query());
                     state.suppress_error_display = true;
                 } else {
                     self.query_input.clear();
@@ -7083,8 +7004,7 @@ impl App {
                 if self.data_table_state.is_some() {
                     self.input_mode = InputMode::Editing;
                     self.input_type = Some(InputType::GoToLine);
-                    self.query_input.value.clear();
-                    self.query_input.cursor = 0;
+                    self.query_input.clear();
                     self.query_input.set_focused(true);
                 }
                 None

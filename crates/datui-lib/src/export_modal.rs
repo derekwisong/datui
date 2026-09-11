@@ -128,7 +128,6 @@ impl ExportModal {
             .with_theme(theme);
         // Priority: 1) Config delimiter (user preference), 2) File delimiter (what was used/autodetected), 3) Comma (default)
         let delimiter_char = config_delimiter.or(file_delimiter).unwrap_or(b',');
-        // Use set_value to properly sync to textarea
         self.csv_delimiter_input
             .set_value(format!("{}", delimiter_char as char));
         self.csv_include_header = true;

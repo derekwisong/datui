@@ -387,7 +387,7 @@ impl PivotMeltModal {
     // ----- Pivot helpers -----
 
     pub fn pivot_filtered_columns(&self) -> Vec<String> {
-        let filter_lower = self.pivot_filter_input.value.to_lowercase();
+        let filter_lower = self.pivot_filter_input.value().to_lowercase();
         self.available_columns
             .iter()
             .filter(|c| c.to_lowercase().contains(&filter_lower))
@@ -615,7 +615,7 @@ impl PivotMeltModal {
     // ----- Melt helpers -----
 
     pub fn melt_filtered_columns(&self) -> Vec<String> {
-        let filter_lower = self.melt_filter_input.value.to_lowercase();
+        let filter_lower = self.melt_filter_input.value().to_lowercase();
         self.available_columns
             .iter()
             .filter(|c| c.to_lowercase().contains(&filter_lower))

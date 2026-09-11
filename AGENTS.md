@@ -60,7 +60,9 @@ src/
 │   ├── analysis.rs     # Analysis modal rendering
 │   ├── chart.rs        # Chart view widget (sidebar + chart area)
 │   ├── pivot_melt.rs   # Pivot & Melt modal rendering
-│   └── template_modal.rs # Template management UI
+│   ├── template_modal.rs # Template management UI
+│   ├── textarea/       # Text editor core (buffer, cursor, undo, rendering)
+│   └── text_input/     # The text field used by every input in the app
 ├── query.rs            # Query parser and executor
 ├── chart_modal.rs      # Chart view state (type, x/y columns, options, export)
 ├── chart_data.rs       # Chart data preparation (LazyFrame → series points)
@@ -239,6 +241,30 @@ Each modal:
 - Uses `TableState` from Ratatui for row/column selection
 - Handles grouped data with drill-down capability
 - Caches collected dataframes until transformation occurs
+
+### Text Input (`widgets/text_input/`, `widgets/textarea/`)
+
+**Purpose**: Every text field in the app - the query bar and its SQL and fuzzy
+tabs, go-to-line, the modal column filters, the export paths, the template
+fields - is one `TextInput`.
+
+**Layering**:
+- `widgets/textarea/` is the editor: a buffer of lines, a cursor in character
+  coordinates, a selection, an undo history and a yank buffer, plus a ratatui
+  `Widget` that draws it and scrolls to follow the cursor. It knows nothing
+  about datui. Editing keys follow readline (`Ctrl-A`, `Ctrl-E`, `Ctrl-K`,
+  `Ctrl-W`, `Ctrl-U` to undo), alongside the arrow keys.
+- `widgets/text_input/` wraps it with theming, focus and history of previously
+  submitted values. `TextInput::new()` is a single-line field, where Enter
+  submits and the arrow keys walk the history; `TextInput::multiline()` inserts
+  newlines instead and walks the history with `Ctrl-P` / `Ctrl-N`.
+
+**Rules**:
+- The editor is the only source of truth for the value. Read it with `value()`
+  and write it with `set_value()`; there is no field to assign.
+- History is persisted through `CacheManager::update_history_file`, which holds
+  a lock across the read-modify-write, so two running instances merge rather
+  than overwrite.
 
 ### Statistics Module (`statistics.rs`)
 

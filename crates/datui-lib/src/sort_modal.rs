@@ -54,7 +54,7 @@ impl SortModal {
     }
 
     pub fn filtered_columns(&self) -> Vec<(usize, &SortColumn)> {
-        let filter_text = self.filter_input.value.to_lowercase();
+        let filter_text = self.filter_input.value().to_lowercase();
         let mut filtered: Vec<_> = self
             .columns
             .iter()
@@ -549,7 +549,7 @@ mod tests {
     fn test_sort_modal_new() {
         let modal = SortModal::new();
         assert!(!modal.active);
-        assert_eq!(modal.filter_input.value, "");
+        assert_eq!(modal.filter_input.value(), "");
         assert!(modal.columns.is_empty());
         assert!(modal.table_state.selected().is_none());
         assert!(modal.ascending);
@@ -585,7 +585,7 @@ mod tests {
                 is_visible: true,
             },
         ];
-        modal.filter_input.value = "an".to_string();
+        modal.filter_input.set_value("an");
         let filtered = modal.filtered_columns();
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].1.name, "Banana");

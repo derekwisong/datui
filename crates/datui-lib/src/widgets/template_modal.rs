@@ -1,5 +1,4 @@
 use crate::template::{BrokenTemplate, Template};
-use crate::widgets::multiline_text_input::MultiLineTextInput;
 use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
 
@@ -48,7 +47,7 @@ pub struct TemplateModal {
     pub broken_templates: Vec<BrokenTemplate>, // Templates that failed to parse
     // Create/Edit mode fields
     pub create_name_input: TextInput,
-    pub create_description_input: MultiLineTextInput,
+    pub create_description_input: TextInput,
     pub create_exact_path_input: TextInput,
     pub create_relative_path_input: TextInput,
     pub create_path_pattern_input: TextInput,
@@ -125,7 +124,7 @@ impl TemplateModal {
         self.create_name_input = TextInput::new()
             .with_history_limit(history_limit)
             .with_theme(theme);
-        self.create_description_input = MultiLineTextInput::new()
+        self.create_description_input = TextInput::multiline()
             .with_history_limit(history_limit)
             .with_theme(theme);
         self.create_exact_path_input = TextInput::new()
@@ -164,7 +163,7 @@ impl TemplateModal {
         self.create_name_input = TextInput::new()
             .with_history_limit(history_limit)
             .with_theme(theme);
-        self.create_description_input = MultiLineTextInput::new()
+        self.create_description_input = TextInput::multiline()
             .with_history_limit(history_limit)
             .with_theme(theme);
         self.create_exact_path_input = TextInput::new()
@@ -180,39 +179,38 @@ impl TemplateModal {
             .with_history_limit(history_limit)
             .with_theme(theme);
         // Populate fields from template
-        self.create_name_input.value = template.name.clone();
-        self.create_name_input.cursor = self.create_name_input.value.chars().count();
-        self.create_description_input.value = template.description.clone().unwrap_or_default();
-        self.create_description_input.cursor = self.create_description_input.value.chars().count();
-        self.create_description_input.update_line_col_from_cursor();
-        self.create_exact_path_input.value = template
-            .match_criteria
-            .exact_path
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        self.create_exact_path_input.cursor = self.create_exact_path_input.value.chars().count();
-        self.create_relative_path_input.value = template
-            .match_criteria
-            .relative_path
-            .clone()
-            .unwrap_or_default();
-        self.create_relative_path_input.cursor =
-            self.create_relative_path_input.value.chars().count();
-        self.create_path_pattern_input.value = template
-            .match_criteria
-            .path_pattern
-            .clone()
-            .unwrap_or_default();
-        self.create_path_pattern_input.cursor =
-            self.create_path_pattern_input.value.chars().count();
-        self.create_filename_pattern_input.value = template
-            .match_criteria
-            .filename_pattern
-            .clone()
-            .unwrap_or_default();
-        self.create_filename_pattern_input.cursor =
-            self.create_filename_pattern_input.value.chars().count();
+        self.create_name_input.set_value(&template.name);
+        self.create_description_input
+            .set_value(template.description.clone().unwrap_or_default());
+        self.create_exact_path_input.set_value(
+            template
+                .match_criteria
+                .exact_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        );
+        self.create_relative_path_input.set_value(
+            template
+                .match_criteria
+                .relative_path
+                .clone()
+                .unwrap_or_default(),
+        );
+        self.create_path_pattern_input.set_value(
+            template
+                .match_criteria
+                .path_pattern
+                .clone()
+                .unwrap_or_default(),
+        );
+        self.create_filename_pattern_input.set_value(
+            template
+                .match_criteria
+                .filename_pattern
+                .clone()
+                .unwrap_or_default(),
+        );
         self.create_schema_match_enabled = template.match_criteria.schema_columns.is_some();
     }
 

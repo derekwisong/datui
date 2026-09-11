@@ -41,9 +41,9 @@ impl ChartExportModal {
             .with_theme(theme);
         self.path_input.clear();
         self.width_input = TextInput::new().with_theme(theme);
-        self.width_input.set_value("1024".to_string());
+        self.width_input.set_value("1024");
         self.height_input = TextInput::new().with_theme(theme);
-        self.height_input.set_value("768".to_string());
+        self.height_input.set_value("768");
     }
 
     /// Reopen the modal with path pre-filled (e.g. after cancel overwrite or export error). Focus is PathInput.

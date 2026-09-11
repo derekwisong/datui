@@ -1180,10 +1180,15 @@ fn app_awaiting_download_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
     }
     // The size probe runs on a background thread now, so the modal arrives by event
     // rather than before the open call returns.
-    for _tick in 0..200 {
-        if app.awaiting_download_confirmation() {
-            break;
-        }
+    //
+    // The budget is deliberately far longer than the probe should ever need. The
+    // first HTTP agent built in a process loads the platform certificate store,
+    // which is slow on a cold Windows runner, and a second was not enough: both
+    // tests using this helper failed there on the v0.3.2 release commit, the first
+    // time Windows had run them. What is being asserted is that datui asks before
+    // downloading, not that it asks within any particular time.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !app.awaiting_download_confirmation() && std::time::Instant::now() < deadline {
         while let Ok(ev) = rx.try_recv() {
             if let Some(follow_up) = app.event(&ev) {
                 app.event(&follow_up);

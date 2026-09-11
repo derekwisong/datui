@@ -1451,6 +1451,15 @@ fn test_concurrent_recents_do_not_lose_entries() {
 
     let recents = cache.load_recents();
 
+    // push_recent stores the canonicalised path, so that is what has to be looked
+    // for. On macOS the temp directory sits under /var, which is a symlink to
+    // /private/var, and on Windows canonicalising yields a \\?\ prefix; on both,
+    // the raw path handed to the thread is not the string that lands in the file.
+    // Comparing the raw one failed on those two platforms for a reason that has
+    // nothing to do with concurrency, and it went unseen because they only run CI
+    // on a release version.
+    let stored = |p: &std::path::PathBuf| p.canonicalize().unwrap_or_else(|_| p.clone());
+
     // The real invariant, and the one worth defending: the lock makes each
     // read-modify-write atomic, so no writer that got the lock can have its entry
     // clobbered by another that came after. Every push that reported success is
@@ -1464,7 +1473,7 @@ fn test_concurrent_recents_do_not_lose_entries() {
     // making it impossible, because no timeout can make a timing assumption true.
     for path in &written {
         assert!(
-            recents.contains(path),
+            recents.contains(&stored(path)),
             "push_recent reported Written for {path:?} but it is not in the file; \
              a locked read-modify-write lost an update. Skipped: {skipped:?}"
         );

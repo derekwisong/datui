@@ -11,4 +11,17 @@ jinja2
 # for running the pre-commit hooks
 pre-commit
 
+# Not used directly. pre-commit pulls virtualenv, which pulls filelock, and
+# filelock before 3.20.3 carries two TOCTOU symlink advisories
+# (PYSEC-2026-1374, PYSEC-2026-1375): it checks whether the lock file exists
+# and then opens it with O_TRUNC, so a local attacker who wins the race can
+# point the name at a file of yours and have it truncated.
+#
+# Pip already resolves past this without the floor, because current virtualenv
+# requires filelock >= 3.24.2 on the Python versions datui supports. The floor
+# is here because nothing audits this file, so "it happens to resolve safely
+# today" is not written down anywhere and nothing would notice if it stopped
+# being true. OpenSSF Scorecard reports both advisories against the repository.
+filelock>=3.20.3
+
 # Wheel build deps: requirements-wheel.txt (Linux/macOS), requirements-wheel-windows.txt (Windows)

@@ -12,9 +12,14 @@ gates. Both are in the `Security` workflow, and both can be run locally.
 **cargo-deny** checks `Cargo.lock` against the [RustSec advisory
 database][rustsec], plus licenses, banned and duplicate crates, and the
 registries dependencies come from. It runs against the root workspace and
-against `crates/datui-pyo3`, which is excluded from the workspace and would
-otherwise never be audited. Configuration is in `deny.toml` at the repository
-root.
+against `crates/datui-pyo3` and `fuzz`, both of which are excluded from the
+workspace and would otherwise never be audited. Configuration is in `deny.toml`
+at the repository root.
+
+Nothing audits the Python dependencies in `scripts/`. They are development
+tooling and never reach a datui user, but an advisory in them still reaches a
+contributor's machine, so a version floor with the advisory ids written beside
+it is the current answer.
 
 **zizmor** analyses the GitHub Actions workflow files for the patterns that let
 a pull request steal a secret or poison a build: unpinned actions, over-broad
@@ -57,9 +62,11 @@ things written down: why it is acceptable today, and the event that should clear
 it. An entry without both is a silenced alarm rather than a decision.
 
 The current entries are all of that shape. The two `quick-xml` denial-of-service
-advisories are the ones worth watching: they are reachable whenever datui opens
-an `.xlsx` file, which is untrusted data, and they clear when `calamine` can be
-upgraded past its `quick-xml` 0.38 pin.
+advisories are the ones worth watching. They used to be reachable whenever datui
+opened an `.xlsx` file, which is untrusted data; `calamine` 0.36 moved to
+`quick-xml` 0.41 and closed that path. What is left is the copy `object_store`
+uses to parse S3 and GCS responses, which `polars` pins, so reaching it needs an
+object-store endpoint the user chose that answers with hostile XML.
 
 ## Adding a new action to a workflow
 

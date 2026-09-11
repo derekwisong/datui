@@ -253,9 +253,6 @@ pub fn render(
             app.template_modal
                 .create_description_input
                 .set_focused(is_focused);
-            app.template_modal
-                .create_description_input
-                .ensure_cursor_visible(desc_inner.height, desc_inner.width);
             (&app.template_modal.create_description_input).render(desc_inner, buf);
 
             for (chunk_idx, (focus, title)) in [

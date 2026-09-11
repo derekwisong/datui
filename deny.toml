@@ -59,10 +59,6 @@ ignore = [
     # Clears when: polars moves off bincode, or bincode finds a maintainer.
     { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained; transitive via polars-utils" },
 
-    # paste, via ratatui. A build-time proc-macro. It does not ship in the
-    # binary and never sees runtime input.
-    # Clears when: ratatui drops paste.
-    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; build-time proc-macro via ratatui, not in the shipped binary" },
 
     # rustls-pemfile, via object_store, on the S3/GCS path. Unmaintained, no
     # advisory against the code; the functionality moved into rustls-pki-types.

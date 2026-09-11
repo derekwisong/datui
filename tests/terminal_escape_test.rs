@@ -149,6 +149,12 @@ fn column_names_cannot_emit_escape_sequences() {
     );
 }
 
+// Windows rejects any filename containing a character below 0x20, so the fixture
+// cannot be created there and the case cannot arise: the filesystem refuses the
+// attack before datui sees it. The other four tests in this file cover the same
+// sanitiser through cell values, column names and error messages, all of which do
+// run on Windows.
+#[cfg(not(windows))]
 #[test]
 fn filenames_cannot_emit_escape_sequences() {
     // The filename is shown in the header bar, and lands in the recent-files

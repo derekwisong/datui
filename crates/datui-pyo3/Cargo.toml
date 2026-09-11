@@ -7,7 +7,7 @@
 
 [package]
 name = "datui-pyo3"
-version = "0.3.2-dev"
+version = "0.3.2"
 edition = "2021"
 description = "Python bindings for datui (view LazyFrame in the TUI)"
 license = "MIT"

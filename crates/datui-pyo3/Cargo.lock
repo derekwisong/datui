@@ -1204,14 +1204,14 @@ dependencies = [
 
 [[package]]
 name = "datui-cli"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "datui-lib"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "arrow",
  "bzip2",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "datui-pyo3"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "bincode",
  "datui-lib",

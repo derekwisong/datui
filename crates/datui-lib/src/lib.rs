@@ -36,6 +36,8 @@ pub mod chart_export_modal;
 pub mod chart_modal;
 pub mod cli;
 #[cfg(feature = "cloud")]
+pub mod cloud_browse;
+#[cfg(feature = "cloud")]
 mod cloud_hive;
 pub mod config;
 pub mod discover;

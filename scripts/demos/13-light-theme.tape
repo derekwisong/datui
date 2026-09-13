@@ -16,7 +16,7 @@ Set Theme { "name": "Tokyo Night Day", "background": "#e1e2e7", "foreground": "#
 Hide
 Type "export HOME=/tmp/datui-demo/home COLORFGBG='0;15' DATUI_CACHE_DIR=/tmp/datui-demo/cache XDG_CONFIG_HOME=/tmp/datui-demo/config"
 Enter
-Type "cd /tmp/datui-demo/quant-research"
+Type "cd /tmp/datui-demo/data/quant-research"
 Enter
 Type "clear"
 Enter

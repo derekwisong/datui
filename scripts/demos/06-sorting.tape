@@ -6,56 +6,55 @@ Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
 Hide
-Type "datui tests/sample-data/large_dataset.parquet"
+# Every magnitude 6+ earthquake since 1900, from the USGS catalogue.
+Type "datui demo/data/earthquakes_m6.parquet"
 Enter
-Sleep 0.5s
+Sleep 0.8s
 Show
 Sleep 1s
 
-# Open Sort & Filter (s)
+# Open Sort & Filter.
 Type "s"
 Sleep 1s
 
-# Tab to Column list (Tab -> Filter, Tab -> ColumnList; only Down moves selection, not 'j')
+# Tab past the filter to the column list.
 Tab
 Sleep 0.5s
 Tab
 Sleep 0.5s
 
-# Navigate down to dist_normal (id=0 .. timestamp=5, dist_normal=7) using Down key
+# Down to magnitude.
 Down
-Sleep 0.5s
+Sleep 0.4s
 Down
-Sleep 0.5s
+Sleep 0.4s
 Down
-Sleep 0.5s
+Sleep 0.4s
 Down
-Sleep 0.5s
+Sleep 0.4s
 Down
-Sleep 0.5s
-Down
-Sleep 0.5s
-Down
-Sleep 0.5s
+Sleep 0.4s
 
-# Add dist_normal to sort
+# Add it to the sort.
 Type " "
-Sleep 0.5s
+Sleep 0.8s
 
-# Tab to Apply (ColumnList -> Order -> Apply) — 2 Tabs
+# Tab to the order and flip it to descending.
 Tab
 Sleep 0.5s
+Type " "
+Sleep 0.8s
+
+# Tab to Apply.
 Tab
 Sleep 0.5s
-Sleep 2s
+Sleep 1.5s
 
-# Apply sort
 Enter
 Sleep 0.5s
 
-# Hold on sorted result
+# The biggest earthquakes since 1900: Chile 1960, Alaska 1964, Sumatra 2004, Tohoku 2011.
 Sleep 5s
 
-# Pause for loop
 Sleep 1s
 Type "q"

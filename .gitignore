@@ -31,3 +31,7 @@ scripts/winget/out/
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# Demo datasets: built by demo/build.py, distribution still to be decided
+/demo/data/
+/demo/.cache/

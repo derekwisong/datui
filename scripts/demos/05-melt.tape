@@ -6,35 +6,28 @@ Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
 Hide
-Type "datui tests/sample-data/melt_wide.parquet"
+# Central Park daily weather since 1869, one column per measurement.
+Type "datui demo/data/central_park_weather.parquet"
 Enter
-Sleep 0.5s
+Sleep 0.8s
 Show
 Sleep 1s
 
-# Open Pivot & Melt (p)
+# Open Pivot & Melt, switch to the Melt tab.
 Type "p"
 Sleep 1s
-
-# Switch to Melt tab (Right arrow — only KeyCode::Right switches tab)
 Right
 Sleep 0.5s
 
-# Tab to Melt Index list (skip filter)
+# Tab past the filter to the index column list; keep date.
 Tab
 Sleep 0.5s
 Tab
-Sleep 0.5s
-
-# Add id and date to index (Space toggles)
-Type " "
-Sleep 0.5s
-Down
 Sleep 0.5s
 Type " "
-Sleep 0.5s
+Sleep 0.8s
 
-# Tab to Apply (Strategy, Pattern, Type, ExplicitList, VarName, ValName, Apply) — 7 Tabs
+# Tab through the strategy, pattern, type, list and name fields to Apply.
 Tab
 Sleep 0.5s
 Tab
@@ -49,15 +42,13 @@ Tab
 Sleep 0.5s
 Tab
 Sleep 0.5s
-Sleep 2s
+Sleep 1.5s
 
-# Apply melt
 Enter
 Sleep 0.5s
 
-# Hold on melted result
+# Every measurement is now a row: date, variable, value.
 Sleep 5s
 
-# Pause for loop
 Sleep 1s
 Type "q"

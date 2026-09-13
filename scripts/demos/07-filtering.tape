@@ -6,60 +6,54 @@ Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
 Hide
-Type "datui tests/sample-data/large_dataset.parquet"
+# Every meteorite in the Meteoritical Society's catalogue, via NASA: 45,716 rows.
+Type "datui demo/data/meteorites.parquet"
 Enter
-Sleep 0.5s
+Sleep 0.8s
 Show
 Sleep 1s
 
-# Open Sort & Filter (s)
+# Open Sort & Filter, switch to the Filter tab.
 Type "s"
 Sleep 1s
-
-# Switch to Filter tab (Right/l on tab bar)
 Type "l"
 Sleep 0.5s
 
-# Tab to body (Filter: Column)
-Tab
-Sleep 0.5s
-
-# Cycle column to dist_normal (id=0 .. timestamp=5, dist_normal=6)
-Type "l"
-Sleep 0.5s
-Type "l"
-Sleep 0.5s
-Type "l"
-Sleep 0.5s
-Type "l"
-Sleep 0.5s
-Type "l"
-Sleep 0.5s
-Type "l"
-Sleep 0.5s
-
-# Tab to Operator, cycle to > (Gt is 3rd)
+# Tab to the column selector and cycle to mass_g.
 Tab
 Sleep 0.5s
 Type "l"
+Sleep 0.4s
 Type "l"
-Sleep 0.5s
+Sleep 0.4s
+Type "l"
+Sleep 0.4s
+Type "l"
+Sleep 0.6s
 
-# Tab to Value, type 4
+# Tab to the operator; cycle to >.
 Tab
 Sleep 0.5s
-Type "4"
-Sleep 0.5s
+Type "l"
+Sleep 0.3s
+Type "l"
+Sleep 0.6s
 
-# Add Filter is two tabs after value (Value -> Logical -> Add), then Enter to add to list
+# Tab to the value.
+Tab
+Sleep 0.5s
+Type "1000000"
+Sleep 0.6s
+
+# Tab past the logical operator to Add, and add the filter.
 Tab
 Sleep 0.5s
 Tab
 Sleep 0.5s
 Enter
-Sleep 0.5s
+Sleep 0.8s
 
-# Tab to Apply (Column -> Operator -> Value -> Logical -> Add -> Statements -> Apply) — 5 Tabs
+# Tab to Apply.
 Tab
 Sleep 0.5s
 Tab
@@ -71,15 +65,13 @@ Sleep 0.5s
 Tab
 Sleep 0.5s
 Tab
-Sleep 2s
+Sleep 1.5s
 
-# Press Enter to apply filter (must land on Apply, not Cancel)
 Enter
 Sleep 0.5s
 
-# Hold on filtered result
-Sleep 2s
+# The 52 meteorites heavier than a tonne.
+Sleep 4s
 
-# Pause for loop
 Sleep 1s
 Type "q"

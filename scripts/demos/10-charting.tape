@@ -6,86 +6,50 @@ Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
 Hide
-Type "datui tests/sample-data/charting_demo.parquet"
+Type "datui demo/data/bitcoin_daily.parquet"
 Enter
-Sleep 0.5s
+Sleep 0.8s
 Show
-
-# App loaded at main screen
 Sleep 2s
 
-# Open charting (c)
+# Open charting.
 Type "c"
 Sleep 3s
 
-# Tab to the plot style selector
+# Tab past the plot style to the X axis filter; pick date.
 Tab
 Sleep 0.5s
-
-# Tab to X axis filter
 Tab
 Sleep 0.5s
-
-# Type filter "high" (narrows to high_temp, etc.)
-Type "high"
+Type "date"
 Sleep 1s
-
-# Tab to X column list, high_temp selected
 Tab
 Sleep 0.5s
-
-# Enter to select high_temp as X axis
 Space
 Sleep 0.5s
 
-# Tab to Y axis filter
+# Tab to the Y axis filter; pick tx_count.
 Tab
 Sleep 0.5s
-
-# Type filter "temp"
-Type "temp"
+Type "tx_count"
 Sleep 0.5s
-
-# Tab to Y column list
 Tab
 Sleep 1s
-
-# j to move down in Y list
-Type "j"
-Sleep 0.5s
 Space
 Sleep 1s
 
-# Shift+Tab 4 times back to chart type (Y list → Y input → X list → X input → Chart type)
-Shift+Tab
-Sleep 0.5s
-Shift+Tab
-Sleep 0.5s
-Shift+Tab
-Sleep 0.5s
-Shift+Tab
-Sleep 1s
+# Transactions per day, 2009 to now.
+Sleep 3s
 
-# l to switch to Scatter chart type
-Type "l"
-Sleep 2s
-
-# e to open export
+# Export the chart as a PNG.
 Type "e"
 Sleep 1s
-
-# Type export path
-Type "/tmp/datui_scatter.png"
+Type "/tmp/datui_chart.png"
 Sleep 1s
-
-# Enter to export
 Enter
 Sleep 2s
-
-# Enter to dismiss success dialog
 Enter
 Sleep 1s
 
-# Escape to close charting (back to main view)
 Escape
 Sleep 2s

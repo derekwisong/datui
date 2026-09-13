@@ -5,36 +5,13 @@ Set Height 800
 Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
-Type "datui tests/sample-data/people.parquet"
+# Every meteorite in the Meteoritical Society's catalogue, via NASA: 45,716 rows.
+Type "datui demo/data/meteorites.parquet"
 Sleep 0.2s
 Enter
+Sleep 0.8s
 
-# Wait for TUI to load and display data
-Sleep 0.5s
-
-
-# Scroll down through data
-
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
-Type "j"
-Sleep 0.05s
+# Down through the oldest recorded falls.
 Type "j"
 Sleep 0.05s
 Type "j"
@@ -96,5 +73,14 @@ Sleep 0.05s
 Type "j"
 Sleep 0.05s
 
-# Quit
+# And across to the columns off screen.
+Type "l"
+Sleep 0.4s
+Type "l"
+Sleep 0.4s
+Type "l"
+Sleep 0.4s
+Type "l"
+Sleep 1.5s
+
 Type "q"

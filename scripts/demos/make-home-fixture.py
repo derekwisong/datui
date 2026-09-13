@@ -11,11 +11,7 @@ nobody meant to publish.
 So the demo gets its own everything: its own cache directory (so RECENT is seeded
 rather than inherited), its own config (with the desktop's recently-used list turned
 off, since that is the one source that can surface a file from outside the project),
-and its own workspace of generated Parquet.
-
-The layout mirrors a real quant-research tree -- hive-partitioned by year, a handful
-of related datasets -- because the home screen's whole point is what it can tell you
-about data before you open it, and that needs data with a shape.
+and its own workspace: a copy of demo/data.
 
     python scripts/demos/make-home-fixture.py [--root /tmp/datui-demo]
 """
@@ -25,77 +21,37 @@ import json
 import shutil
 from pathlib import Path
 
-import polars as pl
 
-# Dataset names taken from a real research tree. Generic terms of the trade: nothing
-# here identifies a strategy, a venue, or a counterparty.
-HIVE_DATASETS = {
-    "prices": (["date", "ticker", "close", "volume"], [2021, 2022, 2023, 2024]),
-    "returns": (["date", "ticker", "ret_1d", "ret_5d"], [2021, 2022, 2023, 2024]),
-    "factors": (["date", "ticker", "value", "momentum", "quality"], [2022, 2023, 2024]),
-    "factor_ic": (["date", "factor", "ic", "ic_std"], [2023, 2024]),
-    "loadings": (["date", "ticker", "beta_mkt", "beta_size"], [2022, 2023, 2024]),
-    "alphas": (["date", "ticker", "alpha", "horizon"], [2023, 2024]),
-}
-
-FLAT_DATASETS = {
-    "universes/flag1000.parquet": ["ticker", "in_universe", "adv_rank"],
-    "universes/flag500.parquet": ["ticker", "in_universe", "adv_rank"],
-    "diagnostics/alpha_models_v1.parquet": ["model", "sharpe", "turnover", "hit_rate"],
-    "risk_factor_cov.parquet": ["factor_a", "factor_b", "cov"],
-}
-
-ROWS_PER_FILE = 500
-
-
-def frame(columns: list[str], rows: int, seed: int) -> pl.DataFrame:
-    """A frame with plausible dtypes, so the details pane has something to show."""
-    data = {}
-    for i, name in enumerate(columns):
-        if name in ("date",):
-            data[name] = pl.date_range(
-                pl.date(2024, 1, 1), pl.date(2024, 1, 1), eager=True
-            ).extend_constant(pl.date(2024, 1, 1), rows - 1)
-        elif name in ("ticker", "factor", "model", "factor_a", "factor_b", "horizon"):
-            data[name] = [f"{name[:3].upper()}{(seed + j) % 500:04d}" for j in range(rows)]
-        elif name in ("in_universe",):
-            data[name] = [(seed + j) % 3 == 0 for j in range(rows)]
-        elif name in ("volume", "adv_rank"):
-            data[name] = [(seed * 7 + j * 13) % 1_000_000 for j in range(rows)]
-        else:
-            data[name] = [((seed + j * (i + 1)) % 1000) / 100.0 for j in range(rows)]
-    return pl.DataFrame(data)
+# The workspace is a copy of demo/data: the public datasets built by demo/build.py
+# plus the private snapshots. The home screen's whole point is what it can tell you
+# about data before you open it, and that needs data with a shape -- so the demo
+# records against the same files the other tapes use.
+DEMO_DATA = Path(__file__).resolve().parents[2] / "demo" / "data"
 
 
 def build_workspace(workspace: Path) -> None:
-    for name, (columns, years) in HIVE_DATASETS.items():
-        for n, year in enumerate(years):
-            out = workspace / name / f"year={year}"
-            out.mkdir(parents=True, exist_ok=True)
-            frame(columns, ROWS_PER_FILE, seed=hash(name) % 997 + n).write_parquet(
-                out / "part-0.parquet", compression="zstd"
-            )
-
-    for rel, columns in FLAT_DATASETS.items():
-        out = workspace / rel
-        out.parent.mkdir(parents=True, exist_ok=True)
-        frame(columns, ROWS_PER_FILE, seed=len(rel)).write_parquet(
-            out, compression="zstd"
+    if not (DEMO_DATA / "quant-research").is_dir():
+        raise SystemExit(
+            f"{DEMO_DATA} is missing the demo datasets. Run demo/build.py "
+            "(with --private for the snapshots) before recording."
         )
-
+    shutil.copytree(DEMO_DATA, workspace)
     # A stray non-data file, because a real directory has them and the home screen
     # should visibly not offer it.
-    (workspace / "README.md").write_text("# quant-research\n\nGenerated demo data.\n")
+    (workspace / "quant-research" / "README.md").write_text(
+        "# quant-research\n\nA trimmed extract for the datui demos.\n"
+    )
 
 
 def seed_cache(cache: Path, workspace: Path) -> None:
     """Seed RECENT so the demo opens onto a screen that looks used, not empty."""
     cache.mkdir(parents=True, exist_ok=True)
     recents = [
-        workspace / "factors",
-        workspace / "prices",
-        workspace / "diagnostics/alpha_models_v1.parquet",
-        workspace / "returns",
+        workspace / "quant-research/prices",
+        workspace / "quant-research/factor_ic",
+        workspace / "earthquakes_m6.parquet",
+        workspace / "quant-research/diagnostics/alpha_models_v2_sweep.parquet",
+        workspace / "bitcoin_daily.parquet",
     ]
     (cache / "recents_history.txt").write_text(
         "\n".join(str(p) for p in recents) + "\n"
@@ -132,8 +88,7 @@ def main() -> None:
     root: Path = args.root
     if root.exists():
         shutil.rmtree(root)
-    workspace = root / "quant-research"
-    workspace.mkdir(parents=True)
+    workspace = root / "data"
 
     build_workspace(workspace)
     seed_cache(root / "cache", workspace)

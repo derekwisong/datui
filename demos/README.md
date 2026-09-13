@@ -7,9 +7,10 @@ python3 scripts/demos/generate_demos.py    # all demos (use --number N for one, 
 vhs scripts/demos/01-basic-navigation.tape  # single demo
 ```
 
-`12-home-screen.tape` builds a throwaway workspace, cache and config under
-`/tmp/datui-demo` before recording, so the home screen shows generated data rather than
-whatever the machine running it happens to have open.
+The tapes open the datasets under `demo/data`, built by `demo/build.py`.
+`12-home-screen.tape` and `13-light-theme.tape` copy that directory into a throwaway
+workspace under `/tmp/datui-demo`, with their own cache and config, so the home screen
+shows the demo data rather than whatever the machine running it happens to have open.
 
 For prerequisites, options, and detailed instructions, see the [Demos documentation][demos-docs].
 

@@ -41,13 +41,14 @@ one-line title bar. Keys in the control bar are drawn as chips.
 | <kbd>Delete</kbd> | forget the highlighted entry (under `RECENT` only) |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | forget every recent entry, after confirming |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | clear the filter |
-| <kbd>Esc</kbd> | back out one layer: clear filter, leave directory, return to your data, quit |
+| <kbd>Esc</kbd> | back out one layer: clear filter, leave directory, return to your data |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | quit |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | return here from anywhere, including during a load |
 
 <kbd>q</kbd> does not quit here, and <kbd>j</kbd> does not move: every plain character
-goes into the filter, so `json` finds json. The control bar shows what <kbd>Esc</kbd>
-will do next.
+goes into the filter, so `json` finds json. <kbd>Esc</kbd> never quits either; it backs
+out one layer at a time and does nothing at the top. The control bar shows what it
+will do next. <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
 
 ## Where the list comes from
 

@@ -13,7 +13,7 @@ NAVIGATION
                     directory, or size / modified / rows once chosen.
   Enter             Open the dataset, enter the directory, or fold the section
   Backspace         Leave a directory you descended into
-  Esc               Back out one layer, and quit once there is nothing left
+  Esc               Back out one layer: the filter, the directory, then the data
   Ctrl+C            Quit
 
 FINDING

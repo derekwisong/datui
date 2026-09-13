@@ -2208,11 +2208,10 @@ impl App {
         self.input_mode = InputMode::Home;
     }
 
-    /// Esc backs out one layer of context at a time, and quits once there is none.
-    ///
-    /// Escalating rather than doing one fixed thing keeps Esc as the "get me out of
-    /// this" key whatever "this" currently is — and it is the only way out when
-    /// nothing is loaded, since `q` has to remain typeable into the filter.
+    /// Esc backs out one layer of context at a time: the filter, then the directory
+    /// descended into, then back to the data that was open. At the top level it does
+    /// nothing. It used to quit there, which made a reflexive Esc close the program
+    /// while the same key one level down merely went up; Ctrl+C quits, from anywhere.
     fn home_escape(&mut self) -> Option<AppEvent> {
         if !self.home.filter.is_empty() {
             self.home.filter.clear();
@@ -2227,9 +2226,8 @@ impl App {
         }
         if self.data_table_state.is_some() {
             self.input_mode = InputMode::Normal;
-            return None;
         }
-        Some(AppEvent::Exit)
+        None
     }
 
     /// Drop the highlighted dataset from the recents list.

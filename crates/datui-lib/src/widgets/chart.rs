@@ -47,7 +47,7 @@ pub enum ChartRenderData<'a> {
 }
 
 /// Renders a single axis column list (shared by X and Y). Display order: selected (remembered) items first.
-/// Remembered items use modal_border_active; others use text_primary. Selected row uses REVERSED (like main datatable).
+/// Remembered items use modal_border_active; others use text_primary. The selected row takes the theme's highlight, like the main table.
 fn render_axis_list(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -73,7 +73,7 @@ fn render_axis_list(
         .collect();
 
     let list = List::new(list_items).highlight_style(if is_focused {
-        Style::default().add_modifier(Modifier::REVERSED)
+        theme.highlight_style()
     } else {
         Style::default()
     });

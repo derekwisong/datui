@@ -2,7 +2,7 @@ use crate::render::context::RenderContext;
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Paragraph, Widget},
 };
 
@@ -14,6 +14,8 @@ pub struct Controls {
     pub bg_color: Color,
     pub key_color: Color,   // Color for keybind hints (keys in toolbar)
     pub label_color: Color, // Color for action labels
+    /// Text colour inside a key chip; the bar's background, so the chip reads as a cut-out.
+    pub chip_text_color: Color,
     pub throbber_color: Color,
     pub use_unicode_throbber: bool, // When true, use 8-dot braille spinner (4 rows tall); else |/-\
     pub busy: bool,                 // When true, show throbber at far right
@@ -36,6 +38,7 @@ impl Default for Controls {
             bg_color: Color::Indexed(236), // Default for backward compatibility
             key_color: Color::Cyan,        // Keys in cyan
             label_color: Color::White,     // Labels in white
+            chip_text_color: Color::Black,
             throbber_color: Color::Cyan,
             use_unicode_throbber: false,
             busy: false,
@@ -62,6 +65,7 @@ impl Controls {
             bg_color: Color::Indexed(236), // Default
             key_color: Color::Cyan,        // Keys in cyan
             label_color: Color::White,     // Labels in white
+            chip_text_color: Color::Black,
             throbber_color: Color::Cyan,
             use_unicode_throbber: false,
             busy: false,
@@ -148,6 +152,7 @@ impl Controls {
             bg_color: ctx.controls_bg,
             key_color: ctx.keybind_hints,
             label_color: ctx.keybind_labels,
+            chip_text_color: ctx.text_inverse,
             throbber_color: ctx.throbber,
             use_unicode_throbber: false,
             busy: false,
@@ -174,6 +179,7 @@ impl Controls {
             bg_color,
             key_color,
             label_color,
+            chip_text_color: Color::Black,
             throbber_color,
             use_unicode_throbber: false,
             busy: false,
@@ -301,8 +307,10 @@ impl Widget for &Controls {
             DEFAULT_CONTROLS.to_vec()
         };
 
+        // A key chip is the key with one cell of padding on either side, then a space,
+        // then the label, then two cells before the next chip.
         let pair_width = |(key, action): &(&str, &str)| -> u16 {
-            (key.chars().count() as u16 + 1) + (action.chars().count() as u16 + 1)
+            (key.chars().count() as u16 + 2) + (action.chars().count() as u16 + 3)
         };
 
         // Reserve space for fill and row count (no right-side throbber in normal mode).
@@ -325,8 +333,8 @@ impl Widget for &Controls {
             .take(n_show)
             .flat_map(|(key, action)| {
                 [
-                    Constraint::Length(key.chars().count() as u16 + 1),
-                    Constraint::Length(action.chars().count() as u16 + 1),
+                    Constraint::Length(key.chars().count() as u16 + 2),
+                    Constraint::Length(action.chars().count() as u16 + 3),
                 ]
             })
             .collect();
@@ -347,16 +355,19 @@ impl Widget for &Controls {
 
         let layout = Layout::new(Direction::Horizontal, constraints).split(area);
 
-        let key_style = if no_bg {
-            Style::default().fg(self.key_color)
-        } else {
-            Style::default().bg(self.bg_color).fg(self.key_color)
-        };
+        // The chip: key on the accent, text in the bar's own colour, bold. A flat
+        // block, no caps, so it reads as a keycap and not as a button.
+        let chip_style = Style::default()
+            .bg(self.key_color)
+            .fg(self.chip_text_color)
+            .add_modifier(Modifier::BOLD);
 
         for (i, (key, action)) in controls.iter().take(n_show).enumerate() {
             let j = i * 2;
-            Paragraph::new(*key).style(key_style).render(layout[j], buf);
-            Paragraph::new(*action)
+            Paragraph::new(format!(" {key} "))
+                .style(chip_style)
+                .render(layout[j], buf);
+            Paragraph::new(format!(" {action}"))
                 .style(label_style)
                 .render(layout[j + 1], buf);
         }

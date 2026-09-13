@@ -138,7 +138,7 @@ fn render_filter_tab(
     buf: &mut Buffer,
     border_c: ratatui::style::Color,
     active_c: ratatui::style::Color,
-    _ctx: &RenderContext,
+    ctx: &RenderContext,
 ) {
     let fchunks = Layout::default()
         .direction(Direction::Vertical)
@@ -279,7 +279,7 @@ fn render_filter_tab(
                 .title("Current Filters")
                 .border_style(list_style),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(ctx.highlight_style());
     StatefulWidget::render(list, fchunks[2], buf, &mut filter.list_state);
 }
 
@@ -393,7 +393,7 @@ fn render_sort_tab(
             .title("Columns")
             .border_style(table_border_style),
     )
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    .row_highlight_style(ctx.highlight_style());
 
     StatefulWidget::render(table, schunks[1], buf, &mut modal.sort.table_state);
 

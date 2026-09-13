@@ -335,6 +335,10 @@ fn test_theme_with_custom_colors() {
         chart_series_color_5: "blue".to_string(),
         chart_series_color_6: "red".to_string(),
         chart_series_color_7: "bright_cyan".to_string(),
+        accent: "cyan".to_string(),
+        accent_bright: "bright_cyan".to_string(),
+        gradient_start: "blue".to_string(),
+        gradient_end: "magenta".to_string(),
     };
 
     let result = Theme::from_config(&config.theme);

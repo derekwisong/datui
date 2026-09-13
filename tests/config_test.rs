@@ -32,9 +32,9 @@ fn test_default_config() {
     assert_eq!(config.performance.event_poll_interval_ms, 25);
 
     // Check theme defaults
-    assert_eq!(config.theme.colors.keybind_hints, "cyan");
-    assert_eq!(config.theme.colors.row_numbers, "dark_gray");
-    assert_eq!(config.theme.colors.alternate_row_color, "indexed(235)");
+    assert_eq!(config.theme.colors.keybind_hints, "#7dcfff");
+    assert_eq!(config.theme.colors.row_numbers, "#565f89");
+    assert_eq!(config.theme.colors.alternate_row_color, "#1e2030");
 
     // Check query defaults
     assert_eq!(config.query.history_limit, 1000);
@@ -372,6 +372,7 @@ fn test_merge_does_not_override_with_defaults() {
         row_start_index: 0,
         table_cell_padding: 1,
         column_colors: true,
+        dtype_row: true,
         sidebar_width: None,
         align_numeric_right: false,
         number_format: NumberFormatConfig::Preset("thousands".to_string()),
@@ -410,8 +411,8 @@ fn test_color_config_merge() {
     assert_eq!(base.keybind_hints, "blue");
     assert_eq!(base.error, "bright_red");
     // Other colors should remain default
-    assert_eq!(base.keybind_labels, "indexed(252)");
-    assert_eq!(base.success, "green");
+    assert_eq!(base.keybind_labels, ColorConfig::default().keybind_labels);
+    assert_eq!(base.success, ColorConfig::default().success);
 }
 
 #[test]
@@ -422,25 +423,29 @@ fn test_new_color_fields() {
     use datui::config::{AppConfig, Theme};
     use ratatui::style::Color;
 
-    // Test that new color fields have correct defaults
+    // Test that new color fields have correct defaults: the dark set, after Tokyo Night
     let config = AppConfig::default();
-    assert_eq!(config.theme.colors.primary_chart_series_color, "cyan");
-    assert_eq!(
-        config.theme.colors.secondary_chart_series_color,
-        "indexed(245)"
-    );
+    assert_eq!(config.theme.colors.primary_chart_series_color, "#7dcfff");
+    assert_eq!(config.theme.colors.secondary_chart_series_color, "#565f89");
     // Chart view series colors
-    assert_eq!(config.theme.colors.chart_series_color_1, "cyan");
-    assert_eq!(config.theme.colors.chart_series_color_2, "magenta");
-    assert_eq!(config.theme.colors.chart_series_color_3, "green");
-    assert_eq!(config.theme.colors.chart_series_color_4, "yellow");
-    assert_eq!(config.theme.colors.chart_series_color_5, "blue");
-    assert_eq!(config.theme.colors.chart_series_color_6, "red");
-    assert_eq!(config.theme.colors.chart_series_color_7, "bright_cyan");
-    assert_eq!(config.theme.colors.controls_bg, "indexed(235)");
-    assert_eq!(config.theme.colors.table_header_bg, "indexed(235)");
-    assert_eq!(config.theme.colors.column_separator, "cyan");
-    assert_eq!(config.theme.colors.sidebar_border, "indexed(235)");
+    assert_eq!(config.theme.colors.chart_series_color_1, "#7dcfff");
+    assert_eq!(config.theme.colors.chart_series_color_2, "#bb9af7");
+    assert_eq!(config.theme.colors.chart_series_color_3, "#9ece6a");
+    assert_eq!(config.theme.colors.chart_series_color_4, "#e0af68");
+    assert_eq!(config.theme.colors.chart_series_color_5, "#7aa2f7");
+    assert_eq!(config.theme.colors.chart_series_color_6, "#f7768e");
+    assert_eq!(config.theme.colors.chart_series_color_7, "#ff9e64");
+    // Three chrome tiers, each its own shade
+    assert_eq!(config.theme.colors.controls_bg, "#262a3f");
+    assert_eq!(config.theme.colors.table_header_bg, "#2b3047");
+    assert_eq!(config.theme.colors.alternate_row_color, "#1e2030");
+    assert_eq!(config.theme.colors.column_separator, "#3b4261");
+    assert_eq!(config.theme.colors.sidebar_border, "#3b4261");
+    assert_eq!(config.theme.colors.accent, "#7dcfff");
+    assert_eq!(config.theme.colors.accent_bright, "#a4daff");
+    assert_eq!(config.theme.colors.gradient_start, "#7aa2f7");
+    assert_eq!(config.theme.colors.gradient_end, "#bb9af7");
+    assert_eq!(config.theme.colors.table_selected, "#283457");
 
     // Test that new colors can be parsed and retrieved from theme
     let theme = Theme::from_config(&config.theme).unwrap();
@@ -449,11 +454,18 @@ fn test_new_color_fields() {
         assert_ne!(theme.get("secondary_chart_series_color"), Color::Reset);
         assert_ne!(theme.get("chart_series_color_1"), Color::Reset);
         assert_ne!(theme.get("chart_series_color_7"), Color::Reset);
-        // controls_bg and table_header_bg default to indexed(235)
-        assert_eq!(theme.get("controls_bg"), Color::Indexed(235));
-        assert_eq!(theme.get("table_header_bg"), Color::Indexed(235));
+        // The chrome tiers resolve to real colours. (Whether they stay distinct
+        // depends on the terminal: under a test harness stdout is not a terminal, so
+        // every hex colour degrades to basic ANSI. The strings are checked above.)
+        assert_ne!(theme.get("controls_bg"), Color::Reset);
+        assert_ne!(theme.get("table_header_bg"), Color::Reset);
         assert_ne!(theme.get("column_separator"), Color::Reset);
         assert_ne!(theme.get("sidebar_border"), Color::Reset);
+        // The sidebars read their resting border from "modal_border", which is the
+        // documented `sidebar_border` slot under the name the widgets use.
+        assert_eq!(theme.get("modal_border"), theme.get("sidebar_border"));
+        // A tinted selection is a colour; "reversed" would leave the slot unset.
+        assert!(theme.get_optional("table_selected").is_some());
     }
 }
 
@@ -1204,7 +1216,7 @@ fn test_default_mode_is_dark_chrome() {
     // Existing configs must not change appearance: the stock palette stays dark.
     let config = AppConfig::default();
     assert_eq!(config.theme.colors, ColorConfig::dark());
-    assert_eq!(config.theme.colors.table_header_bg, "indexed(235)");
+    assert_eq!(config.theme.colors.table_header_bg, "#2b3047");
 }
 
 #[test]
@@ -1222,23 +1234,36 @@ fn test_light_mode_selects_light_chrome() {
 fn test_light_chrome_inverts_rather_than_lightens() {
     // The bug this fixes: fixed dark shades on a light terminal. The light set's
     // fills must be near-white, not near-black.
+    // Luma of a "#rrggbb" string, 0..=255.
+    fn luma(hex: &str) -> u32 {
+        let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).expect("hex colour");
+        let (r, g, b) = ((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+        (r * 299 + g * 587 + b * 114) / 1000
+    }
     let light = ColorConfig::light();
     for (name, value) in [
         ("table_header_bg", &light.table_header_bg),
         ("alternate_row_color", &light.alternate_row_color),
         ("controls_bg", &light.controls_bg),
+        ("table_selected", &light.table_selected),
     ] {
-        let n: u8 = value
-            .trim_start_matches("indexed(")
-            .trim_end_matches(')')
-            .parse()
-            .unwrap_or_else(|_| panic!("{name} should be an indexed colour, got {value}"));
         assert!(
-            n >= 250,
-            "{name} must be a near-white fill on a light terminal, got indexed({n})"
+            luma(value) >= 170,
+            "{name} must be a near-white fill on a light terminal, got {value}"
         );
     }
-    assert_eq!(ColorConfig::dark().table_header_bg, "indexed(235)");
+    let dark = ColorConfig::dark();
+    for (name, value) in [
+        ("table_header_bg", &dark.table_header_bg),
+        ("alternate_row_color", &dark.alternate_row_color),
+        ("controls_bg", &dark.controls_bg),
+        ("table_selected", &dark.table_selected),
+    ] {
+        assert!(
+            luma(value) <= 80,
+            "{name} must be a near-black fill on a dark terminal, got {value}"
+        );
+    }
 }
 
 #[test]

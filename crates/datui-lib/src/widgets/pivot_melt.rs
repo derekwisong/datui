@@ -14,6 +14,7 @@ use ratatui::widgets::{
 /// Render the Pivot and Melt modal: tab bar, tab-specific body, footer.
 /// Uses `border_color` for default borders and `active_color` for focused elements.
 /// `text_primary` and `text_inverse` are used for text-input cursor (same as query prompt).
+#[allow(clippy::too_many_arguments)]
 pub fn render_shell(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -22,6 +23,7 @@ pub fn render_shell(
     active_color: Color,
     text_primary: Color,
     text_inverse: Color,
+    highlight: Style,
 ) {
     Clear.render(area, buf);
     let block = Block::default()
@@ -79,6 +81,7 @@ pub fn render_shell(
             active_color,
             text_primary,
             text_inverse,
+            highlight,
         ),
         PivotMeltTab::Melt => render_melt_body(
             chunks[1],
@@ -88,6 +91,7 @@ pub fn render_shell(
             active_color,
             text_primary,
             text_inverse,
+            highlight,
         ),
     }
 
@@ -146,6 +150,7 @@ pub fn render_shell(
         .render(footer_chunks[2], buf);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_pivot_body(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -154,6 +159,7 @@ fn render_pivot_body(
     active_color: Color,
     _text_primary: Color,
     _text_inverse: Color,
+    highlight: Style,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -221,7 +227,7 @@ fn render_pivot_body(
                 .style(Style::default().add_modifier(Modifier::BOLD))
                 .bottom_margin(0),
         )
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .row_highlight_style(highlight);
     StatefulWidget::render(table, list_inner, buf, &mut modal.pivot_index_table);
 
     // Pivot / Value: small tables (single-select lists)
@@ -264,8 +270,7 @@ fn render_pivot_body(
     if pivot_rows.is_empty() {
         Paragraph::new("(none)").render(pivot_inner, buf);
     } else {
-        let pt = Table::new(pivot_rows, [Constraint::Min(5)])
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let pt = Table::new(pivot_rows, [Constraint::Min(5)]).row_highlight_style(highlight);
         StatefulWidget::render(pt, pivot_inner, buf, &mut modal.pivot_pool_table);
     }
 
@@ -293,8 +298,7 @@ fn render_pivot_body(
     if value_rows.is_empty() {
         Paragraph::new("(none)").render(value_inner, buf);
     } else {
-        let vt = Table::new(value_rows, [Constraint::Min(5)])
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let vt = Table::new(value_rows, [Constraint::Min(5)]).row_highlight_style(highlight);
         StatefulWidget::render(vt, value_inner, buf, &mut modal.value_pool_table);
     }
 
@@ -315,6 +319,7 @@ fn render_pivot_body(
     .render(chunks[3], buf);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_melt_body(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -323,6 +328,7 @@ fn render_melt_body(
     active_color: Color,
     text_primary: Color,
     text_inverse: Color,
+    highlight: Style,
 ) {
     use crate::pivot_melt_modal::{MeltValueStrategy, PivotMeltFocus};
 
@@ -393,7 +399,7 @@ fn render_melt_body(
                 .style(Style::default().add_modifier(Modifier::BOLD))
                 .bottom_margin(0),
         )
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .row_highlight_style(highlight);
     StatefulWidget::render(table, list_inner, buf, &mut modal.melt_index_table);
 
     // Strategy row
@@ -506,7 +512,7 @@ fn render_melt_body(
                         .style(Style::default().add_modifier(Modifier::BOLD))
                         .bottom_margin(0),
                 )
-                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+                .row_highlight_style(highlight);
             StatefulWidget::render(ex_table, ex_inner, buf, &mut modal.melt_explicit_table);
         }
         MeltValueStrategy::AllExceptIndex => {}

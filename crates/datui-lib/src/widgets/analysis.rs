@@ -719,7 +719,7 @@ fn render_statistics_table(
     let table = Table::new(rows, constraints)
         .header(header_row)
         .column_spacing(table_cell_padding)
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .row_highlight_style(theme.highlight_style());
 
     // Use StatefulWidget for row selection
     StatefulWidget::render(table, area, buf, table_state);
@@ -1054,7 +1054,7 @@ fn render_distribution_table(
 
     let table = Table::new(rows, constraints)
         .header(header_row)
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .row_highlight_style(theme.highlight_style());
 
     StatefulWidget::render(table, area, buf, table_state);
 }
@@ -1351,7 +1351,7 @@ fn render_distribution_selector(
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.get("sidebar_border"))),
     )
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    .row_highlight_style(theme.highlight_style());
 
     StatefulWidget::render(table, area, buf, selector_state);
 }
@@ -1439,9 +1439,9 @@ fn render_sidebar(
     ];
 
     let text_primary = theme.get("text_primary");
-    // Use REVERSED for focused row (like main table) so selection is always visible,
+    // The focused row takes the theme's highlight, like the main table,
     // even when controls_bg is "default"/none.
-    let focused_style = Style::default().add_modifier(Modifier::REVERSED);
+    let focused_style = theme.highlight_style();
 
     let items: Vec<ListItem> = tools
         .iter()

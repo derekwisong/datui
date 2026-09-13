@@ -309,6 +309,8 @@ pub struct DataTableInfo<'a> {
     pub border_color: ratatui::style::Color,
     pub active_color: ratatui::style::Color,
     pub primary_color: ratatui::style::Color,
+    /// Style of the schema row the cursor is on.
+    pub highlight: Style,
 }
 
 impl<'a> DataTableInfo<'a> {
@@ -319,6 +321,7 @@ impl<'a> DataTableInfo<'a> {
         border_color: ratatui::style::Color,
         active_color: ratatui::style::Color,
         primary_color: ratatui::style::Color,
+        highlight: Style,
     ) -> Self {
         Self {
             state,
@@ -327,6 +330,7 @@ impl<'a> DataTableInfo<'a> {
             border_color,
             active_color,
             primary_color,
+            highlight,
         }
     }
 
@@ -450,7 +454,7 @@ impl<'a> DataTableInfo<'a> {
         let table = Table::new(rows, widths)
             .header(header)
             .column_spacing(1)
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .row_highlight_style(self.highlight)
             .highlight_symbol(">> ");
         StatefulWidget::render(table, inner, buf, &mut self.modal.schema_table_state);
     }

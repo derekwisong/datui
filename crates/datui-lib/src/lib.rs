@@ -1281,6 +1281,8 @@ pub struct App {
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
+    /// Second header row of column types. Starts from `display.dtype_row`; `D` flips it.
+    dtype_row: bool,
     // Resolved display-time number formatting. `enabled` is flipped by the F key.
     number_format: NumberFormatSettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
@@ -1752,6 +1754,7 @@ impl App {
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
             column_colors: app_config.display.column_colors,
+            dtype_row: app_config.display.dtype_row,
             number_format: app_config
                 .display
                 .number_format
@@ -6862,6 +6865,18 @@ impl App {
                 }
                 None
             }
+            KeyCode::Char('D') => {
+                // The type row is drawn from the schema the table already has, so
+                // this is a render-time flip like `F`. Session-only.
+                self.dtype_row = !self.dtype_row;
+                if self.debug.enabled {
+                    self.debug.last_action = format!(
+                        "toggle_dtype_row({})",
+                        if self.dtype_row { "on" } else { "off" }
+                    );
+                }
+                None
+            }
             KeyCode::Char('F') => {
                 // Formatting is applied at render time, so this takes effect on
                 // the next frame with no re-collect. Session-only: the config
@@ -9496,7 +9511,8 @@ impl Widget for &mut App {
             self.table_cell_padding,
             self.column_colors,
             self.number_format.clone(),
-        );
+        )
+        .with_dtype_row(self.dtype_row);
 
         let main_view_content = MainViewContent::current(self);
 

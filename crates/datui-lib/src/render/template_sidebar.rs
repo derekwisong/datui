@@ -153,7 +153,7 @@ pub fn render(
                     .title("Templates")
                     .border_style(table_border_style),
             )
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+            .row_highlight_style(ctx.highlight_style());
 
             StatefulWidget::render(table, chunks[0], buf, &mut app.template_modal.table_state);
 

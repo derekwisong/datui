@@ -10,7 +10,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, Borders, Cell, Padding, Paragraph, Row, StatefulWidget, Table, TableState, Widget,
     },
@@ -4377,6 +4377,14 @@ pub struct DataTable {
     pub binary_cols: std::collections::HashSet<String>,
     /// Display-time number formatting (digit grouping, separators, alignment).
     pub number_format: NumberFormatSettings,
+    /// Draw a second header row naming each column's type.
+    pub dtype_row: bool,
+    /// Tint under the row the cursor is on. `None` falls back to reversed video.
+    pub selected_bg: Option<Color>,
+    /// The rail beside the selected row and the off-screen column hints.
+    pub accent: Color,
+    /// Null cells and the type row.
+    pub dimmed: Color,
 }
 
 impl Default for DataTable {
@@ -4397,7 +4405,44 @@ impl Default for DataTable {
             binary_col: None,
             binary_cols: std::collections::HashSet::new(),
             number_format: NumberFormatSettings::default(),
+            dtype_row: false,
+            selected_bg: None,
+            accent: Color::Cyan,
+            dimmed: Color::DarkGray,
         }
+    }
+}
+
+/// The short name of a column's type, as the type row and the schema pane spell it.
+///
+/// Polars' own `Display` says `Datetime(Microseconds, None)`; the row under the header
+/// has room for one word.
+pub fn dtype_label(dtype: &DataType) -> String {
+    match dtype {
+        DataType::String => "str".to_string(),
+        DataType::Boolean => "bool".to_string(),
+        DataType::Int8 => "i8".to_string(),
+        DataType::Int16 => "i16".to_string(),
+        DataType::Int32 => "i32".to_string(),
+        DataType::Int64 => "i64".to_string(),
+        DataType::UInt8 => "u8".to_string(),
+        DataType::UInt16 => "u16".to_string(),
+        DataType::UInt32 => "u32".to_string(),
+        DataType::UInt64 => "u64".to_string(),
+        DataType::Float32 => "f32".to_string(),
+        DataType::Float64 => "f64".to_string(),
+        DataType::Date => "date".to_string(),
+        DataType::Datetime(_, _) => "datetime".to_string(),
+        DataType::Time => "time".to_string(),
+        DataType::Duration(_) => "duration".to_string(),
+        DataType::Binary => "binary".to_string(),
+        DataType::Null => "null".to_string(),
+        DataType::List(inner) => format!("list[{}]", dtype_label(inner)),
+        DataType::Struct(_) => "struct".to_string(),
+        other if other.is_categorical() => "cat".to_string(),
+        other if other.is_enum() => "enum".to_string(),
+        other if other.is_decimal() => "decimal".to_string(),
+        other => other.to_string().to_ascii_lowercase(),
     }
 }
 
@@ -4491,6 +4536,42 @@ impl DataTable {
         self
     }
 
+    /// Show or hide the second header row of column types.
+    pub fn with_dtype_row(mut self, on: bool) -> Self {
+        self.dtype_row = on;
+        self
+    }
+
+    /// The tint under the selected row, the rail colour, and the dim colour for nulls.
+    pub fn with_selection_colors(
+        mut self,
+        selected_bg: Option<Color>,
+        accent: Color,
+        dimmed: Color,
+    ) -> Self {
+        self.selected_bg = selected_bg;
+        self.accent = accent;
+        self.dimmed = dimmed;
+        self
+    }
+
+    /// How many rows the header takes: the names, plus the type row when it is on.
+    pub fn header_height(&self) -> u16 {
+        if self.dtype_row {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// Style of the highlighted row: a tint when the theme gives one, else reversed video.
+    fn highlight_style(&self) -> Style {
+        match self.selected_bg {
+            Some(bg) => Style::default().bg(bg),
+            None => Style::default().add_modifier(Modifier::REVERSED),
+        }
+    }
+
     /// Return the color for a column dtype when column_colors is enabled.
     fn column_type_color(&self, dtype: &DataType) -> Option<Color> {
         if !self.column_colors {
@@ -4530,11 +4611,28 @@ impl DataTable {
         // make each column as wide as it needs to be to fit the content
         let (height, cols) = df.shape();
 
-        // widths starts at the length of each column naame
+        let header_h = self.header_height();
+        // The type row is part of the header, so a column is at least as wide as its
+        // type name; "datetime" under a column called "ts" would otherwise clip.
+        let dtype_labels: Vec<String> = if self.dtype_row {
+            df.dtypes().iter().map(dtype_label).collect()
+        } else {
+            Vec::new()
+        };
+
+        // widths starts at the length of each column name
         let mut widths: Vec<u16> = df
             .get_column_names()
             .iter()
-            .map(|name| name.chars().count() as u16)
+            .enumerate()
+            .map(|(i, name)| {
+                let name_w = name.chars().count() as u16;
+                let type_w = dtype_labels
+                    .get(i)
+                    .map(|l| l.chars().count() as u16)
+                    .unwrap_or(0);
+                name_w.max(type_w)
+            })
             .collect();
 
         let mut used_width = 0;
@@ -4543,11 +4641,13 @@ impl DataTable {
         let mut rows: Vec<Vec<Cell>> = vec![vec![]; height];
         let mut visible_columns = 0;
 
-        let max_rows = height.min(if area.height > 1 {
-            area.height as usize - 1
-        } else {
-            0
-        });
+        let max_rows = height.min((area.height as usize).saturating_sub(header_h as usize));
+        let g = crate::glyphs::get();
+        // A null is drawn as a glyph in the dim colour, so it can never be mistaken
+        // for an empty string or a zero that happens to be blank.
+        let null_style = Style::default()
+            .fg(self.dimmed)
+            .add_modifier(Modifier::ITALIC);
 
         // Reused across every cell in the frame so formatting allocates only
         // the destination string each cell already needs.
@@ -4592,6 +4692,16 @@ impl DataTable {
 
             for (row_index, row) in rows.iter_mut().take(max_rows).enumerate() {
                 let value = col_data.get(row_index).unwrap();
+                if matches!(value, AnyValue::Null) {
+                    max_len = max_len.max(g.null.chars().count() as u16);
+                    let line = Line::from(Span::styled(g.null, null_style));
+                    row.push(Cell::from(if right_align {
+                        line.right_aligned()
+                    } else {
+                        line
+                    }));
+                    continue;
+                }
                 let val_str: Cow<str> = numfmt::format_any_value(&col_fmt, &value, &mut scratch);
                 let len = val_str.chars().count() as u16;
                 max_len = max_len.max(len);
@@ -4653,26 +4763,51 @@ impl DataTable {
         } else {
             Style::default().bg(self.header_bg).fg(self.header_fg)
         };
+        // The name takes the column's own colour, bold, so the header says what the
+        // cells say without a mark in front of it; the type row beneath repeats the
+        // colour in plain weight and spells the type out.
+        let dtypes = df.dtypes();
         let headers: Vec<Cell> = df
             .get_column_names()
             .iter()
             .take(visible_columns)
             .enumerate()
             .map(|(i, name)| {
-                let line = Line::from(Span::styled(name.to_string(), Style::default()));
-                Cell::from(if right_aligned_cols[i] {
-                    line.right_aligned()
+                let is_binary = self.binary_cols.contains(name.as_str());
+                let colour = if is_binary {
+                    self.binary_col
                 } else {
-                    line
-                })
+                    self.column_type_color(&dtypes[i])
+                };
+                let name_style = match colour {
+                    Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
+                    None => Style::default().add_modifier(Modifier::BOLD),
+                };
+                let mut lines = vec![Line::from(Span::styled(name.to_string(), name_style))];
+                if self.dtype_row {
+                    let type_style = match colour {
+                        Some(c) => Style::default().fg(c),
+                        None => Style::default().fg(self.dimmed),
+                    };
+                    lines.push(Line::from(Span::styled(
+                        dtype_labels.get(i).cloned().unwrap_or_default(),
+                        type_style,
+                    )));
+                }
+                let text = if right_aligned_cols[i] {
+                    Text::from(lines).right_aligned()
+                } else {
+                    Text::from(lines)
+                };
+                Cell::from(text)
             })
             .collect();
 
         StatefulWidget::render(
             Table::new(rows, widths)
                 .column_spacing(self.table_cell_padding)
-                .header(Row::new(headers).style(header_row_style))
-                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                .header(Row::new(headers).style(header_row_style).height(header_h))
+                .row_highlight_style(self.highlight_style()),
             area,
             buf,
             state,
@@ -4688,16 +4823,21 @@ impl DataTable {
         } else {
             Style::default().bg(self.header_bg).fg(self.header_fg)
         };
+        let header_h = self.header_height().min(area.height);
         let header_fill = " ".repeat(area.width as usize);
-        Paragraph::new(header_fill).style(header_style).render(
-            Rect {
-                x: area.x,
-                y: area.y,
-                width: area.width,
-                height: 1,
-            },
-            buf,
-        );
+        for dy in 0..header_h {
+            Paragraph::new(header_fill.clone())
+                .style(header_style)
+                .render(
+                    Rect {
+                        x: area.x,
+                        y: area.y + dy,
+                        width: area.width,
+                        height: 1,
+                    },
+                    buf,
+                );
+        }
 
         // Only render up to the actual number of rows in the data
         let rows_to_render = params
@@ -4714,7 +4854,7 @@ impl DataTable {
         let max_width = max_row_num.to_string().len();
 
         // Render row numbers
-        for row_idx in 0..rows_to_render.min(area.height.saturating_sub(1) as usize) {
+        for row_idx in 0..rows_to_render.min(area.height.saturating_sub(header_h) as usize) {
             let row_num = params.start_row + row_idx + params.row_start_index;
             let row_num_text = row_num.to_string();
 
@@ -4723,13 +4863,14 @@ impl DataTable {
             let padded_text = format!("{}{}", " ".repeat(padding), row_num_text);
 
             // Match main table background: default when row is even (or no alternate);
-            // when alternate_row_bg is set, odd rows use that background.
-            // When selected: same background as row (no inversion), foreground = terminal default.
+            // when alternate_row_bg is set, odd rows use that background. The selected
+            // row carries the same tint as the table's own highlight.
             let is_selected = params.selected_row == Some(row_idx);
             let (fg, bg) = if is_selected {
                 (
                     Color::Reset,
-                    self.alternate_row_bg.filter(|_| row_idx % 2 == 1),
+                    self.selected_bg
+                        .or(self.alternate_row_bg.filter(|_| row_idx % 2 == 1)),
                 )
             } else {
                 (
@@ -4742,7 +4883,7 @@ impl DataTable {
                 None => Style::default().fg(fg),
             };
 
-            let y = area.y + row_idx as u16 + 1; // +1 for header row
+            let y = area.y + row_idx as u16 + header_h;
             if y < area.y + area.height {
                 Paragraph::new(padded_text).style(row_num_style).render(
                     Rect {
@@ -4762,12 +4903,25 @@ impl StatefulWidget for DataTable {
     type State = DataTableState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        state.visible_termcols = area.width as usize;
-        let new_visible_rows = if area.height > 0 {
-            (area.height - 1) as usize
-        } else {
-            0
+        // One column on the left is the rail: blank on every row but the one the
+        // cursor is on, where it carries the accent. It also holds the "columns off to
+        // the left" hint in the header, so no header name ever gets a character
+        // overwritten.
+        let rail_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: 1.min(area.width),
+            height: area.height,
         };
+        let area = Rect {
+            x: area.x.saturating_add(1),
+            y: area.y,
+            width: area.width.saturating_sub(1),
+            height: area.height,
+        };
+        let header_h = self.header_height();
+        state.visible_termcols = area.width as usize;
+        let new_visible_rows = (area.height as usize).saturating_sub(header_h as usize);
         let visible_rows_changed = new_visible_rows != state.visible_rows;
         state.visible_rows = new_visible_rows;
 
@@ -4803,8 +4957,8 @@ impl StatefulWidget for DataTable {
 
         // Captures the scrollable area plus whether columns exist off-screen to the left/right,
         // so a header-row indicator can be drawn after the table is rendered.
-        // Tuple: (scrollable_area, more_columns_left, more_columns_right).
-        let mut scroll_indicator: Option<(Rect, bool, bool)> = None;
+        // Tuple: (scrollable_area, more_columns_left, columns_hidden_to_the_right).
+        let mut scroll_indicator: Option<(Rect, bool, usize)> = None;
 
         // Calculate row number column width if enabled
         let row_num_width = if state.row_numbers {
@@ -4952,7 +5106,7 @@ impl StatefulWidget for DataTable {
                     scroll_indicator = Some((
                         adjusted_scrollable_area,
                         state.termcol_index > 0,
-                        shown < total_cols,
+                        total_cols.saturating_sub(shown),
                     ));
                 }
             }
@@ -5000,8 +5154,11 @@ impl StatefulWidget for DataTable {
                         false,
                         state.start_row,
                     );
-                    scroll_indicator =
-                        Some((data_area, state.termcol_index > 0, shown < total_cols));
+                    scroll_indicator = Some((
+                        data_area,
+                        state.termcol_index > 0,
+                        total_cols.saturating_sub(shown),
+                    ));
                 }
             } else {
                 // Slice buffer to visible portion
@@ -5018,7 +5175,11 @@ impl StatefulWidget for DataTable {
                         false,
                         state.start_row,
                     );
-                    scroll_indicator = Some((area, state.termcol_index > 0, shown < total_cols));
+                    scroll_indicator = Some((
+                        area,
+                        state.termcol_index > 0,
+                        total_cols.saturating_sub(shown),
+                    ));
                 }
             }
         } else if !state.column_order.is_empty() {
@@ -5072,31 +5233,77 @@ impl StatefulWidget for DataTable {
             Paragraph::new("No data").render(area, buf);
         }
 
-        // Header-row markers showing that more columns exist off-screen. Drawn last so they sit
-        // on top of the rightmost/leftmost header cell.
-        if let Some((scroll_area, more_left, more_right)) = scroll_indicator {
+        // The rail: the header rows take the header fill so the bar runs edge to edge,
+        // and the selected row gets the accent mark.
+        if rail_area.width > 0 && rail_area.height > 0 {
+            let g = crate::glyphs::get();
+            let header_style = if self.header_bg == Color::Reset {
+                Style::default().fg(self.header_fg)
+            } else {
+                Style::default().bg(self.header_bg).fg(self.header_fg)
+            };
+            for dy in 0..header_h.min(rail_area.height) {
+                let cell = &mut buf[(rail_area.x, rail_area.y + dy)];
+                cell.set_char(' ');
+                cell.set_style(header_style);
+            }
+            if state.df.is_some() {
+                if let Some(sel) = state.table_state.selected() {
+                    let y = rail_area.y + header_h + sel as u16;
+                    if y < rail_area.y + rail_area.height {
+                        let cell = &mut buf[(rail_area.x, y)];
+                        cell.set_symbol(g.rail.trim_end());
+                        let mut style = Style::default()
+                            .fg(self.accent)
+                            .add_modifier(Modifier::BOLD);
+                        if let Some(bg) = self.selected_bg {
+                            style = style.bg(bg);
+                        }
+                        cell.set_style(style);
+                    }
+                }
+            }
+        }
+
+        // Hints that more columns exist off-screen. The left one sits in the rail,
+        // where nothing else lives. The right one says how many are hidden, and goes
+        // on the type row when that row is on (its short labels leave room), else on
+        // the name row, right-aligned into the slack after the last column.
+        if let Some((scroll_area, more_left, hidden)) = scroll_indicator {
             if scroll_area.width > 0 && scroll_area.height > 0 {
-                let indicator_style = if self.header_bg == Color::Reset {
+                let g = crate::glyphs::get();
+                let more_right = hidden > 0;
+                let hint_style = if self.header_bg == Color::Reset {
                     Style::default()
-                        .fg(self.header_fg)
+                        .fg(self.accent)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                         .bg(self.header_bg)
-                        .fg(self.header_fg)
+                        .fg(self.accent)
                         .add_modifier(Modifier::BOLD)
                 };
-                let header_y = scroll_area.y;
-                if more_right {
-                    let x = scroll_area.x + scroll_area.width - 1;
-                    let cell = &mut buf[(x, header_y)];
-                    cell.set_char('▶');
-                    cell.set_style(indicator_style);
+                if more_left && rail_area.width > 0 {
+                    let cell = &mut buf[(rail_area.x, rail_area.y)];
+                    cell.set_symbol(g.arrow_left);
+                    cell.set_style(hint_style);
                 }
-                if more_left {
-                    let cell = &mut buf[(scroll_area.x, header_y)];
-                    cell.set_char('◀');
-                    cell.set_style(indicator_style);
+                if more_right {
+                    let text = format!(" +{hidden} {}", g.arrow_right);
+                    let w = text.chars().count() as u16;
+                    if scroll_area.width > w {
+                        let x0 = scroll_area.x + scroll_area.width - w;
+                        let y = if header_h > 1 {
+                            scroll_area.y + 1
+                        } else {
+                            scroll_area.y
+                        };
+                        for (i, ch) in text.chars().enumerate() {
+                            let cell = &mut buf[(x0 + i as u16, y)];
+                            cell.set_char(ch);
+                            cell.set_style(hint_style);
+                        }
+                    }
                 }
             }
         }

@@ -84,10 +84,13 @@ impl Provider {
 pub struct Environment<'a> {
     /// Reads an environment variable.
     pub var: &'a dyn Fn(&str) -> Option<String>,
-    /// True when the path exists. Used for credential files, never to read them:
-    /// discovery decides whether a provider is worth showing, and reading a private key
-    /// to answer that is more than the question needs.
+    /// True when the path exists. This is how a credential file is detected; deciding
+    /// whether a provider is worth showing does not need its contents.
     pub exists: &'a dyn Fn(&Path) -> bool,
+    /// Reads a file, for the one case that needs it: the project id inside the gcloud
+    /// credentials file. Returns `None` on any failure, so an unreadable or malformed
+    /// file costs the project and nothing else.
+    pub read: &'a dyn Fn(&Path) -> Option<String>,
     /// The user's home directory, if there is one.
     pub home: Option<PathBuf>,
 }
@@ -98,6 +101,7 @@ impl Environment<'_> {
         Environment {
             var: &|key| std::env::var(key).ok(),
             exists: &|path| path.exists(),
+            read: &|path| std::fs::read_to_string(path).ok(),
             home: dirs::home_dir(),
         }
     }
@@ -165,10 +169,18 @@ pub fn adc_path(env: &Environment<'_>) -> Option<PathBuf> {
 
 /// The project whose buckets to list.
 ///
-/// Every source here is one the user set deliberately. `gcloud`'s own active project is
-/// not consulted: it is stored in a private sqlite database rather than a documented
-/// file, and reading another tool's internal state to guess at intent is the kind of
-/// cleverness that breaks silently when that tool changes.
+/// An environment variable wins, because it is the one someone set for this shell. The
+/// fallback is the `quota_project_id` that `gcloud auth application-default login`
+/// writes into the credentials file, which is what makes the common case work with no
+/// configuration at all: a developer who has logged in has a project, and asking them
+/// to restate it in an environment variable to see their own buckets would be a poor
+/// welcome.
+///
+/// `gcloud`'s active project setting is deliberately not consulted. It lives in a
+/// private sqlite database rather than a documented file, and reading another tool's
+/// internal state is the kind of cleverness that breaks silently when that tool
+/// changes. The credentials file is different: it is a documented format, and
+/// `object_store` already reads it.
 fn gcp_project(env: &Environment<'_>) -> Option<String> {
     for key in [
         "DATUI_GCP_PROJECT",
@@ -184,7 +196,23 @@ fn gcp_project(env: &Environment<'_>) -> Option<String> {
             }
         }
     }
-    None
+    adc_quota_project(env)
+}
+
+/// The `quota_project_id` recorded in the application default credentials file.
+///
+/// Only that one field is taken. The file also holds a refresh token, which is none of
+/// this module's business: the token is `object_store`'s to use, and discovery has no
+/// reason to touch it.
+fn adc_quota_project(env: &Environment<'_>) -> Option<String> {
+    let path = adc_path(env)?;
+    let contents = (env.read)(&path)?;
+    let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    let project = value.get("quota_project_id")?.as_str()?.trim();
+    if project.is_empty() {
+        return None;
+    }
+    Some(project.to_string())
 }
 
 /// S3, or anything that speaks it, when credentials are present.
@@ -377,6 +405,36 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+/// The S3 builder datui uses everywhere, so that every path authenticates identically.
+///
+/// This existing separately matters more than it looks. The bucket listing needs the
+/// concrete `AmazonS3` in order to ask it for a credential, while opening an object
+/// needs only `dyn ObjectStore`; when the two built their own builders, the listing
+/// quietly dropped the configured endpoint and keys and authenticated from the
+/// environment instead. Against MinIO that fails every time, and against AWS it would
+/// silently use whichever account the environment happened to name.
+fn s3_builder(bucket: &str, config: &CloudConfig) -> object_store::aws::AmazonS3Builder {
+    let mut builder = object_store::aws::AmazonS3Builder::from_env().with_bucket_name(bucket);
+    if let Some(endpoint) = &config.s3_endpoint_url {
+        builder = builder.with_endpoint(endpoint.clone());
+        // A custom endpoint is almost always path-style: a MinIO container on localhost
+        // has no wildcard DNS to give each bucket a subdomain of its own.
+        builder = builder.with_virtual_hosted_style_request(false);
+        if endpoint.starts_with("http://") {
+            builder = builder.with_allow_http(true);
+        }
+    }
+    if let Some(region) = &config.s3_region {
+        builder = builder.with_region(region.clone());
+    }
+    if let (Some(key), Some(secret)) = (&config.s3_access_key_id, &config.s3_secret_access_key) {
+        builder = builder
+            .with_access_key_id(key.clone())
+            .with_secret_access_key(secret.clone());
+    }
+    builder
+}
+
 /// An object store for a bucket, with no key.
 ///
 /// The store builders already in `lib.rs` require a `bucket/key` URL, because every
@@ -396,28 +454,7 @@ pub fn store_for_bucket(
             Ok(std::sync::Arc::new(store))
         }
         ProviderKind::S3 => {
-            let mut builder =
-                object_store::aws::AmazonS3Builder::from_env().with_bucket_name(bucket);
-            if let Some(endpoint) = &config.s3_endpoint_url {
-                builder = builder.with_endpoint(endpoint.clone());
-                // A custom endpoint is almost always path-style: a MinIO container on
-                // localhost has no wildcard DNS to give each bucket a subdomain.
-                builder = builder.with_virtual_hosted_style_request(false);
-                if endpoint.starts_with("http://") {
-                    builder = builder.with_allow_http(true);
-                }
-            }
-            if let Some(region) = &config.s3_region {
-                builder = builder.with_region(region.clone());
-            }
-            if let (Some(key), Some(secret)) =
-                (&config.s3_access_key_id, &config.s3_secret_access_key)
-            {
-                builder = builder
-                    .with_access_key_id(key.clone())
-                    .with_secret_access_key(secret.clone());
-            }
-            let store = builder
+            let store = s3_builder(bucket, config)
                 .build()
                 .map_err(|e| format!("S3 is not configured: {e}"))?;
             Ok(std::sync::Arc::new(store))
@@ -614,12 +651,9 @@ async fn list_s3_buckets(config: &CloudConfig) -> Result<Vec<String>, String> {
 
     // Same placeholder-bucket reasoning as the GCS path: the store exists to hold
     // credentials and a region, and `ListBuckets` is not addressed to a bucket.
-    let store = store_for_bucket(ProviderKind::S3, "datui-credential-probe", config)?;
-    let s3 = object_store::aws::AmazonS3Builder::from_env()
-        .with_bucket_name("datui-credential-probe")
+    let s3 = s3_builder("datui-credential-probe", config)
         .build()
         .map_err(|e| format!("S3 is not configured: {e}"))?;
-    let _ = store;
     let credential = s3
         .credentials()
         .get_credential()
@@ -713,6 +747,15 @@ mod tests {
             Environment {
                 var: &|key| $vars.get(key).cloned(),
                 exists: &|path| $files.iter().any(|f: &PathBuf| f == path),
+                read: &|_| None,
+                home: $home.clone(),
+            }
+        };
+        ($vars:expr, $files:expr, $home:expr, $contents:expr) => {
+            Environment {
+                var: &|key| $vars.get(key).cloned(),
+                exists: &|path| $files.iter().any(|f: &PathBuf| f == path),
+                read: &|_| Some($contents.to_string()),
                 home: $home.clone(),
             }
         };
@@ -842,6 +885,54 @@ mod tests {
         );
         let env = environment!(vars, files, home);
         let found = detect(&CloudConfig::default(), &env);
+        assert!(found[0].project.is_none());
+    }
+
+    #[test]
+    fn the_project_comes_from_the_credentials_file_when_nothing_else_says() {
+        // The shape gcloud writes: an authorized_user with the project the developer
+        // was working in. Without this fallback, a machine that has only ever run
+        // `gcloud auth application-default login` can open a bucket but not find one.
+        let adc = r#"{
+          "type": "authorized_user",
+          "client_id": "x.apps.googleusercontent.com",
+          "refresh_token": "secret-and-not-read-here",
+          "quota_project_id": "derek-wisong-prod"
+        }"#;
+        let (vars, files, home) = env_of(
+            &[],
+            &["/home/u/.config/gcloud/application_default_credentials.json"],
+            Some("/home/u"),
+        );
+        let env = environment!(vars, files, home, adc);
+        let found = detect(&CloudConfig::default(), &env);
+        assert_eq!(found[0].project.as_deref(), Some("derek-wisong-prod"));
+        assert!(found[0].can_list_buckets());
+    }
+
+    #[test]
+    fn an_environment_variable_outranks_the_credentials_file() {
+        let adc = r#"{"quota_project_id": "from-the-file"}"#;
+        let (vars, files, home) = env_of(
+            &[("GOOGLE_CLOUD_PROJECT", "from-the-shell")],
+            &["/home/u/.config/gcloud/application_default_credentials.json"],
+            Some("/home/u"),
+        );
+        let env = environment!(vars, files, home, adc);
+        let found = detect(&CloudConfig::default(), &env);
+        assert_eq!(found[0].project.as_deref(), Some("from-the-shell"));
+    }
+
+    #[test]
+    fn an_unparseable_credentials_file_costs_the_project_and_nothing_else() {
+        let (vars, files, home) = env_of(
+            &[],
+            &["/home/u/.config/gcloud/application_default_credentials.json"],
+            Some("/home/u"),
+        );
+        let env = environment!(vars, files, home, "{ not json");
+        let found = detect(&CloudConfig::default(), &env);
+        assert_eq!(found.len(), 1, "the provider is still usable");
         assert!(found[0].project.is_none());
     }
 

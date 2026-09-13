@@ -1285,7 +1285,8 @@ fn test_len_generations_are_unique_across_datasets() {
 
 /// Modals render over the home screen, but home used to consume every key, so one
 /// raised while the user was at home could not be dismissed: Esc went to home_escape,
-/// which with nothing loaded quits. The only way past an error was to leave datui.
+/// which at the time quit when nothing was loaded. The only way past an error was to
+/// leave datui.
 #[test]
 fn test_error_modal_over_home_is_dismissable() {
     let (tx, _rx) = mpsc::channel();
@@ -1307,15 +1308,24 @@ fn test_error_modal_over_home_is_dismissable() {
         "Esc should dismiss the modal, not quit out from under it"
     );
 
-    // With the modal gone, Esc is home's again, and an empty home has nowhere left
-    // to back out to.
+    // With the modal gone, Esc is home's again. An empty home has nowhere left to
+    // back out to, so it does nothing; Ctrl+C is what quits.
     let out = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
     assert!(
+        !matches!(out, Some(AppEvent::Exit)),
+        "Esc at the top of the home screen must not quit"
+    );
+    assert_eq!(app.input_mode, InputMode::Home);
+    let out = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('c'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(
         matches!(out, Some(AppEvent::Exit)),
-        "once the modal is dismissed Esc should behave as home's Esc again"
+        "Ctrl+C quits from the home screen"
     );
 }
 

@@ -141,6 +141,17 @@ DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
 
 The Nightly workflow runs this configuration; the pull request job does not.
 
+Memory limits a sanitizer build more than disk does. cargo-fuzz compiles every crate as a
+single codegen unit, and instrumented that way `polars-core` alone peaks at about 8.5 GB,
+with `polars-expr`, `polars-ops` and `arrow-cast` at 2–3.4 GB each compiling alongside
+it. At four parallel jobs that is more than a 16 GB machine has, and the build is killed
+rather than failing with an error. The Nightly workflow builds with `CARGO_BUILD_JOBS=2`
+for this reason; do the same locally if the build disappears partway through:
+
+```bash
+CARGO_BUILD_JOBS=2 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
+```
+
 ## Why these run on stable
 
 cargo-fuzz reaches for `-Z sanitizer`, which is normally nightly-only, and

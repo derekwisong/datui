@@ -342,13 +342,22 @@ jobs:
       # and arrow that these targets feed, which the pull request job deliberately skips
       # because it doubles build size and slows execution. See scripts/code/fuzz.sh.
       DATUI_FUZZ_SANITIZER: address
+      # Memory, not disk, is what limits this build. cargo-fuzz forces codegen-units=1, so
+      # each crate is one sanitizer-instrumented LLVM module, and polars-core alone peaks at
+      # 8.5 GB compiling that way. At the runner's default of four jobs it overlaps
+      # polars-expr, polars-ops and arrow-cast (2-3.4 GB each), passes the 15 GB the runner
+      # has, and the kernel takes out the runner service mid-compile: the job ends in "The
+      # runner has received a shutdown signal" with nothing fuzzed. Two jobs keeps the worst
+      # overlap near 12 GB, at the cost of a slower build.
+      CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       # A sanitizer build of the polars dependency tree runs to roughly 12 GB of build
-      # output, which does not fit alongside the runner image.
+      # output, which does not fit alongside the runner image. The swap file stays: it is
+      # the only headroom this job has if a compile goes past the estimate above.
       - name: Free disk space (Ubuntu)
         # SHA-pinned to defend against upstream takeover; bump deliberately.
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2023-10-18
@@ -359,7 +368,7 @@ jobs:
           haskell: true
           large-packages: true
           docker-images: true
-          swap-storage: true
+          swap-storage: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable

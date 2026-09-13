@@ -17,6 +17,23 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use crate::widgets::text_input::TextInput;
 use crate::{App, AppEvent, InputMode, OpenOptions};
 
+/// Point the cache at a directory of this test run's own.
+///
+/// These tests drive the real `App`, and opening a dataset records it in recents. Left
+/// alone that writes into the recents of whoever ran `cargo test`, and since the
+/// fixture lives in a temp directory that is deleted afterwards, each run leaves behind
+/// a recent that no longer exists and a dead root derived from it. Fifty runs fills the
+/// list. `DATUI_CACHE_DIR` is process-wide, so this is done once and as early as
+/// possible.
+fn isolate_cache() {
+    static ISOLATE: std::sync::Once = std::sync::Once::new();
+    ISOLATE.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("datui-flow-cache-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::env::set_var("DATUI_CACHE_DIR", &dir);
+    });
+}
+
 fn runtime() -> tokio::runtime::Handle {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
@@ -44,6 +61,7 @@ struct Harness {
 
 impl Harness {
     fn with_data() -> Self {
+        isolate_cache();
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("people.csv");
         let mut file = std::fs::File::create(&path).expect("create csv");

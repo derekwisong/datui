@@ -1281,6 +1281,8 @@ pub struct App {
     history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
     table_cell_padding: u16, // Spaces between columns (from config.display.table_cell_padding)
     column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
+    /// Second header row of column types. Starts from `display.dtype_row`; `D` flips it.
+    dtype_row: bool,
     // Resolved display-time number formatting. `enabled` is flipped by the F key.
     number_format: NumberFormatSettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
@@ -1752,6 +1754,7 @@ impl App {
             history_limit: app_config.query.history_limit,
             table_cell_padding: app_config.display.table_cell_padding.min(u16::MAX as usize) as u16,
             column_colors: app_config.display.column_colors,
+            dtype_row: app_config.display.dtype_row,
             number_format: app_config
                 .display
                 .number_format
@@ -2183,6 +2186,7 @@ impl App {
     pub fn enter_home(&mut self) {
         self.abandon_load();
         self.home.status = None;
+        self.home.folds = self.cache.load_folds();
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
             let target = open_path
@@ -2204,11 +2208,10 @@ impl App {
         self.input_mode = InputMode::Home;
     }
 
-    /// Esc backs out one layer of context at a time, and quits once there is none.
-    ///
-    /// Escalating rather than doing one fixed thing keeps Esc as the "get me out of
-    /// this" key whatever "this" currently is — and it is the only way out when
-    /// nothing is loaded, since `q` has to remain typeable into the filter.
+    /// Esc backs out one layer of context at a time: the filter, then the directory
+    /// descended into, then back to the data that was open. At the top level it does
+    /// nothing. It used to quit there, which made a reflexive Esc close the program
+    /// while the same key one level down merely went up; Ctrl+C quits, from anywhere.
     fn home_escape(&mut self) -> Option<AppEvent> {
         if !self.home.filter.is_empty() {
             self.home.filter.clear();
@@ -2223,9 +2226,8 @@ impl App {
         }
         if self.data_table_state.is_some() {
             self.input_mode = InputMode::Normal;
-            return None;
         }
-        Some(AppEvent::Exit)
+        None
     }
 
     /// Drop the highlighted dataset from the recents list.
@@ -2274,6 +2276,7 @@ impl App {
             self.home.set_collapsed(section, false);
         }
         self.home.clamp_selection();
+        self.cache.save_folds(&self.home.folds);
     }
 
     /// Step out of a directory that was descended into.
@@ -2299,6 +2302,7 @@ impl App {
             if let Some(section) = self.home.selected_section() {
                 self.home.toggle_collapsed(section);
                 self.home.clamp_selection();
+                self.cache.save_folds(&self.home.folds);
             }
             return None;
         }
@@ -2404,11 +2408,19 @@ impl App {
             return None;
         }
 
+        // Every plain character types into the filter, so no letter or bracket is
+        // a key here: typing "json" must not move the cursor on the "j". Navigation
+        // is the arrows and the Ctrl chords, which cannot be part of a name.
         match event.code {
             KeyCode::Esc => return self.home_escape(),
             KeyCode::Enter => return self.home_open_selected(),
+            // Section to section, past however many rows the current one holds.
+            KeyCode::Down if ctrl => self.home.jump_section(1),
+            KeyCode::Up if ctrl => self.home.jump_section(-1),
             KeyCode::Up => self.home.move_selection(-1),
             KeyCode::Down => self.home.move_selection(1),
+            KeyCode::Char('n') if ctrl => self.home.move_selection(1),
+            KeyCode::Char('p') if ctrl => self.home.move_selection(-1),
             // Left/right fold the section the cursor is in, wherever in it the cursor
             // happens to be — so collapsing does not require first finding the header.
             // Tab cycles the sort. Every plain key goes into the filter, so an
@@ -2419,12 +2431,8 @@ impl App {
             }
             KeyCode::Left => self.home_collapse(true),
             KeyCode::Right => self.home_collapse(false),
-            KeyCode::Char('h') if self.home.filter.is_empty() => self.home_collapse(true),
-            KeyCode::Char('l') if self.home.filter.is_empty() => self.home_collapse(false),
             KeyCode::PageUp => self.home.move_selection(-10),
             KeyCode::PageDown => self.home.move_selection(10),
-            KeyCode::Char('k') if self.home.filter.is_empty() => self.home.move_selection(-1),
-            KeyCode::Char('j') if self.home.filter.is_empty() => self.home.move_selection(1),
             KeyCode::Char('u') if ctrl => {
                 self.home.filter.clear();
                 self.home.sync_search_section();
@@ -6862,6 +6870,18 @@ impl App {
                 }
                 None
             }
+            KeyCode::Char('D') => {
+                // The type row is drawn from the schema the table already has, so
+                // this is a render-time flip like `F`. Session-only.
+                self.dtype_row = !self.dtype_row;
+                if self.debug.enabled {
+                    self.debug.last_action = format!(
+                        "toggle_dtype_row({})",
+                        if self.dtype_row { "on" } else { "off" }
+                    );
+                }
+                None
+            }
             KeyCode::Char('F') => {
                 // Formatting is applied at render time, so this takes effect on
                 // the next frame with no re-collect. Session-only: the config
@@ -9496,7 +9516,8 @@ impl Widget for &mut App {
             self.table_cell_padding,
             self.column_colors,
             self.number_format.clone(),
-        );
+        )
+        .with_dtype_row(self.dtype_row);
 
         let main_view_content = MainViewContent::current(self);
 

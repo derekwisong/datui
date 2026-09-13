@@ -7,26 +7,32 @@ what each contains shown before you open it. <kbd>Ctrl</kbd>+<kbd>O</kbd> return
 here from anywhere.
 
 ```
- datui                                                         ~/work/analysis
-› ▏  type to filter
-▾ RECENT
-▸ sales                          hive      2.4M × 18    340 MB    2d
-  customers.parquet                          89k × 12     4 MB    1w
-▾ /mnt/data                                        network · configured
-  events                         hive       1.1M × 9    120 MB    3h
-  lookup.parquet                              980 × 4     8 KB    2mo
-▾ ~/work/analysis                                     current directory
-  raw_export.csv                                        1.2 GB    3h
-  notes/                         dir
-Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
+ ╺┳┓┏━┓╺┳╸╻ ╻╻
+  ┃┃┣━┫ ┃ ┃ ┃┃   ~/work/analysis
+ ╺┻┛╹ ╹ ╹ ┗━┛╹
+ › ▏  filter and search
+ ▾ RECENT  2  ────────────────────────────────────────────────────────────
+ ▎ ◦ sales  hive                            2.4M × 18    340 MB    2d
+   ◦ customers.parquet                       89k × 12      4 MB    1w
+ ▾ /mnt/data  2  ────────────────────────────────── network · configured
+   ⇅ events  hive                            1.1M × 9    120 MB    3h
+   ⇅ lookup.parquet                           980 × 4      8 KB   2mo
+ ▾ ~/work/analysis  2  ──────────────────────────────── current directory
+   ◦ raw_export.csv                                     1.2 GB    3h
+   ◦ notes/ dir
+ Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
 ```
+
+The wordmark takes three rows; on a terminal shorter than 28 rows it gives way to a
+one-line title bar. Keys in the control bar are drawn as chips.
 
 ## Keys
 
 | key | action |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> | move |
-| <kbd>←</kbd> <kbd>→</kbd> / <kbd>h</kbd> <kbd>l</kbd> | collapse / expand the section |
+| <kbd>↑</kbd> <kbd>↓</kbd> (or <kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd>) | move |
+| <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | previous / next section |
+| <kbd>←</kbd> <kbd>→</kbd> | collapse / expand the section |
 | <kbd>Enter</kbd> | open the dataset, enter the directory, or fold the section |
 | type anything | filter by name (fuzzy: `sal` matches `sales`) |
 | <kbd>~</kbd> | type a path directly; <kbd>Tab</kbd> completes it |
@@ -35,34 +41,40 @@ Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
 | <kbd>Delete</kbd> | forget the highlighted entry (under `RECENT` only) |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | forget every recent entry, after confirming |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | clear the filter |
-| <kbd>Esc</kbd> | back out one layer: clear filter, leave directory, return to your data, quit |
+| <kbd>Esc</kbd> | back out one layer: clear filter, leave directory, return to your data |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | quit |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | return here from anywhere, including during a load |
 
-<kbd>q</kbd> does not quit here — plain characters go into the filter. The control
-bar shows what <kbd>Esc</kbd> will do next.
+<kbd>q</kbd> does not quit here, and <kbd>j</kbd> does not move: every plain character
+goes into the filter, so `json` finds json. <kbd>Esc</kbd> never quits either; it backs
+out one layer at a time and does nothing at the top. The control bar shows what it
+will do next. <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
 
 ## Where the list comes from
 
 The list is grouped by *root* — a directory datui looks in. Sections appear in this
 order:
 
-| # | section | source | shown when empty |
-|---|---|---|---|
-| 1 | `RECENT` | datasets you have opened, most recent first | no |
-| 2 | the current directory | where you launched datui | yes |
-| 3 | a configured directory | `[data] directories`, in the order you list them | yes |
-| 4 | directories of recent datasets | added when you open something | no |
-| 5 | `ELSEWHERE` | [desktop places](#desktop-places) | no |
+| # | section | source | shown when empty | starts |
+|---|---|---|---|---|
+| 1 | `RECENT` | datasets you have opened, most recent first | no | open |
+| 2 | the current directory | where you launched datui | yes | open |
+| 3 | cloud storage | the buckets your credentials reach, one section per provider | yes | open |
+| 4 | a configured directory | `[data] directories`, in the order you list them | yes | open |
+| 5 | directories of recent datasets | added when you open something | no | folded |
+| 6 | `ELSEWHERE` | [desktop places](#desktop-places) | no | folded |
 
-Where you are comes first: a directory holding sixty recently-opened files would
-otherwise push the place you just `cd`'d into off the screen.
+The order is by why you came: what you opened last, where you are, the object stores
+you can reach, the places you named. The directories derived from recents repeat what
+`RECENT` already shows, so they start folded, one keystroke from open.
 
 A directory reached more than one way appears once, under the earliest of these
 that names it.
 
 Sections fold with <kbd>←</kbd> and <kbd>→</kbd>. A folded section shows how many
-rows it is hiding, and stays folded until you expand it or restart datui.
+rows it is hiding. Whether you folded or opened a section is remembered between runs.
+<kbd>Ctrl</kbd>+<kbd>↓</kbd> and <kbd>Ctrl</kbd>+<kbd>↑</kbd> move the cursor from one
+section heading to the next.
 
 Filtering keeps the grouping, so a match always shows which root it came from.
 

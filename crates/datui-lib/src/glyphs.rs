@@ -53,10 +53,24 @@ pub struct Glyphs {
     pub over_network: &'static str,
     pub in_object_store: &'static str,
     pub place_unknown: &'static str,
+    /// A null cell. Blank is what a null used to be, and blank is also what an empty
+    /// string is, so the two were indistinguishable.
+    pub null: &'static str,
+    /// The rail down the left edge of the row the cursor is on.
+    pub rail: &'static str,
+    /// Rule drawn beside a section title: resting, and under the cursor.
+    pub rule_h: &'static str,
+    pub rule_h_focused: &'static str,
+    /// Arrows for the off-screen column hints in the table header.
+    pub arrow_left: &'static str,
+    pub arrow_right: &'static str,
+    /// The home-screen wordmark, three rows of box drawing. `None` when the terminal
+    /// cannot draw it, and the one-line title bar is used instead.
+    pub wordmark: Option<&'static [&'static str]>,
 }
 
 const UNICODE: Glyphs = Glyphs {
-    selector: "▸ ",
+    selector: "▎ ",
     selector_blank: "  ",
     cursor: "▏",
     prompt: "› ",
@@ -76,6 +90,13 @@ const UNICODE: Glyphs = Glyphs {
     over_network: "⇅",
     in_object_store: "☁",
     place_unknown: "◌",
+    null: "∅",
+    rail: "▎",
+    rule_h: "─",
+    rule_h_focused: "━",
+    arrow_left: "←",
+    arrow_right: "→",
+    wordmark: Some(&["╺┳┓┏━┓╺┳╸╻ ╻╻", " ┃┃┣━┫ ┃ ┃ ┃┃", "╺┻┛╹ ╹ ╹ ┗━┛╹"]),
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -96,6 +117,13 @@ const ASCII: Glyphs = Glyphs {
     over_network: "~",
     in_object_store: "@",
     place_unknown: "?",
+    null: "~",
+    rail: ">",
+    rule_h: "-",
+    rule_h_focused: "=",
+    arrow_left: "<",
+    arrow_right: ">",
+    wordmark: None,
 };
 
 /// What the user asked for, from `[display] unicode`.

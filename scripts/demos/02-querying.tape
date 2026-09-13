@@ -1,34 +1,122 @@
 Output demos/02-querying.gif
 Set FontSize 18
-Set Width 100
+Set Width 1200
 Set Height 800
 Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 Hide
 
-Type "datui tests/sample-data/people.parquet"
+# A hive-partitioned directory: one Parquet file per year of US baby names.
+Type "datui --hive demo/data/babynames"
 Enter
-
-# Wait for TUI to load
-Sleep 0.5s
+Sleep 0.8s
 
 Show
+Sleep 1s
 
-Sleep 0.5s
-
-# Open query input (press '/')
+# Open the query input.
 Type "/"
 Sleep 0.5s
 
-# Type a query to select and filter data
-Type "select first_name, last_name, city, salary where salary > 80000"
-Sleep 0.1s
-
-# Execute query (Enter)
+# One name, one sex, every year. A comma is AND.
+Type 'select year, name, count, rank where name = "Derek", sex = "M"'
+Sleep 0.3s
 Enter
+Sleep 1.5s
 
-# Show query results
+# Down to the years the name peaked.
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
+Type "j"
+Sleep 0.04s
 Sleep 3s
 
-# Quit
 Type "q"

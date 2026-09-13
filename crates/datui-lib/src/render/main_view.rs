@@ -137,25 +137,25 @@ pub fn home_control_keys(
         keys.push(("Tab", "Complete"));
     } else {
         // Esc peels off one layer of context at a time, so label it with what it will
-        // actually do next rather than a generic "Back".
-        keys.push((
-            "Esc",
-            if has_filter {
-                "Clear"
-            } else if browsing {
-                "Up"
-            } else if has_data {
-                "Back to data"
-            } else {
-                "Quit"
-            },
-        ));
+        // actually do next rather than a generic "Back". At the top level it does
+        // nothing, and is not offered.
+        if has_filter {
+            keys.push(("Esc", "Clear"));
+        } else if browsing {
+            keys.push(("Esc", "Up"));
+        } else if has_data {
+            keys.push(("Esc", "Back to data"));
+        } else {
+            // The way out takes Esc's place, so a narrow bar still shows it.
+            keys.push(("^C", "Quit"));
+        }
         keys.push(("type", "Filter"));
         keys.push(("~", "Path"));
         if browsing {
             keys.push(("Bksp", "Up"));
         }
         keys.push((g.updown_lr, "Fold"));
+        keys.push(("^↑↓", "Section"));
         // The key is an action; which order is currently in effect is state, and it
         // belongs with the other state at the far end of the bar rather than dressed
         // up as something to press.
@@ -220,13 +220,15 @@ mod tests {
         // include how to leave.
         for (p, b, f, d) in all_states() {
             let keys = home_control_keys(p, b, f, d);
-            let escape_at = keys
+            // Esc while there is a layer to back out of; Ctrl+C at the top, where
+            // Esc does nothing and is not offered.
+            let way_out = keys
                 .iter()
-                .position(|(key, _)| *key == "Esc")
-                .expect("Esc is always offered");
+                .position(|(key, _)| *key == "Esc" || *key == "^C")
+                .expect("a way out is always offered");
             assert!(
-                escape_at < 3,
-                "Esc is {escape_at} deep in state (path={p}, browsing={b}, filter={f}, data={d}); \
+                way_out < 3,
+                "the way out is {way_out} deep in state (path={p}, browsing={b}, filter={f}, data={d}); \
                  a narrow bar would cut it"
             );
         }
@@ -244,7 +246,8 @@ mod tests {
         assert_eq!(esc(false, false, true, false), Some("Clear"));
         assert_eq!(esc(false, true, false, false), Some("Up"));
         assert_eq!(esc(false, false, false, true), Some("Back to data"));
-        assert_eq!(esc(false, false, false, false), Some("Quit"));
+        // Nothing to back out of: Esc does nothing and is not offered.
+        assert_eq!(esc(false, false, false, false), None);
         assert_eq!(esc(true, false, false, false), Some("Cancel"));
     }
 

@@ -21,7 +21,8 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title("Sort & Filter");
+        .title("Sort & Filter")
+        .title_style(ratatui::style::Style::reset());
     let inner_area = block.inner(area);
     block.render(area, buf);
 
@@ -138,7 +139,7 @@ fn render_filter_tab(
     buf: &mut Buffer,
     border_c: ratatui::style::Color,
     active_c: ratatui::style::Color,
-    _ctx: &RenderContext,
+    ctx: &RenderContext,
 ) {
     let fchunks = Layout::default()
         .direction(Direction::Vertical)
@@ -175,6 +176,7 @@ fn render_filter_tab(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Col")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(col_style),
         )
         .render(row_layout[0], buf);
@@ -194,6 +196,7 @@ fn render_filter_tab(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Op")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(op_style),
         )
         .render(row_layout[1], buf);
@@ -209,6 +212,7 @@ fn render_filter_tab(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Val")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(val_style),
         )
         .render(row_layout[2], buf);
@@ -228,6 +232,7 @@ fn render_filter_tab(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Logic")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(log_style),
         )
         .render(row_layout[3], buf);
@@ -277,9 +282,10 @@ fn render_filter_tab(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Current Filters")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(list_style),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(ctx.highlight_style());
     StatefulWidget::render(list, fchunks[2], buf, &mut filter.list_state);
 }
 
@@ -310,6 +316,7 @@ fn render_sort_tab(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title(filter_block_title)
+        .title_style(ratatui::style::Style::reset())
         .border_style(filter_block_border_style);
     let filter_inner_area = filter_block.inner(schunks[0]);
     filter_block.render(schunks[0], buf);
@@ -391,9 +398,10 @@ fn render_sort_tab(
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title("Columns")
+            .title_style(ratatui::style::Style::reset())
             .border_style(table_border_style),
     )
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    .row_highlight_style(ctx.highlight_style());
 
     StatefulWidget::render(table, schunks[1], buf, &mut modal.sort.table_state);
 
@@ -451,6 +459,7 @@ fn render_sort_tab(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Order")
+        .title_style(ratatui::style::Style::reset())
         .border_style(order_border_style);
     let order_inner = order_block.inner(schunks[3]);
     order_block.render(schunks[3], buf);

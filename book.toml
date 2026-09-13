@@ -13,6 +13,7 @@ build-dir = "book"
 [output.html]
 default-theme = "navy"
 preferred-dark-theme = "navy"
+additional-css = ["docs/night-market.css"]
 git-repository-url = "https://github.com/derekwisong/datui"
 edit-url-template = "https://github.com/derekwisong/datui/edit/main/{path}"
 

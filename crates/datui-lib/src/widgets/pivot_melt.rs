@@ -14,6 +14,7 @@ use ratatui::widgets::{
 /// Render the Pivot and Melt modal: tab bar, tab-specific body, footer.
 /// Uses `border_color` for default borders and `active_color` for focused elements.
 /// `text_primary` and `text_inverse` are used for text-input cursor (same as query prompt).
+#[allow(clippy::too_many_arguments)]
 pub fn render_shell(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -22,6 +23,7 @@ pub fn render_shell(
     active_color: Color,
     text_primary: Color,
     text_inverse: Color,
+    highlight: Style,
 ) {
     Clear.render(area, buf);
     let block = Block::default()
@@ -79,6 +81,7 @@ pub fn render_shell(
             active_color,
             text_primary,
             text_inverse,
+            highlight,
         ),
         PivotMeltTab::Melt => render_melt_body(
             chunks[1],
@@ -88,6 +91,7 @@ pub fn render_shell(
             active_color,
             text_primary,
             text_inverse,
+            highlight,
         ),
     }
 
@@ -146,6 +150,7 @@ pub fn render_shell(
         .render(footer_chunks[2], buf);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_pivot_body(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -154,6 +159,7 @@ fn render_pivot_body(
     active_color: Color,
     _text_primary: Color,
     _text_inverse: Color,
+    highlight: Style,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -175,6 +181,7 @@ fn render_pivot_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Filter Index Columns")
+        .title_style(ratatui::style::Style::reset())
         .border_style(filter_style);
     let filter_inner = filter_block.inner(chunks[0]);
     filter_block.render(chunks[0], buf);
@@ -194,6 +201,7 @@ fn render_pivot_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Index Columns")
+        .title_style(ratatui::style::Style::reset())
         .border_style(list_style);
     let list_inner = list_block.inner(chunks[1]);
     list_block.render(chunks[1], buf);
@@ -221,7 +229,7 @@ fn render_pivot_body(
                 .style(Style::default().add_modifier(Modifier::BOLD))
                 .bottom_margin(0),
         )
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .row_highlight_style(highlight);
     StatefulWidget::render(table, list_inner, buf, &mut modal.pivot_index_table);
 
     // Pivot / Value: small tables (single-select lists)
@@ -258,14 +266,14 @@ fn render_pivot_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Pivot Column")
+        .title_style(ratatui::style::Style::reset())
         .border_style(pivot_style);
     let pivot_inner = pivot_block.inner(row_chunks[0]);
     pivot_block.render(row_chunks[0], buf);
     if pivot_rows.is_empty() {
         Paragraph::new("(none)").render(pivot_inner, buf);
     } else {
-        let pt = Table::new(pivot_rows, [Constraint::Min(5)])
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let pt = Table::new(pivot_rows, [Constraint::Min(5)]).row_highlight_style(highlight);
         StatefulWidget::render(pt, pivot_inner, buf, &mut modal.pivot_pool_table);
     }
 
@@ -287,14 +295,14 @@ fn render_pivot_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Value Column")
+        .title_style(ratatui::style::Style::reset())
         .border_style(value_style);
     let value_inner = value_block.inner(row_chunks[1]);
     value_block.render(row_chunks[1], buf);
     if value_rows.is_empty() {
         Paragraph::new("(none)").render(value_inner, buf);
     } else {
-        let vt = Table::new(value_rows, [Constraint::Min(5)])
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let vt = Table::new(value_rows, [Constraint::Min(5)]).row_highlight_style(highlight);
         StatefulWidget::render(vt, value_inner, buf, &mut modal.value_pool_table);
     }
 
@@ -315,6 +323,7 @@ fn render_pivot_body(
     .render(chunks[3], buf);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_melt_body(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -323,6 +332,7 @@ fn render_melt_body(
     active_color: Color,
     text_primary: Color,
     text_inverse: Color,
+    highlight: Style,
 ) {
     use crate::pivot_melt_modal::{MeltValueStrategy, PivotMeltFocus};
 
@@ -347,6 +357,7 @@ fn render_melt_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Filter Index Columns")
+        .title_style(ratatui::style::Style::reset())
         .border_style(filter_style);
     let filter_inner = filter_block.inner(chunks[0]);
     filter_block.render(chunks[0], buf);
@@ -366,6 +377,7 @@ fn render_melt_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Index Columns")
+        .title_style(ratatui::style::Style::reset())
         .border_style(list_style);
     let list_inner = list_block.inner(chunks[1]);
     list_block.render(chunks[1], buf);
@@ -393,7 +405,7 @@ fn render_melt_body(
                 .style(Style::default().add_modifier(Modifier::BOLD))
                 .bottom_margin(0),
         )
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .row_highlight_style(highlight);
     StatefulWidget::render(table, list_inner, buf, &mut modal.melt_index_table);
 
     // Strategy row
@@ -406,6 +418,7 @@ fn render_melt_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Strategy")
+        .title_style(ratatui::style::Style::reset())
         .border_style(strat_style);
     let strat_inner = strat_block.inner(chunks[2]);
     strat_block.render(chunks[2], buf);
@@ -428,6 +441,7 @@ fn render_melt_body(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Pattern (Regex)")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(pat_style);
             let pat_inner = pat_block.inner(opt_chunks[0]);
             pat_block.render(opt_chunks[0], buf);
@@ -465,6 +479,7 @@ fn render_melt_body(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Type")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(ty_style);
             let ty_inner = ty_block.inner(opt_chunks[0]);
             ty_block.render(opt_chunks[0], buf);
@@ -480,6 +495,7 @@ fn render_melt_body(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Value Columns")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(ex_style);
             let ex_inner = ex_block.inner(chunks[3]);
             ex_block.render(chunks[3], buf);
@@ -506,7 +522,7 @@ fn render_melt_body(
                         .style(Style::default().add_modifier(Modifier::BOLD))
                         .bottom_margin(0),
                 )
-                .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+                .row_highlight_style(highlight);
             StatefulWidget::render(ex_table, ex_inner, buf, &mut modal.melt_explicit_table);
         }
         MeltValueStrategy::AllExceptIndex => {}
@@ -531,6 +547,7 @@ fn render_melt_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Variable Name")
+        .title_style(ratatui::style::Style::reset())
         .border_style(var_style);
     let var_inner = var_block.inner(vchunks[0]);
     var_block.render(vchunks[0], buf);
@@ -562,6 +579,7 @@ fn render_melt_body(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Value Name")
+        .title_style(ratatui::style::Style::reset())
         .border_style(val_style);
     let val_inner = val_block.inner(vchunks[1]);
     val_block.render(vchunks[1], buf);

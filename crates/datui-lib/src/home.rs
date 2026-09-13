@@ -214,6 +214,10 @@ pub struct Section {
     /// storage.buckets.list access" tells the user what to change, and an empty section
     /// that does not say why tells them nothing.
     pub unavailable_note: Option<String>,
+    /// Starts folded unless the user has opened it. For the places that are context
+    /// rather than the reason you came: directories promoted from recents, and the
+    /// desktop's list of where you have been.
+    pub folded_by_default: bool,
 }
 
 /// One provider's buckets, ready to become a section.
@@ -358,11 +362,13 @@ pub struct HomeState {
     /// is cheap; reading several hundred of them is not, so results are kept for the
     /// session and each dataset is measured once.
     pub enriched: std::collections::HashMap<PathBuf, Measured>,
-    /// Titles of sections the user has collapsed. Keyed by title rather than index
-    /// so the state survives a rebuild, which reorders and renumbers sections.
-    /// Use [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`] rather
-    /// than touching this directly.
-    pub collapsed: std::collections::HashSet<String>,
+    /// Sections the user has folded or opened, by title, `true` meaning folded. A
+    /// section not listed here takes its own default. Keyed by title rather than
+    /// index so the state survives a rebuild, which reorders and renumbers sections,
+    /// and kept in the cache so it survives a restart. Use
+    /// [`HomeState::toggle_collapsed`] and [`HomeState::set_collapsed`] rather than
+    /// touching this directly.
+    pub folds: std::collections::HashMap<String, bool>,
     /// Datasets found by walking below the working directory.
     pub search: SearchState,
     /// Object stores discovered on this machine, with their buckets. Empty on a machine
@@ -419,7 +425,7 @@ impl Default for HomeState {
             unreachable: std::collections::HashSet::new(),
             pending_enrich: false,
             enriched: std::collections::HashMap::new(),
-            collapsed: std::collections::HashSet::new(),
+            folds: std::collections::HashMap::new(),
             search: SearchState::default(),
         }
     }
@@ -523,6 +529,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             unavailable,
             // A browsed remote place that did not answer: there is nothing to add.
             unavailable_note: None,
+            folded_by_default: false,
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
@@ -557,6 +564,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             rows: recent_rows,
             unavailable: false,
             unavailable_note: None,
+            folded_by_default: false,
         });
     }
 
@@ -565,6 +573,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     let roots = HomeState::roots_with(config_dirs, recents, desktop_dirs, network_check);
     root_paths = roots.iter().map(|r| r.path.clone()).collect();
+    let mut root_sections: Vec<(RootOrigin, Section)> = Vec::new();
     for root in roots {
         // A place the desktop mentioned is listed as a directory to step into,
         // never expanded. Its contents are whatever you last opened anywhere on
@@ -635,19 +644,31 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         if truncated {
             subtitle = format!("first {} · {}", discover::MAX_ENTRIES_PER_DIR, subtitle);
         }
-        sections.push(Section {
-            title: display_path(&root.path),
-            subtitle: Some(subtitle),
-            rows,
-            unavailable: !root.available || unreachable,
-            unavailable_note: None,
-        });
+        root_sections.push((
+            root.origin,
+            Section {
+                title: display_path(&root.path),
+                subtitle: Some(subtitle),
+                rows,
+                unavailable: !root.available || unreachable,
+                unavailable_note: None,
+                // A directory promoted from a recent repeats what Recent already
+                // shows. It stays available, folded, one keystroke from open.
+                folded_by_default: root.origin == RootOrigin::Recent,
+            },
+        ));
     }
 
-    // Object stores, after the places on this machine. A bucket list is stable and
-    // small, and what someone wants first is almost always the directory they are
-    // standing in; putting the cloud above that would push it down the screen.
-    //
+    // The order is by why you came, not by where the rows come from: what you
+    // opened last, where you are standing, the object stores your credentials
+    // reach, the places you configured, and only then the directories derived from
+    // recents. Cloud sits high because credentials on a machine are a deliberate
+    // signal, and a bucket is the one place no directory listing can ever reach.
+    let (cwd_sections, rest): (Vec<_>, Vec<_>) = root_sections
+        .into_iter()
+        .partition(|(origin, _)| *origin == RootOrigin::Cwd);
+    sections.extend(cwd_sections.into_iter().map(|(_, s)| s));
+
     // Each bucket is a row to descend into rather than a listing. Expanding every
     // bucket on the home screen would mean one billed request per bucket on every
     // start, to show a level nobody had asked to see.
@@ -676,8 +697,16 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // is: the section is there, empty, and says why.
             unavailable: provider.error.is_some(),
             unavailable_note: provider.error.clone(),
+            folded_by_default: false,
         });
     }
+
+    // Configured places, then the directories promoted from recents.
+    let (configured, derived): (Vec<_>, Vec<_>) = rest
+        .into_iter()
+        .partition(|(origin, _)| *origin == RootOrigin::Configured);
+    sections.extend(configured.into_iter().map(|(_, s)| s));
+    sections.extend(derived.into_iter().map(|(_, s)| s));
 
     if !elsewhere.is_empty() {
         sections.push(Section {
@@ -686,6 +715,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             rows: elsewhere,
             unavailable: false,
             unavailable_note: None,
+            // Places to look, not datasets: folded until asked for.
+            folded_by_default: true,
         });
     }
 
@@ -1080,32 +1111,70 @@ impl HomeState {
     }
 
     /// Rows currently passing the filter, flattened, as `(section index, row)`.
+    /// Whether a section is folded: what the user last chose for it, else its default.
+    fn section_folded(&self, section: &Section) -> bool {
+        self.folds
+            .get(&section.title)
+            .copied()
+            .unwrap_or(section.folded_by_default)
+    }
+
     /// Whether a section is collapsed.
     pub fn is_collapsed(&self, section: usize) -> bool {
         self.sections
             .get(section)
-            .is_some_and(|s| self.collapsed.contains(&s.title))
+            .is_some_and(|s| self.section_folded(s))
     }
 
     /// Collapse or expand a section.
     pub fn toggle_collapsed(&mut self, section: usize) {
-        let Some(title) = self.sections.get(section).map(|s| s.title.clone()) else {
-            return;
-        };
-        if !self.collapsed.remove(&title) {
-            self.collapsed.insert(title);
-        }
+        let folded = self.is_collapsed(section);
+        self.set_collapsed(section, !folded);
     }
 
     pub fn set_collapsed(&mut self, section: usize, collapsed: bool) {
         let Some(title) = self.sections.get(section).map(|s| s.title.clone()) else {
             return;
         };
-        if collapsed {
-            self.collapsed.insert(title);
-        } else {
-            self.collapsed.remove(&title);
+        self.folds.insert(title, collapsed);
+    }
+
+    /// Move the cursor to the next (`delta` > 0) or previous section header,
+    /// wrapping. The way past a long section to the one you came for.
+    pub fn jump_section(&mut self, delta: isize) {
+        let rows = self.visible();
+        let headers: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r, Row::Header { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        if headers.is_empty() {
+            return;
         }
+        let current = self.selected;
+        self.selected = if delta > 0 {
+            headers
+                .iter()
+                .copied()
+                .find(|&h| h > current)
+                .unwrap_or(headers[0])
+        } else {
+            headers
+                .iter()
+                .rev()
+                .copied()
+                .find(|&h| h < current)
+                .unwrap_or(*headers.last().unwrap())
+        };
+    }
+
+    /// Whether the listing holds anything openable at all, folded or not.
+    pub fn has_any_dataset(&self) -> bool {
+        self.sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .any(|e| e.kind.is_dataset())
     }
 
     /// Lines currently on screen: a header per non-empty section, followed by its
@@ -1172,6 +1241,7 @@ impl HomeState {
             rows,
             unavailable: false,
             unavailable_note: None,
+            folded_by_default: false,
         });
     }
 
@@ -1253,7 +1323,7 @@ impl HomeState {
                 }
             }
 
-            let collapsed = self.collapsed.contains(&section.title);
+            let collapsed = self.section_folded(section);
             out.push(Row::Header {
                 section: si,
                 matches: matched.len(),

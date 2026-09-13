@@ -122,6 +122,23 @@ src/
 - Hex: `"#ff0000"`, `"#00bfff"`
 - Indexed: `"indexed(236)"` for xterm 256-color palette
 
+**Visual language** (keep new UI inside it):
+- Defaults are hex: a dark set after Tokyo Night and a light set of the same hues
+  darkened. `theme.mode` picks one; hex degrades to the nearest 256-colour entry
+  or to basic ANSI when the terminal cannot do better.
+- One accent (`accent`, brighter `accent_bright`) for keys, focused titles and the
+  selection rail. `gradient_start`/`gradient_end` colour the wordmark only.
+- Three chrome tiers a few shades apart: `controls_bg` (bar, chips),
+  `table_header_bg` (header), `alternate_row_color` (stripe).
+- The current row is tinted with `table_selected` and marked by a `▎` rail
+  (`RenderContext::highlight_style`, `Theme::highlight_style`); `"reversed"`
+  restores reversed video. Use the helper rather than `Modifier::REVERSED`.
+- Keys in the control bar are chips: the key on the accent, the label beside it.
+- Section titles sit on a rule with a flat count chip, not on a filled bar.
+- Column names take their type colour; a second header row names the type
+  (`display.dtype_row`, `D`). Nulls are `∅` in the dim colour. Glyphs live in
+  `glyphs.rs` with an ASCII twin each.
+
 **Configuration Flow**:
 ```
 main.rs: AppConfig::load(APP_NAME)
@@ -143,7 +160,7 @@ Settings applied throughout app
 - File loading: Delimiter, headers, skip lines/rows, compression
 - Display: Row numbers, page buffers, row start index
 - Performance: Sampling threshold, event poll interval
-- Theme: 22 customizable colors
+- Theme: every colour slot in `ColorConfig` (see the visual language below)
 - Query: History limits, caching
 - Templates: Auto-apply behavior
 - Debug: Overlay settings

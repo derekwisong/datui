@@ -22,6 +22,7 @@ Display:
   Left / Right:     In Info, on tab bar: switch Schema | Resources
   N:                Toggle row numbers
   F:                Toggle number formatting (thousands separators)
+  D:                Toggle the type row under the column headers
   ? / F1:           Open this help (F1 works in text fields). Esc or ? to close.
 
 Help Navigation:
@@ -36,4 +37,4 @@ Analysis View:
   Esc:              Return to main view
 
 Exit:
-  q / Esc:          Quit
+  q:                Quit

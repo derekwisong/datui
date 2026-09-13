@@ -36,6 +36,10 @@ text_inverse   = "{{ background }}"
 dimmed         = "{{ muted }}"
 
 # --- Chrome ----------------------------------------------------------------
+accent           = "{{ accent }}"
+accent_bright    = "{{ mix accent foreground 30% }}"
+gradient_start   = "{{ blue }}"
+gradient_end     = "{{ magenta }}"
 keybind_hints    = "{{ accent }}"
 keybind_labels   = "{{ light_foreground }}"
 throbber         = "{{ accent }}"
@@ -47,8 +51,8 @@ table_header        = "{{ bright_foreground }}"
 table_header_bg     = "{{ mix background foreground 12% }}"
 alternate_row_color = "{{ mix background foreground 6% }}"
 row_numbers         = "{{ muted }}"
-# "reversed" swaps fg/bg at render time, so it follows any theme for free.
-table_selected      = "reversed"
+# A tint under the current row. "reversed" is still accepted and swaps fg/bg.
+table_selected      = "{{ mix background accent 30% }}"
 
 # --- Cursor / modals -------------------------------------------------------
 cursor_focused      = "{{ accent }}"

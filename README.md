@@ -8,27 +8,70 @@
 ![GitHub Stars](https://img.shields.io/github/stars/derekwisong/datui?style=flat-square&logo=github&color=blue)
 [![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white)](https://github.com/derekwisong/datui/actions)
 
-
-**Datui** is a high-performance terminal UI for exploring and analyzing tabular datasets.
+**Datui** is a terminal UI for looking at tabular data: Parquet, CSV, JSON, Arrow
+and more, on disk or in S3, GCS and HTTP, from a few rows to a few billion.
 
 📖 **Documentation**: [Full User Guide][docs].
 
-## Demo
-
 ![Overview Demo](demos/11-overview.gif)
 
-## Features
+## What it does
 
-- 🚀 **Fast**: Powered by Polars streaming expressions for state-of-the-art performance on
-  massive datsets
-- 📁 **Universal**: Supports Parquet, CSV, JSON, Avro, Arrow, ORC, and Excel
-- 🧰 **Flexible**: View data stored locally, on S3, or over HTTP/HTTPS
-- 🔍 **Queryable**: Fuzzy keyword search and SQL queries
-- 📊 **Charts**: Render terminal-based charts and export them as images
-- 🔬 **Analysis**: Integrated analytical tools reveal correlations, distributions, and more
-- ⚒️ **Transformations**: Sort, filter, pivot, melt, and group
-- ⌨️ **Keyboard-Driven**: Arrow keys and Vim-style navigation (`h`/`j`/`k`/`l`)
+- **Opens the file where it is.** Local paths, `s3://`, `gs://` and `https://`
+  URLs, and hive-partitioned directories. Parquet is read lazily through
+  [Polars](https://pola.rs), so a dataset larger than memory scrolls like a
+  small one.
+- **Shows you what is around you.** Run `datui` with no arguments for the home
+  screen: recent datasets, the current directory, your configured data
+  directories, and the buckets your cloud credentials can reach. Each row shows
+  rows, columns and size before you open it; the schema is one keystroke away.
+  See [The Home Screen][home-screen].
+- **Answers questions.** SQL, a short query language (`select a, b where c > 10
+  by region`), and fuzzy text search across every column. Sort, filter, freeze
+  and hide columns from a sidebar.
+- **Summarises.** Describe, distribution fitting with Q-Q plots, and a
+  correlation matrix, computed on the data as filtered.
+- **Draws.** Line, scatter, bar, histogram, box, KDE and heatmap charts in the
+  terminal, exportable as PNG or EPS.
+- **Reshapes and saves.** Pivot and melt, export to CSV, Parquet, JSON, NDJSON,
+  Arrow or Avro, and templates that replay a query, filters and sort on the next
+  dataset with the same shape.
+- **Fits in.** Light and dark palettes, every colour configurable, and a theme
+  template for [Omarchy][system-theming]. Arrow keys or `h`/`j`/`k`/`l`.
 
+## Quick Start
+
+> See the [Quick Start Guide][quickstart-guide]
+
+Open a file:
+
+```bash
+datui data.parquet
+datui --hive /path/to/partitioned/dataset
+datui s3://bucket/path/file.parquet
+datui https://example.com/file.csv
+```
+
+Or open nothing and pick from the home screen:
+
+```bash
+datui
+```
+
+From Python:
+
+```python
+import polars as pl
+import datui
+
+datui.view(pl.scan_parquet("data.parquet"))
+```
+
+Press `?` for the keys. `/` queries, `s` sorts and filters, `a` analyses,
+`c` charts, `Ctrl+O` returns to the home screen, `q` quits.
+
+> See [Loading Data][loading-data], [Loading Remote Data][loading-remote] and
+> the [Python Module][python-module].
 
 ## Installation
 
@@ -85,40 +128,6 @@ cargo build --release --locked
 
 The binary will be available at `target/release/datui`.
 
-
-## Quick Start
-
-> See the [Quick Start Guide][quickstart-guide]
-
-- 💻 Load a file, or hive-partitioned dataset, from the shell:
-  ```bash
-  datui /path/to/data.parquet
-  datui --hive /path/to/directory
-  datui --hive "/path/to/directory/**/*.parquet"
-  ```
-  > See [Loading Data][loading-data]
-- ☁️ Load data from **S3** and **HTTP**:
-  ```bash
-  datui s3://some-bucket/file.parquet
-  datui gs://some-bucket/file.parquet
-  datui https://www.domain.com/file.csv
-  ```
-  > See [Loading Remote Data][loading-remote]
-- 🐍 View data from Python:
-  ```python
-  import polars as pl
-  import datui
-
-  lf = pl.scan_parquet("/path/to/data.parquet")
-  datui.view(lf)
-  ```
-  > See [Python Module][python-module]
-- Use arrow keys or Vim-style keybinds (`h`/`j`/`k`/`l`) to navigate
-- Press `q` to exit
-
-> 💡 Use `?` or `F1` to show help
-
-
 ## Configuration
 
 > See the [Configuration Guide][config-guide]
@@ -127,6 +136,9 @@ Generate a default [TOML](https://toml.io) config file:
 ```bash
 datui --generate-config
 ```
+
+Data directories for the home screen, S3 endpoints and credentials, number
+formatting and the colour theme all live there.
 
 ## For Developers
 
@@ -161,3 +173,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 [python-module]: https://derekwisong.github.io/datui/latest/user-guide/python-module.html
 [loading-remote]: https://derekwisong.github.io/datui/latest/user-guide/loading-data.html#remote-data-s3-gcs-and-http
 [loading-data]: https://derekwisong.github.io/datui/latest/user-guide/loading-data.html
+[home-screen]: https://derekwisong.github.io/datui/latest/user-guide/home-screen.html
+[system-theming]: https://derekwisong.github.io/datui/latest/user-guide/system-theming.html

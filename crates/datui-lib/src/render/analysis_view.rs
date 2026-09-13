@@ -25,7 +25,8 @@ pub fn render(
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(ratatui::style::Style::default().fg(ctx.modal_border))
-            .title(" Analysis ");
+            .title(" Analysis ")
+            .title_style(ratatui::style::Style::reset());
         let inner = block.inner(area);
         block.render(area, buf);
         let text = format!(

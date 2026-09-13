@@ -60,12 +60,14 @@ fn test_indexed_colors_in_default_config() {
     // Clear NO_COLOR for this test
     std::env::remove_var("NO_COLOR");
 
-    let config = AppConfig::default();
+    // An indexed colour set in the config reaches the theme as that index.
+    let mut config = AppConfig::default();
+    config.theme.colors.controls_bg = "indexed(235)".to_string();
+    config.theme.colors.table_header_bg = "indexed(236)".to_string();
     let theme = Theme::from_config(&config.theme).expect("Failed to create theme");
 
-    // Default config uses indexed(235) for controls_bg and table_header_bg
     assert_eq!(theme.get("controls_bg"), Color::Indexed(235));
-    assert_eq!(theme.get("table_header_bg"), Color::Indexed(235));
+    assert_eq!(theme.get("table_header_bg"), Color::Indexed(236));
 }
 
 #[test]

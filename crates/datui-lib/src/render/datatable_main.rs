@@ -95,6 +95,7 @@ pub fn render(
                         .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(ctx.keybind_hints))
                         .title("Breadcrumb")
+                        .title_style(ratatui::style::Style::reset())
                         .render(breadcrumb_layout[0], buf);
 
                     let inner = Block::default().inner(breadcrumb_layout[0]);
@@ -123,7 +124,9 @@ pub fn render(
                 .with_alternate_row_bg(ctx.alternate_row_color)
                 .with_binary_col(ctx.binary_col)
                 .with_binary_columns(state.binary_column_names())
-                .with_number_format(ctx.number_format.clone());
+                .with_number_format(ctx.number_format.clone())
+                .with_dtype_row(ctx.dtype_row)
+                .with_selection_colors(ctx.table_selected, ctx.accent, ctx.dimmed);
             if ctx.column_colors {
                 dt = dt.with_column_type_colors(
                     ctx.str_col,
@@ -147,6 +150,7 @@ pub fn render(
                     ctx.modal_border,
                     ctx.modal_border_active,
                     ctx.text_primary,
+                    ctx.highlight_style(),
                 );
                 info_widget.render(sort_area, buf);
             }
@@ -190,6 +194,7 @@ pub fn render(
             ctx.modal_border_active,
             ctx.text_primary,
             ctx.text_inverse,
+            ctx.highlight_style(),
         );
     }
 

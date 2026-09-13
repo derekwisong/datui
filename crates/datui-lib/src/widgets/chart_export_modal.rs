@@ -19,7 +19,8 @@ pub fn render_chart_export_modal(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title(" Export Chart ");
+        .title(" Export Chart ")
+        .title_style(ratatui::style::Style::reset());
     let inner = block.inner(area);
     block.render(area, buf);
 
@@ -70,7 +71,8 @@ pub fn render_chart_export_modal(
         } else {
             border_color
         }))
-        .title(" File Path ");
+        .title(" File Path ")
+        .title_style(ratatui::style::Style::reset());
     let path_inner = path_block.inner(path_area);
     path_block.render(path_area, buf);
     modal.path_input.set_focused(is_path_focused);
@@ -87,7 +89,8 @@ pub fn render_chart_export_modal(
         } else {
             border_color
         }))
-        .title(" Chart Title ");
+        .title(" Chart Title ")
+        .title_style(ratatui::style::Style::reset());
     let title_inner = title_block.inner(title_area);
     title_block.render(title_area, buf);
     modal.title_input.set_focused(is_title_focused);
@@ -109,7 +112,8 @@ pub fn render_chart_export_modal(
         } else {
             border_color
         }))
-        .title(" Width ");
+        .title(" Width ")
+        .title_style(ratatui::style::Style::reset());
     let width_inner = width_block.inner(size_row[0]);
     width_block.render(size_row[0], buf);
     modal.width_input.set_focused(is_width_focused);
@@ -122,7 +126,8 @@ pub fn render_chart_export_modal(
         } else {
             border_color
         }))
-        .title(" Height ");
+        .title(" Height ")
+        .title_style(ratatui::style::Style::reset());
     let height_inner = height_block.inner(size_row[1]);
     height_block.render(size_row[1], buf);
     modal.height_input.set_focused(is_height_focused);

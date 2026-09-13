@@ -25,11 +25,23 @@ pub struct RenderContext {
     pub throbber: Color,
     pub primary_chart_series_color: Color,
 
+    /// The accent: key chips, focused titles, the selection rail.
+    pub accent: Color,
+    /// A brighter accent for the section the cursor is in.
+    pub accent_bright: Color,
+    /// The wordmark gradient, first and last stop.
+    pub gradient_start: Color,
+    pub gradient_end: Color,
+
     pub table_header: Color,
     pub table_header_bg: Color,
     pub row_numbers: Color,
     pub column_separator: Color,
     pub alternate_row_color: Option<Color>,
+    /// Tint under the row the cursor is on; `None` means the old reversed-video look.
+    pub table_selected: Option<Color>,
+    /// Whether the data table shows its second header row of column types.
+    pub dtype_row: bool,
 
     pub str_col: Color,
     pub int_col: Color,
@@ -53,6 +65,23 @@ impl RenderContext {
         let theme = Theme::from_config(&crate::config::ThemeConfig::default())
             .expect("default theme colors must resolve");
         Self::from_theme_and_config(&theme, 2, true, NumberFormatSettings::default())
+    }
+
+    /// Style of the row or item the cursor is on: the theme's tint, or reversed video
+    /// when the theme asks for that.
+    pub fn highlight_style(&self) -> ratatui::style::Style {
+        match self.table_selected {
+            Some(bg) => ratatui::style::Style::default().bg(bg),
+            None => {
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED)
+            }
+        }
+    }
+
+    /// The same context with the type row switched on or off.
+    pub fn with_dtype_row(mut self, on: bool) -> Self {
+        self.dtype_row = on;
+        self
     }
 
     /// Build render context from app theme and config.
@@ -83,11 +112,18 @@ impl RenderContext {
             throbber: theme.get("throbber"),
             primary_chart_series_color: theme.get("primary_chart_series_color"),
 
+            accent: theme.get("accent"),
+            accent_bright: theme.get("accent_bright"),
+            gradient_start: theme.get("gradient_start"),
+            gradient_end: theme.get("gradient_end"),
+
             table_header: theme.get("table_header"),
             table_header_bg: theme.get("table_header_bg"),
             row_numbers: theme.get("row_numbers"),
             column_separator: theme.get("column_separator"),
             alternate_row_color: theme.get_optional("alternate_row_color"),
+            table_selected: theme.get_optional("table_selected"),
+            dtype_row: true,
 
             str_col: if column_colors {
                 theme.get("str_col")

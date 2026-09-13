@@ -6,28 +6,25 @@ Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
 Hide
-Type "datui tests/sample-data/people.parquet"
+# Palmer penguins: 344 birds from three islands.
+Type "datui demo/data/penguins.parquet"
 Enter
-Sleep 0.5s
+Sleep 0.8s
 Show
 Sleep 1s
 
-# Open export (e); focus starts on Path input, format defaults to Parquet for .parquet
+# Open export. Focus starts on the path; the format follows the extension.
 Type "e"
 Sleep 1s
 
-# Type export path in /tmp
-Type "/tmp/people_export.parquet"
+Type "/tmp/penguins_export.parquet"
 Sleep 0.5s
 
-# Tab to Export button (PathInput -> ExportButton for Parquet)
+# Tab to the Export button.
 Tab
 Sleep 0.5s
-
-# Pause before pressing Export
 Sleep 1.5s
 
-# Press Export
 Enter
 Sleep 2s
 Type "q"

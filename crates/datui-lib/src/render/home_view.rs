@@ -26,7 +26,7 @@ use crate::glyphs;
 use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget};
 
@@ -108,16 +108,25 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
         return;
     }
 
+    // The wordmark costs two rows more than the title bar. On a tall enough terminal
+    // that is nothing; on a short one it is two datasets, so the bar comes back.
+    let wordmark = glyphs::get()
+        .wordmark
+        .filter(|_| padded.height >= WORDMARK_MIN_HEIGHT);
+    let title_h = wordmark.map(|w| w.len() as u16).unwrap_or(1);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title bar
-            Constraint::Length(1), // prompt
-            Constraint::Fill(1),   // body
+            Constraint::Length(title_h), // title bar or wordmark
+            Constraint::Length(1),       // prompt
+            Constraint::Fill(1),         // body
         ])
         .split(padded);
 
-    render_title_bar(rows[0], buf, app, ctx);
+    match wordmark {
+        Some(lines) => render_wordmark(rows[0], buf, app, ctx, lines),
+        None => render_title_bar(rows[0], buf, app, ctx),
+    }
     render_prompt(rows[1], buf, app, ctx);
 
     let show_preview = padded.width >= PREVIEW_MIN_WIDTH;
@@ -135,6 +144,86 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
         render_preview(body[2], buf, app, ctx);
     } else {
         render_list(rows[2], buf, app, ctx);
+    }
+}
+
+/// Below this many rows the wordmark gives way to the one-line title bar.
+const WORDMARK_MIN_HEIGHT: u16 = 28;
+
+/// Interpolate two colours, when both are RGB. Anything else — a named ANSI colour,
+/// an indexed one, the terminal default — has no arithmetic, so the first stop is
+/// used for every column and the wordmark is simply the accent.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    match (a, b) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            let lerp =
+                |x: u8, y: u8| -> u8 { (x as f32 + (y as f32 - x as f32) * t).round() as u8 };
+            Color::Rgb(lerp(r1, r2), lerp(g1, g2), lerp(b1, b2))
+        }
+        _ => a,
+    }
+}
+
+/// The wordmark: three rows of box drawing, coloured column by column along the
+/// theme's gradient. Once, here, and nowhere else — a gradient on data would be
+/// decoration. The location sits beside the middle row where the title bar used to
+/// put it.
+fn render_wordmark(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &crate::App,
+    ctx: &RenderContext,
+    lines: &[&str],
+) {
+    let location = app
+        .home
+        .browsing
+        .as_ref()
+        .map(|p| crate::home::display_path(p))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| crate::home::display_path(&p))
+        })
+        .unwrap_or_default();
+    let mark_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let start = ctx.gradient_start;
+    let end = ctx.gradient_end;
+    for (row, line) in lines.iter().enumerate() {
+        if row as u16 >= area.height {
+            break;
+        }
+        let mut spans: Vec<Span> = Vec::with_capacity(mark_w + 2);
+        spans.push(Span::raw(" "));
+        for (i, ch) in line.chars().enumerate() {
+            let t = if mark_w > 1 {
+                i as f32 / (mark_w - 1) as f32
+            } else {
+                0.0
+            };
+            spans.push(Span::styled(
+                ch.to_string(),
+                Style::default()
+                    .fg(mix(start, end, t))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if row == lines.len() / 2 {
+            let room = (area.width as usize).saturating_sub(mark_w + 4);
+            spans.push(Span::styled(
+                format!("   {}", truncate_start(&location, room)),
+                Style::default().fg(ctx.text_secondary),
+            ));
+        }
+        Paragraph::new(Line::from(spans)).render(
+            Rect {
+                x: area.x,
+                y: area.y + row as u16,
+                width: area.width,
+                height: 1,
+            },
+            buf,
+        );
     }
 }
 
@@ -254,9 +343,10 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // literally empty. A first run in a directory holding one folder would otherwise
     // present a bare listing with no hint of what datui is for, which is the worst
     // possible first impression for a screen meant to be the way in.
-    let has_dataset = visible
-        .iter()
-        .any(|r| matches!(r, crate::home::Row::Entry { entry, .. } if entry.kind.is_dataset()));
+    //
+    // Counted over every section, folded or not: with everything folded the headers
+    // are the content, and a hint that says there is nothing here would be wrong.
+    let has_dataset = app.home.has_any_dataset();
     let guidance = if has_dataset || !app.home.filter.is_empty() {
         Vec::new()
     } else {
@@ -380,37 +470,55 @@ fn section_header<'a>(
     let marker = if collapsed { g.collapsed } else { g.expanded };
     // Shown whether folded or not: how much is in a place is worth knowing before
     // deciding to look in it, and a folded section would otherwise read as empty.
-    let count = format!("  {matches}");
-    let prefix_width = marker.chars().count() + count.chars().count();
-    title = truncate_start(
-        &title,
-        width.saturating_sub(note.chars().count() + prefix_width + 3),
-    );
+    let chip = format!(" {matches} ");
+    // marker, title, space, chip, space, rule, space, note, space. The title gives
+    // way to the note only down to three cells; below that the note goes instead,
+    // since a heading that is all note and no title says nothing.
+    let mut note = note;
+    let mut fixed =
+        marker.chars().count() + 1 + chip.chars().count() + 1 + note.chars().count() + 2;
+    if width.saturating_sub(fixed) < 3 {
+        note = String::new();
+        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + 2;
+    }
+    title = truncate_start(&title, width.saturating_sub(fixed));
+    let rule_w = width.saturating_sub(fixed + title.chars().count());
 
-    // Filled, like the table's own header row — the same visual grammar, so the home
-    // screen reads as part of datui rather than a different program.
-    let fill = Style::default().bg(ctx.table_header_bg);
+    // A title on a rule, not a filled bar: the accent carries the title, the count
+    // sits in a flat chip, and the rule runs out to the provenance note. The section
+    // the cursor is in is brighter and its rule heavier, which is the whole of the
+    // focus language — nothing moves, one thing lights up.
     let title_style = if selected {
-        fill.fg(ctx.table_header)
-            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        Style::default()
+            .fg(ctx.accent_bright)
+            .add_modifier(Modifier::BOLD)
     } else {
-        fill.fg(ctx.table_header).add_modifier(Modifier::BOLD)
+        Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
     };
-    let pad = width.saturating_sub(prefix_width + title.chars().count() + note.chars().count() + 1);
+    let chip_style = Style::default().bg(ctx.controls_bg).fg(ctx.text_primary);
+    let rule_glyph = if selected { g.rule_h_focused } else { g.rule_h };
+    let rule_style = Style::default().fg(if selected {
+        ctx.accent
+    } else {
+        ctx.column_separator
+    });
     Line::from(vec![
-        Span::styled(marker, fill.fg(ctx.keybind_hints)),
+        Span::styled(marker, Style::default().fg(ctx.accent)),
         Span::styled(title, title_style),
-        Span::styled(count, fill.fg(ctx.text_secondary)),
-        Span::styled(" ".repeat(pad), fill),
+        Span::raw(" "),
+        Span::styled(chip, chip_style),
+        Span::raw(" "),
+        Span::styled(rule_glyph.repeat(rule_w), rule_style),
+        Span::raw(" "),
         Span::styled(
             note,
-            fill.fg(if section.unavailable {
+            Style::default().fg(if section.unavailable {
                 ctx.warning
             } else {
                 ctx.text_secondary
             }),
         ),
-        Span::styled(" ", fill),
+        Span::raw(" "),
     ])
 }
 
@@ -483,9 +591,13 @@ fn entry_line<'a>(
         }
         _ => entry.kind.label(),
     };
+    // Hive and multi-file datasets wear a flat chip; the rest stay as a word.
+    let kind_is_chip =
+        matched_column.is_none() && matches!(entry.kind, EntryKind::Hive | EntryKind::MultiFile);
     let kind_cell = match matched_column {
         Some(column) => format!(" ·{column}"),
         None if kind.is_empty() => String::new(),
+        None if kind_is_chip => format!("  {kind} "),
         None => format!(" {kind}"),
     };
 
@@ -546,12 +658,14 @@ fn entry_line<'a>(
     }
     let pad = name_width.saturating_sub(2 + name.chars().count() + kind_cell.chars().count());
 
-    // The selected row reverses across its full width, the way the table marks its
-    // current row. It is the one thing that must be findable instantly.
-    let base = if selected {
-        Style::default().add_modifier(Modifier::REVERSED)
-    } else {
-        Style::default()
+    // The selected row is tinted across its full width and carries the rail, the way
+    // the table marks its current row. Tinted rather than reversed so the colours
+    // that say what a row is survive on the row you are looking at. A theme that
+    // asks for "reversed" gets the old look.
+    let base = match ctx.table_selected {
+        Some(bg) if selected => Style::default().bg(bg),
+        None if selected => Style::default().add_modifier(Modifier::REVERSED),
+        _ => Style::default(),
     };
     let name_style = if selected {
         base.fg(ctx.text_primary).add_modifier(Modifier::BOLD)
@@ -562,8 +676,10 @@ fn entry_line<'a>(
         base.fg(ctx.keybind_hints)
     } else {
         match entry.kind {
-            EntryKind::Hive => base.fg(ctx.temporal_col),
-            EntryKind::MultiFile => base.fg(ctx.float_col),
+            EntryKind::Hive | EntryKind::MultiFile => Style::default()
+                .bg(ctx.controls_bg)
+                .fg(ctx.accent)
+                .add_modifier(Modifier::BOLD),
             _ => base.fg(ctx.dimmed),
         }
     };
@@ -603,6 +719,11 @@ fn entry_line<'a>(
             let positions = crate::home::substring_positions(filter, column);
             spans.extend(highlight_spans(column, &positions, kind_style, hit_style));
         }
+        None if kind_is_chip => {
+            // One cell of the row's own background, then the chip.
+            spans.push(Span::styled(" ".to_string(), base));
+            spans.push(Span::styled(kind_cell[1..].to_string(), kind_style));
+        }
         None => spans.push(Span::styled(kind_cell.clone(), kind_style)),
     }
     if show_meta {
@@ -619,15 +740,19 @@ fn entry_line<'a>(
 /// The same grammar as the list's section headers — a filled bar, not a box — so the
 /// two halves of the screen read as one program.
 fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> {
-    let fill = Style::default().bg(ctx.table_header_bg);
-    let label = format!(" {text}");
-    let pad = width.saturating_sub(label.chars().count());
+    let g = glyphs::get();
+    let label = text.to_string();
+    let rule_w = width.saturating_sub(label.chars().count() + 2);
     Line::from(vec![
         Span::styled(
             label,
-            fill.fg(ctx.table_header).add_modifier(Modifier::BOLD),
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" ".repeat(pad), fill),
+        Span::raw(" "),
+        Span::styled(
+            g.rule_h.repeat(rule_w),
+            Style::default().fg(ctx.column_separator),
+        ),
     ])
 }
 
@@ -884,6 +1009,7 @@ mod tests {
             rows: Vec::new(),
             unavailable: false,
             unavailable_note: None,
+            folded_by_default: false,
         };
 
         for width in [20usize, 40, 80, 120] {
@@ -1150,6 +1276,7 @@ mod tests {
             rows: Vec::new(),
             unavailable: false,
             unavailable_note: None,
+            folded_by_default: false,
         };
         let ctx = RenderContext::for_test();
         let line = section_header(&section, 3, false, false, 40, &ctx);

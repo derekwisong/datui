@@ -109,6 +109,8 @@ row_start_index = 1   # Starting index for row numbers (0 or 1)
 table_cell_padding = 1   # Spaces between columns in the main table (>= 0)
 align_numeric_right = true   # Right-align numeric columns and their headers
 number_format = "none"       # Digit grouping — see below
+column_colors = true         # Colour cells and headers by column type
+dtype_row = true             # Second header row naming each column's type (D toggles it)
 ```
 
 **Example: Enable row numbers starting at 0**
@@ -316,24 +318,29 @@ light theme gets light chrome automatically — see
 
 Customize the entire UI appearance:
 
+The defaults are datui's own palette, after Tokyo Night: one cyan accent on chrome
+that sits a few shades off the terminal background. Set any slot to change it.
+
 ```toml
 [theme.colors]
-keybind_hints = "cyan"              # Keybind hints
-keybind_labels = "yellow"           # Action labels
-primary_chart_series_color = "cyan" # Chart data
-secondary_chart_series_color = "dark_gray" # Chart theory
-chart_series_color_1 = "cyan"       # Chart view: first series
-chart_series_color_2 = "magenta"    # Chart view: second series
-chart_series_color_3 = "green"      # Chart view: third series
-chart_series_color_4 = "yellow"    # Chart view: fourth series
-chart_series_color_5 = "blue"      # Chart view: fifth series
-chart_series_color_6 = "red"       # Chart view: sixth series
-chart_series_color_7 = "bright_cyan" # Chart view: seventh series
-error = "red"                       # Error messages
-success = "green"                   # Success indicators
-warning = "yellow"                  # Warnings
-dimmed = "dark_gray"                # Dimmed elements
-alternate_row_color = "default"    # Background for every other row ("default" = off, or a color name)
+accent = "#7dcfff"                  # Key chips, focused titles, the selection rail
+accent_bright = "#a4daff"           # The section the cursor is in
+gradient_start = "#7aa2f7"          # Wordmark on the home screen, first stop
+gradient_end = "#bb9af7"            # ... last stop
+keybind_hints = "#7dcfff"           # Keys in the control bar
+keybind_labels = "#a9b1d6"          # Their labels
+table_header_bg = "#2b3047"         # Header fill
+alternate_row_color = "#1e2030"     # Every other row ("default" = off)
+table_selected = "#283457"          # Tint under the current row ("reversed" = swap fg/bg)
+str_col = "#9ece6a"                 # Column colours, by type
+int_col = "#7aa2f7"
+float_col = "#2ac3de"
+bool_col = "#e0af68"
+temporal_col = "#bb9af7"
+error = "#f7768e"
+success = "#9ece6a"
+warning = "#e0af68"
+dimmed = "#565f89"
 ```
 
 #### Color Formats
@@ -392,37 +399,43 @@ Colors automatically adapt to your terminal:
 
 ### Available Colors
 
-All UI colors can be customized:
+All UI colors can be customized. The defaults below are the dark set; `mode = "light"` picks a set with the same hues darkened for a light background.
 
 | Color | Purpose | Default |
 |-------|---------|---------|
-| `keybind_hints` | Keybind hints (modals, breadcrumb, correlation matrix) | cyan |
-| `keybind_labels` | Action labels in controls bar | yellow |
-| `throbber` | Busy indicator (spinner) in control bar | cyan |
-| `primary_chart_series_color` | Chart data (histogram bars, Q-Q plot data points) | cyan |
-| `secondary_chart_series_color` | Chart theory (histogram overlays, Q-Q plot reference line) | dark_gray |
-| `chart_series_color_1` … `chart_series_color_7` | Chart view: series colors (line/scatter/bar) | cyan, magenta, green, yellow, blue, red, bright_cyan |
-| `success` | Success indicators, normal distributions | green |
-| `error` | Error messages, outliers | red |
-| `warning` | Warnings, skewed distributions | yellow |
-| `dimmed` | Dimmed elements, axis lines | dark_gray |
+| `accent` | Key chips, focused section titles, the selection rail | #7dcfff |
+| `accent_bright` | The section the cursor is in | #a4daff |
+| `gradient_start` / `gradient_end` | The wordmark on the home screen | #7aa2f7 / #bb9af7 |
+| `keybind_hints` | Keys in the control bar and hints in modals | #7dcfff |
+| `keybind_labels` | Labels in the control bar | #a9b1d6 |
+| `throbber` | Busy indicator (spinner) in the control bar | #7dcfff |
+| `primary_chart_series_color` | Chart data (histogram bars, Q-Q plot data points) | #7dcfff |
+| `secondary_chart_series_color` | Chart theory (histogram overlays, Q-Q plot reference line) | #565f89 |
+| `chart_series_color_1` … `chart_series_color_7` | Chart view: series colors (line/scatter/bar) | #7dcfff, #bb9af7, #9ece6a, #e0af68, #7aa2f7, #f7768e, #ff9e64 |
+| `success` | Success indicators, normal distributions | #9ece6a |
+| `error` | Error messages, outliers | #f7768e |
+| `warning` | Warnings, skewed distributions | #e0af68 |
+| `dimmed` | Dimmed elements, nulls, axis lines | #565f89 |
 | `background` | Main background | default (uses terminal default) |
 | `surface` | Modal/surface backgrounds | default (uses terminal default) |
-| `controls_bg` | Controls bar and table header backgrounds | indexed(235) |
+| `controls_bg` | Control bar and count chips | #262a3f |
 | `text_primary` | Primary text | default (uses terminal default) |
-| `text_secondary` | Secondary text | dark_gray |
-| `text_inverse` | Text on light backgrounds | black |
-| `table_header` | Table column header text | white |
-| `table_header_bg` | Table column header background | indexed(235) |
-| `column_separator` | Vertical line between table columns | cyan |
-| `table_selected` | Selected row style | reversed |
-| `sidebar_border` | Sidebar borders | dark_gray |
-| `modal_border_active` | Active modal elements | yellow |
-| `modal_border_error` | Error modal borders | red |
-| `distribution_normal` | Normal distribution indicator | green |
-| `distribution_skewed` | Skewed distribution indicator | yellow |
-| `distribution_other` | Other distribution types | white |
-| `outlier_marker` | Outlier indicators | red |
+| `text_secondary` | Secondary text | #737aa2 |
+| `text_inverse` | Text inside a key chip | #1a1b26 |
+| `table_header` | Table column header text (columns take their type colour) | #c0caf5 |
+| `table_header_bg` | Table column header background | #2b3047 |
+| `alternate_row_color` | Every other row | #1e2030 |
+| `column_separator` | Rule after frozen columns, and the rules beside section titles | #3b4261 |
+| `table_selected` | Tint under the current row; `"reversed"` swaps fg and bg instead | #283457 |
+| `sidebar_border` | Sidebar and input strip borders, and their titles | #565f89 |
+| `modal_border_active` | Active modal elements | #7dcfff |
+| `modal_border_error` | Error modal borders | #f7768e |
+| `distribution_normal` | Normal distribution indicator | #9ece6a |
+| `distribution_skewed` | Skewed distribution indicator | #e0af68 |
+| `distribution_other` | Other distribution types | #c0caf5 |
+| `outlier_marker` | Outlier indicators | #f7768e |
+| `str_col`, `int_col`, `float_col`, `bool_col`, `temporal_col` | Cells and headers, by column type | #9ece6a, #7aa2f7, #2ac3de, #e0af68, #bb9af7 |
+| `binary_col` | The `‹binary›` placeholder | #565f89 |
 
 ### Query System
 

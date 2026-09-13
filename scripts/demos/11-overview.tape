@@ -6,15 +6,14 @@ Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
 Hide
-Type "datui tests/sample-data/charting_demo.parquet"
+# Central Park daily weather since 1869: 57,596 days.
+Type "datui demo/data/central_park_weather.parquet"
 Enter
-Sleep 0.5s
+Sleep 0.8s
 Show
-
-# TUI already loaded: Parquet table view
 Sleep 2s
 
-# Scroll down through the table (j = down)
+# Scroll down.
 Type "j"
 Sleep 0.08s
 Type "j"
@@ -36,7 +35,7 @@ Sleep 0.08s
 Type "j"
 Sleep 0.5s
 
-# Scroll back up (k = up)
+# And back up.
 Type "k"
 Sleep 0.08s
 Type "k"
@@ -49,11 +48,17 @@ Type "k"
 Sleep 0.08s
 Sleep 0.5s
 
-# Open chart (c)
-Type "c"
+# Query down to the last decade.
+Type "/"
+Sleep 0.5s
+Type "select date, tmax_c, tmin_c, precip_mm, snow_mm where date >= 2016.01.01"
+Sleep 0.3s
+Enter
 Sleep 2.5s
 
-# Tab to X axis filter, type "date", select date column
+# Chart it: date on X, tmax_c on Y.
+Type "c"
+Sleep 2.5s
 Tab
 Sleep 0.2s
 Tab
@@ -64,73 +69,47 @@ Tab
 Sleep 0.2s
 Space
 Sleep 0.4s
-
-# Tab to Y axis filter, type "stock", select stock_market
 Tab
 Sleep 0.2s
 Tab
 Sleep 0.2s
-Type "stock"
+Type "tmax"
 Sleep 0.4s
 Tab
 Sleep 0.2s
 Space
 Sleep 1.5s
 
-# View the line chart (date vs stock_market)
+# Ten summers and ten winters.
 Sleep 5s
 
-# Back to main table
 Escape
 Sleep 0.8s
 
-# Open analysis (a)
+# Analysis: describe, distribution, correlation.
 Type "a"
 Sleep 1.5s
-
-# Enter to run Describe (first tool, already focused in sidebar)
 Enter
 Sleep 0.5s
-
-# View Describe
 Sleep 2.5s
 
-# Tab to re-focus sidebar, Down to Distribution Analysis, Enter to run
 Tab
 Sleep 0.3s
 Down
 Sleep 0.2s
 Enter
 Sleep 0.5s
-
-# View Distribution Analysis
 Sleep 2.5s
 
-# Tab to sidebar, Down to Correlation Matrix, Enter to run
 Tab
 Sleep 0.3s
 Down
 Sleep 0.2s
 Enter
 Sleep 0.5s
-
-# View Correlation Matrix
 Sleep 2.5s
 
-# Back to main table
 Escape
-Sleep 0.8s
+Sleep 2s
 
-# Open query (/), run a simple query
-Type "/"
-Sleep 0.5s
-Type "select date, stock_market, high_temp where stock_market > 1200"
-Sleep 0.3s
-Enter
-Sleep 1s
-
-# View query results
-Sleep 4s
-
-# Quit
 Type "q"

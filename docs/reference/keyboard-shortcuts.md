@@ -30,7 +30,8 @@ In the main view, the following keyboard shortcuts are available.
 | `t` | Open template manager (See [Templates](../user-guide/templates.md)) |
 | `T` | Apply most relevant template |
 | `i` | Open **Info** panel (modal); `Tab` / `Shift+Tab` move focus (tab bar ↔ schema table); `Left` / `Right` switch tabs (See [Dataset Info](../user-guide/dataset-info.md)) |
-| `r` | Reset (clear query, filters, sort) |
+| `r` | Reverse the sort order |
+| `R` | Reset (clear query, filters, sort) |
 | `q` | Quit |
 | `?` / `F1` | Help (F1 works in text fields, e.g. query input) |
 
@@ -43,5 +44,6 @@ last for the session only — the config file decides the state at launch.
 |-----|--------|
 | `N` | Toggle row numbers |
 | `F` | Toggle number formatting — thousands separators (See [Configuration](../user-guide/configuration.md#number-formatting)) |
+| `D` | Toggle the type row under the column headers |
 
 **Note for Alacritty users:** If F1 does nothing, ensure F1 is not bound in `~/.config/alacritty/alacritty.toml`. You can still use `?` for help when not in a text field.

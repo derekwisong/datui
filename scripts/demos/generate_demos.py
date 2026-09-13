@@ -58,16 +58,16 @@ def _remove_file_if_present(path: Path) -> TapeAction:
     return action
 
 
-# Tape 8 (export): demo creates /tmp/people_export.parquet; require absent before, delete after
+# Tape 8 (export): demo creates /tmp/penguins_export.parquet; require absent before, delete after
 TAPE_ACTIONS[8] = {
-    "pre": [_require_file_absent(Path("/tmp/people_export.parquet"))],
-    "post": [_remove_file_if_present(Path("/tmp/people_export.parquet"))],
+    "pre": [_require_file_absent(Path("/tmp/penguins_export.parquet"))],
+    "post": [_remove_file_if_present(Path("/tmp/penguins_export.parquet"))],
 }
 
-# Tape 10 (charting): demo creates /tmp/datui_scatter.png; require absent before, delete after
+# Tape 10 (charting): demo creates /tmp/datui_chart.png; require absent before, delete after
 TAPE_ACTIONS[10] = {
-    "pre": [_require_file_absent(Path("/tmp/datui_scatter.png"))],
-    "post": [_remove_file_if_present(Path("/tmp/datui_scatter.png"))],
+    "pre": [_require_file_absent(Path("/tmp/datui_chart.png"))],
+    "post": [_remove_file_if_present(Path("/tmp/datui_chart.png"))],
 }
 
 
@@ -87,6 +87,11 @@ def _build_home_fixture(repo_root: Path, _tape_number: int) -> None:
 # Tape 12 (home screen): needs an isolated workspace, cache and config -- see the
 # function above for why. Left in place afterwards so the tape can be re-run by hand.
 TAPE_ACTIONS[12] = {
+    "pre": [_build_home_fixture],
+}
+
+# Tape 13 (light theme) records against the same fixture, for the same reason.
+TAPE_ACTIONS[13] = {
     "pre": [_build_home_fixture],
 }
 

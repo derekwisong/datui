@@ -6,27 +6,26 @@ Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
 Hide
-Type "datui tests/sample-data/correlation_matrix_demo.parquet"
+# Daily Bitcoin chain statistics since the genesis block: blocks, addresses, transactions, fees.
+Type "datui demo/data/bitcoin_daily.parquet"
 Enter
-Sleep 0.5s
+Sleep 0.8s
 Show
 Sleep 1s
 
-# Open analysis tools (a)
+# Open analysis.
 Type "a"
 Sleep 1.5s
 
-# Down twice to Correlation Matrix (Describe -> Distribution -> Correlation Matrix), then Enter
+# Down to Correlation Matrix.
 Down
 Sleep 0.5s
 Down
 Sleep 0.5s
-
-# Select Correlation Matrix
 Enter
-Sleep 1s
+Sleep 1.5s
 
-# Scroll right a few times (focus is on main area, correlation matrix view)
+# Scroll across the matrix.
 Right
 Sleep 0.5s
 Right
@@ -34,24 +33,19 @@ Sleep 0.5s
 Right
 Sleep 0.5s
 Right
-Sleep 0.5s
-
-# Scroll back left
-Left
-Sleep 0.5s
-Left
-Sleep 0.5s
-Left
-Sleep 0.5s
-Left
 Sleep 0.5s
 
-# Pause 3 seconds to let the user see the correlation matrix
+Left
+Sleep 0.5s
+Left
+Sleep 0.5s
+Left
+Sleep 0.5s
+Left
+Sleep 0.5s
+
 Sleep 3s
 
-# Back to main from analysis page
 Escape
-
-# Pause before resuming the loop
 Sleep 2s
 Type "q"

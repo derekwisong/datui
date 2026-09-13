@@ -26,6 +26,7 @@ pub fn render_confirmation_modal(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Confirm")
+        .title_style(ratatui::style::Style::reset())
         .border_style(Style::default().fg(ctx.modal_border_active))
         .style(Style::default().bg(ctx.background));
     let inner_area = block.inner(popup_area);
@@ -96,7 +97,8 @@ pub fn render_success_modal(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title("Success");
+        .title("Success")
+        .title_style(ratatui::style::Style::reset());
     let inner_area = block.inner(popup_area);
     block.render(popup_area, buf);
 
@@ -135,6 +137,7 @@ pub fn render_error_modal(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("Error")
+        .title_style(ratatui::style::Style::reset())
         .border_style(Style::default().fg(ctx.modal_border_error));
     let inner_area = block.inner(popup_area);
     block.render(popup_area, buf);
@@ -183,6 +186,7 @@ pub fn render_help_overlay(
 
     let block = Block::default()
         .title(title)
+        .title_style(ratatui::style::Style::reset())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
     let inner_area = block.inner(text_area);

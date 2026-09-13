@@ -640,6 +640,9 @@ pub struct DisplayConfig {
     pub table_cell_padding: usize,
     /// When true, colorize main table cells by column type (string, int, float, bool, temporal).
     pub column_colors: bool,
+    /// Show a second header row naming each column's type. `D` toggles it for the session.
+    #[serde(default = "default_true")]
+    pub dtype_row: bool,
     /// Optional fixed width for all sidebars (Info, Sort & Filter, Template, Pivot & Melt). When None, use built-in defaults per sidebar.
     #[serde(default)]
     pub sidebar_width: Option<u16>,
@@ -866,6 +869,11 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
     (
         "column_colors",
         "Colorize main table cells by column type (string, int, float, bool, date/datetime)\nSet to false to use default text color for all cells",
+    ),
+    (
+        "dtype_row",
+        "Show a second header row naming each column's type (str, i64, f64, bool, datetime ...)
+D toggles it for the session",
     ),
     (
         "sidebar_width",
@@ -1331,6 +1339,36 @@ pub struct ColorConfig {
     pub chart_series_color_5: String,
     pub chart_series_color_6: String,
     pub chart_series_color_7: String,
+    /// The one colour that means "this is the thing": focused titles, key chips, the
+    /// selection rail. Absent from older configs, so it falls back to the palette.
+    #[serde(default = "default_accent")]
+    pub accent: String,
+    /// A brighter accent for a focused title or a value that just changed.
+    #[serde(default = "default_accent_bright")]
+    pub accent_bright: String,
+    /// Two stops for the wordmark on the home screen. Used nowhere else on purpose:
+    /// a gradient on data would be decoration.
+    #[serde(default = "default_gradient_start")]
+    pub gradient_start: String,
+    #[serde(default = "default_gradient_end")]
+    pub gradient_end: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_accent() -> String {
+    ColorConfig::default().accent
+}
+fn default_accent_bright() -> String {
+    ColorConfig::default().accent_bright
+}
+fn default_gradient_start() -> String {
+    ColorConfig::default().gradient_start
+}
+fn default_gradient_end() -> String {
+    ColorConfig::default().gradient_end
 }
 
 // Field comments for ColorConfig
@@ -1396,6 +1434,22 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("chart_series_color_5", "Chart view: fifth series color"),
     ("chart_series_color_6", "Chart view: sixth series color"),
     ("chart_series_color_7", "Chart view: seventh series color"),
+    (
+        "accent",
+        "The accent: key chips in the control bar, focused section titles, the selection rail",
+    ),
+    (
+        "accent_bright",
+        "A brighter accent, for the section the cursor is in",
+    ),
+    (
+        "gradient_start",
+        "First stop of the wordmark gradient on the home screen",
+    ),
+    (
+        "gradient_end",
+        "Last stop of the wordmark gradient on the home screen",
+    ),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1504,6 +1558,7 @@ impl Default for DisplayConfig {
             row_start_index: 1,
             table_cell_padding: 2,
             column_colors: true,
+            dtype_row: true,
             sidebar_width: None,
             align_numeric_right: true,
             number_format: NumberFormatConfig::default(),
@@ -1540,50 +1595,60 @@ impl ColorConfig {
 
     /// Defaults tuned for a dark terminal background.
     pub fn dark() -> Self {
+        // "Night Market": Tokyo Night's palette with one cyan accent. Chrome sits in
+        // three tiers a few percent apart (controls_bg, table_header_bg, the stripe)
+        // rather than one grey shared by everything, and the row under the cursor is
+        // tinted rather than reversed so cell colours survive on it.
         Self {
-            keybind_hints: "cyan".to_string(),
-            keybind_labels: "indexed(252)".to_string(),
-            throbber: "cyan".to_string(),
-            primary_chart_series_color: "cyan".to_string(),
-            secondary_chart_series_color: "indexed(245)".to_string(),
-            success: "green".to_string(),
-            error: "red".to_string(),
-            warning: "yellow".to_string(),
-            dimmed: "dark_gray".to_string(),
+            keybind_hints: "#7dcfff".to_string(),
+            keybind_labels: "#a9b1d6".to_string(),
+            throbber: "#7dcfff".to_string(),
+            primary_chart_series_color: "#7dcfff".to_string(),
+            secondary_chart_series_color: "#565f89".to_string(),
+            success: "#9ece6a".to_string(),
+            error: "#f7768e".to_string(),
+            warning: "#e0af68".to_string(),
+            dimmed: "#565f89".to_string(),
             background: "default".to_string(),
             surface: "default".to_string(),
-            controls_bg: "indexed(235)".to_string(),
+            controls_bg: "#262a3f".to_string(),
             text_primary: "default".to_string(),
-            text_secondary: "indexed(240)".to_string(),
-            text_inverse: "black".to_string(),
-            table_header: "white".to_string(),
-            table_header_bg: "indexed(235)".to_string(),
-            row_numbers: "dark_gray".to_string(),
-            column_separator: "cyan".to_string(),
-            table_selected: "reversed".to_string(),
-            sidebar_border: "indexed(235)".to_string(),
-            modal_border_active: "yellow".to_string(),
-            modal_border_error: "red".to_string(),
-            distribution_normal: "green".to_string(),
-            distribution_skewed: "yellow".to_string(),
-            distribution_other: "white".to_string(),
-            outlier_marker: "red".to_string(),
+            text_secondary: "#737aa2".to_string(),
+            text_inverse: "#1a1b26".to_string(),
+            table_header: "#c0caf5".to_string(),
+            table_header_bg: "#2b3047".to_string(),
+            row_numbers: "#565f89".to_string(),
+            column_separator: "#3b4261".to_string(),
+            table_selected: "#283457".to_string(),
+            // Box titles are drawn in the border colour, so this has to read as text:
+            // the theme's comment grey, not the hairline shade the rules use.
+            sidebar_border: "#565f89".to_string(),
+            modal_border_active: "#7dcfff".to_string(),
+            modal_border_error: "#f7768e".to_string(),
+            distribution_normal: "#9ece6a".to_string(),
+            distribution_skewed: "#e0af68".to_string(),
+            distribution_other: "#c0caf5".to_string(),
+            outlier_marker: "#f7768e".to_string(),
             cursor_focused: "default".to_string(),
             cursor_dimmed: "default".to_string(),
-            alternate_row_color: "indexed(235)".to_string(),
-            str_col: "green".to_string(),
-            int_col: "cyan".to_string(),
-            float_col: "blue".to_string(),
-            bool_col: "yellow".to_string(),
-            temporal_col: "magenta".to_string(),
-            binary_col: "dark_gray".to_string(),
-            chart_series_color_1: "cyan".to_string(),
-            chart_series_color_2: "magenta".to_string(),
-            chart_series_color_3: "green".to_string(),
-            chart_series_color_4: "yellow".to_string(),
-            chart_series_color_5: "blue".to_string(),
-            chart_series_color_6: "red".to_string(),
-            chart_series_color_7: "bright_cyan".to_string(),
+            alternate_row_color: "#1e2030".to_string(),
+            str_col: "#9ece6a".to_string(),
+            int_col: "#7aa2f7".to_string(),
+            float_col: "#2ac3de".to_string(),
+            bool_col: "#e0af68".to_string(),
+            temporal_col: "#bb9af7".to_string(),
+            binary_col: "#565f89".to_string(),
+            chart_series_color_1: "#7dcfff".to_string(),
+            chart_series_color_2: "#bb9af7".to_string(),
+            chart_series_color_3: "#9ece6a".to_string(),
+            chart_series_color_4: "#e0af68".to_string(),
+            chart_series_color_5: "#7aa2f7".to_string(),
+            chart_series_color_6: "#f7768e".to_string(),
+            chart_series_color_7: "#ff9e64".to_string(),
+            accent: "#7dcfff".to_string(),
+            accent_bright: "#a4daff".to_string(),
+            gradient_start: "#7aa2f7".to_string(),
+            gradient_end: "#bb9af7".to_string(),
         }
     }
 
@@ -1595,52 +1660,57 @@ impl ColorConfig {
     /// on black and not on white (plain `cyan`, plain `yellow`) are replaced with
     /// darker equivalents from the 256-colour cube.
     pub fn light() -> Self {
+        // Tokyo Night's "day" variant: the same hues, darkened until every one of them
+        // clears 4.5:1 on a white or near-white background. The chrome tiers go the
+        // other way — a little darker than the terminal rather than lighter.
         Self {
-            keybind_hints: "blue".to_string(),
-            keybind_labels: "indexed(238)".to_string(),
-            throbber: "blue".to_string(),
-            primary_chart_series_color: "blue".to_string(),
-            secondary_chart_series_color: "indexed(244)".to_string(),
-            success: "green".to_string(),
-            error: "red".to_string(),
-            // Plain yellow is unreadable on white; 94 is a dark amber (5.7:1).
-            warning: "indexed(94)".to_string(),
-            dimmed: "indexed(243)".to_string(),
+            keybind_hints: "#2e7de9".to_string(),
+            keybind_labels: "#3760bf".to_string(),
+            throbber: "#2e7de9".to_string(),
+            primary_chart_series_color: "#2e7de9".to_string(),
+            secondary_chart_series_color: "#848cb5".to_string(),
+            success: "#587539".to_string(),
+            error: "#f52a65".to_string(),
+            warning: "#8c6c3e".to_string(),
+            dimmed: "#848cb5".to_string(),
             background: "default".to_string(),
             surface: "default".to_string(),
-            controls_bg: "indexed(254)".to_string(),
+            controls_bg: "#d0d5e3".to_string(),
             text_primary: "default".to_string(),
-            text_secondary: "indexed(240)".to_string(),
-            text_inverse: "white".to_string(),
-            table_header: "black".to_string(),
-            table_header_bg: "indexed(253)".to_string(),
-            row_numbers: "indexed(243)".to_string(),
-            column_separator: "indexed(250)".to_string(),
-            table_selected: "reversed".to_string(),
-            sidebar_border: "indexed(250)".to_string(),
-            modal_border_active: "blue".to_string(),
-            modal_border_error: "red".to_string(),
-            distribution_normal: "green".to_string(),
-            distribution_skewed: "indexed(94)".to_string(),
-            distribution_other: "black".to_string(),
-            outlier_marker: "red".to_string(),
+            text_secondary: "#6172b0".to_string(),
+            text_inverse: "#e1e2e7".to_string(),
+            table_header: "#3760bf".to_string(),
+            table_header_bg: "#c4c8da".to_string(),
+            row_numbers: "#848cb5".to_string(),
+            column_separator: "#a8aecb".to_string(),
+            table_selected: "#b6bfe2".to_string(),
+            sidebar_border: "#6172b0".to_string(),
+            modal_border_active: "#2e7de9".to_string(),
+            modal_border_error: "#f52a65".to_string(),
+            distribution_normal: "#587539".to_string(),
+            distribution_skewed: "#8c6c3e".to_string(),
+            distribution_other: "#3760bf".to_string(),
+            outlier_marker: "#f52a65".to_string(),
             cursor_focused: "default".to_string(),
             cursor_dimmed: "default".to_string(),
-            alternate_row_color: "indexed(254)".to_string(),
-            str_col: "green".to_string(),
-            // Plain cyan washes out on white; 23 is a dark teal (7.5:1).
-            int_col: "indexed(23)".to_string(),
-            float_col: "blue".to_string(),
-            bool_col: "indexed(94)".to_string(),
-            temporal_col: "magenta".to_string(),
-            binary_col: "indexed(243)".to_string(),
-            chart_series_color_1: "blue".to_string(),
-            chart_series_color_2: "green".to_string(),
-            chart_series_color_3: "magenta".to_string(),
-            chart_series_color_4: "indexed(94)".to_string(),
-            chart_series_color_5: "indexed(23)".to_string(),
-            chart_series_color_6: "red".to_string(),
-            chart_series_color_7: "indexed(54)".to_string(),
+            alternate_row_color: "#dcdfea".to_string(),
+            str_col: "#587539".to_string(),
+            int_col: "#2e7de9".to_string(),
+            float_col: "#007197".to_string(),
+            bool_col: "#8c6c3e".to_string(),
+            temporal_col: "#9854f1".to_string(),
+            binary_col: "#848cb5".to_string(),
+            chart_series_color_1: "#2e7de9".to_string(),
+            chart_series_color_2: "#9854f1".to_string(),
+            chart_series_color_3: "#587539".to_string(),
+            chart_series_color_4: "#8c6c3e".to_string(),
+            chart_series_color_5: "#007197".to_string(),
+            chart_series_color_6: "#f52a65".to_string(),
+            chart_series_color_7: "#b15c00".to_string(),
+            accent: "#2e7de9".to_string(),
+            accent_bright: "#1a6cd0".to_string(),
+            gradient_start: "#2e7de9".to_string(),
+            gradient_end: "#9854f1".to_string(),
         }
     }
 }
@@ -2044,6 +2114,9 @@ impl DisplayConfig {
         if other.column_colors != default.column_colors {
             self.column_colors = other.column_colors;
         }
+        if other.dtype_row != default.dtype_row {
+            self.dtype_row = other.dtype_row;
+        }
         if other.sidebar_width != default.sidebar_width {
             self.sidebar_width = other.sidebar_width;
         }
@@ -2148,6 +2221,10 @@ impl ColorConfig {
         validate_color!(&self.chart_series_color_5, "chart_series_color_5");
         validate_color!(&self.chart_series_color_6, "chart_series_color_6");
         validate_color!(&self.chart_series_color_7, "chart_series_color_7");
+        validate_color!(&self.accent, "accent");
+        validate_color!(&self.accent_bright, "accent_bright");
+        validate_color!(&self.gradient_start, "gradient_start");
+        validate_color!(&self.gradient_end, "gradient_end");
 
         Ok(())
     }
@@ -2284,6 +2361,18 @@ impl ColorConfig {
         }
         if other.chart_series_color_7 != default.chart_series_color_7 {
             self.chart_series_color_7 = other.chart_series_color_7;
+        }
+        if other.accent != default.accent {
+            self.accent = other.accent;
+        }
+        if other.accent_bright != default.accent_bright {
+            self.accent_bright = other.accent_bright;
+        }
+        if other.gradient_start != default.gradient_start {
+            self.gradient_start = other.gradient_start;
+        }
+        if other.gradient_end != default.gradient_end {
+            self.gradient_end = other.gradient_end;
         }
     }
 }
@@ -2476,26 +2565,34 @@ fn parse_hex(s: &str) -> Result<(u8, u8, u8)> {
 /// Convert RGB to nearest 256-color palette index
 /// Uses standard xterm 256-color palette
 pub fn rgb_to_256_color(r: u8, g: u8, b: u8) -> u8 {
-    // Check if it's a gray shade (r ≈ g ≈ b)
-    let max_diff = r.max(g).max(b) as i16 - r.min(g).min(b) as i16;
-    if max_diff < 10 {
-        // Map to grayscale ramp (232-255)
-        let gray = (r as u16 + g as u16 + b as u16) / 3;
-        if gray < 8 {
-            return 16; // Black
-        } else if gray > 247 {
-            return 231; // White
-        } else {
-            return 232 + ((gray - 8) * 24 / 240) as u8;
+    // The nearest entry of the xterm palette, by distance in RGB. The cube's six
+    // levels are far apart (0, 95, 135, 175, 215, 255), so a dark tint like #262a3f
+    // is nearer a grey on the ramp than any cube colour; rounding each channel to
+    // a cube level instead sent every dark tint to the same navy or black.
+    let dist = |cr: i32, cg: i32, cb: i32| -> i32 {
+        let (dr, dg, db) = (cr - r as i32, cg - g as i32, cb - b as i32);
+        dr * dr + dg * dg + db * db
+    };
+    const LEVELS: [i32; 6] = [0, 95, 135, 175, 215, 255];
+    let mut best = (i32::MAX, 16u8);
+    for (ri, &cr) in LEVELS.iter().enumerate() {
+        for (gi, &cg) in LEVELS.iter().enumerate() {
+            for (bi, &cb) in LEVELS.iter().enumerate() {
+                let d = dist(cr, cg, cb);
+                if d < best.0 {
+                    best = (d, 16 + 36 * ri as u8 + 6 * gi as u8 + bi as u8);
+                }
+            }
         }
     }
-
-    // Map to 6x6x6 color cube (16-231)
-    let r_idx = (r as u16 * 5 / 255) as u8;
-    let g_idx = (g as u16 * 5 / 255) as u8;
-    let b_idx = (b as u16 * 5 / 255) as u8;
-
-    16 + 36 * r_idx + 6 * g_idx + b_idx
+    for i in 0..24u8 {
+        let v = 8 + 10 * i as i32;
+        let d = dist(v, v, v);
+        if d < best.0 {
+            best = (d, 232 + i);
+        }
+    }
+    best.1
 }
 
 /// Convert RGB to nearest basic ANSI color (8 colors)
@@ -2599,13 +2696,29 @@ impl Theme {
             "column_separator".to_string(),
             parser.parse(&config.colors.column_separator)?,
         );
+        // "reversed" keeps the old swap-fg-and-bg selection; anything else is the tint
+        // painted under the row the cursor is on. Left out of the map for "reversed"
+        // so a widget can ask `get_optional` and tell the two apart.
+        if !config
+            .colors
+            .table_selected
+            .trim()
+            .eq_ignore_ascii_case("reversed")
+        {
+            colors.insert(
+                "table_selected".to_string(),
+                parser.parse(&config.colors.table_selected)?,
+            );
+        }
+        let sidebar_border = parser.parse(&config.colors.sidebar_border)?;
+        colors.insert("sidebar_border".to_string(), sidebar_border);
+        // Every sidebar and the input strip draw their resting border from
+        // `modal_border`; it is the same slot as `sidebar_border`, which is the name
+        // the config documents.
+        colors.insert("modal_border".to_string(), sidebar_border);
         colors.insert(
-            "table_selected".to_string(),
-            parser.parse(&config.colors.table_selected)?,
-        );
-        colors.insert(
-            "sidebar_border".to_string(),
-            parser.parse(&config.colors.sidebar_border)?,
+            "label".to_string(),
+            parser.parse(&config.colors.text_secondary)?,
         );
         colors.insert(
             "modal_border_active".to_string(),
@@ -2691,6 +2804,19 @@ impl Theme {
             "chart_series_color_7".to_string(),
             parser.parse(&config.colors.chart_series_color_7)?,
         );
+        colors.insert("accent".to_string(), parser.parse(&config.colors.accent)?);
+        colors.insert(
+            "accent_bright".to_string(),
+            parser.parse(&config.colors.accent_bright)?,
+        );
+        colors.insert(
+            "gradient_start".to_string(),
+            parser.parse(&config.colors.gradient_start)?,
+        );
+        colors.insert(
+            "gradient_end".to_string(),
+            parser.parse(&config.colors.gradient_end)?,
+        );
 
         Ok(Self { colors })
     }
@@ -2703,6 +2829,17 @@ impl Theme {
     /// Get a color by name, returns None if not found
     pub fn get_optional(&self, name: &str) -> Option<Color> {
         self.colors.get(name).copied()
+    }
+
+    /// Style of the row or item the cursor is on: the theme's tint, or reversed video
+    /// when `table_selected = "reversed"`.
+    pub fn highlight_style(&self) -> ratatui::style::Style {
+        match self.get_optional("table_selected") {
+            Some(bg) => ratatui::style::Style::default().bg(bg),
+            None => {
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::REVERSED)
+            }
+        }
     }
 }
 

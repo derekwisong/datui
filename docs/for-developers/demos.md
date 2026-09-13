@@ -17,6 +17,16 @@ See [vhs install instructions](https://github.com/charmbracelet/vhs?tab=readme-o
   - Other distributions may have their own packages
 
 
+## The demo data
+
+Every tape opens a file under `demo/data`: real datasets, chosen because the
+features show better on data with a story (the heaviest meteorites, the great
+earthquakes, one name's rise and fall). `demo/build.py` downloads the public ones
+and writes them as Parquet; `demo/DATA-LICENSES.md` records where each came from,
+its licence, and what the build changed. Two snapshots (a quant-research extract
+and daily Bitcoin chain statistics) have no public source and are copied in with
+`--private`.
+
 ## Define Tapes
 
 The `vhs` application uses `.tape` files to script keystrokes. See Datui's [here][demo-tapes].
@@ -32,13 +42,12 @@ contents on screen. That is a privacy problem before it is anything else: the de
 list in particular holds whatever you last opened anywhere, which is regularly
 something you would not publish.
 
-So `12-home-screen.tape` records against a fixture, built by
+So `12-home-screen.tape` and `13-light-theme.tape` record against a fixture, built by
 [`make-home-fixture.py`][home-fixture], which the generator runs first:
 
-- its own workspace of generated Parquet under `/tmp/datui-demo`, laid out like a real
-  research tree — hive-partitioned by year, with related datasets — because the home
-  screen's whole point is what it can tell you about data before you open it, and that
-  needs data with a shape;
+- its own workspace under `/tmp/datui-demo`: a copy of `demo/data`, so the home
+  screen lists the same datasets the other tapes open, hive-partitioned trees and
+  all, because its whole point is what it can tell you about data before you open it;
 - its own `DATUI_CACHE_DIR`, so `Recent` is seeded rather than inherited;
 - its own `XDG_CONFIG_HOME` holding a config with `use_desktop_recents = false`, which
   is the line that matters: that list is the one input which can put a file from

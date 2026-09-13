@@ -47,7 +47,7 @@ pub enum ChartRenderData<'a> {
 }
 
 /// Renders a single axis column list (shared by X and Y). Display order: selected (remembered) items first.
-/// Remembered items use modal_border_active; others use text_primary. Selected row uses REVERSED (like main datatable).
+/// Remembered items use modal_border_active; others use text_primary. The selected row takes the theme's highlight, like the main table.
 fn render_axis_list(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
@@ -73,7 +73,7 @@ fn render_axis_list(
         .collect();
 
     let list = List::new(list_items).highlight_style(if is_focused {
-        Style::default().add_modifier(Modifier::REVERSED)
+        theme.highlight_style()
     } else {
         Style::default()
     });
@@ -104,7 +104,8 @@ fn render_filter_group(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(group_border))
-        .title(title);
+        .title(title)
+        .title_style(ratatui::style::Style::reset());
     let group_inner = group_block.inner(area);
     group_block.render(area, buf);
 
@@ -198,7 +199,8 @@ pub fn render_chart_view(
         } else {
             border_color
         }))
-        .title(" Chart ");
+        .title(" Chart ")
+        .title_style(ratatui::style::Style::reset());
     let tab_highlight = if tab_bar_focused {
         Style::default()
             .fg(active_color)
@@ -223,7 +225,8 @@ pub fn render_chart_view(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title(" Options ");
+        .title(" Options ")
+        .title_style(ratatui::style::Style::reset());
     let sidebar_inner = sidebar_block.inner(main_layout[0]);
     sidebar_block.render(main_layout[0], buf);
 

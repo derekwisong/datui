@@ -90,6 +90,11 @@ TAPE_ACTIONS[12] = {
     "pre": [_build_home_fixture],
 }
 
+# Tape 13 (light theme) records against the same fixture, for the same reason.
+TAPE_ACTIONS[13] = {
+    "pre": [_build_home_fixture],
+}
+
 
 class VHSTapeDemo:
     """

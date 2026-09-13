@@ -8,8 +8,10 @@ Set TypingSpeed 25ms
 # Everything the home screen shows comes from the machine it runs on, so the demo
 # gets its own cache, config and workspace. Built by make-home-fixture.py, which the
 # generator runs first. Set here rather than with `Set Env`, which vhs 0.11 lacks.
+# HOME points into the fixture too: the home screen lists the buckets the machine's
+# cloud credentials reach, and those live under ~/.aws and ~/.config/gcloud.
 Hide
-Type "export DATUI_CACHE_DIR=/tmp/datui-demo/cache XDG_CONFIG_HOME=/tmp/datui-demo/config"
+Type "export HOME=/tmp/datui-demo/home DATUI_CACHE_DIR=/tmp/datui-demo/cache XDG_CONFIG_HOME=/tmp/datui-demo/config"
 Enter
 Type "cd /tmp/datui-demo/quant-research"
 Enter

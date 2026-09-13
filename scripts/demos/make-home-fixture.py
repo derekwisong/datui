@@ -138,11 +138,16 @@ def main() -> None:
     build_workspace(workspace)
     seed_cache(root / "cache", workspace)
     write_config(root / "config", workspace)
+    # An empty HOME. The home screen lists the buckets the machine's cloud
+    # credentials reach, and it finds those under ~/.aws and ~/.config/gcloud; the
+    # tape points HOME here so the recording shows no bucket of the recorder's.
+    (root / "home").mkdir(parents=True, exist_ok=True)
 
     manifest = {
         "workspace": str(workspace),
         "DATUI_CACHE_DIR": str(root / "cache"),
         "XDG_CONFIG_HOME": str(root / "config"),
+        "HOME": str(root / "home"),
     }
     (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest, indent=2))

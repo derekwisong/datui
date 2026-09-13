@@ -1620,7 +1620,9 @@ impl ColorConfig {
             row_numbers: "#565f89".to_string(),
             column_separator: "#3b4261".to_string(),
             table_selected: "#283457".to_string(),
-            sidebar_border: "#3b4261".to_string(),
+            // Box titles are drawn in the border colour, so this has to read as text:
+            // the theme's comment grey, not the hairline shade the rules use.
+            sidebar_border: "#565f89".to_string(),
             modal_border_active: "#7dcfff".to_string(),
             modal_border_error: "#f7768e".to_string(),
             distribution_normal: "#9ece6a".to_string(),
@@ -1682,7 +1684,7 @@ impl ColorConfig {
             row_numbers: "#848cb5".to_string(),
             column_separator: "#a8aecb".to_string(),
             table_selected: "#b6bfe2".to_string(),
-            sidebar_border: "#a8aecb".to_string(),
+            sidebar_border: "#6172b0".to_string(),
             modal_border_active: "#2e7de9".to_string(),
             modal_border_error: "#f52a65".to_string(),
             distribution_normal: "#587539".to_string(),

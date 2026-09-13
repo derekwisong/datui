@@ -30,6 +30,7 @@ pub fn render(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title(title)
+        .title_style(ratatui::style::Style::reset())
         .border_style(border_style);
     let inner_area = block.inner(input_area);
     block.render(input_area, buf);

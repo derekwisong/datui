@@ -22,7 +22,8 @@ pub fn render_export_modal(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title("Export Data");
+        .title("Export Data")
+        .title_style(ratatui::style::Style::reset());
     let inner = block.inner(area);
     block.render(area, buf);
 
@@ -92,7 +93,8 @@ fn render_format_list(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
-        .title("Format");
+        .title("Format")
+        .title_style(ratatui::style::Style::reset());
     let inner = block.inner(area);
     block.render(area, buf);
 
@@ -144,7 +146,8 @@ fn render_path_input(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
-        .title("File Path");
+        .title("File Path")
+        .title_style(ratatui::style::Style::reset());
     let inner = block.inner(area);
     block.render(area, buf);
 
@@ -166,7 +169,8 @@ fn render_format_options(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title("Options");
+        .title("Options")
+        .title_style(ratatui::style::Style::reset());
     let inner = block.inner(area);
     block.render(area, buf);
 

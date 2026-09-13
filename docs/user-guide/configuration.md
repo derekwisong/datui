@@ -427,7 +427,7 @@ All UI colors can be customized. The defaults below are the dark set; `mode = "l
 | `alternate_row_color` | Every other row | #1e2030 |
 | `column_separator` | Rule after frozen columns, and the rules beside section titles | #3b4261 |
 | `table_selected` | Tint under the current row; `"reversed"` swaps fg and bg instead | #283457 |
-| `sidebar_border` | Sidebar and input strip borders | #3b4261 |
+| `sidebar_border` | Sidebar and input strip borders, and their titles | #565f89 |
 | `modal_border_active` | Active modal elements | #7dcfff |
 | `modal_border_error` | Error modal borders | #f7768e |
 | `distribution_normal` | Normal distribution indicator | #9ece6a |

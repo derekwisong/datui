@@ -26,7 +26,8 @@ pub fn render(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(modal_title);
+        .title(modal_title)
+        .title_style(ratatui::style::Style::reset());
     let inner_area = block.inner(sort_area);
     block.render(sort_area, buf);
 
@@ -151,6 +152,7 @@ pub fn render(
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .title("Templates")
+                    .title_style(ratatui::style::Style::reset())
                     .border_style(table_border_style),
             )
             .row_highlight_style(ctx.highlight_style());
@@ -246,6 +248,7 @@ pub fn render(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title("Description")
+                .title_style(ratatui::style::Style::reset())
                 .border_style(desc_style);
             let desc_inner = desc_block.inner(chunks[1]);
             desc_block.render(chunks[1], buf);
@@ -273,6 +276,7 @@ pub fn render(
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .title(*title)
+                    .title_style(ratatui::style::Style::reset())
                     .border_style(style);
                 let inner = block.inner(chunks[2 + chunk_idx]);
                 block.render(chunks[2 + chunk_idx], buf);
@@ -322,6 +326,7 @@ pub fn render(
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
                         .title("Schema Match")
+                        .title_style(ratatui::style::Style::reset())
                         .border_style(schema_style),
                 )
                 .render(chunks[6], buf);
@@ -375,7 +380,8 @@ pub fn render(
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .title("Delete Template");
+                .title("Delete Template")
+                .title_style(ratatui::style::Style::reset());
             let inner_area = block.inner(confirm_area);
             block.render(confirm_area, buf);
 
@@ -452,7 +458,8 @@ pub fn render(
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .border_type(BorderType::Rounded)
-                        .title(format!("Score Details: {}", template.name));
+                        .title(format!("Score Details: {}", template.name))
+                        .title_style(ratatui::style::Style::reset());
                     let inner_area = block.inner(details_area);
                     block.render(details_area, buf);
 

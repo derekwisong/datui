@@ -396,6 +396,7 @@ impl<'a> DataTableInfo<'a> {
         };
         let block = Block::default()
             .title(Line::from(format!("Schema: {}", src)).bold())
+            .title_style(ratatui::style::Style::reset())
             .padding(Padding::new(1, 1, 1, 1))
             .border_style(border_style);
         let inner = block.inner(area);
@@ -724,7 +725,8 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .title("Info");
+            .title("Info")
+            .title_style(ratatui::style::Style::reset());
 
         let inner = block.inner(area);
         block.render(area, buf);

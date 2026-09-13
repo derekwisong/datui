@@ -15,6 +15,7 @@ impl<'a> Widget for &'a SchemaView<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()
             .title("Schema")
+            .title_style(ratatui::style::Style::reset())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded);
 

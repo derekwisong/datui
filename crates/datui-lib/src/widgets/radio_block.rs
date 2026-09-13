@@ -102,6 +102,7 @@ impl Widget for RadioBlock<'_> {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title(self.title)
+            .title_style(ratatui::style::Style::reset())
             .border_style(block_style);
         let inner = block.inner(area);
         block.render(area, buf);

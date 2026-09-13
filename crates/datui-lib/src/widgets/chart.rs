@@ -104,7 +104,8 @@ fn render_filter_group(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(group_border))
-        .title(title);
+        .title(title)
+        .title_style(ratatui::style::Style::reset());
     let group_inner = group_block.inner(area);
     group_block.render(area, buf);
 
@@ -198,7 +199,8 @@ pub fn render_chart_view(
         } else {
             border_color
         }))
-        .title(" Chart ");
+        .title(" Chart ")
+        .title_style(ratatui::style::Style::reset());
     let tab_highlight = if tab_bar_focused {
         Style::default()
             .fg(active_color)
@@ -223,7 +225,8 @@ pub fn render_chart_view(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title(" Options ");
+        .title(" Options ")
+        .title_style(ratatui::style::Style::reset());
     let sidebar_inner = sidebar_block.inner(main_layout[0]);
     sidebar_block.render(main_layout[0], buf);
 

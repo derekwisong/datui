@@ -440,7 +440,7 @@ fn test_new_color_fields() {
     assert_eq!(config.theme.colors.table_header_bg, "#2b3047");
     assert_eq!(config.theme.colors.alternate_row_color, "#1e2030");
     assert_eq!(config.theme.colors.column_separator, "#3b4261");
-    assert_eq!(config.theme.colors.sidebar_border, "#3b4261");
+    assert_eq!(config.theme.colors.sidebar_border, "#565f89");
     assert_eq!(config.theme.colors.accent, "#7dcfff");
     assert_eq!(config.theme.colors.accent_bright, "#a4daff");
     assert_eq!(config.theme.colors.gradient_start, "#7aa2f7");

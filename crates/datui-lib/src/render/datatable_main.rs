@@ -95,6 +95,7 @@ pub fn render(
                         .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(ctx.keybind_hints))
                         .title("Breadcrumb")
+                        .title_style(ratatui::style::Style::reset())
                         .render(breadcrumb_layout[0], buf);
 
                     let inner = Block::default().inner(breadcrumb_layout[0]);

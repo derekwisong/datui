@@ -1347,6 +1347,7 @@ fn render_distribution_selector(
     .block(
         Block::default()
             .title("Distribution")
+            .title_style(ratatui::style::Style::reset())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.get("sidebar_border"))),
@@ -1375,6 +1376,7 @@ fn render_distribution_settings(
 ) {
     let block = Block::default()
         .title("Settings")
+        .title_style(ratatui::style::Style::reset())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.get("sidebar_border")));
@@ -1467,6 +1469,7 @@ fn render_sidebar(
     };
     let block = Block::default()
         .title("Analysis Tools")
+        .title_style(ratatui::style::Style::reset())
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color));
@@ -2084,6 +2087,7 @@ fn render_distribution_histogram(config: HistogramRenderConfig, buf: &mut Buffer
         .block(
             Block::default()
                 .title("Histogram")
+                .title_style(ratatui::style::Style::reset())
                 .title_alignment(ratatui::layout::Alignment::Center)
                 .padding(ratatui::widgets::Padding::new(1, 0, 0, 0)), // Extra top padding to separate title from chart
         )
@@ -2322,6 +2326,7 @@ fn render_qq_plot(
         .block(
             Block::default()
                 .title("Q-Q Plot")
+                .title_style(ratatui::style::Style::reset())
                 .title_alignment(ratatui::layout::Alignment::Center)
                 .padding(ratatui::widgets::Padding::new(1, 0, 0, 0)), // Extra top padding to separate title from chart
         )

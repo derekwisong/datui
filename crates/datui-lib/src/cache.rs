@@ -474,9 +474,13 @@ mod recents_pruning_tests {
         cache.push_recent(&dataset);
         assert!(cache.load_recents().iter().any(|p| p == &dataset));
 
-        // The directory goes away, as a temp directory does.
-        let survivor = scratch.path().parent().unwrap().join("still-here.csv");
+        // A second directory of its own, not a fixed name in the system temp directory:
+        // that would be one path shared by every concurrent run of this suite.
+        let elsewhere = tempfile::tempdir().expect("elsewhere");
+        let survivor = elsewhere.path().join("still-here.csv");
         std::fs::write(&survivor, b"a\n1\n").expect("write");
+
+        // The directory goes away, as a temp directory does.
         drop(scratch);
 
         // The next write is what cleans up. Recents are rewritten on open, so the list
@@ -487,8 +491,12 @@ mod recents_pruning_tests {
             !recents.iter().any(|p| p == &dataset),
             "the dead path should be gone; got {recents:?}"
         );
-        assert!(recents.iter().any(|p| p == &survivor));
-        let _ = std::fs::remove_file(&survivor);
+        assert!(
+            recents
+                .iter()
+                .any(|p| p.file_name() == survivor.file_name()),
+            "the live path should remain; got {recents:?}"
+        );
     }
 
     #[test]

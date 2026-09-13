@@ -298,6 +298,31 @@ next choice is one keystroke away rather than a dead end:
 › corrupt▏   …parquet: 'parquet scan': the file must end with PAR1
 ```
 
+## Where a row's data lives
+
+Every row carries a marker before its name saying where reading it will go:
+
+| Unicode | Plain | Means |
+| --- | --- | --- |
+| `◦` | `.` | a disk on this machine |
+| `▪` | `*` | memory, such as `/tmp` on `tmpfs` |
+| `⇅` | `~` | a network filesystem: NFS, SMB, sshfs |
+| `☁` | `@` | an object store or a URL |
+| `◌` | `?` | nothing in the mount table covered it |
+
+The detail pane has always named the filesystem, and still does. The marker exists
+because the pane is on the other side of the screen: full screen on a wide monitor,
+the row your cursor is on and the pane describing it can be a foot apart, and "will
+this one cost me a download?" is a question about the row you are looking at.
+
+Only the ones that can surprise you are coloured. A local disk, which is most rows
+most of the time, is dimmed so the column reads as texture rather than as a warning
+repeated on every line.
+
+The plain column is used when the terminal is not running a UTF-8 locale, alongside
+the rest of the ASCII fallback. Neither set uses Nerd Font icons: those need a font
+datui cannot assume you have.
+
 ## Network locations
 
 The home screen never reads a network location on the thread that draws it. An
@@ -342,6 +367,10 @@ home screen and each one is somewhere to step into:
 ▾ S3-COMPATIBLE (127.0.0.1:9000)  4                       cloud · datui config
   datui-sales/ bucket
 ```
+
+Every cloud row is marked `☁` beside its name, so an object in `RECENT` is
+distinguishable from a local file without reading the detail pane. See
+[Where a row's data lives](#where-a-rows-data-lives).
 
 Pressing `Enter` on a bucket lists one level of it. Prefixes are marked `prefix` and
 descend like directories; objects open like files. Everything else on this page

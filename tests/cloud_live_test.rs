@@ -608,6 +608,25 @@ fn the_cloud_section_renders_legibly() {
     for bucket in ["datui-sales", "datui-logs", "datui-events", "datui-empty"] {
         assert!(screen.contains(bucket), "{bucket} should be on screen");
     }
+    // The marker that says where a row's data lives, beside the name rather than in
+    // the detail pane a foot away on a full-screen ultrawide.
+    assert!(
+        screen.contains("☁ datui-sales/"),
+        "a bucket should be marked as living in an object store"
+    );
+    assert!(
+        screen.contains("☁ pitscope-prod-data/"),
+        "and so should a bucket from the other provider"
+    );
+    assert!(
+        !screen.contains("☁ crates/"),
+        "a local directory must not be marked as cloud"
+    );
+    assert!(
+        screen.contains("◦ crates/"),
+        "a local directory should carry the local marker"
+    );
+
     // Buckets are places, and a place is written with a trailing slash here.
     assert!(
         screen.contains("datui-sales/"),

@@ -489,6 +489,23 @@ fn entry_line<'a>(
         None => format!(" {kind}"),
     };
 
+    // Where this row's data lives, immediately before its name. The detail pane has
+    // carried this for a long time, and on a full-screen ultrawide the pane is far
+    // enough from the cursor that a cloud path reads as a local one at a glance.
+    let locality = entry
+        .cost
+        .source
+        .as_deref()
+        .map(crate::locality::Locality::of_fstype);
+    let place = match locality {
+        Some(crate::locality::Locality::Object) => g.in_object_store,
+        Some(crate::locality::Locality::Network) => g.over_network,
+        Some(crate::locality::Locality::Memory) => g.in_memory,
+        Some(crate::locality::Locality::Local) => g.here,
+        Some(crate::locality::Locality::Unknown) | None => g.place_unknown,
+    };
+    let place_cell = format!("{place} ");
+
     // Positions are taken from the untruncated name, because that is what matched.
     // Truncation then shifts them, and dropping the ones that fall outside is exactly
     // right: a character no longer on screen cannot be highlighted.
@@ -505,7 +522,8 @@ fn entry_line<'a>(
     // Truncate the name, never the metadata: the columns must stay aligned. A row
     // whose name is a path keeps its tail, since the leaf is what identifies it;
     // an ordinary filename keeps its head, where the distinguishing part usually is.
-    let budget = name_width.saturating_sub(2 + kind_cell.chars().count() + 1);
+    let budget =
+        name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1);
     if name.chars().count() > budget && budget > 1 {
         let original_len = name.chars().count();
         if name.starts_with('/') || name.starts_with('~') {
@@ -554,10 +572,24 @@ fn entry_line<'a>(
         .fg(ctx.keybind_hints)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
 
-    let mut spans = vec![Span::styled(
-        marker,
-        base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
-    )];
+    // Loud enough to find, quiet enough to ignore. Somewhere that can stall or cost
+    // money is coloured; a local disk, which is the overwhelming majority of rows, is
+    // dimmed so the column reads as texture rather than as a warning repeated on every
+    // line.
+    let place_style = base.fg(match locality {
+        Some(crate::locality::Locality::Object) => ctx.keybind_hints,
+        Some(crate::locality::Locality::Network) => ctx.warning,
+        Some(crate::locality::Locality::Memory) => ctx.temporal_col,
+        _ => ctx.dimmed,
+    });
+
+    let mut spans = vec![
+        Span::styled(
+            marker,
+            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(place_cell, place_style),
+    ];
     spans.extend(highlight_spans(
         &name,
         &name_positions,
@@ -1064,9 +1096,11 @@ mod tests {
         let spans = row_spans("sales_2024.parquet", "sales", None);
         assert_eq!(highlighted_text(&spans), "sales");
         // Reassembling the spans must give back exactly the name; highlighting is a
-        // change of style, never of text.
+        // change of style, never of text. The locality marker sits between the
+        // selection marker and the name, so the name is what follows it rather than
+        // what the row starts with.
         let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
-        assert!(text.starts_with("sales_2024.parquet"), "got {text:?}");
+        assert!(text.contains("sales_2024.parquet"), "got {text:?}");
     }
 
     #[test]

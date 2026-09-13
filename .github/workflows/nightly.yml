@@ -181,16 +181,61 @@ jobs:
             python/dist/*.whl
             target/release/datui.exe
 
-      # The test suite, on the platform that otherwise only sees it at release
-      # time. CI's windows job is gated on the version not carrying -dev, so it
-      # runs on a release commit and nowhere else: every test written during a
-      # cycle first meets Windows when the release is already being cut. Three
-      # did that for v0.3.2 and all three failed, none of them for a reason
-      # datui was at fault for.
-      #
-      # Deliberately after the upload. A failing test still fails the job, which
-      # is what nightly is for, but the binaries and the wheel are already
-      # attached by then, so a broken test does not also cost the artifacts.
+  # The test suite, on the platform that otherwise only sees it at release time.
+  # CI's windows job is gated on the version not carrying -dev, so it runs on a
+  # release commit and nowhere else: every test written during a cycle first
+  # meets Windows when the release is already being cut. Three did that for
+  # v0.3.2 and all three failed, none of them for a reason datui was at fault for.
+  #
+  # Its own job rather than steps after the release build, and in the dev
+  # profile rather than release. Testing in release looked like it would reuse
+  # the build above, but it did not: the release profile's thin LTO runs again
+  # for every test executable, around twenty of them, and that alone took the
+  # step to 70 minutes. A dev build of the same suite takes a few, runs in
+  # parallel with the release build, and gets debug_assertions back.
+  #
+  # This is a copy of CI's windows job, cache key included. The shared key is
+  # the point: CI's job runs too rarely to keep its own cache alive, so on a
+  # release commit it has been building from cold. Nightly runs on main, whose
+  # cache every branch can restore, so this job keeps that entry warm for it.
+  # Keep the two in step; an env difference changes rust-cache's key and
+  # silently splits the cache again.
+  windows-tests:
+    runs-on: windows-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          cache-workspace-crates: true
+
       - name: Create virtual environment and install requirements
         run: |
           python -m venv .venv
@@ -201,12 +246,28 @@ jobs:
       - name: Generate sample data
         run: .venv\Scripts\python.exe scripts/generate_sample_data.py
 
-      # Release profile, to reuse what this job already compiled. A debug build
-      # would be a second full compile, and Windows is the slowest thing here.
-      # The cost is that debug_assertions is off, so anything gated on it is
-      # still only covered by the linux job, which builds in debug.
+      - name: Build
+        run: cargo build --workspace --tests --locked
+
       - name: Run tests
-        run: cargo test --release --workspace --locked --no-fail-fast
+        run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Bundle CLI for wheel
+        run: |
+          New-Item -ItemType Directory -Force -Path python/datui_bin
+          Move-Item target/debug/datui.exe python/datui_bin/
+          Copy-Item LICENSE python/LICENSE
+
+      - name: Build and install Python package
+        run: |
+          .\.venv\Scripts\Activate.ps1
+          cd python
+          maturin develop
+
+      - name: Run Python tests
+        run: |
+          .\.venv\Scripts\Activate.ps1
+          pytest python/tests/ -v
 
   macos:
     runs-on: macos-latest
@@ -294,17 +355,51 @@ jobs:
             target/${{ matrix.target }}/release/datui
             target/${{ matrix.target }}/release/datui.1
 
-      # As on windows: CI's macos job only runs on a release commit, so this is
-      # the one place the suite meets macOS during a cycle. Only on the native
-      # target, because the x86_64 leg of this matrix cross-compiles and its test
-      # binaries would need Rosetta to run at all. Whatever is macOS-specific
-      # about a test -- /var resolving to /private/var, for one -- is the same on
-      # both.
-      #
-      # After the upload, and in release profile against this leg's target
-      # directory, for the reasons spelled out on the windows job.
+  # As on windows: CI's macos job only runs on a release commit, so this is the
+  # one place the suite meets macOS during a cycle. Native arm64 only, as CI's
+  # job is. Whatever is macOS-specific about a test -- /var resolving to
+  # /private/var, for one -- is the same on x86_64.
+  #
+  # A copy of CI's macos job, dev profile and cache key included, for the
+  # reasons spelled out on windows-tests. Release-profile tests took an hour
+  # here too, nearly all of it LTO.
+  macos-tests:
+    runs-on: macos-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-wheel.txt
+            scripts/requirements-wheel-windows.txt
+            python/pyproject.toml
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          cache-workspace-crates: true
+
       - name: Create virtual environment and install requirements
-        if: matrix.target == 'aarch64-apple-darwin'
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
@@ -312,14 +407,26 @@ jobs:
           .venv/bin/pip install -r scripts/requirements-wheel.txt
 
       - name: Generate sample data
-        if: matrix.target == 'aarch64-apple-darwin'
         run: .venv/bin/python scripts/generate_sample_data.py
 
+      - name: Build
+        run: cargo build --workspace --tests --locked
+
       - name: Run tests
-        if: matrix.target == 'aarch64-apple-darwin'
-        run: >-
-          cargo test --release --workspace --locked --no-fail-fast
-          --target ${{ matrix.target }}
+        run: cargo test --workspace --locked --no-fail-fast
+
+      - name: Bundle CLI for wheel
+        run: |
+          mkdir -p python/datui_bin
+          mv target/debug/datui python/datui_bin/
+          chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
+
+      - name: Build and install Python package
+        run: . .venv/bin/activate && cd python && maturin develop
+
+      - name: Run Python tests
+        run: . .venv/bin/activate && pytest python/tests/ -v
 
   # The fuzzers proper: each target gets a timed run that generates new input, rather
   # than the corpus replay CI does on every pull request. Targets run as a matrix so a

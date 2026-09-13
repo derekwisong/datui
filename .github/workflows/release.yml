@@ -88,9 +88,19 @@ jobs:
             python/pyproject.toml
 
       - name: Cache cargo dependencies
+        # Restores what the Nightly workflow built on main, and never saves. A
+        # cache entry is scoped to the ref that wrote it, and a tag run can read
+        # its own tag's entries and main's, nothing else. The `release` key this
+        # used to share was only ever written from tags, so every release found
+        # nothing, built from cold (57 minutes on Windows), then spent quota
+        # saving an entry no later tag could reach. Nightly's release build uses
+        # the same commands and env, so its key prefix matches here; the version
+        # bump changes the lockfile hash, and rust-cache falls back to the most
+        # recent nightly entry, which differs by datui's own crates.
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: release
+          shared-key: nightly
+          save-if: false
           cache-workspace-crates: true
 
       - name: Build release binary
@@ -269,9 +279,11 @@ jobs:
         run: pip install maturin
 
       - name: Cache cargo dependencies
+        # Nightly's entry from main, restore only. See the linux job.
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: release
+          shared-key: nightly
+          save-if: false
           cache-workspace-crates: true
 
       - name: Build release binary
@@ -349,9 +361,11 @@ jobs:
         run: pip install maturin
 
       - name: Cache cargo dependencies
+        # Nightly's entry from main, restore only. See the linux job.
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: release
+          shared-key: nightly
+          save-if: false
           key: ${{ matrix.target }}
           cache-workspace-crates: true
 

@@ -14,6 +14,12 @@ rules:
       # lower-trust context can be restored into the job that produces the
       # binary people install, so a poisoned cache becomes a poisoned release.
       #
+      # The rust-cache step is restore-only and reads the Nightly workflow's
+      # entry. A tag run can restore only what was written on its own tag or on
+      # main, and pull request runs write to their merge ref, so that entry was
+      # built from code already merged to main. (Until that change the step
+      # restored nothing at all: its key was only ever written from tags.)
+      #
       # Not suppressed because the risk is imaginary. Suppressed because the
       # fix, building releases with no cache at all, trades a large amount of
       # release wall-clock time for it, and that is a decision to make

@@ -983,6 +983,7 @@ fn test_a_remote_root_is_listed_without_being_read() {
 
     let mut home = HomeState {
         network_check: pretend_remote,
+        cloud: Vec::new(),
         ..Default::default()
     };
     home.rebuild(std::slice::from_ref(&remote), &[]);
@@ -1025,6 +1026,7 @@ fn test_a_probe_result_fills_the_remote_root_in() {
 
     let mut home = HomeState {
         network_check: pretend_remote,
+        cloud: Vec::new(),
         ..Default::default()
     };
     home.rebuild(std::slice::from_ref(&remote), &[]);
@@ -1051,6 +1053,7 @@ fn test_a_root_that_never_answers_is_marked_unreachable() {
 
     let mut home = HomeState {
         network_check: pretend_remote,
+        cloud: Vec::new(),
         ..Default::default()
     };
     home.rebuild(std::slice::from_ref(&remote), &[]);
@@ -1081,6 +1084,7 @@ fn test_remote_rows_are_left_to_their_root_probe() {
 
     let mut home = HomeState {
         network_check: pretend_remote,
+        cloud: Vec::new(),
         browsing: Some(remote.clone()),
         ..Default::default()
     };
@@ -1101,6 +1105,7 @@ fn test_a_remote_recent_is_shown_without_stat() {
 
     let mut home = HomeState {
         network_check: pretend_remote,
+        cloud: Vec::new(),
         ..Default::default()
     };
     home.rebuild(&[], std::slice::from_ref(&remote));
@@ -1191,6 +1196,7 @@ fn test_a_recent_adopts_the_classification_its_root_probe_found() {
 
     let mut home = HomeState {
         network_check: pretend_remote,
+        cloud: Vec::new(),
         ..Default::default()
     };
     home.rebuild(std::slice::from_ref(&root), std::slice::from_ref(&dataset));
@@ -1317,6 +1323,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
         probed: Default::default(),
         unreachable: Default::default(),
         network_check: |_| false,
+        cloud: Vec::new(),
         known: Default::default(),
     };
 
@@ -1526,11 +1533,13 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
         probed: Default::default(),
         unreachable: Default::default(),
         network_check: pretend_remote,
+        cloud: Vec::new(),
         known: cache.load_dataset_facts(),
     });
 
     let mut home = HomeState {
         network_check: pretend_remote,
+        cloud: Vec::new(),
         ..Default::default()
     };
     home.apply_listing(listing);
@@ -1592,6 +1601,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
         probed: Default::default(),
         unreachable: Default::default(),
         network_check: |_| false,
+        cloud: Vec::new(),
         known: cache.load_dataset_facts(),
     });
 

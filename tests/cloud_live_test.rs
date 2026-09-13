@@ -175,5 +175,358 @@ fn minio_is_discovered_and_its_buckets_listed() {
         ))
         .expect("listing the prefix");
     let nested_names: Vec<&str> = nested.iter().map(|r| r.name.as_str()).collect();
-    assert_eq!(nested_names, vec!["january.csv"], "got {nested_names:?}");
+    assert!(
+        nested_names.contains(&"january.csv"),
+        "got {nested_names:?}"
+    );
+    assert!(
+        !nested_names.iter().any(|n| n.contains('/')),
+        "a delimited listing returns leaf names, not paths: {nested_names:?}"
+    );
+}
+
+/// Drive the app the way the main loop does, until `done` or the deadline.
+///
+/// Cloud work lands by event from a worker, so nothing here can be asserted
+/// synchronously after a keypress. The alternative to pumping is sleeping for a fixed
+/// interval and hoping, which is the shape of a test that fails one run in twenty.
+/// Feed an event and everything it leads to, reporting any crash on the way.
+///
+/// `App::event` returns the next link in a load chain; crashes are handled by the main
+/// loop rather than by `event`, so a test that only feeds events back in watches a
+/// failure disappear and then asserts against a screen that never changed.
+fn drive(app: &mut datui::App, first: datui::AppEvent) -> Option<String> {
+    let mut next = Some(first);
+    let mut crash = None;
+    while let Some(event) = next {
+        if let datui::AppEvent::Crash(message) = &event {
+            crash = Some(message.clone());
+        }
+        next = app.event(&event);
+    }
+    crash
+}
+
+fn pump_until(
+    app: &mut datui::App,
+    rx: &std::sync::mpsc::Receiver<datui::AppEvent>,
+    seconds: u64,
+    done: impl Fn(&datui::App) -> bool,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    while std::time::Instant::now() < deadline {
+        if done(app) {
+            return true;
+        }
+        while let Ok(event) = rx.try_recv() {
+            match &event {
+                datui::AppEvent::Crash(message) => eprintln!("crash: {message}"),
+                datui::AppEvent::BackgroundError { message, .. } => {
+                    eprintln!("background error: {message}")
+                }
+                datui::AppEvent::BackgroundDownloadReady { temp_path, .. } => {
+                    eprintln!("download ready: {temp_path:?}")
+                }
+                datui::AppEvent::BackgroundLazyFrameReady { path, .. } => {
+                    eprintln!("lazyframe ready: {path:?}")
+                }
+                _ => {}
+            }
+            // Follow the whole chain, not one link of it. A load is a sequence of
+            // events, each returned by the handler of the last, and stopping after one
+            // leaves the dataset built but never installed — which looks from the
+            // outside exactly like a load that failed without saying so.
+            if let Some(crash) = drive(app, event) {
+                eprintln!("crash: {crash}");
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    done(app)
+}
+
+fn key(code: crossterm::event::KeyCode) -> datui::AppEvent {
+    datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+        code,
+        crossterm::event::KeyModifiers::NONE,
+    ))
+}
+
+/// An app pointed at the MinIO endpoint, on the home screen.
+fn minio_app(endpoint: &str) -> (datui::App, std::sync::mpsc::Receiver<datui::AppEvent>) {
+    common::isolate_cache();
+    let mut config = datui::config::AppConfig {
+        cloud: minio_config(endpoint),
+        ..Default::default()
+    };
+    // Nothing here should depend on what is in this checkout or on this desktop.
+    config.data.use_desktop_recents = false;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+    (app, rx)
+}
+
+/// The section with this exact title, if the listing has one.
+///
+/// Tests name the section they mean rather than searching every section for a row.
+/// Once one of these tests has opened an object, that object is in Recent, so "some
+/// section contains top-level.csv" is satisfied before the bucket has even answered.
+fn section_named<'a>(app: &'a datui::App, title: &str) -> Option<&'a datui::home::Section> {
+    app.home.sections.iter().find(|s| s.title == title)
+}
+
+/// Put the cursor on the visible row with this name, and say whether it was found.
+fn select_row(app: &mut datui::App, name: &str) -> bool {
+    for (index, row) in app.home.visible().iter().enumerate() {
+        if let datui::home::Row::Entry { entry, .. } = row {
+            if entry.name == name {
+                app.home.selected = index;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[test]
+#[ignore = "drives the home screen against a local MinIO; set DATUI_LIVE_S3"]
+fn the_home_screen_lists_buckets_and_descends_into_one() {
+    let Ok(endpoint) = std::env::var("DATUI_LIVE_S3") else {
+        eprintln!("skipped: set DATUI_LIVE_S3 to an endpoint to run");
+        return;
+    };
+    let (mut app, rx) = minio_app(&endpoint);
+
+    let listed = pump_until(&mut app, &rx, 30, |app| {
+        app.home
+            .sections
+            .iter()
+            .any(|s| s.title.contains("S3-compatible"))
+    });
+    assert!(
+        listed,
+        "the provider should appear as a section on the home screen"
+    );
+
+    let section = app
+        .home
+        .sections
+        .iter()
+        .find(|s| s.title.contains("S3-compatible"))
+        .expect("the cloud section");
+    let names: Vec<&str> = section.rows.iter().map(|r| r.name.as_str()).collect();
+    println!(
+        "section {:?} subtitle {:?}",
+        section.title, section.subtitle
+    );
+    println!("buckets on screen: {names:?}");
+    assert!(names.contains(&"datui-sales"), "got {names:?}");
+    assert!(
+        names.contains(&"datui-empty"),
+        "an empty bucket is still a bucket"
+    );
+    assert!(
+        section
+            .subtitle
+            .as_deref()
+            .is_some_and(|s| s.starts_with("cloud · ")),
+        "the section should say where the credentials came from: {:?}",
+        section.subtitle
+    );
+
+    // Every bucket is a row to step into, never expanded in place, and never measured.
+    // Expanding them would be a billed request per bucket on every start, and measuring
+    // one would mean reading object bytes to fill in a column nobody asked for.
+    for row in &section.rows {
+        assert_eq!(row.kind, datui::discover::EntryKind::Directory);
+        assert!(
+            row.rows.is_none(),
+            "a bucket row must not carry a row count"
+        );
+        assert!(row.cols.is_none(), "nor a column count");
+    }
+
+    // The fuzzy filter is the one recents use, and it reaches cloud rows because they
+    // are ordinary rows in an ordinary section rather than a bespoke widget.
+    app.home.filter = "sales".to_string();
+    let visible: Vec<String> = app
+        .home
+        .visible()
+        .iter()
+        .filter_map(|row| match row {
+            datui::home::Row::Entry { entry, .. } => Some(entry.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        visible.iter().any(|n| n == "datui-sales"),
+        "filtering should match a bucket by name; got {visible:?}"
+    );
+    assert!(
+        !visible.iter().any(|n| n == "datui-logs"),
+        "and should exclude the others; got {visible:?}"
+    );
+
+    // Enter on the bucket, through the real key handler rather than by reaching into
+    // state, so what is tested is what a keypress does.
+    assert!(select_row(&mut app, "datui-sales"), "the bucket row");
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    let descended = pump_until(&mut app, &rx, 30, |app| {
+        section_named(app, "s3://datui-sales")
+            .is_some_and(|s| s.rows.iter().any(|r| r.name == "top-level.csv"))
+    });
+    assert!(
+        descended,
+        "descending into a bucket should list its top level"
+    );
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(std::path::Path::new("s3://datui-sales"))
+    );
+
+    for section in &app.home.sections {
+        println!(
+            "section {:?} unavailable={} rows={:?}",
+            section.title,
+            section.unavailable,
+            section.rows.iter().map(|r| &r.name).collect::<Vec<_>>()
+        );
+    }
+    let rows = &section_named(&app, "s3://datui-sales")
+        .expect("the browsed section")
+        .rows;
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    println!("inside s3://datui-sales: {names:?}");
+    assert!(
+        names.contains(&"2024"),
+        "prefixes should be rows: {names:?}"
+    );
+    assert!(names.contains(&"orders.parquet"), "got {names:?}");
+
+    let parquet = rows
+        .iter()
+        .find(|r| r.name == "orders.parquet")
+        .expect("the parquet object");
+    assert!(
+        parquet.size.unwrap_or(0) > 1_000_000,
+        "size comes from the listing itself"
+    );
+    assert!(
+        parquet.rows.is_none() && parquet.columns.is_empty(),
+        "no footer was read, so there is no row count and no column names: {parquet:?}"
+    );
+
+    // And down one more level, into a prefix rather than a bucket.
+    assert!(select_row(&mut app, "2024"), "the prefix row");
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    let deeper = pump_until(&mut app, &rx, 30, |app| {
+        section_named(app, "s3://datui-sales/2024")
+            .is_some_and(|s| s.rows.iter().any(|r| r.name == "january.csv"))
+    });
+    assert!(deeper, "a prefix should descend like a directory");
+    let deep_names: Vec<&str> = section_named(&app, "s3://datui-sales/2024")
+        .expect("the browsed prefix")
+        .rows
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    println!("inside s3://datui-sales/2024: {deep_names:?}");
+    assert!(deep_names.contains(&"march.parquet"), "got {deep_names:?}");
+}
+
+#[test]
+#[ignore = "opens S3 data end to end against a local MinIO; set DATUI_LIVE_S3"]
+fn an_s3_object_opens_and_lands_in_recents() {
+    let Ok(endpoint) = std::env::var("DATUI_LIVE_S3") else {
+        eprintln!("skipped: set DATUI_LIVE_S3 to an endpoint to run");
+        return;
+    };
+    let (mut app, rx) = minio_app(&endpoint);
+
+    // Driven the way a user drives it: find the bucket, step in, press Enter on an
+    // object. Sending `Open` directly skips what the home screen does around it, and a
+    // test that skips that is testing a path nobody takes.
+    let listed = pump_until(&mut app, &rx, 30, |app| {
+        app.home
+            .sections
+            .iter()
+            .any(|s| s.rows.iter().any(|r| r.name == "datui-sales"))
+    });
+    assert!(listed, "the bucket should be listed");
+    assert!(select_row(&mut app, "datui-sales"), "the bucket row");
+    app.event(&key(crossterm::event::KeyCode::Enter));
+
+    let inside = pump_until(&mut app, &rx, 30, |app| {
+        section_named(app, "s3://datui-sales")
+            .is_some_and(|s| s.rows.iter().any(|r| r.name == "top-level.csv"))
+    });
+    assert!(inside, "the bucket contents should be listed");
+    assert!(select_row(&mut app, "top-level.csv"), "the object row");
+
+    if let Some(crash) = drive(&mut app, key(crossterm::event::KeyCode::Enter)) {
+        panic!("opening the object crashed: {crash}");
+    }
+
+    // A remote open asks before spending egress.
+    let asked = pump_until(&mut app, &rx, 30, |app| {
+        app.awaiting_download_confirmation() || app.data_table_state.is_some()
+    });
+    assert!(asked, "opening a remote object should either ask or load");
+    if app.awaiting_download_confirmation() {
+        // The modal opens focused on No, which is the right default for a prompt that
+        // spends somebody's egress budget. Moving to Yes is part of what a user does.
+        println!("confirmation raised, accepting");
+        app.event(&key(crossterm::event::KeyCode::Left));
+        if let Some(crash) = drive(&mut app, key(crossterm::event::KeyCode::Enter)) {
+            panic!("confirming the download crashed: {crash}");
+        }
+    }
+
+    let loaded = pump_until(&mut app, &rx, 60, |app| {
+        app.data_table_state.is_some() && !app.is_busy()
+    });
+    assert!(
+        loaded,
+        "the dataset should load; input_mode={:?} status={:?} busy={}",
+        app.input_mode,
+        app.home.status,
+        app.is_busy()
+    );
+
+    let state = app.data_table_state.as_ref().expect("a loaded table");
+    println!("loaded {} columns", state.headers().len());
+    assert_eq!(
+        state.headers(),
+        vec!["order_id", "region", "customer", "amount", "ts"],
+        "the CSV header should have been read from the object"
+    );
+
+    // And it should be offered next time. Recents is the other half of "open them
+    // easily": a bucket visited once should not need finding again.
+    //
+    // Read through a cache manager of its own. `isolate_cache` points DATUI_CACHE_DIR at
+    // a per-process directory, so this is the same store the app just wrote to, without
+    // the app having to expose it.
+    let cache = datui::CacheManager::new("datui").expect("cache manager");
+    let recorded = pump_until(&mut app, &rx, 20, |_| {
+        cache
+            .load_recents()
+            .iter()
+            .any(|p| p.to_string_lossy().contains("datui-sales/top-level.csv"))
+    });
+    let recents = cache.load_recents();
+    println!("recents now: {recents:?}");
+    assert!(
+        recorded,
+        "an opened S3 object should be recorded in recents; got {recents:?}"
+    );
 }

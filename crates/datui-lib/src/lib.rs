@@ -733,6 +733,13 @@ pub enum AppEvent {
         scanned: usize,
         limited: Option<String>,
     },
+    /// The object stores on this machine, with their buckets. Sent once per session:
+    /// enumeration is a billed network round trip per provider, and a bucket list does
+    /// not change while somebody is looking at it.
+    #[cfg(feature = "cloud")]
+    HomeCloudReady {
+        sections: Vec<crate::home::CloudSection>,
+    },
     /// A network root has been listed off-thread, or could not be.
     HomeProbeReady {
         root: PathBuf,
@@ -1208,6 +1215,10 @@ pub struct App {
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
     home_probes_inflight: Vec<PathBuf>,
+    /// True once cloud discovery has been started. Enumeration costs a request per
+    /// provider, so it happens once and its result is kept for the session.
+    #[cfg(feature = "cloud")]
+    cloud_discovery_started: bool,
     /// True while a recursive search below the working directory is out. One at a
     /// time: the walk is bounded, and a second one would only compete for the disk.
     home_search_inflight: bool,
@@ -1683,6 +1694,8 @@ impl App {
             data_table_state: None,
             home: home::HomeState::default(),
             home_probes_inflight: Vec::new(),
+            #[cfg(feature = "cloud")]
+            cloud_discovery_started: false,
             home_search_inflight: false,
             home_generation: 0,
             home_schema_inflight: Vec::new(),
@@ -1852,11 +1865,37 @@ impl App {
             self.home_probes_inflight.push(root.clone());
             let tx = self.events.clone();
             let cache = self.cache.clone();
+            #[cfg(feature = "cloud")]
+            let cloud = self.app_config.cloud.clone();
+            #[cfg(feature = "cloud")]
+            let runtime = self.runtime.clone();
             // A detached OS thread, not the runtime's blocking pool. A thread wedged
             // on an unreachable `hard` mount never returns, and the pool is shared with
             // the work that actually loads data — a few dead shares must not eat into
             // the capacity that opening a dataset depends on.
             std::thread::spawn(move || {
+                // A bucket or a prefix inside one. It looks like a network root to
+                // everything above, and it is, but it is read with an object-store
+                // listing rather than `read_dir` — which on a `gs://` path fails, which
+                // is why descending into a bucket used to show nothing at all.
+                //
+                // Deliberately metadata-only. A delimited listing returns names, sizes
+                // and modification times for one level, and nothing here reads an
+                // object's contents: no footers, no schemas, no row counts. Those are
+                // what a local listing fills in for free from bytes already on the
+                // machine, and what would cost a ranged read per row against an object
+                // store somebody pays egress on.
+                #[cfg(feature = "cloud")]
+                if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some() {
+                    let listed = runtime
+                        .block_on(crate::cloud_browse::list_objects(
+                            &root.to_string_lossy(),
+                            &cloud,
+                        ))
+                        .ok();
+                    let _ = tx.send(AppEvent::HomeProbeReady { root, rows: listed });
+                    return;
+                }
                 let rows = if std::fs::read_dir(&root).is_ok() {
                     let mut rows = crate::discover::scan_dir(&root);
                     // Measuring happens here too: it is the same remote filesystem,
@@ -1881,6 +1920,66 @@ impl App {
                 let _ = tx.send(AppEvent::HomeProbeReady { root, rows });
             });
         }
+    }
+
+    /// Find the object stores this machine can read, and enumerate their buckets.
+    ///
+    /// Once per session. Every provider costs a request, and against a bucket list that
+    /// does not change while it is on screen, repeating that on each rebuild would be a
+    /// billed round trip per keystroke.
+    ///
+    /// Runs on the runtime's blocking pool rather than a detached thread. Unlike a probe
+    /// of a dead `hard` mount, an HTTP request cannot wedge forever: every call here is
+    /// bounded by a global timeout, so the task is guaranteed to end and the pool slot
+    /// comes back.
+    #[cfg(feature = "cloud")]
+    fn spawn_cloud_discovery(&mut self) {
+        if self.cloud_discovery_started {
+            return;
+        }
+        self.cloud_discovery_started = true;
+        let tx = self.events.clone();
+        let cloud = self.app_config.cloud.clone();
+        self.runtime.spawn(async move {
+            let providers = {
+                let env = crate::cloud_browse::Environment::current();
+                crate::cloud_browse::detect(&cloud, &env)
+            };
+            let mut sections = Vec::new();
+            for provider in &providers {
+                let subtitle = match &provider.project {
+                    Some(project) => format!("cloud · {} · {}", provider.note, project),
+                    None => format!("cloud · {}", provider.note),
+                };
+                let (buckets, error) = if provider.can_list_buckets() {
+                    match crate::cloud_browse::list_buckets(provider, &cloud).await {
+                        Ok(buckets) => (buckets, None),
+                        Err(e) => (Vec::new(), Some(e)),
+                    }
+                } else {
+                    // Usable for anything typed, unable to enumerate. Saying which is
+                    // the difference between "you have no buckets" and "datui cannot
+                    // ask", and only one of those is something the user can fix.
+                    (
+                        Vec::new(),
+                        Some("no project set, so buckets cannot be listed".to_string()),
+                    )
+                };
+                let scheme = provider.kind.scheme();
+                sections.push(crate::home::CloudSection {
+                    title: provider.label.clone(),
+                    subtitle: Some(subtitle),
+                    buckets: buckets
+                        .into_iter()
+                        .map(|b| PathBuf::from(format!("{scheme}://{b}")))
+                        .collect(),
+                    error,
+                });
+            }
+            if !sections.is_empty() {
+                let _ = tx.send(AppEvent::HomeCloudReady { sections });
+            }
+        });
     }
 
     /// Start the recursive search below the working directory, if it is wanted and
@@ -1960,6 +2059,7 @@ impl App {
             probed: self.home.probed.clone(),
             unreachable: self.home.unreachable.clone(),
             network_check: self.home.network_check,
+            cloud: self.home.cloud.clone(),
             known: self.cache.load_dataset_facts(),
         };
 
@@ -2419,6 +2519,38 @@ impl App {
         opts
     }
 
+    /// Point an S3 builder at a custom endpoint, with the two settings such an endpoint
+    /// almost always needs.
+    ///
+    /// Setting the endpoint alone was not enough, and the way it failed was the worst
+    /// available. `object_store` refuses a plain-`http` endpoint unless told otherwise,
+    /// so every operation against a MinIO container on localhost failed — and the size
+    /// probe maps any error to "size unknown", so the download confirmation appeared
+    /// as usual, said the size was unknown, and the download then failed with nothing
+    /// on screen to say why. The `[cloud]` section of the generated config suggests
+    /// `http://localhost:9000` by name, so this was broken for exactly the setup datui
+    /// tells people to use.
+    ///
+    /// Path-style addressing goes with it. Virtual-hosted style puts the bucket in the
+    /// hostname, which needs wildcard DNS that no localhost container has.
+    ///
+    /// `https` endpoints are left alone: those are real services, reached the way any
+    /// other HTTPS service is.
+    #[cfg(feature = "cloud")]
+    fn apply_s3_endpoint(
+        builder: object_store::aws::AmazonS3Builder,
+        endpoint: &str,
+    ) -> object_store::aws::AmazonS3Builder {
+        let builder = builder
+            .with_endpoint(endpoint.to_string())
+            .with_virtual_hosted_style_request(false);
+        if endpoint.starts_with("http://") {
+            builder.with_allow_http(true)
+        } else {
+            builder
+        }
+    }
+
     #[cfg(feature = "cloud")]
     fn build_s3_object_store(
         s3_url: &str,
@@ -2449,7 +2581,7 @@ impl App {
             .as_ref()
             .or(cloud.s3_region.as_ref());
         if let Some(e) = e {
-            builder = builder.with_endpoint(e);
+            builder = Self::apply_s3_endpoint(builder, e);
         }
         if let Some(k) = k {
             builder = builder.with_access_key_id(k);
@@ -2569,7 +2701,7 @@ impl App {
             .as_ref()
             .or(cloud.s3_region.as_ref());
         if let Some(e) = e {
-            builder = builder.with_endpoint(e);
+            builder = Self::apply_s3_endpoint(builder, e);
         }
         if let Some(k) = k {
             builder = builder.with_access_key_id(k);
@@ -2694,7 +2826,7 @@ impl App {
             .as_ref()
             .or(cloud.s3_region.as_ref());
         if let Some(e) = e {
-            builder = builder.with_endpoint(e);
+            builder = Self::apply_s3_endpoint(builder, e);
         }
         if let Some(k) = k {
             builder = builder.with_access_key_id(k);
@@ -7448,6 +7580,8 @@ impl App {
                 // Probes are chosen from the sections, so they can only be started
                 // once those exist — asking before the listing lands finds nothing.
                 self.spawn_home_probes();
+                #[cfg(feature = "cloud")]
+                self.spawn_cloud_discovery();
                 self.request_home_measurements();
                 None
             }
@@ -7520,6 +7654,12 @@ impl App {
                     self.home.search_finished(root, *scanned, limited.clone());
                 }
                 self.home_search_inflight = false;
+                None
+            }
+            #[cfg(feature = "cloud")]
+            AppEvent::HomeCloudReady { sections } => {
+                self.home.cloud = sections.clone();
+                self.home_refresh();
                 None
             }
             AppEvent::HomeProbeReady { root, rows } => {

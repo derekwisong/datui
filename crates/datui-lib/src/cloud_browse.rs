@@ -232,6 +232,14 @@ fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     let shared_credentials = env.home.as_ref().is_some_and(|home| {
         (env.exists)(&home.join(".aws/credentials")) || (env.exists)(&home.join(".aws/config"))
     });
+    // A role rather than a key: ECS and Fargate hand credentials to a task over a
+    // loopback endpoint, and EKS hands them over as a projected web identity token.
+    // Neither leaves a key in the environment or a file in `~/.aws`, so a check for
+    // those alone would find nothing on exactly the machines that are most likely to be
+    // reading from S3 in the first place. `object_store` resolves both.
+    let container_role = (env.var)("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some()
+        || (env.var)("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some();
+    let web_identity = (env.var)("AWS_WEB_IDENTITY_TOKEN_FILE").is_some();
 
     let note = if configured_keys {
         "datui config"
@@ -239,9 +247,20 @@ fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
         "AWS_ACCESS_KEY_ID"
     } else if profile.is_some() {
         "AWS_PROFILE"
+    } else if container_role {
+        "container role"
+    } else if web_identity {
+        "web identity"
     } else if shared_credentials {
         "~/.aws"
     } else {
+        // An EC2 instance role is the one credential source with no local evidence at
+        // all: the only way to know is to ask the instance metadata service, which is a
+        // network request to a link-local address that hangs rather than refuses on some
+        // networks. Doing that at startup on every machine to answer a question that is
+        // "no" almost everywhere is not a trade worth making, so an instance role is not
+        // discovered. Opening a URL still works; only the listing is missing, and
+        // setting AWS_PROFILE or writing an ~/.aws/config is enough to bring it back.
         return None;
     };
 
@@ -1047,5 +1066,69 @@ mod tests {
         assert_eq!(endpoint_host("minio:9000"), Some("minio:9000".into()));
         assert_eq!(endpoint_host(""), None);
         assert_eq!(endpoint_host("http://"), None);
+    }
+}
+
+#[cfg(test)]
+mod aws_role_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn detect_with(vars: &[(&str, &str)]) -> Vec<Provider> {
+        let vars: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let env = Environment {
+            var: &|key| vars.get(key).cloned(),
+            exists: &|_| false,
+            read: &|_| None,
+            home: Some(PathBuf::from("/home/u")),
+        };
+        detect(&CloudConfig::default(), &env)
+    }
+
+    #[test]
+    fn an_ecs_task_role_is_enough() {
+        // Fargate's usual shape: no key anywhere, credentials fetched from a loopback
+        // endpoint. A check for keys and ~/.aws finds nothing on exactly the machines
+        // most likely to be reading from S3.
+        for key in [
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        ] {
+            let found = detect_with(&[(key, "/v2/credentials/abc")]);
+            assert_eq!(found.len(), 1, "{key} should be enough");
+            assert_eq!(found[0].kind, ProviderKind::S3);
+            assert_eq!(found[0].label, "Amazon S3");
+            assert_eq!(found[0].note, "container role");
+        }
+    }
+
+    #[test]
+    fn an_eks_web_identity_is_enough() {
+        let found = detect_with(&[
+            ("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/token"),
+            ("AWS_ROLE_ARN", "arn:aws:iam::1:role/r"),
+        ]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].note, "web identity");
+    }
+
+    #[test]
+    fn a_region_alone_is_not_a_credential() {
+        // Worth pinning down. A region is configuration, not authorisation, and a
+        // provider listed on the strength of one would fail on every Enter.
+        assert!(detect_with(&[("AWS_REGION", "us-east-1")]).is_empty());
+        assert!(detect_with(&[("AWS_DEFAULT_REGION", "us-east-1")]).is_empty());
+    }
+
+    #[test]
+    fn a_key_still_outranks_a_role_in_the_note() {
+        let found = detect_with(&[
+            ("AWS_ACCESS_KEY_ID", "AKIA"),
+            ("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/v2/creds"),
+        ]);
+        assert_eq!(found[0].note, "AWS_ACCESS_KEY_ID");
     }
 }

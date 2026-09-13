@@ -401,7 +401,20 @@ database rather than a documented file, and reading another tool's internals to 
 at intent breaks silently when that tool changes.
 
 **S3, and anything speaking S3**, appears when there are keys in `[cloud]` in your
-config, `AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, or a `~/.aws` directory. A custom endpoint
+config, `AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, a `~/.aws` directory, an ECS or Fargate
+task role (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` or `..._FULL_URI`), or an EKS web
+identity (`AWS_WEB_IDENTITY_TOKEN_FILE`). A region on its own is configuration rather
+than authorisation and is not enough.
+
+An **EC2 instance role is not discovered**, and it is the one credential source with no
+local evidence: the only way to know is to ask the instance metadata service, which
+means a request to a link-local address that hangs rather than refuses on some
+networks. Paying that at startup on every machine, to answer a question that is "no"
+almost everywhere, is not worth it. Opening a URL still works on such a machine; only
+the bucket list is missing, and setting `AWS_PROFILE` or writing an `~/.aws/config` is
+enough to bring it back.
+
+A custom endpoint
 from `cloud.s3_endpoint_url`, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT` is named by its
 host, as `S3-compatible (localhost:9000)`. It is not guessed at more precisely than
 that: a Ceph cluster labelled "MinIO" would be worse than one labelled neither.

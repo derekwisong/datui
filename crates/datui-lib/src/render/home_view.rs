@@ -352,7 +352,12 @@ fn section_header<'a>(
 ) -> Line<'a> {
     let g = glyphs::get();
     let note = if section.unavailable {
-        "unavailable".to_string()
+        // The reason when there is one. A refused bucket listing says what to fix; a
+        // share that has gone away has nothing to add beyond the word itself.
+        section
+            .unavailable_note
+            .clone()
+            .unwrap_or_else(|| "unavailable".to_string())
     } else {
         section.subtitle.clone().unwrap_or_default()
     };
@@ -360,7 +365,13 @@ fn section_header<'a>(
     // line. A note is context; the title is what the section *is*, and a search
     // heading carrying a long path would otherwise crowd the title out entirely.
     let note = truncate_start(&note, width / 2);
-    let is_path = section.title.starts_with('/') || section.title.starts_with('~');
+    // A title that names a place keeps its case; only the word-like headings —
+    // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
+    // `s3://datui-sales` into `S3://DATUI-SALES`, which is not the bucket's name and in
+    // a case-sensitive store is not even a valid one.
+    let is_path = section.title.starts_with('/')
+        || section.title.starts_with('~')
+        || section.title.contains("://");
     let mut title = if is_path {
         section.title.clone()
     } else {
@@ -463,12 +474,37 @@ fn entry_line<'a>(
     }
     // A column hit takes the place of the kind label: both are a short note about
     // what this row is, and two of them would crowd the name.
-    let kind = entry.kind.label();
+    //
+    // Inside an object store the service's own word is used, so a bucket reads as a
+    // bucket rather than as a directory.
+    let kind = match entry.kind {
+        EntryKind::Directory => {
+            crate::home::object_place_label(&entry.path).unwrap_or_else(|| entry.kind.label())
+        }
+        _ => entry.kind.label(),
+    };
     let kind_cell = match matched_column {
         Some(column) => format!(" ·{column}"),
         None if kind.is_empty() => String::new(),
         None => format!(" {kind}"),
     };
+
+    // Where this row's data lives, immediately before its name. The detail pane has
+    // carried this for a long time, and on a full-screen ultrawide the pane is far
+    // enough from the cursor that a cloud path reads as a local one at a glance.
+    let locality = entry
+        .cost
+        .source
+        .as_deref()
+        .map(crate::locality::Locality::of_fstype);
+    let place = match locality {
+        Some(crate::locality::Locality::Object) => g.in_object_store,
+        Some(crate::locality::Locality::Network) => g.over_network,
+        Some(crate::locality::Locality::Memory) => g.in_memory,
+        Some(crate::locality::Locality::Local) => g.here,
+        Some(crate::locality::Locality::Unknown) | None => g.place_unknown,
+    };
+    let place_cell = format!("{place} ");
 
     // Positions are taken from the untruncated name, because that is what matched.
     // Truncation then shifts them, and dropping the ones that fall outside is exactly
@@ -486,7 +522,8 @@ fn entry_line<'a>(
     // Truncate the name, never the metadata: the columns must stay aligned. A row
     // whose name is a path keeps its tail, since the leaf is what identifies it;
     // an ordinary filename keeps its head, where the distinguishing part usually is.
-    let budget = name_width.saturating_sub(2 + kind_cell.chars().count() + 1);
+    let budget =
+        name_width.saturating_sub(2 + place_cell.chars().count() + kind_cell.chars().count() + 1);
     if name.chars().count() > budget && budget > 1 {
         let original_len = name.chars().count();
         if name.starts_with('/') || name.starts_with('~') {
@@ -535,10 +572,24 @@ fn entry_line<'a>(
         .fg(ctx.keybind_hints)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
 
-    let mut spans = vec![Span::styled(
-        marker,
-        base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
-    )];
+    // Loud enough to find, quiet enough to ignore. Somewhere that can stall or cost
+    // money is coloured; a local disk, which is the overwhelming majority of rows, is
+    // dimmed so the column reads as texture rather than as a warning repeated on every
+    // line.
+    let place_style = base.fg(match locality {
+        Some(crate::locality::Locality::Object) => ctx.keybind_hints,
+        Some(crate::locality::Locality::Network) => ctx.warning,
+        Some(crate::locality::Locality::Memory) => ctx.temporal_col,
+        _ => ctx.dimmed,
+    });
+
+    let mut spans = vec![
+        Span::styled(
+            marker,
+            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(place_cell, place_style),
+    ];
     spans.extend(highlight_spans(
         &name,
         &name_positions,
@@ -832,6 +883,7 @@ mod tests {
             ),
             rows: Vec::new(),
             unavailable: false,
+            unavailable_note: None,
         };
 
         for width in [20usize, 40, 80, 120] {
@@ -1044,9 +1096,11 @@ mod tests {
         let spans = row_spans("sales_2024.parquet", "sales", None);
         assert_eq!(highlighted_text(&spans), "sales");
         // Reassembling the spans must give back exactly the name; highlighting is a
-        // change of style, never of text.
+        // change of style, never of text. The locality marker sits between the
+        // selection marker and the name, so the name is what follows it rather than
+        // what the row starts with.
         let text: String = spans.iter().map(|(t, _)| t.as_str()).collect();
-        assert!(text.starts_with("sales_2024.parquet"), "got {text:?}");
+        assert!(text.contains("sales_2024.parquet"), "got {text:?}");
     }
 
     #[test]
@@ -1095,6 +1149,7 @@ mod tests {
             subtitle: Some("x".repeat(200)),
             rows: Vec::new(),
             unavailable: false,
+            unavailable_note: None,
         };
         let ctx = RenderContext::for_test();
         let line = section_header(&section, 3, false, false, 40, &ctx);

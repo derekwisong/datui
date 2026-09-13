@@ -298,6 +298,31 @@ next choice is one keystroke away rather than a dead end:
 › corrupt▏   …parquet: 'parquet scan': the file must end with PAR1
 ```
 
+## Where a row's data lives
+
+Every row carries a marker before its name saying where reading it will go:
+
+| Unicode | Plain | Means |
+| --- | --- | --- |
+| `◦` | `.` | a disk on this machine |
+| `▪` | `*` | memory, such as `/tmp` on `tmpfs` |
+| `⇅` | `~` | a network filesystem: NFS, SMB, sshfs |
+| `☁` | `@` | an object store or a URL |
+| `◌` | `?` | nothing in the mount table covered it |
+
+The detail pane has always named the filesystem, and still does. The marker exists
+because the pane is on the other side of the screen: full screen on a wide monitor,
+the row your cursor is on and the pane describing it can be a foot apart, and "will
+this one cost me a download?" is a question about the row you are looking at.
+
+Only the ones that can surprise you are coloured. A local disk, which is most rows
+most of the time, is dimmed so the column reads as texture rather than as a warning
+repeated on every line.
+
+The plain column is used when the terminal is not running a UTF-8 locale, alongside
+the rest of the ASCII fallback. Neither set uses Nerd Font icons: those need a font
+datui cannot assume you have.
+
 ## Network locations
 
 The home screen never reads a network location on the thread that draws it. An
@@ -329,6 +354,99 @@ verified against size and modification time, and re-measured when either changes
 Object-store and HTTP URLs are recorded in `RECENT` like any other path, and are
 worth having there: `s3://bucket/warehouse/events/year=2024` is the sort of path
 worth not retyping.
+
+## Cloud storage
+
+When this machine has credentials for an object store, its buckets are listed on the
+home screen and each one is somewhere to step into:
+
+```
+▾ GOOGLE CLOUD STORAGE  2                    cloud · gcloud · derek-wisong-prod
+  pitscope-prod-data/ bucket
+  synology-backup-prod/ bucket
+▾ S3-COMPATIBLE (127.0.0.1:9000)  4                       cloud · datui config
+  datui-sales/ bucket
+```
+
+Every cloud row is marked `☁` beside its name, so an object in `RECENT` is
+distinguishable from a local file without reading the detail pane. See
+[Where a row's data lives](#where-a-rows-data-lives).
+
+Pressing `Enter` on a bucket lists one level of it. Prefixes are marked `prefix` and
+descend like directories; objects open like files. Everything else on this page
+applies unchanged: the filter matches bucket and object names, sections fold, and an
+opened object is recorded in `RECENT` so it does not need finding twice.
+
+### Which credentials are looked at
+
+Exactly the ones datui would use to *open* the data, and nowhere else. A bucket that
+is listed is one that can be read. Enumerating through `gcloud` or the AWS CLI would
+work on more machines and would produce a screen of buckets that every `Enter` fails
+on, which is worse than not showing them.
+
+**Google Cloud Storage** appears when any of these is present: `GOOGLE_SERVICE_ACCOUNT`
+or `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`,
+`GOOGLE_APPLICATION_CREDENTIALS`, or the file that
+`gcloud auth application-default login` writes. The note beside the heading says which.
+
+Listing buckets also needs a project, because Google's API cannot enumerate without
+one. It is taken from `DATUI_GCP_PROJECT`, `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`,
+`CLOUDSDK_CORE_PROJECT` or `GCP_PROJECT`, and otherwise from the `quota_project_id`
+that `gcloud` records in the credentials file — so a developer login usually needs no
+configuration. Without a project the provider is still listed, and still opens any URL
+you type; it just cannot offer you the list, and says so.
+
+`gcloud`'s own active project setting is deliberately not read. It lives in a private
+database rather than a documented file, and reading another tool's internals to guess
+at intent breaks silently when that tool changes.
+
+**S3, and anything speaking S3**, appears when there are keys in `[cloud]` in your
+config, `AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, a `~/.aws` directory, an ECS or Fargate
+task role (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` or `..._FULL_URI`), or an EKS web
+identity (`AWS_WEB_IDENTITY_TOKEN_FILE`). A region on its own is configuration rather
+than authorisation and is not enough.
+
+An **EC2 instance role is not discovered**, and it is the one credential source with no
+local evidence: the only way to know is to ask the instance metadata service, which
+means a request to a link-local address that hangs rather than refuses on some
+networks. Paying that at startup on every machine, to answer a question that is "no"
+almost everywhere, is not worth it. Opening a URL still works on such a machine; only
+the bucket list is missing, and setting `AWS_PROFILE` or writing an `~/.aws/config` is
+enough to bring it back.
+
+A custom endpoint
+from `cloud.s3_endpoint_url`, `AWS_ENDPOINT_URL` or `AWS_ENDPOINT` is named by its
+host, as `S3-compatible (localhost:9000)`. It is not guessed at more precisely than
+that: a Ceph cluster labelled "MinIO" would be worse than one labelled neither.
+
+See [Loading Data](loading-data.md) for the credential and endpoint settings
+themselves.
+
+### What a cloud row does not show
+
+A local dataset shows its row count, column count and column names before you open
+it, read for free from a Parquet footer. A cloud row shows only what a listing
+returns: name, size and modification time.
+
+That is deliberate, and it is about egress. Filling in the rest means a ranged read
+per object against storage somebody is billed for, to populate a column nobody asked
+for. So the cloud listing is poorer than a local one on purpose, and reading anything
+is an explicit action on one dataset.
+
+For the same reason buckets are listed but never expanded, and the bucket list itself
+is fetched once per session rather than on every refresh.
+
+### When something goes wrong
+
+A provider whose bucket listing was refused keeps its section and says why, in place
+of the usual note:
+
+```
+▾ GOOGLE CLOUD STORAGE  0     403, no storage.buckets.list access
+```
+
+An empty account says `no buckets`, which is an answer rather than a fault. A section
+still being enumerated says `listing buckets`.
 
 ## Finding a dataset by its columns
 

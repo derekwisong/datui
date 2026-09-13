@@ -127,6 +127,32 @@ fn percent_decode(raw: &str) -> String {
 /// in `RECENT` as individual datasets and remain reachable by typing a path.
 const MAX_RECENT_ROOTS: usize = 8;
 
+/// What to call a place inside an object store: a bucket, or a prefix within one.
+///
+/// `None` for anything that is not an object-store URL, and for objects themselves,
+/// which are named by their own kind like any other file.
+///
+/// Worth the few lines. A bucket labelled `dir` is not wrong so much as unhelpful: the
+/// word that tells you what you are looking at is the one the service uses for it, and
+/// the distinction between a bucket and a prefix is exactly the one that decides whether
+/// stepping out of it leaves the store.
+pub fn object_place_label(path: &Path) -> Option<&'static str> {
+    let text = path.to_string_lossy();
+    let (scheme, rest) = text.split_once("://")?;
+    if !matches!(scheme, "s3" | "s3a" | "gs" | "gcs") {
+        return None;
+    }
+    let rest = rest.trim_end_matches('/');
+    if rest.is_empty() {
+        return None;
+    }
+    Some(if rest.contains('/') {
+        "prefix"
+    } else {
+        "bucket"
+    })
+}
+
 /// Whether `path` is somewhere reading it could block: an object-store or HTTP URL,
 /// or a directory on a network filesystem.
 ///
@@ -181,6 +207,13 @@ pub struct Section {
     pub rows: Vec<Entry>,
     /// Set when a root could not be read, so the UI can say why it is empty.
     pub unavailable: bool,
+    /// What to say instead of the bare word "unavailable".
+    ///
+    /// A share that has stopped answering has nothing to add: "unavailable" is the
+    /// whole story. A bucket listing that was refused does — "403, no
+    /// storage.buckets.list access" tells the user what to change, and an empty section
+    /// that does not say why tells them nothing.
+    pub unavailable_note: Option<String>,
 }
 
 /// One provider's buckets, ready to become a section.
@@ -488,6 +521,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             subtitle: None,
             rows,
             unavailable,
+            // A browsed remote place that did not answer: there is nothing to add.
+            unavailable_note: None,
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
@@ -521,6 +556,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             subtitle: None,
             rows: recent_rows,
             unavailable: false,
+            unavailable_note: None,
         });
     }
 
@@ -604,6 +640,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             subtitle: Some(subtitle),
             rows,
             unavailable: !root.available || unreachable,
+            unavailable_note: None,
         });
     }
 
@@ -635,9 +672,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             title: provider.title.clone(),
             subtitle: provider.subtitle.clone(),
             rows,
-            // An enumeration that failed is reported the same way an unreachable
-            // share is: the section is there, empty, and says why.
+            // An enumeration that failed is reported the same way an unreachable share
+            // is: the section is there, empty, and says why.
             unavailable: provider.error.is_some(),
+            unavailable_note: provider.error.clone(),
         });
     }
 
@@ -647,6 +685,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             subtitle: Some("opened elsewhere".to_string()),
             rows: elsewhere,
             unavailable: false,
+            unavailable_note: None,
         });
     }
 
@@ -1132,6 +1171,7 @@ impl HomeState {
             subtitle: Some(subtitle),
             rows,
             unavailable: false,
+            unavailable_note: None,
         });
     }
 

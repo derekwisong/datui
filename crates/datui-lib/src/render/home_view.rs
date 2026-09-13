@@ -352,7 +352,12 @@ fn section_header<'a>(
 ) -> Line<'a> {
     let g = glyphs::get();
     let note = if section.unavailable {
-        "unavailable".to_string()
+        // The reason when there is one. A refused bucket listing says what to fix; a
+        // share that has gone away has nothing to add beyond the word itself.
+        section
+            .unavailable_note
+            .clone()
+            .unwrap_or_else(|| "unavailable".to_string())
     } else {
         section.subtitle.clone().unwrap_or_default()
     };
@@ -360,7 +365,13 @@ fn section_header<'a>(
     // line. A note is context; the title is what the section *is*, and a search
     // heading carrying a long path would otherwise crowd the title out entirely.
     let note = truncate_start(&note, width / 2);
-    let is_path = section.title.starts_with('/') || section.title.starts_with('~');
+    // A title that names a place keeps its case; only the word-like headings —
+    // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
+    // `s3://datui-sales` into `S3://DATUI-SALES`, which is not the bucket's name and in
+    // a case-sensitive store is not even a valid one.
+    let is_path = section.title.starts_with('/')
+        || section.title.starts_with('~')
+        || section.title.contains("://");
     let mut title = if is_path {
         section.title.clone()
     } else {
@@ -463,7 +474,15 @@ fn entry_line<'a>(
     }
     // A column hit takes the place of the kind label: both are a short note about
     // what this row is, and two of them would crowd the name.
-    let kind = entry.kind.label();
+    //
+    // Inside an object store the service's own word is used, so a bucket reads as a
+    // bucket rather than as a directory.
+    let kind = match entry.kind {
+        EntryKind::Directory => {
+            crate::home::object_place_label(&entry.path).unwrap_or_else(|| entry.kind.label())
+        }
+        _ => entry.kind.label(),
+    };
     let kind_cell = match matched_column {
         Some(column) => format!(" ·{column}"),
         None if kind.is_empty() => String::new(),
@@ -832,6 +851,7 @@ mod tests {
             ),
             rows: Vec::new(),
             unavailable: false,
+            unavailable_note: None,
         };
 
         for width in [20usize, 40, 80, 120] {
@@ -1095,6 +1115,7 @@ mod tests {
             subtitle: Some("x".repeat(200)),
             rows: Vec::new(),
             unavailable: false,
+            unavailable_note: None,
         };
         let ctx = RenderContext::for_test();
         let line = section_header(&section, 3, false, false, 40, &ctx);

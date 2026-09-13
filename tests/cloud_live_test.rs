@@ -6,6 +6,11 @@
 //! test that lies, or need credentials, which is a secret in a workflow for the sake of
 //! a developer convenience.
 //!
+//! Run them with `--test-threads=1`. They share one cache directory and one process, so
+//! an object opened by one test is in Recent for the next, and assertions that say "some
+//! section contains this row" are satisfied by the wrong section. Each test here names
+//! the section it means for that reason.
+//!
 //! They exist because the alternative is worse. The code they cover signs requests and
 //! parses responses from services that cannot be usefully mocked: a fake that agrees
 //! with my reading of the S3 signing rules proves only that I am self-consistent. These
@@ -306,11 +311,11 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
     };
     let (mut app, rx) = minio_app(&endpoint);
 
+    // Wait for rows, not for the section. The section appears first, empty, with
+    // "listing buckets" beside the title, so a wait on the heading alone is satisfied
+    // before a single bucket is known.
     let listed = pump_until(&mut app, &rx, 30, |app| {
-        app.home
-            .sections
-            .iter()
-            .any(|s| s.title.contains("S3-compatible"))
+        section_named(app, "S3-compatible (127.0.0.1:9000)").is_some_and(|s| !s.rows.is_empty())
     });
     assert!(
         listed,
@@ -334,13 +339,10 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
         names.contains(&"datui-empty"),
         "an empty bucket is still a bucket"
     );
-    assert!(
-        section
-            .subtitle
-            .as_deref()
-            .is_some_and(|s| s.starts_with("cloud · ")),
-        "the section should say where the credentials came from: {:?}",
-        section.subtitle
+    assert_eq!(
+        section.subtitle.as_deref(),
+        Some("cloud · datui config"),
+        "the section should say where the credentials came from"
     );
 
     // Every bucket is a row to step into, never expanded in place, and never measured.
@@ -528,5 +530,87 @@ fn an_s3_object_opens_and_lands_in_recents() {
     assert!(
         recorded,
         "an opened S3 object should be recorded in recents; got {recents:?}"
+    );
+}
+
+#[test]
+#[ignore = "renders the home screen against a local MinIO; set DATUI_LIVE_S3"]
+fn the_cloud_section_renders_legibly() {
+    let Ok(endpoint) = std::env::var("DATUI_LIVE_S3") else {
+        eprintln!("skipped: set DATUI_LIVE_S3 to an endpoint to run");
+        return;
+    };
+    let (mut app, rx) = minio_app(&endpoint);
+    pump_until(&mut app, &rx, 30, |app| {
+        section_named(app, "S3-compatible (127.0.0.1:9000)").is_some_and(|s| !s.rows.is_empty())
+    });
+
+    // Rendered rather than inspected. A section can hold the right rows and still read
+    // badly: a note that crowds out the title, a name truncated to nothing, a count in
+    // the wrong place. Printing the buffer is the only way to see that from a test.
+    // Tall enough that section order cannot decide the outcome. Once any test in this
+    // file has opened an object, Recent exists too, and on a short screen the cloud
+    // section's rows fall off the bottom — which is a fact about the viewport, not about
+    // the rendering being asserted here.
+    let area = ratatui::layout::Rect::new(0, 0, 100, 60);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(&mut app, area, &mut buf);
+
+    let mut screen = String::new();
+    for y in 0..area.height {
+        let mut row = String::new();
+        for x in 0..area.width {
+            row.push_str(buf[(x, y)].symbol());
+        }
+        screen.push_str(row.trim_end());
+        screen.push('\n');
+    }
+    println!("{screen}");
+
+    // And the screen that matters more: inside a bucket, where objects carry sizes and
+    // prefixes are somewhere to go next.
+    assert!(select_row(&mut app, "datui-sales"), "the bucket row");
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    pump_until(&mut app, &rx, 30, |app| {
+        section_named(app, "s3://datui-sales")
+            .is_some_and(|s| s.rows.iter().any(|r| r.name == "orders.parquet"))
+    });
+    let mut inside = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(&mut app, area, &mut inside);
+    let mut inside_screen = String::new();
+    for y in 0..area.height {
+        let mut row = String::new();
+        for x in 0..area.width {
+            row.push_str(inside[(x, y)].symbol());
+        }
+        inside_screen.push_str(row.trim_end());
+        inside_screen.push('\n');
+    }
+    println!("{inside_screen}");
+    assert!(
+        inside_screen.contains("2024/ prefix"),
+        "a prefix inside a bucket should say so"
+    );
+    assert!(
+        inside_screen.contains("orders.parquet"),
+        "objects should be listed"
+    );
+
+    // The provider, its provenance, and the buckets all have to survive to the screen.
+    assert!(
+        screen.contains("S3-COMPATIBLE (127.0.0.1:9000)") || screen.contains("S3-compatible"),
+        "the provider should be a visible heading"
+    );
+    assert!(
+        screen.contains("cloud · datui config"),
+        "the heading should say where the credentials came from"
+    );
+    for bucket in ["datui-sales", "datui-logs", "datui-events", "datui-empty"] {
+        assert!(screen.contains(bucket), "{bucket} should be on screen");
+    }
+    // Buckets are places, and a place is written with a trailing slash here.
+    assert!(
+        screen.contains("datui-sales/"),
+        "a bucket should read as somewhere to step into"
     );
 }

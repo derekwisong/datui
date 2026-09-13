@@ -1945,12 +1945,31 @@ impl App {
                 let env = crate::cloud_browse::Environment::current();
                 crate::cloud_browse::detect(&cloud, &env)
             };
+            // Say what was found before saying what is in it. Enumeration is a round
+            // trip, and on a slow link the alternative is a home screen with no sign
+            // that anything cloud-shaped exists, followed by sections appearing under
+            // the cursor a second later.
+            let heading = |provider: &crate::cloud_browse::Provider| match &provider.project {
+                Some(project) => format!("cloud · {} · {}", provider.note, project),
+                None => format!("cloud · {}", provider.note),
+            };
+            if !providers.is_empty() {
+                let _ = tx.send(AppEvent::HomeCloudReady {
+                    sections: providers
+                        .iter()
+                        .map(|provider| crate::home::CloudSection {
+                            title: provider.label.clone(),
+                            subtitle: Some(format!("{} · listing buckets", heading(provider))),
+                            buckets: Vec::new(),
+                            error: None,
+                        })
+                        .collect(),
+                });
+            }
+
             let mut sections = Vec::new();
             for provider in &providers {
-                let subtitle = match &provider.project {
-                    Some(project) => format!("cloud · {} · {}", provider.note, project),
-                    None => format!("cloud · {}", provider.note),
-                };
+                let subtitle = heading(provider);
                 let (buckets, error) = if provider.can_list_buckets() {
                     match crate::cloud_browse::list_buckets(provider, &cloud).await {
                         Ok(buckets) => (buckets, None),
@@ -1964,6 +1983,14 @@ impl App {
                         Vec::new(),
                         Some("no project set, so buckets cannot be listed".to_string()),
                     )
+                };
+                // An account with no buckets is a fine answer, and an unexplained empty
+                // section is not. This is not a warning, so it belongs in the note
+                // beside the title rather than in the failure slot.
+                let subtitle = if buckets.is_empty() && error.is_none() {
+                    format!("{subtitle} · no buckets")
+                } else {
+                    subtitle
                 };
                 let scheme = provider.kind.scheme();
                 sections.push(crate::home::CloudSection {

@@ -1649,6 +1649,7 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
             subtitle: None,
             rows,
             unavailable: false,
+            unavailable_note: None,
         }],
         root_paths: Vec::new(),
     });

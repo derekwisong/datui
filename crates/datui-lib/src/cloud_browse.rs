@@ -143,7 +143,10 @@ fn detect_gcs(env: &Environment<'_>) -> Option<Provider> {
     } else if (env.var)("GOOGLE_APPLICATION_CREDENTIALS").is_some() {
         "GOOGLE_APPLICATION_CREDENTIALS"
     } else if adc_path(env).is_some() {
-        "gcloud application default credentials"
+        // Short on purpose. This sits beside the section title in a fixed half of the
+        // line, and "gcloud application default credentials" truncated from the front
+        // to "…lication default credentials" says less than one word does.
+        "gcloud"
     } else {
         return None;
     };
@@ -231,7 +234,7 @@ fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     });
 
     let note = if configured_keys {
-        "keys from datui config"
+        "datui config"
     } else if env_keys {
         "AWS_ACCESS_KEY_ID"
     } else if profile.is_some() {
@@ -781,7 +784,7 @@ mod tests {
         assert_eq!(found[0].kind, ProviderKind::Gcs);
         assert_eq!(found[0].project.as_deref(), Some("derek-wisong-prod"));
         assert!(found[0].can_list_buckets());
-        assert_eq!(found[0].note, "gcloud application default credentials");
+        assert_eq!(found[0].note, "gcloud");
     }
 
     #[test]
@@ -834,7 +837,7 @@ mod tests {
         let found = detect(&config, &env);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].label, "S3-compatible (localhost:9000)");
-        assert_eq!(found[0].note, "keys from datui config");
+        assert_eq!(found[0].note, "datui config");
         assert_eq!(found[0].endpoint.as_deref(), Some("http://localhost:9000"));
     }
 

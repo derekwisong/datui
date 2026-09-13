@@ -288,9 +288,12 @@ impl CacheManager {
     /// object-store URL or a share that has stopped answering that is the call that
     /// hangs. A share being down is also precisely when its recents matter most, so
     /// pruning them would throw away the list exactly when it is needed.
-    fn recent_is_worth_keeping(path: &str) -> bool {
+    fn recent_is_worth_keeping(path: &str, mounts: &crate::locality::Mounts) -> bool {
         let path = std::path::Path::new(path);
-        if crate::home::is_remote_path(path) {
+        // The mount table is passed in rather than read here. `is_remote_path` reads
+        // /proc/self/mountinfo every time it is called, and this runs once per entry, so
+        // asking it directly meant fifty reads of the same file on every open.
+        if crate::locality::object_scheme(path).is_some() || mounts.is_network(path) {
             return true;
         }
         match path.parent() {
@@ -315,10 +318,14 @@ impl CacheManager {
         };
         let entry = stored.to_string_lossy().into_owned();
 
+        // One read of the mount table for the whole prune. It is a kernel-generated
+        // file, so reading it cannot block on the filesystems it describes.
+        let mounts = crate::locality::Mounts::current();
+
         self.update_history_file("recents", |recents| {
             recents.retain(|p| p != &entry);
             recents.insert(0, entry.clone());
-            recents.retain(|p| Self::recent_is_worth_keeping(p));
+            recents.retain(|p| Self::recent_is_worth_keeping(p, &mounts));
             recents.truncate(MAX_RECENTS);
         })
         .unwrap_or(HistoryUpdate::SkippedBusy)

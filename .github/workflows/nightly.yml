@@ -181,6 +181,33 @@ jobs:
             python/dist/*.whl
             target/release/datui.exe
 
+      # The test suite, on the platform that otherwise only sees it at release
+      # time. CI's windows job is gated on the version not carrying -dev, so it
+      # runs on a release commit and nowhere else: every test written during a
+      # cycle first meets Windows when the release is already being cut. Three
+      # did that for v0.3.2 and all three failed, none of them for a reason
+      # datui was at fault for.
+      #
+      # Deliberately after the upload. A failing test still fails the job, which
+      # is what nightly is for, but the binaries and the wheel are already
+      # attached by then, so a broken test does not also cost the artifacts.
+      - name: Create virtual environment and install requirements
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\pip.exe install -r scripts/requirements.txt
+          .venv\Scripts\pip.exe install -r scripts/requirements-wheel-windows.txt
+
+      - name: Generate sample data
+        run: .venv\Scripts\python.exe scripts/generate_sample_data.py
+
+      # Release profile, to reuse what this job already compiled. A debug build
+      # would be a second full compile, and Windows is the slowest thing here.
+      # The cost is that debug_assertions is off, so anything gated on it is
+      # still only covered by the linux job, which builds in debug.
+      - name: Run tests
+        run: cargo test --release --workspace --locked --no-fail-fast
+
   macos:
     runs-on: macos-latest
     strategy:
@@ -266,6 +293,33 @@ jobs:
             python/dist/*.whl
             target/${{ matrix.target }}/release/datui
             target/${{ matrix.target }}/release/datui.1
+
+      # As on windows: CI's macos job only runs on a release commit, so this is
+      # the one place the suite meets macOS during a cycle. Only on the native
+      # target, because the x86_64 leg of this matrix cross-compiles and its test
+      # binaries would need Rosetta to run at all. Whatever is macOS-specific
+      # about a test -- /var resolving to /private/var, for one -- is the same on
+      # both.
+      #
+      # After the upload, and in release profile against this leg's target
+      # directory, for the reasons spelled out on the windows job.
+      - name: Create virtual environment and install requirements
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r scripts/requirements.txt
+          .venv/bin/pip install -r scripts/requirements-wheel.txt
+
+      - name: Generate sample data
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: .venv/bin/python scripts/generate_sample_data.py
+
+      - name: Run tests
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: >-
+          cargo test --release --workspace --locked --no-fail-fast
+          --target ${{ matrix.target }}
 
   # The fuzzers proper: each target gets a timed run that generates new input, rather
   # than the corpus replay CI does on every pull request. Targets run as a matrix so a

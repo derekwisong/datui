@@ -343,9 +343,10 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // literally empty. A first run in a directory holding one folder would otherwise
     // present a bare listing with no hint of what datui is for, which is the worst
     // possible first impression for a screen meant to be the way in.
-    let has_dataset = visible
-        .iter()
-        .any(|r| matches!(r, crate::home::Row::Entry { entry, .. } if entry.kind.is_dataset()));
+    //
+    // Counted over every section, folded or not: with everything folded the headers
+    // are the content, and a hint that says there is nothing here would be wrong.
+    let has_dataset = app.home.has_any_dataset();
     let guidance = if has_dataset || !app.home.filter.is_empty() {
         Vec::new()
     } else {
@@ -1008,6 +1009,7 @@ mod tests {
             rows: Vec::new(),
             unavailable: false,
             unavailable_note: None,
+            folded_by_default: false,
         };
 
         for width in [20usize, 40, 80, 120] {
@@ -1274,6 +1276,7 @@ mod tests {
             rows: Vec::new(),
             unavailable: false,
             unavailable_note: None,
+            folded_by_default: false,
         };
         let ctx = RenderContext::for_test();
         let line = section_header(&section, 3, false, false, 40, &ctx);

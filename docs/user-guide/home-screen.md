@@ -32,6 +32,7 @@ one-line title bar. Keys in the control bar are drawn as chips.
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> | move |
 | <kbd>←</kbd> <kbd>→</kbd> / <kbd>h</kbd> <kbd>l</kbd> | collapse / expand the section |
+| <kbd>]</kbd> <kbd>[</kbd> | next / previous section |
 | <kbd>Enter</kbd> | open the dataset, enter the directory, or fold the section |
 | type anything | filter by name (fuzzy: `sal` matches `sales`) |
 | <kbd>~</kbd> | type a path directly; <kbd>Tab</kbd> completes it |
@@ -52,22 +53,25 @@ bar shows what <kbd>Esc</kbd> will do next.
 The list is grouped by *root* — a directory datui looks in. Sections appear in this
 order:
 
-| # | section | source | shown when empty |
-|---|---|---|---|
-| 1 | `RECENT` | datasets you have opened, most recent first | no |
-| 2 | the current directory | where you launched datui | yes |
-| 3 | a configured directory | `[data] directories`, in the order you list them | yes |
-| 4 | directories of recent datasets | added when you open something | no |
-| 5 | `ELSEWHERE` | [desktop places](#desktop-places) | no |
+| # | section | source | shown when empty | starts |
+|---|---|---|---|---|
+| 1 | `RECENT` | datasets you have opened, most recent first | no | open |
+| 2 | the current directory | where you launched datui | yes | open |
+| 3 | cloud storage | the buckets your credentials reach, one section per provider | yes | open |
+| 4 | a configured directory | `[data] directories`, in the order you list them | yes | open |
+| 5 | directories of recent datasets | added when you open something | no | folded |
+| 6 | `ELSEWHERE` | [desktop places](#desktop-places) | no | folded |
 
-Where you are comes first: a directory holding sixty recently-opened files would
-otherwise push the place you just `cd`'d into off the screen.
+The order is by why you came: what you opened last, where you are, the object stores
+you can reach, the places you named. The directories derived from recents repeat what
+`RECENT` already shows, so they start folded, one keystroke from open.
 
 A directory reached more than one way appears once, under the earliest of these
 that names it.
 
 Sections fold with <kbd>←</kbd> and <kbd>→</kbd>. A folded section shows how many
-rows it is hiding, and stays folded until you expand it or restart datui.
+rows it is hiding. Whether you folded or opened a section is remembered between runs.
+<kbd>]</kbd> and <kbd>[</kbd> move the cursor from one section heading to the next.
 
 Filtering keeps the grouping, so a match always shows which root it came from.
 

@@ -2186,6 +2186,7 @@ impl App {
     pub fn enter_home(&mut self) {
         self.abandon_load();
         self.home.status = None;
+        self.home.folds = self.cache.load_folds();
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
             let target = open_path
@@ -2277,6 +2278,7 @@ impl App {
             self.home.set_collapsed(section, false);
         }
         self.home.clamp_selection();
+        self.cache.save_folds(&self.home.folds);
     }
 
     /// Step out of a directory that was descended into.
@@ -2302,6 +2304,7 @@ impl App {
             if let Some(section) = self.home.selected_section() {
                 self.home.toggle_collapsed(section);
                 self.home.clamp_selection();
+                self.cache.save_folds(&self.home.folds);
             }
             return None;
         }
@@ -2424,6 +2427,10 @@ impl App {
             KeyCode::Right => self.home_collapse(false),
             KeyCode::Char('h') if self.home.filter.is_empty() => self.home_collapse(true),
             KeyCode::Char('l') if self.home.filter.is_empty() => self.home_collapse(false),
+            // Section to section, past however many rows the current one holds. Only
+            // while the filter is empty, since a bracket can be part of a name.
+            KeyCode::Char(']') if self.home.filter.is_empty() => self.home.jump_section(1),
+            KeyCode::Char('[') if self.home.filter.is_empty() => self.home.jump_section(-1),
             KeyCode::PageUp => self.home.move_selection(-10),
             KeyCode::PageDown => self.home.move_selection(10),
             KeyCode::Char('k') if self.home.filter.is_empty() => self.home.move_selection(-1),

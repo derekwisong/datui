@@ -569,6 +569,13 @@ fn test_desktop_places_are_listed_but_never_expanded() {
 
     let mut home = HomeState::default();
     home.rebuild_with(&[], &[], std::slice::from_ref(&downloads));
+    // Elsewhere starts folded; open it so its rows are on screen.
+    let elsewhere = home
+        .sections
+        .iter()
+        .position(|s| s.title == "Elsewhere")
+        .expect("an Elsewhere section");
+    home.set_collapsed(elsewhere, false);
 
     let names = visible_names(&home);
     assert!(
@@ -1650,6 +1657,7 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
             rows,
             unavailable: false,
             unavailable_note: None,
+            folded_by_default: false,
         }],
         root_paths: Vec::new(),
     });
@@ -2499,4 +2507,85 @@ fn test_applying_a_measurement_puts_the_layout_on_the_row() {
         row.cost.source.is_some(),
         "the live source must survive the measurement being folded in"
     );
+}
+
+#[test]
+fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
+    // Recent, where you are, the cloud, what you configured, and only then the
+    // directories derived from recents and the desktop's places -- folded, since they
+    // repeat what Recent shows or are places rather than datasets.
+    use datui::home::{build_listing, CloudSection, ListingRequest};
+
+    let tmp = TempDir::new().unwrap();
+    let configured = tmp.path().join("configured");
+    touch(&configured, "a.parquet");
+    let elsewhere_dir = tmp.path().join("elsewhere");
+    touch(&elsewhere_dir, "b.parquet");
+    let recent_dir = tmp.path().join("recent_dir");
+    let recent = touch(&recent_dir, "c.parquet");
+
+    let listing = build_listing(&ListingRequest {
+        config_dirs: vec![configured.clone()],
+        recents: vec![recent],
+        desktop_dirs: vec![elsewhere_dir],
+        browsing: None,
+        probed: Default::default(),
+        unreachable: Default::default(),
+        network_check: |_| false,
+        cloud: vec![CloudSection {
+            title: "Cloud".to_string(),
+            subtitle: None,
+            buckets: vec![std::path::PathBuf::from("s3://bucket")],
+            ..Default::default()
+        }],
+        known: Default::default(),
+    });
+
+    let titles: Vec<&str> = listing.sections.iter().map(|s| s.title.as_str()).collect();
+    let pos = |t: &str| {
+        titles
+            .iter()
+            .position(|x| *x == t)
+            .unwrap_or_else(|| panic!("{t} in {titles:?}"))
+    };
+    let derived = datui::home::display_path(&recent_dir);
+    let conf = datui::home::display_path(&configured);
+    assert_eq!(titles[0], "Recent");
+    assert!(
+        pos("Cloud") < pos(&conf),
+        "cloud before configured: {titles:?}"
+    );
+    assert!(
+        pos(&conf) < pos(&derived),
+        "configured before derived: {titles:?}"
+    );
+    assert!(
+        pos(&derived) < pos("Elsewhere"),
+        "derived before Elsewhere: {titles:?}"
+    );
+
+    let by_title = |t: &str| &listing.sections[pos(t)];
+    assert!(!by_title("Recent").folded_by_default);
+    assert!(!by_title("Cloud").folded_by_default);
+    assert!(!by_title(&conf).folded_by_default);
+    assert!(by_title(&derived).folded_by_default);
+    assert!(by_title("Elsewhere").folded_by_default);
+
+    // The default is a default: opening one is remembered over it, and the listing
+    // still knows it holds datasets when every section is folded.
+    let derived_idx = pos(&derived);
+    drop(titles);
+    let mut home = HomeState::default();
+    home.apply_listing(listing);
+    assert!(home.is_collapsed(derived_idx));
+    home.set_collapsed(derived_idx, false);
+    assert!(!home.is_collapsed(derived_idx));
+    for i in 0..home.sections.len() {
+        home.set_collapsed(i, true);
+    }
+    assert!(home
+        .visible()
+        .iter()
+        .all(|r| matches!(r, Row::Header { .. })));
+    assert!(home.has_any_dataset(), "folded is not empty");
 }

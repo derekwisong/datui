@@ -250,6 +250,31 @@ impl CacheManager {
             .collect()
     }
 
+    /// Which home-screen sections the user folded or opened, by title.
+    ///
+    /// One line per section, `title<TAB>1` for folded and `title<TAB>0` for opened.
+    /// A section not listed takes its own default.
+    pub fn load_folds(&self) -> std::collections::HashMap<String, bool> {
+        self.load_history_file("home_folds")
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|line| {
+                let (title, state) = line.rsplit_once('\t')?;
+                Some((title.to_string(), state.trim() == "1"))
+            })
+            .collect()
+    }
+
+    /// Remember the fold state. Failing to write it loses nothing but a preference.
+    pub fn save_folds(&self, folds: &std::collections::HashMap<String, bool>) {
+        let mut lines: Vec<String> = folds
+            .iter()
+            .map(|(title, folded)| format!("{title}\t{}", if *folded { 1 } else { 0 }))
+            .collect();
+        lines.sort();
+        let _ = self.save_history_file("home_folds", &lines);
+    }
+
     /// Forget a single recently opened path.
     ///
     /// A recents list you cannot edit is one people stop trusting: an experiment, a

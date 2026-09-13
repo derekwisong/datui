@@ -470,6 +470,9 @@ mod recents_pruning_tests {
         let scratch = tempfile::tempdir().expect("scratch");
         let dataset = scratch.path().join("people.csv");
         std::fs::write(&dataset, b"a,b\n1,2\n").expect("write");
+        // Recents store the canonical path, which is not the one tempdir hands out
+        // everywhere: /var is /private/var on macOS, and Windows adds a \\?\ prefix.
+        let dataset = dataset.canonicalize().expect("canonicalize");
 
         cache.push_recent(&dataset);
         assert!(cache.load_recents().iter().any(|p| p == &dataset));
@@ -508,6 +511,9 @@ mod recents_pruning_tests {
         let scratch = tempfile::tempdir().expect("scratch");
         let dataset = scratch.path().join("nightly.parquet");
         std::fs::write(&dataset, b"x").expect("write");
+        // Canonical, as recents store it; see the test above. Taken now, while the
+        // file still exists to be resolved.
+        let dataset = dataset.canonicalize().expect("canonicalize");
         cache.push_recent(&dataset);
 
         std::fs::remove_file(&dataset).expect("remove");

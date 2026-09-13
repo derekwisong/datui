@@ -267,6 +267,41 @@ impl CacheManager {
         let _ = self.update_history_file("recents", |recents| recents.clear());
     }
 
+    /// Whether a recorded path is still worth offering.
+    ///
+    /// Recents are written on open and read on the home screen, and nothing used to take
+    /// entries out again except the fifty-entry cap. A dataset in a directory that has
+    /// since been deleted therefore stayed in the file, and while the home screen does
+    /// not list the entry itself, it does derive a *root* from the directory — which
+    /// then sits there marked `unavailable` with nothing in it, until fifty more opens
+    /// push it off the end.
+    ///
+    /// Two deliberate narrownesses:
+    ///
+    /// The test is on the containing directory, not the file. A file that is gone from a
+    /// directory that is still there is an ordinary deletion, and forgetting it the
+    /// moment it disappears would be wrong for anything regenerated in place — a nightly
+    /// export, a file being rewritten as datui looks at it. Only a directory that has
+    /// gone entirely takes its contents with it.
+    ///
+    /// Remote paths are never checked at all. `exists` stats the path, and on an
+    /// object-store URL or a share that has stopped answering that is the call that
+    /// hangs. A share being down is also precisely when its recents matter most, so
+    /// pruning them would throw away the list exactly when it is needed.
+    fn recent_is_worth_keeping(path: &str, mounts: &crate::locality::Mounts) -> bool {
+        let path = std::path::Path::new(path);
+        // The mount table is passed in rather than read here. `is_remote_path` reads
+        // /proc/self/mountinfo every time it is called, and this runs once per entry, so
+        // asking it directly meant fifty reads of the same file on every open.
+        if crate::locality::object_scheme(path).is_some() || mounts.is_network(path) {
+            return true;
+        }
+        match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.exists(),
+            _ => true,
+        }
+    }
+
     /// Record a path as most recently opened, de-duplicating and capping the list.
     ///
     /// Failures are ignored: not being able to write a convenience list must never
@@ -283,9 +318,14 @@ impl CacheManager {
         };
         let entry = stored.to_string_lossy().into_owned();
 
+        // One read of the mount table for the whole prune. It is a kernel-generated
+        // file, so reading it cannot block on the filesystems it describes.
+        let mounts = crate::locality::Mounts::current();
+
         self.update_history_file("recents", |recents| {
             recents.retain(|p| p != &entry);
             recents.insert(0, entry.clone());
+            recents.retain(|p| Self::recent_is_worth_keeping(p, &mounts));
             recents.truncate(MAX_RECENTS);
         })
         .unwrap_or(HistoryUpdate::SkippedBusy)
@@ -409,5 +449,106 @@ impl CacheManager {
         let result = work();
         let _ = FileExt::unlock(&lock);
         result
+    }
+}
+
+#[cfg(test)]
+mod recents_pruning_tests {
+    use super::*;
+
+    fn cache() -> (CacheManager, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        (CacheManager::with_dir(dir.path().to_path_buf()), dir)
+    }
+
+    #[test]
+    fn a_recent_whose_directory_is_gone_is_forgotten() {
+        // The case that filled a real recents file with fifty dead /tmp paths: a test
+        // harness opening a fixture in a temp directory, over and over. Nothing took
+        // them out again, and each one left an unavailable root on the home screen.
+        let (cache, _keep) = cache();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let dataset = scratch.path().join("people.csv");
+        std::fs::write(&dataset, b"a,b\n1,2\n").expect("write");
+
+        cache.push_recent(&dataset);
+        assert!(cache.load_recents().iter().any(|p| p == &dataset));
+
+        // A second directory of its own, not a fixed name in the system temp directory:
+        // that would be one path shared by every concurrent run of this suite.
+        let elsewhere = tempfile::tempdir().expect("elsewhere");
+        let survivor = elsewhere.path().join("still-here.csv");
+        std::fs::write(&survivor, b"a\n1\n").expect("write");
+
+        // The directory goes away, as a temp directory does.
+        drop(scratch);
+
+        // The next write is what cleans up. Recents are rewritten on open, so the list
+        // heals as datui is used rather than needing a maintenance pass.
+        cache.push_recent(&survivor);
+        let recents = cache.load_recents();
+        assert!(
+            !recents.iter().any(|p| p == &dataset),
+            "the dead path should be gone; got {recents:?}"
+        );
+        assert!(
+            recents
+                .iter()
+                .any(|p| p.file_name() == survivor.file_name()),
+            "the live path should remain; got {recents:?}"
+        );
+    }
+
+    #[test]
+    fn a_deleted_file_in_a_directory_that_still_exists_is_kept() {
+        // Deliberate. Anything regenerated in place -- a nightly export, a file being
+        // rewritten while datui looks at it -- is briefly absent, and forgetting it for
+        // that is worse than showing it.
+        let (cache, _keep) = cache();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let dataset = scratch.path().join("nightly.parquet");
+        std::fs::write(&dataset, b"x").expect("write");
+        cache.push_recent(&dataset);
+
+        std::fs::remove_file(&dataset).expect("remove");
+        let other = scratch.path().join("other.csv");
+        std::fs::write(&other, b"a\n1\n").expect("write");
+        cache.push_recent(&other);
+
+        assert!(
+            cache.load_recents().iter().any(|p| p == &dataset),
+            "a missing file in a live directory should stay"
+        );
+    }
+
+    #[test]
+    fn a_remote_recent_is_never_stated_let_alone_dropped() {
+        // A share being down is exactly when its recents matter most, and an
+        // object-store URL has no local existence to check. Neither may be pruned.
+        let (cache, _keep) = cache();
+        let scratch = tempfile::tempdir().expect("scratch");
+        let local = scratch.path().join("local.csv");
+        std::fs::write(&local, b"a\n1\n").expect("write");
+
+        for url in [
+            "s3://bucket/warehouse/events.parquet",
+            "gs://bucket/data.csv",
+            "https://example.com/data.csv",
+        ] {
+            cache.push_recent(std::path::Path::new(url));
+        }
+        cache.push_recent(&local);
+
+        let recents = cache.load_recents();
+        for url in [
+            "s3://bucket/warehouse/events.parquet",
+            "gs://bucket/data.csv",
+            "https://example.com/data.csv",
+        ] {
+            assert!(
+                recents.iter().any(|p| p.to_string_lossy() == url),
+                "{url} should have survived; got {recents:?}"
+            );
+        }
     }
 }

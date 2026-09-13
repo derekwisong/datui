@@ -127,6 +127,32 @@ fn percent_decode(raw: &str) -> String {
 /// in `RECENT` as individual datasets and remain reachable by typing a path.
 const MAX_RECENT_ROOTS: usize = 8;
 
+/// What to call a place inside an object store: a bucket, or a prefix within one.
+///
+/// `None` for anything that is not an object-store URL, and for objects themselves,
+/// which are named by their own kind like any other file.
+///
+/// Worth the few lines. A bucket labelled `dir` is not wrong so much as unhelpful: the
+/// word that tells you what you are looking at is the one the service uses for it, and
+/// the distinction between a bucket and a prefix is exactly the one that decides whether
+/// stepping out of it leaves the store.
+pub fn object_place_label(path: &Path) -> Option<&'static str> {
+    let text = path.to_string_lossy();
+    let (scheme, rest) = text.split_once("://")?;
+    if !matches!(scheme, "s3" | "s3a" | "gs" | "gcs") {
+        return None;
+    }
+    let rest = rest.trim_end_matches('/');
+    if rest.is_empty() {
+        return None;
+    }
+    Some(if rest.contains('/') {
+        "prefix"
+    } else {
+        "bucket"
+    })
+}
+
 /// Whether `path` is somewhere reading it could block: an object-store or HTTP URL,
 /// or a directory on a network filesystem.
 ///
@@ -181,6 +207,32 @@ pub struct Section {
     pub rows: Vec<Entry>,
     /// Set when a root could not be read, so the UI can say why it is empty.
     pub unavailable: bool,
+    /// What to say instead of the bare word "unavailable".
+    ///
+    /// A share that has stopped answering has nothing to add: "unavailable" is the
+    /// whole story. A bucket listing that was refused does — "403, no
+    /// storage.buckets.list access" tells the user what to change, and an empty section
+    /// that does not say why tells them nothing.
+    pub unavailable_note: Option<String>,
+}
+
+/// One provider's buckets, ready to become a section.
+///
+/// Held apart from [`Section`] because it survives a rebuild. A listing is rebuilt
+/// whenever a probe answers or a measurement lands, and re-enumerating buckets each time
+/// would be a billed network round trip per keystroke.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CloudSection {
+    /// The provider's name, e.g. "Google Cloud Storage".
+    pub title: String,
+    /// Which credentials were found, and the project when there is one.
+    pub subtitle: Option<String>,
+    /// Bucket URLs, e.g. `gs://my-bucket`, most useful first.
+    pub buckets: Vec<PathBuf>,
+    /// Why there are no buckets, when that is the reason rather than there being none.
+    /// Shown in place of the list: "403, no storage.buckets.list access" is worth
+    /// reading, and an empty section that does not say why is not.
+    pub error: Option<String>,
 }
 
 /// What measuring a dataset yielded: rows, columns, and total size, each absent when
@@ -313,6 +365,9 @@ pub struct HomeState {
     pub collapsed: std::collections::HashSet<String>,
     /// Datasets found by walking below the working directory.
     pub search: SearchState,
+    /// Object stores discovered on this machine, with their buckets. Empty on a machine
+    /// with no cloud credentials, which is the common case and not a failure.
+    pub cloud: Vec<CloudSection>,
 }
 
 /// The result of one recursive walk below the working directory.
@@ -347,6 +402,7 @@ impl Default for HomeState {
     fn default() -> Self {
         Self {
             sections: Vec::new(),
+            cloud: Vec::new(),
             filter: String::new(),
             selected: 0,
             scroll: 0,
@@ -380,6 +436,8 @@ pub struct ListingRequest {
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     pub unreachable: std::collections::HashSet<PathBuf>,
     pub network_check: fn(&Path) -> bool,
+    /// Buckets already enumerated, one entry per provider.
+    pub cloud: Vec<CloudSection>,
     /// What datui measured on a previous run. A row whose size and modification time
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
@@ -432,6 +490,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         probed,
         unreachable,
         network_check,
+        cloud,
         known,
     } = request;
     let network_check = *network_check;
@@ -444,12 +503,26 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     // Descended into a directory: show only that.
     if let Some(dir) = browsing.clone() {
-        let rows = discover::scan_dir(&dir);
+        // A remote directory is never read here. Listing an object store or a share
+        // that has stopped answering is the call that freezes the interface, so the
+        // rows come from whatever the background probe returned and the section is
+        // empty until it does. This is the same rule the root listing below follows;
+        // it was missing here, which is why descending into a bucket showed nothing
+        // and kept showing nothing.
+        let remote = network_check(&dir);
+        let rows = if remote {
+            probed.get(&dir).cloned().unwrap_or_default()
+        } else {
+            discover::scan_dir(&dir)
+        };
+        let unavailable = remote && unreachable.contains(&dir);
         sections.push(Section {
             title: display_path(&dir),
             subtitle: None,
             rows,
-            unavailable: false,
+            unavailable,
+            // A browsed remote place that did not answer: there is nothing to add.
+            unavailable_note: None,
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
@@ -483,6 +556,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             subtitle: None,
             rows: recent_rows,
             unavailable: false,
+            unavailable_note: None,
         });
     }
 
@@ -566,6 +640,42 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             subtitle: Some(subtitle),
             rows,
             unavailable: !root.available || unreachable,
+            unavailable_note: None,
+        });
+    }
+
+    // Object stores, after the places on this machine. A bucket list is stable and
+    // small, and what someone wants first is almost always the directory they are
+    // standing in; putting the cloud above that would push it down the screen.
+    //
+    // Each bucket is a row to descend into rather than a listing. Expanding every
+    // bucket on the home screen would mean one billed request per bucket on every
+    // start, to show a level nobody had asked to see.
+    for provider in cloud {
+        let rows: Vec<Entry> = provider
+            .buckets
+            .iter()
+            .map(|bucket| {
+                let mut entry = Entry::directory(bucket);
+                // The bucket name, not the last path segment of a URL, which for
+                // `gs://name` is the whole thing anyway but reads as an accident.
+                entry.name = bucket
+                    .to_string_lossy()
+                    .rsplit('/')
+                    .find(|part| !part.is_empty())
+                    .unwrap_or("")
+                    .to_string();
+                entry
+            })
+            .collect();
+        sections.push(Section {
+            title: provider.title.clone(),
+            subtitle: provider.subtitle.clone(),
+            rows,
+            // An enumeration that failed is reported the same way an unreachable share
+            // is: the section is there, empty, and says why.
+            unavailable: provider.error.is_some(),
+            unavailable_note: provider.error.clone(),
         });
     }
 
@@ -575,6 +685,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             subtitle: Some("opened elsewhere".to_string()),
             rows: elsewhere,
             unavailable: false,
+            unavailable_note: None,
         });
     }
 
@@ -935,6 +1046,7 @@ impl HomeState {
             probed: self.probed.clone(),
             unreachable: self.unreachable.clone(),
             network_check: self.network_check,
+            cloud: self.cloud.clone(),
             // The synchronous path is for tests and library callers; it consults no
             // cache, so what it produces is exactly what is on disk right now.
             known: Default::default(),
@@ -1059,6 +1171,7 @@ impl HomeState {
             subtitle: Some(subtitle),
             rows,
             unavailable: false,
+            unavailable_note: None,
         });
     }
 
@@ -1198,6 +1311,18 @@ impl HomeState {
                 {
                     out.push(root.clone());
                 }
+            }
+        }
+        // Descended into a remote directory — a bucket, a prefix, a share. It is the
+        // only thing on screen and its rows can come from nowhere but a probe, so it
+        // is not covered by the section scan above, which only looks at roots.
+        if let Some(dir) = &self.browsing {
+            if check(dir)
+                && !self.probed.contains_key(dir)
+                && !self.unreachable.contains(dir)
+                && !out.contains(dir)
+            {
+                out.push(dir.clone());
             }
         }
         out

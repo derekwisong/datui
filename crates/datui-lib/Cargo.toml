@@ -16,7 +16,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["cloud", "http", "sql", "streaming"]
-cloud = ["polars/aws", "polars/gcp", "dep:object_store"]
+cloud = ["polars/aws", "polars/gcp", "dep:object_store", "dep:quick-xml", "dep:ureq", "dep:http"]
 http = ["dep:ureq"]
 sql = ["polars/sql", "dep:polars-sql"]
 streaming = ["polars/new_streaming"]
@@ -47,6 +47,14 @@ arrow = "59"
 tempfile = "3.14"
 ureq = { version = "3.4", optional = true }
 object_store = { version = "0.12", optional = true, default-features = false, features = ["aws", "gcp"] }
+# S3 ListBuckets answers in XML, from an endpoint the user pointed datui at and does
+# not necessarily control. 0.41 is the first release past the two denial-of-service
+# advisories against the 0.38 line, and it is already in the tree behind calamine.
+quick-xml = { version = "0.41", optional = true }
+# The request type object_store's SigV4 authorizer signs. Pulled in directly rather
+# than reached through object_store, whose own re-export is of an internal module of
+# the same name, not of this crate.
+http = { version = "1", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "io-util"] }
 polars-sql = { version = "0.52", optional = true }
 ignore = "0.4.33"

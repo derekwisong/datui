@@ -57,6 +57,25 @@ pub enum Locality {
     Unknown,
 }
 
+impl Locality {
+    /// The locality a [`Source::fstype`] implies.
+    ///
+    /// The round trip exists because a row carries the filesystem name and not the
+    /// classification: `fstype` is what gets cached, and re-deriving it here is free,
+    /// whereas asking the mount table again means reading `/proc` on the thread that
+    /// draws.
+    ///
+    /// Object-store schemes are handled first. They never appear in the mount table, so
+    /// a classifier that only knew filesystems would call `s3` a local disk.
+    pub fn of_fstype(fstype: &str) -> Locality {
+        match fstype {
+            "s3" | "s3a" | "gs" | "gcs" | "http" | "https" => Locality::Object,
+            "" | "unknown" => Locality::Unknown,
+            other => classify(other),
+        }
+    }
+}
+
 /// Where something lives and what the kernel calls it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
@@ -229,5 +248,68 @@ pub fn object_scheme(path: &Path) -> Option<String> {
         crate::source::InputSource::S3(_) => Some("s3".to_string()),
         crate::source::InputSource::Gcs(_) => Some("gs".to_string()),
         crate::source::InputSource::Http(_) => Some("http".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod locality_of_fstype_tests {
+    use super::*;
+
+    #[test]
+    fn object_store_schemes_are_not_local_disks() {
+        // The case the round trip exists for. These never appear in the mount table, so
+        // a classifier that only knew filesystems would call every one of them a disk
+        // on this machine -- and the row would then claim a cloud object is local.
+        for scheme in ["s3", "s3a", "gs", "gcs", "http", "https"] {
+            assert_eq!(
+                Locality::of_fstype(scheme),
+                Locality::Object,
+                "{scheme} should be an object store"
+            );
+        }
+    }
+
+    #[test]
+    fn network_filesystems_are_network() {
+        for fstype in ["nfs", "nfs4", "cifs", "smb3"] {
+            assert_eq!(
+                Locality::of_fstype(fstype),
+                Locality::Network,
+                "{fstype} should be network"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_filesystems_are_memory() {
+        assert_eq!(Locality::of_fstype("tmpfs"), Locality::Memory);
+    }
+
+    #[test]
+    fn ordinary_filesystems_are_local() {
+        for fstype in ["ext4", "btrfs", "xfs", "apfs", "ntfs"] {
+            assert_eq!(
+                Locality::of_fstype(fstype),
+                Locality::Local,
+                "{fstype} should be local"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_known_is_not_guessed_at() {
+        assert_eq!(Locality::of_fstype(""), Locality::Unknown);
+        assert_eq!(Locality::of_fstype("unknown"), Locality::Unknown);
+    }
+
+    /// What `describe` reports and what `of_fstype` makes of it have to agree, or a row
+    /// is classified one way for the detail pane and another for its marker.
+    #[test]
+    fn it_agrees_with_describe() {
+        let mounts = Mounts::parse("");
+        for path in ["s3://bucket/key.parquet", "gs://bucket/key.parquet"] {
+            let source = mounts.describe(std::path::Path::new(path));
+            assert_eq!(source.locality, Locality::of_fstype(&source.fstype));
+        }
     }
 }

@@ -41,6 +41,18 @@ pub struct Glyphs {
     /// Spinner frames, cycled while something is loading. Every frame must be the
     /// same display width, or the text beside it jitters.
     pub spinner: &'static [&'static str],
+    /// Where a row's data lives, shown beside its name.
+    ///
+    /// Beside the name on purpose. The detail pane has said this for a long time, but
+    /// on a full-screen ultrawide the pane is a foot away from the row the cursor is
+    /// on, and "is this one in the cloud?" is a question you ask about the row you are
+    /// looking at. All five must be the same display width or every name after them
+    /// shifts by a column.
+    pub here: &'static str,
+    pub in_memory: &'static str,
+    pub over_network: &'static str,
+    pub in_object_store: &'static str,
+    pub place_unknown: &'static str,
 }
 
 const UNICODE: Glyphs = Glyphs {
@@ -56,6 +68,14 @@ const UNICODE: Glyphs = Glyphs {
     updown: "↑↓",
     updown_lr: "←→",
     spinner: &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"],
+    // Plain Unicode from blocks any UTF-8 font covers, and each one Neutral width
+    // rather than Ambiguous, so an East Asian locale does not render them double-wide
+    // and knock every name out of line.
+    here: "◦",
+    in_memory: "▪",
+    over_network: "⇅",
+    in_object_store: "☁",
+    place_unknown: "◌",
 };
 
 const ASCII: Glyphs = Glyphs {
@@ -71,6 +91,11 @@ const ASCII: Glyphs = Glyphs {
     updown: "Up/Dn",
     updown_lr: "Lt/Rt",
     spinner: &["|", "/", "-", "\\"],
+    here: ".",
+    in_memory: "*",
+    over_network: "~",
+    in_object_store: "@",
+    place_unknown: "?",
 };
 
 /// What the user asked for, from `[display] unicode`.
@@ -135,4 +160,76 @@ pub fn unicode() -> &'static Glyphs {
 /// The ASCII set.
 pub fn ascii() -> &'static Glyphs {
     &ASCII
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    /// Every locality marker has to be the same display width in a given set, or the
+    /// name beside it starts one column further along on some rows than on others and
+    /// the whole list looks broken.
+    #[test]
+    fn locality_markers_are_all_one_column() {
+        for set in [unicode(), ascii()] {
+            for marker in [
+                set.here,
+                set.in_memory,
+                set.over_network,
+                set.in_object_store,
+                set.place_unknown,
+            ] {
+                assert_eq!(
+                    UnicodeWidthStr::width(marker),
+                    1,
+                    "{marker:?} is not one column wide"
+                );
+            }
+        }
+    }
+
+    /// The two sets must agree column for column, since the layout arithmetic around
+    /// them is written once and used for both.
+    #[test]
+    fn the_two_sets_have_the_same_shape() {
+        let (u, a) = (unicode(), ascii());
+        for (left, right) in [
+            (u.here, a.here),
+            (u.in_memory, a.in_memory),
+            (u.over_network, a.over_network),
+            (u.in_object_store, a.in_object_store),
+            (u.place_unknown, a.place_unknown),
+            (u.selector, a.selector),
+            (u.selector_blank, a.selector_blank),
+            (u.collapsed, a.collapsed),
+            (u.expanded, a.expanded),
+        ] {
+            assert_eq!(
+                UnicodeWidthStr::width(left),
+                UnicodeWidthStr::width(right),
+                "{left:?} and {right:?} are different widths"
+            );
+        }
+    }
+
+    /// A marker that is also a letter or a space would read as part of the name.
+    #[test]
+    fn no_marker_could_be_mistaken_for_text() {
+        for set in [unicode(), ascii()] {
+            for marker in [
+                set.here,
+                set.in_memory,
+                set.over_network,
+                set.in_object_store,
+                set.place_unknown,
+            ] {
+                let c = marker.chars().next().expect("a marker");
+                assert!(
+                    !c.is_alphanumeric() && !c.is_whitespace(),
+                    "{marker:?} would read as part of a filename"
+                );
+            }
+        }
+    }
 }

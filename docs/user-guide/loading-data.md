@@ -53,6 +53,10 @@ datui s3://my-bucket/data/myfile.parquet
 
 ### Configurable S3 (MinIO and other S3-compatible backends)
 
+> Once an endpoint and keys are set, the backend's buckets also appear on the home
+> screen, so you can browse and open them without typing a URL. See
+> [Cloud storage](home-screen.md#cloud-storage).
+
 You can point S3 at a custom endpoint (e.g. MinIO) via **config**, **environment variables**, or **CLI options**. Priority is: **CLI > env > config**. That lets you keep a default in config and override per run when you use multiple backends.
 
 **Config** — In `~/.config/datui/config.toml` add a `[cloud]` section:

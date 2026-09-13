@@ -7,19 +7,24 @@ what each contains shown before you open it. <kbd>Ctrl</kbd>+<kbd>O</kbd> return
 here from anywhere.
 
 ```
- datui                                                         ~/work/analysis
-› ▏  type to filter
-▾ RECENT
-▸ sales                          hive      2.4M × 18    340 MB    2d
-  customers.parquet                          89k × 12     4 MB    1w
-▾ /mnt/data                                        network · configured
-  events                         hive       1.1M × 9    120 MB    3h
-  lookup.parquet                              980 × 4     8 KB    2mo
-▾ ~/work/analysis                                     current directory
-  raw_export.csv                                        1.2 GB    3h
-  notes/                         dir
-Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
+ ╺┳┓┏━┓╺┳╸╻ ╻╻
+  ┃┃┣━┫ ┃ ┃ ┃┃   ~/work/analysis
+ ╺┻┛╹ ╹ ╹ ┗━┛╹
+ › ▏  filter and search
+ ▾ RECENT  2  ────────────────────────────────────────────────────────────
+ ▎ ◦ sales  hive                            2.4M × 18    340 MB    2d
+   ◦ customers.parquet                       89k × 12      4 MB    1w
+ ▾ /mnt/data  2  ────────────────────────────────── network · configured
+   ⇅ events  hive                            1.1M × 9    120 MB    3h
+   ⇅ lookup.parquet                           980 × 4      8 KB   2mo
+ ▾ ~/work/analysis  2  ──────────────────────────────── current directory
+   ◦ raw_export.csv                                     1.2 GB    3h
+   ◦ notes/ dir
+ Enter Open  ↑↓ Move  Esc Quit  type Filter  ~ Path  ←→ Fold  Tab Sort
 ```
+
+The wordmark takes three rows; on a terminal shorter than 28 rows it gives way to a
+one-line title bar. Keys in the control bar are drawn as chips.
 
 ## Keys
 

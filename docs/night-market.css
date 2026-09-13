@@ -1,0 +1,128 @@
+/* datui's own colours for the documentation site. The app's default palette
+   ("Night Market", after Tokyo Night) for the dark theme, and its light palette
+   for the light one, so the docs look like the program they describe. */
+
+.navy,
+.coal,
+.ayu {
+    --bg: #1a1b26;
+    --fg: #c0caf5;
+    --sidebar-bg: #16161e;
+    --sidebar-fg: #a9b1d6;
+    --sidebar-non-existant: #414868;
+    --sidebar-active: #7dcfff;
+    --sidebar-spacer: #24283b;
+    --scrollbar: #3b4261;
+    --icons: #565f89;
+    --icons-hover: #a9b1d6;
+    --links: #7dcfff;
+    --inline-code-color: #bb9af7;
+    --theme-popup-bg: #16161e;
+    --theme-popup-border: #3b4261;
+    --theme-hover: #24283b;
+    --quote-bg: #1e2030;
+    --quote-border: #3b4261;
+    --warning-border: #e0af68;
+    --table-border-color: #292e42;
+    --table-header-bg: #292e42;
+    --table-alternate-bg: #1e2030;
+    --searchbar-border-color: #3b4261;
+    --searchbar-bg: #24283b;
+    --searchbar-fg: #c0caf5;
+    --searchbar-shadow-color: #16161e;
+    --searchresults-header-fg: #737aa2;
+    --searchresults-border-color: #3b4261;
+    --searchresults-li-bg: #24283b;
+    --search-mark-bg: #7dcfff;
+    --footnote-highlight: #3d59a1;
+    --sidebar-header-border-color: #7dcfff;
+    --blockquote-note-color: #7dcfff;
+    --blockquote-tip-color: #9ece6a;
+    --blockquote-important-color: #bb9af7;
+    --blockquote-warning-color: #e0af68;
+    --blockquote-caution-color: #f7768e;
+}
+
+.light,
+.rust {
+    --bg: #e1e2e7;
+    --fg: #3760bf;
+    --sidebar-bg: #d0d5e3;
+    --sidebar-fg: #3760bf;
+    --sidebar-non-existant: #a8aecb;
+    --sidebar-active: #2e7de9;
+    --sidebar-spacer: #c4c8da;
+    --scrollbar: #a8aecb;
+    --icons: #848cb5;
+    --icons-hover: #3760bf;
+    --links: #2e7de9;
+    --inline-code-color: #7847bd;
+    --theme-popup-bg: #d0d5e3;
+    --theme-popup-border: #a8aecb;
+    --theme-hover: #c4c8da;
+    --quote-bg: #d9dce8;
+    --quote-border: #a8aecb;
+    --warning-border: #8c6c3e;
+    --table-border-color: #c4c8da;
+    --table-header-bg: #c4c8da;
+    --table-alternate-bg: #d9dce8;
+    --searchbar-border-color: #a8aecb;
+    --searchbar-bg: #d0d5e3;
+    --searchbar-fg: #3760bf;
+    --searchbar-shadow-color: #c4c8da;
+    --searchresults-header-fg: #6172b0;
+    --searchresults-border-color: #a8aecb;
+    --searchresults-li-bg: #d0d5e3;
+    --search-mark-bg: #b6bfe2;
+    --footnote-highlight: #2e7de9;
+    --sidebar-header-border-color: #2e7de9;
+    --blockquote-note-color: #2e7de9;
+    --blockquote-tip-color: #587539;
+    --blockquote-important-color: #9854f1;
+    --blockquote-warning-color: #8c6c3e;
+    --blockquote-caution-color: #f52a65;
+}
+
+/* Keys are drawn the way the control bar draws them: a flat chip. */
+kbd {
+    background: var(--links);
+    color: var(--bg);
+    border: none;
+    border-radius: 3px;
+    box-shadow: none;
+    font-weight: 700;
+    padding: 0 0.4em;
+    line-height: 1.4;
+}
+
+/* Headings take the accent, like a section title in the app. */
+.content h1,
+.content h2 {
+    color: var(--links);
+}
+
+.content h2 {
+    border-bottom: 1px solid var(--table-border-color);
+    padding-bottom: 0.2em;
+}
+
+/* Tables: a filled header row, a lighter stripe, no heavy borders. */
+.content table thead th {
+    background: var(--table-header-bg);
+    border: none;
+}
+
+.content table td {
+    border-left: none;
+    border-right: none;
+    border-bottom: 1px solid var(--table-border-color);
+}
+
+/* Code blocks sit on the panel tier, one step off the page. */
+.content pre {
+    background: var(--quote-bg);
+}
+
+.content pre > .buttons button {
+    border-color: var(--quote-border);
+}

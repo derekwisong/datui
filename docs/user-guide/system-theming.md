@@ -48,7 +48,8 @@ Colours under `[theme.colors]` override whichever set `mode` chooses.
    ```
 
 The template sets `theme.mode` from the theme's own polarity, so light themes get
-light chrome. A theme switch takes effect the next time datui starts; a running
+light chrome. It maps the theme's accent onto datui's accent, gradient and selection
+tint, so the wordmark, key chips and current row follow the theme too. A theme switch takes effect the next time datui starts; a running
 instance keeps the theme it launched with.
 
 ### Overriding colours

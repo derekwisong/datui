@@ -22,6 +22,17 @@ This page showcases interactive demonstrations of Datui's features.
 
 See [The Home Screen](user-guide/home-screen.md) for the full guide.
 
+## Light Terminals
+
+![Light Theme Demo](demos/13-light-theme.gif)
+
+**What it shows:**
+- The light colour set, chosen automatically on a terminal that sets `COLORFGBG`
+  (or with `mode = "light"` in the config)
+- The home screen, the table and the sort & filter sidebar in that set
+
+See [Theme Mode](user-guide/configuration.md#theme-mode-light-and-dark-terminals).
+
 ## Navigation
 
 ![Basic Navigation Demo](demos/01-basic-navigation.gif)

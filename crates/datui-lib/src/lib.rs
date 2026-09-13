@@ -2410,11 +2410,19 @@ impl App {
             return None;
         }
 
+        // Every plain character types into the filter, so no letter or bracket is
+        // a key here: typing "json" must not move the cursor on the "j". Navigation
+        // is the arrows and the Ctrl chords, which cannot be part of a name.
         match event.code {
             KeyCode::Esc => return self.home_escape(),
             KeyCode::Enter => return self.home_open_selected(),
+            // Section to section, past however many rows the current one holds.
+            KeyCode::Down if ctrl => self.home.jump_section(1),
+            KeyCode::Up if ctrl => self.home.jump_section(-1),
             KeyCode::Up => self.home.move_selection(-1),
             KeyCode::Down => self.home.move_selection(1),
+            KeyCode::Char('n') if ctrl => self.home.move_selection(1),
+            KeyCode::Char('p') if ctrl => self.home.move_selection(-1),
             // Left/right fold the section the cursor is in, wherever in it the cursor
             // happens to be — so collapsing does not require first finding the header.
             // Tab cycles the sort. Every plain key goes into the filter, so an
@@ -2425,16 +2433,8 @@ impl App {
             }
             KeyCode::Left => self.home_collapse(true),
             KeyCode::Right => self.home_collapse(false),
-            KeyCode::Char('h') if self.home.filter.is_empty() => self.home_collapse(true),
-            KeyCode::Char('l') if self.home.filter.is_empty() => self.home_collapse(false),
-            // Section to section, past however many rows the current one holds. Only
-            // while the filter is empty, since a bracket can be part of a name.
-            KeyCode::Char(']') if self.home.filter.is_empty() => self.home.jump_section(1),
-            KeyCode::Char('[') if self.home.filter.is_empty() => self.home.jump_section(-1),
             KeyCode::PageUp => self.home.move_selection(-10),
             KeyCode::PageDown => self.home.move_selection(10),
-            KeyCode::Char('k') if self.home.filter.is_empty() => self.home.move_selection(-1),
-            KeyCode::Char('j') if self.home.filter.is_empty() => self.home.move_selection(1),
             KeyCode::Char('u') if ctrl => {
                 self.home.filter.clear();
                 self.home.sync_search_section();

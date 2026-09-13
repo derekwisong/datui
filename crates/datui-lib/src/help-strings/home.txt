@@ -2,9 +2,12 @@ The home screen is where datui starts when you launch it without a path, and
 where Ctrl+O returns you from anywhere.
 
 NAVIGATION
-  ↑ / ↓ / k / j     Move the selection
-  ← / → / h / l     Collapse or expand a section; the choice is remembered
-  ] / [             Next or previous section
+  ↑ / ↓             Move the selection (Ctrl+P / Ctrl+N as well)
+  Ctrl+↑ / Ctrl+↓   Previous or next section
+  ← / →             Collapse or expand a section; the choice is remembered
+  PgUp / PgDn       Move ten rows
+
+  Every letter types into the filter, so none is a key here: "json" finds json.
   Tab               Cycle the sort. The control bar names the order in effect
                     where the cursor is: "recent" under Recent, "name" under a
                     directory, or size / modified / rows once chosen.

@@ -156,7 +156,7 @@ pub fn home_control_keys(
             keys.push(("Bksp", "Up"));
         }
         keys.push((g.updown_lr, "Fold"));
-        keys.push(("[]", "Section"));
+        keys.push(("^↑↓", "Section"));
         // The key is an action; which order is currently in effect is state, and it
         // belongs with the other state at the far end of the bar rather than dressed
         // up as something to press.

@@ -30,9 +30,9 @@ one-line title bar. Keys in the control bar are drawn as chips.
 
 | key | action |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> | move |
-| <kbd>←</kbd> <kbd>→</kbd> / <kbd>h</kbd> <kbd>l</kbd> | collapse / expand the section |
-| <kbd>]</kbd> <kbd>[</kbd> | next / previous section |
+| <kbd>↑</kbd> <kbd>↓</kbd> (or <kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd>) | move |
+| <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | previous / next section |
+| <kbd>←</kbd> <kbd>→</kbd> | collapse / expand the section |
 | <kbd>Enter</kbd> | open the dataset, enter the directory, or fold the section |
 | type anything | filter by name (fuzzy: `sal` matches `sales`) |
 | <kbd>~</kbd> | type a path directly; <kbd>Tab</kbd> completes it |
@@ -45,8 +45,9 @@ one-line title bar. Keys in the control bar are drawn as chips.
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | quit |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | return here from anywhere, including during a load |
 
-<kbd>q</kbd> does not quit here — plain characters go into the filter. The control
-bar shows what <kbd>Esc</kbd> will do next.
+<kbd>q</kbd> does not quit here, and <kbd>j</kbd> does not move: every plain character
+goes into the filter, so `json` finds json. The control bar shows what <kbd>Esc</kbd>
+will do next.
 
 ## Where the list comes from
 
@@ -71,7 +72,8 @@ that names it.
 
 Sections fold with <kbd>←</kbd> and <kbd>→</kbd>. A folded section shows how many
 rows it is hiding. Whether you folded or opened a section is remembered between runs.
-<kbd>]</kbd> and <kbd>[</kbd> move the cursor from one section heading to the next.
+<kbd>Ctrl</kbd>+<kbd>↓</kbd> and <kbd>Ctrl</kbd>+<kbd>↑</kbd> move the cursor from one
+section heading to the next.
 
 Filtering keeps the grouping, so a match always shows which root it came from.
 

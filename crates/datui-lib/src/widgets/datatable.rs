@@ -5289,9 +5289,13 @@ impl StatefulWidget for DataTable {
                     cell.set_style(hint_style);
                 }
                 if more_right {
-                    let text = format!(" +{hidden} {}", g.arrow_right);
+                    // The count when there is room for it, the arrow alone when not.
+                    let mut text = format!(" +{hidden} {}", g.arrow_right);
+                    if scroll_area.width <= text.chars().count() as u16 {
+                        text = g.arrow_right.to_string();
+                    }
                     let w = text.chars().count() as u16;
-                    if scroll_area.width > w {
+                    if scroll_area.width >= w {
                         let x0 = scroll_area.x + scroll_area.width - w;
                         let y = if header_h > 1 {
                             scroll_area.y + 1
@@ -6770,11 +6774,11 @@ mod tests {
         DataTable::default().render(area, &mut buf, &mut state);
         let header = header_row_string(&buf, area);
         assert!(
-            header.contains('▶'),
+            header.contains('→'),
             "expected right indicator, header: {header:?}"
         );
         assert!(
-            !header.contains('◀'),
+            !header.contains('←'),
             "should not show left indicator at offset 0: {header:?}"
         );
 
@@ -6784,7 +6788,7 @@ mod tests {
         DataTable::default().render(area, &mut buf2, &mut state);
         let header2 = header_row_string(&buf2, area);
         assert!(
-            header2.contains('◀'),
+            header2.contains('←'),
             "expected left indicator after scroll: {header2:?}"
         );
     }

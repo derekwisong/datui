@@ -469,12 +469,19 @@ fn section_header<'a>(
     let marker = if collapsed { g.collapsed } else { g.expanded };
     // Shown whether folded or not: how much is in a place is worth knowing before
     // deciding to look in it, and a folded section would otherwise read as empty.
-    let count = format!("  {matches}");
-    let prefix_width = marker.chars().count() + count.chars().count();
-    title = truncate_start(
-        &title,
-        width.saturating_sub(note.chars().count() + prefix_width + 3),
-    );
+    let chip = format!(" {matches} ");
+    // marker, title, space, chip, space, rule, space, note, space. The title gives
+    // way to the note only down to three cells; below that the note goes instead,
+    // since a heading that is all note and no title says nothing.
+    let mut note = note;
+    let mut fixed =
+        marker.chars().count() + 1 + chip.chars().count() + 1 + note.chars().count() + 2;
+    if width.saturating_sub(fixed) < 3 {
+        note = String::new();
+        fixed = marker.chars().count() + 1 + chip.chars().count() + 1 + 2;
+    }
+    title = truncate_start(&title, width.saturating_sub(fixed));
+    let rule_w = width.saturating_sub(fixed + title.chars().count());
 
     // A title on a rule, not a filled bar: the accent carries the title, the count
     // sits in a flat chip, and the rule runs out to the provenance note. The section
@@ -487,7 +494,6 @@ fn section_header<'a>(
     } else {
         Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
     };
-    let chip = format!(" {matches} ");
     let chip_style = Style::default().bg(ctx.controls_bg).fg(ctx.text_primary);
     let rule_glyph = if selected { g.rule_h_focused } else { g.rule_h };
     let rule_style = Style::default().fg(if selected {
@@ -495,16 +501,6 @@ fn section_header<'a>(
     } else {
         ctx.column_separator
     });
-    // marker + title + space + chip + space + rule + space + note + space
-    let fixed = marker.chars().count()
-        + title.chars().count()
-        + 1
-        + chip.chars().count()
-        + 1
-        + note.chars().count()
-        + 2;
-    let rule_w = width.saturating_sub(fixed);
-    let _ = count;
     Line::from(vec![
         Span::styled(marker, Style::default().fg(ctx.accent)),
         Span::styled(title, title_style),

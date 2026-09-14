@@ -178,6 +178,14 @@ fn next_len_generation() -> u64 {
     NEXT_LEN_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Options for sorting by `n` columns. Nulls go last in both directions, as in pandas,
+/// DuckDB and spreadsheets; Polars would otherwise put them first either way.
+fn sort_options(n: usize, descending: bool) -> SortMultipleOptions {
+    SortMultipleOptions::default()
+        .with_order_descending_multi(vec![descending; n])
+        .with_nulls_last_multi(vec![true; n])
+}
+
 impl DataTableState {
     pub fn new(
         lf: LazyFrame,
@@ -4018,17 +4026,9 @@ impl DataTableState {
         }
 
         if !self.sort_columns.is_empty() {
-            let options = SortMultipleOptions {
-                descending: self
-                    .sort_columns
-                    .iter()
-                    .map(|_| !self.sort_ascending)
-                    .collect(),
-                ..Default::default()
-            };
             lf = lf.sort_by_exprs(
                 self.sort_columns.iter().map(col).collect::<Vec<_>>(),
-                options,
+                sort_options(self.sort_columns.len(), !self.sort_ascending),
             );
         } else if !self.sort_ascending {
             lf = lf.reverse();
@@ -4056,18 +4056,10 @@ impl DataTableState {
         self.buffered_df = None;
 
         if !self.sort_columns.is_empty() {
-            let options = SortMultipleOptions {
-                descending: self
-                    .sort_columns
-                    .iter()
-                    .map(|_| !self.sort_ascending)
-                    .collect(),
-                ..Default::default()
-            };
             self.invalidate_num_rows();
             self.lf = self.lf.clone().sort_by_exprs(
                 self.sort_columns.iter().map(col).collect::<Vec<_>>(),
-                options,
+                sort_options(self.sort_columns.len(), !self.sort_ascending),
             );
             self.collect();
         } else {
@@ -4146,7 +4138,8 @@ impl DataTableState {
                         .take(group_by_cols.len())
                         .map(|n| col(n.as_str()))
                         .collect();
-                    lf = lf.sort_by_exprs(sort_exprs, Default::default());
+                    let options = sort_options(sort_exprs.len(), false);
+                    lf = lf.sort_by_exprs(sort_exprs, options);
                 } else if !cols.is_empty() {
                     lf = lf.select(cols);
                 }
@@ -5816,6 +5809,79 @@ mod tests {
                 .unwrap(),
             AnyValue::Int32(3)
         );
+    }
+
+    fn column_values(state: &DataTableState, name: &str) -> Vec<Option<i64>> {
+        let df = state.lf.clone().collect().unwrap();
+        df.column(name)
+            .unwrap()
+            .cast(&DataType::Int64)
+            .unwrap()
+            .i64()
+            .unwrap()
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn test_sort_puts_nulls_last_in_both_directions() {
+        let lf = df!("a" => &[Some(2i64), None, Some(3), None, Some(1)])
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+
+        state.sort(vec!["a".to_string()], true);
+        assert_eq!(
+            column_values(&state, "a"),
+            [Some(1), Some(2), Some(3), None, None]
+        );
+
+        state.sort(vec!["a".to_string()], false);
+        assert_eq!(
+            column_values(&state, "a"),
+            [Some(3), Some(2), Some(1), None, None]
+        );
+
+        state.reverse();
+        assert_eq!(
+            column_values(&state, "a"),
+            [Some(1), Some(2), Some(3), None, None]
+        );
+    }
+
+    #[test]
+    fn test_multi_column_sort_puts_nulls_last_in_every_column() {
+        let lf = df!(
+            "a" => &[Some(1i64), None, Some(1), Some(2), Some(1)],
+            "b" => &[Some(5i64), Some(9), None, Some(7), Some(6)],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+
+        state.sort(vec!["a".to_string(), "b".to_string()], false);
+        assert_eq!(
+            column_values(&state, "a"),
+            [Some(2), Some(1), Some(1), Some(1), None]
+        );
+        assert_eq!(
+            column_values(&state, "b"),
+            [Some(7), Some(6), Some(5), None, Some(9)]
+        );
+    }
+
+    #[test]
+    fn test_by_query_puts_null_group_last() {
+        let lf = df!(
+            "g" => &[Some(2i64), None, Some(1), Some(2)],
+            "v" => &[1i64, 2, 3, 4],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.query("select sum v by g".to_string());
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert_eq!(column_values(&state, "g"), [Some(1), Some(2), None]);
     }
 
     #[test]

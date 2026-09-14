@@ -355,6 +355,11 @@ pub struct HomeState {
     pub path_input: String,
     /// Directory the user has descended into, if any. `None` means the root listing.
     pub browsing: Option<PathBuf>,
+    /// Where the current browse began: the directory entered from the root listing or
+    /// jumped to by path. Esc climbs back to here and then to the listing, so it never
+    /// wanders above the place the user started from. `None` treats `browsing` itself
+    /// as the start.
+    pub browse_start: Option<PathBuf>,
     /// Transient message (e.g. a path that does not exist).
     pub status: Option<String>,
     /// How a path is judged to be network-backed. Swappable so the "never touch a
@@ -435,6 +440,7 @@ impl Default for HomeState {
             path_input_active: false,
             path_input: String::new(),
             browsing: None,
+            browse_start: None,
             status: None,
             network_check: is_remote_path,
             sort: SortMode::default(),
@@ -1417,6 +1423,15 @@ impl HomeState {
             }
         }
         out
+    }
+
+    /// Whether the browsed directory is strictly below where the browse began, so Esc
+    /// still has a level to climb before it returns to the listing.
+    pub fn below_browse_start(&self) -> bool {
+        match (&self.browsing, &self.browse_start) {
+            (Some(dir), Some(start)) => dir != start && dir.starts_with(start),
+            _ => false,
+        }
     }
 
     /// The remote location being browsed, while its listing has not come back.

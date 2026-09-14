@@ -102,11 +102,28 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
         }
         MainViewContent::Home => ControlBarSpec::Custom(home_control_keys(
             app.home.path_input_active,
-            app.home.browsing.is_some(),
+            if app.home.below_browse_start() {
+                Browse::BelowStart
+            } else if app.home.browsing.is_some() {
+                Browse::AtStart
+            } else {
+                Browse::Listing
+            },
             !app.home.filter.is_empty(),
             app.data_table_state.is_some(),
         )),
     }
+}
+
+/// Where the home screen is, as far as Esc is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Browse {
+    /// The root listing.
+    Listing,
+    /// In the directory the browse began at; Esc returns to the listing.
+    AtStart,
+    /// Below where the browse began; Esc goes up a level.
+    BelowStart,
 }
 
 /// Control bar keys for the home screen.
@@ -117,7 +134,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
 /// and a control bar promising otherwise leaves the user with no visible way out.
 pub fn home_control_keys(
     path_input_active: bool,
-    browsing: bool,
+    browsing: Browse,
     has_filter: bool,
     has_data: bool,
 ) -> Vec<(&'static str, &'static str)> {
@@ -141,8 +158,10 @@ pub fn home_control_keys(
         // nothing, and is not offered.
         if has_filter {
             keys.push(("Esc", "Clear"));
-        } else if browsing {
+        } else if browsing == Browse::BelowStart {
             keys.push(("Esc", "Up"));
+        } else if browsing == Browse::AtStart {
+            keys.push(("Esc", "Back"));
         } else if has_data {
             keys.push(("Esc", "Back to data"));
         } else {
@@ -151,7 +170,7 @@ pub fn home_control_keys(
         }
         keys.push(("type", "Filter"));
         keys.push(("~", "Path"));
-        if browsing {
+        if browsing != Browse::Listing {
             keys.push(("Bksp", "Up"));
         }
         keys.push((g.updown_lr, "Fold"));
@@ -172,13 +191,13 @@ pub fn home_control_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::home_control_keys;
+    use super::{home_control_keys, Browse};
 
     /// Every combination of home-screen state the control bar can be drawn in.
-    fn all_states() -> Vec<(bool, bool, bool, bool)> {
+    fn all_states() -> Vec<(bool, Browse, bool, bool)> {
         let mut out = Vec::new();
         for path_input in [false, true] {
-            for browsing in [false, true] {
+            for browsing in [Browse::Listing, Browse::AtStart, Browse::BelowStart] {
                 for filter in [false, true] {
                     for data in [false, true] {
                         out.push((path_input, browsing, filter, data));
@@ -197,7 +216,7 @@ mod tests {
             for (key, _) in home_control_keys(p, b, f, d) {
                 assert_ne!(
                     key, "q",
-                    "bare `q` advertised in state (path={p}, browsing={b}, filter={f}, data={d})"
+                    "bare `q` advertised in state (path={p}, browsing={b:?}, filter={f}, data={d})"
                 );
             }
         }
@@ -209,7 +228,7 @@ mod tests {
             let keys = home_control_keys(p, b, f, d);
             assert!(
                 keys.iter().any(|(_, label)| *label == "Quit"),
-                "no quit offered in state (path={p}, browsing={b}, filter={f}, data={d})"
+                "no quit offered in state (path={p}, browsing={b:?}, filter={f}, data={d})"
             );
         }
     }
@@ -228,7 +247,7 @@ mod tests {
                 .expect("a way out is always offered");
             assert!(
                 way_out < 3,
-                "the way out is {way_out} deep in state (path={p}, browsing={b}, filter={f}, data={d}); \
+                "the way out is {way_out} deep in state (path={p}, browsing={b:?}, filter={f}, data={d}); \
                  a narrow bar would cut it"
             );
         }
@@ -243,12 +262,16 @@ mod tests {
                 .find(|(key, _)| *key == "Esc")
                 .map(|(_, label)| label)
         };
-        assert_eq!(esc(false, false, true, false), Some("Clear"));
-        assert_eq!(esc(false, true, false, false), Some("Up"));
-        assert_eq!(esc(false, false, false, true), Some("Back to data"));
+        assert_eq!(esc(false, Browse::Listing, true, false), Some("Clear"));
+        assert_eq!(esc(false, Browse::BelowStart, false, false), Some("Up"));
+        assert_eq!(esc(false, Browse::AtStart, false, false), Some("Back"));
+        assert_eq!(
+            esc(false, Browse::Listing, false, true),
+            Some("Back to data")
+        );
         // Nothing to back out of: Esc does nothing and is not offered.
-        assert_eq!(esc(false, false, false, false), None);
-        assert_eq!(esc(true, false, false, false), Some("Cancel"));
+        assert_eq!(esc(false, Browse::Listing, false, false), None);
+        assert_eq!(esc(true, Browse::Listing, false, false), Some("Cancel"));
     }
 
     #[test]
@@ -258,7 +281,8 @@ mod tests {
                 .iter()
                 .any(|(_, label)| *label == "Up")
         };
-        assert!(has_up(true));
-        assert!(!has_up(false));
+        assert!(has_up(Browse::AtStart));
+        assert!(has_up(Browse::BelowStart));
+        assert!(!has_up(Browse::Listing));
     }
 }

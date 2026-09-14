@@ -1522,3 +1522,59 @@ fn test_remote_listing_shows_progress_until_it_arrives() {
     assert!(!done.contains("Listing gs://bucket/demo"), "{done}");
     assert_eq!(app.home.waiting_since, None);
 }
+
+/// Esc retraces a browse back to the listing and stops there, however deep the user
+/// went — it does not climb above the directory the browse began at.
+#[test]
+fn test_escape_stops_at_where_browsing_began() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    let tmp = tempfile::tempdir().unwrap();
+    let start = tmp.path().join("a");
+    let deeper = start.join("b");
+    std::fs::create_dir_all(&deeper).unwrap();
+    let key = |app: &mut App, code| {
+        app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    };
+
+    app.home.path_input_active = true;
+    app.home.path_input = start.display().to_string();
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.home.browsing.as_deref(), Some(start.as_path()));
+
+    // As if Enter had descended into `b`.
+    app.home.browsing = Some(deeper);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.home.browsing.as_deref(), Some(start.as_path()));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.home.browsing, None);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.home.browsing, None);
+    assert_eq!(app.input_mode, InputMode::Home);
+}
+
+/// Backspace still climbs above where a browse began, and Esc from there goes back to
+/// the listing rather than on up the tree.
+#[test]
+fn test_escape_after_backspace_above_the_start_returns_home() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    let tmp = tempfile::tempdir().unwrap();
+    let start = tmp.path().join("a");
+    std::fs::create_dir_all(&start).unwrap();
+    app.home.browsing = Some(start.clone());
+    app.home.browse_start = Some(start);
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Backspace,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.home.browsing.as_deref(), Some(tmp.path()));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.home.browsing, None);
+}

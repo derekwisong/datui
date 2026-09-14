@@ -47,8 +47,10 @@ one-line title bar. Keys in the control bar are drawn as chips.
 
 <kbd>q</kbd> does not quit here, and <kbd>j</kbd> does not move: every plain character
 goes into the filter, so `json` finds json. <kbd>Esc</kbd> never quits either; it backs
-out one layer at a time and does nothing at the top. The control bar shows what it
-will do next. <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
+out one layer at a time and does nothing at the top. In a directory it goes up only
+as far as the directory you first entered, then back to the list; <kbd>Backspace</kbd>
+keeps going up past that. The control bar shows what it will do next.
+<kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
 
 ## Where the list comes from
 

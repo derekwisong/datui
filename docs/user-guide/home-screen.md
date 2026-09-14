@@ -373,9 +373,9 @@ When this machine has credentials for an object store, its buckets are listed on
 home screen and each one is somewhere to step into:
 
 ```
-▾ GOOGLE CLOUD STORAGE  2                    cloud · gcloud · derek-wisong-prod
-  pitscope-prod-data/ bucket
-  synology-backup-prod/ bucket
+▾ GOOGLE CLOUD STORAGE  2                      cloud · gcloud · example-project
+  example-data/ bucket
+  example-backups/ bucket
 ▾ S3-COMPATIBLE (127.0.0.1:9000)  4                       cloud · datui config
   datui-sales/ bucket
 ```

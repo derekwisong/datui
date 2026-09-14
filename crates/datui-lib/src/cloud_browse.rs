@@ -793,7 +793,7 @@ mod tests {
     #[test]
     fn gcloud_default_credentials_are_enough_to_list_gcs() {
         let (vars, files, home) = env_of(
-            &[("GOOGLE_CLOUD_PROJECT", "derek-wisong-prod")],
+            &[("GOOGLE_CLOUD_PROJECT", "example-project")],
             &["/home/u/.config/gcloud/application_default_credentials.json"],
             Some("/home/u"),
         );
@@ -801,7 +801,7 @@ mod tests {
         let found = detect(&CloudConfig::default(), &env);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].kind, ProviderKind::Gcs);
-        assert_eq!(found[0].project.as_deref(), Some("derek-wisong-prod"));
+        assert_eq!(found[0].project.as_deref(), Some("example-project"));
         assert!(found[0].can_list_buckets());
         assert_eq!(found[0].note, "gcloud");
     }
@@ -919,7 +919,7 @@ mod tests {
           "type": "authorized_user",
           "client_id": "x.apps.googleusercontent.com",
           "refresh_token": "secret-and-not-read-here",
-          "quota_project_id": "derek-wisong-prod"
+          "quota_project_id": "example-project"
         }"#;
         let (vars, files, home) = env_of(
             &[],
@@ -928,7 +928,7 @@ mod tests {
         );
         let env = environment!(vars, files, home, adc);
         let found = detect(&CloudConfig::default(), &env);
-        assert_eq!(found[0].project.as_deref(), Some("derek-wisong-prod"));
+        assert_eq!(found[0].project.as_deref(), Some("example-project"));
         assert!(found[0].can_list_buckets());
     }
 
@@ -963,13 +963,13 @@ mod tests {
         let body = r#"{
           "kind": "storage#buckets",
           "items": [
-            {"kind": "storage#bucket", "name": "pitscope-prod-data", "location": "US-CENTRAL1"},
-            {"kind": "storage#bucket", "name": "synology-backup-prod"}
+            {"kind": "storage#bucket", "name": "example-data", "location": "US-CENTRAL1"},
+            {"kind": "storage#bucket", "name": "example-backups"}
           ]
         }"#;
         assert_eq!(
             parse_gcs_buckets(body).unwrap(),
-            vec!["pitscope-prod-data", "synology-backup-prod"]
+            vec!["example-data", "example-backups"]
         );
     }
 

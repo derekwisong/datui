@@ -153,6 +153,24 @@ pub fn object_place_label(path: &Path) -> Option<&'static str> {
     })
 }
 
+/// The location one level up from `path`, or `None` at the top.
+///
+/// A URL's top is its bucket or host: `Path::parent` would turn `gs://bucket` into `gs:`.
+pub fn parent_location(path: &Path) -> Option<PathBuf> {
+    if !matches!(
+        crate::source::input_source(path),
+        crate::source::InputSource::Local(_)
+    ) {
+        let s = path.to_string_lossy();
+        let (scheme, rest) = s.split_once("://")?;
+        let (up, _) = rest.trim_end_matches('/').rsplit_once('/')?;
+        return Some(PathBuf::from(format!("{scheme}://{up}")));
+    }
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty() && *p != path)
+        .map(Path::to_path_buf)
+}
+
 /// Whether `path` is somewhere reading it could block: an object-store or HTTP URL,
 /// or a directory on a network filesystem.
 ///

@@ -902,18 +902,18 @@ fn test_network_detection_prefers_the_deepest_and_last_mount() {
     // the automount and misses the network entirely.
     let shadowed = "\
 25 1 0:22 / / rw - btrfs /dev/mapper/root rw
-30 25 0:44 / /mnt/gilead/data rw - autofs systemd-1 rw
-81 30 0:57 / /mnt/gilead/data rw - nfs4 192.168.2.68:/volume1/data rw
+30 25 0:44 / /mnt/nas/data rw - autofs systemd-1 rw
+81 30 0:57 / /mnt/nas/data rw - nfs4 nas:/volume1/data rw
 ";
     assert!(network_fs_for_test(
         shadowed,
-        std::path::Path::new("/mnt/gilead/data/sets/prices")
+        std::path::Path::new("/mnt/nas/data/sets/returns")
     ));
 
     // The parent of a network mount is whatever the parent actually is.
     assert!(!network_fs_for_test(
         shadowed,
-        std::path::Path::new("/mnt/gilead")
+        std::path::Path::new("/mnt/nas")
     ));
 
     // A local mount nested under a network one wins, being the closer answer.
@@ -2588,4 +2588,28 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
         .iter()
         .all(|r| matches!(r, Row::Header { .. })));
     assert!(home.has_any_dataset(), "folded is not empty");
+}
+
+#[test]
+fn test_parent_location_stops_at_a_bucket() {
+    use datui::home::parent_location;
+    use std::path::{Path, PathBuf};
+
+    assert_eq!(parent_location(Path::new("gs://bucket")), None);
+    assert_eq!(parent_location(Path::new("gs://bucket/")), None);
+    assert_eq!(parent_location(Path::new("s3://bucket")), None);
+    assert_eq!(
+        parent_location(Path::new("gs://bucket/demo/")),
+        Some(PathBuf::from("gs://bucket"))
+    );
+    assert_eq!(
+        parent_location(Path::new("s3://bucket/a/b/")),
+        Some(PathBuf::from("s3://bucket/a"))
+    );
+    assert_eq!(parent_location(Path::new("https://example.com")), None);
+    assert_eq!(
+        parent_location(Path::new("/data/sets")),
+        Some(PathBuf::from("/data"))
+    );
+    assert_eq!(parent_location(Path::new("/")), None);
 }

@@ -9,4 +9,6 @@ Open the **Sort & Filter** dialog with **`s`**. The dialog has two tabs:
 - **Sort**: Manage column order, sort order, locking, and visibility.
 - **Filter**: Add and manage row filters (column, operator, value).
 
+Nulls sort last in both directions, as they do in pandas, DuckDB and spreadsheets.
+
 Use **Tab** / **Shift+Tab** to move focus; **Left** / **Right** on the tab bar to switch tabs. **Apply** runs changes and closes the dialog; **Cancel** closes without applying; **Clear** resets the current tab.

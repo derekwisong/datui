@@ -72,11 +72,13 @@ These cannot be rebuilt by `demo/build.py`. They are copies of the author's own
 data, trimmed for the demos.
 
 - `quant-research/`: an extract of a research tree. Daily bars and returns for
-  30 tickers, out-of-sample factor information coefficients, an alpha model
-  parameter sweep, and a factor covariance history. Hive-partitioned by year.
+  30 tickers, out-of-sample information coefficients for two textbook factors
+  (12-1 momentum and book-to-market), and a factor covariance history built on
+  ETF proxies. Hive-partitioned by year.
 - `bitcoin_daily.parquet`: daily statistics computed from the public Bitcoin
   blockchain: blocks, addresses, transaction counts, values and fees, from the
   genesis block.
-- `fred/series_id=…/`: US government economic series (Treasury yields, the federal
-  funds rate, CPI, GDP, money supply) retrieved from FRED, Federal Reserve Bank
-  of St. Louis. US public domain.
+- `fred/series_id=…/`: economic series retrieved from FRED, Federal Reserve Bank
+  of St. Louis. The US government series (Treasury yields, the federal funds rate,
+  CPI, GDP, money supply) are public domain. `BAA10Y` is derived from Moody's
+  corporate bond yields, which FRED marks as copyrighted by Moody's.

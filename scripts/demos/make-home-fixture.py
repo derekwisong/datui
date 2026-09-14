@@ -50,7 +50,7 @@ def seed_cache(cache: Path, workspace: Path) -> None:
         workspace / "quant-research/prices",
         workspace / "quant-research/factor_ic",
         workspace / "earthquakes_m6.parquet",
-        workspace / "quant-research/diagnostics/alpha_models_v2_sweep.parquet",
+        workspace / "quant-research/returns",
         workspace / "bitcoin_daily.parquet",
     ]
     (cache / "recents_history.txt").write_text(

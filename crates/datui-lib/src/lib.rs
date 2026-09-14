@@ -2244,7 +2244,13 @@ impl App {
             return None;
         }
         if self.home.browsing.is_some() {
-            self.home_ascend();
+            if self.home.below_browse_start() {
+                self.home_ascend();
+            } else {
+                // Climbing past where the browse began would take Esc somewhere the
+                // user never was; it returns to the listing they started from instead.
+                self.home_leave_browsing(None);
+            }
             return None;
         }
         if self.data_table_state.is_some() {
@@ -2307,7 +2313,17 @@ impl App {
         let Some(current) = self.home.browsing.clone() else {
             return;
         };
-        self.home.browsing = home::parent_location(&current);
+        self.home_leave_browsing(home::parent_location(&current));
+    }
+
+    /// Move the browse up to `to`, or back to the root listing when `None`.
+    fn home_leave_browsing(&mut self, to: Option<PathBuf>) {
+        self.home.browsing = to;
+        // Backspace can climb above where the browse began; the start follows, so a
+        // later Esc still has a place to stop.
+        if !self.home.below_browse_start() {
+            self.home.browse_start = self.home.browsing.clone();
+        }
         // Going up widens what a search would cover, so the previous one no longer
         // answers the question being asked.
         self.home.search.reset();
@@ -2328,6 +2344,11 @@ impl App {
         }
         let entry = self.home.selected_entry()?;
         if entry.kind == discover::EntryKind::Directory {
+            if self.home.browsing.is_none() {
+                self.home.browse_start = Some(entry.path.clone());
+            } else if self.home.browse_start.is_none() {
+                self.home.browse_start = self.home.browsing.clone();
+            }
             self.home.browsing = Some(entry.path.clone());
             // "Below here" now means somewhere else. Whatever the last walk found
             // describes a different place, and a fresh one starts on the next
@@ -2401,6 +2422,9 @@ impl App {
                         && discover::classify_directory(&path) == discover::EntryKind::Directory
                     {
                         // An ordinary directory: browse it rather than trying to load it.
+                        // A jump starts a new browse: Esc comes back from here to the
+                        // listing, not up through wherever the path happens to sit.
+                        self.home.browse_start = Some(path.clone());
                         self.home.browsing = Some(path);
                         self.home.search.reset();
                         self.home.filter.clear();

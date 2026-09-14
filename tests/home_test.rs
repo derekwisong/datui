@@ -2589,3 +2589,27 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
         .all(|r| matches!(r, Row::Header { .. })));
     assert!(home.has_any_dataset(), "folded is not empty");
 }
+
+#[test]
+fn test_parent_location_stops_at_a_bucket() {
+    use datui::home::parent_location;
+    use std::path::{Path, PathBuf};
+
+    assert_eq!(parent_location(Path::new("gs://bucket")), None);
+    assert_eq!(parent_location(Path::new("gs://bucket/")), None);
+    assert_eq!(parent_location(Path::new("s3://bucket")), None);
+    assert_eq!(
+        parent_location(Path::new("gs://bucket/demo/")),
+        Some(PathBuf::from("gs://bucket"))
+    );
+    assert_eq!(
+        parent_location(Path::new("s3://bucket/a/b/")),
+        Some(PathBuf::from("s3://bucket/a"))
+    );
+    assert_eq!(parent_location(Path::new("https://example.com")), None);
+    assert_eq!(
+        parent_location(Path::new("/data/sets")),
+        Some(PathBuf::from("/data"))
+    );
+    assert_eq!(parent_location(Path::new("/")), None);
+}

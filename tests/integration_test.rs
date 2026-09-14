@@ -1472,3 +1472,19 @@ fn test_hive_partition_types_match_full_scan() {
     let df = lf.filter(col("year").gt(lit(2020))).collect().unwrap();
     assert_eq!(df.height(), 2);
 }
+
+/// Esc at a bucket's top goes back to the home listing, not to a directory named `gs:`.
+#[test]
+fn test_escape_from_a_bucket_returns_home() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(PathBuf::from("gs://bucket"));
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.home.browsing, None);
+    assert_eq!(app.input_mode, InputMode::Home);
+}

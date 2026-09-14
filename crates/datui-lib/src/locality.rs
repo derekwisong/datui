@@ -175,7 +175,7 @@ impl Mounts {
         // which touches the filesystem and is exactly what must not happen here.
         let joined;
         // `has_root`, not `is_absolute`. On Windows a path is absolute only with a
-        // drive or UNC prefix, so `/mnt/gilead/data` is "relative" there -- and
+        // drive or UNC prefix, so `/mnt/nas/data` is "relative" there -- and
         // joining the working directory onto it turns an already-rooted path into
         // nonsense that matches no mount at all.
         let path = if path.has_root() {

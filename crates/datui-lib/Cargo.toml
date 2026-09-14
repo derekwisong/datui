@@ -50,7 +50,7 @@ object_store = { version = "0.12", optional = true, default-features = false, fe
 # S3 ListBuckets answers in XML, from an endpoint the user pointed datui at and does
 # not necessarily control. 0.41 is the first release past the two denial-of-service
 # advisories against the 0.38 line, and it is already in the tree behind calamine.
-quick-xml = { version = "0.41", optional = true }
+quick-xml = { version = "0.42", optional = true }
 # The request type object_store's SigV4 authorizer signs. Pulled in directly rather
 # than reached through object_store, whose own re-export is of an internal module of
 # the same name, not of this crate.

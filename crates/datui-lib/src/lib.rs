@@ -2284,10 +2284,7 @@ impl App {
         let Some(current) = self.home.browsing.clone() else {
             return;
         };
-        self.home.browsing = current
-            .parent()
-            .map(|p| p.to_path_buf())
-            .filter(|p| !p.as_os_str().is_empty() && p != &current);
+        self.home.browsing = home::parent_location(&current);
         // Going up widens what a search would cover, so the previous one no longer
         // answers the question being asked.
         self.home.search.reset();

@@ -1433,3 +1433,19 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
         "the load finished in one frame; nothing was tested"
     );
 }
+
+/// Esc at a bucket's top goes back to the home listing, not to a directory named `gs:`.
+#[test]
+fn test_escape_from_a_bucket_returns_home() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(PathBuf::from("gs://bucket"));
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.home.browsing, None);
+    assert_eq!(app.input_mode, InputMode::Home);
+}

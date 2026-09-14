@@ -10,8 +10,8 @@ const MOUNTINFO: &str = "\
 25 1 0:6 / /dev rw,nosuid - devtmpfs devtmpfs rw
 30 1 0:24 / /tmp rw,nosuid,nodev - tmpfs tmpfs rw
 40 1 259:2 /home /home rw,relatime - btrfs /dev/nvme0n1p2 rw
-55 1 0:45 / /mnt/gilead/data rw,relatime - autofs systemd-1 rw
-70 55 0:52 / /mnt/gilead/data rw,relatime - nfs4 nas:/data rw
+55 1 0:45 / /mnt/nas/data rw,relatime - autofs systemd-1 rw
+70 55 0:52 / /mnt/nas/data rw,relatime - nfs4 nas:/data rw
 80 1 0:60 / /media/backup rw - fuse.sshfs user@host:/ rw
 ";
 
@@ -25,7 +25,7 @@ fn test_the_filesystem_is_named_not_merely_classified() {
     // The kernel's own name for it costs one word and says considerably more.
     let m = mounts();
     assert_eq!(
-        m.fstype_for(Path::new("/home/derek/data.parquet")),
+        m.fstype_for(Path::new("/home/user/data.parquet")),
         Some("btrfs")
     );
     assert_eq!(
@@ -45,18 +45,18 @@ fn test_an_automounted_share_reports_the_share_not_the_automounter() {
     // will actually do.
     let m = mounts();
     assert_eq!(
-        m.fstype_for(Path::new("/mnt/gilead/data/sets/prices.parquet")),
+        m.fstype_for(Path::new("/mnt/nas/data/sets/returns.parquet")),
         Some("nfs4")
     );
-    assert!(m.is_network(Path::new("/mnt/gilead/data/sets/prices.parquet")));
+    assert!(m.is_network(Path::new("/mnt/nas/data/sets/returns.parquet")));
 }
 
 #[test]
 fn test_the_deepest_mount_wins() {
     let m = mounts();
-    // /home is btrfs and /mnt/gilead/data is nfs4; neither should claim the other.
+    // /home is btrfs and /mnt/nas/data is nfs4; neither should claim the other.
     assert_eq!(m.fstype_for(Path::new("/home/x")), Some("btrfs"));
-    assert_eq!(m.fstype_for(Path::new("/mnt/gilead/data/x")), Some("nfs4"));
+    assert_eq!(m.fstype_for(Path::new("/mnt/nas/data/x")), Some("nfs4"));
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn test_locality_separates_what_behaves_differently() {
     assert_eq!(m.describe(Path::new("/home/x")).locality, Locality::Local);
     assert_eq!(m.describe(Path::new("/tmp/x")).locality, Locality::Memory);
     assert_eq!(
-        m.describe(Path::new("/mnt/gilead/data/x")).locality,
+        m.describe(Path::new("/mnt/nas/data/x")).locality,
         Locality::Network
     );
     assert_eq!(
@@ -81,7 +81,7 @@ fn test_local_disk_is_not_worth_flagging_but_everything_else_is() {
     let m = mounts();
     assert!(!m.describe(Path::new("/home/x")).notable());
     assert!(m.describe(Path::new("/tmp/x")).notable());
-    assert!(m.describe(Path::new("/mnt/gilead/data/x")).notable());
+    assert!(m.describe(Path::new("/mnt/nas/data/x")).notable());
 }
 
 #[test]
@@ -128,16 +128,16 @@ fn test_a_relative_path_resolves_against_the_working_directory() {
 
 #[test]
 fn test_a_rooted_unix_path_is_never_treated_as_relative() {
-    // Windows calls "/mnt/gilead/data" relative, because absolute there means a drive
+    // Windows calls "/mnt/nas/data" relative, because absolute there means a drive
     // or UNC prefix. Joining the working directory onto it produced a path matching no
     // mount at all.
     let m = mounts();
     assert_eq!(
-        m.fstype_for(Path::new("/mnt/gilead/data/sets/prices.parquet")),
+        m.fstype_for(Path::new("/mnt/nas/data/sets/returns.parquet")),
         Some("nfs4"),
         "a rooted path must resolve against the mount table as given"
     );
-    assert_eq!(m.fstype_for(Path::new("/home/derek/x")), Some("btrfs"));
+    assert_eq!(m.fstype_for(Path::new("/home/user/x")), Some("btrfs"));
 }
 
 #[test]

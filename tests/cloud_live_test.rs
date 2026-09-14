@@ -311,9 +311,9 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
     };
     let (mut app, rx) = minio_app(&endpoint);
 
-    // Wait for rows, not for the section. The section appears first, empty, with
-    // "listing buckets" beside the title, so a wait on the heading alone is satisfied
-    // before a single bucket is known.
+    // Wait for rows, not for the section. The section appears first, empty and still
+    // listing, so a wait on the heading alone is satisfied before a single bucket is
+    // known.
     let listed = pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "S3-compatible (127.0.0.1:9000)").is_some_and(|s| !s.rows.is_empty())
     });
@@ -340,9 +340,8 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
         "an empty bucket is still a bucket"
     );
     assert_eq!(
-        section.subtitle.as_deref(),
-        Some("cloud · datui config"),
-        "the section should say where the credentials came from"
+        section.subtitle, None,
+        "keys from datui config name no project or profile"
     );
 
     // Every bucket is a row to step into, never expanded in place, and never measured.
@@ -596,14 +595,10 @@ fn the_cloud_section_renders_legibly() {
         "objects should be listed"
     );
 
-    // The provider, its provenance, and the buckets all have to survive to the screen.
+    // The provider and its buckets both have to survive to the screen.
     assert!(
         screen.contains("S3-COMPATIBLE (127.0.0.1:9000)") || screen.contains("S3-compatible"),
         "the provider should be a visible heading"
-    );
-    assert!(
-        screen.contains("cloud · datui config"),
-        "the heading should say where the credentials came from"
     );
     for bucket in ["datui-sales", "datui-logs", "datui-events", "datui-empty"] {
         assert!(screen.contains(bucket), "{bucket} should be on screen");

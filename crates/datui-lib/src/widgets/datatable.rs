@@ -1296,7 +1296,7 @@ impl DataTableState {
         Ok(Arc::new(schema))
     }
 
-    /// Infer schema from one parquet file in a hive directory and merge with partition columns (Utf8).
+    /// Infer schema from one parquet file in a hive directory and merge with partition columns.
     /// Returns (merged_schema, partition_columns). Use with scan_parquet_hive_with_schema to avoid slow collect_schema().
     /// Only supported when path is a directory (not a glob). Returns Err if no parquet file found or read fails.
     pub fn schema_from_one_hive_parquet(path: &Path) -> Result<(Arc<Schema>, Vec<String>)> {
@@ -1304,10 +1304,14 @@ impl DataTableState {
         let one_file = Self::first_parquet_file_in_hive_dir(path)
             .ok_or_else(|| color_eyre::eyre::eyre!("No parquet file found in hive directory"))?;
         let file_schema = Self::read_schema_from_single_parquet(&one_file)?;
+        let values = Self::hive_partition_values(path, &one_file);
         let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
         let mut merged = Schema::with_capacity(partition_columns.len() + file_schema.len());
         for name in &partition_columns {
-            merged.with_column(name.clone().into(), DataType::String);
+            merged.with_column(
+                name.clone().into(),
+                partition_dtype(name, &file_schema, &values),
+            );
         }
         for (name, dtype) in file_schema.iter() {
             if !part_set.contains(name.as_str()) {
@@ -1315,6 +1319,33 @@ impl DataTableState {
             }
         }
         Ok((Arc::new(merged), partition_columns))
+    }
+
+    /// `key=value` names of the partition directories beside each one on the path to `file`.
+    fn hive_partition_values(root: &Path, file: &Path) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let Some(rel) = file.strip_prefix(root).ok().and_then(Path::parent) else {
+            return out;
+        };
+        let mut dir = root.to_path_buf();
+        for component in rel.components() {
+            let Some(segment) = component.as_os_str().to_str() else {
+                break;
+            };
+            if let Some((key, _)) = segment.split_once('=') {
+                for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let name = entry.file_name();
+                    let Some((k, v)) = name.to_str().and_then(|n| n.split_once('=')) else {
+                        continue;
+                    };
+                    if k == key && entry.path().is_dir() {
+                        out.push((k.to_string(), v.to_string()));
+                    }
+                }
+            }
+            dir.push(segment);
+        }
+        out
     }
 
     /// Discover hive partition column names (public for phased loading). Directory: single-spine walk; glob: parse pattern.
@@ -5304,6 +5335,29 @@ impl StatefulWidget for DataTable {
                 }
             }
         }
+    }
+}
+
+/// A partition column's type: the file's own if stored there, else inferred from its
+/// values the way Polars does for a full scan.
+pub(crate) fn partition_dtype(
+    name: &str,
+    file_schema: &Schema,
+    values: &[(String, String)],
+) -> DataType {
+    use polars::io::csv::read::schema_inference::{finish_infer_field_schema, infer_field_schema};
+    if let Some(dtype) = file_schema.get(name) {
+        return dtype.clone();
+    }
+    let seen: PlHashSet<DataType> = values
+        .iter()
+        .filter(|(k, v)| k == name && !v.is_empty() && v != "__HIVE_DEFAULT_PARTITION__")
+        .map(|(_, v)| infer_field_schema(v, true, false))
+        .collect();
+    if seen.is_empty() {
+        DataType::String
+    } else {
+        finish_infer_field_schema(&seen)
     }
 }
 

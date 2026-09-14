@@ -1433,3 +1433,42 @@ fn test_opening_from_home_does_not_show_the_previous_dataset() {
         "the load finished in one frame; nothing was tested"
     );
 }
+
+/// The one-file schema types partition columns the way a full scan does.
+#[test]
+fn test_hive_partition_types_match_full_scan() {
+    use datui::widgets::datatable::DataTableState;
+
+    let dir = tempfile::tempdir().unwrap();
+    for sub in [
+        "region=eu/year=2020/day=2020-01-01",
+        "region=us/year=2021/day=2021-06-30",
+    ] {
+        let d = dir.path().join(sub);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut df = df!("v" => [1i64, 2]).unwrap();
+        ParquetWriter::new(File::create(d.join("data.parquet")).unwrap())
+            .finish(&mut df)
+            .unwrap();
+    }
+
+    let (fast, parts) = DataTableState::schema_from_one_hive_parquet(dir.path()).unwrap();
+    assert_eq!(parts, ["region", "year", "day"]);
+    let mut full = LazyFrame::scan_parquet(
+        PlPath::Local(Arc::from(dir.path())),
+        ScanArgsParquet {
+            hive_options: polars::io::HiveOptions::new_enabled(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let full = full.collect_schema().unwrap();
+    for name in parts {
+        assert_eq!(fast.get(&name), full.get(&name), "{name}");
+    }
+    assert_eq!(fast.get("year"), Some(&DataType::Int64));
+
+    let lf = DataTableState::scan_parquet_hive_with_schema(dir.path(), fast).unwrap();
+    let df = lf.filter(col("year").gt(lit(2020))).collect().unwrap();
+    assert_eq!(df.height(), 2);
+}

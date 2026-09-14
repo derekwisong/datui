@@ -614,8 +614,15 @@ fn the_cloud_section_renders_legibly() {
         screen.contains("☁ datui-sales/"),
         "a bucket should be marked as living in an object store"
     );
+    let gcs_bucket = app
+        .home
+        .sections
+        .iter()
+        .find(|s| s.title.to_lowercase().contains("google"))
+        .and_then(|s| s.rows.first())
+        .expect("a Google Cloud Storage bucket");
     assert!(
-        screen.contains("☁ pitscope-prod-data/"),
+        screen.contains(&format!("☁ {}/", gcs_bucket.name)),
         "and so should a bucket from the other provider"
     );
     assert!(

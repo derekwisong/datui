@@ -18,6 +18,7 @@ async fn first_parquet_key_spine(
     store: &Arc<dyn ObjectStore>,
     prefix: &OsPath,
     depth: usize,
+    values: &mut Vec<(String, String)>,
 ) -> Result<Option<OsPath>> {
     if depth >= MAX_PARTITION_DEPTH {
         return Ok(None);
@@ -34,9 +35,14 @@ async fn first_parquet_key_spine(
         }
     }
     for common in &result.common_prefixes {
+        if let Some((k, v)) = common.filename().and_then(|n| n.split_once('=')) {
+            values.push((k.to_string(), v.to_string()));
+        }
+    }
+    for common in &result.common_prefixes {
         let s = common.as_ref();
         if s.contains('=') {
-            return Box::pin(first_parquet_key_spine(store, common, depth + 1)).await;
+            return Box::pin(first_parquet_key_spine(store, common, depth + 1, values)).await;
         }
     }
     Ok(None)
@@ -101,7 +107,8 @@ pub async fn schema_from_one_cloud_hive(
     } else {
         OsPath::from(prefix_trimmed)
     };
-    let one_key = first_parquet_key_spine(&store, &prefix_path, 0)
+    let mut values = Vec::new();
+    let one_key = first_parquet_key_spine(&store, &prefix_path, 0, &mut values)
         .await?
         .ok_or_else(|| color_eyre::eyre::eyre!("No parquet file found in cloud hive prefix"))?;
     let file_schema = read_schema_from_cloud_parquet(&store, &one_key).await?;
@@ -110,7 +117,10 @@ pub async fn schema_from_one_cloud_hive(
     let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
     let mut merged = Schema::with_capacity(partition_columns.len() + file_schema.len());
     for name in &partition_columns {
-        merged.with_column(name.clone().into(), polars::datatypes::DataType::String);
+        merged.with_column(
+            name.clone().into(),
+            crate::widgets::datatable::partition_dtype(name, &file_schema, &values),
+        );
     }
     for (name, dtype) in file_schema.iter() {
         if !part_set.contains(name.as_str()) {

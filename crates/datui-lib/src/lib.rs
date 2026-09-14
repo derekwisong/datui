@@ -332,6 +332,30 @@ pub mod tests {
         .clone()
     }
 
+    /// Quitting while a bucket listing was still out used to panic on the listing's
+    /// thread. A timer stands in for the request's timeout, which is what tripped.
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn a_runtime_shut_down_under_a_waiting_thread_does_not_panic_it() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let handle = rt.handle().clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            super::wait_on_runtime(&handle, async move {
+                let _ = started_tx.send(());
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            })
+        });
+        started_rx.recv().expect("future started");
+        rt.shutdown_background();
+        let outcome = waiter.join().expect("the waiting thread must not panic");
+        assert!(outcome.is_none());
+    }
+
     /// Path to the tests/sample-data directory (at repo root). Call `ensure_sample_data()` first if needed.
     pub fn sample_data_dir() -> std::path::PathBuf {
         ensure_sample_data();
@@ -1890,12 +1914,11 @@ impl App {
                 // store somebody pays egress on.
                 #[cfg(feature = "cloud")]
                 if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some() {
-                    let listed = runtime
-                        .block_on(crate::cloud_browse::list_objects(
-                            &root.to_string_lossy(),
-                            &cloud,
-                        ))
-                        .ok();
+                    let url = root.to_string_lossy().into_owned();
+                    let listed = wait_on_runtime(&runtime, async move {
+                        crate::cloud_browse::list_objects(&url, &cloud).await
+                    })
+                    .and_then(Result::ok);
                     let _ = tx.send(AppEvent::HomeProbeReady { root, rows: listed });
                     return;
                 }
@@ -2748,10 +2771,8 @@ impl App {
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
         let path = OsPath::from(key);
-        match runtime.block_on(store.head(&path)) {
-            Ok(meta) => Ok(Some(meta.size)),
-            Err(_) => Ok(None),
-        }
+        let head = wait_on_runtime(runtime, async move { store.head(&path).await });
+        Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
 
     #[cfg(feature = "cloud")]
@@ -2776,10 +2797,8 @@ impl App {
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
         let path = OsPath::from(key);
-        match runtime.block_on(store.head(&path)) {
-            Ok(meta) => Ok(Some(meta.size)),
-            Err(_) => Ok(None),
-        }
+        let head = wait_on_runtime(runtime, async move { store.head(&path).await });
+        Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
 
     #[cfg(feature = "http")]
@@ -2874,12 +2893,16 @@ impl App {
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
 
         let path = OsPath::from(key);
-        let get_result = runtime.block_on(store.get(&path)).map_err(|e| {
-            color_eyre::eyre::eyre!("Could not read from S3. Check credentials and URL: {}", e)
-        })?;
-        let bytes = runtime
-            .block_on(get_result.bytes())
-            .map_err(|e| color_eyre::eyre::eyre!("Could not read S3 object body: {}", e))?;
+        let bytes = wait_on_runtime(runtime, async move {
+            let get_result = store.get(&path).await.map_err(|e| {
+                color_eyre::eyre::eyre!("Could not read from S3. Check credentials and URL: {}", e)
+            })?;
+            get_result
+                .bytes()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("Could not read S3 object body: {}", e))
+        })
+        .ok_or_else(|| color_eyre::eyre::eyre!("S3 download was cancelled."))??;
 
         let dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
         let suffix = ext
@@ -2924,12 +2947,16 @@ impl App {
             .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
 
         let path = OsPath::from(key);
-        let get_result = runtime.block_on(store.get(&path)).map_err(|e| {
-            color_eyre::eyre::eyre!("Could not read from GCS. Check credentials and URL: {}", e)
-        })?;
-        let bytes = runtime
-            .block_on(get_result.bytes())
-            .map_err(|e| color_eyre::eyre::eyre!("Could not read GCS object body: {}", e))?;
+        let bytes = wait_on_runtime(runtime, async move {
+            let get_result = store.get(&path).await.map_err(|e| {
+                color_eyre::eyre::eyre!("Could not read from GCS. Check credentials and URL: {}", e)
+            })?;
+            get_result
+                .bytes()
+                .await
+                .map_err(|e| color_eyre::eyre::eyre!("Could not read GCS object body: {}", e))
+        })
+        .ok_or_else(|| color_eyre::eyre::eyre!("GCS download was cancelled."))??;
 
         let dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
         let suffix = ext
@@ -3147,10 +3174,12 @@ impl App {
         let key = path_part
             .split_once('/')
             .map(|(_, k)| k.trim_end_matches('/'))
-            .unwrap_or("");
-        let (merged_schema, partition_columns) = runtime
-            .block_on(cloud_hive::schema_from_one_cloud_hive(store, key))
-            .ok()?;
+            .unwrap_or("")
+            .to_string();
+        let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
+            cloud_hive::schema_from_one_cloud_hive(store, &key).await
+        })?
+        .ok()?;
         let args = ScanArgsParquet {
             schema: Some(merged_schema.clone()),
             cloud_options: Some(cloud_opts),
@@ -9714,6 +9743,28 @@ impl Drop for App {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+/// Run a future on the app's runtime from a thread outside it, and wait for the answer.
+///
+/// Every background thread that needs the network goes through this rather than
+/// `Handle::block_on`. That polls the future on the calling thread, and quitting shuts
+/// the runtime down without waiting for those threads: the next timer or socket an
+/// in-flight request touches then panics with "A Tokio 1.x context was found, but it is
+/// being shutdown", across the terminal the user just got back. A task spawned onto the
+/// runtime is dropped by the shutdown instead of polled, so the wait ends with `None`
+/// and the abandoned request goes quietly.
+#[cfg(feature = "cloud")]
+fn wait_on_runtime<F>(runtime: &tokio::runtime::Handle, future: F) -> Option<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    runtime.spawn(async move {
+        let _ = tx.send(future.await);
+    });
+    rx.recv().ok()
 }
 
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.

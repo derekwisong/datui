@@ -902,18 +902,18 @@ fn test_network_detection_prefers_the_deepest_and_last_mount() {
     // the automount and misses the network entirely.
     let shadowed = "\
 25 1 0:22 / / rw - btrfs /dev/mapper/root rw
-30 25 0:44 / /mnt/gilead/data rw - autofs systemd-1 rw
-81 30 0:57 / /mnt/gilead/data rw - nfs4 192.168.2.68:/volume1/data rw
+30 25 0:44 / /mnt/nas/data rw - autofs systemd-1 rw
+81 30 0:57 / /mnt/nas/data rw - nfs4 nas:/volume1/data rw
 ";
     assert!(network_fs_for_test(
         shadowed,
-        std::path::Path::new("/mnt/gilead/data/sets/prices")
+        std::path::Path::new("/mnt/nas/data/sets/returns")
     ));
 
     // The parent of a network mount is whatever the parent actually is.
     assert!(!network_fs_for_test(
         shadowed,
-        std::path::Path::new("/mnt/gilead")
+        std::path::Path::new("/mnt/nas")
     ));
 
     // A local mount nested under a network one wins, being the closer answer.

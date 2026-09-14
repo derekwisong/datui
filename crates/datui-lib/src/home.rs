@@ -392,6 +392,8 @@ pub struct HomeState {
     /// Object stores discovered on this machine, with their buckets. Empty on a machine
     /// with no cloud credentials, which is the common case and not a failure.
     pub cloud: Vec<CloudSection>,
+    /// When the current wait for a remote listing began, for the elapsed time on screen.
+    pub waiting_since: Option<std::time::Instant>,
 }
 
 /// The result of one recursive walk below the working directory.
@@ -442,6 +444,7 @@ impl Default for HomeState {
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
             pending_enrich: false,
+            waiting_since: None,
             enriched: std::collections::HashMap::new(),
             folds: std::collections::HashMap::new(),
             search: SearchState::default(),
@@ -1414,6 +1417,15 @@ impl HomeState {
             }
         }
         out
+    }
+
+    /// The remote location being browsed, while its listing has not come back.
+    pub fn awaiting_listing(&self) -> Option<&Path> {
+        let dir = self.browsing.as_deref()?;
+        ((self.network_check)(dir)
+            && !self.probed.contains_key(dir)
+            && !self.unreachable.contains(dir))
+        .then_some(dir)
     }
 
     /// Record what a probe found. An empty listing is still an answer.

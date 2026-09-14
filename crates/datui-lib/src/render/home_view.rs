@@ -319,7 +319,43 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // Nothing is read here. Rows carry whatever a worker has measured so far, and
     // the request for more is made after the frame, not during it.
     app.home.pending_enrich = !app.home.unmeasured_visible(1).is_empty();
+    let awaiting = app.home.awaiting_listing().map(|d| d.to_path_buf());
+    let since = match awaiting {
+        Some(_) => Some(
+            *app.home
+                .waiting_since
+                .get_or_insert_with(std::time::Instant::now),
+        ),
+        None => {
+            app.home.waiting_since = None;
+            None
+        }
+    };
     let visible = app.home.visible();
+
+    if let (Some(dir), Some(since), true) = (&awaiting, since, visible.is_empty()) {
+        let spinner = glyphs::get().spinner;
+        let mut spans = vec![
+            Span::styled(
+                spinner[app.throbber_frame as usize % spinner.len()],
+                Style::default().fg(ctx.accent),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("Listing {}", crate::home::display_path(dir)),
+                Style::default().fg(ctx.text_secondary),
+            ),
+        ];
+        let secs = since.elapsed().as_secs();
+        if secs >= 1 {
+            spans.push(Span::styled(
+                format!("  {secs}s"),
+                Style::default().fg(ctx.dimmed),
+            ));
+        }
+        Paragraph::new(Line::from(spans)).render(area, buf);
+        return;
+    }
 
     if app.home.listing_in_flight && visible.is_empty() {
         Paragraph::new(Line::from(Span::styled(

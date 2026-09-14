@@ -1488,3 +1488,37 @@ fn test_escape_from_a_bucket_returns_home() {
     assert_eq!(app.home.browsing, None);
     assert_eq!(app.input_mode, InputMode::Home);
 }
+
+/// A remote location shows that it is being listed, not "No datasets here.", until its
+/// listing arrives.
+#[test]
+fn test_remote_listing_shows_progress_until_it_arrives() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    let dir = PathBuf::from("gs://bucket/demo");
+    app.home.browsing = Some(dir.clone());
+
+    let area = Rect::new(0, 0, 100, 20);
+    let screen = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let waiting = screen(&mut app);
+    assert!(waiting.contains("Listing gs://bucket/demo"), "{waiting}");
+    assert!(!waiting.contains("No datasets here."), "{waiting}");
+
+    app.home.probe_ready(dir, Vec::new());
+    let done = screen(&mut app);
+    assert!(!done.contains("Listing gs://bucket/demo"), "{done}");
+    assert_eq!(app.home.waiting_since, None);
+}

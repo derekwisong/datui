@@ -9678,7 +9678,8 @@ impl Widget for &mut App {
                 .map(|s| s.subtitle.is_none())
                 .unwrap_or(false);
             let order = self.home.sort.label_in(in_recents);
-            let caption = if self.home.listing_in_flight && datasets == 0 {
+            let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();
+            let caption = if waiting && datasets == 0 {
                 "Looking…".to_string()
             } else if datasets == 1 {
                 format!("by {order}  ·  1 dataset")
@@ -9889,7 +9890,10 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     loop {
         // Poll with a shorter timeout when busy so the throbber animates (~30fps).
         // 33ms is plenty for a spinner and halves redraw load vs. 60fps.
-        let poll_ms = if app.busy || app.len_count_inflight.is_some() {
+        let spinning = app.busy
+            || app.len_count_inflight.is_some()
+            || (app.input_mode == InputMode::Home && app.home.awaiting_listing().is_some());
+        let poll_ms = if spinning {
             33
         } else {
             config.performance.event_poll_interval_ms
@@ -9942,7 +9946,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
 
         // Animate throbber when busy or while the background row count is still resolving
         // (that count doesn't set `busy` but drives the row-count spinner).
-        if app.busy || app.len_count_inflight.is_some() {
+        if spinning {
             app.throbber_frame = app.throbber_frame.wrapping_add(1);
             updated = true;
         }

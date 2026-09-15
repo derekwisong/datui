@@ -208,12 +208,20 @@ def main():
     # CI copies the current release to book/latest so this link works on GitHub Pages.
     latest_permanent_path = "latest"
 
+    # The index redirects straight to the latest release when there is one. CI
+    # copies the newest tag to book/latest right after this script runs, so a
+    # newest tag on disk is as good as the alias itself. A local build of only a
+    # branch has neither and keeps the plain version picker.
+    latest_exists = (output_dir / LATEST_RELEASE_DIR).is_dir() or latest_stable_path is not None
+    redirect_path = latest_permanent_path if latest_exists else None
+
     # Render the template
     output_html = template.render(
         recent_versions=recent_versions,
         older_versions=older_versions,
         latest_stable_path=latest_stable_path,
         latest_permanent_path=latest_permanent_path,
+        redirect_path=redirect_path,
     )
 
     # Write the output file

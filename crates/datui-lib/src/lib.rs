@@ -8179,6 +8179,9 @@ impl App {
     fn reset_chart_state(&mut self) {
         self.chart_cache.clear();
         self.chart_inflight = None;
+        // A failed export reopens its modal; it must not follow the user to the next
+        // dataset.
+        self.chart_export_modal.close();
         self.chart_generation = self.chart_generation.wrapping_add(1);
         *self
             .pending_chart_result

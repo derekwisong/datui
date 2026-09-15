@@ -4,12 +4,14 @@ Navigation:
   Home/End:        Go to first/last row (G = End)
   Ctrl+D/Ctrl+U:   Half page down/up
   ::               Go to line number (e.g. :0 Enter for top)
+  Enter:           On a grouped row, drill into the group (Esc comes back)
 
 Data Operations:
   /:                Open Query input
   c:                Open charts
   s:                Open Sort & Filter modal (tabs: Sort, Filter)
   a:                Open Statistical Analysis
+  p:                Open Pivot & Melt
   e:                Export data to file
   r:                Reverse sort order
   R:                Reset table (clear queries, filters, sorts, locks)
@@ -37,4 +39,5 @@ Analysis View:
   Esc:              Return to main view
 
 Exit:
+  Ctrl+O:           Home screen (works during a load)
   q:                Quit

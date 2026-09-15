@@ -4,7 +4,7 @@ Reshape data between long and wide formats.
   Left / Right:     In tab bar:     Switch Pivot and Melt.
                     In text fields: Move cursor
   ↑ / ↓:            Change selection (index, pivot, value, aggregation, strategy, etc.)
-  Space:            Toggle index/explicit list; toggle Sort new columns (Pivot)
+  Space:            Toggle a column in the index or explicit list
   Enter:            Apply, or Cancel/Clear when focused
   Esc:              Close without applying
   ? / F1:           Show this help (F1 works in text fields)

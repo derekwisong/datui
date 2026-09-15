@@ -53,3 +53,5 @@ filters, <kbd>c</kbd> charts, <kbd>a</kbd> analyzes, <kbd>q</kbd> quits.
 
 Datui is open source under the MIT license. Source, issues and releases are on
 [GitHub](https://github.com/derekwisong/datui).
+
+These pages describe one release; [other versions](../) are also published.

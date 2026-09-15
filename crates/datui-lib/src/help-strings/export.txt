@@ -14,6 +14,8 @@ Formats:
   Parquet: Columnar format (efficient, compressed)
   JSON:    JSON array format
   NDJSON:  Newline-delimited JSON (one object per line)
+  Arrow:   Arrow IPC / Feather v2
+  Avro:    Avro row format
 
 CSV Options:
   Delimiter:        Character to separate columns (default: comma)

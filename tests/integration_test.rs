@@ -342,6 +342,46 @@ fn test_chart_prepares_one_selection_at_a_time() {
     );
 }
 
+/// An export parked while a *different*, failing selection is in flight is not failed
+/// with that selection's error: it waits for the current selection's data and completes.
+#[test]
+fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
+    use datui::chart_export::ChartExportFormat;
+    let (mut app, rx, tx) = open_chart_view("chart_export_after_failure_test.csv");
+    // x against x cannot be charted (duplicate column) and takes a moment to fail.
+    app.chart_modal.x_column = Some("x".to_string());
+    app.chart_modal.y_columns = vec!["x".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(app.chart_preparing());
+
+    // Move on to a valid selection while that one is still out, and ask for an export.
+    app.chart_modal.y_columns = vec!["y".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chart.eps");
+    let next = app
+        .event(&AppEvent::ChartExport(
+            path.clone(),
+            ChartExportFormat::Eps,
+            String::new(),
+            400,
+            300,
+        ))
+        .expect("ChartExport defers to DoChartExport");
+    app.event(&next);
+
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        path.exists(),
+        "the export completed from the valid selection"
+    );
+    assert!(
+        !app.chart_export_modal.active,
+        "no error reopened the modal"
+    );
+    assert!(app.chart_data_ready());
+}
+
 /// A chart export uses the prepared data and writes the file off-thread; if the data is
 /// not ready yet the export waits for it rather than collecting on the UI thread.
 #[test]

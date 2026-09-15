@@ -262,6 +262,7 @@ mod chart_prepare_tests {
             generation,
             dataset: None,
             request: request.clone(),
+            stale: false,
         }
     }
 
@@ -314,8 +315,9 @@ mod chart_prepare_tests {
     }
 
     /// Leaving the dataset drops the chart state with it: nothing keeps spinning on the
-    /// home screen, a late result has nothing to match, and an export parked on data
-    /// that will never come stops holding the app busy.
+    /// home screen, the worker still running is waited for and its result discarded
+    /// (nothing else starts until it lands), and an export parked on data that will
+    /// never come stops holding the app busy.
     #[test]
     fn leaving_the_dataset_resets_chart_state() {
         let (tx, _rx) = mpsc::channel();
@@ -323,7 +325,6 @@ mod chart_prepare_tests {
         let request = histogram_request("a");
         app.chart_generation = 1;
         app.chart_inflight = Some(inflight(1, &request));
-        *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
         app.chart_export_waiting = Some((
             PathBuf::from("/tmp/x.png"),
             ChartExportFormat::Png,
@@ -334,14 +335,56 @@ mod chart_prepare_tests {
         app.busy = true;
 
         app.abandon_load();
-        assert!(app.chart_inflight.is_none());
+        assert!(!app.chart_preparing(), "nothing spins on the home screen");
+        assert!(
+            app.chart_inflight.as_ref().is_some_and(|i| i.stale),
+            "the worker cannot be cancelled, so it is remembered as stale"
+        );
         assert!(app.pending_chart_result.lock().unwrap().is_none());
         assert!(app.chart_export_waiting.is_none());
         assert!(!app.is_busy());
-        assert!(app.chart_generation > 1, "a later result cannot match");
 
+        *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
         app.event(&AppEvent::BackgroundChartReady { generation: 1 });
-        assert!(!app.chart_cache.satisfies(&request));
+        assert!(
+            !app.chart_cache.satisfies(&request),
+            "stale result is dropped"
+        );
+        assert!(app.chart_inflight.is_none(), "and the slot is free again");
+    }
+
+    /// Going home while the export file is being written: the app stops being busy,
+    /// and when the write finishes its result is ignored rather than reopening the
+    /// export modal over the home screen.
+    #[test]
+    fn leaving_the_dataset_abandons_an_export_write() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let path = PathBuf::from("/tmp/x.png");
+        app.chart_export_generation = 7;
+        app.chart_export_inflight = Some(7);
+        app.busy = true;
+        app.loading_state = LoadingState::Exporting {
+            file_path: path.clone(),
+            current_phase: "Exporting chart".to_string(),
+            progress_percent: 0,
+        };
+        let task_generation = app.task_generation();
+
+        app.abandon_load();
+        assert!(!app.is_busy());
+        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert_eq!(app.task_generation(), task_generation);
+
+        app.event(&AppEvent::BackgroundChartExportWritten {
+            generation: 7,
+            path,
+            format: ChartExportFormat::Png,
+            result: Err("disk full".to_string()),
+        });
+        assert!(!app.error_modal.active);
+        assert!(!app.chart_export_modal.active);
+        assert!(!app.is_busy());
     }
 
     /// A selection that cannot be charted is remembered as failed rather than retried
@@ -1681,6 +1724,10 @@ struct ChartInflight {
     /// cannot be installed for a different dataset that happens to share column names.
     dataset: Option<u64>,
     request: ChartRequest,
+    /// Set when the view or dataset it was spawned for has gone. The worker cannot be
+    /// cancelled, so the record stays until its result lands and is discarded; the next
+    /// request waits for it, which is what keeps the number of collects at one.
+    stale: bool,
 }
 
 /// A prepared chart, ready to go into the cache.
@@ -1842,12 +1889,19 @@ pub struct App {
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
     pub(crate) chart_cache: ChartCache,
-    /// Chart preparation in flight. Render draws only what is in `chart_cache`; this
-    /// drives the throbber, and a result whose generation or dataset no longer matches
-    /// is dropped. Deliberately not `busy`: the sidebar stays live while the data is
-    /// computed, and the newest selection is prepared once this one lands.
+    /// The one chart preparation allowed to run at a time. Render draws only what is in
+    /// `chart_cache`; this drives the throbber while it is current. Its result is
+    /// installed only if the record is still current (not `stale`), its generation
+    /// matches and the dataset is the one it was computed from. Deliberately not
+    /// `busy`: the sidebar stays live while the data is computed, and the newest
+    /// selection is prepared once this one lands.
     chart_inflight: Option<ChartInflight>,
     chart_generation: u64,
+    /// Generation and in-flight marker of the chart export write. Separate from
+    /// `task_generation`, which going home deliberately leaves alone (it also gates
+    /// data exports and analysis); leaving the dataset drops this one instead.
+    chart_export_generation: u64,
+    chart_export_inflight: Option<u64>,
     /// (generation, result) from the background chart preparation, like
     /// `pending_collect_result`: the data stays out of the event.
     pending_chart_result: ChartResultSlot,
@@ -2333,6 +2387,8 @@ impl App {
             chart_cache: ChartCache::default(),
             chart_inflight: None,
             chart_generation: 0,
+            chart_export_generation: 0,
+            chart_export_inflight: None,
             pending_chart_result: Arc::new(Mutex::new(None)),
             chart_export_waiting: None,
             error_modal: ErrorModal::new(),
@@ -8021,19 +8077,23 @@ impl App {
         out
     }
 
-    /// True while chart data for the current selection is being prepared off-thread.
+    /// True while chart data for the current view is being prepared off-thread.
     pub fn chart_preparing(&self) -> bool {
-        self.chart_inflight.is_some()
+        self.chart_inflight.as_ref().is_some_and(|i| !i.stale)
     }
 
     /// Forget everything chart-related that belongs to the view or dataset on its way
-    /// out: the cache, the preparation in flight (its result is then dropped on arrival,
-    /// by generation and dataset), the handed-over slot, and an export parked on data
-    /// that is now never coming. Called when the chart view closes and whenever the
+    /// out: the cache, the handed-over slot, an export parked on data that is now never
+    /// coming, and an export write still running (its file may still appear, but its
+    /// result is ignored and `busy` is released). The preparation in flight is marked
+    /// stale rather than forgotten: it cannot be cancelled, so it is waited for and its
+    /// result discarded on arrival. Called when the chart view closes and whenever the
     /// dataset changes or is left for the home screen.
     fn reset_chart_state(&mut self) {
         self.chart_cache.clear();
-        self.chart_inflight = None;
+        if let Some(inflight) = self.chart_inflight.as_mut() {
+            inflight.stale = true;
+        }
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
         self.chart_export_modal.close();
@@ -8042,7 +8102,9 @@ impl App {
             .pending_chart_result
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
-        if self.chart_export_waiting.take().is_some() {
+        let writing = self.chart_export_inflight.take().is_some();
+        let waiting = self.chart_export_waiting.take().is_some();
+        if writing || waiting {
             self.loading_state = LoadingState::Idle;
             self.status_message = None;
             self.busy = false;
@@ -8095,6 +8157,7 @@ impl App {
             generation,
             dataset,
             request: request.clone(),
+            stale: false,
         });
         let slot = self.pending_chart_result.clone();
         let tx = self.events.clone();
@@ -9318,18 +9381,25 @@ impl App {
                 format,
                 result,
             } => {
-                if *generation == self.task_generation {
+                // Gated on the chart export's own marker, which leaving the dataset
+                // clears: a write that finishes after Ctrl-O must not reopen its modal
+                // over the home screen.
+                if self.chart_export_inflight == Some(*generation) {
                     self.finish_chart_export(path, *format, result.clone());
                 }
                 None
             }
             AppEvent::BackgroundChartReady { generation } => {
-                // A result is only installed for the preparation still recorded as in
-                // flight, and only into the dataset it was computed from. Anything else
-                // is left over from a chart view or dataset that has since gone.
+                // A result is installed only for the preparation still recorded as in
+                // flight, only while that record is current (a reset marks it stale when
+                // its view or dataset goes), and only into the dataset it was computed
+                // from. Taking the record is what lets the next request start.
                 let inflight = self.chart_inflight.take()?;
                 if inflight.generation != *generation {
                     self.chart_inflight = Some(inflight);
+                    return None;
+                }
+                if inflight.stale {
                     return None;
                 }
                 let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
@@ -9347,22 +9417,19 @@ impl App {
                     _ => Err("Chart preparation produced no result".to_string()),
                 };
                 match outcome {
-                    Ok(prepared) => {
-                        self.chart_cache.install(prepared);
-                        if let Some((path, format, title, width, height)) =
-                            self.chart_export_waiting.take()
-                        {
-                            self.start_chart_export(path, format, title, width, height);
-                        }
-                    }
-                    // A chart that cannot be prepared draws as empty, as before; only an
-                    // export waiting on it is told why. Remembered so it is not retried.
-                    Err(message) => {
-                        if let Some((path, format, ..)) = self.chart_export_waiting.take() {
-                            self.finish_chart_export(&path, format, Err(message.clone()));
-                        }
-                        self.chart_cache.failed = Some((request, message));
-                    }
+                    Ok(prepared) => self.chart_cache.install(prepared),
+                    // A chart that cannot be prepared draws as empty, as before.
+                    // Remembered so it is not retried.
+                    Err(message) => self.chart_cache.failed = Some((request, message)),
+                }
+                // An export parked on chart data resumes against the *current*
+                // selection, whatever just landed: it is written if that selection is
+                // now prepared, fails with the reason if that is the one that failed,
+                // and otherwise waits for the next result (which `ensure_chart_data`
+                // starts once this handler returns).
+                if let Some((path, format, title, width, height)) = self.chart_export_waiting.take()
+                {
+                    self.start_chart_export(path, format, title, width, height);
                 }
                 None
             }
@@ -9737,7 +9804,10 @@ impl App {
         match self.build_chart_export_job(&title) {
             Ok(Some(job)) => {
                 self.chart_export_waiting = None;
-                self.spawn_bg("Exporting chart...", move |generation, tx| {
+                self.chart_export_generation = self.chart_export_generation.wrapping_add(1);
+                let generation = self.chart_export_generation;
+                self.chart_export_inflight = Some(generation);
+                self.spawn_bg("Exporting chart...", move |_, tx| {
                     let result = job.write(&path, format, (width, height)).map_err(|e| {
                         crate::error_display::user_message_from_report(&e, Some(&path))
                     });
@@ -9765,6 +9835,7 @@ impl App {
         result: Result<(), String>,
     ) {
         self.chart_export_waiting = None;
+        self.chart_export_inflight = None;
         self.loading_state = LoadingState::Idle;
         self.status_message = None;
         self.busy = false;
@@ -10331,7 +10402,7 @@ impl Widget for &mut App {
             LoadingState::Idle => {
                 if self.busy {
                     self.status_message.clone()
-                } else if self.chart_inflight.is_some() {
+                } else if self.chart_preparing() {
                     Some("Preparing chart...".to_string())
                 } else {
                     None
@@ -10385,10 +10456,7 @@ impl Widget for &mut App {
 
         // Chart preparation spins the throbber without setting `busy`, so the chart
         // sidebar keeps taking keys while the data is computed.
-        controls = controls.with_busy(
-            self.busy || self.chart_inflight.is_some(),
-            self.throbber_frame,
-        );
+        controls = controls.with_busy(self.busy || self.chart_preparing(), self.throbber_frame);
         // Reflect the row-count's determinacy in the control bar:
         //  - in flight   -> spinner (still being computed)
         //  - failed       -> "?" (computation gave up; don't show a misleading partial total)
@@ -10591,7 +10659,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         // 33ms is plenty for a spinner and halves redraw load vs. 60fps.
         let spinning = app.busy
             || app.len_count_inflight.is_some()
-            || app.chart_inflight.is_some()
+            || app.chart_preparing()
             || (app.input_mode == InputMode::Home
                 && (app.home.awaiting_listing().is_some() || app.home.sections_waiting()));
         let poll_ms = if spinning {

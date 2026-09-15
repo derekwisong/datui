@@ -1199,7 +1199,7 @@ const DATA_COMMENTS: &[(&str, &str)] = &[
     (
         "directories",
         "Directories to offer as roots on the datui home screen (opened with no arguments).\n\
-     Think of this like PATH: a list of places, not a catalogue. datui stores nothing\n\
+     Think of this like PATH: a list of places, not a catalog. datui stores nothing\n\
      about what it finds. Supports ~ and $VAR.\n\
      Directories of datasets you opened recently are offered automatically, so this is\n\
      only needed for places you have not visited yet.\n\
@@ -1228,12 +1228,12 @@ pub struct ThemeConfig {
 // Field comments for ThemeConfig
 const THEME_COMMENTS: &[(&str, &str)] = &[(
     "mode",
-    "Which built-in colour set to start from: \"auto\" (default), \"dark\" or \"light\".\n\
+    "Which built-in color set to start from: \"auto\" (default), \"dark\" or \"light\".\n\
      datui's stock chrome (header fills, row striping, borders, dim text) uses fixed\n\
      shades, and a set tuned for a dark terminal is unreadable on a light one.\n\
      \"auto\" reads COLORFGBG and falls back to dark; Alacritty, Kitty and Ghostty do\n\
      not set it, so on a light background in those terminals set this to \"light\".\n\
-     Individual colours below always override whichever set is chosen.",
+     Individual colors below always override whichever set is chosen.",
 )];
 
 fn default_row_numbers_color() -> String {

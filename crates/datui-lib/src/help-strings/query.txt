@@ -59,10 +59,10 @@ Where Conditions:
   - Note: Where clause does NOT support column assignment
 
 Operators:
-  Math:        +, -, *, %
-  Comparison:  =, <, >, <=, >=
+  Math:        +, -, *, % (% is division)
+  Comparison:  =, !=, <>, <, >, <=, >=
   Logic:       , (AND), | (OR)
-  Note: Use not[expr] or not expr instead of !=
+  Coalesce:    ^ (a^b is the first non-null of a, b)
 
 Expression Evaluation:
   - Operators evaluated right-to-left

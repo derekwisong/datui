@@ -58,6 +58,11 @@ fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
 pub struct DataTableState {
     pub lf: LazyFrame,
     original_lf: LazyFrame,
+    /// What the sidebar filters and sort are applied to: the active query's result (DSL,
+    /// SQL or fuzzy), the last pivot/melt, or `original_lf` when there is none. The
+    /// pipeline is original → query/reshape (`base_lf`) → filters → sort (`lf`) → column
+    /// order (at collect). Filters therefore never discard the query.
+    base_lf: LazyFrame,
     df: Option<DataFrame>,        // Scrollable columns dataframe
     locked_df: Option<DataFrame>, // Locked columns dataframe
     pub table_state: TableState,
@@ -89,14 +94,20 @@ pub struct DataTableState {
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
+    /// Last executed DSL query. At most one of the three `active_*` queries is set: running
+    /// one clears the other two.
     pub active_query: String,
-    /// Last executed SQL (Sql tab). Independent from active_query; only one applies to current view.
+    /// Last executed SQL (Sql tab).
     pub active_sql_query: String,
-    /// Last executed fuzzy search (Fuzzy tab). Independent from active_query/active_sql_query.
+    /// Last executed fuzzy search (Fuzzy tab).
     pub active_fuzzy_query: String,
     column_order: Vec<String>,   // Order of columns for display
     locked_columns_count: usize, // Number of locked columns (from left)
-    grouped_lf: Option<LazyFrame>,
+    /// The grouped view a drill-down left, restored exactly by `drill_up`.
+    grouped: Option<GroupedView>,
+    /// The last pivot/melt result, while one is in effect. SQL runs against it rather
+    /// than the data as loaded (see `query_root`).
+    reshaped_lf: Option<LazyFrame>,
     drilled_down_group_index: Option<usize>, // Index of the group we're viewing
     pub drilled_down_group_key: Option<Vec<String>>, // Key values of the drilled down group
     pub drilled_down_group_key_columns: Option<Vec<String>>, // Key column names of the drilled down group
@@ -141,6 +152,17 @@ enum ExcelColType {
     Utf8,
     Date,
     Datetime,
+}
+
+/// The grouped view and the pipeline state that produced it, saved by a drill-down so
+/// filters and sort inside the group work on the group and `drill_up` restores the
+/// grouped view as it was.
+struct GroupedView {
+    lf: LazyFrame,
+    base_lf: LazyFrame,
+    filters: Vec<FilterStatement>,
+    sort_columns: Vec<String>,
+    sort_ascending: bool,
 }
 
 /// Parameters for a background buffer load. Produced by `prepare_async_collect()`.
@@ -199,6 +221,7 @@ impl DataTableState {
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
         Ok(Self {
             original_lf: lf.clone(),
+            base_lf: lf.clone(),
             lf,
             df: None,
             locked_df: None,
@@ -222,7 +245,8 @@ impl DataTableState {
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
-            grouped_lf: None,
+            grouped: None,
+            reshaped_lf: None,
             drilled_down_group_index: None,
             drilled_down_group_key: None,
             drilled_down_group_key_columns: None,
@@ -285,6 +309,7 @@ impl DataTableState {
         };
         Ok(Self {
             original_lf: lf.clone(),
+            base_lf: lf.clone(),
             lf,
             df: None,
             locked_df: None,
@@ -308,7 +333,8 @@ impl DataTableState {
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
-            grouped_lf: None,
+            grouped: None,
+            reshaped_lf: None,
             drilled_down_group_index: None,
             drilled_down_group_key: None,
             drilled_down_group_key_columns: None,
@@ -333,6 +359,18 @@ impl DataTableState {
         })
     }
 
+    /// Make `lf` the data as loaded: the root of the pipeline (`original_lf` and
+    /// `base_lf`), the frame shown, and the schema. For load-time options such as header
+    /// trimming, string parsing and dropped footer rows, which have to survive a later
+    /// filter or sort.
+    fn replace_original_lf(&mut self, lf: &LazyFrame) -> Result<()> {
+        self.original_lf = lf.clone();
+        self.base_lf = lf.clone();
+        self.schema = lf.clone().collect_schema()?;
+        self.lf = lf.clone();
+        Ok(())
+    }
+
     /// Reset LazyFrame and view state to original_lf. Schema is re-fetched so it matches
     /// after a previous query/SQL that may have changed columns. Caller should call
     /// collect() afterward if display update is needed (reset/query/fuzzy do; sql_query
@@ -340,6 +378,8 @@ impl DataTableState {
     fn reset_lf_to_original(&mut self) {
         self.invalidate_num_rows();
         self.lf = self.original_lf.clone();
+        self.base_lf = self.original_lf.clone();
+        self.reshaped_lf = None;
         self.schema = self
             .original_lf
             .clone()
@@ -358,7 +398,7 @@ impl DataTableState {
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
-        self.grouped_lf = None;
+        self.grouped = None;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;
@@ -2204,19 +2244,13 @@ impl DataTableState {
                     },
                 )?;
                 let mut lf = Self::trim_csv_column_names(std::mem::take(&mut state.lf))?;
-                state.original_lf = lf.clone();
-                state.schema = lf.clone().collect_schema()?;
-                state.lf = lf.clone();
+                state.replace_original_lf(&lf)?;
                 if options.parse_strings.is_some() {
                     lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                    state.original_lf = lf.clone();
-                    state.schema = lf.clone().collect_schema()?;
-                    state.lf = lf.clone();
+                    state.replace_original_lf(&lf)?;
                 }
                 lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-                state.original_lf = lf.clone();
-                state.schema = lf.clone().collect_schema()?;
-                state.lf = lf;
+                state.replace_original_lf(&lf)?;
                 state.row_numbers = options.row_numbers;
                 state.row_start_index = options.row_start_index;
                 state.decompress_temp_file = Some(temp);
@@ -2255,19 +2289,13 @@ impl DataTableState {
                 },
             )?;
             let mut lf = Self::trim_csv_column_names(std::mem::take(&mut state.lf))?;
-            state.original_lf = lf.clone();
-            state.schema = lf.clone().collect_schema()?;
-            state.lf = lf.clone();
+            state.replace_original_lf(&lf)?;
             if options.parse_strings.is_some() {
                 lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                state.original_lf = lf.clone();
-                state.schema = lf.clone().collect_schema()?;
-                state.lf = lf.clone();
+                state.replace_original_lf(&lf)?;
             }
             lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-            state.original_lf = lf.clone();
-            state.schema = lf.clone().collect_schema()?;
-            state.lf = lf;
+            state.replace_original_lf(&lf)?;
             state.row_numbers = options.row_numbers;
             Ok(state)
         }
@@ -3632,6 +3660,16 @@ impl DataTableState {
         &self.active_fuzzy_query
     }
 
+    /// The frame filters and sort are applied to (see `base_lf`).
+    pub fn base_lf_clone(&self) -> LazyFrame {
+        self.base_lf.clone()
+    }
+
+    /// Restore a `base_lf` taken with `base_lf_clone`, e.g. when a template fails to apply.
+    pub fn set_base_lf(&mut self, lf: LazyFrame) {
+        self.base_lf = lf;
+    }
+
     pub fn last_pivot_spec(&self) -> Option<&PivotSpec> {
         self.last_pivot_spec.as_ref()
     }
@@ -3725,8 +3763,6 @@ impl DataTableState {
             return Ok(());
         }
 
-        self.grouped_lf = Some(self.lf.clone());
-
         let grouped_df = collect_lazy(self.lf.clone(), self.polars_streaming)?;
 
         if group_index >= grouped_df.height() {
@@ -3814,8 +3850,19 @@ impl DataTableState {
 
         let group_df = DataFrame::new(columns)?;
 
+        // The group becomes the pipeline root while drilled in, so a sidebar filter or
+        // sort applies within it instead of rebuilding the grouped view underneath.
+        self.grouped = Some(GroupedView {
+            lf: self.lf.clone(),
+            base_lf: self.base_lf.clone(),
+            filters: std::mem::take(&mut self.filters),
+            sort_columns: std::mem::take(&mut self.sort_columns),
+            sort_ascending: self.sort_ascending,
+        });
+        self.sort_ascending = true;
         self.invalidate_num_rows();
         self.lf = group_df.lazy();
+        self.base_lf = self.lf.clone();
         self.schema = self.lf.clone().collect_schema()?;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
         self.drilled_down_group_index = Some(group_index);
@@ -3829,9 +3876,13 @@ impl DataTableState {
     }
 
     pub fn drill_up(&mut self) -> Result<()> {
-        if let Some(grouped_lf) = self.grouped_lf.take() {
+        if let Some(view) = self.grouped.take() {
             self.invalidate_num_rows();
-            self.lf = grouped_lf;
+            self.lf = view.lf;
+            self.base_lf = view.base_lf;
+            self.filters = view.filters;
+            self.sort_columns = view.sort_columns;
+            self.sort_ascending = view.sort_ascending;
             self.schema = self.lf.clone().collect_schema()?;
             self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
             self.drilled_down_group_index = None;
@@ -3959,6 +4010,8 @@ impl DataTableState {
 
     fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
         self.invalidate_num_rows();
+        self.reshaped_lf = Some(lf.clone());
+        self.base_lf = lf.clone();
         self.lf = lf;
         self.schema = self.lf.clone().collect_schema()?;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
@@ -3970,7 +4023,7 @@ impl DataTableState {
         self.error = None;
         self.df = None;
         self.locked_df = None;
-        self.grouped_lf = None;
+        self.grouped = None;
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
@@ -3989,8 +4042,9 @@ impl DataTableState {
         self.drilled_down_group_index.is_some()
     }
 
+    /// Rebuild `lf` as `base_lf` → filters → sort. Column order is applied at collect.
     fn apply_transformations(&mut self) {
-        let mut lf = self.original_lf.clone();
+        let mut lf = self.base_lf.clone();
         let mut final_expr: Option<Expr> = None;
 
         for filter in &self.filters {
@@ -4188,6 +4242,7 @@ impl DataTableState {
 
                 self.schema = schema;
                 self.invalidate_num_rows();
+                self.base_lf = lf.clone();
                 self.lf = lf;
                 self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
 
@@ -4217,6 +4272,8 @@ impl DataTableState {
                 self.start_row = 0;
                 self.termcol_index = 0;
                 self.active_query = query;
+                self.active_sql_query.clear();
+                self.active_fuzzy_query.clear();
                 self.buffered_start_row = 0;
                 self.buffered_end_row = 0;
                 self.buffered_df = None;
@@ -4224,7 +4281,7 @@ impl DataTableState {
                 self.drilled_down_group_index = None;
                 self.drilled_down_group_key = None;
                 self.drilled_down_group_key_columns = None;
-                self.grouped_lf = None;
+                self.grouped = None;
                 // Reset table state selection
                 self.table_state.select(Some(0));
                 // Collect will clamp start_row to valid range, but we want to ensure it's 0
@@ -4243,8 +4300,19 @@ impl DataTableState {
         }
     }
 
-    /// Execute a SQL query against the current LazyFrame (registered as table "df").
-    /// Empty SQL resets to original state. Does not call collect(); the event loop does that via AppEvent::Collect.
+    /// The data a query runs against: the pivot/melt result while one is in effect,
+    /// otherwise the data as loaded. Never the sidebar filters or sort, which go on top.
+    fn query_root(&self) -> LazyFrame {
+        self.reshaped_lf
+            .clone()
+            .unwrap_or_else(|| self.original_lf.clone())
+    }
+
+    /// Execute a SQL query against `query_root` (registered as table "df"): the reshaped
+    /// data when a pivot/melt is in effect, otherwise the data as loaded. Sidebar filters
+    /// and sort are not baked into the result, they go on top of it. Empty SQL resets to
+    /// original state. Does not call collect(); the event loop does that via
+    /// AppEvent::Collect.
     pub fn sql_query(&mut self, sql: String) {
         self.error = None;
         let trimmed = sql.trim();
@@ -4257,7 +4325,7 @@ impl DataTableState {
         {
             use polars_sql::SQLContext;
             let mut ctx = SQLContext::new();
-            ctx.register("df", self.lf.clone());
+            ctx.register("df", self.query_root());
             match ctx.execute(trimmed) {
                 Ok(result_lf) => {
                     let schema = match result_lf.clone().collect_schema() {
@@ -4269,9 +4337,12 @@ impl DataTableState {
                     };
                     self.schema = schema;
                     self.invalidate_num_rows();
+                    self.base_lf = result_lf.clone();
                     self.lf = result_lf;
                     self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
                     self.active_sql_query = sql;
+                    self.active_query.clear();
+                    self.active_fuzzy_query.clear();
                     self.locked_columns_count = 0;
                     self.filters.clear();
                     self.sort_columns.clear();
@@ -4281,7 +4352,7 @@ impl DataTableState {
                     self.drilled_down_group_index = None;
                     self.drilled_down_group_key = None;
                     self.drilled_down_group_key_columns = None;
-                    self.grouped_lf = None;
+                    self.grouped = None;
                     self.buffered_start_row = 0;
                     self.buffered_end_row = 0;
                     self.buffered_df = None;
@@ -4312,8 +4383,16 @@ impl DataTableState {
             self.collect();
             return;
         }
-        let string_cols: Vec<String> = self
-            .schema
+        // The search runs over the data as loaded, so its columns come from there too,
+        // not from a DSL query's possibly renamed schema.
+        let schema = match self.original_lf.clone().collect_schema() {
+            Ok(schema) => schema,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let string_cols: Vec<String> = schema
             .iter()
             .filter(|(_, dtype)| dtype.is_string())
             .map(|(name, _)| name.to_string())
@@ -4340,7 +4419,10 @@ impl DataTableState {
             })
             .collect();
         let combined = token_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
-        self.lf = self.original_lf.clone().filter(combined);
+        self.base_lf = self.original_lf.clone().filter(combined);
+        self.lf = self.base_lf.clone();
+        self.schema = schema;
+        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
         self.filters.clear();
         self.sort_columns.clear();
         self.active_query.clear();
@@ -4353,7 +4435,7 @@ impl DataTableState {
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
-        self.grouped_lf = None;
+        self.grouped = None;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;

@@ -213,17 +213,11 @@ fn test_chart_q_does_not_exit() {
     assert_eq!(app.input_mode, InputMode::Chart);
 }
 
-/// Renders the app in chart view to exercise the chart cache path (no x/y selected, then with x+y).
-/// Ensures the chart render path does not panic and cache logic works.
-#[test]
-fn test_chart_view_render_with_cache() {
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-
+/// Opens a small x/y dataset in the chart view. Nothing is selected yet.
+fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let test_data_dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&test_data_dir).unwrap();
-    let csv_path = test_data_dir.join("chart_render_cache_test.csv");
-
+    let csv_path = test_data_dir.join(name);
     let mut df = df!(
         "x" => (0..5).collect::<Vec<i32>>(),
         "y" => (0..5).map(|i| i * 3).collect::<Vec<i32>>()
@@ -232,39 +226,200 @@ fn test_chart_view_render_with_cache() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    pump_open_until_loaded(
-        &mut app,
-        &rx,
-        vec![csv_path.clone()],
-        OpenOptions::default(),
-    );
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.is_some());
 
-    // Open chart view (no x/y selected yet)
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
     assert_eq!(app.input_mode, InputMode::Chart);
+    (app, rx, tx)
+}
 
-    // Render in chart view with no series (exercises cache path; xy_series and x_bounds stay None)
+/// Feed background results back until the chart for the current selection is prepared.
+fn pump_until_chart_ready(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+) {
+    for _ in 0..500 {
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        if app.chart_data_ready() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("chart data was not prepared within 5 seconds");
+}
+
+/// Chart data is prepared off the render path: selecting columns starts a background
+/// computation (with the throbber up), render draws nothing until it lands, and then
+/// draws the prepared series. Nothing here collects on the calling thread.
+#[test]
+fn test_chart_data_is_prepared_in_the_background() {
+    let (mut app, rx, tx) = open_chart_view("chart_render_cache_test.csv");
+
+    // Nothing selected: render draws the empty view and asks for nothing.
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
     Widget::render(&mut app, area, &mut buf);
+    assert!(!app.chart_preparing());
 
-    // Select x and y via modal state so chart data is computed and cached
+    // Select x and y, then let any event go through so the selection is noticed.
     app.chart_modal.x_column = Some("x".to_string());
     app.chart_modal.y_columns = vec!["y".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(
+        app.chart_preparing(),
+        "a selection starts a background prepare"
+    );
+    assert!(!app.chart_data_ready());
+    assert!(
+        !app.is_busy(),
+        "chart preparation must not lock the keyboard"
+    );
 
-    // Render again: should use or populate chart cache (XY series)
+    // Render while it computes must not block or panic; it just has no data yet.
     Widget::render(&mut app, area, &mut buf);
 
-    // Close chart (clears cache)
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert!(!app.chart_preparing());
+    Widget::render(&mut app, area, &mut buf);
+
+    // Closing the chart drops the cache and any late result.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
     assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(!app.chart_preparing());
+}
+
+/// Holding a key through the options must not fan out into a collect per step: one
+/// preparation runs at a time, and when it lands the newest selection is the one prepared.
+#[test]
+fn test_chart_prepares_one_selection_at_a_time() {
+    use datui::chart_modal::ChartKind;
+    let (mut app, rx, tx) = open_chart_view("chart_one_at_a_time_test.csv");
+    app.chart_modal.chart_kind = ChartKind::Histogram;
+    app.chart_modal.hist_column = Some("x".to_string());
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(app.chart_preparing());
+
+    // Five more distinct requests while the first is still out.
+    for _ in 0..5 {
+        app.chart_modal.hist_bins += 1;
+        app.event(&AppEvent::Resize(80, 24));
+    }
+
+    let mut results = 0;
+    for _ in 0..500 {
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AppEvent::BackgroundChartReady { .. }) {
+                results += 1;
+            }
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        if app.chart_data_ready() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.chart_data_ready());
+    assert_eq!(
+        results, 2,
+        "the first request, then the newest; the four in between were never spawned"
+    );
+}
+
+/// An export parked while a *different*, failing selection is in flight is not failed
+/// with that selection's error: it waits for the current selection's data and completes.
+#[test]
+fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
+    use datui::chart_export::ChartExportFormat;
+    let (mut app, rx, tx) = open_chart_view("chart_export_after_failure_test.csv");
+    // x against x cannot be charted (duplicate column) and takes a moment to fail.
+    app.chart_modal.x_column = Some("x".to_string());
+    app.chart_modal.y_columns = vec!["x".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(app.chart_preparing());
+
+    // Move on to a valid selection while that one is still out, and ask for an export.
+    app.chart_modal.y_columns = vec!["y".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chart.eps");
+    let next = app
+        .event(&AppEvent::ChartExport(
+            path.clone(),
+            ChartExportFormat::Eps,
+            String::new(),
+            400,
+            300,
+        ))
+        .expect("ChartExport defers to DoChartExport");
+    app.event(&next);
+
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        path.exists(),
+        "the export completed from the valid selection"
+    );
+    assert!(
+        !app.chart_export_modal.active,
+        "no error reopened the modal"
+    );
+    assert!(app.chart_data_ready());
+}
+
+/// A chart export uses the prepared data and writes the file off-thread; if the data is
+/// not ready yet the export waits for it rather than collecting on the UI thread.
+#[test]
+fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
+    use datui::chart_export::ChartExportFormat;
+    let (mut app, rx, tx) = open_chart_view("chart_export_bg_test.csv");
+    app.chart_modal.x_column = Some("x".to_string());
+    app.chart_modal.y_columns = vec!["y".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(app.chart_preparing());
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chart.eps");
+    // Asked for while the data is still being prepared.
+    let next = app
+        .event(&AppEvent::ChartExport(
+            path.clone(),
+            ChartExportFormat::Eps,
+            String::new(),
+            400,
+            300,
+        ))
+        .expect("ChartExport defers to DoChartExport");
+    app.event(&next);
+    assert!(
+        app.is_busy(),
+        "an export owns the busy state until it finishes"
+    );
+
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        path.exists(),
+        "the export was written once its data arrived"
+    );
+    assert!(
+        !app.chart_export_modal.active,
+        "the export modal closes on success"
+    );
 }
 
 /// Wait for the outcome of a background scan.
@@ -1577,4 +1732,421 @@ fn test_escape_after_backspace_above_the_start_returns_home() {
         KeyModifiers::NONE,
     )));
     assert_eq!(app.home.browsing, None);
+}
+
+/// Feed background results back into the app until it is no longer busy.
+fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>) {
+    for _ in 0..500 {
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        if !app.is_busy() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("app did not settle within 5 seconds");
+}
+
+/// A 100-row table: `a` 0..100, `c` = a % 3, `name` "alpha_N" for even and "beta_N" for odd `a`.
+fn open_query_filter_fixture(
+    name: &str,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join(name);
+    let mut df = df!(
+        "a" => (0..100i64).collect::<Vec<_>>(),
+        "c" => (0..100i64).map(|i| i % 3).collect::<Vec<_>>(),
+        "name" => (0..100i64)
+            .map(|i| if i % 2 == 0 { format!("alpha_{i}") } else { format!("beta_{i}") })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let mut file = File::create(&csv_path).unwrap();
+    CsvWriter::new(&mut file).finish(&mut df).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 100);
+    (app, rx, tx)
+}
+
+fn current_rows(app: &App) -> usize {
+    let state = app.data_table_state.as_ref().unwrap();
+    state.lf.clone().collect().unwrap().height()
+}
+
+fn filter_stmt(
+    column: &str,
+    operator: datui::filter_modal::FilterOperator,
+    value: &str,
+) -> datui::filter_modal::FilterStatement {
+    datui::filter_modal::FilterStatement {
+        column: column.to_string(),
+        operator,
+        value: value.to_string(),
+        logical_op: datui::filter_modal::LogicalOperator::And,
+    }
+}
+
+/// A sidebar filter applies on top of the active DSL query rather than replacing it, and
+/// clearing the filters returns to the query result. Reset still clears everything.
+#[test]
+fn test_sidebar_filter_applies_on_top_of_query() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("query_then_filter.csv");
+
+    app.event(&AppEvent::Search("select where a < 50".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 50);
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "c",
+        FilterOperator::Eq,
+        "1",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    // a in 0..50 with a % 3 == 1: 1, 4, ..., 49
+    assert_eq!(
+        current_rows(&app),
+        17,
+        "filter must apply to the query result"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_active_query(), "select where a < 50");
+    assert_eq!(state.get_filters().len(), 1);
+
+    app.event(&AppEvent::Filter(vec![]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        current_rows(&app),
+        50,
+        "clearing filters returns to the query result"
+    );
+
+    app.event(&AppEvent::Reset);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 100);
+    assert!(app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .get_active_query()
+        .is_empty());
+}
+
+/// Same for a fuzzy search: sort and filter stack on it, and clearing them keeps it.
+#[test]
+fn test_sidebar_filter_and_sort_keep_fuzzy_query() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("fuzzy_then_filter.csv");
+
+    app.event(&AppEvent::FuzzySearch("alpha".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 50);
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "a",
+        FilterOperator::Lt,
+        "20",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 10);
+
+    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf
+        .clone()
+        .collect()
+        .unwrap();
+    assert_eq!(df.height(), 10);
+    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(18));
+
+    app.event(&AppEvent::Filter(vec![]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 50);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .get_active_fuzzy_query(),
+        "alpha"
+    );
+}
+
+/// And for SQL.
+#[test]
+fn test_sidebar_filter_keeps_sql_query() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("sql_then_filter.csv");
+
+    app.event(&AppEvent::SqlSearch(
+        "SELECT * FROM df WHERE a < 30".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 30);
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "c",
+        FilterOperator::Eq,
+        "0",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    // a in 0..30 with a % 3 == 0: 0, 3, ..., 27
+    assert_eq!(current_rows(&app), 10);
+
+    app.event(&AppEvent::Filter(vec![]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 30);
+}
+
+/// SQL runs against the data as loaded, like the DSL and fuzzy queries: a sidebar filter
+/// that was active when the SQL ran is not baked into its result, so clearing the
+/// filters afterwards shows the SQL result over the whole table.
+#[test]
+fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("filter_then_sql.csv");
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "c",
+        FilterOperator::Eq,
+        "0",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 34);
+
+    app.event(&AppEvent::SqlSearch(
+        "SELECT * FROM df WHERE a < 30".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 30, "the SQL replaces the filter");
+    assert!(app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .get_filters()
+        .is_empty());
+
+    app.event(&AppEvent::Filter(vec![]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 30);
+}
+
+/// Opens an inline CSV with the given options and settles the load.
+fn open_csv_with(
+    name: &str,
+    contents: &str,
+    options: OpenOptions,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join(name);
+    std::fs::write(&csv_path, contents).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], options);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.is_some());
+    (app, rx, tx)
+}
+
+/// Footer rows dropped with `skip_tail_rows` stay dropped after a sidebar sort: the
+/// load-time trimming is part of the pipeline's root, not just of the first view.
+#[test]
+fn test_skip_tail_rows_survives_a_sidebar_sort() {
+    let mut csv = String::from("a,b\n");
+    for i in 0..100 {
+        csv.push_str(&format!("{i},{}\n", i * 2));
+    }
+    // Two summary rows at the end, the kind `skip_tail_rows` exists for.
+    csv.push_str("9999,-1\n9998,-2\n");
+    let options = OpenOptions {
+        skip_tail_rows: Some(2),
+        ..OpenOptions::default()
+    };
+    let (mut app, rx, tx) = open_csv_with("skip_tail_then_sort.csv", &csv, options);
+    assert_eq!(current_rows(&app), 100);
+
+    app.event(&AppEvent::Sort(vec!["b".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf
+        .clone()
+        .collect()
+        .unwrap();
+    assert_eq!(df.height(), 100, "the footer rows must not come back");
+    assert_eq!(
+        df.column("b").unwrap().get(0).unwrap(),
+        AnyValue::Int64(198)
+    );
+}
+
+/// Numbers parsed out of padded strings with `parse_strings` are still numbers when a
+/// sidebar filter compares them.
+#[test]
+fn test_parse_strings_survives_a_sidebar_filter() {
+    use datui::filter_modal::FilterOperator;
+    use datui::ParseStringsTarget;
+    let mut csv = String::from("id,amount\n");
+    for i in 0..100 {
+        csv.push_str(&format!("{i},\" {} \"\n", i * 3));
+    }
+    let options = OpenOptions {
+        parse_strings: Some(ParseStringsTarget::All),
+        ..OpenOptions::default()
+    };
+    let (mut app, rx, tx) = open_csv_with("parse_strings_then_filter.csv", &csv, options);
+    {
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.schema.get("amount").unwrap().is_integer(),
+            "parse_strings should have made amount numeric"
+        );
+    }
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "amount",
+        FilterOperator::Gt,
+        "150",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    // amount = 3 * id > 150 for id 51..100
+    assert_eq!(current_rows(&app), 49);
+}
+
+/// SQL after a pivot sees the pivoted columns: the reshape is the root the query runs
+/// against, so `SELECT` of a pivoted column works and the reshape stays in the view.
+#[test]
+fn test_sql_after_pivot_sees_the_pivoted_columns() {
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    let mut csv = String::from("id,key,val\n");
+    for id in 0..10 {
+        csv.push_str(&format!("{id},k1,{id}\n{id},k2,{}\n", id * 10));
+    }
+    let (mut app, rx, tx) = open_csv_with("pivot_then_sql.csv", &csv, OpenOptions::default());
+
+    app.event(&AppEvent::Pivot(PivotSpec {
+        index: vec!["id".to_string()],
+        pivot_column: "key".to_string(),
+        value_column: "val".to_string(),
+        aggregation: PivotAggregation::First,
+        sort_columns: None,
+    }));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 10);
+    assert!(app.data_table_state.as_ref().unwrap().schema.contains("k1"));
+
+    app.event(&AppEvent::SqlSearch(
+        "SELECT id, k2 FROM df WHERE k1 > 4".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 5, "ids 5..9");
+    assert_eq!(df.get_column_names_str(), vec!["id", "k2"]);
+}
+
+/// While drilled into a group, a sidebar filter or sort applies within the group and
+/// leaves the drill-down in place; drilling back up restores the grouped view.
+#[test]
+fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_down_filter.csv");
+
+    app.event(&AppEvent::Search("select by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 3, "one row per group");
+
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .drill_down_into_group(0)
+        .unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+    assert_eq!(current_rows(&app), 34, "c == 0: 0, 3, ..., 99");
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "a",
+        FilterOperator::Lt,
+        "30",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(
+        state.is_drilled_down(),
+        "the filter must not undo the drill-down"
+    );
+    assert_eq!(current_rows(&app), 10);
+
+    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.is_drilled_down());
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 10);
+    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(27));
+
+    app.data_table_state.as_mut().unwrap().drill_up().unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.is_drilled_down());
+    assert!(
+        state.get_filters().is_empty(),
+        "the group's filter stays with the group"
+    );
+    assert_eq!(current_rows(&app), 3);
+}
+
+/// A fuzzy search after a DSL query that renamed columns works on the data as loaded
+/// and installs that schema, so a sidebar sort afterwards finds its columns.
+#[test]
+fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
+    let (mut app, rx, tx) = open_query_filter_fixture("alias_then_fuzzy.csv");
+
+    app.event(&AppEvent::Search("select a, label: name".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .schema
+            .iter_names()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        vec!["a", "label"]
+    );
+
+    app.event(&AppEvent::FuzzySearch("alpha".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    assert_eq!(current_rows(&app), 50);
+    assert!(state.schema.contains("name") && state.schema.contains("c"));
+    assert_eq!(state.headers(), vec!["a", "c", "name"]);
+
+    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 50);
+    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(98));
 }

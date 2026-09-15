@@ -213,17 +213,11 @@ fn test_chart_q_does_not_exit() {
     assert_eq!(app.input_mode, InputMode::Chart);
 }
 
-/// Renders the app in chart view to exercise the chart cache path (no x/y selected, then with x+y).
-/// Ensures the chart render path does not panic and cache logic works.
-#[test]
-fn test_chart_view_render_with_cache() {
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-
+/// Opens a small x/y dataset in the chart view. Nothing is selected yet.
+fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let test_data_dir = PathBuf::from("tests/sample-data");
     std::fs::create_dir_all(&test_data_dir).unwrap();
-    let csv_path = test_data_dir.join("chart_render_cache_test.csv");
-
+    let csv_path = test_data_dir.join(name);
     let mut df = df!(
         "x" => (0..5).collect::<Vec<i32>>(),
         "y" => (0..5).map(|i| i * 3).collect::<Vec<i32>>()
@@ -232,39 +226,121 @@ fn test_chart_view_render_with_cache() {
     let mut file = File::create(&csv_path).unwrap();
     CsvWriter::new(&mut file).finish(&mut df).unwrap();
 
-    pump_open_until_loaded(
-        &mut app,
-        &rx,
-        vec![csv_path.clone()],
-        OpenOptions::default(),
-    );
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.is_some());
 
-    // Open chart view (no x/y selected yet)
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
     assert_eq!(app.input_mode, InputMode::Chart);
+    (app, rx, tx)
+}
 
-    // Render in chart view with no series (exercises cache path; xy_series and x_bounds stay None)
+/// Feed background results back until the chart for the current selection is prepared.
+fn pump_until_chart_ready(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+) {
+    for _ in 0..500 {
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        if app.chart_data_ready() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("chart data was not prepared within 5 seconds");
+}
+
+/// Chart data is prepared off the render path: selecting columns starts a background
+/// computation (with the throbber up), render draws nothing until it lands, and then
+/// draws the prepared series. Nothing here collects on the calling thread.
+#[test]
+fn test_chart_data_is_prepared_in_the_background() {
+    let (mut app, rx, tx) = open_chart_view("chart_render_cache_test.csv");
+
+    // Nothing selected: render draws the empty view and asks for nothing.
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
     Widget::render(&mut app, area, &mut buf);
+    assert!(!app.chart_preparing());
 
-    // Select x and y via modal state so chart data is computed and cached
+    // Select x and y, then let any event go through so the selection is noticed.
     app.chart_modal.x_column = Some("x".to_string());
     app.chart_modal.y_columns = vec!["y".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(
+        app.chart_preparing(),
+        "a selection starts a background prepare"
+    );
+    assert!(!app.chart_data_ready());
+    assert!(
+        !app.is_busy(),
+        "chart preparation must not lock the keyboard"
+    );
 
-    // Render again: should use or populate chart cache (XY series)
+    // Render while it computes must not block or panic; it just has no data yet.
     Widget::render(&mut app, area, &mut buf);
 
-    // Close chart (clears cache)
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert!(!app.chart_preparing());
+    Widget::render(&mut app, area, &mut buf);
+
+    // Closing the chart drops the cache and any late result.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
     assert_eq!(app.input_mode, InputMode::Normal);
+    assert!(!app.chart_preparing());
+}
+
+/// A chart export uses the prepared data and writes the file off-thread; if the data is
+/// not ready yet the export waits for it rather than collecting on the UI thread.
+#[test]
+fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
+    use datui::chart_export::ChartExportFormat;
+    let (mut app, rx, tx) = open_chart_view("chart_export_bg_test.csv");
+    app.chart_modal.x_column = Some("x".to_string());
+    app.chart_modal.y_columns = vec!["y".to_string()];
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(app.chart_preparing());
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chart.eps");
+    // Asked for while the data is still being prepared.
+    let next = app
+        .event(&AppEvent::ChartExport(
+            path.clone(),
+            ChartExportFormat::Eps,
+            String::new(),
+            400,
+            300,
+        ))
+        .expect("ChartExport defers to DoChartExport");
+    app.event(&next);
+    assert!(
+        app.is_busy(),
+        "an export owns the busy state until it finishes"
+    );
+
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        path.exists(),
+        "the export was written once its data arrived"
+    );
+    assert!(
+        !app.chart_export_modal.active,
+        "the export modal closes on success"
+    );
 }
 
 /// Wait for the outcome of a background scan.

@@ -328,6 +328,84 @@ mod busy_key_queue_tests {
 }
 
 #[cfg(test)]
+mod chart_prepare_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn histogram_request(column: &str) -> ChartRequest {
+        ChartRequest::Histogram {
+            column: column.to_string(),
+            bins: 10,
+            row_limit: None,
+        }
+    }
+
+    fn prepared_histogram(column: &str) -> ChartPrepared {
+        ChartPrepared::Histogram(ChartCacheHistogram {
+            column: column.to_string(),
+            bins: 10,
+            row_limit: None,
+            data: chart_data::HistogramData {
+                column: column.to_string(),
+                bins: Vec::new(),
+                x_min: 0.0,
+                x_max: 1.0,
+                max_count: 0.0,
+            },
+        })
+    }
+
+    /// The selection moved from `a` to `b` while `a` was computing: `a`'s result lands
+    /// first and must be dropped, and `b`'s result is the one that is installed.
+    #[test]
+    fn a_result_for_a_superseded_selection_is_dropped() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let old = histogram_request("a");
+        let new = histogram_request("b");
+        app.chart_generation = 2;
+        app.chart_inflight = Some((2, new.clone()));
+
+        *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
+        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        assert!(
+            !app.chart_cache.satisfies(&old),
+            "stale result must not land"
+        );
+        assert_eq!(
+            app.chart_inflight.as_ref().map(|(g, _)| *g),
+            Some(2),
+            "still waiting for the newest request"
+        );
+
+        *app.pending_chart_result.lock().unwrap() = Some((2, Ok(prepared_histogram("b"))));
+        app.event(&AppEvent::BackgroundChartReady { generation: 2 });
+        assert!(app.chart_cache.satisfies(&new));
+        assert!(app.chart_inflight.is_none());
+    }
+
+    /// A selection that cannot be charted is remembered as failed rather than retried
+    /// after every event, which would spin the throbber forever.
+    #[test]
+    fn a_failed_preparation_is_remembered_not_retried() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let request = histogram_request("a");
+        app.chart_generation = 1;
+        app.chart_inflight = Some((1, request.clone()));
+
+        *app.pending_chart_result.lock().unwrap() = Some((1, Err("duplicate column".into())));
+        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        assert!(app.chart_inflight.is_none());
+        assert_eq!(
+            app.chart_cache.failed.as_ref().map(|(r, _)| r),
+            Some(&request)
+        );
+        assert!(!app.chart_cache.satisfies(&request));
+    }
+}
+
+#[cfg(test)]
 mod text_input_flows;
 
 #[cfg(test)]
@@ -956,6 +1034,18 @@ pub enum AppEvent {
         options: OpenOptions,
         debug_label: Option<String>,
     },
+    /// Background task completed: chart data for one selection is prepared. The data is
+    /// in `App::pending_chart_result`; a stale generation is dropped.
+    BackgroundChartReady {
+        generation: u64,
+    },
+    /// Background task completed: chart written to disk.
+    BackgroundChartExportWritten {
+        generation: u64,
+        path: PathBuf,
+        format: ChartExportFormat,
+        result: Result<(), String>,
+    },
     /// Background task completed: export data collected.
     BackgroundExportCollected {
         generation: u64,
@@ -1279,11 +1369,317 @@ pub(crate) struct ChartCache {
     pub(crate) box_plot: Option<ChartCacheBoxPlot>,
     pub(crate) kde: Option<ChartCacheKde>,
     pub(crate) heatmap: Option<ChartCacheHeatmap>,
+    /// The request that last failed to prepare, with the reason. Kept so the same
+    /// selection is not retried after every event; the chart draws as empty, as it
+    /// always has for a selection that cannot be charted.
+    pub(crate) failed: Option<(ChartRequest, String)>,
 }
 
 impl ChartCache {
     fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    /// Whether the slot for `request`'s kind holds exactly that request's data.
+    fn satisfies(&self, request: &ChartRequest) -> bool {
+        match request {
+            ChartRequest::XY {
+                x_column,
+                y_columns,
+                row_limit,
+            } => self.xy.as_ref().is_some_and(|c| {
+                c.x_column == *x_column && c.y_columns == *y_columns && c.row_limit == *row_limit
+            }),
+            ChartRequest::XRange {
+                x_column,
+                row_limit,
+            } => self
+                .x_range
+                .as_ref()
+                .is_some_and(|c| c.x_column == *x_column && c.row_limit == *row_limit),
+            ChartRequest::Histogram {
+                column,
+                bins,
+                row_limit,
+            } => self.histogram.as_ref().is_some_and(|c| {
+                c.column == *column && c.bins == *bins && c.row_limit == *row_limit
+            }),
+            ChartRequest::BoxPlot { column, row_limit } => self
+                .box_plot
+                .as_ref()
+                .is_some_and(|c| c.column == *column && c.row_limit == *row_limit),
+            ChartRequest::Kde {
+                column,
+                bandwidth_factor,
+                row_limit,
+            } => self.kde.as_ref().is_some_and(|c| {
+                c.column == *column
+                    && c.bandwidth_factor == *bandwidth_factor
+                    && c.row_limit == *row_limit
+            }),
+            ChartRequest::Heatmap {
+                x_column,
+                y_column,
+                bins,
+                row_limit,
+            } => self.heatmap.as_ref().is_some_and(|c| {
+                c.x_column == *x_column
+                    && c.y_column == *y_column
+                    && c.bins == *bins
+                    && c.row_limit == *row_limit
+            }),
+        }
+    }
+
+    fn install(&mut self, prepared: ChartPrepared) {
+        match prepared {
+            ChartPrepared::XY(c) => self.xy = Some(c),
+            ChartPrepared::XRange(c) => self.x_range = Some(c),
+            ChartPrepared::Histogram(c) => self.histogram = Some(c),
+            ChartPrepared::BoxPlot(c) => self.box_plot = Some(c),
+            ChartPrepared::Kde(c) => self.kde = Some(c),
+            ChartPrepared::Heatmap(c) => self.heatmap = Some(c),
+        }
+    }
+
+    /// Build the log-scale copy of the XY series once it is wanted. A pure in-memory
+    /// map, cheap enough for the event thread; it never happens in render.
+    fn ensure_log_series(&mut self) {
+        if let Some(cache) = self.xy.as_mut() {
+            if cache.series_log.is_none() {
+                cache.series_log = Some(log_series(&cache.series));
+            }
+        }
+    }
+}
+
+fn log_series(series: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
+    series
+        .iter()
+        .map(|pts| pts.iter().map(|&(x, y)| (x, y.max(0.0).ln_1p())).collect())
+        .collect()
+}
+
+/// What the chart view needs prepared for the modal's current selection. Compared with
+/// the cache and with the computation in flight, so each selection is prepared once, off
+/// the UI thread, and a result for a selection the user has since moved past is stale.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ChartRequest {
+    XY {
+        x_column: String,
+        y_columns: Vec<String>,
+        row_limit: Option<usize>,
+    },
+    /// Only an x column is selected: its range gives the placeholder axis its bounds.
+    XRange {
+        x_column: String,
+        row_limit: Option<usize>,
+    },
+    Histogram {
+        column: String,
+        bins: usize,
+        row_limit: Option<usize>,
+    },
+    BoxPlot {
+        column: String,
+        row_limit: Option<usize>,
+    },
+    Kde {
+        column: String,
+        bandwidth_factor: f64,
+        row_limit: Option<usize>,
+    },
+    Heatmap {
+        x_column: String,
+        y_column: String,
+        bins: usize,
+        row_limit: Option<usize>,
+    },
+}
+
+impl ChartRequest {
+    fn from_modal(modal: &ChartModal) -> Option<Self> {
+        let row_limit = modal.row_limit;
+        match modal.chart_kind {
+            ChartKind::XY => {
+                let x_column = modal.effective_x_column()?.clone();
+                let y_columns = modal.effective_y_columns();
+                Some(if y_columns.is_empty() {
+                    Self::XRange {
+                        x_column,
+                        row_limit,
+                    }
+                } else {
+                    Self::XY {
+                        x_column,
+                        y_columns,
+                        row_limit,
+                    }
+                })
+            }
+            ChartKind::Histogram => Some(Self::Histogram {
+                column: modal.effective_hist_column()?,
+                bins: modal.hist_bins,
+                row_limit,
+            }),
+            ChartKind::BoxPlot => Some(Self::BoxPlot {
+                column: modal.effective_box_column()?,
+                row_limit,
+            }),
+            ChartKind::Kde => Some(Self::Kde {
+                column: modal.effective_kde_column()?,
+                bandwidth_factor: modal.kde_bandwidth_factor,
+                row_limit,
+            }),
+            ChartKind::Heatmap => Some(Self::Heatmap {
+                x_column: modal.effective_heatmap_x_column()?,
+                y_column: modal.effective_heatmap_y_column()?,
+                bins: modal.heatmap_bins,
+                row_limit,
+            }),
+        }
+    }
+
+    /// The Polars work. Runs on a worker thread; `rows` is the effective row limit.
+    fn prepare(&self, lf: &LazyFrame, schema: &Schema, rows: usize) -> Result<ChartPrepared> {
+        Ok(match self {
+            Self::XY {
+                x_column,
+                y_columns,
+                row_limit,
+            } => {
+                let r = chart_data::prepare_chart_data(lf, schema, x_column, y_columns, rows)?;
+                ChartPrepared::XY(ChartCacheXY {
+                    x_column: x_column.clone(),
+                    y_columns: y_columns.clone(),
+                    row_limit: *row_limit,
+                    series: r.series,
+                    series_log: None,
+                    x_axis_kind: r.x_axis_kind,
+                })
+            }
+            Self::XRange {
+                x_column,
+                row_limit,
+            } => {
+                let r = chart_data::prepare_chart_x_range(lf, schema, x_column, rows)?;
+                ChartPrepared::XRange(ChartCacheXRange {
+                    x_column: x_column.clone(),
+                    row_limit: *row_limit,
+                    x_min: r.x_min,
+                    x_max: r.x_max,
+                    x_axis_kind: r.x_axis_kind,
+                })
+            }
+            Self::Histogram {
+                column,
+                bins,
+                row_limit,
+            } => ChartPrepared::Histogram(ChartCacheHistogram {
+                column: column.clone(),
+                bins: *bins,
+                row_limit: *row_limit,
+                data: chart_data::prepare_histogram_data(lf, column, *bins, rows)?,
+            }),
+            Self::BoxPlot { column, row_limit } => ChartPrepared::BoxPlot(ChartCacheBoxPlot {
+                column: column.clone(),
+                row_limit: *row_limit,
+                data: chart_data::prepare_box_plot_data(lf, std::slice::from_ref(column), rows)?,
+            }),
+            Self::Kde {
+                column,
+                bandwidth_factor,
+                row_limit,
+            } => ChartPrepared::Kde(ChartCacheKde {
+                column: column.clone(),
+                bandwidth_factor: *bandwidth_factor,
+                row_limit: *row_limit,
+                data: chart_data::prepare_kde_data(
+                    lf,
+                    std::slice::from_ref(column),
+                    *bandwidth_factor,
+                    rows,
+                )?,
+            }),
+            Self::Heatmap {
+                x_column,
+                y_column,
+                bins,
+                row_limit,
+            } => ChartPrepared::Heatmap(ChartCacheHeatmap {
+                x_column: x_column.clone(),
+                y_column: y_column.clone(),
+                bins: *bins,
+                row_limit: *row_limit,
+                data: chart_data::prepare_heatmap_data(lf, x_column, y_column, *bins, rows)?,
+            }),
+        })
+    }
+}
+
+/// (generation, outcome) handed from the chart worker to `BackgroundChartReady`.
+type ChartResultSlot = Arc<Mutex<Option<(u64, Result<ChartPrepared, String>)>>>;
+
+/// A prepared chart, ready to go into the cache.
+pub(crate) enum ChartPrepared {
+    XY(ChartCacheXY),
+    XRange(ChartCacheXRange),
+    Histogram(ChartCacheHistogram),
+    BoxPlot(ChartCacheBoxPlot),
+    Kde(ChartCacheKde),
+    Heatmap(ChartCacheHeatmap),
+}
+
+/// A chart export with its data taken from the cache; `write` is the slow part and runs
+/// off the UI thread.
+enum ChartExportJob {
+    Series {
+        series: Vec<ChartExportSeries>,
+        chart_type: ChartType,
+        bounds: ChartExportBounds,
+    },
+    BoxPlot {
+        data: chart_data::BoxPlotData,
+        bounds: BoxPlotExportBounds,
+    },
+    Heatmap {
+        data: chart_data::HeatmapData,
+        bounds: ChartExportBounds,
+    },
+}
+
+impl ChartExportJob {
+    fn write(&self, path: &Path, format: ChartExportFormat, size: (u32, u32)) -> Result<()> {
+        match (self, format) {
+            (
+                Self::Series {
+                    series,
+                    chart_type,
+                    bounds,
+                },
+                ChartExportFormat::Png,
+            ) => write_chart_png(path, series, *chart_type, bounds, size),
+            (
+                Self::Series {
+                    series,
+                    chart_type,
+                    bounds,
+                },
+                ChartExportFormat::Eps,
+            ) => write_chart_eps(path, series, *chart_type, bounds),
+            (Self::BoxPlot { data, bounds }, ChartExportFormat::Png) => {
+                write_box_plot_png(path, data, bounds, size)
+            }
+            (Self::BoxPlot { data, bounds }, ChartExportFormat::Eps) => {
+                write_box_plot_eps(path, data, bounds)
+            }
+            (Self::Heatmap { data, bounds }, ChartExportFormat::Png) => {
+                write_heatmap_png(path, data, bounds, size)
+            }
+            (Self::Heatmap { data, bounds }, ChartExportFormat::Eps) => {
+                write_heatmap_eps(path, data, bounds)
+            }
+        }
     }
 }
 
@@ -1383,6 +1779,19 @@ pub struct App {
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
     pub(crate) chart_cache: ChartCache,
+    /// Chart preparation in flight: its generation and request. Render draws only what is
+    /// in `chart_cache`; this drives the throbber and marks a result whose generation no
+    /// longer matches as stale (the selection moved on) so it is dropped. Deliberately not
+    /// `busy`: the sidebar stays live while the data is computed, and the newest selection
+    /// wins.
+    chart_inflight: Option<(u64, ChartRequest)>,
+    chart_generation: u64,
+    /// (generation, result) from the background chart preparation, like
+    /// `pending_collect_result`: the data stays out of the event.
+    pending_chart_result: ChartResultSlot,
+    /// A chart export that asked for data still being prepared. `BackgroundChartReady`
+    /// picks it up; `busy` stays set until then.
+    chart_export_waiting: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
     error_modal: ErrorModal,
     success_modal: SuccessModal,
     confirmation_modal: ConfirmationModal,
@@ -1862,6 +2271,10 @@ impl App {
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
             chart_cache: ChartCache::default(),
+            chart_inflight: None,
+            chart_generation: 0,
+            pending_chart_result: Arc::new(Mutex::new(None)),
+            chart_export_waiting: None,
             error_modal: ErrorModal::new(),
             success_modal: SuccessModal::new(),
             confirmation_modal: ConfirmationModal::new(),
@@ -5293,6 +5706,8 @@ impl App {
                 KeyCode::Esc if event.is_press() => {
                     self.chart_modal.close();
                     self.chart_cache.clear();
+                    // A result still coming back is for a view that no longer exists.
+                    self.chart_inflight = None;
                     self.input_mode = InputMode::Normal;
                 }
                 KeyCode::Tab if event.is_press() => {
@@ -7541,10 +7956,78 @@ impl App {
 
     pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
         let out = self.dispatch_event(event);
+        self.ensure_chart_data();
         if !self.busy {
             self.replay_queued_keys();
         }
         out
+    }
+
+    /// True while chart data for the current selection is being prepared off-thread.
+    pub fn chart_preparing(&self) -> bool {
+        self.chart_inflight.is_some()
+    }
+
+    /// True when the chart cache holds the data for the modal's current selection.
+    pub fn chart_data_ready(&self) -> bool {
+        ChartRequest::from_modal(&self.chart_modal).is_some_and(|r| self.chart_cache.satisfies(&r))
+    }
+
+    /// Start preparing the chart the modal currently asks for, unless the cache already
+    /// has it or the same request is in flight. Runs after every event, so a change of
+    /// column or option is picked up as soon as it is made and render only ever draws.
+    fn ensure_chart_data(&mut self) {
+        if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+            return;
+        }
+        let Some(request) = ChartRequest::from_modal(&self.chart_modal) else {
+            return;
+        };
+        if self.chart_cache.satisfies(&request) {
+            if self.chart_modal.log_scale {
+                self.chart_cache.ensure_log_series();
+            }
+            return;
+        }
+        if self
+            .chart_inflight
+            .as_ref()
+            .is_some_and(|(_, r)| *r == request)
+        {
+            return;
+        }
+        if self
+            .chart_cache
+            .failed
+            .as_ref()
+            .is_some_and(|(r, _)| *r == request)
+        {
+            return;
+        }
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let lf = state.lf.clone();
+        let schema = state.schema.clone();
+        let rows = self.chart_modal.effective_row_limit();
+        self.chart_generation = self.chart_generation.wrapping_add(1);
+        let generation = self.chart_generation;
+        self.chart_inflight = Some((generation, request.clone()));
+        let slot = self.pending_chart_result.clone();
+        let tx = self.events.clone();
+        self.runtime.spawn_blocking(move || {
+            let result = request
+                .prepare(&lf, &schema, rows)
+                .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+            let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+            // Only write if no newer result is already stored.
+            let dominated = slot.as_ref().is_some_and(|(g, _)| *g > generation);
+            if !dominated {
+                *slot = Some((generation, result));
+            }
+            drop(slot);
+            let _ = tx.send(AppEvent::BackgroundChartReady { generation });
+        });
     }
 
     /// Hold a key typed while busy. The oldest goes when the cap is reached, so a held key
@@ -8768,25 +9251,56 @@ impl App {
                 ))
             }
             AppEvent::DoChartExport(path, format, title, width, height) => {
-                let result = self.do_chart_export(path, *format, title, *width, *height);
-                self.loading_state = LoadingState::Idle;
-                self.busy = false;
-                self.drain_keys_on_next_loop = true;
-                match result {
-                    Ok(()) => {
-                        self.success_modal.show(format!(
-                            "Chart exported successfully to\n{}",
-                            path.display()
-                        ));
-                        self.chart_export_modal.close();
+                self.start_chart_export(path.clone(), *format, title.clone(), *width, *height);
+                None
+            }
+            AppEvent::BackgroundChartExportWritten {
+                generation,
+                path,
+                format,
+                result,
+            } => {
+                if *generation == self.task_generation {
+                    self.finish_chart_export(path, *format, result.clone());
+                }
+                None
+            }
+            AppEvent::BackgroundChartReady { generation } => {
+                // Only the newest request's result is wanted; the selection may have
+                // moved on since this one was spawned, in which case a newer computation
+                // is in flight and this one is dropped.
+                let request = match self.chart_inflight.take() {
+                    Some((g, request)) if g == *generation => request,
+                    other => {
+                        self.chart_inflight = other;
+                        return None;
                     }
-                    Err(e) => {
-                        self.error_modal
-                            .show(crate::error_display::user_message_from_report(
-                                &e,
-                                Some(path),
-                            ));
-                        self.chart_export_modal.reopen_with_path(path, *format);
+                };
+                let taken = self
+                    .pending_chart_result
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                let outcome = match taken {
+                    Some((slot_gen, result)) if slot_gen == *generation => result,
+                    _ => Err("Chart preparation produced no result".to_string()),
+                };
+                match outcome {
+                    Ok(prepared) => {
+                        self.chart_cache.install(prepared);
+                        if let Some((path, format, title, width, height)) =
+                            self.chart_export_waiting.take()
+                        {
+                            self.start_chart_export(path, format, title, width, height);
+                        }
+                    }
+                    // A chart that cannot be prepared draws as empty, as before; only an
+                    // export waiting on it is told why. Remembered so it is not retried.
+                    Err(message) => {
+                        if let Some((path, format, ..)) = self.chart_export_waiting.take() {
+                            self.finish_chart_export(&path, format, Err(message.clone()));
+                        }
+                        self.chart_cache.failed = Some((request, message));
                     }
                 }
                 None
@@ -8894,107 +9408,75 @@ impl App {
         }
     }
 
-    /// Perform chart export to file. Exports what is currently visible (effective x + y).
-    /// Title is optional; blank or whitespace means no chart title on export.
-    /// Width and height are used for PNG output (pixels); EPS uses fixed logical size.
-    fn do_chart_export(
-        &self,
-        path: &Path,
-        format: ChartExportFormat,
-        title: &str,
-        width: u32,
-        height: u32,
-    ) -> color_eyre::Result<()> {
-        let state = self
-            .data_table_state
-            .as_ref()
-            .ok_or_else(|| color_eyre::eyre::eyre!("No data loaded"))?;
-        let chart_title = title.trim();
-        let chart_title = if chart_title.is_empty() {
-            None
-        } else {
-            Some(chart_title.to_string())
+    /// Build the export from the prepared chart for the current selection. `Ok(None)`
+    /// means that chart is still being prepared and the caller should wait for it.
+    /// Exports what is visible (effective x + y); a blank title means no title.
+    fn build_chart_export_job(&self, title: &str) -> Result<Option<ChartExportJob>> {
+        if self.data_table_state.is_none() {
+            return Err(color_eyre::eyre::eyre!("No data loaded"));
+        }
+        let chart_title = Some(title.trim())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+
+        let request = match (
+            ChartRequest::from_modal(&self.chart_modal),
+            self.chart_modal.chart_kind,
+        ) {
+            (Some(ChartRequest::XRange { .. }), _) => {
+                return Err(color_eyre::eyre::eyre!("No Y axis columns selected"))
+            }
+            (None, ChartKind::XY) => {
+                return Err(color_eyre::eyre::eyre!("No X axis column selected"))
+            }
+            (None, ChartKind::Histogram) => {
+                return Err(color_eyre::eyre::eyre!("No histogram column selected"))
+            }
+            (None, ChartKind::BoxPlot) => {
+                return Err(color_eyre::eyre::eyre!("No box plot column selected"))
+            }
+            (None, ChartKind::Kde) => {
+                return Err(color_eyre::eyre::eyre!("No KDE column selected"))
+            }
+            (None, ChartKind::Heatmap) => {
+                return Err(color_eyre::eyre::eyre!("No heatmap columns selected"))
+            }
+            (Some(request), _) => request,
         };
+        if !self.chart_cache.satisfies(&request) {
+            return Ok(None);
+        }
+        let no_points = || color_eyre::eyre::eyre!("No valid data points to export");
 
-        match self.chart_modal.chart_kind {
-            ChartKind::XY => {
-                let x_column = self
-                    .chart_modal
-                    .effective_x_column()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("No X axis column selected"))?;
-                let y_columns = self.chart_modal.effective_y_columns();
-                if y_columns.is_empty() {
-                    return Err(color_eyre::eyre::eyre!("No Y axis columns selected"));
-                }
-
-                let row_limit_opt = self.chart_modal.row_limit;
-                let row_limit = self.chart_modal.effective_row_limit();
-                let cache_matches = self.chart_cache.xy.as_ref().is_some_and(|c| {
-                    c.x_column == *x_column
-                        && c.y_columns == y_columns
-                        && c.row_limit == row_limit_opt
-                });
-
-                let (series_vec, x_axis_kind_export, from_cache) = if cache_matches {
-                    if let Some(cache) = self.chart_cache.xy.as_ref() {
-                        let pts = if self.chart_modal.log_scale {
-                            cache.series_log.as_ref().cloned().unwrap_or_else(|| {
-                                cache
-                                    .series
-                                    .iter()
-                                    .map(|s| {
-                                        s.iter().map(|&(x, y)| (x, y.max(0.0).ln_1p())).collect()
-                                    })
-                                    .collect()
-                            })
-                        } else {
-                            cache.series.clone()
-                        };
-                        (pts, cache.x_axis_kind, true)
-                    } else {
-                        let r = chart_data::prepare_chart_data(
-                            &state.lf,
-                            &state.schema,
-                            x_column,
-                            &y_columns,
-                            row_limit,
-                        )?;
-                        (r.series, r.x_axis_kind, false)
-                    }
-                } else {
-                    let r = chart_data::prepare_chart_data(
-                        &state.lf,
-                        &state.schema,
-                        x_column,
-                        &y_columns,
-                        row_limit,
-                    )?;
-                    (r.series, r.x_axis_kind, false)
+        let job = match request {
+            ChartRequest::XY {
+                x_column,
+                y_columns,
+                ..
+            } => {
+                let Some(cache) = self.chart_cache.xy.as_ref() else {
+                    return Ok(None);
                 };
-
                 let log_scale = self.chart_modal.log_scale;
-                let series: Vec<ChartExportSeries> = series_vec
-                    .iter()
+                let points = if log_scale {
+                    cache
+                        .series_log
+                        .clone()
+                        .unwrap_or_else(|| log_series(&cache.series))
+                } else {
+                    cache.series.clone()
+                };
+                let series: Vec<ChartExportSeries> = points
+                    .into_iter()
                     .zip(y_columns.iter())
                     .filter(|(points, _)| !points.is_empty())
-                    .map(|(points, name)| {
-                        let pts = if log_scale && !from_cache {
-                            points
-                                .iter()
-                                .map(|&(x, y)| (x, y.max(0.0).ln_1p()))
-                                .collect()
-                        } else {
-                            points.clone()
-                        };
-                        ChartExportSeries {
-                            name: name.clone(),
-                            points: pts,
-                        }
+                    .map(|(points, name)| ChartExportSeries {
+                        name: name.clone(),
+                        points,
                     })
                     .collect();
-
                 if series.is_empty() {
-                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                    return Err(no_points());
                 }
 
                 let mut all_x_min = f64::INFINITY;
@@ -9011,10 +9493,9 @@ impl App {
                 }
 
                 let chart_type = self.chart_modal.chart_type;
-                let y_starts_at_zero = self.chart_modal.y_starts_at_zero;
                 let y_min_bounds = if chart_type == ChartType::Bar {
                     0.0_f64.min(all_y_min)
-                } else if y_starts_at_zero {
+                } else if self.chart_modal.y_starts_at_zero {
                     0.0
                 } else {
                     all_y_min
@@ -9024,60 +9505,36 @@ impl App {
                 } else {
                     y_min_bounds + 1.0
                 };
-                let x_min_bounds = if all_x_max > all_x_min {
-                    all_x_min
+                let (x_min_bounds, x_max_bounds) = if all_x_max > all_x_min {
+                    (all_x_min, all_x_max)
                 } else {
-                    all_x_min - 0.5
-                };
-                let x_max_bounds = if all_x_max > all_x_min {
-                    all_x_max
-                } else {
-                    all_x_min + 0.5
+                    (all_x_min - 0.5, all_x_min + 0.5)
                 };
 
-                let x_label = x_column.to_string();
-                let y_label = y_columns.join(", ");
                 let bounds = ChartExportBounds {
                     x_min: x_min_bounds,
                     x_max: x_max_bounds,
                     y_min: y_min_bounds,
                     y_max: y_max_bounds,
-                    x_label: x_label.clone(),
-                    y_label: y_label.clone(),
-                    x_axis_kind: x_axis_kind_export,
-                    log_scale: self.chart_modal.log_scale,
+                    x_label: x_column,
+                    y_label: y_columns.join(", "),
+                    x_axis_kind: cache.x_axis_kind,
+                    log_scale,
                     chart_title,
                 };
-
-                match format {
-                    ChartExportFormat::Png => {
-                        write_chart_png(path, &series, chart_type, &bounds, (width, height))
-                    }
-                    ChartExportFormat::Eps => write_chart_eps(path, &series, chart_type, &bounds),
+                ChartExportJob::Series {
+                    series,
+                    chart_type,
+                    bounds,
                 }
             }
-            ChartKind::Histogram => {
-                let column = self
-                    .chart_modal
-                    .effective_hist_column()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("No histogram column selected"))?;
-                let row_limit = self.chart_modal.effective_row_limit();
-                let data = if let Some(c) = self.chart_cache.histogram.as_ref().filter(|c| {
-                    c.column == column
-                        && c.bins == self.chart_modal.hist_bins
-                        && c.row_limit == self.chart_modal.row_limit
-                }) {
-                    c.data.clone()
-                } else {
-                    chart_data::prepare_histogram_data(
-                        &state.lf,
-                        &column,
-                        self.chart_modal.hist_bins,
-                        row_limit,
-                    )?
+            ChartRequest::Histogram { column, .. } => {
+                let Some(cache) = self.chart_cache.histogram.as_ref() else {
+                    return Ok(None);
                 };
+                let data = &cache.data;
                 if data.bins.is_empty() {
-                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                    return Err(no_points());
                 }
                 let points: Vec<(f64, f64)> =
                     data.bins.iter().map(|b| (b.center, b.count)).collect();
@@ -9100,81 +9557,45 @@ impl App {
                     x_max,
                     y_min: 0.0,
                     y_max,
-                    x_label: column.clone(),
+                    x_label: column,
                     y_label: "Count".to_string(),
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
                 };
-                match format {
-                    ChartExportFormat::Png => {
-                        write_chart_png(path, &series, ChartType::Bar, &bounds, (width, height))
-                    }
-                    ChartExportFormat::Eps => {
-                        write_chart_eps(path, &series, ChartType::Bar, &bounds)
-                    }
+                ChartExportJob::Series {
+                    series,
+                    chart_type: ChartType::Bar,
+                    bounds,
                 }
             }
-            ChartKind::BoxPlot => {
-                let column = self
-                    .chart_modal
-                    .effective_box_column()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("No box plot column selected"))?;
-                let row_limit = self.chart_modal.effective_row_limit();
-                let data = if let Some(c) = self
-                    .chart_cache
-                    .box_plot
-                    .as_ref()
-                    .filter(|c| c.column == column && c.row_limit == self.chart_modal.row_limit)
-                {
-                    c.data.clone()
-                } else {
-                    chart_data::prepare_box_plot_data(
-                        &state.lf,
-                        std::slice::from_ref(&column),
-                        row_limit,
-                    )?
+            ChartRequest::BoxPlot { column, .. } => {
+                let Some(cache) = self.chart_cache.box_plot.as_ref() else {
+                    return Ok(None);
                 };
-                if data.stats.is_empty() {
-                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                if cache.data.stats.is_empty() {
+                    return Err(no_points());
                 }
                 let bounds = BoxPlotExportBounds {
-                    y_min: data.y_min,
-                    y_max: data.y_max,
-                    x_labels: vec![column.clone()],
+                    y_min: cache.data.y_min,
+                    y_max: cache.data.y_max,
+                    x_labels: vec![column],
                     x_label: "Columns".to_string(),
                     y_label: "Value".to_string(),
                     chart_title,
                 };
-                match format {
-                    ChartExportFormat::Png => {
-                        write_box_plot_png(path, &data, &bounds, (width, height))
-                    }
-                    ChartExportFormat::Eps => write_box_plot_eps(path, &data, &bounds),
+                ChartExportJob::BoxPlot {
+                    data: cache.data.clone(),
+                    bounds,
                 }
             }
-            ChartKind::Kde => {
-                let column = self
-                    .chart_modal
-                    .effective_kde_column()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("No KDE column selected"))?;
-                let row_limit = self.chart_modal.effective_row_limit();
-                let data = if let Some(c) = self.chart_cache.kde.as_ref().filter(|c| {
-                    c.column == column
-                        && c.bandwidth_factor == self.chart_modal.kde_bandwidth_factor
-                        && c.row_limit == self.chart_modal.row_limit
-                }) {
-                    c.data.clone()
-                } else {
-                    chart_data::prepare_kde_data(
-                        &state.lf,
-                        std::slice::from_ref(&column),
-                        self.chart_modal.kde_bandwidth_factor,
-                        row_limit,
-                    )?
+            ChartRequest::Kde { column, .. } => {
+                let Some(cache) = self.chart_cache.kde.as_ref() else {
+                    return Ok(None);
                 };
+                let data = &cache.data;
                 if data.series.is_empty() {
-                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                    return Err(no_points());
                 }
                 let series: Vec<ChartExportSeries> = data
                     .series
@@ -9189,67 +9610,105 @@ impl App {
                     x_max: data.x_max,
                     y_min: 0.0,
                     y_max: data.y_max,
-                    x_label: column.clone(),
+                    x_label: column,
                     y_label: "Density".to_string(),
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
                 };
-                match format {
-                    ChartExportFormat::Png => {
-                        write_chart_png(path, &series, ChartType::Line, &bounds, (width, height))
-                    }
-                    ChartExportFormat::Eps => {
-                        write_chart_eps(path, &series, ChartType::Line, &bounds)
-                    }
+                ChartExportJob::Series {
+                    series,
+                    chart_type: ChartType::Line,
+                    bounds,
                 }
             }
-            ChartKind::Heatmap => {
-                let x_column = self
-                    .chart_modal
-                    .effective_heatmap_x_column()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("No heatmap X column selected"))?;
-                let y_column = self
-                    .chart_modal
-                    .effective_heatmap_y_column()
-                    .ok_or_else(|| color_eyre::eyre::eyre!("No heatmap Y column selected"))?;
-                let row_limit = self.chart_modal.effective_row_limit();
-                let data = if let Some(c) = self.chart_cache.heatmap.as_ref().filter(|c| {
-                    c.x_column == *x_column
-                        && c.y_column == *y_column
-                        && c.bins == self.chart_modal.heatmap_bins
-                        && c.row_limit == self.chart_modal.row_limit
-                }) {
-                    c.data.clone()
-                } else {
-                    chart_data::prepare_heatmap_data(
-                        &state.lf,
-                        &x_column,
-                        &y_column,
-                        self.chart_modal.heatmap_bins,
-                        row_limit,
-                    )?
+            ChartRequest::Heatmap {
+                x_column, y_column, ..
+            } => {
+                let Some(cache) = self.chart_cache.heatmap.as_ref() else {
+                    return Ok(None);
                 };
+                let data = &cache.data;
                 if data.counts.is_empty() || data.max_count <= 0.0 {
-                    return Err(color_eyre::eyre::eyre!("No valid data points to export"));
+                    return Err(no_points());
                 }
                 let bounds = ChartExportBounds {
                     x_min: data.x_min,
                     x_max: data.x_max,
                     y_min: data.y_min,
                     y_max: data.y_max,
-                    x_label: x_column.clone(),
-                    y_label: y_column.clone(),
+                    x_label: x_column,
+                    y_label: y_column,
                     x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
                     log_scale: false,
                     chart_title,
                 };
-                match format {
-                    ChartExportFormat::Png => {
-                        write_heatmap_png(path, &data, &bounds, (width, height))
-                    }
-                    ChartExportFormat::Eps => write_heatmap_eps(path, &data, &bounds),
+                ChartExportJob::Heatmap {
+                    data: data.clone(),
+                    bounds,
                 }
+            }
+            ChartRequest::XRange { .. } => return Ok(None),
+        };
+        Ok(Some(job))
+    }
+
+    /// Write the chart from the prepared data off-thread, or park the export until that
+    /// data is ready. `busy` was set by `ChartExport` and stays set until the export ends.
+    fn start_chart_export(
+        &mut self,
+        path: PathBuf,
+        format: ChartExportFormat,
+        title: String,
+        width: u32,
+        height: u32,
+    ) {
+        match self.build_chart_export_job(&title) {
+            Ok(Some(job)) => {
+                self.chart_export_waiting = None;
+                self.spawn_bg("Exporting chart...", move |generation, tx| {
+                    let result = job.write(&path, format, (width, height)).map_err(|e| {
+                        crate::error_display::user_message_from_report(&e, Some(&path))
+                    });
+                    let _ = tx.send(AppEvent::BackgroundChartExportWritten {
+                        generation,
+                        path,
+                        format,
+                        result,
+                    });
+                });
+            }
+            // Still being prepared; `BackgroundChartReady` comes back here.
+            Ok(None) => self.chart_export_waiting = Some((path, format, title, width, height)),
+            Err(e) => {
+                let message = crate::error_display::user_message_from_report(&e, Some(&path));
+                self.finish_chart_export(&path, format, Err(message));
+            }
+        }
+    }
+
+    fn finish_chart_export(
+        &mut self,
+        path: &Path,
+        format: ChartExportFormat,
+        result: Result<(), String>,
+    ) {
+        self.chart_export_waiting = None;
+        self.loading_state = LoadingState::Idle;
+        self.status_message = None;
+        self.busy = false;
+        self.drain_keys_on_next_loop = true;
+        match result {
+            Ok(()) => {
+                self.success_modal.show(format!(
+                    "Chart exported successfully to\n{}",
+                    path.display()
+                ));
+                self.chart_export_modal.close();
+            }
+            Err(message) => {
+                self.error_modal.show(message);
+                self.chart_export_modal.reopen_with_path(path, format);
             }
         }
     }
@@ -9801,6 +10260,8 @@ impl Widget for &mut App {
             LoadingState::Idle => {
                 if self.busy {
                     self.status_message.clone()
+                } else if self.chart_inflight.is_some() {
+                    Some("Preparing chart...".to_string())
                 } else {
                     None
                 }
@@ -9851,7 +10312,12 @@ impl Widget for &mut App {
             controls = controls.with_caption(Some(caption));
         }
 
-        controls = controls.with_busy(self.busy, self.throbber_frame);
+        // Chart preparation spins the throbber without setting `busy`, so the chart
+        // sidebar keeps taking keys while the data is computed.
+        controls = controls.with_busy(
+            self.busy || self.chart_inflight.is_some(),
+            self.throbber_frame,
+        );
         // Reflect the row-count's determinacy in the control bar:
         //  - in flight   -> spinner (still being computed)
         //  - failed       -> "?" (computation gave up; don't show a misleading partial total)
@@ -10054,6 +10520,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         // 33ms is plenty for a spinner and halves redraw load vs. 60fps.
         let spinning = app.busy
             || app.len_count_inflight.is_some()
+            || app.chart_inflight.is_some()
             || (app.input_mode == InputMode::Home
                 && (app.home.awaiting_listing().is_some() || app.home.sections_waiting()));
         let poll_ms = if spinning {

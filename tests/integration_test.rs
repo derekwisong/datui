@@ -1266,10 +1266,6 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
         !app.is_busy(),
         "abandoning should clear the load's busy flag"
     );
-    assert!(
-        app.should_drain_keys(),
-        "keys typed at the frozen screen were meant for the load"
-    );
     assert_eq!(
         app.task_generation(),
         generation_before,

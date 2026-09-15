@@ -155,6 +155,33 @@ fn typing_a_query_and_submitting_it_applies_the_query() {
     assert_eq!(state.get_active_query(), "select name where age > 40");
 }
 
+/// Keys typed while the app is busy are held and then typed, in order, into whatever
+/// they were meant for: `/hello` at a spinner opens the query bar with "hello" in it.
+/// Nothing in it acts early — the `h` does not scroll a column, the `l` neither.
+#[test]
+fn keys_typed_while_busy_replay_in_order_into_the_query_bar() {
+    let mut h = Harness::with_data();
+    h.app.busy = true;
+    for c in "/hello".chars() {
+        let out = h.app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+        assert!(out.is_none());
+    }
+    assert_eq!(
+        h.app.input_mode,
+        InputMode::Normal,
+        "nothing acts while busy"
+    );
+
+    // The work finishes without a message; whatever event ends it replays the keys.
+    h.app.busy = false;
+    h.run(AppEvent::Resize(80, 24));
+    assert_eq!(h.app.input_mode, InputMode::Editing);
+    assert_eq!(h.app.query_input.value(), "hello");
+}
+
 #[test]
 fn reopening_the_query_bar_shows_the_query_that_is_running() {
     // Reopening has to put the live query back on screen, not the blank field

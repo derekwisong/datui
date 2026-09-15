@@ -342,6 +342,18 @@ impl DataTableState {
         })
     }
 
+    /// Make `lf` the data as loaded: the root of the pipeline (`original_lf` and
+    /// `base_lf`), the frame shown, and the schema. For load-time options such as header
+    /// trimming, string parsing and dropped footer rows, which have to survive a later
+    /// filter or sort.
+    fn replace_original_lf(&mut self, lf: &LazyFrame) -> Result<()> {
+        self.original_lf = lf.clone();
+        self.base_lf = lf.clone();
+        self.schema = lf.clone().collect_schema()?;
+        self.lf = lf.clone();
+        Ok(())
+    }
+
     /// Reset LazyFrame and view state to original_lf. Schema is re-fetched so it matches
     /// after a previous query/SQL that may have changed columns. Caller should call
     /// collect() afterward if display update is needed (reset/query/fuzzy do; sql_query
@@ -2214,19 +2226,13 @@ impl DataTableState {
                     },
                 )?;
                 let mut lf = Self::trim_csv_column_names(std::mem::take(&mut state.lf))?;
-                state.original_lf = lf.clone();
-                state.schema = lf.clone().collect_schema()?;
-                state.lf = lf.clone();
+                state.replace_original_lf(&lf)?;
                 if options.parse_strings.is_some() {
                     lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                    state.original_lf = lf.clone();
-                    state.schema = lf.clone().collect_schema()?;
-                    state.lf = lf.clone();
+                    state.replace_original_lf(&lf)?;
                 }
                 lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-                state.original_lf = lf.clone();
-                state.schema = lf.clone().collect_schema()?;
-                state.lf = lf;
+                state.replace_original_lf(&lf)?;
                 state.row_numbers = options.row_numbers;
                 state.row_start_index = options.row_start_index;
                 state.decompress_temp_file = Some(temp);
@@ -2265,19 +2271,13 @@ impl DataTableState {
                 },
             )?;
             let mut lf = Self::trim_csv_column_names(std::mem::take(&mut state.lf))?;
-            state.original_lf = lf.clone();
-            state.schema = lf.clone().collect_schema()?;
-            state.lf = lf.clone();
+            state.replace_original_lf(&lf)?;
             if options.parse_strings.is_some() {
                 lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options)?;
-                state.original_lf = lf.clone();
-                state.schema = lf.clone().collect_schema()?;
-                state.lf = lf.clone();
+                state.replace_original_lf(&lf)?;
             }
             lf = Self::apply_skip_tail_rows_csv(lf, options)?;
-            state.original_lf = lf.clone();
-            state.schema = lf.clone().collect_schema()?;
-            state.lf = lf;
+            state.replace_original_lf(&lf)?;
             state.row_numbers = options.row_numbers;
             Ok(state)
         }
@@ -4268,8 +4268,10 @@ impl DataTableState {
         }
     }
 
-    /// Execute a SQL query against the current LazyFrame (registered as table "df").
-    /// Empty SQL resets to original state. Does not call collect(); the event loop does that via AppEvent::Collect.
+    /// Execute a SQL query against the data as loaded (registered as table "df"), like the
+    /// DSL and fuzzy queries: sidebar filters and sort are not baked into the result, they
+    /// go on top of it. Empty SQL resets to original state. Does not call collect(); the
+    /// event loop does that via AppEvent::Collect.
     pub fn sql_query(&mut self, sql: String) {
         self.error = None;
         let trimmed = sql.trim();
@@ -4282,7 +4284,7 @@ impl DataTableState {
         {
             use polars_sql::SQLContext;
             let mut ctx = SQLContext::new();
-            ctx.register("df", self.lf.clone());
+            ctx.register("df", self.original_lf.clone());
             match ctx.execute(trimmed) {
                 Ok(result_lf) => {
                     let schema = match result_lf.clone().collect_schema() {

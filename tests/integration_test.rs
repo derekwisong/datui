@@ -1868,3 +1868,123 @@ fn test_sidebar_filter_keeps_sql_query() {
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30);
 }
+
+/// SQL runs against the data as loaded, like the DSL and fuzzy queries: a sidebar filter
+/// that was active when the SQL ran is not baked into its result, so clearing the
+/// filters afterwards shows the SQL result over the whole table.
+#[test]
+fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("filter_then_sql.csv");
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "c",
+        FilterOperator::Eq,
+        "0",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 34);
+
+    app.event(&AppEvent::SqlSearch(
+        "SELECT * FROM df WHERE a < 30".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 30, "the SQL replaces the filter");
+    assert!(app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .get_filters()
+        .is_empty());
+
+    app.event(&AppEvent::Filter(vec![]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 30);
+}
+
+/// Opens an inline CSV with the given options and settles the load.
+fn open_csv_with(
+    name: &str,
+    contents: &str,
+    options: OpenOptions,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join(name);
+    std::fs::write(&csv_path, contents).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], options);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.is_some());
+    (app, rx, tx)
+}
+
+/// Footer rows dropped with `skip_tail_rows` stay dropped after a sidebar sort: the
+/// load-time trimming is part of the pipeline's root, not just of the first view.
+#[test]
+fn test_skip_tail_rows_survives_a_sidebar_sort() {
+    let mut csv = String::from("a,b\n");
+    for i in 0..100 {
+        csv.push_str(&format!("{i},{}\n", i * 2));
+    }
+    // Two summary rows at the end, the kind `skip_tail_rows` exists for.
+    csv.push_str("9999,-1\n9998,-2\n");
+    let options = OpenOptions {
+        skip_tail_rows: Some(2),
+        ..OpenOptions::default()
+    };
+    let (mut app, rx, tx) = open_csv_with("skip_tail_then_sort.csv", &csv, options);
+    assert_eq!(current_rows(&app), 100);
+
+    app.event(&AppEvent::Sort(vec!["b".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf
+        .clone()
+        .collect()
+        .unwrap();
+    assert_eq!(df.height(), 100, "the footer rows must not come back");
+    assert_eq!(
+        df.column("b").unwrap().get(0).unwrap(),
+        AnyValue::Int64(198)
+    );
+}
+
+/// Numbers parsed out of padded strings with `parse_strings` are still numbers when a
+/// sidebar filter compares them.
+#[test]
+fn test_parse_strings_survives_a_sidebar_filter() {
+    use datui::filter_modal::FilterOperator;
+    use datui::ParseStringsTarget;
+    let mut csv = String::from("id,amount\n");
+    for i in 0..100 {
+        csv.push_str(&format!("{i},\" {} \"\n", i * 3));
+    }
+    let options = OpenOptions {
+        parse_strings: Some(ParseStringsTarget::All),
+        ..OpenOptions::default()
+    };
+    let (mut app, rx, tx) = open_csv_with("parse_strings_then_filter.csv", &csv, options);
+    {
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.schema.get("amount").unwrap().is_integer(),
+            "parse_strings should have made amount numeric"
+        );
+    }
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "amount",
+        FilterOperator::Gt,
+        "150",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    // amount = 3 * id > 150 for id 51..100
+    assert_eq!(current_rows(&app), 49);
+}

@@ -1578,3 +1578,178 @@ fn test_escape_after_backspace_above_the_start_returns_home() {
     )));
     assert_eq!(app.home.browsing, None);
 }
+
+/// Feed background results back into the app until it is no longer busy.
+fn pump_until_idle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>) {
+    for _ in 0..500 {
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        if !app.is_busy() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("app did not settle within 5 seconds");
+}
+
+/// A 100-row table: `a` 0..100, `c` = a % 3, `name` "alpha_N" for even and "beta_N" for odd `a`.
+fn open_query_filter_fixture(
+    name: &str,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let test_data_dir = PathBuf::from("tests/sample-data");
+    std::fs::create_dir_all(&test_data_dir).unwrap();
+    let csv_path = test_data_dir.join(name);
+    let mut df = df!(
+        "a" => (0..100i64).collect::<Vec<_>>(),
+        "c" => (0..100i64).map(|i| i % 3).collect::<Vec<_>>(),
+        "name" => (0..100i64)
+            .map(|i| if i % 2 == 0 { format!("alpha_{i}") } else { format!("beta_{i}") })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let mut file = File::create(&csv_path).unwrap();
+    CsvWriter::new(&mut file).finish(&mut df).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![csv_path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.data_table_state.as_ref().unwrap().num_rows, 100);
+    (app, rx, tx)
+}
+
+fn current_rows(app: &App) -> usize {
+    let state = app.data_table_state.as_ref().unwrap();
+    state.lf.clone().collect().unwrap().height()
+}
+
+fn filter_stmt(
+    column: &str,
+    operator: datui::filter_modal::FilterOperator,
+    value: &str,
+) -> datui::filter_modal::FilterStatement {
+    datui::filter_modal::FilterStatement {
+        column: column.to_string(),
+        operator,
+        value: value.to_string(),
+        logical_op: datui::filter_modal::LogicalOperator::And,
+    }
+}
+
+/// A sidebar filter applies on top of the active DSL query rather than replacing it, and
+/// clearing the filters returns to the query result. Reset still clears everything.
+#[test]
+fn test_sidebar_filter_applies_on_top_of_query() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("query_then_filter.csv");
+
+    app.event(&AppEvent::Search("select where a < 50".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 50);
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "c",
+        FilterOperator::Eq,
+        "1",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    // a in 0..50 with a % 3 == 1: 1, 4, ..., 49
+    assert_eq!(
+        current_rows(&app),
+        17,
+        "filter must apply to the query result"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_active_query(), "select where a < 50");
+    assert_eq!(state.get_filters().len(), 1);
+
+    app.event(&AppEvent::Filter(vec![]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        current_rows(&app),
+        50,
+        "clearing filters returns to the query result"
+    );
+
+    app.event(&AppEvent::Reset);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 100);
+    assert!(app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .get_active_query()
+        .is_empty());
+}
+
+/// Same for a fuzzy search: sort and filter stack on it, and clearing them keeps it.
+#[test]
+fn test_sidebar_filter_and_sort_keep_fuzzy_query() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("fuzzy_then_filter.csv");
+
+    app.event(&AppEvent::FuzzySearch("alpha".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 50);
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "a",
+        FilterOperator::Lt,
+        "20",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 10);
+
+    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf
+        .clone()
+        .collect()
+        .unwrap();
+    assert_eq!(df.height(), 10);
+    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(18));
+
+    app.event(&AppEvent::Filter(vec![]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 50);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .get_active_fuzzy_query(),
+        "alpha"
+    );
+}
+
+/// And for SQL.
+#[test]
+fn test_sidebar_filter_keeps_sql_query() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("sql_then_filter.csv");
+
+    app.event(&AppEvent::SqlSearch(
+        "SELECT * FROM df WHERE a < 30".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 30);
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "c",
+        FilterOperator::Eq,
+        "0",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    // a in 0..30 with a % 3 == 0: 0, 3, ..., 27
+    assert_eq!(current_rows(&app), 10);
+
+    app.event(&AppEvent::Filter(vec![]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 30);
+}

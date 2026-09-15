@@ -58,6 +58,11 @@ fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
 pub struct DataTableState {
     pub lf: LazyFrame,
     original_lf: LazyFrame,
+    /// What the sidebar filters and sort are applied to: the active query's result (DSL,
+    /// SQL or fuzzy), the last pivot/melt, or `original_lf` when there is none. The
+    /// pipeline is original → query/reshape (`base_lf`) → filters → sort (`lf`) → column
+    /// order (at collect). Filters therefore never discard the query.
+    base_lf: LazyFrame,
     df: Option<DataFrame>,        // Scrollable columns dataframe
     locked_df: Option<DataFrame>, // Locked columns dataframe
     pub table_state: TableState,
@@ -89,10 +94,12 @@ pub struct DataTableState {
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
+    /// Last executed DSL query. At most one of the three `active_*` queries is set: running
+    /// one clears the other two.
     pub active_query: String,
-    /// Last executed SQL (Sql tab). Independent from active_query; only one applies to current view.
+    /// Last executed SQL (Sql tab).
     pub active_sql_query: String,
-    /// Last executed fuzzy search (Fuzzy tab). Independent from active_query/active_sql_query.
+    /// Last executed fuzzy search (Fuzzy tab).
     pub active_fuzzy_query: String,
     column_order: Vec<String>,   // Order of columns for display
     locked_columns_count: usize, // Number of locked columns (from left)
@@ -199,6 +206,7 @@ impl DataTableState {
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
         Ok(Self {
             original_lf: lf.clone(),
+            base_lf: lf.clone(),
             lf,
             df: None,
             locked_df: None,
@@ -285,6 +293,7 @@ impl DataTableState {
         };
         Ok(Self {
             original_lf: lf.clone(),
+            base_lf: lf.clone(),
             lf,
             df: None,
             locked_df: None,
@@ -340,6 +349,7 @@ impl DataTableState {
     fn reset_lf_to_original(&mut self) {
         self.invalidate_num_rows();
         self.lf = self.original_lf.clone();
+        self.base_lf = self.original_lf.clone();
         self.schema = self
             .original_lf
             .clone()
@@ -3632,6 +3642,16 @@ impl DataTableState {
         &self.active_fuzzy_query
     }
 
+    /// The frame filters and sort are applied to (see `base_lf`).
+    pub fn base_lf_clone(&self) -> LazyFrame {
+        self.base_lf.clone()
+    }
+
+    /// Restore a `base_lf` taken with `base_lf_clone`, e.g. when a template fails to apply.
+    pub fn set_base_lf(&mut self, lf: LazyFrame) {
+        self.base_lf = lf;
+    }
+
     pub fn last_pivot_spec(&self) -> Option<&PivotSpec> {
         self.last_pivot_spec.as_ref()
     }
@@ -3959,6 +3979,7 @@ impl DataTableState {
 
     fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
         self.invalidate_num_rows();
+        self.base_lf = lf.clone();
         self.lf = lf;
         self.schema = self.lf.clone().collect_schema()?;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
@@ -3989,8 +4010,9 @@ impl DataTableState {
         self.drilled_down_group_index.is_some()
     }
 
+    /// Rebuild `lf` as `base_lf` → filters → sort. Column order is applied at collect.
     fn apply_transformations(&mut self) {
-        let mut lf = self.original_lf.clone();
+        let mut lf = self.base_lf.clone();
         let mut final_expr: Option<Expr> = None;
 
         for filter in &self.filters {
@@ -4188,6 +4210,7 @@ impl DataTableState {
 
                 self.schema = schema;
                 self.invalidate_num_rows();
+                self.base_lf = lf.clone();
                 self.lf = lf;
                 self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
 
@@ -4217,6 +4240,8 @@ impl DataTableState {
                 self.start_row = 0;
                 self.termcol_index = 0;
                 self.active_query = query;
+                self.active_sql_query.clear();
+                self.active_fuzzy_query.clear();
                 self.buffered_start_row = 0;
                 self.buffered_end_row = 0;
                 self.buffered_df = None;
@@ -4269,9 +4294,12 @@ impl DataTableState {
                     };
                     self.schema = schema;
                     self.invalidate_num_rows();
+                    self.base_lf = result_lf.clone();
                     self.lf = result_lf;
                     self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
                     self.active_sql_query = sql;
+                    self.active_query.clear();
+                    self.active_fuzzy_query.clear();
                     self.locked_columns_count = 0;
                     self.filters.clear();
                     self.sort_columns.clear();
@@ -4340,7 +4368,8 @@ impl DataTableState {
             })
             .collect();
         let combined = token_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
-        self.lf = self.original_lf.clone().filter(combined);
+        self.base_lf = self.original_lf.clone().filter(combined);
+        self.lf = self.base_lf.clone();
         self.filters.clear();
         self.sort_columns.clear();
         self.active_query.clear();

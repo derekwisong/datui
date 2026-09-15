@@ -1161,6 +1161,7 @@ fn active_query_settings(
 // Helper struct to save state before template application
 struct TemplateApplicationState {
     lf: LazyFrame,
+    base_lf: LazyFrame,
     schema: Arc<Schema>,
     active_query: String,
     active_sql_query: String,
@@ -9122,6 +9123,7 @@ impl App {
             .as_ref()
             .map(|state| TemplateApplicationState {
                 lf: state.lf.clone(),
+                base_lf: state.base_lf_clone(),
                 schema: state.schema.clone(),
                 active_query: state.active_query.clone(),
                 active_sql_query: state.get_active_sql_query().to_string(),
@@ -9460,6 +9462,7 @@ impl App {
             // Restore lf and schema directly (these are public fields)
             // This preserves the exact LazyFrame state from before template application
             state.lf = saved.lf;
+            state.set_base_lf(saved.base_lf);
             state.schema = saved.schema;
             state.active_query = saved.active_query;
             state.active_sql_query = saved.active_sql_query;

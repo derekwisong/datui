@@ -7,7 +7,7 @@ use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
 use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 #[cfg(feature = "cloud")]
 use polars::prelude::{PlPathRef, ScanArgsParquet};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 /// Rows measured per background pass. Small enough that a slow filesystem shows
 /// progress rather than a long silence.
@@ -19,10 +19,6 @@ const PROBE_MEASURE_LIMIT: usize = 24;
 /// Probes allowed at once. A probe of a share that has gone away holds its thread
 /// until the process exits, so the number of them has to be bounded.
 const MAX_CONCURRENT_PROBES: usize = 4;
-
-/// Keys held while the app is busy. Beyond this the oldest is dropped, which bounds how
-/// long a held key keeps acting after the work it was waiting on has finished.
-const MAX_QUEUED_KEYS: usize = 32;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc, Mutex};
 use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
@@ -230,141 +226,6 @@ mod probe_slot_tests {
             vec![wedged],
             "a thread still stuck on a dead mount must keep costing a slot"
         );
-    }
-}
-
-#[cfg(test)]
-mod busy_key_queue_tests {
-    use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::sync::mpsc;
-
-    fn plain(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    fn queued_codes(app: &App) -> Vec<KeyCode> {
-        app.queued_keys.iter().map(|k| k.code).collect()
-    }
-
-    /// Ends the busy state the way a finished background task does.
-    fn finish_background_work(app: &mut App) {
-        let generation = app.task_generation();
-        app.event(&AppEvent::BackgroundError {
-            generation,
-            message: "done".to_string(),
-        });
-        assert!(!app.is_busy());
-    }
-
-    /// Keys typed while busy are held, in the order typed, and none of them acts until
-    /// the work finishes. (`text_input_flows` checks they then type into the right
-    /// place, in order.)
-    #[test]
-    fn keys_typed_while_busy_are_held_in_order() {
-        let (tx, rx) = mpsc::channel();
-        let mut app = App::new(tx, crate::tests::test_runtime());
-        app.busy = true;
-
-        for code in [KeyCode::Char('j'), KeyCode::Char('/'), KeyCode::Char('x')] {
-            assert!(app.event(&AppEvent::Key(plain(code))).is_none());
-        }
-        assert_eq!(
-            queued_codes(&app),
-            vec![KeyCode::Char('j'), KeyCode::Char('/'), KeyCode::Char('x')]
-        );
-        assert_eq!(app.input_mode, InputMode::Normal);
-        assert!(rx.try_recv().is_err(), "nothing is emitted while busy");
-
-        // A busy state that ends without a modal replays them all at once.
-        app.busy = false;
-        app.event(&AppEvent::Resize(80, 24));
-        assert!(app.queued_keys.is_empty());
-    }
-
-    /// Work that ends by opening a modal drops the keys typed before it: a queued Enter
-    /// must not dismiss a message the user has not yet seen.
-    #[test]
-    fn keys_queued_before_a_modal_appears_are_dropped() {
-        let (tx, _rx) = mpsc::channel();
-        let mut app = App::new(tx, crate::tests::test_runtime());
-        app.busy = true;
-        app.event(&AppEvent::Key(plain(KeyCode::Enter)));
-        app.event(&AppEvent::Key(plain(KeyCode::Esc)));
-        assert_eq!(app.queued_keys.len(), 2);
-
-        finish_background_work(&mut app);
-        assert!(app.error_modal.active, "the error is still on screen");
-        assert!(app.queued_keys.is_empty());
-    }
-
-    /// Keys typed at a frozen load were meant for that dataset; going home must not
-    /// replay them into the home screen, where they could open something else.
-    #[test]
-    fn going_home_drops_the_keys_typed_at_the_load() {
-        let (tx, _rx) = mpsc::channel();
-        let mut app = App::new(tx, crate::tests::test_runtime());
-        app.busy = true;
-        app.loading_state = LoadingState::Loading {
-            file_path: None,
-            file_size: 0,
-            current_phase: "Scanning".to_string(),
-            progress_percent: 0,
-        };
-        app.event(&AppEvent::Key(plain(KeyCode::Char('j'))));
-        app.event(&AppEvent::Key(plain(KeyCode::Enter)));
-
-        app.event(&AppEvent::Key(KeyEvent::new(
-            KeyCode::Char('o'),
-            KeyModifiers::CONTROL,
-        )));
-        assert_eq!(app.input_mode, InputMode::Home);
-        assert!(!app.is_busy());
-        assert!(app.queued_keys.is_empty());
-    }
-
-    /// A held key cannot build an unbounded backlog: only the newest keys are kept.
-    #[test]
-    fn the_queue_is_capped_and_drops_the_oldest() {
-        let (tx, _rx) = mpsc::channel();
-        let mut app = App::new(tx, crate::tests::test_runtime());
-        app.busy = true;
-
-        // Digits, because letters such as q, h and l act immediately and never queue.
-        for i in 0..(MAX_QUEUED_KEYS + 8) {
-            let c = char::from_digit((i % 10) as u32, 10).unwrap();
-            app.event(&AppEvent::Key(plain(KeyCode::Char(c))));
-        }
-        assert_eq!(app.queued_keys.len(), MAX_QUEUED_KEYS);
-        // The first eight typed were dropped, so the queue starts at the ninth key.
-        assert_eq!(
-            app.queued_keys.front().map(|k| k.code),
-            Some(KeyCode::Char('8'))
-        );
-    }
-
-    /// Only the keys that mean "get me out of here" act at once; a plain `q` or `h` is
-    /// just as likely to be part of a query being typed ahead, so it waits like the rest.
-    #[test]
-    fn only_ctrl_escape_keys_act_while_busy() {
-        let (tx, _rx) = mpsc::channel();
-        let mut app = App::new(tx, crate::tests::test_runtime());
-        app.busy = true;
-
-        for code in [KeyCode::Char('q'), KeyCode::Char('h'), KeyCode::Char('?')] {
-            assert!(app.event(&AppEvent::Key(plain(code))).is_none());
-        }
-        assert_eq!(app.queued_keys.len(), 3);
-
-        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
-        app.event(&AppEvent::Key(ctrl_o));
-        assert_eq!(app.input_mode, InputMode::Home);
-        assert!(app.queued_keys.is_empty());
-
-        app.busy = true;
-        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        let out = app.event(&AppEvent::Key(ctrl_c));
-        assert!(matches!(out, Some(AppEvent::Exit)));
     }
 }
 
@@ -2047,12 +1908,9 @@ pub struct App {
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
-    /// When true, show the throbber and hold keys in `queued_keys` instead of acting on them.
-    busy: bool,
-    /// Keys typed while `busy`, oldest first. Replayed in order once the busy state clears,
-    /// so the app never looks frozen and nothing typed is lost. Capped at `MAX_QUEUED_KEYS`.
-    queued_keys: VecDeque<KeyEvent>,
+    busy: bool,                     // When true, show throbber and ignore keys
     throbber_frame: u8,             // Spinner frame index (0..3) for control bar
+    drain_keys_on_next_loop: bool,  // Main loop drains crossterm key buffer when true
     status_message: Option<String>, // Status text shown in control bar when busy (replaces keybindings)
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
@@ -2081,6 +1939,16 @@ impl App {
     /// assert an abandoned load did not swap a dataset in after the fact.
     pub fn open_path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Returns true when the main loop should drain the crossterm key buffer after render.
+    pub fn should_drain_keys(&self) -> bool {
+        self.drain_keys_on_next_loop
+    }
+
+    /// Clears the drain-keys request after the main loop has drained the buffer.
+    pub fn clear_drain_keys_request(&mut self) {
+        self.drain_keys_on_next_loop = false;
     }
 
     pub fn send_event(&mut self, event: AppEvent) -> Result<()> {
@@ -2307,6 +2175,7 @@ impl App {
             self.busy = false;
             self.status_message = None;
         }
+        self.drain_keys_on_next_loop = true;
         None
     }
 
@@ -2507,8 +2376,8 @@ impl App {
             len_count_failed: None,
             pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
-            queued_keys: VecDeque::new(),
             throbber_frame: 0,
+            drain_keys_on_next_loop: false,
             status_message: None,
             analysis_computation: None,
             app_config,
@@ -2910,9 +2779,8 @@ impl App {
             self.busy = false;
             self.status_message = None;
         }
-        // Keys typed at the frozen screen were meant for the load, not for home:
-        // replayed there they could open a dataset nobody asked for.
-        self.queued_keys.clear();
+        // Keys typed at the frozen screen were meant for the load, not for home.
+        self.drain_keys_on_next_loop = true;
     }
 
     pub fn enter_home(&mut self) {
@@ -8148,22 +8016,9 @@ impl App {
     }
 
     pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
-        let was_busy = self.busy;
-        let modal_before = self.modal_showing();
         let out = self.dispatch_event(event);
         self.ensure_chart_data();
-        if was_busy && !self.busy && !modal_before && self.modal_showing() {
-            // The work ended by putting a message in front of the user, who has not
-            // seen it yet: keys typed before it appeared were not answers to it, and a
-            // queued Enter or Esc would dismiss it before it was ever drawn.
-            self.queued_keys.clear();
-        }
-        self.replay_queued_keys();
         out
-    }
-
-    fn modal_showing(&self) -> bool {
-        self.error_modal.active || self.success_modal.active || self.confirmation_modal.active
     }
 
     /// True while chart data for the current selection is being prepared off-thread.
@@ -8258,60 +8113,35 @@ impl App {
         });
     }
 
-    /// Hold a key typed while busy. The oldest goes when the cap is reached, so a held key
-    /// cannot build a backlog that plays out for seconds after the work finishes.
-    fn queue_key(&mut self, key: KeyEvent) {
-        if self.queued_keys.len() >= MAX_QUEUED_KEYS {
-            self.queued_keys.pop_front();
-        }
-        self.queued_keys.push_back(key);
-    }
-
-    /// Handle the keys held while busy, in the order typed and before anything that
-    /// arrived after them on the channel. Each goes through the same gate as fresh
-    /// input, so if one of them makes the app busy again the rest stay held for the
-    /// next transition; a follow-up event a key asks for goes to the channel, as it
-    /// would from the main loop.
-    ///
-    /// They act on the state at replay time, deliberately: the point of holding them is
-    /// typing ahead into the view that is about to appear, and remembering the mode each
-    /// key was meant for and dropping the ones that no longer fit would lose exactly
-    /// those. A transition that opens a modal is the one case where that goes wrong, and
-    /// `event()` drops the queue there.
-    fn replay_queued_keys(&mut self) {
-        while !self.busy {
-            let Some(key) = self.queued_keys.pop_front() else {
-                break;
-            };
-            if let Some(next) = self.dispatch_event(&AppEvent::Key(key)) {
-                let _ = self.events.send(next);
-            }
-            self.ensure_chart_data();
-        }
-    }
-
     fn dispatch_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
         self.debug.num_events += 1;
 
         match event {
             AppEvent::Key(key) => {
-                // Only the keys that mean "get me out of here" act while busy: Ctrl-C
-                // and Ctrl-Q quit and Ctrl-O goes home, from any mode, so a slow load
-                // never traps the user. A confirmation modal keeps its keys too, and the
-                // home screen is never busy in this sense. Everything else is held and
-                // replayed in order once the work is done. Classifying by keycode alone
-                // would let the `h` in a typed `/hello` scroll the table and the `q` in
-                // `/query` quit the app.
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                let acts_now = (ctrl
-                    && matches!(
-                        key.code,
-                        KeyCode::Char('c') | KeyCode::Char('q') | KeyCode::Char('o')
-                    ))
-                    || self.confirmation_modal.active
+                let is_column_scroll = matches!(
+                    key.code,
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
+                );
+                let is_help_key = key.code == KeyCode::F(1) || key.code == KeyCode::Char('?');
+                // Quit must always work, even mid-load — otherwise a slow collect leaves the user
+                // stuck with only Ctrl-C (which kills via SIGINT rather than quitting cleanly).
+                let is_quit_key = matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL));
+                // Going home must work mid-load too, or a slow dataset traps you in it
+                // and browsing stops being cheap.
+                let is_home_key = (key.code == KeyCode::Char('o')
+                    && key.modifiers.contains(KeyModifiers::CONTROL))
                     || self.input_mode == InputMode::Home;
-                if self.busy && !acts_now {
-                    self.queue_key(*key);
+                // When busy (e.g. loading), still process quit, column scroll, help,
+                // home, and confirmation modal keys.
+                if self.busy
+                    && !is_column_scroll
+                    && !is_help_key
+                    && !is_quit_key
+                    && !is_home_key
+                    && !self.confirmation_modal.active
+                {
                     return None;
                 }
                 self.key(key)
@@ -8911,6 +8741,7 @@ impl App {
                 if !self.spawn_async_collect("Loading buffer...") {
                     self.loading_state = LoadingState::Idle;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9070,6 +8901,7 @@ impl App {
                 } else {
                     self.analysis_modal.computing = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9110,6 +8942,7 @@ impl App {
                 } else {
                     self.analysis_modal.computing = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9160,6 +8993,7 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 // Stale results (generation mismatch) are silently ignored —
                 // busy stays true until the current generation's result arrives.
@@ -9196,6 +9030,7 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 // Stale message (generation mismatch) — ignore entirely.
                 None
@@ -9209,6 +9044,7 @@ impl App {
                     self.analysis_modal.computing = None;
                     self.status_message = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9221,6 +9057,7 @@ impl App {
                     self.analysis_modal.computing = None;
                     self.status_message = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9233,6 +9070,7 @@ impl App {
                     self.analysis_modal.computing = None;
                     self.status_message = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9280,6 +9118,7 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                     match result {
                         Ok(()) => {
                             self.success_modal
@@ -9304,6 +9143,7 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                     // Kept so the home screen can say why, if that is where dismissing
                     // the error lands the user.
                     self.last_load_error = Some(message.clone());
@@ -9610,6 +9450,7 @@ impl App {
                 } else {
                     self.loading_state = LoadingState::Idle;
                     self.busy = false;
+                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9621,6 +9462,7 @@ impl App {
                     }
                 }
                 self.busy = false;
+                self.drain_keys_on_next_loop = true;
                 None
             }
             _ => None,
@@ -9926,6 +9768,7 @@ impl App {
         self.loading_state = LoadingState::Idle;
         self.status_message = None;
         self.busy = false;
+        self.drain_keys_on_next_loop = true;
         match result {
             Ok(()) => {
                 self.success_modal.show(format!(
@@ -10828,6 +10671,30 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
                     state.needs_recollect = false;
                     app.spawn_async_collect("Loading buffer...");
                 }
+            }
+            if app.should_drain_keys() {
+                // Keys typed *at* a busy screen are usually accidental — a held arrow
+                // key, an impatient double-tap — so they get dropped. But the two keys
+                // that mean "get me out of here" must survive: discarding those is
+                // exactly the moment a user needs them to work.
+                let mut escape: Option<crossterm::event::KeyEvent> = None;
+                while crossterm::event::poll(std::time::Duration::from_millis(0))? {
+                    if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
+                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                        if ctrl
+                            && matches!(
+                                key.code,
+                                KeyCode::Char('c') | KeyCode::Char('q') | KeyCode::Char('o')
+                            )
+                        {
+                            escape = Some(key);
+                        }
+                    }
+                }
+                if let Some(key) = escape {
+                    tx.send(AppEvent::Key(key))?;
+                }
+                app.clear_drain_keys_request();
             }
         }
     }

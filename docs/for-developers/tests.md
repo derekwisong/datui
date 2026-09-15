@@ -1,74 +1,47 @@
-
-# Running the Tests
-
-Running the tests is done using Cargo's test command.
+# Tests
 
 ```bash
-# Run all workspace tests (root datui + datui-lib + datui-cli)
+./scripts/dev/setup-test-data.sh   # once: creates .venv and generates the fixtures
 cargo test --workspace
 ```
 
-From the repo root, `cargo test` without `--workspace` runs only the root package (the **datui** CLI). Use `cargo test --workspace` to include datui-lib and datui-cli tests (e.g. CI and full local check). The **datui-pyo3** crate is not in the workspace; to run Python binding tests, use `pytest python/tests/` after installing the package with `maturin develop` (see [Python package](../../python/README.md)).
+`cargo test` alone runs only the root package. `--workspace` adds `datui-lib`
+and `datui-cli`, which is what CI runs. The Python bindings are tested
+separately; see [Python Bindings](python-bindings.md#testing).
 
-However, the tests require sample data which are too large to add to the repo. Instead,
-the data must be generated before the tests can be run.
+## Fixtures
 
-## Generating Sample Data
+The statistics, distribution-detection and pivot/melt tests read sample files
+that are too large to commit. `scripts/dev/setup-test-data.sh` creates `.venv`,
+installs `scripts/requirements.txt` (Polars, NumPy, pyarrow, fastavro,
+openpyxl) and generates them, using [uv](https://github.com/astral-sh/uv) when
+it is installed and `python -m venv` otherwise. It is safe to re-run;
+`--force` regenerates from scratch.
 
-The quickest path, from a fresh checkout:
+The test harness looks for `.venv/bin/python` (`.venv\Scripts\python.exe` on
+Windows) and falls back to the system Python, so the environment does not need
+to be activated. If the fixtures are missing when the tests start, they run the
+generator themselves.
 
-```bash
-./scripts/dev/setup-test-data.sh
-cargo test --workspace
-```
-
-That creates `.venv`, installs `scripts/requirements.txt`, and generates the
-fixtures — the same steps CI runs. It uses [uv](https://github.com/astral-sh/uv)
-when available, otherwise `python -m venv`. Re-running is safe; `--force`
-regenerates the fixtures from scratch.
-
-Activating the virtualenv is not necessary: the test harness looks for
-`.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) before falling back to a
-system Python.
-
-Without the fixtures, the statistics, distribution-detection and pivot/melt tests
-fail. The generator requires Polars, NumPy, pyarrow, fastavro and openpyxl.
-
-The rest of this section describes the same steps done by hand.
-
-> If you used the [Setup Script](setup-script.md), the sample data has already
-> been generated. To regenerate the data, see the [instructions](tests.md#regenerating-or-updating-the-sample-data)
-
-The tests will automatically run a Python script to generate the sample files if
-they do not already exist. However, that script has some dependencies.
-
-To install the dependencies, I recommend following the
-[Python Virtual Environment Setup Instructions](contributing.md#python-virtual-environment)
-from the [Contributing](contributing.md) section.
-
-Once you have a Python virtual environment set up with the `requirements.txt` from
-the `scripts/` directory, and activated it, you're ready to run the tests for the first time.
+To regenerate by hand:
 
 ```bash
-# activate the virtual environment if sample data is not already generated
-source .venv/bin/activate
-
-# run the tests
-cargo test --workspace
+.venv/bin/python scripts/generate_sample_data.py
 ```
 
-The tests will look for the files and run the generation script if they don't already exist.
-Having the virtual environment activated before running tests for the first time ensures the
-automatic generation goes smoothly.
+The fixtures are not regenerated automatically once they exist.
 
-After the files are built you don't need to have that environment activated anymore to run tests.
+## Layout
 
-## Regenerating or Updating the Sample Data
+| Path | Tests |
+|---|---|
+| `tests/integration_test.rs` | Load, query, display, end to end |
+| `tests/statistics_test.rs`, `tests/distribution_detection_test.rs` | Analysis |
+| `tests/pivot_melt_backend_test.rs` | Reshaping |
+| `tests/template_test.rs` | Templates and their scoring |
+| `tests/home_test.rs`, `tests/search_test.rs`, `tests/locality_test.rs` | Home screen, recursive search, filesystem detection |
+| `tests/config_test.rs`, `tests/config_integration_test.rs`, `tests/theme_application_test.rs` | Configuration and themes |
+| `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
+| `tests/common/` | Shared helpers |
 
-You can run the data generation script yourself:
-```bash
-python scripts/generate_sample_data.py
-```
-
-> The data will not be automatically regenerated in the future. Use the script to regenerate
-> the data when necessary.
+Unit tests live beside the code they test.

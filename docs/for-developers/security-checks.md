@@ -21,7 +21,7 @@ tooling and never reach a datui user, but an advisory in them still reaches a
 contributor's machine, so a version floor with the advisory ids written beside
 it is the current answer.
 
-**zizmor** analyses the GitHub Actions workflow files for the patterns that let
+**zizmor** analyzes the GitHub Actions workflow files for the patterns that let
 a pull request steal a secret or poison a build: unpinned actions, over-broad
 token permissions, expressions interpolated straight into shell, and cache
 poisoning. It fails the build on a high-severity finding and reports everything

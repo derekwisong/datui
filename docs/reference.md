@@ -1,7 +1,7 @@
 # Reference
 
-This section contains information about specific topics.
-
-- Customize with [Command Line Options](reference/command-line-options.md)
-- See an overview of [Keyboard Shortcuts](reference/keyboard-shortcuts.md)
-- Learn about the Datui [Query Syntax](reference/query-syntax.md)
+| Page | What it covers |
+|---|---|
+| [Keyboard Shortcuts](reference/keyboard-shortcuts.md) | Every key, on every screen |
+| [Query Syntax](reference/query-syntax.md) | The full grammar of the query language: clauses, operators, accessors, functions |
+| [Command Line Options](reference/command-line-options.md) | Every flag, generated from the program itself |

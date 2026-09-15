@@ -1,4 +1,4 @@
-/* datui's own colours for the documentation site. The app's default palette
+/* datui's own colors for the documentation site. The app's default palette
    ("Night Market", after Tokyo Night) for the dark theme, and its light palette
    for the light one, so the docs look like the program they describe. */
 
@@ -83,6 +83,11 @@
     --blockquote-caution-color: #f52a65;
 }
 
+/* Key tables and option tables need the room. */
+:root {
+    --content-max-width: 860px;
+}
+
 /* Keys are drawn the way the control bar draws them: a flat chip. */
 kbd {
     background: var(--links);
@@ -118,6 +123,16 @@ kbd {
     border-bottom: 1px solid var(--table-border-color);
 }
 
+.content table th,
+.content table td {
+    padding: 0.35em 0.75em;
+    vertical-align: top;
+}
+
+.content table tbody tr:nth-child(2n) {
+    background: var(--table-alternate-bg);
+}
+
 /* Code blocks sit on the panel tier, one step off the page. */
 .content pre {
     background: var(--quote-bg);
@@ -125,4 +140,12 @@ kbd {
 
 .content pre > .buttons button {
     border-color: var(--quote-border);
+}
+
+/* Demo recordings: one step off the page, rounded like a terminal window. */
+.content img[src$=".gif"] {
+    display: block;
+    margin: 1.2em auto;
+    border-radius: 6px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }

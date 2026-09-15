@@ -18,7 +18,7 @@ Adding a new configuration option requires updates in 7 places:
 
 ### 1. Add Field to Config Struct
 
-Add the new field to the appropriate config struct in `src/config.rs`:
+Add the new field to the appropriate config struct in `crates/datui-lib/src/config.rs`:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,7 +59,7 @@ impl DisplayConfig {
     pub fn merge(&mut self, other: Self) {
         let default = DisplayConfig::default();
         // ... existing merge logic ...
-        
+
         // NEW: Merge font_size (Option fields)
         if other.font_size.is_some() {
             self.font_size = other.font_size;
@@ -76,7 +76,7 @@ impl DisplayConfig {
 
 The default config file is populated with comments useful to users.
 
-Add comments to the comment constant array right after the struct definition in `src/config.rs`:
+Add comments to the comment constant array right after the struct definition in `crates/datui-lib/src/config.rs`:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,7 +123,7 @@ Add tests in `tests/config_test.rs` or `tests/config_integration_test.rs`:
 fn test_font_size_config() {
     let mut config = AppConfig::default();
     config.display.font_size = Some(12);
-    
+
     assert_eq!(config.display.font_size, Some(12));
     assert!(config.validate().is_ok());
 }
@@ -135,7 +135,7 @@ Update documentation:
 - Add to `docs/user-guide/configuration.md`
 - Mention in README.md if it's a major feature
 
-**Note:** Configuration comments are defined in comment constants next to struct definitions (e.g., `DISPLAY_COMMENTS`, `PERFORMANCE_COMMENTS`) in `src/config.rs`. The config template is generated programmatically from these constants.
+**Note:** Configuration comments are defined in comment constants next to struct definitions (e.g., `DISPLAY_COMMENTS`, `PERFORMANCE_COMMENTS`) in `crates/datui-lib/src/config.rs`. The config template is generated programmatically from these constants.
 
 ## Implementation Checklist
 
@@ -218,14 +218,14 @@ Add validation in `AppConfig::validate()` for constraints:
 ```rust
 fn validate(&self) -> Result<()> {
     // ... existing validation ...
-    
+
     // Validate new field (when Option, validate only when set)
     if let Some(t) = self.performance.sampling_threshold {
         if t == 0 {
             return Err(eyre!("sampling_threshold must be greater than 0 when set"));
         }
     }
-    
+
     Ok(())
 }
 ```
@@ -279,10 +279,10 @@ impl ColorConfig {
                     .map_err(|e| eyre!("Invalid color value for '{}': {}", $name, e))?;
             };
         }
-        
+
         // ... existing validations ...
         validate_color!(&self.new_color, "new_color");  // NEW
-        
+
         Ok(())
     }
 }
@@ -295,7 +295,7 @@ impl ColorConfig {
     pub fn merge(&mut self, other: Self) {
         let default = ColorConfig::default();
         // ... existing merge logic ...
-        
+
         if other.new_color != default.new_color {  // NEW
             self.new_color = other.new_color;
         }
@@ -310,13 +310,13 @@ impl Theme {
     pub fn from_config(config: &ThemeConfig) -> Result<Self> {
         let parser = ColorParser::new();
         let mut colors = HashMap::new();
-        
+
         // ... existing color parsing ...
         colors.insert(
             "new_color".to_string(),
             parser.parse(&config.colors.new_color)?,
         );  // NEW
-        
+
         Ok(Self { colors })
     }
 }
@@ -461,7 +461,7 @@ fn validate(&self) -> Result<()> {
 
 ## Resources
 
-- See `src/config.rs` for existing implementations and comment constants (e.g., `PERFORMANCE_COMMENTS`, `DISPLAY_COMMENTS`)
+- See `crates/datui-lib/src/config.rs` for existing implementations and comment constants (e.g., `PERFORMANCE_COMMENTS`, `DISPLAY_COMMENTS`)
 - See `tests/config_test.rs` for test examples
 - Run `datui --generate-config` to see the generated config template (all fields commented out)
 

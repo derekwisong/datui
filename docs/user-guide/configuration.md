@@ -1,723 +1,343 @@
 # Configuration
 
-Datui supports extensive customization through TOML configuration files. You can customize colors, defaults, performance settings, and more.
-
-## Quick Start
-
-Generate a default configuration file:
+Datui reads one [TOML](https://toml.io) file. Generate it with every option
+present and commented out:
 
 ```bash
 datui --generate-config
 ```
 
-This creates `~/.config/datui/config.toml` with all available options and helpful comments.
+| OS | Path |
+|---|---|
+| Linux | `~/.config/datui/config.toml` |
+| macOS | `~/Library/Application Support/datui/config.toml` |
+| Windows | `%APPDATA%\datui\config.toml` |
 
-## Configuration File Location
+Settings apply in this order, later winning: built-in defaults, imported files
+in the order listed, this file, command-line flags.
 
-- **Linux**: `~/.config/datui/config.toml`
-- **macOS**: `~/.config/datui/config.toml`
-- **Windows**: `%APPDATA%\datui\config.toml`
-
-## Configuration Priority
-
-Settings are applied in this order (later values override earlier ones):
-
-1. **Default values** (hardcoded)
-2. **Imported files** (each entry of `import`, in the order listed — see below)
-3. **Config file** (`~/.config/datui/config.toml`)
-4. **Command-line arguments** (highest priority)
-
-## Importing Other Config Files
-
-The top-level `import` key names TOML files to merge in before this file's own
-settings:
+A minimal file:
 
 ```toml
-# ~/.config/datui/config.toml
-import = ["~/.local/state/omarchy/current/theme/datui.toml"]
-
 [display]
 row_numbers = true
+number_format = "thousands"
+
+[data]
+directories = ["/mnt/data", "~/datasets"]
+
+[theme.colors]
+accent = "#ff9e64"
 ```
 
-- **Order is precedence.** Imports apply in the order listed, each overriding the
-  last; this file's own values are applied after all of them.
-- **Imports nest.** An imported file may declare its own `import`, merged before
-  it. Chains are capped at 8 files; a cycle is an error.
-- **Paths** may be absolute, relative to the importing file, or use `~` and
-  `$VAR` / `${VAR}`.
-- **A missing file is skipped** with a warning on stderr — datui starts on the
-  remaining layers.
-- **A file that exists but cannot be read or parsed is fatal**, and datui names
-  it.
+## Sections
 
-To stop following an imported theme, delete the `import` line.
+### File loading
 
-See [Theming from Your System](system-theming.md) for the Omarchy template and
-per-theme overrides.
-
-### A caveat when overriding an imported color
-
-datui decides whether you set a color by comparing it against the built-in
-default, so a color set to *the same value as datui's default* looks unset and
-will not override an import.
-
-datui's default `error` is `red`. Given an import setting `error` to `#FF5345`,
-writing `error = "red"` has no effect. Use a form the default does not already
-use — `#ff0000`, or `indexed(9)`.
-
-Colors set to any other value override imports normally.
-
-## Configuration Sections
-
-### File Loading Defaults
-
-Customize how data files are loaded:
+Defaults for the CSV options; the [command-line flags](../reference/command-line-options.md)
+of the same name override them per run.
 
 ```toml
 [file_loading]
-delimiter = 44        # CSV delimiter (44 = comma). null = auto-detect
-has_header = true     # Whether files have headers. null = auto-detect
-skip_lines = 0        # Lines to skip at file start
-skip_rows = 0         # Rows to skip when reading
-parse_dates = true    # When true (default), CSV reader tries to parse string columns as dates (e.g. YYYY-MM-DD, ISO datetime)
-decompress_in_memory = false  # When true, decompress compressed CSV into memory; when false (default), decompress to a temp file so scan can be used
-temp_dir = null       # Directory for temp files when decompressing compressed CSV. null = system default (e.g. /tmp)
-infer_schema_length = 1000   # Rows to use when inferring CSV column types. Default 1000; higher reduces risk of wrong type (e.g. int then N/A)
-ignore_errors = false # When true, CSV reader skips rows that fail to parse instead of failing the load
+delimiter = 44                # ASCII code of the separator. Omit for auto-detect
+has_header = true             # Omit for auto-detect
+skip_lines = 0                # Lines to skip before the header
+skip_rows = 0                 # Rows to skip after it
+skip_tail_rows = 0            # Rows to drop at the end of the file
+null_values = ["NA", "amount="]   # Read as null: everywhere, or in one column with COL=VAL
+parse_dates = true            # Parse date-looking strings as Date / Datetime
+parse_strings = true          # Trim and type-infer string columns
+parse_strings_sample_rows = 1000  # Rows sampled for that inference
+infer_schema_length = 1000    # Rows used to infer column types
+ignore_errors = false         # Skip unparseable rows instead of failing
+decompress_in_memory = false  # Compressed CSV: decompress to a temp file (false) or into memory (true)
+temp_dir = "/tmp"             # Where that temp file goes. Omit for the system default
+single_spine_schema = true    # Hive: read the schema from one file rather than all
 ```
 
-- **delimiter** — ASCII value of the CSV column separator (e.g. 44 for comma). Omit or set to `null` to use auto-detection.
-- **has_header** — Whether the first row is a header. Omit or `null` for auto-detect; `true` or `false` to force.
-- **skip_lines** / **skip_rows** — Number of lines (or rows) to skip before reading the header and data.
-- **parse_dates** — When `true` (default), the CSV reader attempts to parse string columns that look like dates (e.g. `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`) into Polars Date or Datetime. Set to `false` to keep such columns as strings. Overridden by the `--parse-dates` CLI flag (e.g. `--parse-dates false` to disable; see [command-line options](../reference/command-line-options.md)).
-- **decompress_in_memory** — When `false` (default), compressed CSV is decompressed to a temporary file so the lazy CSV reader can scan it. When `true`, compressed data is decompressed into memory (eager load). Use `true` if you have no temp filesystem. Overridden by `--decompress-in-memory` / `--decompress-in-memory false`.
-- **temp_dir** — Directory used for temporary files when decompressing compressed CSV. Omit or set to `null` to use the system default (e.g. `/tmp` on Unix). Overridden by the `--temp-dir` CLI option.
-- **infer_schema_length** — Number of rows used to infer CSV column types (default 1000). If a column looks like integers in the first N rows but later has a non-numeric value (e.g. `N/A`), increasing this or adding that value to **null_values** avoids parse errors. Overridden by `--infer-schema-length`.
-- **ignore_errors** — When `false` (default), a CSV parse error (e.g. wrong type) fails the load. When `true`, the reader skips rows that fail to parse. Overridden by `--ignore-errors`.
-
-### Display Settings
-
-Control how data is displayed:
+### Display
 
 ```toml
 [display]
-pages_lookahead = 3   # Pages to buffer ahead (smoother scrolling)
-pages_lookback = 3    # Pages to buffer behind
-row_numbers = false   # Show row numbers on left side
-row_start_index = 1   # Starting index for row numbers (0 or 1)
-table_cell_padding = 1   # Spaces between columns in the main table (>= 0)
-align_numeric_right = true   # Right-align numeric columns and their headers
-number_format = "none"       # Digit grouping — see below
-column_colors = true         # Colour cells and headers by column type
-dtype_row = true             # Second header row naming each column's type (D toggles it)
-```
-
-**Example: Enable row numbers starting at 0**
-```toml
-[display]
-row_numbers = true
-row_start_index = 0
+row_numbers = false         # Row numbers on the left (N toggles)
+row_start_index = 1         # First row number, 0 or 1
+number_format = "none"      # Digit grouping, see below (F toggles)
+align_numeric_right = true  # Right-align numbers and their headers
+column_colors = true        # Color cells and headers by type
+dtype_row = true            # Second header row naming each type (D toggles)
+table_cell_padding = 1      # Spaces between columns
+# sidebar_width = 70        # Fixed width for every sidebar. Omit for each sidebar's own default
+pages_lookahead = 3         # Pages buffered ahead of the screen
+pages_lookback = 3          # Pages buffered behind
+max_buffered_rows = 100000  # Cap on buffered rows, 0 for none
+max_buffered_mb = 512       # Cap on buffer memory, 0 for none
+unicode = "auto"            # "auto", "always" or "never": glyphs or ASCII
 ```
 
 #### Number formatting
 
-Large integers — genomic coordinates, row counts, IDs — are hard to read as an
-unbroken run of digits. `number_format` adds digit grouping:
+`number_format` groups digits so `248956422` reads as `248,956,422`.
+<kbd>F</kbd> toggles it for the session.
 
-```toml
-[display]
-number_format = "thousands"   # 1,234,567
-```
-
-Press <kbd>F</kbd> in the data table to toggle formatting on and off at any
-time. The toggle is session-only; the config file decides the state at launch.
-With the default `"none"`, <kbd>F</kbd> turns on comma grouping.
-
-| Preset | Renders `1234567.89` as |
-|--------|-------------------------|
+| Preset | `1234567.89` becomes |
+|---|---|
 | `none` (default) | `1234567.89` |
 | `thousands` | `1,234,567.89` |
 | `european` | `1.234.567,89` |
-| `si` | `1 234 567.89` (narrow no-break space, ISO 31-0) |
+| `si` | `1 234 567.89` (narrow no-break space) |
 | `swiss` | `1'234'567.89` |
-| `indian` | `12,34,567.89` (lakh / crore) |
+| `indian` | `12,34,567.89` |
 | `underscore` | `1_234_567.89` |
+| `system` | whatever `LC_ALL` / `LC_NUMERIC` / `LANG` says, else `thousands` |
 
-For finer control, replace the shorthand with a table:
-
-```toml
-[display.number_format]
-grouping = "thousands"     # none | thousands | indian | system | any preset above
-group_separator = ","
-decimal_separator = "."
-floats = true              # group float columns too
-float_precision = 2        # omit to keep the file's own decimal rendering
-exclude_columns = ["*_id", "year"]   # never format these (globs: * and ?)
-```
-
-**Every value in a formatted column is grouped**, with no size threshold — a
-column never mixes `1000` and `248,956,422`. Uniform treatment of a column reads
-better in a table than the prose convention of leaving four-digit numbers alone.
-
-**`exclude_columns`** is how you keep a column plain. Use it for columns that
-are numeric but are not quantities — years, sample IDs, ZIP codes, accession
-numbers:
+For finer control, use a table:
 
 ```toml
 [display.number_format]
 grouping = "thousands"
-exclude_columns = ["year", "*_id", "zip"]
+group_separator = ","
+decimal_separator = "."
+floats = true                        # group float columns too
+float_precision = 2                  # omit to keep the file's own decimals
+exclude_columns = ["year", "*_id", "zip"]   # never group these (globs)
 ```
 
-##### Why formatting is not taken from your locale
+Every value in a grouped column is grouped, with no size threshold. Use
+`exclude_columns` for numbers that are labels: years, IDs, postcodes.
 
-By default datui never reads `LC_NUMERIC` or `LANG` to decide how to render
-numbers. A data file has no locale, so the same file should look the same on
-your laptop and over SSH on a cluster — and `LC_NUMERIC` is unset or `C` on much
-of the infrastructure this feature is aimed at, so detection would silently do
-nothing exactly where it was wanted. Proper locale formatting also needs
-ICU/CLDR data, which is megabytes for a tool that ships as a single binary.
+Formatting is display-only. Exports, queries, filters and templates use the raw
+values. Datui does not read your locale unless you ask with `"system"`: a data
+file has no locale, and `LC_NUMERIC` is unset on most servers.
 
-The presets above cover the same conventions explicitly. If you do want the
-environment consulted, opt in:
-
-```toml
-[display.number_format]
-grouping = "system"   # reads LC_ALL / LC_NUMERIC / LANG, falls back to "thousands"
-```
-
-##### What formatting does and does not affect
-
-Formatting is **display-only**. Exported files, query and filter expressions,
-templates, and group-by keys always use raw values — what you see grouped on
-screen is written out ungrouped.
-
-The control bar's row count and the info panel's totals are datui's own labels
-rather than your data, so they always group and ignore both this setting and
-the <kbd>F</kbd> toggle.
-
-#### Numeric alignment
-
-`align_numeric_right` (default `true`) renders integer and float columns, and
-their headers, flush right so magnitudes line up. Strings, booleans and
-temporal columns stay left-aligned. Set it to `false` for the pre-0.2.56
-appearance:
-
-```toml
-[display]
-align_numeric_right = false
-```
-
-Unlike grouping, alignment is on by default: it changes neither the characters
-of a value nor a column's width, so nothing reflows and copied text is
-identical.
-
-### Performance Settings
-
-Tune performance and responsiveness:
+### Performance
 
 ```toml
 [performance]
-# sampling_threshold = 10000   # Optional: when set, sample datasets >= this size for analysis
-event_poll_interval_ms = 25  # UI polling interval (lower = more responsive)
+# sampling_threshold = 1000000   # Analyze a sample when a table has this many rows or more
+event_poll_interval_ms = 25      # Lower is more responsive and uses more CPU
 ```
 
-- **event_poll_interval_ms** — UI event polling interval in milliseconds. Lower values feel more responsive but use more CPU.
+Sampling is off unless `sampling_threshold` is set. `--sampling-threshold N`
+overrides it for a run and `0` forces the full dataset. See
+[Analysis](analysis-features.md#sampling).
 
-#### sampling_threshold (optional)
-
-Controls whether [Analysis Mode](../user-guide/analysis-features.md) uses a sample of the data for large datasets. **Default: sampling is off** (full dataset is used).
-
-| Config / CLI | Behavior |
-|--------------|----------|
-| Omit `sampling_threshold` in config (default) | Full dataset is used. No "Resample" keybind or "(sampled)" label. |
-| `sampling_threshold = N` in config | For datasets with ≥ N rows, analysis runs on a sample (faster, less memory). **r** resamples; tool shows "(sampled)". |
-| `--sampling-threshold N` on the command line | Overrides config for that run. Use a positive N to enable sampling, or `0` to force full-dataset analysis. |
-
-Example: to sample only when a table has at least 50,000 rows, set `sampling_threshold = 50000` under `[performance]`, or run `datui --sampling-threshold 50000 …`. See [command-line options](../reference/command-line-options.md) for the CLI flag.
-
-### Chart View
-
-Default limit for how many rows are used when building chart data (display and export). You can also change this in chart view with the **Limit Rows** option.
+### Charts
 
 ```toml
 [chart]
-row_limit = 10000  # Max rows for chart data (1 to 10_000_000). Default 10000
+row_limit = 10000   # Rows used to build a chart, 1 to 10_000_000. Adjustable in the chart view
 ```
 
 ### Data
 
 ```toml
 [data]
-directories = ["/mnt/data", "~/datasets"]   # roots for the home screen
-use_desktop_recents = true                  # offer directories from the desktop's recent-files list
+directories = ["/mnt/data", "~/datasets"]   # Places the home screen always lists
+use_desktop_recents = true                  # Offer directories from the desktop's recent-files list
+
+[data.search]                               # The recursive search typing starts
+enabled           = true
+max_depth         = 8
+max_results       = 20000
+time_budget_ms    = 1500
+cross_filesystems = false
+follow_gitignore  = false
+skip_extra        = []                      # Directory names to skip, beyond the defaults
+extensions        = []                      # Empty means every format datui opens
 ```
 
-- **directories** — directories the [home screen](home-screen.md) lists datasets
-  from. `~` and `$VAR` are expanded; order is preserved. Directories you open
-  datasets from are added automatically, so this is for places you have not
-  visited yet, and for places you want listed even when empty.
-- **use_desktop_recents** — when `true` (default), directories named in
-  freedesktop's `recently-used.xbel` are offered as places to enter. Only the
-  directories are used, never the file names. Set `false` to ignore that file.
+See [The Home Screen](home-screen.md#searching-below-the-current-directory)
+for what each does.
 
-#### Searching below the working directory
-
-Typing on the home screen also searches recursively beneath it. The walk runs once, in
-the background, on the first keystroke; everything after that is filtered in memory.
+### Cloud
 
 ```toml
-[data.search]
-enabled           = true    # search below the working directory when you type
-max_depth         = 8       # how deep to descend
-max_results       = 20000   # stop after this many datasets
-time_budget_ms    = 1500    # give up and keep what was found
-cross_filesystems = false   # do not descend onto a different filesystem
-follow_gitignore  = false   # do not read .gitignore
-skip_extra        = []      # directory names to skip beyond the defaults
-extensions        = []      # empty = every format datui opens
+[cloud]
+s3_endpoint_url = "http://localhost:9000"   # MinIO, R2, Ceph and other S3-compatible stores
+s3_access_key_id = "..."
+s3_secret_access_key = "..."
+s3_region = "us-east-1"
 ```
 
-- **cross_filesystems** — off by default, and the most important setting here: it is
-  what keeps a search from wandering onto a network share, and on autofs, from
-  *mounting* one merely by looking at it.
-- **follow_gitignore** — off by default and deliberately, because people gitignore
-  data directories precisely because the data is too big to commit. See
-  [the home screen guide](home-screen.md#what-is-skipped-and-why-not-gitignore).
-- **skip** / **skip_extra** — `skip` replaces the default list
-  (`node_modules`, `target`, `build`, `dist`, `vendor`, `site-packages`,
-  `__pycache__`, `venv`, `env`); `skip_extra` adds to it. Hidden directories are
-  always skipped.
+Environment variables override these, and command-line flags override both.
+See [Loading Data](loading-data.md#remote-data).
 
-### Theme Mode (light and dark terminals)
-
-Some of datui's colors — header fills, alternating row stripes, borders, dim text —
-need to sit *near* the terminal background without matching it. No ANSI color means
-"slightly off from the background", so those slots resolve to fixed shades, and a
-set tuned for a dark terminal is unreadable on a light one.
-
-```toml
-[theme]
-mode = "auto"   # "auto" (default), "dark", or "light"
-```
-
-- **auto** — reads the `COLORFGBG` environment variable, falling back to `dark`.
-- **dark** / **light** — pick a set explicitly.
-
-Alacritty, Kitty and Ghostty do not set `COLORFGBG`. **If you use a light terminal
-color scheme in one of those, set `mode = "light"`** — otherwise the header bar and
-row striping will render as near-black blocks on your light background.
-
-`mode` only chooses the starting point; any color you set under `[theme.colors]`
-overrides it. An imported theme can also declare `mode`, which is how a generated
-light theme gets light chrome automatically — see
-[Theming from Your System](system-theming.md).
-
-### Color Themes
-
-Customize the entire UI appearance:
-
-The defaults are datui's own palette, after Tokyo Night: one cyan accent on chrome
-that sits a few shades off the terminal background. Set any slot to change it.
-
-```toml
-[theme.colors]
-accent = "#7dcfff"                  # Key chips, focused titles, the selection rail
-accent_bright = "#a4daff"           # The section the cursor is in
-gradient_start = "#7aa2f7"          # Wordmark on the home screen, first stop
-gradient_end = "#bb9af7"            # ... last stop
-keybind_hints = "#7dcfff"           # Keys in the control bar
-keybind_labels = "#a9b1d6"          # Their labels
-table_header_bg = "#2b3047"         # Header fill
-alternate_row_color = "#1e2030"     # Every other row ("default" = off)
-table_selected = "#283457"          # Tint under the current row ("reversed" = swap fg/bg)
-str_col = "#9ece6a"                 # Column colours, by type
-int_col = "#7aa2f7"
-float_col = "#2ac3de"
-bool_col = "#e0af68"
-temporal_col = "#bb9af7"
-error = "#f7768e"
-success = "#9ece6a"
-warning = "#e0af68"
-dimmed = "#565f89"
-```
-
-#### Color Formats
-
-Three color formats are supported:
-
-**1. Named Colors**
-```toml
-keybind_hints = "cyan"
-error = "bright_red"
-dimmed = "dark_gray"
-background = "default"  # Use terminal default background
-text_primary = "default"  # Use terminal default text color
-```
-
-Available names:
-- Basic: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`
-- Bright: `bright_red`, `bright_green`, `bright_blue`, etc.
-- Grays: `gray`, `dark_gray`, `light_gray`
-- Special: `reset` or `default` (uses terminal default colors - works in both light and dark themes)
-
-**2. Hex Colors**
-```toml
-background = "#1e1e1e"
-sidebar_border = "#007acc"
-controls_bg = "#2d2d2d"
-```
-
-- Format: `#rrggbb` (6 hex digits)
-- Case-insensitive: `#FF0000` or `#ff0000`
-- Automatically adapted to your terminal's capabilities
-
-**3. Indexed Colors**
-```toml
-controls_bg = "indexed(236)"  # Example: specific palette entry
-surface = "indexed(239)"
-```
-
-- Direct reference to xterm 256-color palette (0-255)
-- Respects your terminal's color scheme
-- Useful for matching specific terminal themes
-
-#### Terminal Compatibility
-
-Colors automatically adapt to your terminal:
-
-- **True color terminals** (Alacritty, kitty, iTerm2): Hex colors display exactly
-- **256-color terminals** (xterm-256color): Hex converted to nearest palette match
-- **Basic terminals** (8/16 colors): Colors map to nearest ANSI color
-- **Monochrome**: Set `NO_COLOR=1` to disable colors
-- **Light Theme Support:**
-  - The default values for `background` and `text_primary` are set to `"default"`
-  - Datui will inherit your terminal's default colors
-  - The application renders correctly in both light and dark terminal themes
-  - Be aware that setting explicit colors like `"black"` or `"white"` may result in poor visibility in certain terminal themes
-
-### Available Colors
-
-All UI colors can be customized. The defaults below are the dark set; `mode = "light"` picks a set with the same hues darkened for a light background.
-
-| Color | Purpose | Default |
-|-------|---------|---------|
-| `accent` | Key chips, focused section titles, the selection rail | #7dcfff |
-| `accent_bright` | The section the cursor is in | #a4daff |
-| `gradient_start` / `gradient_end` | The wordmark on the home screen | #7aa2f7 / #bb9af7 |
-| `keybind_hints` | Keys in the control bar and hints in modals | #7dcfff |
-| `keybind_labels` | Labels in the control bar | #a9b1d6 |
-| `throbber` | Busy indicator (spinner) in the control bar | #7dcfff |
-| `primary_chart_series_color` | Chart data (histogram bars, Q-Q plot data points) | #7dcfff |
-| `secondary_chart_series_color` | Chart theory (histogram overlays, Q-Q plot reference line) | #565f89 |
-| `chart_series_color_1` … `chart_series_color_7` | Chart view: series colors (line/scatter/bar) | #7dcfff, #bb9af7, #9ece6a, #e0af68, #7aa2f7, #f7768e, #ff9e64 |
-| `success` | Success indicators, normal distributions | #9ece6a |
-| `error` | Error messages, outliers | #f7768e |
-| `warning` | Warnings, skewed distributions | #e0af68 |
-| `dimmed` | Dimmed elements, nulls, axis lines | #565f89 |
-| `background` | Main background | default (uses terminal default) |
-| `surface` | Modal/surface backgrounds | default (uses terminal default) |
-| `controls_bg` | Control bar and count chips | #262a3f |
-| `text_primary` | Primary text | default (uses terminal default) |
-| `text_secondary` | Secondary text | #737aa2 |
-| `text_inverse` | Text inside a key chip | #1a1b26 |
-| `table_header` | Table column header text (columns take their type colour) | #c0caf5 |
-| `table_header_bg` | Table column header background | #2b3047 |
-| `alternate_row_color` | Every other row | #1e2030 |
-| `column_separator` | Rule after frozen columns, and the rules beside section titles | #3b4261 |
-| `table_selected` | Tint under the current row; `"reversed"` swaps fg and bg instead | #283457 |
-| `sidebar_border` | Sidebar and input strip borders, and their titles | #565f89 |
-| `modal_border_active` | Active modal elements | #7dcfff |
-| `modal_border_error` | Error modal borders | #f7768e |
-| `distribution_normal` | Normal distribution indicator | #9ece6a |
-| `distribution_skewed` | Skewed distribution indicator | #e0af68 |
-| `distribution_other` | Other distribution types | #c0caf5 |
-| `outlier_marker` | Outlier indicators | #f7768e |
-| `str_col`, `int_col`, `float_col`, `bool_col`, `temporal_col` | Cells and headers, by column type | #9ece6a, #7aa2f7, #2ac3de, #e0af68, #bb9af7 |
-| `binary_col` | The `‹binary›` placeholder | #565f89 |
-
-### Query System
-
-Configure query behavior:
+### Query, templates, debug
 
 ```toml
 [query]
-history_limit = 1000      # Max queries to remember
-enable_history = true     # Enable query history
-```
+history_limit = 1000     # Queries remembered
+enable_history = true
 
-### Template Settings
-
-Configure template behavior:
-
-```toml
 [templates]
-auto_apply = false  # Auto-apply most relevant template on file open
-```
+auto_apply = false       # Apply the best-matching template when a file opens
 
-### Debug Settings
-
-Configure debug overlay:
-
-```toml
 [debug]
-enabled = false             # Show debug overlay by default
-show_performance = true     # Show performance metrics
-show_query = true           # Show LazyFrame query
-show_transformations = true # Show transformation state
+enabled = false          # Debug overlay (--debug)
+show_performance = true
+show_query = true
+show_transformations = true
 ```
 
-## Example Configurations
+## Theme
 
-### Minimal Configuration
-
-Simple customization for common preferences:
+### Light and dark
 
 ```toml
-version = "0.2"
+[theme]
+mode = "auto"   # "auto" (default), "dark" or "light"
+```
+
+The header fill, row stripe, borders and dim text sit a few shades off the
+terminal background, and the shades for a dark terminal are unreadable on a
+light one. `auto` reads `COLORFGBG` and falls back to `dark`. **Alacritty,
+Kitty and Ghostty do not set `COLORFGBG`**, so with a light scheme in those
+terminals set `mode = "light"`.
+
+### Colors
+
+Every color is a slot under `[theme.colors]`. The defaults are datui's own
+palette, after Tokyo Night, in a dark set and a light set of the same hues
+darkened. Set any slot to change it.
+
+| Slot | Used for | Dark default |
+|---|---|---|
+| `accent` | Key chips, focused titles, the selection rail | `#7dcfff` |
+| `accent_bright` | The section the cursor is in | `#a4daff` |
+| `gradient_start`, `gradient_end` | The wordmark on the home screen | `#7aa2f7`, `#bb9af7` |
+| `keybind_hints`, `keybind_labels` | Keys and their labels in the control bar | `#7dcfff`, `#a9b1d6` |
+| `throbber` | The busy spinner | `#7dcfff` |
+| `background`, `surface` | Main and modal backgrounds | `default` (the terminal's) |
+| `controls_bg` | Control bar and count chips | `#262a3f` |
+| `text_primary`, `text_secondary`, `text_inverse` | Text; secondary text; text on a key chip | `default`, `#737aa2`, `#1a1b26` |
+| `table_header`, `table_header_bg` | Header text and fill | `#c0caf5`, `#2b3047` |
+| `row_numbers` | The row-number column | `#565f89` |
+| `alternate_row_color` | Every other row (`"default"` turns the stripe off) | `#1e2030` |
+| `table_selected` | Tint under the current row (`"reversed"` swaps fg and bg instead) | `#283457` |
+| `column_separator` | Rule after frozen columns, rules beside section titles | `#3b4261` |
+| `sidebar_border`, `modal_border_active`, `modal_border_error` | Borders | `#565f89`, `#7dcfff`, `#f7768e` |
+| `str_col`, `int_col`, `float_col`, `bool_col`, `temporal_col`, `binary_col` | Cells and headers by type | `#9ece6a`, `#7aa2f7`, `#2ac3de`, `#e0af68`, `#bb9af7`, `#565f89` |
+| `success`, `warning`, `error`, `dimmed` | Status colors; nulls and axes use `dimmed` | `#9ece6a`, `#e0af68`, `#f7768e`, `#565f89` |
+| `primary_chart_series_color`, `secondary_chart_series_color` | Histogram bars and Q-Q points; theoretical overlays | `#7dcfff`, `#565f89` |
+| `chart_series_color_1` to `chart_series_color_7` | Series in the chart view | `#7dcfff`, `#bb9af7`, `#9ece6a`, `#e0af68`, `#7aa2f7`, `#f7768e`, `#ff9e64` |
+| `distribution_normal`, `distribution_skewed`, `distribution_other`, `outlier_marker` | Analysis view | `#9ece6a`, `#e0af68`, `#c0caf5`, `#f7768e` |
+| `cursor_focused`, `cursor_dimmed` | The text cursor, focused and not | `default` |
+
+Three formats are accepted:
+
+```toml
+[theme.colors]
+accent = "#ff9e64"          # hex, adapted to what the terminal can show
+error = "bright_red"        # a name: black red green yellow blue magenta cyan white,
+                            # bright_*, gray dark_gray light_gray, default (the terminal's)
+controls_bg = "indexed(236)"   # an entry of the xterm 256-color palette
+```
+
+Hex colors display exactly on a true-color terminal, snap to the nearest of
+256 on `xterm-256color`, and to basic ANSI on anything less. `NO_COLOR=1`
+turns color off.
+
+A ready-made Dracula theme:
+
+```toml
+[theme.colors]
+accent = "#bd93f9"
+accent_bright = "#ff79c6"
+gradient_start = "#8be9fd"
+gradient_end = "#ff79c6"
+keybind_hints = "#bd93f9"
+keybind_labels = "#ff79c6"
+background = "#282a36"
+surface = "#44475a"
+controls_bg = "#44475a"
+text_primary = "#f8f8f2"
+text_secondary = "#6272a4"
+text_inverse = "#282a36"
+table_header = "#f8f8f2"
+table_header_bg = "#44475a"
+table_selected = "#44475a"
+alternate_row_color = "default"
+column_separator = "#bd93f9"
+str_col = "#50fa7b"
+int_col = "#8be9fd"
+float_col = "#bd93f9"
+bool_col = "#f1fa8c"
+temporal_col = "#ff79c6"
+success = "#50fa7b"
+warning = "#ffb86c"
+error = "#ff5555"
+dimmed = "#6272a4"
+chart_series_color_1 = "#8be9fd"
+chart_series_color_2 = "#ff79c6"
+chart_series_color_3 = "#50fa7b"
+chart_series_color_4 = "#f1fa8c"
+chart_series_color_5 = "#bd93f9"
+chart_series_color_6 = "#ff5555"
+chart_series_color_7 = "#ffb86c"
+```
+
+## Importing other config files
+
+`import` names TOML files to merge in before this file's own settings. It is
+how datui follows a theme generated by something else; see
+[Theming from Your System](system-theming.md).
+
+```toml
+import = ["~/.local/state/omarchy/current/theme/datui.toml"]
 
 [display]
 row_numbers = true
-row_start_index = 0
-
-[theme.colors]
-keybind_hints = "blue"
 ```
 
-### Dracula Theme
+- Imports apply in the order listed, each overriding the last; this file's own
+  values apply after all of them.
+- An imported file may itself `import`. Chains stop at 8 files; a cycle is an
+  error.
+- Paths may be absolute, relative to the importing file, or use `~` and
+  `$VAR`.
+- A missing file is skipped with a warning on stderr. A file that exists but
+  cannot be parsed is fatal.
 
-Complete Dracula color scheme using the [official palette](https://spec.draculatheme.com/) (hex colors):
+### A caveat when overriding an imported color
 
-```toml
-version = "0.2"
+Datui decides whether you set a color by comparing it with the built-in
+default, so a color set to **exactly the default value** looks unset and will
+not override an import. If an import sets `error` to `#ff5345` and you want
+red back, write `#ff0000` or `indexed(9)` rather than the default `#f7768e`.
 
-[theme.colors]
-# Keybinds and UI chrome
-keybind_hints = "#bd93f9"              # Purple
-keybind_labels = "#ff79c6"             # Pink
-throbber = "#bd93f9"                   # Purple
+## Command-line overrides
 
-# Chart colors
-primary_chart_series_color = "#bd93f9" # Purple
-secondary_chart_series_color = "#6272a4" # Comment
-chart_series_color_1 = "#8be9fd"       # Cyan
-chart_series_color_2 = "#ff79c6"       # Pink
-chart_series_color_3 = "#50fa7b"       # Green
-chart_series_color_4 = "#f1fa8c"       # Yellow
-chart_series_color_5 = "#bd93f9"       # Purple
-chart_series_color_6 = "#ff5555"       # Red
-chart_series_color_7 = "#ffb86c"       # Orange
-
-# Status
-success = "#50fa7b"                    # Green
-error = "#ff5555"                      # Red
-warning = "#ffb86c"                    # Orange
-dimmed = "#6272a4"                     # Comment
-
-# Backgrounds
-background = "#282a36"                 # Background
-surface = "#44475a"                    # Selection / current line
-controls_bg = "#44475a"                # Controls bar
-
-# Text
-text_primary = "#f8f8f2"               # Foreground
-text_secondary = "#6272a4"             # Comment
-text_inverse = "#282a36"               # Background (for inverse)
-
-# Table
-table_header = "#f8f8f2"               # Foreground
-table_header_bg = "#44475a"            # Selection
-row_numbers = "#6272a4"                # Comment
-column_separator = "#bd93f9"           # Purple
-table_selected = "reversed"
-alternate_row_color = "default"        # No stripe (or use "#3d3f4a" for subtle stripe)
-
-# Column type colors (when column_colors enabled)
-str_col = "#50fa7b"                    # Green
-int_col = "#8be9fd"                    # Cyan
-float_col = "#bd93f9"                  # Purple
-bool_col = "#f1fa8c"                  # Yellow
-temporal_col = "#ff79c6"               # Pink
-binary_col = "dark_gray"               # Binary column ‹binary› placeholder (always applied, shown italic)
-
-# Borders and modals
-sidebar_border = "#6272a4"             # Comment
-modal_border_active = "#ff79c6"        # Pink
-modal_border_error = "#ff5555"         # Red
-
-# Cursor (query input, etc.)
-cursor_focused = "#f8f8f2"             # Foreground
-cursor_dimmed = "#6272a4"              # Comment
-
-# Analysis / distributions
-distribution_normal = "#50fa7b"        # Green
-distribution_skewed = "#ffb86c"        # Orange
-distribution_other = "#f8f8f2"         # Foreground
-outlier_marker = "#ff5555"             # Red
-```
-
-### Performance Tuned
-
-Optimize for large datasets:
-
-```toml
-version = "0.2"
-
-[display]
-pages_lookahead = 5   # More buffering for smoother scrolling
-pages_lookback = 5
-
-[performance]
-sampling_threshold = 50000  # Optional: sample only datasets >= 50k rows (omit to use full data)
-event_poll_interval_ms = 16 # ~60 FPS polling (more responsive)
-```
-
-### High Contrast Theme
-
-Using named colors for maximum compatibility:
-
-```toml
-version = "0.2"
-
-[theme.colors]
-keybind_hints = "bright_cyan"
-keybind_labels = "bright_yellow"
-primary_chart_series_color = "bright_cyan"
-secondary_chart_series_color = "dark_gray"
-error = "bright_red"
-success = "bright_green"
-warning = "bright_yellow"
-dimmed = "dark_gray"
-
-background = "black"
-controls_bg = "dark_gray"
-text_primary = "bright_white"
-```
-
-## Command-Line Overrides
-
-CLI arguments always override config file settings:
+Any flag beats the file for that run:
 
 ```bash
-# Config has row_numbers = true, but disable for this run:
-datui data.csv --row-numbers=false
-
-# Override page buffering:
-datui data.csv --pages-lookahead 10
-
-# Override delimiter:
-datui data.csv --delimiter=9  # Tab character (ASCII 9)
+datui data.csv --row-numbers
+datui data.csv --number-format thousands
+datui data.csv --delimiter 9          # tab
+datui data.csv --sampling-threshold 0 # no sampling, whatever the file says
 ```
-
-## Managing Configuration
-
-### View Current Config
-
-Your config file is at `~/.config/datui/config.toml`. Edit it with any text editor:
-
-```bash
-# Linux/macOS
-nano ~/.config/datui/config.toml
-vim ~/.config/datui/config.toml
-code ~/.config/datui/config.toml
-
-# Windows
-notepad %APPDATA%\datui\config.toml
-```
-
-### Reset to Defaults
-
-Regenerate the default config file:
-
-```bash
-datui --generate-config --force
-```
-
-This overwrites your existing config with a fresh template.
-
-### Remove Configuration
-
-Simply delete the config file:
-
-```bash
-# Linux/macOS
-rm ~/.config/datui/config.toml
-
-# Windows
-del %APPDATA%\datui\config.toml
-```
-
-Datui will use default values when no config file exists.
 
 ## Troubleshooting
 
-### Config Not Loading
+**The file is ignored.** Check the path for your OS above, and that the TOML
+parses. Warnings go to stderr, which the UI hides; run
+`datui data.csv 2> /tmp/datui.log` and read the log after quitting. A `version`
+key, if present, must start with `0.2`.
 
-If your config isn't being used:
+**An import does not apply.** Confirm the file exists at the resolved path, that
+your value differs from datui's default (see the caveat above), and that nothing
+later in the chain, including a command-line flag, overrides it.
 
-1. **Check file location**: Ensure config is at `~/.config/datui/config.toml`
-2. **Check syntax**: TOML must be valid. Run `datui <file>` and check for warnings
-3. **Check version**: Config must start with `version = "0.2"`
-4. **Check validation**: Ensure values are in valid ranges (e.g., if set, `sampling_threshold > 0`)
-5. **Check imports**: If you use `import`, a missing file is reported on stderr —
-   run `datui <file> 2>/tmp/datui.log` and read the log after quitting
+**A color is rejected.** `Invalid color value for 'accent': Unknown color name`
+means a typo in a name. Names are case-insensitive; hex needs six digits;
+indexed is `indexed(0)` to `indexed(255)`.
 
-### Imported Theme Not Applying
+**Colors look wrong.** Your terminal may not support true color, so hex
+values are being approximated; try names or `indexed(...)`. If everything is
+monochrome, `NO_COLOR` is set.
 
-If an `import` does not seem to take effect:
-
-1. **Confirm the file exists** at the resolved path. A missing import is skipped
-   with a warning on stderr, which the TUI hides while it is running — redirect
-   stderr to a file to see it.
-2. **Confirm the value differs from datui's default.** A color set to the same
-   string as datui's default cannot override an import — see
-   [the caveat above](#a-caveat-when-overriding-an-imported-color).
-3. **Confirm nothing later overrides it.** Your own config file and any
-   command-line flags both win over an imported file.
-
-### Invalid Color
-
-If you see an error about invalid colors:
-
-```
-Error: Invalid color value for 'keybind_hints': Unknown color name: 'notacolor'
-```
-
-**Solutions:**
-- Use valid color names (see list above)
-- Use hex format: `#ff0000`
-- Use indexed format: `indexed(236)`
-- Check spelling and case (names are case-insensitive)
-
-### Config Parse Error
-
-If TOML parsing fails:
-
-```
-Error: Failed to parse config file: expected newline, found ...
-```
-
-**Solutions:**
-- Check TOML syntax at https://toml.io/
-- Ensure proper quotes around strings
-- Verify no typos in section names
-- Regenerate config: `datui --generate-config --force`
-
-### Colors Look Wrong
-
-If colors don't look right:
-
-1. **Check terminal capabilities**: Some terminals don't support true color
-2. **Try named colors**: More portable than hex colors
-3. **Try indexed colors**: Match your terminal's palette exactly
-4. **Check NO_COLOR**: Unset with `unset NO_COLOR` if colors are disabled
-
-### Table Headers or Toolbar Text Cut Off or Deformed (VS Code, xterm-256)
-
-On some terminals (e.g. VS Code integrated terminal, xterm-256color), **custom background colors** on headers/toolbar can cause text to render cut off or deformed. By default, `controls_bg` and `table_header_bg` use **`indexed(235)`**, which works well on most setups.
-
-If you see deformed text, set them to **`"default"`** or **`"none"`** for no custom background:
+**Header or toolbar text is cut off or garbled** in VS Code's terminal or on
+`xterm-256color`. Some terminals mishandle a background color on those rows.
+Set them to the terminal's own background:
 
 ```toml
 [theme.colors]
@@ -725,9 +345,5 @@ controls_bg = "default"
 table_header_bg = "default"
 ```
 
-
-## See Also
-
-- [Command-Line Options](../reference/command-line-options.md) - CLI flags that override config
-- [Quick Start Guide](../getting-started/quick-start.md) - Getting started with datui
-- [Keyboard Shortcuts](../reference/keyboard-shortcuts.md) - Available keybindings
+**Start over.** `datui --generate-config --force` rewrites the file with the
+defaults, or delete it and datui runs with none.

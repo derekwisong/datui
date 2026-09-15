@@ -429,6 +429,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     *collapsed,
                     selected,
                     area.width as usize,
+                    app.throbber_frame as usize,
                     ctx,
                 ));
             }
@@ -468,12 +469,14 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
 
 /// Section headers carry the collapse marker and the provenance note, so the list
 /// explains itself without a legend.
+#[allow(clippy::too_many_arguments)]
 fn section_header<'a>(
     section: &'a crate::home::Section,
     matches: usize,
     collapsed: bool,
     selected: bool,
     width: usize,
+    frame: usize,
     ctx: &RenderContext,
 ) -> Line<'a> {
     let g = glyphs::get();
@@ -484,6 +487,11 @@ fn section_header<'a>(
             .unavailable_note
             .clone()
             .unwrap_or_else(|| "unavailable".to_string())
+    } else if section.waiting {
+        match &section.subtitle {
+            Some(subtitle) => format!("listing · {subtitle}"),
+            None => "listing".to_string(),
+        }
     } else {
         section.subtitle.clone().unwrap_or_default()
     };
@@ -506,7 +514,13 @@ fn section_header<'a>(
     let marker = if collapsed { g.collapsed } else { g.expanded };
     // Shown whether folded or not: how much is in a place is worth knowing before
     // deciding to look in it, and a folded section would otherwise read as empty.
-    let chip = format!(" {matches} ");
+    // Until the listing is in, a count would be a guess, and a zero reads as empty.
+    let chip = if section.waiting {
+        let spinner = g.spinner;
+        format!(" {} ", spinner[frame % spinner.len()])
+    } else {
+        format!(" {matches} ")
+    };
     // marker, title, space, chip, space, rule, space, note, space. The title gives
     // way to the note only down to three cells; below that the note goes instead,
     // since a heading that is all note and no title says nothing.
@@ -1028,7 +1042,7 @@ mod tests {
 
     fn header_width(section: &Section, width: usize) -> usize {
         let ctx = RenderContext::for_test();
-        let line = section_header(section, 3, false, false, width, &ctx);
+        let line = section_header(section, 3, false, false, width, 0, &ctx);
         line.spans.iter().map(|s| s.content.chars().count()).sum()
     }
 
@@ -1046,6 +1060,8 @@ mod tests {
             unavailable: false,
             unavailable_note: None,
             folded_by_default: false,
+            remote_root: None,
+            waiting: false,
         };
 
         for width in [20usize, 40, 80, 120] {
@@ -1313,9 +1329,11 @@ mod tests {
             unavailable: false,
             unavailable_note: None,
             folded_by_default: false,
+            remote_root: None,
+            waiting: false,
         };
         let ctx = RenderContext::for_test();
-        let line = section_header(&section, 3, false, false, 40, &ctx);
+        let line = section_header(&section, 3, false, false, 40, 0, &ctx);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             text.contains("FOUND"),

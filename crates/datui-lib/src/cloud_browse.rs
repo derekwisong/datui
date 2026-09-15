@@ -48,20 +48,30 @@ pub struct Provider {
     pub kind: ProviderKind,
     /// Section title on the home screen.
     pub label: String,
-    /// Shown beside the title. It says which credentials were found, because "why is
-    /// this here" and "why is this not here" are the two questions a discovered list
-    /// always raises.
+    /// Which credentials were found.
     pub note: String,
     /// The GCP project whose buckets get listed. Google's API cannot enumerate buckets
     /// without one, so a GCS provider with no project can still open a URL you type but
     /// cannot offer you a list.
     pub project: Option<String>,
+    /// The AWS profile in use, when one is named.
+    pub profile: Option<String>,
     /// Set when the endpoint is not the provider's own, which is what makes this MinIO
     /// or another S3-compatible service rather than AWS.
     pub endpoint: Option<String>,
 }
 
 impl Provider {
+    /// Shown beside the section title: the account the buckets belong to, when there
+    /// is one to name. The title already says which store this is.
+    pub fn detail(&self) -> Option<String> {
+        match (&self.project, &self.profile) {
+            (Some(project), _) => Some(format!("project: {project}")),
+            (None, Some(profile)) => Some(format!("profile: {profile}")),
+            (None, None) => None,
+        }
+    }
+
     /// True when this provider can enumerate its own buckets.
     ///
     /// Being unable to is not an error and not a reason to hide it. A GCS provider
@@ -156,6 +166,7 @@ fn detect_gcs(env: &Environment<'_>) -> Option<Provider> {
         label: "Google Cloud Storage".to_string(),
         note: note.to_string(),
         project: gcp_project(env),
+        profile: None,
         endpoint: None,
     })
 }
@@ -277,6 +288,7 @@ fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
         label,
         note: note.to_string(),
         project: None,
+        profile,
         endpoint,
     })
 }
@@ -801,6 +813,18 @@ mod tests {
         assert_eq!(found[0].project.as_deref(), Some("example-project"));
         assert!(found[0].can_list_buckets());
         assert_eq!(found[0].note, "gcloud");
+        assert_eq!(
+            found[0].detail().as_deref(),
+            Some("project: example-project")
+        );
+    }
+
+    #[test]
+    fn an_aws_profile_is_the_detail_for_s3() {
+        let (vars, files, home) = env_of(&[("AWS_PROFILE", "research")], &[], Some("/home/u"));
+        let env = environment!(vars, files, home);
+        let found = detect(&CloudConfig::default(), &env);
+        assert_eq!(found[0].detail().as_deref(), Some("profile: research"));
     }
 
     #[test]

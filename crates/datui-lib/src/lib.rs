@@ -1975,19 +1975,16 @@ impl App {
             // trip, and on a slow link the alternative is a home screen with no sign
             // that anything cloud-shaped exists, followed by sections appearing under
             // the cursor a second later.
-            let heading = |provider: &crate::cloud_browse::Provider| match &provider.project {
-                Some(project) => format!("cloud · {} · {}", provider.note, project),
-                None => format!("cloud · {}", provider.note),
-            };
             if !providers.is_empty() {
                 let _ = tx.send(AppEvent::HomeCloudReady {
                     sections: providers
                         .iter()
                         .map(|provider| crate::home::CloudSection {
                             title: provider.label.clone(),
-                            subtitle: Some(format!("{} · listing buckets", heading(provider))),
+                            subtitle: provider.detail(),
                             buckets: Vec::new(),
                             error: None,
+                            listing: true,
                         })
                         .collect(),
                 });
@@ -1995,7 +1992,6 @@ impl App {
 
             let mut sections = Vec::new();
             for provider in &providers {
-                let subtitle = heading(provider);
                 let (buckets, error) = if provider.can_list_buckets() {
                     match crate::cloud_browse::list_buckets(provider, &cloud).await {
                         Ok(buckets) => (buckets, None),
@@ -2013,20 +2009,21 @@ impl App {
                 // An account with no buckets is a fine answer, and an unexplained empty
                 // section is not. This is not a warning, so it belongs in the note
                 // beside the title rather than in the failure slot.
-                let subtitle = if buckets.is_empty() && error.is_none() {
-                    format!("{subtitle} · no buckets")
-                } else {
-                    subtitle
+                let subtitle = match (provider.detail(), buckets.is_empty() && error.is_none()) {
+                    (Some(detail), true) => Some(format!("{detail} · no buckets")),
+                    (None, true) => Some("no buckets".to_string()),
+                    (detail, false) => detail,
                 };
                 let scheme = provider.kind.scheme();
                 sections.push(crate::home::CloudSection {
                     title: provider.label.clone(),
-                    subtitle: Some(subtitle),
+                    subtitle,
                     buckets: buckets
                         .into_iter()
                         .map(|b| PathBuf::from(format!("{scheme}://{b}")))
                         .collect(),
                     error,
+                    listing: false,
                 });
             }
             if !sections.is_empty() {
@@ -9916,7 +9913,8 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         // 33ms is plenty for a spinner and halves redraw load vs. 60fps.
         let spinning = app.busy
             || app.len_count_inflight.is_some()
-            || (app.input_mode == InputMode::Home && app.home.awaiting_listing().is_some());
+            || (app.input_mode == InputMode::Home
+                && (app.home.awaiting_listing().is_some() || app.home.sections_waiting()));
         let poll_ms = if spinning {
             33
         } else {

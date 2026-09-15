@@ -236,6 +236,11 @@ pub struct Section {
     /// rather than the reason you came: directories promoted from recents, and the
     /// desktop's list of where you have been.
     pub folded_by_default: bool,
+    /// The remote root whose background probe fills this section in.
+    pub remote_root: Option<PathBuf>,
+    /// The probe had not answered when this listing was built, so the rows are not in
+    /// yet. Shown, not hidden: an empty section here means "wait", not "nothing".
+    pub waiting: bool,
 }
 
 /// One provider's buckets, ready to become a section.
@@ -255,6 +260,8 @@ pub struct CloudSection {
     /// Shown in place of the list: "403, no storage.buckets.list access" is worth
     /// reading, and an empty section that does not say why is not.
     pub error: Option<String>,
+    /// The buckets are still being enumerated.
+    pub listing: bool,
 }
 
 /// What measuring a dataset yielded: rows, columns, and total size, each absent when
@@ -365,8 +372,6 @@ pub struct HomeState {
     /// How a path is judged to be network-backed. Swappable so the "never touch a
     /// remote path on this thread" rule can be tested without a remote.
     pub network_check: fn(&Path) -> bool,
-    /// Roots the current listing was built from, in order.
-    pub root_paths: Vec<PathBuf>,
     /// Network roots whose listing has come back, keyed by path.
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network roots that did not answer.
@@ -446,7 +451,6 @@ impl Default for HomeState {
             sort: SortMode::default(),
             listing_in_flight: false,
             measure_in_flight: false,
-            root_paths: Vec::new(),
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
             pending_enrich: false,
@@ -481,7 +485,6 @@ pub struct ListingRequest {
 #[derive(Debug, Clone, Default)]
 pub struct Listing {
     pub sections: Vec<Section>,
-    pub root_paths: Vec<PathBuf>,
 }
 
 /// Fold a measured probe into the record kept for a row.
@@ -532,7 +535,6 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // the entire reason it is safe to ask about a share that has stopped answering.
     let mounts = crate::locality::Mounts::current();
     let mut sections: Vec<Section> = Vec::new();
-    let mut root_paths: Vec<PathBuf> = Vec::new();
 
     // Descended into a directory: show only that.
     if let Some(dir) = browsing.clone() {
@@ -557,12 +559,12 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // A browsed remote place that did not answer: there is nothing to add.
             unavailable_note: None,
             folded_by_default: false,
+            // Its wait is drawn in place of the whole list; see `awaiting_listing`.
+            remote_root: None,
+            waiting: false,
         });
         annotate(&mut sections, known, network_check, &mounts);
-        return Listing {
-            sections,
-            root_paths,
-        };
+        return Listing { sections };
     }
 
     // Recents that still exist, most recent first.
@@ -592,6 +594,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             unavailable: false,
             unavailable_note: None,
             folded_by_default: false,
+            remote_root: None,
+            waiting: false,
         });
     }
 
@@ -599,7 +603,6 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     let mut elsewhere: Vec<Entry> = Vec::new();
 
     let roots = HomeState::roots_with(config_dirs, recents, desktop_dirs, network_check);
-    root_paths = roots.iter().map(|r| r.path.clone()).collect();
     let mut root_sections: Vec<(RootOrigin, Section)> = Vec::new();
     for root in roots {
         // A place the desktop mentioned is listed as a directory to step into,
@@ -659,9 +662,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         } else {
             "network".to_string()
         };
-        let mut subtitle = if waiting {
-            format!("{fstype} · checking · {}", root.origin.note())
-        } else if root.network {
+        let mut subtitle = if root.network {
             format!("{fstype} · {}", root.origin.note())
         } else {
             root.origin.note().to_string()
@@ -682,6 +683,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 // A directory promoted from a recent repeats what Recent already
                 // shows. It stays available, folded, one keystroke from open.
                 folded_by_default: root.origin == RootOrigin::Recent,
+                remote_root: root.network.then(|| root.path.clone()),
+                waiting,
             },
         ));
     }
@@ -725,6 +728,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             unavailable: provider.error.is_some(),
             unavailable_note: provider.error.clone(),
             folded_by_default: false,
+            remote_root: None,
+            waiting: provider.listing,
         });
     }
 
@@ -744,6 +749,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             unavailable_note: None,
             // Places to look, not datasets: folded until asked for.
             folded_by_default: true,
+            remote_root: None,
+            waiting: false,
         });
     }
 
@@ -755,10 +762,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // so nothing here can block on a filesystem that has stopped answering.
     annotate(&mut sections, known, network_check, &mounts);
 
-    Listing {
-        sections,
-        root_paths,
-    }
+    Listing { sections }
 }
 
 /// Apply a cached measurement to a row.
@@ -1117,7 +1121,6 @@ impl HomeState {
     pub fn apply_listing(&mut self, listing: Listing) {
         let previous = self.selected_entry().map(|e| e.path);
         self.sections = listing.sections;
-        self.root_paths = listing.root_paths;
         // A rebuild replaces every section, and search results outlive rebuilds —
         // they came from a walk, not from this listing. Put them back.
         self.sync_search_section();
@@ -1269,6 +1272,8 @@ impl HomeState {
             unavailable: false,
             unavailable_note: None,
             folded_by_default: false,
+            remote_root: None,
+            waiting: false,
         });
     }
 
@@ -1307,8 +1312,9 @@ impl HomeState {
 
             // A section with nothing to show is dropped, unless it is standing in for
             // a root the user named or is currently in, where its absence would be
-            // more confusing than an empty heading.
+            // more confusing than an empty heading, or its rows are still on the way.
             let keep_empty = section.unavailable
+                || section.waiting
                 || matches!(
                     section.subtitle.as_deref(),
                     Some("configured") | Some("current directory")
@@ -1391,23 +1397,15 @@ impl HomeState {
     pub fn pending_probes(&self) -> Vec<PathBuf> {
         let check = self.network_check;
         let mut out = Vec::new();
-        for section in &self.sections {
-            let Some(sub) = &section.subtitle else {
-                continue;
-            };
-            if !sub.starts_with("network") {
-                continue;
-            }
-            // The section title is a display path; recover the root it came from.
-            for root in &self.root_paths {
-                if display_path(root) == section.title
-                    && check(root)
-                    && !self.probed.contains_key(root)
-                    && !self.unreachable.contains(root)
-                    && !out.contains(root)
-                {
-                    out.push(root.clone());
-                }
+        // Read from the section, not its subtitle: a share's subtitle names its
+        // filesystem, and matching on the word "network" meant NFS roots were never
+        // listed at all.
+        for root in self.sections.iter().filter_map(|s| s.remote_root.as_ref()) {
+            if !self.probed.contains_key(root)
+                && !self.unreachable.contains(root)
+                && !out.contains(root)
+            {
+                out.push(root.clone());
             }
         }
         // Descended into a remote directory — a bucket, a prefix, a share. It is the
@@ -1432,6 +1430,11 @@ impl HomeState {
             (Some(dir), Some(start)) => dir != start && dir.starts_with(start),
             _ => false,
         }
+    }
+
+    /// Whether any section on screen is still waiting for its rows.
+    pub fn sections_waiting(&self) -> bool {
+        self.sections.iter().any(|s| s.waiting)
     }
 
     /// The remote location being browsed, while its listing has not come back.

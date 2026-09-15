@@ -1026,6 +1026,38 @@ fn test_a_remote_root_is_listed_without_being_read() {
 }
 
 #[test]
+fn test_a_share_named_by_its_filesystem_is_still_probed_and_shown() {
+    // A root on an NFS mount is subtitled "nfs4 · recent", not "network · recent".
+    // Probing used to key off that word, so such a root was never listed, and with
+    // no rows its section was hidden.
+    let root = std::path::PathBuf::from("/mnt/share/sets");
+    let mut home = HomeState::default();
+    home.apply_listing(datui::home::Listing {
+        sections: vec![datui::home::Section {
+            title: "/mnt/share/sets".into(),
+            subtitle: Some("nfs4 · recent".into()),
+            rows: Vec::new(),
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: true,
+            remote_root: Some(root.clone()),
+            waiting: true,
+        }],
+    });
+
+    assert_eq!(home.pending_probes(), vec![root.clone()]);
+    assert!(
+        home.visible()
+            .iter()
+            .any(|r| matches!(r, Row::Header { .. })),
+        "a section still being listed should be on screen, not hidden as empty"
+    );
+
+    home.probe_ready(root, Vec::new());
+    assert!(home.pending_probes().is_empty());
+}
+
+#[test]
 fn test_a_probe_result_fills_the_remote_root_in() {
     let tmp = TempDir::new().unwrap();
     let remote = tmp.path().join("PRETEND_REMOTE/data");
@@ -1658,8 +1690,9 @@ fn home_with_rows(rows: Vec<datui::discover::Entry>) -> HomeState {
             unavailable: false,
             unavailable_note: None,
             folded_by_default: false,
+            remote_root: None,
+            waiting: false,
         }],
-        root_paths: Vec::new(),
     });
     home
 }

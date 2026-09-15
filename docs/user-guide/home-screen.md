@@ -346,13 +346,14 @@ root on a network filesystem, and any `s3://`, `gs://` or `https://` path, is
 recognised from its name and the mount table alone, without being reached for.
 
 The consequence is that datui starts at the same speed whether the network is there
-or not. A remote root appears immediately, marked `network · checking`, and is
-listed in the background:
+or not. A remote root appears immediately and is listed in the background. Until
+its listing arrives, a spinner stands in for the count and the note starts with
+`listing`:
 
 ```
-▾ /mnt/data                                        network · configured
+▾ /mnt/data  1                                        nfs4 · configured
   events                         hive       1.1M × 9    120 MB    3h
-▾ s3://bucket/warehouse                         network · checking
+▾ s3://bucket/warehouse  ⣾                  listing · network · recent
 ```
 
 A remote dataset datui has measured before shows its counts and columns straight
@@ -375,10 +376,10 @@ When this machine has credentials for an object store, its buckets are listed on
 home screen and each one is somewhere to step into:
 
 ```
-▾ GOOGLE CLOUD STORAGE  2                      cloud · gcloud · example-project
+▾ GOOGLE CLOUD STORAGE  2                            project: example-project
   example-data/ bucket
   example-backups/ bucket
-▾ S3-COMPATIBLE (127.0.0.1:9000)  4                       cloud · datui config
+▾ S3-COMPATIBLE (127.0.0.1:9000)  4
   datui-sales/ bucket
 ```
 
@@ -401,7 +402,8 @@ on, which is worse than not showing them.
 **Google Cloud Storage** appears when any of these is present: `GOOGLE_SERVICE_ACCOUNT`
 or `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`,
 `GOOGLE_APPLICATION_CREDENTIALS`, or the file that
-`gcloud auth application-default login` writes. The note beside the heading says which.
+`gcloud auth application-default login` writes. The note beside the heading names
+the project whose buckets are listed.
 
 Listing buckets also needs a project, because Google's API cannot enumerate without
 one. It is taken from `DATUI_GCP_PROJECT`, `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`,
@@ -418,7 +420,7 @@ at intent breaks silently when that tool changes.
 config, `AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, a `~/.aws` directory, an ECS or Fargate
 task role (`AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` or `..._FULL_URI`), or an EKS web
 identity (`AWS_WEB_IDENTITY_TOKEN_FILE`). A region on its own is configuration rather
-than authorisation and is not enough.
+than authorisation and is not enough. When `AWS_PROFILE` is set, the note names it.
 
 An **EC2 instance role is not discovered**, and it is the one credential source with no
 local evidence: the only way to know is to ask the instance metadata service, which
@@ -460,7 +462,7 @@ of the usual note:
 ```
 
 An empty account says `no buckets`, which is an answer rather than a fault. A section
-still being enumerated says `listing buckets`.
+still being enumerated shows a spinner in place of its count.
 
 ## Finding a dataset by its columns
 

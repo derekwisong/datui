@@ -103,7 +103,11 @@ pub struct DataTableState {
     pub active_fuzzy_query: String,
     column_order: Vec<String>,   // Order of columns for display
     locked_columns_count: usize, // Number of locked columns (from left)
-    grouped_lf: Option<LazyFrame>,
+    /// The grouped view a drill-down left, restored exactly by `drill_up`.
+    grouped: Option<GroupedView>,
+    /// The last pivot/melt result, while one is in effect. SQL runs against it rather
+    /// than the data as loaded (see `query_root`).
+    reshaped_lf: Option<LazyFrame>,
     drilled_down_group_index: Option<usize>, // Index of the group we're viewing
     pub drilled_down_group_key: Option<Vec<String>>, // Key values of the drilled down group
     pub drilled_down_group_key_columns: Option<Vec<String>>, // Key column names of the drilled down group
@@ -148,6 +152,17 @@ enum ExcelColType {
     Utf8,
     Date,
     Datetime,
+}
+
+/// The grouped view and the pipeline state that produced it, saved by a drill-down so
+/// filters and sort inside the group work on the group and `drill_up` restores the
+/// grouped view as it was.
+struct GroupedView {
+    lf: LazyFrame,
+    base_lf: LazyFrame,
+    filters: Vec<FilterStatement>,
+    sort_columns: Vec<String>,
+    sort_ascending: bool,
 }
 
 /// Parameters for a background buffer load. Produced by `prepare_async_collect()`.
@@ -230,7 +245,8 @@ impl DataTableState {
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
-            grouped_lf: None,
+            grouped: None,
+            reshaped_lf: None,
             drilled_down_group_index: None,
             drilled_down_group_key: None,
             drilled_down_group_key_columns: None,
@@ -317,7 +333,8 @@ impl DataTableState {
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
-            grouped_lf: None,
+            grouped: None,
+            reshaped_lf: None,
             drilled_down_group_index: None,
             drilled_down_group_key: None,
             drilled_down_group_key_columns: None,
@@ -362,6 +379,7 @@ impl DataTableState {
         self.invalidate_num_rows();
         self.lf = self.original_lf.clone();
         self.base_lf = self.original_lf.clone();
+        self.reshaped_lf = None;
         self.schema = self
             .original_lf
             .clone()
@@ -380,7 +398,7 @@ impl DataTableState {
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
-        self.grouped_lf = None;
+        self.grouped = None;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;
@@ -3745,8 +3763,6 @@ impl DataTableState {
             return Ok(());
         }
 
-        self.grouped_lf = Some(self.lf.clone());
-
         let grouped_df = collect_lazy(self.lf.clone(), self.polars_streaming)?;
 
         if group_index >= grouped_df.height() {
@@ -3834,8 +3850,19 @@ impl DataTableState {
 
         let group_df = DataFrame::new(columns)?;
 
+        // The group becomes the pipeline root while drilled in, so a sidebar filter or
+        // sort applies within it instead of rebuilding the grouped view underneath.
+        self.grouped = Some(GroupedView {
+            lf: self.lf.clone(),
+            base_lf: self.base_lf.clone(),
+            filters: std::mem::take(&mut self.filters),
+            sort_columns: std::mem::take(&mut self.sort_columns),
+            sort_ascending: self.sort_ascending,
+        });
+        self.sort_ascending = true;
         self.invalidate_num_rows();
         self.lf = group_df.lazy();
+        self.base_lf = self.lf.clone();
         self.schema = self.lf.clone().collect_schema()?;
         self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
         self.drilled_down_group_index = Some(group_index);
@@ -3849,9 +3876,13 @@ impl DataTableState {
     }
 
     pub fn drill_up(&mut self) -> Result<()> {
-        if let Some(grouped_lf) = self.grouped_lf.take() {
+        if let Some(view) = self.grouped.take() {
             self.invalidate_num_rows();
-            self.lf = grouped_lf;
+            self.lf = view.lf;
+            self.base_lf = view.base_lf;
+            self.filters = view.filters;
+            self.sort_columns = view.sort_columns;
+            self.sort_ascending = view.sort_ascending;
             self.schema = self.lf.clone().collect_schema()?;
             self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
             self.drilled_down_group_index = None;
@@ -3979,6 +4010,7 @@ impl DataTableState {
 
     fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
         self.invalidate_num_rows();
+        self.reshaped_lf = Some(lf.clone());
         self.base_lf = lf.clone();
         self.lf = lf;
         self.schema = self.lf.clone().collect_schema()?;
@@ -3991,7 +4023,7 @@ impl DataTableState {
         self.error = None;
         self.df = None;
         self.locked_df = None;
-        self.grouped_lf = None;
+        self.grouped = None;
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
@@ -4249,7 +4281,7 @@ impl DataTableState {
                 self.drilled_down_group_index = None;
                 self.drilled_down_group_key = None;
                 self.drilled_down_group_key_columns = None;
-                self.grouped_lf = None;
+                self.grouped = None;
                 // Reset table state selection
                 self.table_state.select(Some(0));
                 // Collect will clamp start_row to valid range, but we want to ensure it's 0
@@ -4268,10 +4300,19 @@ impl DataTableState {
         }
     }
 
-    /// Execute a SQL query against the data as loaded (registered as table "df"), like the
-    /// DSL and fuzzy queries: sidebar filters and sort are not baked into the result, they
-    /// go on top of it. Empty SQL resets to original state. Does not call collect(); the
-    /// event loop does that via AppEvent::Collect.
+    /// The data a query runs against: the pivot/melt result while one is in effect,
+    /// otherwise the data as loaded. Never the sidebar filters or sort, which go on top.
+    fn query_root(&self) -> LazyFrame {
+        self.reshaped_lf
+            .clone()
+            .unwrap_or_else(|| self.original_lf.clone())
+    }
+
+    /// Execute a SQL query against `query_root` (registered as table "df"): the reshaped
+    /// data when a pivot/melt is in effect, otherwise the data as loaded. Sidebar filters
+    /// and sort are not baked into the result, they go on top of it. Empty SQL resets to
+    /// original state. Does not call collect(); the event loop does that via
+    /// AppEvent::Collect.
     pub fn sql_query(&mut self, sql: String) {
         self.error = None;
         let trimmed = sql.trim();
@@ -4284,7 +4325,7 @@ impl DataTableState {
         {
             use polars_sql::SQLContext;
             let mut ctx = SQLContext::new();
-            ctx.register("df", self.original_lf.clone());
+            ctx.register("df", self.query_root());
             match ctx.execute(trimmed) {
                 Ok(result_lf) => {
                     let schema = match result_lf.clone().collect_schema() {
@@ -4311,7 +4352,7 @@ impl DataTableState {
                     self.drilled_down_group_index = None;
                     self.drilled_down_group_key = None;
                     self.drilled_down_group_key_columns = None;
-                    self.grouped_lf = None;
+                    self.grouped = None;
                     self.buffered_start_row = 0;
                     self.buffered_end_row = 0;
                     self.buffered_df = None;
@@ -4342,8 +4383,16 @@ impl DataTableState {
             self.collect();
             return;
         }
-        let string_cols: Vec<String> = self
-            .schema
+        // The search runs over the data as loaded, so its columns come from there too,
+        // not from a DSL query's possibly renamed schema.
+        let schema = match self.original_lf.clone().collect_schema() {
+            Ok(schema) => schema,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let string_cols: Vec<String> = schema
             .iter()
             .filter(|(_, dtype)| dtype.is_string())
             .map(|(name, _)| name.to_string())
@@ -4372,6 +4421,8 @@ impl DataTableState {
         let combined = token_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
         self.base_lf = self.original_lf.clone().filter(combined);
         self.lf = self.base_lf.clone();
+        self.schema = schema;
+        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
         self.filters.clear();
         self.sort_columns.clear();
         self.active_query.clear();
@@ -4384,7 +4435,7 @@ impl DataTableState {
         self.drilled_down_group_index = None;
         self.drilled_down_group_key = None;
         self.drilled_down_group_key_columns = None;
-        self.grouped_lf = None;
+        self.grouped = None;
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;

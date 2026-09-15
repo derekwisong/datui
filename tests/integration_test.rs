@@ -2028,3 +2028,125 @@ fn test_parse_strings_survives_a_sidebar_filter() {
     // amount = 3 * id > 150 for id 51..100
     assert_eq!(current_rows(&app), 49);
 }
+
+/// SQL after a pivot sees the pivoted columns: the reshape is the root the query runs
+/// against, so `SELECT` of a pivoted column works and the reshape stays in the view.
+#[test]
+fn test_sql_after_pivot_sees_the_pivoted_columns() {
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    let mut csv = String::from("id,key,val\n");
+    for id in 0..10 {
+        csv.push_str(&format!("{id},k1,{id}\n{id},k2,{}\n", id * 10));
+    }
+    let (mut app, rx, tx) = open_csv_with("pivot_then_sql.csv", &csv, OpenOptions::default());
+
+    app.event(&AppEvent::Pivot(PivotSpec {
+        index: vec!["id".to_string()],
+        pivot_column: "key".to_string(),
+        value_column: "val".to_string(),
+        aggregation: PivotAggregation::First,
+        sort_columns: None,
+    }));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 10);
+    assert!(app.data_table_state.as_ref().unwrap().schema.contains("k1"));
+
+    app.event(&AppEvent::SqlSearch(
+        "SELECT id, k2 FROM df WHERE k1 > 4".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 5, "ids 5..9");
+    assert_eq!(df.get_column_names_str(), vec!["id", "k2"]);
+}
+
+/// While drilled into a group, a sidebar filter or sort applies within the group and
+/// leaves the drill-down in place; drilling back up restores the grouped view.
+#[test]
+fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_down_filter.csv");
+
+    app.event(&AppEvent::Search("select by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 3, "one row per group");
+
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .drill_down_into_group(0)
+        .unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+    assert_eq!(current_rows(&app), 34, "c == 0: 0, 3, ..., 99");
+
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "a",
+        FilterOperator::Lt,
+        "30",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    assert!(
+        state.is_drilled_down(),
+        "the filter must not undo the drill-down"
+    );
+    assert_eq!(current_rows(&app), 10);
+
+    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.is_drilled_down());
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 10);
+    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(27));
+
+    app.data_table_state.as_mut().unwrap().drill_up().unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.is_drilled_down());
+    assert!(
+        state.get_filters().is_empty(),
+        "the group's filter stays with the group"
+    );
+    assert_eq!(current_rows(&app), 3);
+}
+
+/// A fuzzy search after a DSL query that renamed columns works on the data as loaded
+/// and installs that schema, so a sidebar sort afterwards finds its columns.
+#[test]
+fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
+    let (mut app, rx, tx) = open_query_filter_fixture("alias_then_fuzzy.csv");
+
+    app.event(&AppEvent::Search("select a, label: name".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .schema
+            .iter_names()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        vec!["a", "label"]
+    );
+
+    app.event(&AppEvent::FuzzySearch("alpha".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    assert_eq!(current_rows(&app), 50);
+    assert!(state.schema.contains("name") && state.schema.contains("c"));
+    assert_eq!(state.headers(), vec!["a", "c", "name"]);
+
+    app.event(&AppEvent::Sort(vec!["a".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(df.height(), 50);
+    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(98));
+}

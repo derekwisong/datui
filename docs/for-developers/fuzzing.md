@@ -12,11 +12,11 @@ is the code datui wrote itself, which is where the index arithmetic lives.
 
 | Target | Surface | What it checks |
 | --- | --- | --- |
-| `parse_query` | `query::parse_query` | A tokeniser and recursive-descent parser that slices token vectors by index. Malformed input must return `Err`, never panic. |
+| `parse_query` | `query::parse_query` | A tokenizer and recursive-descent parser that slices token vectors by index. Malformed input must return `Err`, never panic. |
 | `number_format` | `numfmt::NumberFormat` | `width_*` computes a display width arithmetically, `write_*` renders into a fixed 64-byte stack buffer and returns the width it produced. The two must agree, and both must equal the characters actually appended. Table columns are sized from these numbers, so a disagreement corrupts the layout instead of failing visibly. |
 | `fuzzy_match` | `fuzzy::best_match` | Returned positions must be valid, strictly ascending character indices into the haystack, one per needle character. The home screen highlights matches by indexing with them. |
 | `glob_match` | `numfmt::Glob` | A backtracking wildcard matcher, checked for hangs and for its wildcard-free fast path agreeing with equality. |
-| `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and colour strings that get sliced by byte offset after a byte-length check. |
+| `config_parse` | `config::AppConfig`, `config::ColorParser` | Validation and merging of user TOML, and color strings that get sliced by byte offset after a byte-length check. |
 
 Three of these check an invariant rather than merely the absence of a panic. A fuzzer
 that only asks "did it crash" finds far less than one that can also ask "did it produce
@@ -32,7 +32,7 @@ the corpus:
   same number of leading minus signs, exhausted a worker thread's stack and killed the
   process. Anyone could reach it by pasting into the query bar. `parse_expr` now refuses
   to nest past `MAX_EXPR_DEPTH` and returns an ordinary error.
-- **The colour parser sliced a character in half.** It checked that a hex colour was
+- **The color parser sliced a character in half.** It checked that a hex color was
   seven *bytes* and then indexed at fixed byte offsets. `#` followed by a four-byte emoji
   and two more characters is also seven bytes, so the slice landed mid-character and
   panicked. It now requires the body to be ASCII before indexing.
@@ -71,7 +71,7 @@ Crashing inputs are uploaded as build artifacts.
 
 Each target's corpus is cached between runs, and this matters more than the ten minutes
 does. Fuzzing is cumulative: reaching a bug often takes a chain of discoveries, where one
-input gets as far as the tokeniser, a mutation of it reaches the parser, and a mutation
+input gets as far as the tokenizer, a mutation of it reaches the parser, and a mutation
 of *that* crashes. Starting from the seed corpus every night caps the search at whatever
 is reachable in one sitting, so the deep chains never form. With the corpus restored,
 each night begins where the last one left off.
@@ -95,7 +95,7 @@ again.
 
 The other three take structured input that `arbitrary` decodes from raw bytes, so a
 hand-written seed would mean nothing. Those directories hold a bounded sample of
-minimised inputs from a real run, capped at 64 files each.
+minimized inputs from a real run, capped at 64 files each.
 
 The cap is deliberate. A few minutes of fuzzing produces thousands of inputs — around 27
 MB across 6,900 files even after `cargo fuzz cmin` — and carrying that in the repository
@@ -104,7 +104,7 @@ seeds rediscovers the rest within minutes, and the Nightly workflow uploads what
 finds as an artifact.
 
 So: contribute a `regression-*` file for anything that crashed, and leave the rest to the
-fuzzer. If you do want to add coverage seeds, minimise first:
+fuzzer. If you do want to add coverage seeds, minimize first:
 
 ```bash
 ./scripts/code/fuzz.sh cmin parse_query

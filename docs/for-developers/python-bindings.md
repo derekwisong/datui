@@ -1,6 +1,6 @@
 # Python Bindings
 
-The **datui-pyo3** crate and the **datui** Python package let you open the datui TUI from Python with a Polars `LazyFrame` or `DataFrame` (e.g. `datui.view(lf)` or `datui.view(df)`). Data is passed via **binary** (from `LazyFrame.serialize()`). Use a **Polars Python version built with the same Rust Polars as this extension** (e.g. polars 1.35.x uses Rust 0.51). The crate lives at `crates/datui-pyo3` and is excluded from the Cargo workspace; it is built with **maturin** from the `python/` directory.
+The **datui-pyo3** crate and the **datui** Python package let you open the datui TUI from Python with a Polars `LazyFrame` or `DataFrame` (`datui.view(lf)` or `datui.view(df)`), or with paths. A frame is passed as the binary form of `LazyFrame.serialize()`, so the Python `polars` in use must produce a plan the crate's Rust Polars (currently 0.52) can read; keep both current. The crate lives at `crates/datui-pyo3` and is excluded from the Cargo workspace; it is built with **maturin** from the `python/` directory.
 
 ## Summary
 
@@ -89,5 +89,6 @@ If you built the datui binary (`cargo build` (from repo root)) and it’s on you
 
 ## More
 
-- User-facing install and usage: [python/README.md](../../python/README.md) in the repo.
+- User-facing usage: [Python Module](../user-guide/python-module.md), and
+  [python/README.md](https://github.com/derekwisong/datui/blob/main/python/README.md) in the repo.
 - PyPI package: `pip install datui`

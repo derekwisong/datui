@@ -1,20 +1,19 @@
-# Query Syntax Reference
+# Query Syntax
 
-This document details the syntax of the Datui query language. For examples and typical workflows, see [Querying Data](../user-guide/querying-data.md).
+The grammar of the **Query** tab of the query prompt. For a walkthrough with
+examples, see [Querying Data](../user-guide/querying-data.md).
 
 ## Structure of a query
-
-A query has the form:
 
 ```
 select [columns] [by group_columns] [where conditions]
 ```
 
-- **`select`** — Required. Starts every query. May be followed by nothing (select all columns), or a comma‑separated list of column expressions.
-- **`by`** — Optional. Grouping and aggregation. Everything after `by` up to `where` (if present) is the group specification.
-- **`where`** — Optional. Filtering. Everything after `where` is the filter expression.
+- **`select`** — Required. Starts every query. Followed by nothing (all columns) or a comma‑separated list of column expressions.
+- **`by`** — Optional. Grouping and aggregation.
+- **`where`** — Optional. Filtering.
 
-Clause order is fixed: `select` → `by` → `where`. The parser splits on the keywords `where` and `by` (respecting parentheses and brackets), so you cannot reorder or repeat clauses.
+Clause order is fixed and each clause appears at most once. The parser splits on the keywords `where` and `by`, respecting parentheses and brackets.
 
 ---
 
@@ -52,14 +51,12 @@ Inside the brackets use either a **quoted string** (`"name with spaces"`) or a s
 
 ## Right‑to‑left expression parsing
 
-Expressions are parsed **right‑to‑left**: the **leftmost** binary operator is the root, and the **right** subexpression is parsed first (so it effectively binds tighter).
+There is no operator precedence. Expressions are parsed **right‑to‑left**: the **leftmost** binary operator is the root, and everything to its right is parsed first as a unit.
 
-### What this means
+- **`a + b * c`** → **`a + (b * c)`**
+- **`a * b + c`** → **`a * (b + c)`**, not `(a * b) + c`
 
-- **`a + b * c`** → parsed as **`a + (b * c)`** (multiplication binds tighter).
-- **`a * b + c`** → parsed as **`a * (b + c)`** (`*` is leftmost; the right subexpression `b + c` is parsed as a unit).
-
-So “higher‑precedence”‑style grouping happens when you put those operations **on the right**. You can often avoid parentheses by ordering:
+Put the operation you want done first on the right, or use parentheses:
 
 ```
 select x, y: a * b + c    →  a * (b + c)

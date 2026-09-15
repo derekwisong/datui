@@ -1,144 +1,78 @@
 # Installation
 
-Once installed, have a look at the [Quick Start Guide](quick-start.md).
+Datui runs on Linux, macOS and Windows. Pick one method, then check it with
+`datui --version` and move on to the [Quick Start](quick-start.md).
 
-## ✨ Quick Install for Linux and macOS
+## Linux and macOS, one line
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 ```
 
-> Don't like piping to shell? See the alternative methods below.
+The script downloads the latest release for your platform and installs it: a
+`.deb` on Debian and Ubuntu, an `.rpm` on Fedora and RHEL, the binary elsewhere.
+It asks before using `sudo`. Prefer not to pipe to a shell? Any method below
+does the same thing.
 
-## Releases
+## Package managers
 
-Download a ready-to-use copy from the [Latest Release][latest-release] on GitHub.
+| Platform | Command |
+|---|---|
+| macOS, [Homebrew](https://github.com/derekwisong/homebrew-datui) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
+| Windows, WinGet | `winget install derekwisong.datui` |
+| Arch Linux, [AUR](https://aur.archlinux.org/packages/datui-bin) | `paru -S datui-bin` or `yay -S datui-bin` |
+| Debian, Ubuntu | See [apt repository](#apt-repository) below |
+| Fedora, RHEL | `dnf install <url of the .rpm from the latest release>` |
+| Python, [PyPI](https://pypi.org/project/datui/) | `pip install datui` |
+| Rust, [crates.io](https://crates.io/crates/datui) | `cargo install datui --locked` |
 
-> Datui runs on Linux, macOS, and Windows
+Homebrew needs `brew trust` before it will install from a third-party tap. The
+pip package installs the `datui` command and the [Python module](../user-guide/python-module.md).
 
-## Package Managers
+### Apt repository
 
-### Homebrew (macOS)
-
-Install via the [derekwisong/datui](https://github.com/derekwisong/homebrew-datui) tap:
-
-```bash
-brew tap derekwisong/datui
-brew trust derekwisong/datui
-brew install datui
-```
-
-Homebrew requires `brew trust` before it will install from a third-party tap.
-
-### Windows (WinGet)
-
-Install via [WinGet: The Windows Package Manager](https://learn.microsoft.com/en-us/windows/package-manager/):
-
-```powershell
-winget install derekwisong.datui
-```
-
-### Arch Linux (AUR)
-
-Datui is available in the [Arch User Repository](https://aur.archlinux.org/packages/datui-bin)
-as `datui-bin`. Install it with an AUR helper such as
-[paru](https://github.com/Morganamilo/paru) or [yay](https://github.com/Jguer/yay):
+Add the signing key and source once:
 
 ```bash
-paru -S datui-bin
+curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/datui-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | sudo tee /etc/apt/sources.list.d/datui.list
+sudo apt update
+sudo apt install datui
 ```
 
-or
+After that, `apt upgrade` keeps datui current.
+
+## Pre-built binaries
+
+Every release on [GitHub][latest-release] carries binaries for Linux, macOS
+(Intel and Apple silicon) and Windows, plus `.deb`, `.rpm` and Arch tarballs.
+Download, unpack, and put `datui` somewhere on your `PATH`.
 
 ```bash
-yay -S datui-bin
+# .deb
+sudo apt install ./datui_X.Y.Z-1_amd64.deb
+# .rpm
+sudo dnf install https://github.com/derekwisong/datui/releases/download/vX.Y.Z/datui-X.Y.Z-1.x86_64.rpm
 ```
 
-### Pip
+## From source
 
-Get the module from PyPI and launch Datui right from a Python console.
-
-```
-pip install datui
-```
-
-> See [Python Module](../user-guide/python-module.md).
-
-### RPM-based (Fedora, RedHat)
-
-Get the link to the `.rpm` file for the release version you want from the [Latest Release][latest-release].
-
-Use `dnf` to install that link.
-```bash
-dnf install https://github.com/derekwisong/datui/releases/download/vX.Y.Z/datui-X.Y.Z-1.x86_64.rpm
-```
-
-### Deb-based (Debian, Ubuntu)
-
-#### Install from the Datui Apt Repository
-
-Installing through the repository makes updating easy and automatic.
-
-- Install the GPG signing key and the Datui apt source. **You only need to do this once.**
-
-  ```bash
-  curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/datui-archive-keyring.gpg
-  ```
-
-  ```bash
-  echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | sudo tee /etc/apt/sources.list.d/datui.list
-  ```
-- Update the `apt` cache and install:
-
-  ```bash
-  sudo apt update
-  sudo apt install datui
-  ```
-
-#### Install from a `.deb` File
-
-Download the `.deb` file for the release version you want from the [Latest Release][latest-release].
-
-Use `apt` to install that file:
-```bash
-apt install datui-X.Y.Z-1.x86_64.deb
-```
-
-## Compiling from Source
-
-Datui is built using [Rust](https://www.rust-lang.org/), leveraging its
-[Cargo](https://doc.rust-lang.org/cargo/index.html) toolkit for compilation.
-
-To compile a release-quality executable, clone the repository and use `cargo` to build:
+Needs a [Rust toolchain](https://www.rust-lang.org/tools/install).
 
 ```bash
 git clone https://github.com/derekwisong/datui.git
 cd datui
-cargo build --release
+cargo build --release --locked
 ```
 
-If desired, before building you could check out a specific release tag
+The binary is `target/release/datui`. To build a specific release, check out
+its tag first (`git tag --list`, then `git checkout vX.Y.Z`). To install into
+`~/.cargo/bin` instead, run `cargo install --path . --locked` from the checkout.
+
+Cloud storage support (S3, GCS, HTTP) is on by default. To leave it out:
 
 ```bash
-git tag --list
-git checkout <tag from the list>
-cargo build --release
+cargo build --release --locked --no-default-features
 ```
-
-The `datui` executable can be found in the `target/release` directory.
-
-Run it directly, or copy the file to a location on your `PATH` environment variable to make it
-discoverable by your terminal.
-
-### Using `cargo install`
-
-You may use `cargo` to install Datui locally into Cargo's binary cache. (The `~/.cargo/bin`
-directory on Linux).
-
-```bash
-cargo install --path .
-```
-
-
 
 [latest-release]: https://github.com/derekwisong/datui/releases/latest

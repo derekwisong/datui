@@ -1,29 +1,43 @@
 # Performance Tips
 
-## Sampling in Analysis Mode
+Datui works on a lazy Polars plan and reads only the rows on screen, so most
+datasets are fast without any of this. When one is not:
 
-When you use Datui's [Analysis Mode](../user-guide/analysis-features.md), you can optionally have the application
-sample from your data rather than analyzing every row. Sampling improves responsiveness and keeps memory usage
-low when working with very large datasets.
+**Prefer Parquet.** It is scanned lazily, row groups are skipped, and the
+schema and row count come from the footer. JSON, Avro, Excel and ORC are read
+whole before the table appears; see [Formats](../user-guide/loading-data.md#formats).
 
-**By default, sampling is off:** analysis uses the full dataset. To enable sampling for large tables, set a
-threshold in configuration or on the command line. When enabled, datasets with at least that many rows are
-analyzed using a representative sample; the **r** key resamples and the tool shows "(sampled)".
+**Open a hive directory, not a glob.** `datui --hive /data/events/` is faster
+than `datui --hive "/data/events/**/*.parquet"`, and the schema is read from one
+file rather than all of them.
 
-- **Configuration:** In `[performance]`, set `sampling_threshold = N` (e.g. `10000`). Omit the setting or leave it unset to keep full-dataset analysis (default).
-- **CLI:** Use `--sampling-threshold N` to enable sampling for that run; this overrides the config file. Use `--sampling-threshold 0` to force full-dataset analysis for that run even if config sets a threshold.
+**Query before you pivot.** Pivot has to read every affected row to discover
+the new column names. Filter or query down first.
 
-See the [Configuration Guide: Performance Settings](../user-guide/configuration.md#performance-settings) for details.
+**Sample the analysis.** Describe, distribution fitting and the correlation
+matrix read every row by default. On a very large table:
 
-## Pivot is Eager
+```toml
+[performance]
+sampling_threshold = 1000000
+```
 
-In order to determine all column names, pivot operations materialize all affected data in memory, which may increase
-RAM usage significantly for large tables.
+or `--sampling-threshold 1000000` for one run. See
+[Analysis](../user-guide/analysis-features.md#sampling).
 
-Do as much filtering on the data as possible before pivoting to keep things manageable.
+**Cap chart rows.** Charts use at most `row_limit` rows (default 10,000), set
+in [`[chart]`](../user-guide/configuration.md#charts) or with **Limit Rows** in
+the chart view.
 
-## Prefer Directories with `--hive`
+**Leave streaming on.** `--polars-streaming` (default `true`) lets Polars
+process a collect in batches. Turn it off only to test whether it is the cause
+of a problem.
 
-Using a directory with `--hive` is faster than a glob.
+**Compressed CSV.** A `.csv.gz` is decompressed to a temporary file so it can
+still be scanned lazily. Point `--temp-dir` at a fast disk with room for the
+uncompressed file.
 
-e.g. `/path/to/partitioned/` would be faster than `/path/to/partitioned/**/*.parquet`.
+**Cloud data.** Parquet in S3 or GCS is read in place, and a partitioned prefix
+opens like a local hive directory. Other formats are downloaded whole first.
+The [home screen](../user-guide/home-screen.md#cloud-storage) lists bucket
+contents without reading any object.

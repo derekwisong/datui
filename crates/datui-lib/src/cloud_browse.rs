@@ -358,16 +358,13 @@ pub fn parse_s3_buckets(body: &str) -> Result<Vec<String>, String> {
                 if path.len() >= MAX_XML_DEPTH {
                     return Err("response nested implausibly deeply".to_string());
                 }
-                path.push(tag.local_name().as_ref().to_vec());
+                path.push(tag.local_name().as_ref().as_bytes().to_vec());
             }
             Ok(Event::End(_)) => {
                 path.pop();
             }
             Ok(Event::Text(text)) => {
-                let value = text
-                    .decode()
-                    .map_err(|e| format!("undecodable text: {e}"))?
-                    .to_string();
+                let value = text.xml10_content().into_owned();
                 match path_tail(&path) {
                     // .../Buckets/Bucket/Name
                     (Some(b"Name"), Some(b"Bucket")) if !value.is_empty() => {

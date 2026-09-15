@@ -42,10 +42,10 @@ See the [install guide][install-guide] for details and building from source.
 
 ## What it does
 
-- **Opens the file where it is.** Local paths, `s3://`, `gs://` and `https://`
-  URLs, and hive-partitioned directories. Parquet is read lazily through
-  [Polars](https://pola.rs), so a dataset larger than memory scrolls like a
-  small one.
+- **Opens the file where it is.** Local paths, `s3://` and `gs://` URLs, and
+  hive-partitioned directories; HTTP URLs are fetched first. Parquet is read
+  lazily through [Polars](https://pola.rs), one row group at a time, so a
+  dataset larger than memory scrolls like a small one.
 - **Shows you what is around you.** Run `datui` with no arguments for the
   [home screen][home-screen]: recent datasets, the current directory, your
   data directories, and the buckets your credentials can reach. Each row shows

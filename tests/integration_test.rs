@@ -303,6 +303,45 @@ fn test_chart_data_is_prepared_in_the_background() {
     assert!(!app.chart_preparing());
 }
 
+/// Holding a key through the options must not fan out into a collect per step: one
+/// preparation runs at a time, and when it lands the newest selection is the one prepared.
+#[test]
+fn test_chart_prepares_one_selection_at_a_time() {
+    use datui::chart_modal::ChartKind;
+    let (mut app, rx, tx) = open_chart_view("chart_one_at_a_time_test.csv");
+    app.chart_modal.chart_kind = ChartKind::Histogram;
+    app.chart_modal.hist_column = Some("x".to_string());
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(app.chart_preparing());
+
+    // Five more distinct requests while the first is still out.
+    for _ in 0..5 {
+        app.chart_modal.hist_bins += 1;
+        app.event(&AppEvent::Resize(80, 24));
+    }
+
+    let mut results = 0;
+    for _ in 0..500 {
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, AppEvent::BackgroundChartReady { .. }) {
+                results += 1;
+            }
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        if app.chart_data_ready() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.chart_data_ready());
+    assert_eq!(
+        results, 2,
+        "the first request, then the newest; the four in between were never spawned"
+    );
+}
+
 /// A chart export uses the prepared data and writes the file off-thread; if the data is
 /// not ready yet the export waits for it rather than collecting on the UI thread.
 #[test]

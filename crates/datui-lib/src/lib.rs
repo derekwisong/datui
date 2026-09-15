@@ -355,16 +355,24 @@ mod chart_prepare_tests {
         })
     }
 
-    /// The selection moved from `a` to `b` while `a` was computing: `a`'s result lands
-    /// first and must be dropped, and `b`'s result is the one that is installed.
+    fn inflight(generation: u64, request: &ChartRequest) -> ChartInflight {
+        ChartInflight {
+            generation,
+            dataset: None,
+            request: request.clone(),
+        }
+    }
+
+    /// A result whose generation is not the one recorded as in flight (the chart view
+    /// was reset in between) is dropped, and the one that matches is installed.
     #[test]
-    fn a_result_for_a_superseded_selection_is_dropped() {
+    fn a_result_from_a_superseded_generation_is_dropped() {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let old = histogram_request("a");
         let new = histogram_request("b");
         app.chart_generation = 2;
-        app.chart_inflight = Some((2, new.clone()));
+        app.chart_inflight = Some(inflight(2, &new));
 
         *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
         app.event(&AppEvent::BackgroundChartReady { generation: 1 });
@@ -373,7 +381,7 @@ mod chart_prepare_tests {
             "stale result must not land"
         );
         assert_eq!(
-            app.chart_inflight.as_ref().map(|(g, _)| *g),
+            app.chart_inflight.as_ref().map(|i| i.generation),
             Some(2),
             "still waiting for the newest request"
         );
@@ -384,6 +392,56 @@ mod chart_prepare_tests {
         assert!(app.chart_inflight.is_none());
     }
 
+    /// A result computed against a dataset that is no longer the one open is dropped
+    /// even when its generation matches.
+    #[test]
+    fn a_result_for_another_dataset_is_dropped() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let request = histogram_request("a");
+        app.chart_generation = 1;
+        app.chart_inflight = Some(ChartInflight {
+            dataset: Some(12345),
+            ..inflight(1, &request)
+        });
+
+        *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
+        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        assert!(!app.chart_cache.satisfies(&request));
+        assert!(app.chart_inflight.is_none());
+    }
+
+    /// Leaving the dataset drops the chart state with it: nothing keeps spinning on the
+    /// home screen, a late result has nothing to match, and an export parked on data
+    /// that will never come stops holding the app busy.
+    #[test]
+    fn leaving_the_dataset_resets_chart_state() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let request = histogram_request("a");
+        app.chart_generation = 1;
+        app.chart_inflight = Some(inflight(1, &request));
+        *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
+        app.chart_export_waiting = Some((
+            PathBuf::from("/tmp/x.png"),
+            ChartExportFormat::Png,
+            String::new(),
+            1,
+            1,
+        ));
+        app.busy = true;
+
+        app.abandon_load();
+        assert!(app.chart_inflight.is_none());
+        assert!(app.pending_chart_result.lock().unwrap().is_none());
+        assert!(app.chart_export_waiting.is_none());
+        assert!(!app.is_busy());
+        assert!(app.chart_generation > 1, "a later result cannot match");
+
+        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        assert!(!app.chart_cache.satisfies(&request));
+    }
+
     /// A selection that cannot be charted is remembered as failed rather than retried
     /// after every event, which would spin the throbber forever.
     #[test]
@@ -392,7 +450,7 @@ mod chart_prepare_tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         let request = histogram_request("a");
         app.chart_generation = 1;
-        app.chart_inflight = Some((1, request.clone()));
+        app.chart_inflight = Some(inflight(1, &request));
 
         *app.pending_chart_result.lock().unwrap() = Some((1, Err("duplicate column".into())));
         app.event(&AppEvent::BackgroundChartReady { generation: 1 });
@@ -402,6 +460,98 @@ mod chart_prepare_tests {
             Some(&request)
         );
         assert!(!app.chart_cache.satisfies(&request));
+    }
+
+    /// Writes a CSV with columns x and y where y = x * factor, so two datasets share a
+    /// schema but not values.
+    fn write_xy_csv(dir: &std::path::Path, name: &str, factor: i64) -> PathBuf {
+        let path = dir.join(name);
+        let mut body = String::from("x,y\n");
+        for x in 0..5i64 {
+            body.push_str(&format!("{x},{}\n", x * factor));
+        }
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// Drive background results back into the app until `done`.
+    fn pump(
+        app: &mut App,
+        rx: &mpsc::Receiver<AppEvent>,
+        tx: &mpsc::Sender<AppEvent>,
+        done: impl Fn(&App) -> bool,
+    ) {
+        for _ in 0..500 {
+            while let Ok(ev) = rx.try_recv() {
+                if let Some(next) = app.event(&ev) {
+                    let _ = tx.send(next);
+                }
+            }
+            if done(app) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("app did not reach the expected state within 5 seconds");
+    }
+
+    fn open(
+        app: &mut App,
+        rx: &mpsc::Receiver<AppEvent>,
+        tx: &mpsc::Sender<AppEvent>,
+        path: PathBuf,
+    ) {
+        // As `home_open_path` does before it emits the `Open`.
+        app.input_mode = InputMode::Normal;
+        if let Some(next) = app.event(&AppEvent::Open(vec![path], OpenOptions::default())) {
+            let _ = tx.send(next);
+        }
+        pump(app, rx, tx, |a| {
+            a.data_table_state.is_some() && !a.is_busy()
+        });
+    }
+
+    fn select_xy(app: &mut App) {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.input_mode, InputMode::Chart);
+        app.chart_modal.x_column = Some("x".to_string());
+        app.chart_modal.y_columns = vec!["y".to_string()];
+        app.event(&AppEvent::Resize(80, 24));
+    }
+
+    /// A chart still being prepared when the user goes home and opens another file with
+    /// the same columns must not land in the new dataset; the new dataset's own values
+    /// are what gets charted.
+    #[test]
+    fn a_prepare_from_the_previous_dataset_does_not_land_in_the_next() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let first = write_xy_csv(dir.path(), "first.csv", 1);
+        let second = write_xy_csv(dir.path(), "second.csv", 100);
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+
+        open(&mut app, &rx, &tx, first);
+        select_xy(&mut app);
+        assert!(app.chart_preparing());
+
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.input_mode, InputMode::Home);
+        assert!(!app.chart_preparing(), "nothing spins on the home screen");
+
+        open(&mut app, &rx, &tx, second);
+        select_xy(&mut app);
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+
+        let series = &app.chart_cache.xy.as_ref().unwrap().series;
+        assert_eq!(series[0][4], (4.0, 400.0), "the second dataset's values");
+        assert!(!app.chart_preparing());
     }
 }
 
@@ -1620,6 +1770,17 @@ impl ChartRequest {
 /// (generation, outcome) handed from the chart worker to `BackgroundChartReady`.
 type ChartResultSlot = Arc<Mutex<Option<(u64, Result<ChartPrepared, String>)>>>;
 
+/// The chart preparation currently running. There is at most one: a burst of selection
+/// changes must not fan out into a full collect per column, so the next request waits
+/// for this one to land and then the newest selection is the one prepared.
+struct ChartInflight {
+    generation: u64,
+    /// `len_generation` of the dataset the request was spawned against, so a result
+    /// cannot be installed for a different dataset that happens to share column names.
+    dataset: Option<u64>,
+    request: ChartRequest,
+}
+
 /// A prepared chart, ready to go into the cache.
 pub(crate) enum ChartPrepared {
     XY(ChartCacheXY),
@@ -1779,12 +1940,11 @@ pub struct App {
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
     pub(crate) chart_cache: ChartCache,
-    /// Chart preparation in flight: its generation and request. Render draws only what is
-    /// in `chart_cache`; this drives the throbber and marks a result whose generation no
-    /// longer matches as stale (the selection moved on) so it is dropped. Deliberately not
-    /// `busy`: the sidebar stays live while the data is computed, and the newest selection
-    /// wins.
-    chart_inflight: Option<(u64, ChartRequest)>,
+    /// Chart preparation in flight. Render draws only what is in `chart_cache`; this
+    /// drives the throbber, and a result whose generation or dataset no longer matches
+    /// is dropped. Deliberately not `busy`: the sidebar stays live while the data is
+    /// computed, and the newest selection is prepared once this one lands.
+    chart_inflight: Option<ChartInflight>,
     chart_generation: u64,
     /// (generation, result) from the background chart preparation, like
     /// `pending_collect_result`: the data stays out of the event.
@@ -1929,6 +2089,8 @@ impl App {
             self.load_active,
             "apply_schema_ready called for an abandoned load"
         );
+        // Whatever chart state survived belongs to the dataset being replaced.
+        self.reset_chart_state();
         self.debug.schema_load = debug_label;
         self.awaiting_dataset = false;
         self.parquet_metadata_cache = None;
@@ -2702,6 +2864,10 @@ impl App {
     /// must survive this.
     pub fn abandon_load(&mut self) {
         self.load_active = false;
+        // A chart being prepared for the dataset we are leaving would otherwise keep
+        // the throbber up on the home screen, and its result could later land in a
+        // different dataset with the same column names.
+        self.reset_chart_state();
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
@@ -5705,9 +5871,7 @@ impl App {
                 }
                 KeyCode::Esc if event.is_press() => {
                     self.chart_modal.close();
-                    self.chart_cache.clear();
-                    // A result still coming back is for a view that no longer exists.
-                    self.chart_inflight = None;
+                    self.reset_chart_state();
                     self.input_mode = InputMode::Normal;
                 }
                 KeyCode::Tab if event.is_press() => {
@@ -7968,14 +8132,35 @@ impl App {
         self.chart_inflight.is_some()
     }
 
+    /// Forget everything chart-related that belongs to the view or dataset on its way
+    /// out: the cache, the preparation in flight (its result is then dropped on arrival,
+    /// by generation and dataset), the handed-over slot, and an export parked on data
+    /// that is now never coming. Called when the chart view closes and whenever the
+    /// dataset changes or is left for the home screen.
+    fn reset_chart_state(&mut self) {
+        self.chart_cache.clear();
+        self.chart_inflight = None;
+        self.chart_generation = self.chart_generation.wrapping_add(1);
+        *self
+            .pending_chart_result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        if self.chart_export_waiting.take().is_some() {
+            self.loading_state = LoadingState::Idle;
+            self.status_message = None;
+            self.busy = false;
+        }
+    }
+
     /// True when the chart cache holds the data for the modal's current selection.
     pub fn chart_data_ready(&self) -> bool {
         ChartRequest::from_modal(&self.chart_modal).is_some_and(|r| self.chart_cache.satisfies(&r))
     }
 
     /// Start preparing the chart the modal currently asks for, unless the cache already
-    /// has it or the same request is in flight. Runs after every event, so a change of
-    /// column or option is picked up as soon as it is made and render only ever draws.
+    /// has it, it is known to fail, or another preparation is still running (the newest
+    /// selection is picked up when that one lands). Runs after every event, so a change
+    /// of column or option is noticed as soon as it is made and render only ever draws.
     fn ensure_chart_data(&mut self) {
         if self.input_mode != InputMode::Chart || !self.chart_modal.active {
             return;
@@ -7989,11 +8174,7 @@ impl App {
             }
             return;
         }
-        if self
-            .chart_inflight
-            .as_ref()
-            .is_some_and(|(_, r)| *r == request)
-        {
+        if self.chart_inflight.is_some() {
             return;
         }
         if self
@@ -8009,10 +8190,15 @@ impl App {
         };
         let lf = state.lf.clone();
         let schema = state.schema.clone();
+        let dataset = Some(state.len_generation());
         let rows = self.chart_modal.effective_row_limit();
         self.chart_generation = self.chart_generation.wrapping_add(1);
         let generation = self.chart_generation;
-        self.chart_inflight = Some((generation, request.clone()));
+        self.chart_inflight = Some(ChartInflight {
+            generation,
+            dataset,
+            request: request.clone(),
+        });
         let slot = self.pending_chart_result.clone();
         let tx = self.events.clone();
         self.runtime.spawn_blocking(move || {
@@ -8098,6 +8284,7 @@ impl App {
                 if let Some(ref p) = self.http_temp_path.take() {
                     let _ = std::fs::remove_file(p);
                 }
+                self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
                 self.load_active = true;
                 self.awaiting_dataset = true;
@@ -8143,6 +8330,7 @@ impl App {
                 Some(AppEvent::DoLoadScanPaths(paths.clone(), options.clone()))
             }
             AppEvent::OpenLazyFrame(lf, options) => {
+                self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
                 self.load_active = true;
                 self.awaiting_dataset = true;
@@ -9266,16 +9454,19 @@ impl App {
                 None
             }
             AppEvent::BackgroundChartReady { generation } => {
-                // Only the newest request's result is wanted; the selection may have
-                // moved on since this one was spawned, in which case a newer computation
-                // is in flight and this one is dropped.
-                let request = match self.chart_inflight.take() {
-                    Some((g, request)) if g == *generation => request,
-                    other => {
-                        self.chart_inflight = other;
-                        return None;
-                    }
-                };
+                // A result is only installed for the preparation still recorded as in
+                // flight, and only into the dataset it was computed from. Anything else
+                // is left over from a chart view or dataset that has since gone.
+                let inflight = self.chart_inflight.take()?;
+                if inflight.generation != *generation {
+                    self.chart_inflight = Some(inflight);
+                    return None;
+                }
+                let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
+                if dataset != inflight.dataset {
+                    return None;
+                }
+                let request = inflight.request;
                 let taken = self
                     .pending_chart_result
                     .lock()
@@ -9444,6 +9635,16 @@ impl App {
             (Some(request), _) => request,
         };
         if !self.chart_cache.satisfies(&request) {
+            // A selection known not to chart is never retried, so waiting for its data
+            // would wait forever: fail the export now with the reason.
+            if let Some((_, message)) = self
+                .chart_cache
+                .failed
+                .as_ref()
+                .filter(|(r, _)| *r == request)
+            {
+                return Err(color_eyre::eyre::eyre!("{}", message));
+            }
             return Ok(None);
         }
         let no_points = || color_eyre::eyre::eyre!("No valid data points to export");

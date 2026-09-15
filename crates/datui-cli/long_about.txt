@@ -1,12 +1,13 @@
-Data Exploration in the Terminal
+Datui is a terminal UI for tabular data: Parquet, CSV, JSON, Arrow and more,
+local or in S3, GCS and HTTP, from a few rows to a few billion.
 
-    - Explore tabular data in many formats
-    - Create and export charts from the terminal
-    - Work with hive-partitioned datasets
-    - Compute summary statistics
-    - Discover relationships with a correlation matrix
-    - Understand how data are distributed
+    - Opens files where they are: local, s3://, gs://, https://, hive-partitioned
+    - Home screen: recent datasets, your directories and reachable buckets
+    - SQL, a short query language (select a, b where c > 10 by region), fuzzy search
+    - Describe, distribution fitting with Q-Q plots, correlation matrix
+    - Line, scatter, bar, histogram, box, KDE and heatmap charts; export PNG or EPS
+    - Pivot and melt; export CSV, Parquet, JSON, NDJSON, Arrow, Avro; templates
+    - Light and dark palettes, every color and default in one config file
 
-Documentation: https://derekwisong.github.io/datui/
-
-Repository:  https://github.com/derekwisong/datui/
+Run with no PATH for the home screen. Press ? inside for the keys.
+Docs: https://derekwisong.github.io/datui/

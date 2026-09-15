@@ -353,6 +353,32 @@ mod chart_prepare_tests {
         assert!(app.chart_inflight.is_none(), "and the slot is free again");
     }
 
+    /// Going home in the one-frame window between `ChartExport` arming `busy` and the
+    /// deferred `DoChartExport`: the export must not be parked on a view that is gone,
+    /// leaving the home screen busy forever.
+    #[test]
+    fn a_chart_export_deferred_past_the_chart_view_releases_busy() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let path = PathBuf::from("/tmp/x.png");
+        let next = app
+            .event(&AppEvent::ChartExport(
+                path,
+                ChartExportFormat::Png,
+                String::new(),
+                1,
+                1,
+            ))
+            .expect("ChartExport defers to DoChartExport");
+        assert!(app.is_busy());
+
+        app.enter_home();
+        app.event(&next);
+        assert!(!app.is_busy());
+        assert!(matches!(app.loading_state, LoadingState::Idle));
+        assert!(app.chart_export_waiting.is_none());
+    }
+
     /// Going home while the export file is being written: the app stops being busy,
     /// and when the write finishes its result is ignored rather than reopening the
     /// export modal over the home screen.
@@ -9372,6 +9398,16 @@ impl App {
                 ))
             }
             AppEvent::DoChartExport(path, format, title, width, height) => {
+                // `ChartExport` arms `busy` and defers here so the phase can be drawn
+                // first. A Ctrl-O in that window has already left the chart view, and
+                // there is nothing to export any more: release the app rather than park
+                // an export that no view would ever prepare.
+                if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+                    self.loading_state = LoadingState::Idle;
+                    self.status_message = None;
+                    self.busy = false;
+                    return None;
+                }
                 self.start_chart_export(path.clone(), *format, title.clone(), *width, *height);
                 None
             }

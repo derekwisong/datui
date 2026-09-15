@@ -7,7 +7,7 @@ use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
 use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 #[cfg(feature = "cloud")]
 use polars::prelude::{PlPathRef, ScanArgsParquet};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Rows measured per background pass. Small enough that a slow filesystem shows
 /// progress rather than a long silence.
@@ -19,6 +19,10 @@ const PROBE_MEASURE_LIMIT: usize = 24;
 /// Probes allowed at once. A probe of a share that has gone away holds its thread
 /// until the process exits, so the number of them has to be bounded.
 const MAX_CONCURRENT_PROBES: usize = 4;
+
+/// Keys held while the app is busy. Beyond this the oldest is dropped, which bounds how
+/// long a held key keeps acting after the work it was waiting on has finished.
+const MAX_QUEUED_KEYS: usize = 32;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc::Sender, Arc, Mutex};
 use widgets::info::{read_parquet_metadata, InfoFocus, InfoModal, InfoTab, ParquetMetadataCache};
@@ -226,6 +230,100 @@ mod probe_slot_tests {
             vec![wedged],
             "a thread still stuck on a dead mount must keep costing a slot"
         );
+    }
+}
+
+#[cfg(test)]
+mod busy_key_queue_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::mpsc;
+
+    fn plain(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn queued_codes(app: &App) -> Vec<KeyCode> {
+        app.queued_keys.iter().map(|k| k.code).collect()
+    }
+
+    /// Ends the busy state the way a finished background task does.
+    fn finish_background_work(app: &mut App) {
+        let generation = app.task_generation();
+        app.event(&AppEvent::BackgroundError {
+            generation,
+            message: "done".to_string(),
+        });
+        assert!(!app.is_busy());
+    }
+
+    /// Keys typed while busy are held, then put back on the channel in the order typed
+    /// once the work finishes, so nothing typed at a spinner is lost.
+    #[test]
+    fn keys_typed_while_busy_replay_in_order_when_busy_clears() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.busy = true;
+
+        for code in [KeyCode::Char('j'), KeyCode::Char('/'), KeyCode::Char('x')] {
+            assert!(app.event(&AppEvent::Key(plain(code))).is_none());
+        }
+        assert_eq!(
+            queued_codes(&app),
+            vec![KeyCode::Char('j'), KeyCode::Char('/'), KeyCode::Char('x')]
+        );
+        assert!(rx.try_recv().is_err(), "nothing replays while still busy");
+
+        finish_background_work(&mut app);
+
+        let replayed: Vec<KeyCode> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|ev| match ev {
+                AppEvent::Key(k) => k.code,
+                _ => panic!("only replayed keys should be on the channel"),
+            })
+            .collect();
+        assert_eq!(
+            replayed,
+            vec![KeyCode::Char('j'), KeyCode::Char('/'), KeyCode::Char('x')]
+        );
+        assert!(app.queued_keys.is_empty());
+    }
+
+    /// A held key cannot build an unbounded backlog: only the newest keys are kept.
+    #[test]
+    fn the_queue_is_capped_and_drops_the_oldest() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.busy = true;
+
+        // Digits, because letters such as q, h and l act immediately and never queue.
+        for i in 0..(MAX_QUEUED_KEYS + 8) {
+            let c = char::from_digit((i % 10) as u32, 10).unwrap();
+            app.event(&AppEvent::Key(plain(KeyCode::Char(c))));
+        }
+        assert_eq!(app.queued_keys.len(), MAX_QUEUED_KEYS);
+        // The first eight typed were dropped, so the queue starts at the ninth key.
+        assert_eq!(
+            app.queued_keys.front().map(|k| k.code),
+            Some(KeyCode::Char('8'))
+        );
+    }
+
+    /// The keys that mean "get me out of here" act at once rather than queueing.
+    #[test]
+    fn quit_and_home_keys_are_not_queued_while_busy() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.busy = true;
+
+        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        app.event(&AppEvent::Key(ctrl_o));
+        assert!(app.queued_keys.is_empty());
+
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let out = app.event(&AppEvent::Key(ctrl_c));
+        assert!(app.queued_keys.is_empty());
+        assert!(matches!(out, Some(AppEvent::Exit)));
     }
 }
 
@@ -1339,7 +1437,11 @@ pub struct App {
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
-    busy: bool,                     // When true, show throbber and ignore keys
+    /// When true, show the throbber and hold keys in `queued_keys` instead of acting on them.
+    busy: bool,
+    /// Keys typed while `busy`, oldest first. Replayed in order once the busy state clears,
+    /// so the app never looks frozen and nothing typed is lost. Capped at `MAX_QUEUED_KEYS`.
+    queued_keys: VecDeque<KeyEvent>,
     throbber_frame: u8,             // Spinner frame index (0..3) for control bar
     drain_keys_on_next_loop: bool,  // Main loop drains crossterm key buffer when true
     status_message: Option<String>, // Status text shown in control bar when busy (replaces keybindings)
@@ -1801,6 +1903,7 @@ impl App {
             len_count_failed: None,
             pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
+            queued_keys: VecDeque::new(),
             throbber_frame: 0,
             drain_keys_on_next_loop: false,
             status_message: None,
@@ -7437,6 +7540,40 @@ impl App {
     }
 
     pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+        let out = self.dispatch_event(event);
+        if !self.busy {
+            self.replay_queued_keys();
+        }
+        out
+    }
+
+    /// Hold a key typed while busy. The oldest goes when the cap is reached, so a held key
+    /// cannot build a backlog that plays out for seconds after the work finishes.
+    fn queue_key(&mut self, key: KeyEvent) {
+        if self.queued_keys.len() >= MAX_QUEUED_KEYS {
+            self.queued_keys.pop_front();
+        }
+        self.queued_keys.push_back(key);
+    }
+
+    /// Put the keys held while busy back on the event channel, in order. They are then
+    /// handled by `event()` like fresh input: against the state at replay time, and if
+    /// the first of them makes the app busy again the rest simply queue up again.
+    ///
+    /// Replaying against the current state rather than the state the key was typed at
+    /// is deliberate. The alternative, remembering the mode each key was meant for and
+    /// dropping the ones that no longer fit, would make the queue lossy in exactly the
+    /// case the user cares about (typing ahead into the view that is about to appear).
+    /// The awkward case is a queued Esc arriving after the modal it was aimed at has
+    /// closed: in the main view Esc only leaves a drill-down or clears a finished query
+    /// input, both harmless and both visible, so a stray one is easy to recover from.
+    fn replay_queued_keys(&mut self) {
+        for key in std::mem::take(&mut self.queued_keys) {
+            let _ = self.events.send(AppEvent::Key(key));
+        }
+    }
+
+    fn dispatch_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
         self.debug.num_events += 1;
 
         match event {
@@ -7457,7 +7594,7 @@ impl App {
                     && key.modifiers.contains(KeyModifiers::CONTROL))
                     || self.input_mode == InputMode::Home;
                 // When busy (e.g. loading), still process quit, column scroll, help,
-                // home, and confirmation modal keys.
+                // home, and confirmation modal keys. Everything else waits its turn.
                 if self.busy
                     && !is_column_scroll
                     && !is_help_key
@@ -7465,6 +7602,7 @@ impl App {
                     && !is_home_key
                     && !self.confirmation_modal.active
                 {
+                    self.queue_key(*key);
                     return None;
                 }
                 self.key(key)

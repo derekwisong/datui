@@ -244,6 +244,104 @@ jobs:
             target/cargo-aur/PKGBUILD
             python/dist/*.whl
 
+  linux-arm64:
+    # A native arm64 runner, so the build steps are the linux job's unchanged.
+    # This job is deliberately narrower than `linux`: no docs (published once,
+    # from the x86_64 job), no AUR package (cargo-aur writes a PKGBUILD with
+    # arch=("x86_64") and names its tarball -x86_64 whatever the host, so the
+    # tarball is packed by hand below in the same layout), and no Python wheel
+    # (adding a manylinux aarch64 wheel is a separate decision). Its outputs are
+    # the ones scripts/install/install.sh asks for on an aarch64 machine:
+    # datui_<ver>-1_arm64.deb, datui-<ver>-1.aarch64.rpm and
+    # datui-<ver>-aarch64.tar.gz.
+    runs-on: ubuntu-24.04-arm
+    needs: [check-ci-passed]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Install system dependencies
+        run: |
+          # See the linux job for why `apt-get update` is allowed to fail here.
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      # No rust-cache step: Nightly writes its entry from an x86_64 runner, and
+      # the key includes the host triple, so this job would never hit it.
+
+      - name: Build release binary
+        run: cargo build --release --locked --workspace -p datui
+
+      - name: Verify release artifacts
+        run: |
+          test -f target/release/datui || (echo "Release binary not found" && exit 1)
+          test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
+
+      - name: Cache cargo packaging tools
+        id: cache-cargo-tools
+        # runner.arch is in the key: the linux job's entry holds x86_64 binaries,
+        # which would restore here and fail to execute.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-v1
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-
+
+      - name: Install cargo packaging tools
+        run: |
+          command -v cargo-deb || cargo install cargo-deb
+          command -v cargo-generate-rpm || cargo install cargo-generate-rpm
+
+      - name: Build deb package
+        run: python3 scripts/packaging/build_package.py deb --no-build
+
+      - name: Build rpm package
+        run: python3 scripts/packaging/build_package.py rpm --no-build
+
+      - name: Stage and pack tarball
+        # Same members and paths as the cargo-aur tarball the x86_64 job ships,
+        # which install.sh relies on (it reads target/release/datui.1.gz from
+        # inside the archive). Version from Cargo.toml, as cargo-deb and
+        # cargo-generate-rpm name theirs.
+        run: |
+          set -euo pipefail
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "datui") | .version')
+          ARCH=$(uname -m)
+          test "$ARCH" = "aarch64" || (echo "Expected an aarch64 runner, got $ARCH" && exit 1)
+          test -f target/release/datui.1.gz || gzip -9 -k -f target/release/datui.1
+          STAGING="$RUNNER_TEMP/tarball"
+          mkdir -p "$STAGING/target/release" "$STAGING/scripts/packaging"
+          cp target/release/datui "$STAGING/"
+          chmod +x "$STAGING/datui"
+          cp LICENSE "$STAGING/"
+          cp target/release/datui.1.gz "$STAGING/target/release/"
+          cp scripts/packaging/datui.desktop "$STAGING/scripts/packaging/"
+          mkdir -p dist-linux-aarch64
+          tar czvf "dist-linux-aarch64/datui-${VERSION}-${ARCH}.tar.gz" -C "$STAGING" \
+            datui LICENSE target/release/datui.1.gz scripts/packaging/datui.desktop
+          cp target/debian/*.deb target/generate-rpm/*.rpm dist-linux-aarch64/
+          ls -l dist-linux-aarch64
+
+      - name: Upload linux arm64 artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: datui-linux-aarch64-artifacts
+          path: dist-linux-aarch64/*
+
   windows:
     runs-on: windows-latest
     needs: [check-ci-passed]
@@ -412,7 +510,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [linux, windows, macos]
+    needs: [linux, linux-arm64, windows, macos]
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -430,6 +528,12 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: datui-linux-artifacts
+
+      - name: Download linux arm64 artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: datui-linux-aarch64-artifacts
+          path: linux-aarch64
 
       - name: Download Windows artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -530,6 +634,9 @@ jobs:
              target/cargo-aur/*.tar.gz \
              target/cargo-aur/PKGBUILD \
              python/dist/*.whl \
+             linux-aarch64/*.deb \
+             linux-aarch64/*.rpm \
+             linux-aarch64/*.tar.gz \
              "windows-artifacts/datui-${REF_NAME}-windows-x86_64.zip" \
              windows-artifacts/python/dist/*.whl \
              macos-aarch64/datui-*.tar.gz \
@@ -582,6 +689,9 @@ jobs:
             target/cargo-aur/*.tar.gz
             target/cargo-aur/PKGBUILD
             python/dist/*.whl
+            linux-aarch64/*.deb
+            linux-aarch64/*.rpm
+            linux-aarch64/*.tar.gz
             windows-artifacts/datui-${{ github.ref_name }}-windows-x86_64.zip
             windows-artifacts/python/dist/*.whl
             macos-aarch64/datui-*.tar.gz

@@ -44,8 +44,9 @@ After that, `apt upgrade` keeps datui current.
 
 ## Pre-built binaries
 
-Every release on [GitHub][latest-release] carries binaries for Linux, macOS
-(Intel and Apple silicon) and Windows, plus `.deb`, `.rpm` and Arch tarballs.
+Every release on [GitHub][latest-release] carries binaries for Linux (x86_64
+and arm64), macOS (Intel and Apple silicon) and Windows, plus `.deb`, `.rpm`
+and Arch tarballs.
 Download, unpack, and put `datui` somewhere on your `PATH`.
 
 ```bash

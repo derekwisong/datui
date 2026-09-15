@@ -6893,12 +6893,14 @@ mod tests {
         let mut buf = Buffer::empty(area);
         DataTable::default().render(area, &mut buf, &mut state);
         let header = header_row_string(&buf, area);
+        // The arrows come from the glyph set for the locale, which is ASCII on Windows CI.
+        let g = crate::glyphs::get();
         assert!(
-            header.contains('→'),
+            header.contains(g.arrow_right),
             "expected right indicator, header: {header:?}"
         );
         assert!(
-            !header.contains('←'),
+            !header.contains(g.arrow_left),
             "should not show left indicator at offset 0: {header:?}"
         );
 
@@ -6908,7 +6910,7 @@ mod tests {
         DataTable::default().render(area, &mut buf2, &mut state);
         let header2 = header_row_string(&buf2, area);
         assert!(
-            header2.contains('←'),
+            header2.contains(g.arrow_left),
             "expected left indicator after scroll: {header2:?}"
         );
     }

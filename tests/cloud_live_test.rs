@@ -45,6 +45,7 @@
 mod common;
 
 use datui::cloud_browse::{self, Environment, ProviderKind};
+use datui::cloud_sources;
 use datui::config::CloudConfig;
 
 /// The MinIO credentials the documented container runs with. Not a secret in any sense:
@@ -59,6 +60,7 @@ fn minio_config(endpoint: &str) -> CloudConfig {
         s3_access_key_id: Some(MINIO_KEY.to_string()),
         s3_secret_access_key: Some(MINIO_SECRET.to_string()),
         s3_region: Some("us-east-1".to_string()),
+        ..CloudConfig::default()
     }
 }
 
@@ -72,13 +74,13 @@ fn gcs_is_discovered_and_its_buckets_listed() {
 
     let config = CloudConfig::default();
     let env = Environment::current();
-    let providers = cloud_browse::detect(&config, &env);
-    let gcs = providers
+    let sources = cloud_sources::discover(&config, &env);
+    let gcs = sources
         .iter()
         .find(|p| p.kind == ProviderKind::Gcs)
         .expect("GCS should be discovered after `gcloud auth application-default login`");
 
-    println!("provider: {} ({})", gcs.label, gcs.note);
+    println!("source: {} ({})", gcs.label, gcs.origin);
     println!("project: {:?}", gcs.project);
     assert!(
         gcs.can_list_buckets(),
@@ -87,7 +89,7 @@ fn gcs_is_discovered_and_its_buckets_listed() {
 
     let runtime = common::test_runtime();
     let buckets = runtime
-        .block_on(cloud_browse::list_buckets(gcs, &config))
+        .block_on(cloud_browse::list_buckets(gcs))
         .expect("listing buckets");
     println!("buckets: {buckets:?}");
     assert!(
@@ -124,13 +126,13 @@ fn minio_is_discovered_and_its_buckets_listed() {
 
     let config = minio_config(&endpoint);
     let env = Environment::current();
-    let providers = cloud_browse::detect(&config, &env);
-    let s3 = providers
+    let sources = cloud_sources::discover(&config, &env);
+    let s3 = sources
         .iter()
         .find(|p| p.kind == ProviderKind::S3)
         .expect("configured keys should be enough to discover S3");
 
-    println!("provider: {} ({})", s3.label, s3.note);
+    println!("source: {} ({})", s3.label, s3.origin);
     assert!(
         s3.label.contains("S3-compatible"),
         "a custom endpoint should not be labelled Amazon: {}",
@@ -139,7 +141,7 @@ fn minio_is_discovered_and_its_buckets_listed() {
 
     let runtime = common::test_runtime();
     let buckets = runtime
-        .block_on(cloud_browse::list_buckets(s3, &config))
+        .block_on(cloud_browse::list_buckets(s3))
         .expect("listing buckets");
     println!("buckets: {buckets:?}");
     assert!(
@@ -634,4 +636,126 @@ fn the_cloud_section_renders_legibly() {
         screen.contains("datui-sales/"),
         "a bucket should read as somewhere to step into"
     );
+}
+
+/// Two S3-compatible servers, each with a bucket called `data` holding a different
+/// `table.parquet`, named in `[[cloud.sources]]` as `lab` and `corp`.
+///
+/// ```bash
+/// DATUI_LIVE_S3_PAIR=http://127.0.0.1:9101,http://127.0.0.1:9102 \
+///   cargo test --test cloud_live_test -- --ignored --nocapture two_servers
+/// ```
+///
+/// The servers need `data/table.parquet`: `people.parquet` on the first and
+/// `sales.parquet` on the second, from `tests/sample-data`. Any keys work against a
+/// local MinIO or moto; this test sets `LAB_KEY`, `LAB_SECRET`, `CORP_KEY` and
+/// `CORP_SECRET` to match what it expects the servers to accept.
+#[test]
+#[ignore = "talks to two local S3-compatible servers; set DATUI_LIVE_S3_PAIR"]
+fn two_servers_with_the_same_bucket_open_their_own_objects() {
+    let Ok(pair) = std::env::var("DATUI_LIVE_S3_PAIR") else {
+        eprintln!("skipped: set DATUI_LIVE_S3_PAIR=<endpoint>,<endpoint> to run");
+        return;
+    };
+    let (lab_endpoint, corp_endpoint) = pair.split_once(',').expect("two endpoints");
+    common::isolate_cache();
+    // SAFETY: set before the runtime or any worker starts reading the environment, and
+    // this test is run on its own.
+    unsafe {
+        std::env::set_var("LAB_KEY", "key9101");
+        std::env::set_var("LAB_SECRET", "secret9101");
+        std::env::set_var("CORP_KEY", "key9102");
+        std::env::set_var("CORP_SECRET", "secret9102");
+    }
+    let source = |name: &str, endpoint: &str| datui::config::CloudSourceConfig {
+        name: name.to_string(),
+        kind: Some("s3".to_string()),
+        endpoint_url: Some(endpoint.to_string()),
+        region: Some("us-east-1".to_string()),
+        access_key_id_env: Some(format!("{}_KEY", name.to_uppercase())),
+        secret_access_key_env: Some(format!("{}_SECRET", name.to_uppercase())),
+        ..Default::default()
+    };
+    let cloud = CloudConfig {
+        sources: vec![source("lab", lab_endpoint), source("corp", corp_endpoint)],
+        ..CloudConfig::default()
+    };
+    cloud.validate().expect("valid sources");
+
+    // Each source lists its own server's buckets, and the rows it returns stay tied to it.
+    let runtime = common::test_runtime();
+    let env = Environment::current();
+    for found in cloud_sources::discover(&cloud, &env)
+        .iter()
+        .filter(|s| s.id == "lab" || s.id == "corp")
+    {
+        let buckets = runtime
+            .block_on(cloud_browse::list_buckets(found))
+            .expect("listing buckets");
+        assert!(
+            buckets.contains(&"data".to_string()),
+            "{}: {buckets:?}",
+            found.id
+        );
+        let url = found.bucket_url("data");
+        let rows = runtime
+            .block_on(cloud_browse::list_objects(&url, &cloud))
+            .expect("listing objects");
+        let paths: Vec<String> = rows
+            .iter()
+            .map(|r| r.path.to_string_lossy().into_owned())
+            .collect();
+        println!("{url}: {paths:?}");
+        assert!(
+            paths.contains(&format!("s3://{}@data/table.parquet", found.id)),
+            "rows should keep their source: {paths:?}"
+        );
+    }
+
+    let headers_of = |url: &str| -> Vec<String> {
+        let mut config = datui::config::AppConfig {
+            cloud: cloud.clone(),
+            ..Default::default()
+        };
+        config.data.use_desktop_recents = false;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = datui::App::new_with_config(
+            tx,
+            common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        let open = datui::AppEvent::Open(
+            vec![std::path::PathBuf::from(url)],
+            datui::OpenOptions::default(),
+        );
+        if let Some(crash) = drive(&mut app, open) {
+            panic!("opening {url} crashed: {crash}");
+        }
+        let loaded = pump_until(&mut app, &rx, 60, |app| {
+            app.data_table_state.is_some() && !app.is_busy()
+        });
+        assert!(loaded, "{url} should load");
+        app.data_table_state.as_ref().expect("a table").headers()
+    };
+    let local_headers = |file: &str| -> Vec<String> {
+        let path = format!("{}/tests/sample-data/{file}", env!("CARGO_MANIFEST_DIR"));
+        polars::prelude::LazyFrame::scan_parquet(
+            polars::prelude::PlRefPath::new(path.as_str()),
+            Default::default(),
+        )
+        .and_then(|mut lf| lf.collect_schema())
+        .expect("local schema")
+        .iter_names()
+        .map(|n| n.to_string())
+        .collect()
+    };
+
+    let lab = headers_of("s3://lab@data/table.parquet");
+    let corp = headers_of("s3://corp@data/table.parquet");
+    println!("lab: {lab:?}\ncorp: {corp:?}");
+    assert_eq!(lab, local_headers("people.parquet"));
+    assert_eq!(corp, local_headers("sales.parquet"));
 }

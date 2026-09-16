@@ -39,6 +39,8 @@ pub mod cli;
 pub mod cloud_browse;
 #[cfg(feature = "cloud")]
 mod cloud_hive;
+#[cfg(feature = "cloud")]
+pub mod cloud_sources;
 pub mod config;
 pub mod discover;
 pub mod error_display;
@@ -985,6 +987,7 @@ pub mod tests {
             s3_region: Some("us-east-1".to_string()),
             s3_access_key_id: Some("testing".to_string()),
             s3_secret_access_key: Some("testing".to_string()),
+            ..Default::default()
         };
         let rt = test_runtime();
         let path = std::path::Path::new("s3://bucket/obj.parquet");
@@ -1219,6 +1222,7 @@ impl OpenOptions {
             s3_access_key_id: self.s3_access_key_id_override.clone(),
             s3_secret_access_key: self.s3_secret_access_key_override.clone(),
             s3_region: self.s3_region_override.clone(),
+            ..Default::default()
         });
         merged
     }
@@ -3214,7 +3218,7 @@ impl App {
         self.runtime.spawn(async move {
             let providers = {
                 let env = crate::cloud_browse::Environment::current();
-                crate::cloud_browse::detect(&cloud, &env)
+                crate::cloud_sources::discover(&cloud, &env)
             };
             // Say what was found before saying what is in it. Enumeration is a round
             // trip, and on a slow link the alternative is a home screen with no sign
@@ -3238,7 +3242,7 @@ impl App {
             let mut sections = Vec::new();
             for provider in &providers {
                 let (buckets, error) = if provider.can_list_buckets() {
-                    match crate::cloud_browse::list_buckets(provider, &cloud).await {
+                    match crate::cloud_browse::list_buckets(provider).await {
                         Ok(buckets) => (buckets, None),
                         Err(e) => (Vec::new(), Some(e)),
                     }
@@ -3259,13 +3263,15 @@ impl App {
                     (None, true) => Some("no buckets".to_string()),
                     (detail, false) => detail,
                 };
-                let scheme = provider.kind.scheme();
+                for bucket in &buckets {
+                    crate::cloud_sources::remember_bucket(provider, bucket);
+                }
                 sections.push(crate::home::CloudSection {
                     title: provider.label.clone(),
                     subtitle,
                     buckets: buckets
-                        .into_iter()
-                        .map(|b| PathBuf::from(format!("{scheme}://{b}")))
+                        .iter()
+                        .map(|b| PathBuf::from(provider.bucket_url(b)))
                         .collect(),
                     error,
                     listing: false,
@@ -3800,18 +3806,22 @@ impl App {
         DataTableState::from_csv(path, options)
     }
 
-    /// Polars' view of the effective S3 settings, for `scan_parquet`.
+    /// Polars' view of one source's S3 settings, for `scan_parquet`.
     #[cfg(feature = "cloud")]
-    fn build_s3_cloud_options(cloud: &crate::config::CloudConfig) -> CloudOptions {
-        let cloud = cloud.clone();
+    fn build_s3_cloud_options(settings: &crate::cloud_sources::S3Settings) -> CloudOptions {
+        let settings = settings.clone();
+        let virtual_hosted = (settings.endpoint.is_some() || settings.virtual_hosted.is_some())
+            .then(|| settings.virtual_hosted_style().to_string());
         let configs: Vec<(AmazonS3ConfigKey, String)> = [
-            (AmazonS3ConfigKey::Endpoint, cloud.s3_endpoint_url),
-            (AmazonS3ConfigKey::AccessKeyId, cloud.s3_access_key_id),
+            (AmazonS3ConfigKey::Endpoint, settings.endpoint),
+            (AmazonS3ConfigKey::AccessKeyId, settings.access_key_id),
             (
                 AmazonS3ConfigKey::SecretAccessKey,
-                cloud.s3_secret_access_key,
+                settings.secret_access_key,
             ),
-            (AmazonS3ConfigKey::Region, cloud.s3_region),
+            (AmazonS3ConfigKey::Token, settings.session_token),
+            (AmazonS3ConfigKey::Region, settings.region),
+            (AmazonS3ConfigKey::VirtualHostedStyleRequest, virtual_hosted),
         ]
         .into_iter()
         .filter_map(|(key, value)| value.map(|v| (key, v)))
@@ -4268,6 +4278,23 @@ impl App {
         Ok((state, label))
     }
 
+    /// The plain URL and Polars options for one object-store path, through the source
+    /// it names or belongs to (`cloud_sources::resolve`).
+    #[cfg(feature = "cloud")]
+    fn resolve_cloud_url(
+        path: &Path,
+        cloud: &crate::config::CloudConfig,
+    ) -> Result<(String, CloudOptions)> {
+        let text = path.to_string_lossy();
+        let resolved =
+            crate::cloud_sources::resolve(&text, cloud).map_err(|e| color_eyre::eyre::eyre!(e))?;
+        let options = match resolved.kind {
+            crate::cloud_browse::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
+            crate::cloud_browse::ProviderKind::Gcs => CloudOptions::default(),
+        };
+        Ok((resolved.url, options))
+    }
+
     /// The URL, Polars options and store for one object-store path. `cloud` is the
     /// effective config the `App` keeps (see `OpenOptions::effective_cloud`).
     #[cfg(feature = "cloud")]
@@ -4276,13 +4303,7 @@ impl App {
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
     ) -> Result<(String, CloudOptions, Arc<dyn object_store::ObjectStore>)> {
-        let (full, cloud_opts) = match source::input_source(path) {
-            source::InputSource::S3(url) => {
-                (format!("s3://{url}"), Self::build_s3_cloud_options(cloud))
-            }
-            source::InputSource::Gcs(url) => (format!("gs://{url}"), CloudOptions::default()),
-            _ => return Err(color_eyre::eyre::eyre!("not an object-store URL")),
-        };
+        let (full, cloud_opts) = Self::resolve_cloud_url(path, cloud)?;
         let store = Self::polars_object_store(&full, &cloud_opts, runtime)?;
         Ok((full, cloud_opts, store))
     }
@@ -4397,8 +4418,8 @@ impl App {
             source::InputSource::S3(url) => {
                 #[cfg(feature = "cloud")]
                 {
-                    let full = format!("s3://{url}");
-                    let cloud_opts = Self::build_s3_cloud_options(cloud);
+                    let (full, cloud_opts) =
+                        Self::resolve_cloud_url(Path::new(&format!("s3://{url}")), cloud)?;
                     let pl_path = PlRefPath::new(full.as_str());
                     let is_glob = source::is_prefix_or_glob(&full);
                     let hive_options = if is_glob {
@@ -4431,7 +4452,8 @@ impl App {
             source::InputSource::Gcs(url) => {
                 #[cfg(feature = "cloud")]
                 {
-                    let full = format!("gs://{url}");
+                    let (full, cloud_opts) =
+                        Self::resolve_cloud_url(Path::new(&format!("gs://{url}")), cloud)?;
                     let pl_path = PlRefPath::new(full.as_str());
                     let is_glob = source::is_prefix_or_glob(&full);
                     let hive_options = if is_glob {
@@ -4440,7 +4462,7 @@ impl App {
                         polars::io::HiveOptions::default()
                     };
                     let args = ScanArgsParquet {
-                        cloud_options: Some(CloudOptions::default()),
+                        cloud_options: Some(cloud_opts),
                         hive_options,
                         glob: is_glob,
                         ..Default::default()

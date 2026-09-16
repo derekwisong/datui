@@ -29,6 +29,28 @@ pub fn input_source(path: &Path) -> InputSource {
     InputSource::Local(path.to_path_buf())
 }
 
+/// The source an `s3://<id>@bucket/key` URL names, and the URL without it.
+///
+/// Only S3 URLs carry a source, and only for S3-compatible servers, whose bucket names
+/// repeat from one endpoint to the next. Bucket names cannot contain `@`, so an `@` in
+/// the first segment is always a source. Everything else comes back unchanged.
+pub fn split_source_id(url: &str) -> (Option<&str>, std::borrow::Cow<'_, str>) {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return (None, url.into());
+    };
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "s3" | "s3a") {
+        return (None, url.into());
+    }
+    let first = rest.split('/').next().unwrap_or(rest);
+    match first.split_once('@') {
+        Some((id, _)) if !id.is_empty() => {
+            let plain = format!("{scheme}://{}", &rest[id.len() + 1..]);
+            (Some(id), plain.into())
+        }
+        _ => (None, url.into()),
+    }
+}
+
 /// A cloud location whose shape is a prefix or a glob rather than one object.
 pub(crate) fn is_prefix_or_glob(url: &str) -> bool {
     url.ends_with('/') || url.contains('*')
@@ -112,6 +134,31 @@ mod tests {
             InputSource::S3(rest) => assert_eq!(rest, "my-bucket/path/to/file.csv"),
             _ => panic!("expected S3"),
         }
+    }
+
+    #[test]
+    fn a_source_is_split_off_s3_urls_only() {
+        assert_eq!(
+            split_source_id("s3://onprem@sales/2024/q3.parquet"),
+            (Some("onprem"), "s3://sales/2024/q3.parquet".into())
+        );
+        assert_eq!(
+            split_source_id("s3://onprem@sales"),
+            (Some("onprem"), "s3://sales".into())
+        );
+        assert_eq!(
+            split_source_id("s3://sales/a@b.parquet"),
+            (None, "s3://sales/a@b.parquet".into())
+        );
+        assert_eq!(
+            split_source_id("gs://bucket/key"),
+            (None, "gs://bucket/key".into())
+        );
+        assert_eq!(
+            split_source_id("https://user@host/file.csv"),
+            (None, "https://user@host/file.csv".into())
+        );
+        assert_eq!(split_source_id("s3://@sales"), (None, "s3://@sales".into()));
     }
 
     #[test]

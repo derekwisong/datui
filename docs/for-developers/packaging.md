@@ -62,9 +62,9 @@ All packages include the MIT license as required:
 
 | Package | Output Directory | Example Filename |
 |---------|-----------------|------------------|
-| deb | `target/debian/` | `datui_0.2.11-dev-1_amd64.deb` |
-| rpm | `target/generate-rpm/` | `datui-0.2.11-dev-1.x86_64.rpm` |
-| aur | `target/cargo-aur/` | `PKGBUILD`, `datui-0.2.11-dev-x86_64.tar.gz` |
+| deb | `target/debian/` | `datui_X.Y.Z-1_amd64.deb` |
+| rpm | `target/generate-rpm/` | `datui-X.Y.Z-1.x86_64.rpm` |
+| aur | `target/cargo-aur/` | `PKGBUILD`, `datui-X.Y.Z-x86_64.tar.gz` |
 
 ## CI and Releases
 
@@ -133,7 +133,7 @@ To update the AUR package when you release a new version:
    git push
    ```
 
-Use **stable** release tags only (e.g. `v0.2.11`); the AUR package fetches the tarball from the GitHub release. Dev builds are available from the `dev` release tag.
+Use **stable** release tags only (e.g. `v0.3.2`); the AUR package fetches the tarball from the GitHub release. Dev builds are available from the `dev` release tag.
 
 ### Automated AUR updates (GitHub Actions)
 
@@ -197,8 +197,3 @@ manifest PRs constantly and those never touch workflow files.
 If this becomes a recurring nuisance, the durable fix is a dedicated machine account
 that owns the fork and holds a `repo` + `workflow` PAT (full `repo` scope is harmless
 on an account with no private repos), wired up via the action's `fork-user` input.
-
-## More Information
-
-For detailed information about packaging metadata, policies, and AUR submission, see
-[plans/packaging-deb-rpm-aur-plan.md](https://github.com/derekwisong/datui/blob/main/plans/packaging-deb-rpm-aur-plan.md).

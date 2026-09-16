@@ -6,7 +6,7 @@ use polars::datatypes::DataType;
 use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
 use polars::prelude::{col, len, DataFrame, LazyFrame, Schema};
 #[cfg(feature = "cloud")]
-use polars::prelude::{PlPathRef, ScanArgsParquet};
+use polars::prelude::{PlRefPath, ScanArgsParquet};
 use std::collections::HashMap;
 
 /// Rows measured per background pass. Small enough that a slow filesystem shows
@@ -171,7 +171,7 @@ mod export_format_tests {
 
         // A frame whose len() cannot be taken: a short read has to answer without it.
         let unreadable = LazyFrame::scan_parquet(
-            polars::prelude::PlPath::new("/nonexistent/for-this-test.parquet"),
+            polars::prelude::PlRefPath::new("/nonexistent/for-this-test.parquet"),
             Default::default(),
         )
         .unwrap();
@@ -1099,7 +1099,8 @@ pub struct OpenOptions {
     pub s3_region_override: Option<String>,
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     pub polars_streaming: bool,
-    /// When true, cast Date/Datetime pivot index columns to Int32 before pivot to avoid Polars 0.52 panic.
+    /// No effect since Polars 0.55: the eager pivot that crashed on a Date/Datetime index is
+    /// gone. Kept so `--workaround-pivot-date-index` and the Python option still parse.
     pub workaround_pivot_date_index: bool,
     /// Null value specs for CSV: global strings and/or "COL=VAL" for per-column. Empty = use Polars default.
     pub null_values: Option<Vec<String>>,
@@ -3840,10 +3841,13 @@ impl App {
         let url = url.to_string();
         let options = options.clone();
         wait_on_runtime(runtime, async move {
-            let (_, store) =
-                polars::io::cloud::build_object_store(PlPathRef::new(&url), Some(&options), false)
-                    .await?;
-            polars::prelude::PolarsResult::Ok(store.to_dyn_object_store().await)
+            let (_, store) = polars::io::cloud::build_object_store(
+                PlRefPath::new(url.as_str()),
+                Some(&options),
+                false,
+            )
+            .await?;
+            polars::prelude::PolarsResult::Ok(store.to_dyn_object_store().await.into_owned())
         })
         .ok_or_else(|| color_eyre::eyre::eyre!("cancelled"))?
         .map_err(|e| color_eyre::eyre::eyre!("Object store config failed: {}", e))
@@ -3909,7 +3913,7 @@ impl App {
         runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
-        use object_store::ObjectStore;
+        use object_store::ObjectStoreExt;
 
         let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
         if key.is_empty() {
@@ -3967,7 +3971,7 @@ impl App {
         runtime: &tokio::runtime::Handle,
     ) -> Result<PathBuf> {
         use object_store::path::Path as OsPath;
-        use object_store::ObjectStore;
+        use object_store::ObjectStoreExt;
 
         let (label, example) = match source::input_source(Path::new(url)) {
             source::InputSource::Gcs(_) => ("GCS", "gs://bucket/path/file.csv"),
@@ -4202,7 +4206,7 @@ impl App {
             glob: true,
             ..Default::default()
         };
-        let lf = LazyFrame::scan_parquet(PlPathRef::new(&full).into_owned(), args).ok()?;
+        let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args).ok()?;
         let lf = Self::hoist_partition_columns(lf, &merged_schema, &partition_columns);
         DataTableState::from_schema_and_lazyframe(
             merged_schema,
@@ -4310,7 +4314,7 @@ impl App {
             glob: false,
             ..Default::default()
         };
-        let lf = LazyFrame::scan_parquet(PlPathRef::new(&full).into_owned(), args)?;
+        let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args)?;
         let mut state =
             DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
         state.set_row_groups(&footer.row_group_rows);
@@ -4388,7 +4392,7 @@ impl App {
                 {
                     let full = format!("s3://{url}");
                     let cloud_opts = Self::build_s3_cloud_options(cloud);
-                    let pl_path = PlPathRef::new(&full).into_owned();
+                    let pl_path = PlRefPath::new(full.as_str());
                     let is_glob = source::is_prefix_or_glob(&full);
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
@@ -4421,7 +4425,7 @@ impl App {
                 #[cfg(feature = "cloud")]
                 {
                     let full = format!("gs://{url}");
-                    let pl_path = PlPathRef::new(&full).into_owned();
+                    let pl_path = PlRefPath::new(full.as_str());
                     let is_glob = source::is_prefix_or_glob(&full);
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()

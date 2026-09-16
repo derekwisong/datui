@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::{fs, fs::File, path::Path, path::PathBuf};
 
+use polars::frame::PivotColumnNaming;
 use polars::io::HiveOptions;
 use polars::prelude::*;
 use ratatui::{
@@ -24,7 +25,6 @@ use crate::query::parse_query;
 use crate::statistics::collect_lazy;
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 use polars::io::csv::read::NullValues;
-use polars::lazy::frame::pivot::pivot_stable;
 use polars::prelude::StrptimeOptions;
 use std::io::{BufReader, Read};
 
@@ -41,7 +41,8 @@ use arrow::array::{Array, AsArray};
 use arrow::record_batch::RecordBatch;
 
 fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
-    let e = col(PlSmallStr::from_static(""));
+    // The lazy pivot only allows the value column to be referenced as `element()`.
+    let e = element();
     let expr = match agg {
         PivotAggregation::Last => e.last(),
         PivotAggregation::First => e.first(),
@@ -145,7 +146,6 @@ pub struct DataTableState {
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     pub polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
-    workaround_pivot_date_index: bool,
     /// When true, `collect()` / `apply_transformations()` skip the blocking collect.
     /// The caller is responsible for triggering an async collect afterwards.
     pub defer_collect: bool,
@@ -404,7 +404,6 @@ impl DataTableState {
             partition_columns: None,
             decompress_temp_file: None,
             polars_streaming,
-            workaround_pivot_date_index: true,
             defer_collect: false,
             needs_recollect: false,
         })
@@ -422,7 +421,6 @@ impl DataTableState {
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
-        state.workaround_pivot_date_index = options.workaround_pivot_date_index;
         Ok(state)
     }
 
@@ -498,7 +496,6 @@ impl DataTableState {
             partition_columns,
             decompress_temp_file: None,
             polars_streaming: options.polars_streaming,
-            workaround_pivot_date_index: options.workaround_pivot_date_index,
             defer_collect: false,
             needs_recollect: false,
         })
@@ -617,7 +614,7 @@ impl DataTableState {
     ) -> Result<Self> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             glob: is_glob,
             ..Default::default()
@@ -662,7 +659,7 @@ impl DataTableState {
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
             let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
             lazy_frames.push(lf);
         }
@@ -690,7 +687,7 @@ impl DataTableState {
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
         let mut state = Self::new(
             lf,
@@ -731,7 +728,7 @@ impl DataTableState {
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
             let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
             lazy_frames.push(lf);
         }
@@ -857,7 +854,7 @@ impl DataTableState {
         };
         let rows: Vec<Vec<Data>> = range.rows().map(|r| r.to_vec()).collect();
         if rows.is_empty() {
-            let empty_df = DataFrame::new(vec![])?;
+            let empty_df = DataFrame::empty();
             let mut state = Self::new(
                 empty_df.lazy(),
                 pages_lookahead,
@@ -888,7 +885,7 @@ impl DataTableState {
             let series = Self::excel_column_to_series(name.as_str(), &col_cells, inferred)?;
             series_vec.push(series.into());
         }
-        let df = DataFrame::new(series_vec)?;
+        let df = DataFrame::new_infer_height(series_vec)?;
         let mut state = Self::new(
             df.lazy(),
             pages_lookahead,
@@ -1168,7 +1165,7 @@ impl DataTableState {
     /// arrow 57; Polars uses polars-arrow, so we cannot use Series::from_arrow).
     fn arrow_record_batches_to_dataframe(batches: &[RecordBatch]) -> Result<DataFrame> {
         if batches.is_empty() {
-            return Ok(DataFrame::new(vec![])?);
+            return Ok(DataFrame::empty());
         }
         let mut all_dfs = Vec::with_capacity(batches.len());
         for batch in batches {
@@ -1180,7 +1177,7 @@ impl DataTableState {
                 let s = Self::arrow_array_to_polars_series(name, col)?;
                 series_vec.push(s.into());
             }
-            let df = DataFrame::new(series_vec)?;
+            let df = DataFrame::new_infer_height(series_vec)?;
             all_dfs.push(df);
         }
         let mut out = all_dfs.remove(0);
@@ -1375,7 +1372,7 @@ impl DataTableState {
     pub fn scan_parquet_hive(path: &Path) -> Result<LazyFrame> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             hive_options: HiveOptions::new_enabled(),
             glob: is_glob,
@@ -1388,7 +1385,7 @@ impl DataTableState {
     pub fn scan_parquet_hive_with_schema(path: &Path, schema: Arc<Schema>) -> Result<LazyFrame> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             schema: Some(schema),
             hive_options: HiveOptions::new_enabled(),
@@ -1679,7 +1676,7 @@ impl DataTableState {
     ) -> Result<Self> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             hive_options: HiveOptions::new_enabled(),
             glob: is_glob,
@@ -1855,7 +1852,7 @@ impl DataTableState {
 
     /// Infer CSV schema with minimal read (one row) for building null_values when both global and per-column are set.
     fn csv_schema_for_null_values(path: &Path, options: &OpenOptions) -> Result<Arc<Schema>> {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let mut reader = LazyCsvReader::new(pl_path).with_n_rows(Some(1));
         if let Some(skip_lines) = options.skip_lines {
             reader = reader.with_skip_lines(skip_lines);
@@ -2501,7 +2498,7 @@ impl DataTableState {
     where
         F: FnOnce(LazyCsvReader) -> LazyCsvReader,
     {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let reader = LazyCsvReader::new(pl_path);
         let lf = func(reader).finish()?;
         Self::new(
@@ -2525,7 +2522,7 @@ impl DataTableState {
         let nv = Self::build_null_values_for_csv(options, Some(paths[0].as_ref()))?;
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
             let mut reader = LazyCsvReader::new(pl_path);
             if let Some(skip_lines) = options.skip_lines {
                 reader = reader.with_skip_lines(skip_lines);
@@ -2576,7 +2573,7 @@ impl DataTableState {
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let lf = LazyJsonLineReader::new(pl_path).finish()?;
         let mut state = Self::new(
             lf,
@@ -2617,7 +2614,7 @@ impl DataTableState {
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
             let lf = LazyJsonLineReader::new(pl_path).finish()?;
             lazy_frames.push(lf);
         }
@@ -2806,7 +2803,7 @@ impl DataTableState {
     }
 
     pub fn from_delimited(path: &Path, delimiter: u8, options: &OpenOptions) -> Result<Self> {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let mut reader = LazyCsvReader::new(pl_path).with_separator(delimiter);
         if let Some(skip_lines) = options.skip_lines {
             reader = reader.with_skip_lines(skip_lines);
@@ -3912,9 +3909,10 @@ impl DataTableState {
             if matches!(dtype, DataType::List(_)) {
                 let string_series: Series = col
                     .list()?
-                    .into_iter()
+                    .amortized_iter()
                     .map(|opt_list| {
                         opt_list.map(|list_series| {
+                            let list_series = list_series.as_ref();
                             let values: Vec<String> = list_series
                                 .iter()
                                 .take(10)
@@ -3934,7 +3932,7 @@ impl DataTableState {
             }
         }
 
-        Ok(DataFrame::new(new_series)?)
+        Ok(DataFrame::new_infer_height(new_series)?)
     }
 
     /// Returns true if a buffer collect is needed after the scroll.
@@ -4360,7 +4358,7 @@ impl DataTableState {
             }
         }
 
-        let group_df = DataFrame::new(columns)?;
+        let group_df = DataFrame::new_infer_height(columns)?;
 
         // The group becomes the pipeline root while drilled in, so a sidebar filter or
         // sort applies within it instead of rebuilding the grouped view underneath.
@@ -4425,79 +4423,42 @@ impl DataTableState {
         }
     }
 
-    /// Polars 0.52 pivot_stable panics (from_physical Date/UInt32) when index is Date/Datetime. Cast to Int32, restore after.
-    /// Returns (modified df, list of (column name, original dtype) to restore after pivot).
-    fn cast_temporal_index_columns_for_pivot(
-        df: &DataFrame,
-        index: &[String],
-    ) -> Result<(DataFrame, Vec<(String, DataType)>)> {
-        let mut out = df.clone();
-        let mut restore = Vec::new();
-        for name in index {
-            if let Ok(s) = out.column(name) {
-                let dtype = s.dtype();
-                if matches!(dtype, DataType::Date | DataType::Datetime(_, _)) {
-                    restore.push((name.clone(), dtype.clone()));
-                    let casted = s.cast(&DataType::Int32)?;
-                    out.with_column(casted)?;
-                }
-            }
-        }
-        Ok((out, restore))
-    }
-
-    /// Restore Date/Datetime types on index columns after pivot.
-    fn restore_temporal_index_columns_after_pivot(
-        pivoted: &mut DataFrame,
-        restore: &[(String, DataType)],
-    ) -> Result<()> {
-        for (name, dtype) in restore {
-            if let Ok(s) = pivoted.column(name) {
-                let restored = s.cast(dtype)?;
-                pivoted.with_column(restored)?;
-            }
-        }
-        Ok(())
-    }
-
     /// Pivot the current `LazyFrame` (long → wide). Never uses `original_lf`.
-    /// Collects current `lf`, runs `pivot_stable`, then replaces `lf` with result.
-    /// We use pivot_stable for all aggregation types: Polars' non-stable pivot() prints
-    /// "unstable pivot not yet supported, using stable pivot" to stdout, which corrupts the TUI.
+    /// The lazy pivot needs the new column set before it runs, so one distinct pass on the
+    /// pivot column comes first, sorted so the new columns come out alphabetical with a
+    /// trailing `null` column, as the eager pivot ordered them. Index rows keep first-seen
+    /// order.
     pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
-        let df = collect_lazy(self.lf.clone(), self.polars_streaming)?;
-        let agg_expr = pivot_agg_expr(spec.aggregation)?;
-        let index_str: Vec<&str> = spec.index.iter().map(|s| s.as_str()).collect();
-        let index_opt = if index_str.is_empty() {
-            None
-        } else {
-            Some(index_str)
-        };
-
-        let (df_for_pivot, temporal_index_restore) = if self.workaround_pivot_date_index {
-            let (df_w, restore) =
-                Self::cast_temporal_index_columns_for_pivot(&df, spec.index.as_slice())?;
-            (df_w, Some(restore))
-        } else {
-            (df.clone(), None)
-        };
-        let sort_new_columns = spec.sort_columns.unwrap_or(true);
-        let mut pivoted = pivot_stable(
-            &df_for_pivot,
-            [spec.pivot_column.as_str()],
-            index_opt,
-            Some([spec.value_column.as_str()]),
-            sort_new_columns,
-            Some(agg_expr),
-            None,
+        let on = spec.pivot_column.as_str();
+        let value = spec.value_column.as_str();
+        let on_columns = collect_lazy(
+            self.lf
+                .clone()
+                .select([col(on)])
+                .unique(None, UniqueKeepStrategy::Any)
+                .sort([on], SortMultipleOptions::default().with_nulls_last(true)),
+            self.polars_streaming,
         )?;
-        if let Some(restore) = &temporal_index_restore {
-            Self::restore_temporal_index_columns_after_pivot(&mut pivoted, restore)?;
-        }
+        // Names are literal: a header may contain `*` or `^`, so no pattern expansion.
+        let index = if spec.index.is_empty() {
+            all() - by_name([on, value], true, false)
+        } else {
+            by_name(spec.index.iter().map(String::as_str), true, false)
+        };
+        let pivoted = self.lf.clone().pivot(
+            by_name([on], true, false),
+            Arc::new(on_columns),
+            index,
+            by_name([value], true, false),
+            pivot_agg_expr(spec.aggregation)?,
+            true,
+            PlSmallStr::from_static("_"),
+            PivotColumnNaming::Auto,
+        );
 
         self.last_pivot_spec = Some(spec.clone());
         self.last_melt_spec = None;
-        self.replace_lf_after_reshape(pivoted.lazy())?;
+        self.replace_lf_after_reshape(pivoted)?;
         Ok(())
     }
 
@@ -4506,7 +4467,7 @@ impl DataTableState {
         let on = cols(spec.value_columns.iter().map(|s| s.as_str()));
         let index = cols(spec.index.iter().map(|s| s.as_str()));
         let args = UnpivotArgsDSL {
-            on,
+            on: Some(on),
             index,
             variable_name: Some(PlSmallStr::from(spec.variable_name.as_str())),
             value_name: Some(PlSmallStr::from(spec.value_name.as_str())),
@@ -5719,7 +5680,7 @@ impl StatefulWidget for DataTable {
                 .iter()
                 .map(|name| Series::new(name.as_str().into(), Vec::<String>::new()).into())
                 .collect();
-            if let Ok(empty_df) = DataFrame::new(empty_columns) {
+            if let Ok(empty_df) = DataFrame::new_infer_height(empty_columns) {
                 if state.row_numbers {
                     let row_num_area = Rect {
                         x: area.x,
@@ -5855,7 +5816,7 @@ pub(crate) fn partition_dtype(
     if let Some(dtype) = file_schema.get(name) {
         return dtype.clone();
     }
-    let seen: PlHashSet<DataType> = values
+    let seen: PlIndexSet<DataType> = values
         .iter()
         .filter(|(k, v)| k == name && !v.is_empty() && v != "__HIVE_DEFAULT_PARTITION__")
         .map(|(_, v)| infer_field_schema(v, true, false))
@@ -6379,7 +6340,7 @@ mod tests {
             .unwrap()
             .i64()
             .unwrap()
-            .into_iter()
+            .iter()
             .collect()
     }
 
@@ -7518,7 +7479,7 @@ mod tests {
         let columns: Vec<Column> = (0..1000)
             .map(|i| Series::new(format!("f{i}").into(), &[0.0f64]).into())
             .collect();
-        let lf = DataFrame::new(columns).unwrap().lazy();
+        let lf = DataFrame::new(1, columns).unwrap().lazy();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         assert_eq!(
             estimate_bytes_per_row(&state.schema, &state.column_order, &[]),
@@ -7849,7 +7810,9 @@ mod tests {
         let blob = Series::new("blob".into(), &["aaaa", "bbbb", "cccc"])
             .cast(&DataType::Binary)
             .unwrap();
-        let lf = DataFrame::new(vec![a.into(), blob.into()]).unwrap().lazy();
+        let lf = DataFrame::new_infer_height(vec![a.into(), blob.into()])
+            .unwrap()
+            .lazy();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.visible_rows = 10;
         state.collect();
@@ -7875,7 +7838,9 @@ mod tests {
         let blob = Series::new("blob".into(), &["aaaa", "bbbb", "cccc"])
             .cast(&DataType::Binary)
             .unwrap();
-        let lf = DataFrame::new(vec![a.into(), blob.into()]).unwrap().lazy();
+        let lf = DataFrame::new_infer_height(vec![a.into(), blob.into()])
+            .unwrap()
+            .lazy();
         let state = DataTableState::new(lf, None, None, None, None, true).unwrap();
 
         let analysis_lf = state.lf.clone().select(state.binary_stub_exprs());
@@ -7918,7 +7883,7 @@ mod tests {
         )
         .cast(&DataType::Binary)
         .unwrap();
-        let df = DataFrame::new(vec![a.into(), bin.into()]).unwrap();
+        let df = DataFrame::new_infer_height(vec![a.into(), bin.into()]).unwrap();
         let area = Rect::new(0, 0, 8, 4);
         let mut buf = Buffer::empty(area);
         let mut ts = TableState::default();

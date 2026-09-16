@@ -87,36 +87,58 @@ def _to_path_strings(data: str | Path | list[PathLike] | tuple[PathLike, ...]) -
     return paths
 
 
+def _polars_requirement() -> str:
+    """The polars range this datui declares, from its own package metadata."""
+    try:
+        from importlib.metadata import requires
+
+        for requirement in requires("datui") or []:
+            spec = requirement.split(";")[0].strip()
+            if spec.startswith("polars"):
+                return spec
+    except Exception:
+        pass
+    return "the polars version this datui release was built for"
+
+
 def _view_frame(lf: pl.LazyFrame, *, options: DatuiOptions | None) -> None:
-    """Serialize LazyFrame plan and launch TUI. Tries binary first, falls back to JSON."""
+    """Serialize the LazyFrame plan and launch the TUI.
+
+    The binary plan is tried first; the deprecated JSON plan only if binary is refused.
+    Only a refused plan (ValueError) moves on: a RuntimeError is the TUI itself failing,
+    and must not launch it a second time.
+    """
     payload = lf.serialize()
-    if isinstance(payload, bytes):
-        try:
-            datui._datui.view_from_bytes(payload, options=options)
-            return
-        except (ValueError, RuntimeError):
-            pass
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*json.*deprecated", category=UserWarning)
-            try:
-                json_payload = lf.serialize(format="json")
-            except TypeError:
-                raise RuntimeError(
-                    "LazyFrame could not be sent to Datui; binary format was rejected and "
-                    "this Polars version does not support format='json'."
-                ) from None
-            if isinstance(json_payload, str):
-                datui._datui.view_from_json(json_payload, options=options)
-                return
-        raise RuntimeError(
-            "LazyFrame could not be sent to Datui; Polars version may be incompatible."
-        )
     if isinstance(payload, str):
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*json.*deprecated", category=UserWarning)
             datui._datui.view_from_json(payload, options=options)
         return
-    raise RuntimeError("LazyFrame.serialize() returned an unsupported type")
+    if not isinstance(payload, bytes):
+        raise RuntimeError("LazyFrame.serialize() returned an unsupported type")
+    try:
+        datui._datui.view_from_bytes(payload, options=options)
+        return
+    except ValueError as refused:
+        binary_error = refused
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*json.*deprecated", category=UserWarning)
+        try:
+            json_payload = lf.serialize(format="json")
+        except TypeError:
+            json_payload = None
+        if isinstance(json_payload, str):
+            try:
+                datui._datui.view_from_json(json_payload, options=options)
+                return
+            except ValueError:
+                pass
+    version = getattr(pl, "__version__", "unknown")
+    raise ValueError(
+        f"datui cannot read this LazyFrame: it was serialized by polars {version}, and this "
+        f"datui reads plans from {_polars_requirement()}. Install a matching polars, or pass "
+        "a file path to datui.view() instead."
+    ) from binary_error
 
 
 def view(

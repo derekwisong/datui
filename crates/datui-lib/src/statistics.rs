@@ -17,7 +17,9 @@ pub fn collect_lazy(
     #[cfg(feature = "streaming")]
     {
         if use_streaming {
-            lf.with_new_streaming(true).collect()
+            // A plain collect is always one frame; `Multiple` only comes from sink_multiple.
+            lf.collect_with_engine(Engine::Streaming)
+                .map(|result| result.unwrap_single())
         } else {
             lf.collect()
         }

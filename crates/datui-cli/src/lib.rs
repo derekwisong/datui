@@ -234,7 +234,7 @@ pub struct Args {
     #[arg(long = "polars-streaming", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
     pub polars_streaming: Option<bool>,
 
-    /// Apply workaround for Polars 0.52 pivot with Date/Datetime index (default: true). Set to false to test without it.
+    /// No effect since Polars 0.55: the pivot crash with a Date/Datetime index it worked around is gone. Kept so existing invocations still parse.
     #[arg(long = "workaround-pivot-date-index", value_name = "BOOL", value_parser = clap::value_parser!(bool))]
     pub workaround_pivot_date_index: Option<bool>,
 

@@ -19,7 +19,7 @@ fn test_distribution_detection_normal() -> Result<()> {
         })
         .collect();
 
-    let df = DataFrame::new(vec![Series::new("value".into(), values).into()])?;
+    let df = DataFrame::new_infer_height(vec![Series::new("value".into(), values).into()])?;
 
     let lf = df.lazy();
     let options = ComputeOptions {
@@ -51,7 +51,7 @@ fn test_correlation_matrix_computation() -> Result<()> {
     let y: Vec<f64> = x.iter().map(|&xi| xi * 2.0 + 5.0 + (xi * 0.1)).collect(); // Strong positive correlation
     let z: Vec<f64> = x.iter().map(|&xi| -xi * 1.5 + 10.0).collect(); // Strong negative correlation
 
-    let df = DataFrame::new(vec![
+    let df = DataFrame::new_infer_height(vec![
         Series::new("x".into(), x).into(),
         Series::new("y".into(), y).into(),
         Series::new("z".into(), z).into(),
@@ -88,7 +88,7 @@ fn test_correlation_pair_computation() -> Result<()> {
     let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
     let y: Vec<f64> = x.iter().map(|&xi| xi * 2.0 + 5.0).collect();
 
-    let df = DataFrame::new(vec![
+    let df = DataFrame::new_infer_height(vec![
         Series::new("x".into(), x).into(),
         Series::new("y".into(), y).into(),
     ])?;
@@ -111,7 +111,7 @@ fn test_outlier_detection() -> Result<()> {
     values.push(1000.0); // Outlier
     values.push(-1000.0); // Outlier
 
-    let df = DataFrame::new(vec![Series::new("value".into(), values).into()])?;
+    let df = DataFrame::new_infer_height(vec![Series::new("value".into(), values).into()])?;
 
     let lf = df.lazy();
     let options = ComputeOptions {

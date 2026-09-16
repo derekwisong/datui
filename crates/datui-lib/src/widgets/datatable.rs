@@ -3343,7 +3343,7 @@ impl DataTableState {
     /// straddling two groups. Returns the buffer to keep and its first row. A shape
     /// mismatch (the columns changed underneath) keeps the fetched rows alone.
     fn stitch_buffer(&mut self, df: DataFrame, buffer_start: usize) -> (DataFrame, usize) {
-        if !self.remote_window() || !self.buffer_on_hand() {
+        if !self.stitches_buffer() {
             return (df, buffer_start);
         }
         let Some(mut held) = self.buffered_df.take() else {
@@ -3439,8 +3439,14 @@ impl DataTableState {
         self.polars_streaming
     }
 
+    /// True when a fill that runs on from the rows on hand, or up to them, will be
+    /// stitched on to them rather than replace them. See `stitch_buffer`.
+    pub(crate) fn stitches_buffer(&self) -> bool {
+        self.remote_window() && self.buffer_on_hand()
+    }
+
     /// True when every row of the buffered range is on hand.
-    pub(crate) fn buffer_on_hand(&self) -> bool {
+    fn buffer_on_hand(&self) -> bool {
         self.buffered_end_row > self.buffered_start_row
             && self
                 .buffered_df
@@ -3709,6 +3715,7 @@ impl DataTableState {
 
         // Trim to the byte budget while keeping the view in range (see clamp_buffer_bytes).
         self.observe_bytes_per_row(&full_df);
+        let (full_df, buffer_start) = self.stitch_buffer(full_df, buffer_start);
         let (full_df, effective_buffer_start, effective_buffer_end) =
             self.clamp_buffer_bytes(full_df, buffer_start);
 

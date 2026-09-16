@@ -2167,7 +2167,7 @@ impl InflightCollect {
         // A row group being stitched on to the buffer covers the view with it.
         let (mut start, mut end) = (self.start, self.end);
         let (held_start, held_end) = (state.buffered_start(), state.buffered_end());
-        if state.buffer_on_hand() && held_start <= end && start <= held_end {
+        if state.stitches_buffer() && (start == held_end || end == held_start) {
             start = start.min(held_start);
             end = end.max(held_end);
         }

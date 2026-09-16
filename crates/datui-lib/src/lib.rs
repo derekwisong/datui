@@ -1304,6 +1304,7 @@ pub enum AppEvent {
     DoScrollNext,     // Deferred scroll: perform select_next (one row down)
     DoScrollPrev,     // Deferred scroll: perform select_previous (one row up)
     DoScrollEnd,      // Deferred scroll: jump to last page (throbber)
+    DoScrollHome,     // Deferred scroll: jump to first page (throbber)
     DoScrollHalfDown, // Deferred scroll: half page down
     DoScrollHalfUp,   // Deferred scroll: half page up
     GoToLine(usize),  // Deferred: jump to line number (when collect needed)
@@ -2123,6 +2124,11 @@ pub struct App {
     // generation (and the count is still invalid) the row count is shown as "?" rather than a
     // misleading provisional total.
     len_count_failed: Option<u64>,
+    /// The buffer collect in flight: its generation and the row range it will fill.
+    /// The first frame after a load sets `visible_rows` and asks for a recollect while
+    /// the pre-frame collect is still running; on an object store that restarted the
+    /// same row-group download. A collect that already covers the view is left to land.
+    collect_inflight: Option<(u64, usize, usize)>,
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
@@ -2209,6 +2215,7 @@ impl App {
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
         self.awaiting_dataset = false;
+        self.collect_inflight = None;
         self.parquet_metadata_cache = None;
         self.export_df = None;
         self.data_table_state = Some(state);
@@ -2325,10 +2332,21 @@ impl App {
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
+        if let Some((gen, start, end)) = self.collect_inflight {
+            let view_end = state.start_row + state.visible_rows;
+            if gen == self.task_generation && start <= state.start_row && view_end <= end {
+                return true;
+            }
+        }
         let Some(request) = state.prepare_async_collect(None) else {
             return false;
         };
         self.task_generation = self.task_generation.wrapping_add(1);
+        self.collect_inflight = Some((
+            self.task_generation,
+            request.buffer_start,
+            request.buffer_end,
+        ));
         let collect_slot = self.pending_collect_result.clone();
         self.spawn_bg(status, move |gen, tx| {
             match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
@@ -2592,6 +2610,7 @@ impl App {
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             len_count_inflight: None,
+            collect_inflight: None,
             len_count_failed: None,
             pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
@@ -3379,9 +3398,9 @@ impl App {
         }
     }
 
-    /// The bucket of an `s3://bucket/key` URL.
+    /// The bucket and key of an `s3://bucket/key` or `gs://bucket/key` URL.
     #[cfg(feature = "cloud")]
-    fn s3_bucket_and_key(s3_url: &str) -> Result<(String, String)> {
+    fn cloud_bucket_and_key(s3_url: &str) -> Result<(String, String)> {
         let (path_part, _ext) = source::url_path_extension(s3_url);
         let (bucket, key) = path_part
             .split_once('/')
@@ -3395,7 +3414,7 @@ impl App {
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
     ) -> Result<Arc<dyn object_store::ObjectStore>> {
-        let (bucket, _key) = Self::s3_bucket_and_key(s3_url)?;
+        let (bucket, _key) = Self::cloud_bucket_and_key(s3_url)?;
         let store = crate::cloud_browse::s3_builder(&bucket, &options.effective_cloud(cloud))
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
@@ -3478,7 +3497,7 @@ impl App {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
-        let (_bucket, key) = Self::s3_bucket_and_key(s3_url)?;
+        let (_bucket, key) = Self::cloud_bucket_and_key(s3_url)?;
         if key.is_empty() {
             return Ok(None);
         }
@@ -3561,7 +3580,7 @@ impl App {
         use object_store::ObjectStore;
 
         let (_path_part, ext) = source::url_path_extension(s3_url);
-        let (_bucket, key) = Self::s3_bucket_and_key(s3_url)?;
+        let (_bucket, key) = Self::cloud_bucket_and_key(s3_url)?;
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!(
                 "S3 URL must point to an object (e.g. s3://bucket/path/file.csv)"
@@ -3904,6 +3923,76 @@ impl App {
     /// Returns the state and a label naming the route it came from, for the debug
     /// overlay. Takes its config by value so all of it can run off the UI thread.
     fn build_schema_state(
+        lf: LazyFrame,
+        path: Option<&Path>,
+        options: &OpenOptions,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<(DataTableState, String)> {
+        let (mut state, label) = Self::schema_state_by_route(lf, path, options, cloud, runtime)?;
+        // `path` is what is actually scanned: a cloud URL only when the object is read
+        // in place, not when it was downloaded to a temporary file first.
+        if path.is_some_and(|p| {
+            matches!(
+                source::input_source(p),
+                source::InputSource::S3(_) | source::InputSource::Gcs(_)
+            )
+        }) {
+            state.set_remote_source();
+            #[cfg(feature = "cloud")]
+            if let Some(rows) = Self::cloud_object_row_count(path, options, cloud, runtime) {
+                state.set_num_rows(rows);
+            }
+        }
+        Ok((state, label))
+    }
+
+    /// The row count of one Parquet object read in place, from its footer.
+    ///
+    /// Polars answers `len()` on a cloud scan by reading the first row group rather
+    /// than the footer, so the background count that followed an open downloaded row
+    /// group 0 a second time, alongside the buffer that was showing it. The footer
+    /// has the number, and the tail read that fetches it is a few hundred kilobytes.
+    /// A prefix or glob is many footers and keeps the background count; a count that
+    /// cannot be read leaves it too.
+    #[cfg(feature = "cloud")]
+    fn cloud_object_row_count(
+        path: Option<&Path>,
+        options: &OpenOptions,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+    ) -> Option<usize> {
+        let p = path?;
+        let s = p.to_string_lossy();
+        if options.hive || s.ends_with('/') || s.contains('*') {
+            return None;
+        }
+        let (full, store) = match source::input_source(p) {
+            source::InputSource::S3(url) => {
+                let full = format!("s3://{url}");
+                let store = Self::build_s3_object_store(&full, cloud, options).ok()?;
+                (full, store)
+            }
+            source::InputSource::Gcs(url) => {
+                let full = format!("gs://{url}");
+                let store = Self::build_gcs_object_store(&full).ok()?;
+                (full, store)
+            }
+            _ => return None,
+        };
+        let (_bucket, key) = Self::cloud_bucket_and_key(&full).ok()?;
+        if key.is_empty() {
+            return None;
+        }
+        wait_on_runtime(runtime, async move {
+            cloud_hive::rows_in_cloud_parquet(store, &key).await
+        })?
+        .ok()
+    }
+
+    /// The schema routes, cheapest first: one local footer, one cloud footer, then
+    /// asking the frame.
+    fn schema_state_by_route(
         lf: LazyFrame,
         path: Option<&Path>,
         options: &OpenOptions,
@@ -7694,13 +7783,15 @@ impl App {
                 }
             }
             KeyCode::Home if event.is_press() => {
-                if let Some(ref mut state) = self.data_table_state {
-                    if state.start_row > 0 {
-                        state.scroll_to(0);
-                    }
-                    state.table_state.select(Some(0));
+                // Deferred like End. Setting `start_row` alone left the old buffer on
+                // screen, drawn from its first row rather than the dataset's, until
+                // something else happened to trigger a collect.
+                if self.data_table_state.is_some() {
+                    self.busy = true;
+                    Some(AppEvent::DoScrollHome)
+                } else {
+                    None
                 }
-                None
             }
             KeyCode::End if event.is_press() => {
                 if self.data_table_state.is_some() {
@@ -8887,6 +8978,7 @@ impl App {
             AppEvent::DoScrollNext => self.handle_scroll(|s| s.select_next()),
             AppEvent::DoScrollPrev => self.handle_scroll(|s| s.select_previous()),
             AppEvent::DoScrollEnd => self.handle_scroll(|s| s.scroll_to_end()),
+            AppEvent::DoScrollHome => self.handle_scroll(|s| s.scroll_to_start()),
             AppEvent::DoScrollHalfDown => self.handle_scroll(|s| s.half_page_down()),
             AppEvent::DoScrollHalfUp => self.handle_scroll(|s| s.half_page_up()),
             AppEvent::GoToLine(n) => {
@@ -9069,6 +9161,7 @@ impl App {
             }
             AppEvent::BackgroundCollectReady { generation } => {
                 if *generation == self.task_generation {
+                    self.collect_inflight = None;
                     let taken = self
                         .pending_collect_result
                         .lock()
@@ -9227,6 +9320,7 @@ impl App {
                 message,
             } => {
                 if *generation == self.task_generation {
+                    self.collect_inflight = None;
                     self.analysis_modal.computing = None;
                     // The load is over and installed nothing, so the previous dataset is
                     // the current one again — and it is what the error modal sits over.

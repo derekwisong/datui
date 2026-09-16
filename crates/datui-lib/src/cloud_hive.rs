@@ -62,21 +62,32 @@ fn partition_columns_from_prefix(prefix_str: &str) -> Vec<String> {
     columns
 }
 
-/// Read Parquet schema from the last N bytes of a file (footer). The slice must be the tail of the file.
-fn schema_from_parquet_footer_tail(tail_bytes: &[u8]) -> Result<Schema> {
+/// Read the Parquet footer at the end of `tail_bytes`: the schema and the row count. The
+/// slice must be the tail of the file.
+fn footer_from_parquet_tail(tail_bytes: &[u8]) -> Result<(Schema, usize)> {
     let mut cursor = Cursor::new(tail_bytes);
     let mut reader = ParquetReader::new(&mut cursor);
     let arrow_schema = reader
         .schema()
         .map_err(|e| color_eyre::eyre::eyre!("Parquet schema read failed: {}", e))?;
-    Ok(Schema::from_arrow_schema(arrow_schema.as_ref()))
+    let rows = reader
+        .num_rows()
+        .map_err(|e| color_eyre::eyre::eyre!("Parquet row count read failed: {}", e))?;
+    Ok((Schema::from_arrow_schema(arrow_schema.as_ref()), rows))
 }
 
-/// Fetch the tail of one object and return its schema. Does not fetch full file.
-async fn read_schema_from_cloud_parquet(
+/// The row count in one object's footer. Does not fetch the data.
+pub async fn rows_in_cloud_parquet(store: Arc<dyn ObjectStore>, key: &str) -> Result<usize> {
+    read_parquet_footer(&store, &OsPath::from(key))
+        .await
+        .map(|(_, rows)| rows)
+}
+
+/// Fetch the tail of one object and read its footer. Does not fetch the full file.
+async fn read_parquet_footer(
     store: &Arc<dyn ObjectStore>,
     path: &OsPath,
-) -> Result<Schema> {
+) -> Result<(Schema, usize)> {
     let meta = store
         .head(path)
         .await
@@ -92,7 +103,7 @@ async fn read_schema_from_cloud_parquet(
         .into_iter()
         .next()
         .ok_or_else(|| color_eyre::eyre::eyre!("Empty range response"))?;
-    schema_from_parquet_footer_tail(&tail)
+    footer_from_parquet_tail(&tail)
 }
 
 /// Infer (merged_schema, partition_columns) from one parquet file in a cloud hive prefix.
@@ -111,7 +122,7 @@ pub async fn schema_from_one_cloud_hive(
     let one_key = first_parquet_key_spine(&store, &prefix_path, 0, &mut values)
         .await?
         .ok_or_else(|| color_eyre::eyre::eyre!("No parquet file found in cloud hive prefix"))?;
-    let file_schema = read_schema_from_cloud_parquet(&store, &one_key).await?;
+    let (file_schema, _rows) = read_parquet_footer(&store, &one_key).await?;
     let key_str = one_key.as_ref();
     let partition_columns = partition_columns_from_prefix(key_str);
     let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
@@ -159,9 +170,20 @@ mod tests {
     }
 
     #[test]
-    fn schema_from_parquet_footer_tail_invalid_returns_err() {
+    fn footer_from_parquet_tail_invalid_returns_err() {
         let invalid = vec![0u8; 100];
-        let r = schema_from_parquet_footer_tail(&invalid);
+        let r = footer_from_parquet_tail(&invalid);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn footer_from_parquet_tail_reads_schema_and_row_count() {
+        use polars::prelude::{df, ParquetWriter};
+        let mut df = df!("a" => &[1i32, 2, 3], "b" => &["x", "y", "z"]).unwrap();
+        let mut bytes = Vec::new();
+        ParquetWriter::new(&mut bytes).finish(&mut df).unwrap();
+        let (schema, rows) = footer_from_parquet_tail(&bytes).unwrap();
+        assert_eq!(rows, 3);
+        assert_eq!(schema.len(), 2);
     }
 }

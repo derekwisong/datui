@@ -415,6 +415,16 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         area.width as usize
     };
 
+    // Sources a URL can name. Taken from the config rather than from the sources
+    // listed so far, so a source that is hidden or still being discovered is not
+    // reported as missing.
+    let known_sources: Vec<String> = app
+        .app_config
+        .cloud
+        .sources
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
     let mut lines: Vec<Line> = Vec::new();
     for (idx, row) in visible.iter().enumerate() {
         let selected = idx == app.home.selected;
@@ -464,7 +474,10 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     via,
                     &app.home.filter,
                     // Inside a source the trail already names it.
-                    app.home.browsing.is_none(),
+                    app.home
+                        .browsing
+                        .is_none()
+                        .then_some(known_sources.as_slice()),
                     ctx,
                 ));
             }
@@ -736,7 +749,7 @@ fn entry_line<'a>(
     show_meta: bool,
     matched_column: Option<&'a str>,
     filter: &str,
-    show_source: bool,
+    known_sources: Option<&[String]>,
     ctx: &RenderContext,
 ) -> Line<'a> {
     // The selection marker is the loudest thing on screen, and the only thing that
@@ -766,9 +779,14 @@ fn entry_line<'a>(
         _ => entry.kind.label(),
     };
     // Two stores can hold the same bucket and key, so a row from one that is named in
-    // its URL says which, where a kind would otherwise go.
-    let kind = match (named_source, kind) {
-        (Some(id), "") if show_source => id,
+    // its URL says which, where a kind would otherwise go. A recent whose source has
+    // since left the config says that instead of failing only when it is opened.
+    let missing_source = named_source
+        .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k == id)));
+    let missing_note = named_source.map(|id| format!("source not found: {id}"));
+    let kind: &str = match (named_source, kind, known_sources) {
+        (Some(_), "", Some(_)) if missing_source => missing_note.as_deref().unwrap_or(""),
+        (Some(id), "", Some(_)) => id,
         _ => kind,
     };
     // Hive and multi-file datasets wear a flat chip; the rest stay as a word.
@@ -854,6 +872,8 @@ fn entry_line<'a>(
     };
     let kind_style = if matched_column.is_some() {
         base.fg(ctx.keybind_hints)
+    } else if missing_source {
+        base.fg(ctx.warning)
     } else {
         match entry.kind {
             EntryKind::Hive | EntryKind::MultiFile => Style::default()
@@ -1269,11 +1289,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_recent_from_a_source_names_it_or_says_it_is_gone() {
+        let ctx = RenderContext::for_test();
+        let path = std::path::Path::new("s3://lab@data/sales.parquet");
+        let mut entry = Entry::for_test(path, "sales.parquet");
+        entry.kind = EntryKind::Unknown;
+        let text = |known: Option<&[String]>| -> String {
+            entry_line(&entry, false, 80, false, None, "", known, &ctx)
+                .spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect()
+        };
+        let lab = ["lab".to_string()];
+        assert!(text(Some(&lab)).contains("sales.parquet lab"));
+        assert!(text(Some(&[])).contains("source not found: lab"));
+        // Inside a source the trail already says which, so nothing is added.
+        assert!(!text(None).contains("lab"));
+    }
+
     /// The row's spans, as (text, is_highlighted) pairs.
     fn row_spans(name: &str, filter: &str, column: Option<&str>) -> Vec<(String, bool)> {
         let ctx = RenderContext::for_test();
         let entry = Entry::for_test(std::path::Path::new("/tmp/x"), name);
-        let line = entry_line(&entry, false, 60, false, column, filter, true, &ctx);
+        let line = entry_line(&entry, false, 60, false, column, filter, Some(&[]), &ctx);
         line.spans
             .iter()
             .skip(1) // the selection marker

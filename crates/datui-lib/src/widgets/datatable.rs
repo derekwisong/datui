@@ -165,6 +165,13 @@ struct GroupedView {
     sort_ascending: bool,
 }
 
+/// The query bar a result came from, with its text. At most one is active at a time.
+enum ActiveQuery {
+    Dsl(String),
+    Sql(String),
+    Fuzzy(String),
+}
+
 /// Parameters for a background buffer load. Produced by `prepare_async_collect()`.
 pub struct CollectRequest {
     /// LazyFrame to collect (sliced to the buffer range, with column selection applied).
@@ -371,21 +378,65 @@ impl DataTableState {
         Ok(())
     }
 
+    /// Make `lf` the frame shown and the base the sidebar filters and sort go on top of,
+    /// with `schema` as its schema and every column in view. Row counts are invalidated.
+    fn install_base(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
+        self.invalidate_num_rows();
+        self.base_lf = lf.clone();
+        self.lf = lf;
+        self.schema = schema;
+        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+    }
+
+    /// Install a query's result as the pipeline root. The other query bars are cleared,
+    /// sidebar filters and sort are dropped, and the view returns to the top-left of an
+    /// ungrouped, unlocked frame. A DSL or fuzzy query runs over the data as loaded, so
+    /// a pivot or melt in effect is forgotten; SQL runs against the reshape and keeps
+    /// it. The caller collects.
+    fn install_query_result(&mut self, lf: LazyFrame, schema: Arc<Schema>, query: ActiveQuery) {
+        self.install_base(lf, schema);
+        self.active_query.clear();
+        self.active_sql_query.clear();
+        self.active_fuzzy_query.clear();
+        let keeps_reshape = matches!(query, ActiveQuery::Sql(_));
+        match query {
+            ActiveQuery::Dsl(q) => self.active_query = q,
+            ActiveQuery::Sql(q) => self.active_sql_query = q,
+            ActiveQuery::Fuzzy(q) => self.active_fuzzy_query = q,
+        }
+        if !keeps_reshape {
+            self.reshaped_lf = None;
+            self.last_pivot_spec = None;
+            self.last_melt_spec = None;
+        }
+        self.locked_columns_count = 0;
+        self.filters.clear();
+        self.sort_columns.clear();
+        self.sort_ascending = true;
+        self.start_row = 0;
+        self.termcol_index = 0;
+        self.drilled_down_group_index = None;
+        self.drilled_down_group_key = None;
+        self.drilled_down_group_key_columns = None;
+        self.grouped = None;
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
+        self.buffered_df = None;
+        self.table_state.select(Some(0));
+    }
+
     /// Reset LazyFrame and view state to original_lf. Schema is re-fetched so it matches
     /// after a previous query/SQL that may have changed columns. Caller should call
     /// collect() afterward if display update is needed (reset/query/fuzzy do; sql_query
     /// relies on event loop Collect).
     fn reset_lf_to_original(&mut self) {
-        self.invalidate_num_rows();
-        self.lf = self.original_lf.clone();
-        self.base_lf = self.original_lf.clone();
-        self.reshaped_lf = None;
-        self.schema = self
+        let schema = self
             .original_lf
             .clone()
             .collect_schema()
             .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
-        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+        self.install_base(self.original_lf.clone(), schema);
+        self.reshaped_lf = None;
         self.active_query.clear();
         self.active_sql_query.clear();
         self.active_fuzzy_query.clear();
@@ -3903,11 +3954,9 @@ impl DataTableState {
             sort_ascending: self.sort_ascending,
         });
         self.sort_ascending = true;
-        self.invalidate_num_rows();
-        self.lf = group_df.lazy();
-        self.base_lf = self.lf.clone();
-        self.schema = self.lf.clone().collect_schema()?;
-        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+        let lf = group_df.lazy();
+        let schema = lf.clone().collect_schema()?;
+        self.install_base(lf, schema);
         self.drilled_down_group_index = Some(group_index);
         self.start_row = 0;
         self.termcol_index = 0;
@@ -4052,12 +4101,9 @@ impl DataTableState {
     }
 
     fn replace_lf_after_reshape(&mut self, lf: LazyFrame) -> Result<()> {
-        self.invalidate_num_rows();
+        let schema = lf.clone().collect_schema()?;
         self.reshaped_lf = Some(lf.clone());
-        self.base_lf = lf.clone();
-        self.lf = lf;
-        self.schema = self.lf.clone().collect_schema()?;
-        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+        self.install_base(lf, schema);
         self.filters.clear();
         self.sort_columns.clear();
         self.active_query.clear();
@@ -4283,54 +4329,13 @@ impl DataTableState {
                     },
                 };
 
-                self.schema = schema;
-                self.invalidate_num_rows();
-                self.base_lf = lf.clone();
-                self.lf = lf;
-                self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-
-                // Lock grouped columns if by clause was used
-                // Only lock the columns specified in the 'by' clause, not the value columns
-                if !group_by_col_names.is_empty() {
-                    // Group columns appear first in Polars results, so count consecutive
-                    // columns from the start that are in group_by_col_names
-                    let mut locked_count = 0;
-                    for col_name in &self.column_order {
-                        if group_by_col_names.contains(col_name) {
-                            locked_count += 1;
-                        } else {
-                            // Once we hit a non-group column, we've passed all group columns
-                            break;
-                        }
-                    }
-                    self.locked_columns_count = locked_count;
-                } else {
-                    self.locked_columns_count = 0;
-                }
-
-                // Clear filters when using query
-                self.filters.clear();
-                self.sort_columns.clear();
-                self.sort_ascending = true;
-                self.start_row = 0;
-                self.termcol_index = 0;
-                self.active_query = query;
-                self.active_sql_query.clear();
-                self.active_fuzzy_query.clear();
-                // The view no longer shows the reshape, so nothing may run against it.
-                self.reshaped_lf = None;
-                self.last_pivot_spec = None;
-                self.last_melt_spec = None;
-                self.buffered_start_row = 0;
-                self.buffered_end_row = 0;
-                self.buffered_df = None;
-                // Reset drill-down state when applying new query
-                self.drilled_down_group_index = None;
-                self.drilled_down_group_key = None;
-                self.drilled_down_group_key_columns = None;
-                self.grouped = None;
-                // Reset table state selection
-                self.table_state.select(Some(0));
+                self.install_query_result(lf, schema, ActiveQuery::Dsl(query));
+                // Group columns come first in the result; lock that leading run.
+                self.locked_columns_count = self
+                    .column_order
+                    .iter()
+                    .take_while(|c| group_by_col_names.contains(c))
+                    .count();
                 // Collect will clamp start_row to valid range, but we want to ensure it's 0
                 // So we set it to 0, collect (which may clamp it), then ensure it's 0 again
                 self.collect();
@@ -4387,28 +4392,7 @@ impl DataTableState {
                             return;
                         }
                     };
-                    self.schema = schema;
-                    self.invalidate_num_rows();
-                    self.base_lf = result_lf.clone();
-                    self.lf = result_lf;
-                    self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-                    self.active_sql_query = sql;
-                    self.active_query.clear();
-                    self.active_fuzzy_query.clear();
-                    self.locked_columns_count = 0;
-                    self.filters.clear();
-                    self.sort_columns.clear();
-                    self.sort_ascending = true;
-                    self.start_row = 0;
-                    self.termcol_index = 0;
-                    self.drilled_down_group_index = None;
-                    self.drilled_down_group_key = None;
-                    self.drilled_down_group_key_columns = None;
-                    self.grouped = None;
-                    self.buffered_start_row = 0;
-                    self.buffered_end_row = 0;
-                    self.buffered_df = None;
-                    self.table_state.select(Some(0));
+                    self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql));
                 }
                 Err(e) => {
                     self.error = Some(e);
@@ -4471,31 +4455,8 @@ impl DataTableState {
             })
             .collect();
         let combined = token_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
-        self.base_lf = self.original_lf.clone().filter(combined);
-        self.lf = self.base_lf.clone();
-        self.schema = schema;
-        self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-        self.filters.clear();
-        self.sort_columns.clear();
-        self.active_query.clear();
-        self.active_sql_query.clear();
-        self.active_fuzzy_query = query;
-        self.reshaped_lf = None;
-        self.last_pivot_spec = None;
-        self.last_melt_spec = None;
-        // Reset view and buffer so collect() runs on the new lf
-        self.locked_columns_count = 0;
-        self.start_row = 0;
-        self.termcol_index = 0;
-        self.drilled_down_group_index = None;
-        self.drilled_down_group_key = None;
-        self.drilled_down_group_key_columns = None;
-        self.grouped = None;
-        self.buffered_start_row = 0;
-        self.buffered_end_row = 0;
-        self.buffered_df = None;
-        self.table_state.select(Some(0));
-        self.invalidate_num_rows();
+        let lf = self.original_lf.clone().filter(combined);
+        self.install_query_result(lf, schema, ActiveQuery::Fuzzy(query));
         self.collect();
     }
 }
@@ -6439,6 +6400,30 @@ mod tests {
             1,
             "fuzzy_search-style filter should match 1 row"
         );
+    }
+
+    /// A fuzzy search replaces the sort along with the rest of the pipeline: a descending
+    /// sort before it must not leave the result reversed with no sort column to show it.
+    #[test]
+    fn fuzzy_search_after_a_descending_sort_is_not_reversed() {
+        let lf = df!(
+            "id" => &[1i32, 2, 3],
+            "name" => &["alice", "bob", "carol"]
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.sort(vec!["id".to_string()], false);
+        state.fuzzy_search("a".to_string());
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(state.view_sort_columns().is_empty());
+        assert!(state.view_sort_ascending());
+
+        // The sidebar re-applies the (empty) filters and sort over the result.
+        state.filter(Vec::new());
+        let df = state.lf.clone().collect().unwrap();
+        assert_eq!(df.height(), 2);
+        assert_eq!(df.column("id").unwrap().get(0).unwrap(), AnyValue::Int32(1));
     }
 
     #[test]

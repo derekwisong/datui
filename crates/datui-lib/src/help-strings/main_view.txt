@@ -39,5 +39,11 @@ Analysis View:
   Esc:              Return to main view
 
 Exit:
-  Ctrl+O:           Home screen (works during a load)
+  Ctrl+O:           Home screen (works during a load; abandons it)
+  Ctrl+Q:           Quit from anywhere (Ctrl+C too, outside a text field)
   q:                Quit
+
+While busy:
+  Keys typed at a spinner are queued and replayed once the work is done, so
+  typing ahead is never lost. Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load
+  at once.

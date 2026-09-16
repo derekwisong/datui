@@ -2255,21 +2255,106 @@ impl App {
         self.input_dropped = dropped;
     }
 
-    /// The keys that act at once while the app is busy; every other key waits. Only the
-    /// escapes qualify: Ctrl-C and Ctrl-Q quit and Ctrl-O goes home, so a slow load never
-    /// traps the user, and a confirmation modal is answered when it is asked. The home
-    /// screen is never busy on its own account (only work left running behind it sets
-    /// `busy`), so it keeps every key. Nothing is classified by keycode alone: the `h` in
-    /// a typed `/hello` or the `q` in `/query` is not a command.
-    pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {
+    /// The escapes that act at once while busy and jump ahead of anything queued: Ctrl-Q
+    /// (and Ctrl-C outside a text field) quit, Ctrl-O goes home, so a slow load never
+    /// traps the user; a confirmation modal keeps its keys so it can be answered; and the
+    /// home screen is never busy on its own account (only work left running behind it sets
+    /// `busy`), so it keeps every key.
+    pub fn hard_escape_while_busy(&self, key: &KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        (ctrl
+        let quit = ctrl
+            && (key.code == KeyCode::Char('q')
+                || (key.code == KeyCode::Char('c') && !self.text_field_focused()));
+        let home = ctrl && key.code == KeyCode::Char('o');
+        quit || home || self.confirmation_modal.active || self.input_mode == InputMode::Home
+    }
+
+    /// Whether a key may act while the app is busy. `App::handle` gates on this; the main
+    /// loop applies the extra "nothing queued" condition for the second group.
+    ///
+    /// The hard escapes always qualify. Beyond them, in the plain Normal-mode table view
+    /// (no text field, no modal), the harmless view keys act — quit, column scroll (never
+    /// collects), and help — because the first key held in that view cannot be part of a
+    /// typed `/query`. Everything else, letters included, is type-ahead and waits; a bare
+    /// Enter or Esc there confirms nothing and is dropped by the caller. Nothing is
+    /// classified by keycode alone: the `h` in a typed `/hello` never scrolls.
+    pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {
+        if self.hard_escape_while_busy(key) {
+            return true;
+        }
+        self.in_normal_table_view()
             && matches!(
                 key.code,
-                KeyCode::Char('c') | KeyCode::Char('q') | KeyCode::Char('o')
-            ))
-            || self.confirmation_modal.active
-            || self.input_mode == InputMode::Home
+                KeyCode::Char('q')
+                    | KeyCode::Char('Q')
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('l')
+                    | KeyCode::F(1)
+                    | KeyCode::Char('?')
+            )
+    }
+
+    /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
+    /// (template, analysis) drawn over it.
+    pub fn in_normal_table_view(&self) -> bool {
+        self.input_mode == InputMode::Normal
+            && !self.show_help
+            && !self.template_modal.active
+            && !self.analysis_modal.active
+            && !self.error_modal.active
+            && !self.success_modal.active
+            && !self.confirmation_modal.active
+    }
+
+    /// Whether a text field currently owns typed characters, so Ctrl-C copies rather than
+    /// quits. The home filter is deliberately excluded: Ctrl-C quits from the home screen.
+    pub fn text_field_focused(&self) -> bool {
+        match self.input_mode {
+            InputMode::Editing => true,
+            InputMode::Export => matches!(
+                self.export_modal.focus,
+                ExportFocus::PathInput | ExportFocus::CsvDelimiter
+            ),
+            InputMode::SortFilter => {
+                self.sort_filter_modal.focus == SortFilterFocus::Body
+                    && self.sort_filter_modal.active_tab == SortFilterTab::Filter
+                    && self.sort_filter_modal.filter.focus == FilterFocus::Value
+            }
+            InputMode::PivotMelt => matches!(
+                self.pivot_melt_modal.focus,
+                PivotMeltFocus::PivotFilter
+                    | PivotMeltFocus::MeltFilter
+                    | PivotMeltFocus::MeltPattern
+                    | PivotMeltFocus::MeltVarName
+                    | PivotMeltFocus::MeltValName
+            ),
+            InputMode::Chart => {
+                self.chart_export_modal.active
+                    && matches!(
+                        self.chart_export_modal.focus,
+                        ChartExportFocus::PathInput
+                            | ChartExportFocus::TitleInput
+                            | ChartExportFocus::WidthInput
+                            | ChartExportFocus::HeightInput
+                    )
+            }
+            InputMode::Normal => {
+                self.template_modal.active
+                    && self.template_modal.mode != TemplateModalMode::List
+                    && matches!(
+                        self.template_modal.create_focus,
+                        CreateFocus::Name
+                            | CreateFocus::Description
+                            | CreateFocus::ExactPath
+                            | CreateFocus::RelativePath
+                            | CreateFocus::PathPattern
+                            | CreateFocus::FilenamePattern
+                    )
+            }
+            InputMode::Home | InputMode::Info => false,
+        }
     }
 
     pub fn send_event(&mut self, event: AppEvent) -> Result<()> {
@@ -4418,12 +4503,16 @@ impl App {
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
-        // Quit from anywhere, before any mode gets a say: these are the keys that must
-        // work when a long export or chart has the app busy, and a mode without a
-        // CONTROL arm (the chart view) used to swallow them.
-        if event.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(event.code, KeyCode::Char('c') | KeyCode::Char('q'))
-        {
+        let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+        // Ctrl-Q quits from anywhere, before any mode gets a say — including a mode
+        // with no CONTROL arm of its own (the chart view) that would otherwise swallow
+        // it while busy.
+        if ctrl && event.code == KeyCode::Char('q') {
+            return Some(AppEvent::Exit);
+        }
+        // Ctrl-C also quits from anywhere, except in a focused text field, where it is
+        // the textarea's Copy binding and must reach it.
+        if ctrl && event.code == KeyCode::Char('c') && !self.text_field_focused() {
             return Some(AppEvent::Exit);
         }
 
@@ -10865,6 +10954,19 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     // Main event loop: replay one held key, poll for input, drain the channel, redraw.
     loop {
         let mut updated = pump.replay_one()?;
+        // A replayed key may have queued a follow-up (a Search, an Export); handle it
+        // before the terminal is read so a key typed now cannot overtake it.
+        match pump.drain()? {
+            Drained::Continue { updated: drained } => updated |= drained,
+            Drained::Exit => {
+                ratatui::restore();
+                return Ok(());
+            }
+            Drained::Crash(msg) => {
+                ratatui::restore();
+                return Err(color_eyre::eyre::eyre!(msg));
+            }
+        }
         let app = &pump.app;
 
         // Poll with a shorter timeout when busy so the throbber animates (~30fps).

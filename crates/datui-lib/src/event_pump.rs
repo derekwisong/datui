@@ -21,6 +21,16 @@ use crate::{App, AppEvent};
 /// tail of a typed query would replay as hotkeys.
 pub const MAX_HELD_KEYS: usize = 32;
 
+/// What a fresh key from the terminal should do while the app cannot take it directly.
+enum Act {
+    /// Handle it now.
+    Now,
+    /// Hold it for replay once the app is idle.
+    Hold,
+    /// Discard it: a bare Enter/Esc at a busy table confirms nothing.
+    Drop,
+}
+
 /// What a pass over the channel found.
 #[derive(Debug)]
 pub enum Drained {
@@ -78,22 +88,51 @@ impl EventPump {
         !self.held.is_empty() && !self.app.is_busy()
     }
 
-    /// A key read from the terminal. Handled now if nothing is ahead of it and the app
-    /// is idle, or if it is one of the few that act while busy; otherwise it waits
-    /// behind whatever was typed before it. Returns whether the app changed.
+    /// A key read from the terminal. Handled now if it is a hard escape, or the app is
+    /// idle with nothing queued ahead of it, or it is one of the view keys that act at a
+    /// busy table; a bare Enter/Esc at a busy table is dropped; otherwise it waits behind
+    /// whatever was typed before it. Returns whether the app changed.
     pub fn terminal_key(&mut self, key: KeyEvent) -> Result<bool> {
         self.discard_stale();
-        let acts_now = if self.app.is_busy() {
-            self.app.key_acts_while_busy(&key)
-        } else {
-            self.held.is_empty()
-        };
-        if acts_now {
-            self.dispatch(key)?;
-            return Ok(true);
+        match self.classify(&key) {
+            Act::Now => {
+                self.dispatch(key)?;
+                Ok(true)
+            }
+            Act::Drop => Ok(false),
+            Act::Hold => {
+                self.hold(key);
+                Ok(false)
+            }
         }
-        self.hold(key);
-        Ok(false)
+    }
+
+    fn classify(&self, key: &KeyEvent) -> Act {
+        // Escapes jump ahead of anything queued, busy or idle: Ctrl-Q/Ctrl-C quit,
+        // Ctrl-O goes home, a confirmation modal is answered. Checked first so a
+        // Ctrl-C typed during replay is not appended behind the held keys, where a
+        // modal opening could discard it.
+        if self.app.hard_escape_while_busy(key) {
+            return Act::Now;
+        }
+        let queued = !self.held.is_empty();
+        // Idle with nothing ahead: ordinary front-of-line handling.
+        if !self.app.is_busy() && !queued {
+            return Act::Now;
+        }
+        // Busy, nothing queued yet, at the plain table view: the harmless view keys act
+        // (quit, column scroll, help); a bare Enter/Esc confirms nothing and is dropped;
+        // everything else is type-ahead and waits. Once anything is queued, or the view
+        // is a text field or modal, every key waits to keep the typed order.
+        if self.app.is_busy() && !queued && self.app.in_normal_table_view() {
+            if self.app.key_acts_while_busy(key) {
+                return Act::Now;
+            }
+            if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                return Act::Drop;
+            }
+        }
+        Act::Hold
     }
 
     /// Replay the oldest held key if the app is idle. Returns whether one was replayed.
@@ -164,8 +203,10 @@ impl EventPump {
         Ok(Drained::Continue { updated })
     }
 
-    /// Offer one key to the app, the way the channel drain does.
+    /// Offer one key to the app, the way the channel drain does, then reconcile the
+    /// keys queued behind it with the screen it left.
     fn dispatch(&mut self, key: KeyEvent) -> Result<()> {
+        let gen_before = self.app.screen_generation();
         match self.app.handle(&AppEvent::Key(key)) {
             Ok(Some(follow_up)) => self.tx.send(follow_up)?,
             Ok(None) => {}
@@ -173,19 +214,37 @@ impl EventPump {
             // nothing on this thread does; the key keeps its place either way.
             Err(deferred) => self.held.push_front(deferred),
         }
-        self.discard_stale();
+        if self.app.screen_generation() != gen_before {
+            // This key abandoned the view — home, or a declined download. The keys
+            // queued behind it were typed for the screen that is now gone.
+            self.held.clear();
+            self.app.set_input_dropped(false);
+        } else {
+            // A modal this key opened — an overwrite prompt, an error it surfaced — is
+            // one the queued keys are the answer to, unlike a modal that arrives on its
+            // own from a background result (handled in `drain_from`). Keep them and
+            // re-baseline the stamp so `discard_stale` does not then drop them.
+            self.held_for = Self::screen_of(&self.app);
+        }
         Ok(())
     }
 
     /// Hold a key for later. A held navigation key repeats fast and would replay as a
     /// burst, each step chaining another collect, so consecutive repeats become one
-    /// press. At the cap the newest key is dropped and the user told; never the oldest,
-    /// which may be the `/` the rest were typed into.
+    /// press — but only at the plain table view and only while every key already held is
+    /// itself a navigation key. Once `/` or any other key is held the run is text, so
+    /// nothing after it coalesces and a typed `/bookkeeper` keeps both `k`s. At the cap
+    /// the newest key is dropped and the user told; never the oldest, which may be the
+    /// `/` the rest were typed into.
     fn hold(&mut self, key: KeyEvent) {
         if self.held.is_empty() {
             self.held_for = Self::screen_of(&self.app);
         }
-        if is_navigation(&key) && self.held.back() == Some(&key) {
+        if is_navigation(&key)
+            && self.held.back() == Some(&key)
+            && self.app.in_normal_table_view()
+            && self.held.iter().all(is_navigation)
+        {
             return;
         }
         if self.held.len() >= MAX_HELD_KEYS {
@@ -195,11 +254,18 @@ impl EventPump {
         self.held.push_back(key);
     }
 
-    /// Drop the held keys if the screen they were typed at has gone: a modal has
-    /// appeared that they were not answers to, or the view they were meant for was
-    /// abandoned.
+    /// Drop the held keys if the screen they were typed at has gone: the view was
+    /// abandoned (a bumped generation), or a modal appeared that they were not answers
+    /// to. A modal that a held key opens itself is re-baselined in `dispatch`, so this
+    /// only fires for a change the keys did not cause — a background result, above all.
     fn discard_stale(&mut self) {
-        if !self.held.is_empty() && self.held_for != Self::screen_of(&self.app) {
+        if self.held.is_empty() {
+            return;
+        }
+        let now = Self::screen_of(&self.app);
+        let abandoned = now.generation != self.held_for.generation;
+        let new_modal = now.modal && !self.held_for.modal;
+        if abandoned || new_modal {
             self.held.clear();
             self.app.set_input_dropped(false);
         }
@@ -213,7 +279,9 @@ impl EventPump {
     }
 }
 
-/// Keys that move the view and are commonly held down.
+/// Keys that move the view and are commonly held down. Column scroll (Left/Right/h/l)
+/// is included so a held one collapses when it cannot act live (behind other keys, or
+/// in a modal).
 fn is_navigation(key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -223,8 +291,12 @@ fn is_navigation(key: &KeyEvent) -> bool {
         | KeyCode::PageDown
         | KeyCode::Home
         | KeyCode::End
+        | KeyCode::Left
+        | KeyCode::Right
         | KeyCode::Char('j')
         | KeyCode::Char('k')
+        | KeyCode::Char('h')
+        | KeyCode::Char('l')
         | KeyCode::Char('G') => true,
         KeyCode::Char('f') | KeyCode::Char('b') | KeyCode::Char('d') | KeyCode::Char('u') => ctrl,
         _ => false,
@@ -234,6 +306,7 @@ fn is_navigation(key: &KeyEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::export_modal::{ExportFocus, ExportFormat};
     use crate::{InputMode, LoadingState, OpenOptions};
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     use std::io::Write;
@@ -482,14 +555,14 @@ mod tests {
         assert_eq!(held(&p).len(), 4);
     }
 
-    /// Work that ends by opening a modal drops the keys typed before it: a held Enter
-    /// was not an answer to a message the user has not seen.
+    /// Work that ends by opening a modal from a background result drops the keys typed
+    /// before it: a held key was not an answer to a message the user has not seen.
     #[test]
     fn keys_held_before_an_error_modal_appears_are_dropped() {
         let mut p = pump();
         p.app.busy = true;
-        p.terminal_key(plain(KeyCode::Enter)).unwrap();
-        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        // A typed sequence (starts with `/`, so it is held, not dropped).
+        type_keys(&mut p, "/x");
         assert_eq!(held(&p).len(), 2);
 
         p.send(AppEvent::BackgroundError {
@@ -502,6 +575,256 @@ mod tests {
         assert!(held(&p).is_empty());
         settle(&mut p);
         assert!(p.app.error_modal.active, "the error is still on screen");
+    }
+
+    // --- Fixes from the high-effort review of #162 --------------------------------
+
+    /// Item 1: Ctrl-C in a focused text field copies (reaches the textarea) rather than
+    /// quitting; Ctrl-Q still quits from there.
+    #[test]
+    fn ctrl_c_in_the_query_bar_does_not_quit() {
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        assert_eq!(p.app.input_mode, InputMode::Editing);
+
+        let out = p.app.handle(&AppEvent::Key(ctrl('c')));
+        assert!(
+            !matches!(out, Ok(Some(AppEvent::Exit))),
+            "Ctrl-C in the query bar must not quit"
+        );
+        assert_eq!(
+            p.app.input_mode,
+            InputMode::Editing,
+            "still in the query bar"
+        );
+        // Ctrl-Q quits from anywhere, the query bar included.
+        assert!(matches!(
+            p.app.handle(&AppEvent::Key(ctrl('q'))),
+            Ok(Some(AppEvent::Exit))
+        ));
+    }
+
+    /// Item 2: a `q` at the startup spinner (busy, plain table view, nothing held) quits
+    /// at once; a typed `/query` is still held and typed.
+    #[test]
+    fn q_at_the_startup_spinner_quits_but_slash_query_types() {
+        let mut p = pump();
+        p.app.busy = true;
+        assert!(p.app.in_normal_table_view());
+        p.terminal_key(plain(KeyCode::Char('q'))).unwrap();
+        assert!(
+            matches!(p.drain().unwrap(), Drained::Exit),
+            "q quits at once"
+        );
+
+        let mut p2 = pump();
+        p2.app.busy = true;
+        type_keys(&mut p2, "/query");
+        assert_eq!(held(&p2).len(), 6, "the q in /query is held, not a quit");
+    }
+
+    /// Item 3: coalescing never eats a doubled letter in typed text, but does collapse a
+    /// held navigation key in the plain table view.
+    #[test]
+    fn doubled_letters_survive_but_navigation_coalesces() {
+        let mut p = pump();
+        p.app.busy = true;
+        type_keys(&mut p, "/bookkeeper");
+        let typed: String = held(&p)
+            .iter()
+            .filter_map(|c| match c {
+                KeyCode::Char(ch) => Some(*ch),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(typed, "/bookkeeper", "both k's, o's and e's survive");
+
+        let mut p2 = pump();
+        p2.app.busy = true;
+        type_keys(&mut p2, "jj");
+        assert_eq!(
+            held(&p2),
+            vec![KeyCode::Char('j')],
+            "a doubled navigation key collapses"
+        );
+    }
+
+    /// Item 4: a hard escape typed during the replay window (idle, keys still held) acts
+    /// at once rather than queueing behind the held keys; a non-escape waits.
+    #[test]
+    fn escapes_act_during_the_replay_window() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.busy = true;
+        type_keys(&mut p, "/foo");
+        p.app.busy = false; // replay window: idle with keys still held
+
+        assert!(p.terminal_key(ctrl('o')).unwrap(), "Ctrl-O acts now");
+        assert_eq!(p.app.input_mode, InputMode::Home);
+        assert!(held(&p).is_empty(), "going home cleared the held keys");
+
+        let (mut p2, _d) = loaded_pump();
+        p2.app.busy = true;
+        type_keys(&mut p2, "/foo");
+        p2.app.busy = false;
+        assert!(
+            !p2.terminal_key(plain(KeyCode::Char('x'))).unwrap(),
+            "a fresh non-escape key waits behind the held ones"
+        );
+        assert_eq!(held(&p2).last().copied(), Some(KeyCode::Char('x')));
+    }
+
+    /// Item 5: a replayed Enter's Search runs before a key typed in the same moment. The
+    /// run loop drains the channel after a replay, so the fresh key finds the app busy
+    /// and waits; it then acts on the search's result.
+    #[test]
+    fn a_replayed_search_runs_before_a_fresh_key() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.busy = true;
+        type_keys(&mut p, "/select name where age > 40");
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        p.app.busy = false;
+
+        // Replay one key, then drain, exactly as the run loop does before polling.
+        loop {
+            let replayed = p.replay_one().unwrap();
+            assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+            if p.app.is_busy() {
+                // The Search is running: a key typed now must wait for it.
+                assert!(
+                    !p.terminal_key(plain(KeyCode::Char('G'))).unwrap(),
+                    "G waits behind the running search"
+                );
+                break;
+            }
+            assert!(replayed, "should still be replaying the query");
+        }
+
+        settle(&mut p);
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.get_active_query(), "select name where age > 40");
+        assert_eq!(state.num_rows, 2);
+        assert_eq!(
+            state.table_state.selected(),
+            Some(1),
+            "G ran after the search, on its result"
+        );
+    }
+
+    /// Item 6: a bare Enter or Esc at a busy table confirms nothing and is dropped; the
+    /// Enter that submits a typed query is held because `/` is queued ahead of it.
+    #[test]
+    fn a_bare_enter_or_esc_at_a_busy_table_is_dropped() {
+        let mut p = pump();
+        p.app.busy = true;
+        assert!(!p.terminal_key(plain(KeyCode::Enter)).unwrap());
+        assert!(!p.terminal_key(plain(KeyCode::Esc)).unwrap());
+        assert!(held(&p).is_empty(), "neither is queued");
+
+        let (mut p2, _d) = loaded_pump();
+        p2.app.busy = true;
+        type_keys(&mut p2, "/x");
+        p2.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            held(&p2).last().copied(),
+            Some(KeyCode::Enter),
+            "the query's Enter is held"
+        );
+    }
+
+    /// Item 7: column scroll acts live at a busy table rather than queueing, and a held
+    /// column-scroll key coalesces when it cannot act live.
+    #[test]
+    fn column_scroll_acts_live_and_coalesces() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.busy = true;
+        let before = p.app.data_table_state.as_ref().unwrap().termcol_index;
+        assert!(
+            p.terminal_key(plain(KeyCode::Right)).unwrap(),
+            "Right scrolls a column live"
+        );
+        assert!(held(&p).is_empty(), "it did not queue");
+        assert_eq!(
+            p.app.data_table_state.as_ref().unwrap().termcol_index,
+            before + 1
+        );
+
+        let (mut p2, _d) = loaded_pump();
+        p2.app.busy = true;
+        // A non-actor navigation key is held first, so the Rights behind it queue.
+        p2.terminal_key(plain(KeyCode::Char('k'))).unwrap();
+        for _ in 0..20 {
+            p2.terminal_key(plain(KeyCode::Right)).unwrap();
+        }
+        assert_eq!(
+            held(&p2),
+            vec![KeyCode::Char('k'), KeyCode::Right],
+            "the held Rights collapse to one"
+        );
+    }
+
+    /// Item 8: F1 and `?` open help during a long load, at once, with nothing held.
+    #[test]
+    fn help_opens_during_a_load() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.busy = true;
+        assert!(p.terminal_key(plain(KeyCode::F(1))).unwrap());
+        assert!(p.app.show_help, "F1 opened help immediately");
+        assert!(held(&p).is_empty());
+
+        let (mut p2, _d) = loaded_pump();
+        p2.app.busy = true;
+        assert!(p2.terminal_key(plain(KeyCode::Char('?'))).unwrap());
+        assert!(p2.app.show_help, "? opened help immediately");
+        assert!(held(&p2).is_empty());
+    }
+
+    /// Item 9: a modal a replayed key opens itself (an overwrite prompt) does not discard
+    /// the answer keys queued behind it, so held Enter, Left, Enter completes the export.
+    #[test]
+    fn a_prompt_a_replayed_key_opens_keeps_its_answer_keys() {
+        let (mut p, dir) = loaded_pump();
+        let path = dir.path().join("out.csv");
+        std::fs::write(&path, "old").expect("seed an existing file");
+
+        // Stage the export modal on an existing path, focused on the path field.
+        p.app.export_modal.active = true;
+        p.app.export_modal.selected_format = ExportFormat::Csv;
+        p.app.export_modal.focus = ExportFocus::PathInput;
+        p.app
+            .export_modal
+            .path_input
+            .set_value(path.display().to_string());
+        p.app.input_mode = InputMode::Export;
+
+        // Keys typed while busy in Export mode are all held (not a plain table view).
+        p.app.busy = true;
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        p.terminal_key(plain(KeyCode::Left)).unwrap();
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        assert_eq!(held(&p).len(), 3);
+        p.app.busy = false;
+
+        // The first replayed Enter opens the overwrite confirmation.
+        assert!(p.replay_one().unwrap());
+        assert!(
+            p.app.confirmation_modal.active,
+            "the overwrite prompt is up"
+        );
+        assert_eq!(
+            held(&p),
+            vec![KeyCode::Left, KeyCode::Enter],
+            "the answer keys were not discarded by the prompt"
+        );
+
+        settle(&mut p);
+        assert!(
+            p.app.success_modal.active,
+            "the held Left+Enter answered the prompt and the export ran"
+        );
+        assert!(
+            std::fs::read(&path).unwrap().len() > 3,
+            "the file was overwritten with exported data"
+        );
     }
 
     /// Going home mid-load drops the keys typed at the load: replayed into the home

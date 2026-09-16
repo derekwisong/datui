@@ -22,21 +22,6 @@ Three of these check an invariant rather than merely the absence of a panic. A f
 that only asks "did it crash" finds far less than one that can also ask "did it produce
 an answer that contradicts the other implementation of the same thing".
 
-### What the first run found
-
-Two real bugs, both fixed in the change that added these targets, and both kept fixed by
-the corpus:
-
-- **The query parser died on the stack.** Parsing is recursive descent, so nesting in
-  the query became nesting on the stack. Roughly two hundred nested parentheses, or the
-  same number of leading minus signs, exhausted a worker thread's stack and killed the
-  process. Anyone could reach it by pasting into the query bar. `parse_expr` now refuses
-  to nest past `MAX_EXPR_DEPTH` and returns an ordinary error.
-- **The color parser sliced a character in half.** It checked that a hex color was
-  seven *bytes* and then indexed at fixed byte offsets. `#` followed by a four-byte emoji
-  and two more characters is also seven bytes, so the slice landed mid-character and
-  panicked. It now requires the body to be ASCII before indexing.
-
 ## Running
 
 Install the tool once:

@@ -955,7 +955,13 @@ pub mod tests {
     }
 
     /// Returns a tokio runtime handle for use in tests.
+    ///
+    /// Also points the cache at a directory of the test run's own. Every `App` a test
+    /// builds takes this handle, and an `App` that opens a file records it in recents;
+    /// without the redirect those temp-dir fixtures land in the developer's own home
+    /// screen as dead roots.
     pub fn test_runtime() -> tokio::runtime::Handle {
+        crate::text_input_flows::isolate_cache();
         static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
         RT.get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()

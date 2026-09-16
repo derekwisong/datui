@@ -329,19 +329,23 @@ fn focus_controls_whether_a_cursor_is_drawn() {
     let rect = Rect::new(0, 0, 2, 1);
     let mut buf = Buffer::empty(rect);
     (&input).render(rect, &mut buf);
-    assert!(!buf[(0, 0)]
-        .style()
-        .add_modifier
-        .contains(Modifier::REVERSED));
+    assert!(
+        !buf[(0, 0)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    );
 
     input.set_focused(true);
     assert!(input.is_focused());
     let mut buf = Buffer::empty(rect);
     (&input).render(rect, &mut buf);
-    assert!(buf[(0, 0)]
-        .style()
-        .add_modifier
-        .contains(Modifier::REVERSED));
+    assert!(
+        buf[(0, 0)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    );
 }
 
 #[test]

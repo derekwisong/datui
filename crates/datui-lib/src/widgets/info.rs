@@ -636,21 +636,21 @@ impl<'a> DataTableInfo<'a> {
                 );
                 y += 1;
             }
-            if let Some(ref cb) = meta.created_by {
-                if y < area.y + h {
-                    label_value_row(
-                        "Created by:",
-                        cb,
-                        Rect {
-                            y,
-                            width: w,
-                            height: 1,
-                            ..area
-                        },
-                        buf,
-                        LABEL_WIDTH,
-                    );
-                }
+            if let Some(ref cb) = meta.created_by
+                && y < area.y + h
+            {
+                label_value_row(
+                    "Created by:",
+                    cb,
+                    Rect {
+                        y,
+                        width: w,
+                        height: 1,
+                        ..area
+                    },
+                    buf,
+                    LABEL_WIDTH,
+                );
             }
         }
     }

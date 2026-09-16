@@ -9,9 +9,9 @@
 //! input", "Caching schema", "Loading buffer"), unlike the percentage beside it in
 //! the control bar, which is a constant per phase.
 
+use crate::LoadingState;
 use crate::glyphs;
 use crate::render::context::RenderContext;
-use crate::LoadingState;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

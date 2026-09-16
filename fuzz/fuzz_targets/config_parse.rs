@@ -19,7 +19,8 @@ fn parser() -> &'static ColorParser {
     PARSER.get_or_init(|| {
         // `parse` short-circuits to `Color::Reset` when NO_COLOR is set, which would
         // hide every path this target exists to reach.
-        std::env::remove_var("NO_COLOR");
+        // SAFETY: libFuzzer calls the target on a single thread.
+        unsafe { std::env::remove_var("NO_COLOR") };
         ColorParser::new()
     })
 }

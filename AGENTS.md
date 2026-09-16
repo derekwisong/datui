@@ -108,7 +108,8 @@ Keep new UI inside it:
 
 ## Conventions
 
-- Rust 2021, `cargo fmt`, zero clippy warnings, no lint suppressions.
+- Rust edition 2024, MSRV 1.95 (`rust-version`, checked in CI). `cargo fmt`, zero
+  clippy warnings, no lint suppressions.
 - Comments are brief and explain why, especially around Polars operations.
   Do not comment what the code already says.
 - `Result<T>` for anything fallible; user-facing errors go to the error modal,

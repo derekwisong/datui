@@ -7,7 +7,8 @@ resolver = "2"
 [package]
 name = "datui"
 version = "0.4.0-dev"
-edition = "2021"
+edition = "2024"
+rust-version = "1.95"
 authors = ["Derek Wisong"]
 description = "Data Exploration in the Terminal"
 repository = "https://github.com/derekwisong/datui"
@@ -44,7 +45,7 @@ datui-cli = { path = "crates/datui-cli", version = "0.4.0-dev" }
 
 [dev-dependencies]
 # For integration tests (tests/*.rs) that use polars and config parsing
-polars = { version = "0.52", features = ["lazy"] }
+polars = { version = "0.55", features = ["lazy"] }
 tempfile = "3.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 fs2 = "0.4"

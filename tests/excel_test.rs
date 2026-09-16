@@ -26,17 +26,18 @@ fn pump_open_until_loaded(
 ) {
     let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
     loop {
-        if let Some(ev) = next.take() {
-            if matches!(ev, AppEvent::Crash(_)) {
-                app.event(&ev);
-                return;
+        match next.take() {
+            Some(ev) => {
+                if matches!(ev, AppEvent::Crash(_)) {
+                    app.event(&ev);
+                    return;
+                }
+                next = app.event(&ev);
             }
-            next = app.event(&ev);
-        } else {
-            match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+            _ => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
                 Ok(ev) => next = Some(ev),
                 Err(_) => return,
-            }
+            },
         }
     }
 }
@@ -63,7 +64,10 @@ fn reads_headers_and_row_count() {
 
     assert_eq!(df.height(), 1000, "people.xlsx has 1000 data rows");
     assert_eq!(
-        df.get_column_names_str(),
+        df.get_column_names()
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
         [
             "id",
             "first_name",

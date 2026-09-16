@@ -1,8 +1,7 @@
 use color_eyre::Result;
-use datui::statistics::{compute_statistics_with_options, ComputeOptions, DistributionType};
+use datui::statistics::{ComputeOptions, DistributionType, compute_statistics_with_options};
 use polars::prelude::*;
 use std::path::Path;
-use std::sync::Arc;
 
 mod common;
 
@@ -11,7 +10,7 @@ mod common;
 fn load_large_dataset() -> Result<LazyFrame> {
     common::ensure_sample_data();
     let path = Path::new("tests/sample-data/large_dataset.parquet");
-    let pl_path = PlPath::Local(Arc::from(path));
+    let pl_path = PlRefPath::try_from_path(path)?;
     let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
     Ok(lf)
 }

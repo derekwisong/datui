@@ -8,8 +8,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::cursor::CursorMove;
 use super::TextArea;
+use super::cursor::CursorMove;
 
 /// A key, independent of any particular terminal backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -122,10 +122,11 @@ pub(super) fn action_for(input: Input) -> Action {
     } = input;
 
     // Plain (or shifted) printable characters insert themselves.
-    if let Key::Char(c) = key {
-        if !ctrl && !alt {
-            return Action::Insert(c);
-        }
+    if let Key::Char(c) = key
+        && !ctrl
+        && !alt
+    {
+        return Action::Insert(c);
     }
 
     match (key, ctrl, alt) {

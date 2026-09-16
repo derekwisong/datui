@@ -341,16 +341,16 @@ impl ChartModal {
     }
 
     fn display_list_with_selected(filtered: Vec<String>, selected: &Option<String>) -> Vec<String> {
-        if let Some(ref selected) = selected {
-            if let Some(pos) = filtered.iter().position(|c| c == selected) {
-                let mut out = vec![filtered[pos].clone()];
-                for (i, c) in filtered.iter().enumerate() {
-                    if i != pos {
-                        out.push(c.clone());
-                    }
+        if let Some(selected) = selected
+            && let Some(pos) = filtered.iter().position(|c| c == selected)
+        {
+            let mut out = vec![filtered[pos].clone()];
+            for (i, c) in filtered.iter().enumerate() {
+                if i != pos {
+                    out.push(c.clone());
                 }
-                return out;
             }
+            return out;
         }
         filtered
     }
@@ -445,12 +445,12 @@ impl ChartModal {
         let mut out = self.y_columns.clone();
         if self.focus == ChartFocus::YList {
             let display = self.y_display_list();
-            if let Some(i) = self.y_list_state.selected() {
-                if i < display.len() {
-                    let name = &display[i];
-                    if !out.contains(name) {
-                        out.push(name.clone());
-                    }
+            if let Some(i) = self.y_list_state.selected()
+                && i < display.len()
+            {
+                let name = &display[i];
+                if !out.contains(name) {
+                    out.push(name.clone());
                 }
             }
         }
@@ -460,10 +460,10 @@ impl ChartModal {
     pub fn effective_hist_column(&self) -> Option<String> {
         if self.focus == ChartFocus::HistList {
             let display = self.hist_display_list();
-            if let Some(i) = self.hist_list_state.selected() {
-                if i < display.len() {
-                    return Some(display[i].clone());
-                }
+            if let Some(i) = self.hist_list_state.selected()
+                && i < display.len()
+            {
+                return Some(display[i].clone());
             }
         }
         self.hist_column.clone()
@@ -472,10 +472,10 @@ impl ChartModal {
     pub fn effective_box_column(&self) -> Option<String> {
         if self.focus == ChartFocus::BoxList {
             let display = self.box_display_list();
-            if let Some(i) = self.box_list_state.selected() {
-                if i < display.len() {
-                    return Some(display[i].clone());
-                }
+            if let Some(i) = self.box_list_state.selected()
+                && i < display.len()
+            {
+                return Some(display[i].clone());
             }
         }
         self.box_column.clone()
@@ -484,10 +484,10 @@ impl ChartModal {
     pub fn effective_kde_column(&self) -> Option<String> {
         if self.focus == ChartFocus::KdeList {
             let display = self.kde_display_list();
-            if let Some(i) = self.kde_list_state.selected() {
-                if i < display.len() {
-                    return Some(display[i].clone());
-                }
+            if let Some(i) = self.kde_list_state.selected()
+                && i < display.len()
+            {
+                return Some(display[i].clone());
             }
         }
         self.kde_column.clone()
@@ -496,10 +496,10 @@ impl ChartModal {
     pub fn effective_heatmap_x_column(&self) -> Option<String> {
         if self.focus == ChartFocus::HeatmapXList {
             let display = self.heatmap_x_display_list();
-            if let Some(i) = self.heatmap_x_list_state.selected() {
-                if i < display.len() {
-                    return Some(display[i].clone());
-                }
+            if let Some(i) = self.heatmap_x_list_state.selected()
+                && i < display.len()
+            {
+                return Some(display[i].clone());
             }
         }
         self.heatmap_x_column.clone()
@@ -508,10 +508,10 @@ impl ChartModal {
     pub fn effective_heatmap_y_column(&self) -> Option<String> {
         if self.focus == ChartFocus::HeatmapYList {
             let display = self.heatmap_y_display_list();
-            if let Some(i) = self.heatmap_y_list_state.selected() {
-                if i < display.len() {
-                    return Some(display[i].clone());
-                }
+            if let Some(i) = self.heatmap_y_list_state.selected()
+                && i < display.len()
+            {
+                return Some(display[i].clone());
             }
         }
         self.heatmap_y_column.clone()
@@ -523,10 +523,10 @@ impl ChartModal {
             return;
         }
         let display = self.y_display_list();
-        if let Some(i) = self.y_list_state.selected() {
-            if i < display.len() {
-                self.y_columns.push(display[i].clone());
-            }
+        if let Some(i) = self.y_list_state.selected()
+            && i < display.len()
+        {
+            self.y_columns.push(display[i].clone());
         }
     }
 
@@ -771,10 +771,10 @@ impl ChartModal {
     /// Toggle x selection with spacebar: set remembered x to the highlighted row (single selection).
     pub fn x_list_toggle(&mut self) {
         let display = self.x_display_list();
-        if let Some(i) = self.x_list_state.selected() {
-            if i < display.len() {
-                self.x_column = Some(display[i].clone());
-            }
+        if let Some(i) = self.x_list_state.selected()
+            && i < display.len()
+        {
+            self.x_column = Some(display[i].clone());
         }
     }
 
@@ -852,10 +852,10 @@ impl ChartModal {
 
     pub fn hist_list_toggle(&mut self) {
         let display = self.hist_display_list();
-        if let Some(i) = self.hist_list_state.selected() {
-            if i < display.len() {
-                self.hist_column = Some(display[i].clone());
-            }
+        if let Some(i) = self.hist_list_state.selected()
+            && i < display.len()
+        {
+            self.hist_column = Some(display[i].clone());
         }
     }
 
@@ -889,10 +889,10 @@ impl ChartModal {
 
     pub fn box_list_toggle(&mut self) {
         let display = self.box_display_list();
-        if let Some(i) = self.box_list_state.selected() {
-            if i < display.len() {
-                self.box_column = Some(display[i].clone());
-            }
+        if let Some(i) = self.box_list_state.selected()
+            && i < display.len()
+        {
+            self.box_column = Some(display[i].clone());
         }
     }
 
@@ -926,10 +926,10 @@ impl ChartModal {
 
     pub fn kde_list_toggle(&mut self) {
         let display = self.kde_display_list();
-        if let Some(i) = self.kde_list_state.selected() {
-            if i < display.len() {
-                self.kde_column = Some(display[i].clone());
-            }
+        if let Some(i) = self.kde_list_state.selected()
+            && i < display.len()
+        {
+            self.kde_column = Some(display[i].clone());
         }
     }
 
@@ -963,10 +963,10 @@ impl ChartModal {
 
     pub fn heatmap_x_list_toggle(&mut self) {
         let display = self.heatmap_x_display_list();
-        if let Some(i) = self.heatmap_x_list_state.selected() {
-            if i < display.len() {
-                self.heatmap_x_column = Some(display[i].clone());
-            }
+        if let Some(i) = self.heatmap_x_list_state.selected()
+            && i < display.len()
+        {
+            self.heatmap_x_column = Some(display[i].clone());
         }
     }
 
@@ -1000,10 +1000,10 @@ impl ChartModal {
 
     pub fn heatmap_y_list_toggle(&mut self) {
         let display = self.heatmap_y_display_list();
-        if let Some(i) = self.heatmap_y_list_state.selected() {
-            if i < display.len() {
-                self.heatmap_y_column = Some(display[i].clone());
-            }
+        if let Some(i) = self.heatmap_y_list_state.selected()
+            && i < display.len()
+        {
+            self.heatmap_y_column = Some(display[i].clone());
         }
     }
 

@@ -5,9 +5,9 @@
 //! Building each operation out of that single primitive is what keeps undo
 //! exact: the inverse of a replacement is another replacement.
 
-use super::cursor::{next_word_start, prev_word_start, CursorMove};
+use super::cursor::{CursorMove, next_word_start, prev_word_start};
 use super::history::Edit;
-use super::{byte_of_char, char_count, split_lines, TextArea};
+use super::{TextArea, byte_of_char, char_count, split_lines};
 
 impl TextArea {
     /// Replace `[start, end)` with `text`, recording it for undo.

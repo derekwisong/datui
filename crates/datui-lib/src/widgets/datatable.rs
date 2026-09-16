@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::{fs, fs::File, path::Path, path::PathBuf};
 
+use polars::frame::PivotColumnNaming;
 use polars::io::HiveOptions;
 use polars::prelude::*;
 use ratatui::{
@@ -24,24 +25,24 @@ use crate::query::parse_query;
 use crate::statistics::collect_lazy;
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 use polars::io::csv::read::NullValues;
-use polars::lazy::frame::pivot::pivot_stable;
 use polars::prelude::StrptimeOptions;
 use std::io::{BufReader, Read};
 
-use calamine::{open_workbook_auto, Data, Reader};
+use calamine::{Data, Reader, open_workbook_auto};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use orc_rust::ArrowReaderBuilder;
 use tempfile::NamedTempFile;
 
 use arrow::array::types::{
-    Date32Type, Date64Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
-    TimestampMillisecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+    Date32Type, Date64Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
+    TimestampMillisecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow::array::{Array, AsArray};
 use arrow::record_batch::RecordBatch;
 
 fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
-    let e = col(PlSmallStr::from_static(""));
+    // The lazy pivot only allows the value column to be referenced as `element()`.
+    let e = element();
     let expr = match agg {
         PivotAggregation::Last => e.last(),
         PivotAggregation::First => e.first(),
@@ -145,7 +146,6 @@ pub struct DataTableState {
     /// When true, use Polars streaming engine for LazyFrame collect when the streaming feature is enabled.
     pub polars_streaming: bool,
     /// When true, cast Date/Datetime pivot index columns to Int32 before pivot (workaround for Polars 0.52).
-    workaround_pivot_date_index: bool,
     /// When true, `collect()` / `apply_transformations()` skip the blocking collect.
     /// The caller is responsible for triggering an async collect afterwards.
     pub defer_collect: bool,
@@ -404,7 +404,6 @@ impl DataTableState {
             partition_columns: None,
             decompress_temp_file: None,
             polars_streaming,
-            workaround_pivot_date_index: true,
             defer_collect: false,
             needs_recollect: false,
         })
@@ -422,7 +421,6 @@ impl DataTableState {
         )?;
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
-        state.workaround_pivot_date_index = options.workaround_pivot_date_index;
         Ok(state)
     }
 
@@ -498,7 +496,6 @@ impl DataTableState {
             partition_columns,
             decompress_temp_file: None,
             polars_streaming: options.polars_streaming,
-            workaround_pivot_date_index: options.workaround_pivot_date_index,
             defer_collect: false,
             needs_recollect: false,
         })
@@ -617,7 +614,7 @@ impl DataTableState {
     ) -> Result<Self> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             glob: is_glob,
             ..Default::default()
@@ -662,7 +659,7 @@ impl DataTableState {
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
             let lf = LazyFrame::scan_parquet(pl_path, Default::default())?;
             lazy_frames.push(lf);
         }
@@ -690,7 +687,7 @@ impl DataTableState {
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
         let mut state = Self::new(
             lf,
@@ -731,7 +728,7 @@ impl DataTableState {
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
             let lf = LazyFrame::scan_ipc(pl_path, Default::default(), Default::default())?;
             lazy_frames.push(lf);
         }
@@ -857,7 +854,7 @@ impl DataTableState {
         };
         let rows: Vec<Vec<Data>> = range.rows().map(|r| r.to_vec()).collect();
         if rows.is_empty() {
-            let empty_df = DataFrame::new(vec![])?;
+            let empty_df = DataFrame::empty();
             let mut state = Self::new(
                 empty_df.lazy(),
                 pages_lookahead,
@@ -888,7 +885,7 @@ impl DataTableState {
             let series = Self::excel_column_to_series(name.as_str(), &col_cells, inferred)?;
             series_vec.push(series.into());
         }
-        let df = DataFrame::new(series_vec)?;
+        let df = DataFrame::new_infer_height(series_vec)?;
         let mut state = Self::new(
             df.lazy(),
             pages_lookahead,
@@ -1168,7 +1165,7 @@ impl DataTableState {
     /// arrow 57; Polars uses polars-arrow, so we cannot use Series::from_arrow).
     fn arrow_record_batches_to_dataframe(batches: &[RecordBatch]) -> Result<DataFrame> {
         if batches.is_empty() {
-            return Ok(DataFrame::new(vec![])?);
+            return Ok(DataFrame::empty());
         }
         let mut all_dfs = Vec::with_capacity(batches.len());
         for batch in batches {
@@ -1180,7 +1177,7 @@ impl DataTableState {
                 let s = Self::arrow_array_to_polars_series(name, col)?;
                 series_vec.push(s.into());
             }
-            let df = DataFrame::new(series_vec)?;
+            let df = DataFrame::new_infer_height(series_vec)?;
             all_dfs.push(df);
         }
         let mut out = all_dfs.remove(0);
@@ -1375,7 +1372,7 @@ impl DataTableState {
     pub fn scan_parquet_hive(path: &Path) -> Result<LazyFrame> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             hive_options: HiveOptions::new_enabled(),
             glob: is_glob,
@@ -1388,7 +1385,7 @@ impl DataTableState {
     pub fn scan_parquet_hive_with_schema(path: &Path, schema: Arc<Schema>) -> Result<LazyFrame> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             schema: Some(schema),
             hive_options: HiveOptions::new_enabled(),
@@ -1424,12 +1421,12 @@ impl DataTableState {
                 {
                     return Some(child);
                 }
-            } else if child.is_dir() {
-                if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
-                    if name.contains('=') && first_partition_child.is_none() {
-                        first_partition_child = Some(child);
-                    }
-                }
+            } else if child.is_dir()
+                && let Some(name) = child.file_name().and_then(|n| n.to_str())
+                && name.contains('=')
+                && first_partition_child.is_none()
+            {
+                first_partition_child = Some(child);
             }
         }
         first_partition_child.and_then(|p| Self::first_parquet_file_spine(&p, depth + 1, max_depth))
@@ -1490,11 +1487,11 @@ impl DataTableState {
                         let mut sum = 0usize;
                         let mut ok = 0usize;
                         for path in chunk {
-                            if let Ok(file) = File::open(path) {
-                                if let Ok(n) = ParquetReader::new(file).num_rows() {
-                                    sum += n;
-                                    ok += 1;
-                                }
+                            if let Ok(file) = File::open(path)
+                                && let Ok(n) = ParquetReader::new(file).num_rows()
+                            {
+                                sum += n;
+                                ok += 1;
                             }
                         }
                         (sum, ok)
@@ -1623,18 +1620,17 @@ impl DataTableState {
         let mut first_partition_child: Option<std::path::PathBuf> = None;
         for entry in entries.flatten() {
             let child = entry.path();
-            if child.is_dir() {
-                if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
-                    if let Some((key, _)) = name.split_once('=') {
-                        if !key.is_empty() && seen.insert(key.to_string()) {
-                            columns.push(key.to_string());
-                        }
-                        if first_partition_child.is_none() {
-                            first_partition_child = Some(child);
-                        }
-                        break;
-                    }
+            if child.is_dir()
+                && let Some(name) = child.file_name().and_then(|n| n.to_str())
+                && let Some((key, _)) = name.split_once('=')
+            {
+                if !key.is_empty() && seen.insert(key.to_string()) {
+                    columns.push(key.to_string());
                 }
+                if first_partition_child.is_none() {
+                    first_partition_child = Some(child);
+                }
+                break;
             }
         }
         if let Some(one) = first_partition_child {
@@ -1648,13 +1644,12 @@ impl DataTableState {
         let mut columns = Vec::<String>::new();
         let mut seen = HashSet::<String>::new();
         for segment in path_str.split('/') {
-            if let Some((key, rest)) = segment.split_once('=') {
-                if !key.is_empty()
-                    && (rest == "*" || !rest.contains('*'))
-                    && seen.insert(key.to_string())
-                {
-                    columns.push(key.to_string());
-                }
+            if let Some((key, rest)) = segment.split_once('=')
+                && !key.is_empty()
+                && (rest == "*" || !rest.contains('*'))
+                && seen.insert(key.to_string())
+            {
+                columns.push(key.to_string());
             }
         }
         columns
@@ -1679,7 +1674,7 @@ impl DataTableState {
     ) -> Result<Self> {
         let path_str = path.as_os_str().to_string_lossy();
         let is_glob = path_str.contains('*');
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let args = ScanArgsParquet {
             hive_options: HiveOptions::new_enabled(),
             glob: is_glob,
@@ -1855,7 +1850,7 @@ impl DataTableState {
 
     /// Infer CSV schema with minimal read (one row) for building null_values when both global and per-column are set.
     fn csv_schema_for_null_values(path: &Path, options: &OpenOptions) -> Result<Arc<Schema>> {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let mut reader = LazyCsvReader::new(pl_path).with_n_rows(Some(1));
         if let Some(skip_lines) = options.skip_lines {
             reader = reader.with_skip_lines(skip_lines);
@@ -1919,13 +1914,14 @@ impl DataTableState {
         };
         let count_df = collect_lazy(lf.clone().select([len()]), options.polars_streaming)
             .map_err(color_eyre::eyre::Report::from)?;
-        let total: u32 = if let Some(col) = count_df.get(0) {
-            match col.first() {
+        let total: u32 = match count_df.get(0) {
+            Some(col) => match col.first() {
                 Some(AnyValue::UInt32(v)) => *v,
                 _ => return Ok(lf),
+            },
+            _ => {
+                return Ok(lf);
             }
-        } else {
-            return Ok(lf);
         };
         let keep = total.saturating_sub(n as u32);
         Ok(lf.slice(0, keep))
@@ -2501,7 +2497,7 @@ impl DataTableState {
     where
         F: FnOnce(LazyCsvReader) -> LazyCsvReader,
     {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let reader = LazyCsvReader::new(pl_path);
         let lf = func(reader).finish()?;
         Self::new(
@@ -2525,7 +2521,7 @@ impl DataTableState {
         let nv = Self::build_null_values_for_csv(options, Some(paths[0].as_ref()))?;
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
             let mut reader = LazyCsvReader::new(pl_path);
             if let Some(skip_lines) = options.skip_lines {
                 reader = reader.with_skip_lines(skip_lines);
@@ -2576,7 +2572,7 @@ impl DataTableState {
         row_numbers: bool,
         row_start_index: usize,
     ) -> Result<Self> {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let lf = LazyJsonLineReader::new(pl_path).finish()?;
         let mut state = Self::new(
             lf,
@@ -2617,7 +2613,7 @@ impl DataTableState {
         }
         let mut lazy_frames = Vec::with_capacity(paths.len());
         for p in paths {
-            let pl_path = PlPath::Local(Arc::from(p.as_ref()));
+            let pl_path = PlRefPath::try_from_path(p.as_ref())?;
             let lf = LazyJsonLineReader::new(pl_path).finish()?;
             lazy_frames.push(lf);
         }
@@ -2806,7 +2802,7 @@ impl DataTableState {
     }
 
     pub fn from_delimited(path: &Path, delimiter: u8, options: &OpenOptions) -> Result<Self> {
-        let pl_path = PlPath::Local(Arc::from(path));
+        let pl_path = PlRefPath::try_from_path(path)?;
         let mut reader = LazyCsvReader::new(pl_path).with_separator(delimiter);
         if let Some(skip_lines) = options.skip_lines {
             reader = reader.with_skip_lines(skip_lines);
@@ -2840,10 +2836,11 @@ impl DataTableState {
         let new_start_row = if self.start_row as i64 + rows <= 0 {
             0
         } else {
-            if let Some(df) = self.df.as_ref() {
-                if rows > 0 && df.shape().0 <= self.visible_rows {
-                    return false;
-                }
+            if let Some(df) = self.df.as_ref()
+                && rows > 0
+                && df.shape().0 <= self.visible_rows
+            {
+                return false;
             }
             let unclamped = (self.start_row as i64 + rows) as usize;
             if rows > 0 {
@@ -2877,10 +2874,11 @@ impl DataTableState {
         let new_start_row = if self.start_row as i64 + rows <= 0 {
             0
         } else {
-            if let Some(df) = self.df.as_ref() {
-                if rows > 0 && df.shape().0 <= self.visible_rows {
-                    return false;
-                }
+            if let Some(df) = self.df.as_ref()
+                && rows > 0
+                && df.shape().0 <= self.visible_rows
+            {
+                return false;
             }
             let unclamped = (self.start_row as i64 + rows) as usize;
             if rows > 0 {
@@ -2933,17 +2931,16 @@ impl DataTableState {
         if !self.num_rows_valid {
             self.num_rows =
                 match collect_lazy(self.lf.clone().select([len()]), self.polars_streaming) {
-                    Ok(df) => {
-                        if let Some(col) = df.get(0) {
+                    Ok(df) => match df.get(0) {
+                        Some(col) => {
                             if let Some(AnyValue::UInt32(len)) = col.first() {
                                 *len as usize
                             } else {
                                 0
                             }
-                        } else {
-                            0
                         }
-                    }
+                        _ => 0,
+                    },
                     Err(_) => 0,
                 };
             self.num_rows_valid = true;
@@ -3383,8 +3380,10 @@ impl DataTableState {
             if held.vstack_mut(&df).is_ok() {
                 return (held, self.buffered_start_row);
             }
-        } else if let Ok(joined) = df.vstack(&held) {
-            return (joined, buffer_start);
+        } else {
+            if let Ok(joined) = df.vstack(&held) {
+                return (joined, buffer_start);
+            }
         }
         (df, buffer_start)
     }
@@ -3887,12 +3886,14 @@ impl DataTableState {
             .collect();
         if scroll_names.is_empty() {
             self.df = None;
-        } else if let Ok(scroll_df) = full_df.select(scroll_names) {
-            self.df = if self.is_grouped() {
-                self.format_grouped_dataframe(scroll_df).ok()
-            } else {
-                Some(scroll_df)
-            };
+        } else {
+            if let Ok(scroll_df) = full_df.select(scroll_names) {
+                self.df = if self.is_grouped() {
+                    self.format_grouped_dataframe(scroll_df).ok()
+                } else {
+                    Some(scroll_df)
+                };
+            }
         }
     }
 
@@ -3912,9 +3913,10 @@ impl DataTableState {
             if matches!(dtype, DataType::List(_)) {
                 let string_series: Series = col
                     .list()?
-                    .into_iter()
+                    .amortized_iter()
                     .map(|opt_list| {
                         opt_list.map(|list_series| {
+                            let list_series = list_series.as_ref();
                             let values: Vec<String> = list_series
                                 .iter()
                                 .take(10)
@@ -3934,16 +3936,17 @@ impl DataTableState {
             }
         }
 
-        Ok(DataFrame::new(new_series)?)
+        Ok(DataFrame::new_infer_height(new_series)?)
     }
 
     /// Returns true if a buffer collect is needed after the scroll.
     pub fn select_next(&mut self) -> bool {
         self.table_state.select_next();
-        if let Some(selected) = self.table_state.selected() {
-            if selected >= self.visible_rows && self.visible_rows > 0 {
-                return self.slide_table(1);
-            }
+        if let Some(selected) = self.table_state.selected()
+            && selected >= self.visible_rows
+            && self.visible_rows > 0
+        {
+            return self.slide_table(1);
         }
         false
     }
@@ -4360,7 +4363,7 @@ impl DataTableState {
             }
         }
 
-        let group_df = DataFrame::new(columns)?;
+        let group_df = DataFrame::new_infer_height(columns)?;
 
         // The group becomes the pipeline root while drilled in, so a sidebar filter or
         // sort applies within it instead of rebuilding the grouped view underneath.
@@ -4386,26 +4389,27 @@ impl DataTableState {
     }
 
     pub fn drill_up(&mut self) -> Result<()> {
-        if let Some(view) = self.grouped.take() {
-            self.invalidate_num_rows();
-            self.lf = view.lf;
-            self.base_lf = view.base_lf;
-            self.filters = view.filters;
-            self.sort_columns = view.sort_columns;
-            self.sort_ascending = view.sort_ascending;
-            self.schema = self.lf.clone().collect_schema()?;
-            self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-            self.drilled_down_group_index = None;
-            self.drilled_down_group_key = None;
-            self.drilled_down_group_key_columns = None;
-            self.start_row = 0;
-            self.termcol_index = 0;
-            self.locked_columns_count = 0;
-            self.table_state.select(Some(0));
-            self.collect();
-            Ok(())
-        } else {
-            Err(color_eyre::eyre::eyre!("Not in drill-down mode"))
+        match self.grouped.take() {
+            Some(view) => {
+                self.invalidate_num_rows();
+                self.lf = view.lf;
+                self.base_lf = view.base_lf;
+                self.filters = view.filters;
+                self.sort_columns = view.sort_columns;
+                self.sort_ascending = view.sort_ascending;
+                self.schema = self.lf.clone().collect_schema()?;
+                self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+                self.drilled_down_group_index = None;
+                self.drilled_down_group_key = None;
+                self.drilled_down_group_key_columns = None;
+                self.start_row = 0;
+                self.termcol_index = 0;
+                self.locked_columns_count = 0;
+                self.table_state.select(Some(0));
+                self.collect();
+                Ok(())
+            }
+            _ => Err(color_eyre::eyre::eyre!("Not in drill-down mode")),
         }
     }
 
@@ -4425,79 +4429,42 @@ impl DataTableState {
         }
     }
 
-    /// Polars 0.52 pivot_stable panics (from_physical Date/UInt32) when index is Date/Datetime. Cast to Int32, restore after.
-    /// Returns (modified df, list of (column name, original dtype) to restore after pivot).
-    fn cast_temporal_index_columns_for_pivot(
-        df: &DataFrame,
-        index: &[String],
-    ) -> Result<(DataFrame, Vec<(String, DataType)>)> {
-        let mut out = df.clone();
-        let mut restore = Vec::new();
-        for name in index {
-            if let Ok(s) = out.column(name) {
-                let dtype = s.dtype();
-                if matches!(dtype, DataType::Date | DataType::Datetime(_, _)) {
-                    restore.push((name.clone(), dtype.clone()));
-                    let casted = s.cast(&DataType::Int32)?;
-                    out.with_column(casted)?;
-                }
-            }
-        }
-        Ok((out, restore))
-    }
-
-    /// Restore Date/Datetime types on index columns after pivot.
-    fn restore_temporal_index_columns_after_pivot(
-        pivoted: &mut DataFrame,
-        restore: &[(String, DataType)],
-    ) -> Result<()> {
-        for (name, dtype) in restore {
-            if let Ok(s) = pivoted.column(name) {
-                let restored = s.cast(dtype)?;
-                pivoted.with_column(restored)?;
-            }
-        }
-        Ok(())
-    }
-
     /// Pivot the current `LazyFrame` (long → wide). Never uses `original_lf`.
-    /// Collects current `lf`, runs `pivot_stable`, then replaces `lf` with result.
-    /// We use pivot_stable for all aggregation types: Polars' non-stable pivot() prints
-    /// "unstable pivot not yet supported, using stable pivot" to stdout, which corrupts the TUI.
+    /// The lazy pivot needs the new column set before it runs, so one distinct pass on the
+    /// pivot column comes first, sorted so the new columns come out alphabetical with a
+    /// trailing `null` column, as the eager pivot ordered them. Index rows keep first-seen
+    /// order.
     pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
-        let df = collect_lazy(self.lf.clone(), self.polars_streaming)?;
-        let agg_expr = pivot_agg_expr(spec.aggregation)?;
-        let index_str: Vec<&str> = spec.index.iter().map(|s| s.as_str()).collect();
-        let index_opt = if index_str.is_empty() {
-            None
-        } else {
-            Some(index_str)
-        };
-
-        let (df_for_pivot, temporal_index_restore) = if self.workaround_pivot_date_index {
-            let (df_w, restore) =
-                Self::cast_temporal_index_columns_for_pivot(&df, spec.index.as_slice())?;
-            (df_w, Some(restore))
-        } else {
-            (df.clone(), None)
-        };
-        let sort_new_columns = spec.sort_columns.unwrap_or(true);
-        let mut pivoted = pivot_stable(
-            &df_for_pivot,
-            [spec.pivot_column.as_str()],
-            index_opt,
-            Some([spec.value_column.as_str()]),
-            sort_new_columns,
-            Some(agg_expr),
-            None,
+        let on = spec.pivot_column.as_str();
+        let value = spec.value_column.as_str();
+        let on_columns = collect_lazy(
+            self.lf
+                .clone()
+                .select([col(on)])
+                .unique(None, UniqueKeepStrategy::Any)
+                .sort([on], SortMultipleOptions::default().with_nulls_last(true)),
+            self.polars_streaming,
         )?;
-        if let Some(restore) = &temporal_index_restore {
-            Self::restore_temporal_index_columns_after_pivot(&mut pivoted, restore)?;
-        }
+        // Names are literal: a header may contain `*` or `^`, so no pattern expansion.
+        let index = if spec.index.is_empty() {
+            all() - by_name([on, value], true, false)
+        } else {
+            by_name(spec.index.iter().map(String::as_str), true, false)
+        };
+        let pivoted = self.lf.clone().pivot(
+            by_name([on], true, false),
+            Arc::new(on_columns),
+            index,
+            by_name([value], true, false),
+            pivot_agg_expr(spec.aggregation)?,
+            true,
+            PlSmallStr::from_static("_"),
+            PivotColumnNaming::Auto,
+        );
 
         self.last_pivot_spec = Some(spec.clone());
         self.last_melt_spec = None;
-        self.replace_lf_after_reshape(pivoted.lazy())?;
+        self.replace_lf_after_reshape(pivoted)?;
         Ok(())
     }
 
@@ -4506,7 +4473,7 @@ impl DataTableState {
         let on = cols(spec.value_columns.iter().map(|s| s.as_str()));
         let index = cols(spec.index.iter().map(|s| s.as_str()));
         let args = UnpivotArgsDSL {
-            on,
+            on: Some(on),
             index,
             variable_name: Some(PlSmallStr::from(spec.variable_name.as_str())),
             value_name: Some(PlSmallStr::from(spec.value_name.as_str())),
@@ -5087,11 +5054,7 @@ impl DataTable {
 
     /// How many rows the header takes: the names, plus the type row when it is on.
     pub fn header_height(&self) -> u16 {
-        if self.dtype_row {
-            2
-        } else {
-            1
-        }
+        if self.dtype_row { 2 } else { 1 }
     }
 
     /// Style of the highlighted row: a tint when the theme gives one, else reversed video.
@@ -5455,10 +5418,11 @@ impl StatefulWidget for DataTable {
         let visible_rows_changed = new_visible_rows != state.visible_rows;
         state.visible_rows = new_visible_rows;
 
-        if let Some(selected) = state.table_state.selected() {
-            if selected >= state.visible_rows && state.visible_rows > 0 {
-                state.table_state.select(Some(state.visible_rows - 1))
-            }
+        if let Some(selected) = state.table_state.selected()
+            && selected >= state.visible_rows
+            && state.visible_rows > 0
+        {
+            state.table_state.select(Some(state.visible_rows - 1))
         }
 
         if visible_rows_changed {
@@ -5469,21 +5433,21 @@ impl StatefulWidget for DataTable {
 
         // Only show errors in main view if not suppressed (e.g., when query input is active)
         // Query errors should only be shown in the query input frame
-        if let Some(error) = state.error.as_ref() {
-            if !state.suppress_error_display {
-                Paragraph::new(format!("Error: {}", user_message_from_polars(error)))
-                    .centered()
-                    .block(
-                        Block::default()
-                            .borders(Borders::NONE)
-                            .padding(Padding::top(area.height / 2)),
-                    )
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .render(area, buf);
-                return;
-            }
-            // If suppress_error_display is true, continue rendering the table normally
+        if let Some(error) = state.error.as_ref()
+            && !state.suppress_error_display
+        {
+            Paragraph::new(format!("Error: {}", user_message_from_polars(error)))
+                .centered()
+                .block(
+                    Block::default()
+                        .borders(Borders::NONE)
+                        .padding(Padding::top(area.height / 2)),
+                )
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .render(area, buf);
+            return;
         }
+        // If suppress_error_display is true, continue rendering the table normally
 
         // Captures the scrollable area plus whether columns exist off-screen to the left/right,
         // so a header-row indicator can be drawn after the table is rendered.
@@ -5719,44 +5683,54 @@ impl StatefulWidget for DataTable {
                 .iter()
                 .map(|name| Series::new(name.as_str().into(), Vec::<String>::new()).into())
                 .collect();
-            if let Ok(empty_df) = DataFrame::new(empty_columns) {
-                if state.row_numbers {
-                    let row_num_area = Rect {
-                        x: area.x,
-                        y: area.y,
-                        width: row_num_width,
-                        height: area.height,
-                    };
-                    self.render_row_numbers(
-                        row_num_area,
-                        buf,
-                        RowNumbersParams {
-                            start_row: 0,
-                            visible_rows: state.visible_rows,
-                            num_rows: 0,
-                            row_start_index: state.row_start_index,
-                            selected_row: None,
-                        },
-                    );
-                    let data_area = Rect {
-                        x: area.x + row_num_width,
-                        y: area.y,
-                        width: area.width.saturating_sub(row_num_width),
-                        height: area.height,
-                    };
-                    self.render_dataframe(
-                        &empty_df,
-                        data_area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        0,
-                    );
-                } else {
-                    self.render_dataframe(&empty_df, area, buf, &mut state.table_state, false, 0);
+            match DataFrame::new_infer_height(empty_columns) {
+                Ok(empty_df) => {
+                    if state.row_numbers {
+                        let row_num_area = Rect {
+                            x: area.x,
+                            y: area.y,
+                            width: row_num_width,
+                            height: area.height,
+                        };
+                        self.render_row_numbers(
+                            row_num_area,
+                            buf,
+                            RowNumbersParams {
+                                start_row: 0,
+                                visible_rows: state.visible_rows,
+                                num_rows: 0,
+                                row_start_index: state.row_start_index,
+                                selected_row: None,
+                            },
+                        );
+                        let data_area = Rect {
+                            x: area.x + row_num_width,
+                            y: area.y,
+                            width: area.width.saturating_sub(row_num_width),
+                            height: area.height,
+                        };
+                        self.render_dataframe(
+                            &empty_df,
+                            data_area,
+                            buf,
+                            &mut state.table_state,
+                            false,
+                            0,
+                        );
+                    } else {
+                        self.render_dataframe(
+                            &empty_df,
+                            area,
+                            buf,
+                            &mut state.table_state,
+                            false,
+                            0,
+                        );
+                    }
                 }
-            } else {
-                Paragraph::new("No data").render(area, buf);
+                _ => {
+                    Paragraph::new("No data").render(area, buf);
+                }
             }
         } else {
             // Truly empty: no schema, not loaded, or blank file
@@ -5777,20 +5751,20 @@ impl StatefulWidget for DataTable {
                 cell.set_char(' ');
                 cell.set_style(header_style);
             }
-            if state.df.is_some() {
-                if let Some(sel) = state.table_state.selected() {
-                    let y = rail_area.y + header_h + sel as u16;
-                    if y < rail_area.y + rail_area.height {
-                        let cell = &mut buf[(rail_area.x, y)];
-                        cell.set_symbol(g.rail.trim_end());
-                        let mut style = Style::default()
-                            .fg(self.accent)
-                            .add_modifier(Modifier::BOLD);
-                        if let Some(bg) = self.selected_bg {
-                            style = style.bg(bg);
-                        }
-                        cell.set_style(style);
+            if state.df.is_some()
+                && let Some(sel) = state.table_state.selected()
+            {
+                let y = rail_area.y + header_h + sel as u16;
+                if y < rail_area.y + rail_area.height {
+                    let cell = &mut buf[(rail_area.x, y)];
+                    cell.set_symbol(g.rail.trim_end());
+                    let mut style = Style::default()
+                        .fg(self.accent)
+                        .add_modifier(Modifier::BOLD);
+                    if let Some(bg) = self.selected_bg {
+                        style = style.bg(bg);
                     }
+                    cell.set_style(style);
                 }
             }
         }
@@ -5799,44 +5773,45 @@ impl StatefulWidget for DataTable {
         // where nothing else lives. The right one says how many are hidden, and goes
         // on the type row when that row is on (its short labels leave room), else on
         // the name row, right-aligned into the slack after the last column.
-        if let Some((scroll_area, more_left, hidden)) = scroll_indicator {
-            if scroll_area.width > 0 && scroll_area.height > 0 {
-                let g = crate::glyphs::get();
-                let more_right = hidden > 0;
-                let hint_style = if self.header_bg == Color::Reset {
-                    Style::default()
-                        .fg(self.accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                        .bg(self.header_bg)
-                        .fg(self.accent)
-                        .add_modifier(Modifier::BOLD)
-                };
-                if more_left && rail_area.width > 0 {
-                    let cell = &mut buf[(rail_area.x, rail_area.y)];
-                    cell.set_symbol(g.arrow_left);
-                    cell.set_style(hint_style);
+        if let Some((scroll_area, more_left, hidden)) = scroll_indicator
+            && scroll_area.width > 0
+            && scroll_area.height > 0
+        {
+            let g = crate::glyphs::get();
+            let more_right = hidden > 0;
+            let hint_style = if self.header_bg == Color::Reset {
+                Style::default()
+                    .fg(self.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .bg(self.header_bg)
+                    .fg(self.accent)
+                    .add_modifier(Modifier::BOLD)
+            };
+            if more_left && rail_area.width > 0 {
+                let cell = &mut buf[(rail_area.x, rail_area.y)];
+                cell.set_symbol(g.arrow_left);
+                cell.set_style(hint_style);
+            }
+            if more_right {
+                // The count when there is room for it, the arrow alone when not.
+                let mut text = format!(" +{hidden} {}", g.arrow_right);
+                if scroll_area.width <= text.chars().count() as u16 {
+                    text = g.arrow_right.to_string();
                 }
-                if more_right {
-                    // The count when there is room for it, the arrow alone when not.
-                    let mut text = format!(" +{hidden} {}", g.arrow_right);
-                    if scroll_area.width <= text.chars().count() as u16 {
-                        text = g.arrow_right.to_string();
-                    }
-                    let w = text.chars().count() as u16;
-                    if scroll_area.width >= w {
-                        let x0 = scroll_area.x + scroll_area.width - w;
-                        let y = if header_h > 1 {
-                            scroll_area.y + 1
-                        } else {
-                            scroll_area.y
-                        };
-                        for (i, ch) in text.chars().enumerate() {
-                            let cell = &mut buf[(x0 + i as u16, y)];
-                            cell.set_char(ch);
-                            cell.set_style(hint_style);
-                        }
+                let w = text.chars().count() as u16;
+                if scroll_area.width >= w {
+                    let x0 = scroll_area.x + scroll_area.width - w;
+                    let y = if header_h > 1 {
+                        scroll_area.y + 1
+                    } else {
+                        scroll_area.y
+                    };
+                    for (i, ch) in text.chars().enumerate() {
+                        let cell = &mut buf[(x0 + i as u16, y)];
+                        cell.set_char(ch);
+                        cell.set_style(hint_style);
                     }
                 }
             }
@@ -5855,7 +5830,7 @@ pub(crate) fn partition_dtype(
     if let Some(dtype) = file_schema.get(name) {
         return dtype.clone();
     }
-    let seen: PlHashSet<DataType> = values
+    let seen: PlIndexSet<DataType> = values
         .iter()
         .filter(|(k, v)| k == name && !v.is_empty() && v != "__HIVE_DEFAULT_PARTITION__")
         .map(|(_, v)| infer_field_schema(v, true, false))
@@ -5905,19 +5880,20 @@ mod tests {
         let mut next: Option<AppEvent> = Some(AppEvent::Open(vec![path], opts));
         let mut saw_crash = false;
         loop {
-            if let Some(ev) = next.take() {
-                if matches!(ev, AppEvent::Crash(_)) {
-                    saw_crash = true;
-                    break;
+            match next.take() {
+                Some(ev) => {
+                    if matches!(ev, AppEvent::Crash(_)) {
+                        saw_crash = true;
+                        break;
+                    }
+                    next = app.event(&ev);
                 }
-                next = app.event(&ev);
-            } else {
-                match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+                _ => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
                     Ok(ev) => {
                         next = Some(ev);
                     }
                     Err(_) => break,
-                }
+                },
             }
         }
         saw_crash
@@ -6379,7 +6355,7 @@ mod tests {
             .unwrap()
             .i64()
             .unwrap()
-            .into_iter()
+            .iter()
             .collect()
     }
 
@@ -7393,7 +7369,9 @@ mod tests {
         );
         // Groups the window reaches into come along while they fit, the one ahead first.
         assert_eq!(
-            align_to_row_groups(&offsets, 1_500_000, 1_500_047, 950_000, 2_050_000, 2_000_000),
+            align_to_row_groups(
+                &offsets, 1_500_000, 1_500_047, 950_000, 2_050_000, 2_000_000
+            ),
             (1_000_000, 3_000_000)
         );
         assert_eq!(
@@ -7402,7 +7380,9 @@ mod tests {
         );
         // The last, short group; and a window past the data is clamped to it.
         assert_eq!(
-            align_to_row_groups(&offsets, 3_400_000, 3_400_047, 3_350_000, 3_450_000, 100_000),
+            align_to_row_groups(
+                &offsets, 3_400_000, 3_400_047, 3_350_000, 3_450_000, 100_000
+            ),
             (3_000_000, 3_500_000)
         );
         // No groups known: the window is left alone.
@@ -7518,7 +7498,7 @@ mod tests {
         let columns: Vec<Column> = (0..1000)
             .map(|i| Series::new(format!("f{i}").into(), &[0.0f64]).into())
             .collect();
-        let lf = DataFrame::new(columns).unwrap().lazy();
+        let lf = DataFrame::new(1, columns).unwrap().lazy();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         assert_eq!(
             estimate_bytes_per_row(&state.schema, &state.column_order, &[]),
@@ -7849,7 +7829,9 @@ mod tests {
         let blob = Series::new("blob".into(), &["aaaa", "bbbb", "cccc"])
             .cast(&DataType::Binary)
             .unwrap();
-        let lf = DataFrame::new(vec![a.into(), blob.into()]).unwrap().lazy();
+        let lf = DataFrame::new_infer_height(vec![a.into(), blob.into()])
+            .unwrap()
+            .lazy();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.visible_rows = 10;
         state.collect();
@@ -7875,7 +7857,9 @@ mod tests {
         let blob = Series::new("blob".into(), &["aaaa", "bbbb", "cccc"])
             .cast(&DataType::Binary)
             .unwrap();
-        let lf = DataFrame::new(vec![a.into(), blob.into()]).unwrap().lazy();
+        let lf = DataFrame::new_infer_height(vec![a.into(), blob.into()])
+            .unwrap()
+            .lazy();
         let state = DataTableState::new(lf, None, None, None, None, true).unwrap();
 
         let analysis_lf = state.lf.clone().select(state.binary_stub_exprs());
@@ -7918,7 +7902,7 @@ mod tests {
         )
         .cast(&DataType::Binary)
         .unwrap();
-        let df = DataFrame::new(vec![a.into(), bin.into()]).unwrap();
+        let df = DataFrame::new_infer_height(vec![a.into(), bin.into()]).unwrap();
         let area = Rect::new(0, 0, 8, 4);
         let mut buf = Buffer::empty(area);
         let mut ts = TableState::default();

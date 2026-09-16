@@ -1,6 +1,6 @@
 use clap::Parser;
 use color_eyre::Result;
-use datui::{error_display, Args, OpenOptions, RunInput, APP_NAME};
+use datui::{APP_NAME, Args, OpenOptions, RunInput, error_display};
 use datui::{AppConfig, ConfigManager, TemplateManager};
 
 fn handle_early_exit_flags(args: &Args) -> Result<Option<()>> {
@@ -112,7 +112,9 @@ fn main() -> Result<()> {
                 "Error: {}",
                 error_display::user_message_from_report(&e, None)
             );
-            eprintln!("Fix the configuration and try again, or remove/rename the config file to use defaults.");
+            eprintln!(
+                "Fix the configuration and try again, or remove/rename the config file to use defaults."
+            );
             std::process::exit(1);
         }
     };

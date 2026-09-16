@@ -36,7 +36,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `--remove-templates` | Remove all templates and exit |
 | `--sampling-threshold <N>` | When set, datasets with this many or more rows are sampled for analysis (faster, less memory). Overrides config [performance] sampling_threshold. Use 0 to disable sampling (full dataset) for this run. When omitted, config or full-dataset mode is used |
 | `--polars-streaming <BOOL>` | Use Polars streaming engine for LazyFrame collect when available (default: true). Set to false to disable |
-| `--workaround-pivot-date-index <BOOL>` | Apply workaround for Polars 0.52 pivot with Date/Datetime index (default: true). Set to false to test without it |
+| `--workaround-pivot-date-index <BOOL>` | No effect since Polars 0.55: the pivot crash with a Date/Datetime index it worked around is gone. Kept so existing invocations still parse |
 | `--pages-lookahead <PAGES_LOOKAHEAD>` | Number of pages to buffer ahead of the visible area (default: 3) Larger values provide smoother scrolling but use more memory |
 | `--pages-lookback <PAGES_LOOKBACK>` | Number of pages to buffer behind the visible area (default: 3) Larger values provide smoother scrolling but use more memory |
 | `--row-numbers` | Display row numbers on the left side of the table |

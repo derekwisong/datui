@@ -1,5 +1,8 @@
-# Match Rust polars 0.52 (required for datui Python bindings / LazyFrame DSL_SCHEMA_HASH)
-polars>=1.35,<1.36
+# The Python polars whose serialized LazyFrame plans Rust polars 0.55 reads. Polars
+# pairs rs-0.55 with Python 1.43; the wheel accepts 1.38 through 1.43 (see
+# python/pyproject.toml). 1.44 writes a join node 0.55 cannot read. Move this with
+# the Rust polars bump.
+polars>=1.43,<1.44
 
 # for building sample data
 numpy

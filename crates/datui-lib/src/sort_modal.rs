@@ -101,10 +101,10 @@ impl SortModal {
                 if let Some(old_order) = self.columns[real_idx].sort_order {
                     self.columns[real_idx].sort_order = None;
                     for col in &mut self.columns {
-                        if let Some(order) = col.sort_order {
-                            if order > old_order {
-                                col.sort_order = Some(order - 1);
-                            }
+                        if let Some(order) = col.sort_order
+                            && order > old_order
+                        {
+                            col.sort_order = Some(order - 1);
                         }
                     }
                 } else {
@@ -301,24 +301,24 @@ impl SortModal {
             let filtered = self.filtered_columns();
             if let Some((real_idx, _)) = filtered.get(idx) {
                 let real_idx = *real_idx;
-                if let Some(current_order) = self.columns[real_idx].sort_order {
-                    if current_order > 1 {
-                        for col in &mut self.columns {
-                            if col.sort_order == Some(current_order - 1) {
-                                col.sort_order = Some(current_order);
-                                break;
-                            }
+                if let Some(current_order) = self.columns[real_idx].sort_order
+                    && current_order > 1
+                {
+                    for col in &mut self.columns {
+                        if col.sort_order == Some(current_order - 1) {
+                            col.sort_order = Some(current_order);
+                            break;
                         }
-                        self.columns[real_idx].sort_order = Some(current_order - 1);
-                        self.has_unapplied_changes = true;
-                        // Update selection to follow the moved item
-                        if let Some(new_selected_idx) = self
-                            .filtered_columns()
-                            .iter()
-                            .position(|&(idx, _)| idx == real_idx)
-                        {
-                            self.table_state.select(Some(new_selected_idx));
-                        }
+                    }
+                    self.columns[real_idx].sort_order = Some(current_order - 1);
+                    self.has_unapplied_changes = true;
+                    // Update selection to follow the moved item
+                    if let Some(new_selected_idx) = self
+                        .filtered_columns()
+                        .iter()
+                        .position(|&(idx, _)| idx == real_idx)
+                    {
+                        self.table_state.select(Some(new_selected_idx));
                     }
                 }
             }
@@ -336,25 +336,25 @@ impl SortModal {
                     .filter_map(|c| c.sort_order)
                     .max()
                     .unwrap_or(0);
-                if let Some(current_order) = self.columns[real_idx].sort_order {
-                    if current_order < max_order {
-                        for col in &mut self.columns {
-                            if col.sort_order == Some(current_order + 1) {
-                                col.sort_order = Some(current_order);
-                                break;
-                            }
+                if let Some(current_order) = self.columns[real_idx].sort_order
+                    && current_order < max_order
+                {
+                    for col in &mut self.columns {
+                        if col.sort_order == Some(current_order + 1) {
+                            col.sort_order = Some(current_order);
+                            break;
                         }
-                        self.columns[real_idx].sort_order = Some(current_order + 1);
-                        // Update selection to follow the moved item
-                        if let Some(new_selected_idx) = self
-                            .filtered_columns()
-                            .iter()
-                            .position(|&(idx, _)| idx == real_idx)
-                        {
-                            self.table_state.select(Some(new_selected_idx));
-                        }
-                        self.has_unapplied_changes = true;
                     }
+                    self.columns[real_idx].sort_order = Some(current_order + 1);
+                    // Update selection to follow the moved item
+                    if let Some(new_selected_idx) = self
+                        .filtered_columns()
+                        .iter()
+                        .position(|&(idx, _)| idx == real_idx)
+                    {
+                        self.table_state.select(Some(new_selected_idx));
+                    }
+                    self.has_unapplied_changes = true;
                 }
             }
         }

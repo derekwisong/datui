@@ -183,6 +183,11 @@ mod export_format_tests {
         };
         assert_eq!(job.after_collect(1_000, 30, 70), Ok(1_030), "short: known");
         assert_eq!(job.after_collect(1_000, 70, 70), Err(()), "full: counted");
+        assert_eq!(
+            job.after_collect(1_000, 0, 70),
+            Err(()),
+            "deep and empty: counted"
+        );
 
         // Through the harness: a filtered remote frame gets its count from the
         // collect that came back short, and the len() never runs alongside it.
@@ -229,6 +234,48 @@ mod export_format_tests {
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.num_rows_if_valid(), Some(50));
         assert_eq!(app.len_count_inflight, None);
+    }
+
+    #[test]
+    fn a_filter_applied_from_the_end_shows_its_rows() {
+        // End on a 10,000-row remote object, then a filter matching 100 rows: the view
+        // comes back to the top and the count is the filter's, not the old position.
+        use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+        use polars::prelude::IntoLazy;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let lf = polars::df!("a" => (0..10_000).collect::<Vec<i32>>())
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
+        state.set_remote_source();
+        state.set_row_groups(&[10_000]);
+        state.visible_rows = 10;
+        state.defer_collect = true;
+        assert!(state.scroll_to_end());
+        app.data_table_state = Some(state);
+
+        app.event(&AppEvent::Filter(vec![FilterStatement {
+            column: "a".to_string(),
+            operator: FilterOperator::Lt,
+            value: "100".to_string(),
+            logical_op: LogicalOperator::And,
+        }]));
+        let wait = std::time::Duration::from_secs(20);
+        for _ in 0..2 {
+            let event = rx.recv_timeout(wait).expect("the collect, then the count");
+            app.event(&event);
+        }
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.num_rows_if_valid(), Some(100));
+        assert_eq!(state.start_row, 0);
+        assert!(
+            state.buffered_start() == 0 && state.buffered_end() >= 10,
+            "the first page is on hand: {}..{}",
+            state.buffered_start(),
+            state.buffered_end()
+        );
     }
 
     #[test]
@@ -2221,10 +2268,12 @@ impl LenCount {
     }
 
     /// The count once a buffer collect of `requested` rows from `start` has returned
-    /// `returned` of them. A short read ran off the end of the data, which names the
-    /// total without a pass over it; a full one leaves the count to `run`.
+    /// `returned` of them. A short read that began inside the data — at its top, or
+    /// finding at least a row — ran off its end, which names the total without a pass
+    /// over it. A full read, or a slice deep in a frame that found nothing and may lie
+    /// past the data entirely, leaves the count to `run`.
     fn after_collect(&self, start: usize, returned: usize, requested: usize) -> Result<usize, ()> {
-        if returned < requested {
+        if returned < requested && (start == 0 || returned > 0) {
             Ok(start + returned)
         } else {
             self.run()
@@ -2646,9 +2695,10 @@ impl App {
         // The exact row count, when it isn't known and none is already running for
         // this data version. Independent of `task_generation` (a scroll must not
         // restart it) and does not set `busy`. On a local file it runs alongside the
-        // buffer collect; on an object store it waits for the collect, which
-        // answers it outright when the read comes back short and otherwise gets the
-        // row groups to itself first.
+        // buffer collect; on an object store it rides in the collect spawned below,
+        // which answers it outright when the read comes back short and otherwise
+        // gets the row groups to itself first — unless no collect is spawned, when it
+        // runs on its own after all.
         let mut count = None;
         if !state.is_num_rows_valid() && self.len_count_inflight != Some(state.len_generation()) {
             let job = LenCount::for_state(state);
@@ -2675,7 +2725,7 @@ impl App {
             .is_some_and(|inflight| inflight.covers(self.task_generation, state));
         let request = (!covered).then(|| state.prepare_async_collect(None));
         let Some(Some(request)) = request else {
-            // No collect to wait for: a remote count runs on its own after all.
+            // Nothing to ride in: the view is covered, or the buffer on hand serves it.
             if let Some(job) = count {
                 let tx = self.events.clone();
                 self.runtime
@@ -2723,9 +2773,11 @@ impl App {
                         generation: gen,
                         message: crate::error_display::user_message_from_polars(&e),
                     });
-                    // The count is owed regardless; a failed collect says nothing about it.
+                    // A pass over a frame that just failed to collect would fail too:
+                    // report the count as failed and leave the retry to a later
+                    // interaction (see `len_count_failed`).
                     if let Some(job) = count {
-                        job.send(job.run(), &tx);
+                        job.send(Err(()), &tx);
                     }
                 }
             }
@@ -3849,39 +3901,21 @@ impl App {
         }
     }
 
+    /// The size of one S3 or GCS object, from a HEAD through the shared store.
     #[cfg(feature = "cloud")]
-    fn fetch_remote_size_s3(
-        s3_url: &str,
+    fn fetch_remote_size_cloud(
+        url: &str,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
-        let (_bucket, key) = Self::cloud_bucket_and_key(s3_url)?;
+        let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
         if key.is_empty() {
             return Ok(None);
         }
-        let (_, _, store) = Self::cloud_store_for(Path::new(s3_url), cloud, runtime)?;
-        let path = OsPath::from(key);
-        let head = wait_on_runtime(runtime, async move { store.head(&path).await });
-        Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
-    }
-
-    #[cfg(feature = "cloud")]
-    fn fetch_remote_size_gcs(
-        gs_url: &str,
-        cloud: &crate::config::CloudConfig,
-        runtime: &tokio::runtime::Handle,
-    ) -> Result<Option<u64>> {
-        use object_store::path::Path as OsPath;
-        use object_store::ObjectStore;
-
-        let (_bucket, key) = Self::cloud_bucket_and_key(gs_url)?;
-        if key.is_empty() {
-            return Ok(None);
-        }
-        let (_, _, store) = Self::cloud_store_for(Path::new(gs_url), cloud, runtime)?;
+        let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
         let path = OsPath::from(key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
@@ -3923,9 +3957,11 @@ impl App {
         Ok(path)
     }
 
+    /// Download one S3 or GCS object to a temporary file, named for the user by its
+    /// scheme in any error.
     #[cfg(feature = "cloud")]
-    fn download_s3_to_temp(
-        s3_url: &str,
+    fn download_cloud_to_temp(
+        url: &str,
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
@@ -3933,74 +3969,33 @@ impl App {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
-        let (_path_part, ext) = source::url_path_extension(s3_url);
-        let (_bucket, key) = Self::cloud_bucket_and_key(s3_url)?;
+        let (label, example) = match source::input_source(Path::new(url)) {
+            source::InputSource::Gcs(_) => ("GCS", "gs://bucket/path/file.csv"),
+            _ => ("S3", "s3://bucket/path/file.csv"),
+        };
+        let (_path_part, ext) = source::url_path_extension(url);
+        let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!(
-                "S3 URL must point to an object (e.g. s3://bucket/path/file.csv)"
+                "{label} URL must point to an object (e.g. {example})"
             ));
         }
-        let (_, _, store) = Self::cloud_store_for(Path::new(s3_url), cloud, runtime)?;
+        let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
 
         let path = OsPath::from(key);
         let bytes = wait_on_runtime(runtime, async move {
             let get_result = store.get(&path).await.map_err(|e| {
-                color_eyre::eyre::eyre!("Could not read from S3. Check credentials and URL: {}", e)
+                color_eyre::eyre::eyre!(
+                    "Could not read from {label}. Check credentials and URL: {}",
+                    e
+                )
             })?;
             get_result
                 .bytes()
                 .await
-                .map_err(|e| color_eyre::eyre::eyre!("Could not read S3 object body: {}", e))
+                .map_err(|e| color_eyre::eyre::eyre!("Could not read {label} object body: {}", e))
         })
-        .ok_or_else(|| color_eyre::eyre::eyre!("S3 download was cancelled."))??;
-
-        let dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-        let suffix = ext
-            .as_ref()
-            .map(|e| format!(".{e}"))
-            .unwrap_or_else(|| ".tmp".to_string());
-        let mut temp = tempfile::Builder::new()
-            .suffix(&suffix)
-            .tempfile_in(&dir)
-            .map_err(|_| color_eyre::eyre::eyre!("Could not create a temporary file."))?;
-        std::io::copy(&mut std::io::Cursor::new(bytes.as_ref()), &mut temp)
-            .map_err(|_| color_eyre::eyre::eyre!("Could not write downloaded file."))?;
-        let (_file, path_buf) = temp
-            .keep()
-            .map_err(|_| color_eyre::eyre::eyre!("Could not save the downloaded file."))?;
-        Ok(path_buf)
-    }
-
-    #[cfg(feature = "cloud")]
-    fn download_gcs_to_temp(
-        gs_url: &str,
-        cloud: &crate::config::CloudConfig,
-        options: &OpenOptions,
-        runtime: &tokio::runtime::Handle,
-    ) -> Result<PathBuf> {
-        use object_store::path::Path as OsPath;
-        use object_store::ObjectStore;
-
-        let (_path_part, ext) = source::url_path_extension(gs_url);
-        let (_bucket, key) = Self::cloud_bucket_and_key(gs_url)?;
-        if key.is_empty() {
-            return Err(color_eyre::eyre::eyre!(
-                "GCS URL must point to an object (e.g. gs://bucket/path/file.csv)"
-            ));
-        }
-        let (_, _, store) = Self::cloud_store_for(Path::new(gs_url), cloud, runtime)?;
-
-        let path = OsPath::from(key);
-        let bytes = wait_on_runtime(runtime, async move {
-            let get_result = store.get(&path).await.map_err(|e| {
-                color_eyre::eyre::eyre!("Could not read from GCS. Check credentials and URL: {}", e)
-            })?;
-            get_result
-                .bytes()
-                .await
-                .map_err(|e| color_eyre::eyre::eyre!("Could not read GCS object body: {}", e))
-        })
-        .ok_or_else(|| color_eyre::eyre::eyre!("GCS download was cancelled."))??;
+        .ok_or_else(|| color_eyre::eyre::eyre!("{label} download was cancelled."))??;
 
         let dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
         let suffix = ext
@@ -4037,12 +4032,8 @@ impl App {
                     Self::fetch_remote_size_http(url).unwrap_or(None)
                 }
                 #[cfg(feature = "cloud")]
-                PendingDownload::S3 { url, .. } => {
-                    Self::fetch_remote_size_s3(url, &cloud, &runtime).unwrap_or(None)
-                }
-                #[cfg(feature = "cloud")]
-                PendingDownload::Gcs { url, .. } => {
-                    Self::fetch_remote_size_gcs(url, &cloud, &runtime).unwrap_or(None)
+                PendingDownload::S3 { url, .. } | PendingDownload::Gcs { url, .. } => {
+                    Self::fetch_remote_size_cloud(url, &cloud, &runtime).unwrap_or(None)
                 }
             };
             let _ = tx.send(AppEvent::BackgroundRemoteSizeReady {
@@ -4323,7 +4314,7 @@ impl App {
         let mut state =
             DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
         state.set_row_groups(&footer.row_group_rows);
-        state.set_string_widths(footer.string_bytes_per_row);
+        state.set_column_widths(footer.column_bytes_per_row);
         Ok(state)
     }
 
@@ -9005,7 +8996,7 @@ impl App {
                 let options = options.clone();
                 let rt = self.runtime.clone();
                 self.spawn_bg("Downloading from S3...", move |gen, tx| {
-                    match Self::download_s3_to_temp(&s3_url, &cloud_config, &options, &rt) {
+                    match Self::download_cloud_to_temp(&s3_url, &cloud_config, &options, &rt) {
                         Ok(temp_path) => {
                             let _ = tx.send(AppEvent::BackgroundDownloadReady {
                                 generation: gen,
@@ -9033,7 +9024,7 @@ impl App {
                 let cloud_config = self.app_config.cloud.clone();
                 let rt = self.runtime.clone();
                 self.spawn_bg("Downloading from GCS...", move |gen, tx| {
-                    match Self::download_gcs_to_temp(&gs_url, &cloud_config, &options, &rt) {
+                    match Self::download_cloud_to_temp(&gs_url, &cloud_config, &options, &rt) {
                         Ok(temp_path) => {
                             let _ = tx.send(AppEvent::BackgroundDownloadReady {
                                 generation: gen,

@@ -4,7 +4,7 @@
 use color_eyre::Result;
 use object_store::path::Path as OsPath;
 use object_store::ObjectStore;
-use polars::prelude::{DataType, ParquetReader, Schema, SchemaExt, SerReader};
+use polars::prelude::{ParquetReader, Schema, SchemaExt, SerReader};
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -67,9 +67,10 @@ pub struct ParquetFooter {
     pub schema: Arc<Schema>,
     /// Rows in each row group, in file order.
     pub row_group_rows: Vec<usize>,
-    /// Uncompressed bytes per row of each string column, averaged over the file. The
-    /// schema gives every other column's width; a string's is only known from here.
-    pub string_bytes_per_row: Vec<(String, usize)>,
+    /// Uncompressed bytes per row of each column, averaged over the file and summed
+    /// over a nested column's leaves. The schema gives a fixed-size column's width; a
+    /// string's or a nested column's is only known from here.
+    pub column_bytes_per_row: Vec<(String, usize)>,
 }
 
 /// Read the Parquet footer at the end of `tail_bytes`. The slice must be the tail of the
@@ -84,12 +85,11 @@ fn footer_from_parquet_tail(tail_bytes: &[u8]) -> Result<ParquetFooter> {
         .get_metadata()
         .map_err(|e| color_eyre::eyre::eyre!("Parquet row count read failed: {}", e))?;
     let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
-    let rows = metadata.num_rows;
-    let row_group_rows = metadata.row_groups.iter().map(|rg| rg.num_rows()).collect();
-    let string_bytes_per_row = schema
-        .iter()
-        .filter(|(_, dtype)| matches!(dtype, DataType::String))
-        .filter_map(|(name, _)| {
+    let row_group_rows: Vec<usize> = metadata.row_groups.iter().map(|rg| rg.num_rows()).collect();
+    let rows: usize = row_group_rows.iter().sum();
+    let column_bytes_per_row = schema
+        .iter_names()
+        .filter_map(|name| {
             let bytes: i64 = metadata
                 .row_groups
                 .iter()
@@ -102,7 +102,7 @@ fn footer_from_parquet_tail(tail_bytes: &[u8]) -> Result<ParquetFooter> {
     Ok(ParquetFooter {
         schema: Arc::new(schema),
         row_group_rows,
-        string_bytes_per_row,
+        column_bytes_per_row,
     })
 }
 
@@ -172,6 +172,7 @@ pub async fn schema_from_one_cloud_hive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polars::prelude::{NamedFrom, Series};
 
     #[test]
     fn partition_columns_from_prefix_basic() {
@@ -216,11 +217,15 @@ mod tests {
     }
 
     #[test]
-    fn footer_from_parquet_tail_reads_row_groups_and_string_widths() {
+    fn footer_from_parquet_tail_reads_row_groups_and_column_widths() {
         use polars::prelude::{df, ParquetWriter};
         let ids: Vec<i32> = (0..1000).collect();
         let notes: Vec<String> = ids.iter().map(|i| format!("note-{i:04}")).collect();
-        let mut df = df!("id" => ids, "note" => notes).unwrap();
+        let lists: Vec<Series> = ids
+            .iter()
+            .map(|i| Series::new("".into(), &[*i as f64; 10]))
+            .collect();
+        let mut df = df!("id" => ids, "note" => notes, "list" => lists).unwrap();
         let mut bytes = Vec::new();
         ParquetWriter::new(&mut bytes)
             .with_row_group_size(Some(400))
@@ -233,9 +238,26 @@ mod tests {
             footer.row_group_rows
         );
         assert_eq!(footer.row_group_rows.iter().sum::<usize>(), 1000);
-        let (name, width) = &footer.string_bytes_per_row[0];
-        assert_eq!(name, "note");
+        let width = |column: &str| {
+            footer
+                .column_bytes_per_row
+                .iter()
+                .find(|(n, _)| n == column)
+                .map(|(_, w)| *w)
+                .unwrap_or_else(|| panic!("no width for {column}"))
+        };
         // Nine characters, the length prefix, and the page headers spread over the rows.
-        assert!((9..=20).contains(width), "note width {width}");
+        assert!(
+            (9..=20).contains(&width("note")),
+            "note width {}",
+            width("note")
+        );
+        // Ten floats a row, so the nested column is not guessed at.
+        assert!(
+            (80..=120).contains(&width("list")),
+            "list width {}",
+            width("list")
+        );
+        assert!(width("id") >= 4);
     }
 }

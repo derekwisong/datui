@@ -393,6 +393,15 @@ mod chart_prepare_tests {
             Some(Err(m)) if m == "duplicate column"
         ));
         assert!(!app.chart_cache.satisfies(&request));
+
+        // With that selection on screen, nothing more is wanted.
+        app.input_mode = InputMode::Chart;
+        app.chart_modal.active = true;
+        app.chart_modal.chart_kind = ChartKind::Histogram;
+        app.chart_modal.hist_column = Some("a".to_string());
+        app.chart_modal.hist_bins = 10;
+        app.chart_modal.row_limit = None;
+        assert_eq!(ChartRequest::from_modal(&app.chart_modal), Some(request));
         assert!(!app.chart_request_pending(), "not asked for again");
     }
 
@@ -408,17 +417,79 @@ mod chart_prepare_tests {
         assert!(cache.satisfies(&a));
         assert!(matches!(cache.get(&b), Some(Err(m)) if m == "no numbers"));
 
-        // Re-inserting replaces rather than duplicates, and the oldest goes first.
+        // Re-inserting replaces rather than duplicates, and moves to the back.
         cache.insert(a.clone(), Ok(prepared_histogram("a")));
-        for i in 0..ChartCache::CAPACITY - 1 {
+        assert_eq!(cache.entries.len(), 2);
+
+        // Fill to capacity, then one more evicts the least recently used: `b`.
+        for i in 0..ChartCache::CAPACITY - 2 {
             cache.insert(
                 histogram_request(&format!("c{i}")),
                 Ok(prepared_histogram("c")),
             );
         }
         assert_eq!(cache.entries.len(), ChartCache::CAPACITY);
-        assert!(cache.get(&b).is_none(), "the oldest entry was evicted");
+        assert!(cache.get(&b).is_some());
+        cache.insert(histogram_request("one more"), Ok(prepared_histogram("d")));
+        assert_eq!(cache.entries.len(), ChartCache::CAPACITY);
+        assert!(cache.get(&b).is_none(), "the least recently used went");
         assert!(cache.satisfies(&a), "the refreshed one is still there");
+    }
+
+    fn xy_request(x: &str) -> ChartRequest {
+        ChartRequest::XY {
+            x_column: x.to_string(),
+            y_columns: vec!["y".to_string()],
+            row_limit: None,
+        }
+    }
+
+    fn prepared_xy(x: &str) -> ChartPrepared {
+        ChartPrepared::XY(ChartCacheXY {
+            x_column: x.to_string(),
+            y_columns: vec!["y".to_string()],
+            series: vec![vec![(0.0, 1.0)]],
+            series_log: None,
+            x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
+        })
+    }
+
+    fn has_log_series(cache: &ChartCache, request: &ChartRequest) -> bool {
+        matches!(
+            cache.prepared(request),
+            Some(ChartPrepared::XY(xy)) if xy.series_log.is_some()
+        )
+    }
+
+    /// XY series are the payload that grows with the data, so fewer of them are kept
+    /// than small kinds, the one on screen is kept over one merely inserted later, and
+    /// only the one on screen carries a log-scale copy.
+    #[test]
+    fn xy_entries_are_few_and_the_one_on_screen_stays() {
+        let mut cache = ChartCache::default();
+        let (a, b, c) = (xy_request("a"), xy_request("b"), xy_request("c"));
+        cache.insert(a.clone(), Ok(prepared_xy("a")));
+        cache.insert(b.clone(), Ok(prepared_xy("b")));
+        cache.touch(&a, true);
+        assert!(has_log_series(&cache, &a));
+        assert!(!has_log_series(&cache, &b));
+
+        cache.insert(c.clone(), Ok(prepared_xy("c")));
+        assert!(cache.satisfies(&a), "on screen, so kept");
+        assert!(!cache.satisfies(&b), "least recently used XY went");
+        assert!(cache.satisfies(&c));
+        assert_eq!(cache.entries.len(), ChartCache::XY_CAPACITY);
+
+        // Small kinds are not counted against the XY cap, and vice versa.
+        cache.insert(histogram_request("h"), Ok(prepared_histogram("h")));
+        assert_eq!(cache.entries.len(), 3);
+
+        cache.touch(&c, true);
+        assert!(has_log_series(&cache, &c));
+        assert!(
+            !has_log_series(&cache, &a),
+            "only the one on screen keeps its log copy"
+        );
     }
 
     /// Writes a CSV with columns x and y where y = x * factor, so two datasets share a
@@ -1594,11 +1665,12 @@ struct TemplateApplicationState {
     locked_columns_count: usize,
 }
 
-/// Outcomes of chart preparation keyed by the request that produced them, newest last.
-/// A failure is remembered too, so a selection that cannot be charted is not retried
-/// after every event; it draws as empty, as it always has. Bounded so that toggling
-/// between a few selections does not collect again, without holding every series ever
-/// prepared.
+/// Outcomes of chart preparation keyed by the request that produced them, least
+/// recently used first. A failure is remembered too, so a selection that cannot be
+/// charted is not retried after every event; it draws as empty, as it always has.
+/// Bounded so that toggling between a few selections does not collect again, without
+/// holding every series ever prepared: XY series are the only payload that grows with
+/// the row limit, so few of those are kept and only the current one has its log copy.
 #[derive(Default)]
 pub(crate) struct ChartCache {
     entries: Vec<(ChartRequest, Result<ChartPrepared, String>)>,
@@ -1606,6 +1678,7 @@ pub(crate) struct ChartCache {
 
 impl ChartCache {
     const CAPACITY: usize = 8;
+    const XY_CAPACITY: usize = 2;
 
     fn clear(&mut self) {
         self.entries.clear();
@@ -1630,25 +1703,55 @@ impl ChartCache {
 
     fn insert(&mut self, request: ChartRequest, outcome: Result<ChartPrepared, String>) {
         self.entries.retain(|(r, _)| *r != request);
-        if self.entries.len() >= Self::CAPACITY {
-            self.entries.drain(..1);
-        }
         self.entries.push((request, outcome));
+        Self::evict(&mut self.entries, Self::XY_CAPACITY, |outcome| {
+            matches!(outcome, Ok(ChartPrepared::XY(_)))
+        });
+        Self::evict(&mut self.entries, Self::CAPACITY, |_| true);
     }
 
-    /// Build the log-scale copy of `request`'s XY series once it is wanted. A pure
-    /// in-memory map, cheap enough for the event thread; it never happens in render.
-    fn ensure_log_series(&mut self, request: &ChartRequest) {
-        let xy = self
-            .entries
-            .iter_mut()
-            .find(|(r, _)| r == request)
-            .and_then(|(_, outcome)| match outcome {
-                Ok(ChartPrepared::XY(xy)) => Some(xy),
-                _ => None,
-            });
-        if let Some(xy) = xy {
-            if xy.series_log.is_none() {
+    /// Drop the least recently used of the entries `counts` selects until at most `cap`
+    /// remain.
+    fn evict(
+        entries: &mut Vec<(ChartRequest, Result<ChartPrepared, String>)>,
+        cap: usize,
+        counts: impl Fn(&Result<ChartPrepared, String>) -> bool,
+    ) {
+        let mut over = entries
+            .iter()
+            .filter(|(_, o)| counts(o))
+            .count()
+            .saturating_sub(cap);
+        entries.retain(|(_, o)| {
+            if over > 0 && counts(o) {
+                over -= 1;
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Note that `request` is the selection on screen: its entry moves to the back,
+    /// where eviction reaches it last, and it alone keeps a log-scale copy of its XY
+    /// series, built here when wanted. A pure in-memory map, cheap enough for the event
+    /// thread; it never happens in render.
+    fn touch(&mut self, request: &ChartRequest, log_scale: bool) {
+        let Some(i) = self.entries.iter().position(|(r, _)| r == request) else {
+            return;
+        };
+        let current = self.entries.remove(i);
+        self.entries.push(current);
+        let Some(((_, current), others)) = self.entries.split_last_mut() else {
+            return;
+        };
+        for (_, outcome) in others {
+            if let Ok(ChartPrepared::XY(xy)) = outcome {
+                xy.series_log = None;
+            }
+        }
+        if let Ok(ChartPrepared::XY(xy)) = current {
+            if log_scale && xy.series_log.is_none() {
                 xy.series_log = Some(log_series(&xy.series));
             }
         }
@@ -1759,14 +1862,9 @@ impl ChartRequest {
                     x_axis_kind: r.x_axis_kind,
                 })
             }
-            Self::XRange { x_column, .. } => {
-                let r = chart_data::prepare_chart_x_range(lf, schema, x_column, rows)?;
-                ChartPrepared::XRange(ChartCacheXRange {
-                    x_min: r.x_min,
-                    x_max: r.x_max,
-                    x_axis_kind: r.x_axis_kind,
-                })
-            }
+            Self::XRange { x_column, .. } => ChartPrepared::XRange(
+                chart_data::prepare_chart_x_range(lf, schema, x_column, rows)?,
+            ),
             Self::Histogram { column, bins, .. } => ChartPrepared::Histogram(
                 chart_data::prepare_histogram_data(lf, column, *bins, rows)?,
             ),
@@ -1818,7 +1916,7 @@ struct ChartInflight {
 /// was drawn from, since render and export label the axes from it.
 pub(crate) enum ChartPrepared {
     XY(ChartCacheXY),
-    XRange(ChartCacheXRange),
+    XRange(chart_data::ChartXRangeResult),
     Histogram(chart_data::HistogramData),
     BoxPlot(chart_data::BoxPlotData),
     Kde(chart_data::KdeData),
@@ -1884,12 +1982,6 @@ pub(crate) struct ChartCacheXY {
     pub(crate) y_columns: Vec<String>,
     pub(crate) series: Vec<Vec<(f64, f64)>>,
     pub(crate) series_log: Option<Vec<Vec<(f64, f64)>>>,
-    pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
-}
-
-pub(crate) struct ChartCacheXRange {
-    pub(crate) x_min: f64,
-    pub(crate) x_max: f64,
     pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
 }
 
@@ -8203,9 +8295,7 @@ impl App {
             return;
         };
         if self.chart_cache.get(&request).is_some() {
-            if self.chart_modal.log_scale {
-                self.chart_cache.ensure_log_series(&request);
-            }
+            self.chart_cache.touch(&request, self.chart_modal.log_scale);
             return;
         }
         if self.chart_inflight.is_some() {
@@ -9466,8 +9556,15 @@ impl App {
                 // The result belongs to the one preparation in flight. It is installed
                 // only while that record is current (a reset marks it stale when its
                 // view or dataset goes) and only into the dataset it was computed from.
-                // Taking the record is what lets the next request start.
+                // Taking the record is what lets the next request start; the slot is
+                // emptied either way so a discarded series is not kept around.
                 let inflight = self.chart_inflight.take()?;
+                let outcome = self
+                    .pending_chart_result
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap_or_else(|| Err("Chart preparation produced no result".to_string()));
                 if inflight.stale {
                     return None;
                 }
@@ -9475,12 +9572,6 @@ impl App {
                 if dataset != inflight.dataset {
                     return None;
                 }
-                let outcome = self
-                    .pending_chart_result
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .unwrap_or_else(|| Err("Chart preparation produced no result".to_string()));
                 self.chart_cache.insert(inflight.request, outcome);
                 // An export parked on chart data resumes against the *current*
                 // selection, whatever just landed: it is written if that selection is
@@ -9820,8 +9911,11 @@ impl App {
                     bounds,
                 }
             }
-            // Rejected above: a single X column has nothing to export.
-            ChartPrepared::XRange(_) => return Ok(None),
+            // Rejected above, since a single X column has nothing to export; never
+            // `Ok(None)`, which would park the export waiting for data that is here.
+            ChartPrepared::XRange(_) => {
+                return Err(color_eyre::eyre::eyre!("No Y axis columns selected"))
+            }
         };
         Ok(Some(job))
     }

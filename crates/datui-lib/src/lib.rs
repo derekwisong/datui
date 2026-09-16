@@ -2319,8 +2319,14 @@ impl App {
             ),
             InputMode::SortFilter => {
                 self.sort_filter_modal.focus == SortFilterFocus::Body
-                    && self.sort_filter_modal.active_tab == SortFilterTab::Filter
-                    && self.sort_filter_modal.filter.focus == FilterFocus::Value
+                    && match self.sort_filter_modal.active_tab {
+                        SortFilterTab::Filter => {
+                            self.sort_filter_modal.filter.focus == FilterFocus::Value
+                        }
+                        SortFilterTab::Sort => {
+                            self.sort_filter_modal.sort.focus == SortFocus::Filter
+                        }
+                    }
             }
             InputMode::PivotMelt => matches!(
                 self.pivot_melt_modal.focus,
@@ -2331,14 +2337,27 @@ impl App {
                     | PivotMeltFocus::MeltValName
             ),
             InputMode::Chart => {
-                self.chart_export_modal.active
-                    && matches!(
+                if self.chart_export_modal.active {
+                    matches!(
                         self.chart_export_modal.focus,
                         ChartExportFocus::PathInput
                             | ChartExportFocus::TitleInput
                             | ChartExportFocus::WidthInput
                             | ChartExportFocus::HeightInput
                     )
+                } else {
+                    // The column search boxes above each list.
+                    matches!(
+                        self.chart_modal.focus,
+                        ChartFocus::XInput
+                            | ChartFocus::YInput
+                            | ChartFocus::HistInput
+                            | ChartFocus::BoxInput
+                            | ChartFocus::KdeInput
+                            | ChartFocus::HeatmapXInput
+                            | ChartFocus::HeatmapYInput
+                    )
+                }
             }
             InputMode::Normal => {
                 self.template_modal.active
@@ -4768,49 +4787,8 @@ impl App {
 
         if event.code == KeyCode::Char('?') {
             let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
-            let in_text_input = match self.input_mode {
-                InputMode::Editing => true,
-                // The home screen is always accepting characters, into either the
-                // filter or the path input.
-                InputMode::Home => true,
-                InputMode::Export => matches!(
-                    self.export_modal.focus,
-                    ExportFocus::PathInput | ExportFocus::CsvDelimiter
-                ),
-                InputMode::SortFilter => {
-                    let on_body = self.sort_filter_modal.focus == SortFilterFocus::Body;
-                    let filter_tab = self.sort_filter_modal.active_tab == SortFilterTab::Filter;
-                    on_body
-                        && filter_tab
-                        && self.sort_filter_modal.filter.focus == FilterFocus::Value
-                }
-                InputMode::PivotMelt => matches!(
-                    self.pivot_melt_modal.focus,
-                    PivotMeltFocus::PivotFilter
-                        | PivotMeltFocus::MeltFilter
-                        | PivotMeltFocus::MeltPattern
-                        | PivotMeltFocus::MeltVarName
-                        | PivotMeltFocus::MeltValName
-                ),
-                InputMode::Info | InputMode::Chart => false,
-                InputMode::Normal => {
-                    if self.template_modal.active
-                        && self.template_modal.mode != TemplateModalMode::List
-                    {
-                        matches!(
-                            self.template_modal.create_focus,
-                            CreateFocus::Name
-                                | CreateFocus::Description
-                                | CreateFocus::ExactPath
-                                | CreateFocus::RelativePath
-                                | CreateFocus::PathPattern
-                                | CreateFocus::FilenamePattern
-                        )
-                    } else {
-                        false
-                    }
-                }
-            };
+            // The home screen always accepts characters, into its filter or path input.
+            let in_text_input = self.text_field_focused() || self.input_mode == InputMode::Home;
             // Ctrl-? always opens help; bare ? only when not in a text field
             if ctrl_help || !in_text_input {
                 self.open_help_overlay();
@@ -10827,8 +10805,27 @@ where
 }
 
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.
+/// Folds one channel drain into the loop: records whether the app changed, or restores
+/// the terminal and returns how `run` should end.
+fn finish_drain(drained: event_pump::Drained, updated: &mut bool) -> Option<Result<()>> {
+    match drained {
+        event_pump::Drained::Continue { updated: changed } => {
+            *updated |= changed;
+            None
+        }
+        event_pump::Drained::Exit => {
+            ratatui::restore();
+            Some(Ok(()))
+        }
+        event_pump::Drained::Crash(msg) => {
+            ratatui::restore();
+            Some(Err(color_eyre::eyre::eyre!(msg)))
+        }
+    }
+}
+
 pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
-    use event_pump::{Drained, EventPump};
+    use event_pump::EventPump;
     use std::io::Write;
     use std::sync::{mpsc, Mutex, Once};
 
@@ -10956,16 +10953,8 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         let mut updated = pump.replay_one()?;
         // A replayed key may have queued a follow-up (a Search, an Export); handle it
         // before the terminal is read so a key typed now cannot overtake it.
-        match pump.drain()? {
-            Drained::Continue { updated: drained } => updated |= drained,
-            Drained::Exit => {
-                ratatui::restore();
-                return Ok(());
-            }
-            Drained::Crash(msg) => {
-                ratatui::restore();
-                return Err(color_eyre::eyre::eyre!(msg));
-            }
+        if let Some(done) = finish_drain(pump.drain()?, &mut updated) {
+            return done;
         }
         let app = &pump.app;
 
@@ -10997,16 +10986,8 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             }
         }
 
-        match pump.drain()? {
-            Drained::Continue { updated: drained } => updated |= drained,
-            Drained::Exit => {
-                ratatui::restore();
-                return Ok(());
-            }
-            Drained::Crash(msg) => {
-                ratatui::restore();
-                return Err(color_eyre::eyre::eyre!(msg));
-            }
+        if let Some(done) = finish_drain(pump.drain()?, &mut updated) {
+            return done;
         }
         let app = &mut pump.app;
 

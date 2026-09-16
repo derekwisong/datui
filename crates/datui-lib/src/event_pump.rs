@@ -604,6 +604,63 @@ mod tests {
         ));
     }
 
+    /// Ctrl-C copies in every search box, not only the query bar: the Sort tab's column
+    /// search and the chart view's column searches are text fields too. At the plain
+    /// table it still quits.
+    #[test]
+    fn ctrl_c_copies_in_the_sort_and_chart_search_boxes() {
+        use crate::chart_modal::ChartFocus;
+        use crate::sort_filter_modal::{SortFilterFocus, SortFilterTab};
+        use crate::sort_modal::SortFocus;
+
+        let (mut p, _dir) = loaded_pump();
+        p.app.input_mode = InputMode::SortFilter;
+        p.app.sort_filter_modal.active = true;
+        p.app.sort_filter_modal.active_tab = SortFilterTab::Sort;
+        p.app.sort_filter_modal.focus = SortFilterFocus::Body;
+        p.app.sort_filter_modal.sort.focus = SortFocus::Filter;
+        assert!(
+            p.app.text_field_focused(),
+            "the sort search is a text field"
+        );
+        assert!(!matches!(
+            p.app.handle(&AppEvent::Key(ctrl('c'))),
+            Ok(Some(AppEvent::Exit))
+        ));
+
+        let (mut p2, _d) = loaded_pump();
+        p2.app.input_mode = InputMode::Chart;
+        p2.app.chart_modal.active = true;
+        for focus in [
+            ChartFocus::XInput,
+            ChartFocus::YInput,
+            ChartFocus::HistInput,
+            ChartFocus::BoxInput,
+            ChartFocus::KdeInput,
+            ChartFocus::HeatmapXInput,
+            ChartFocus::HeatmapYInput,
+        ] {
+            p2.app.chart_modal.focus = focus;
+            assert!(
+                p2.app.text_field_focused(),
+                "{focus:?} is a column search box"
+            );
+        }
+        p2.app.chart_modal.focus = ChartFocus::XInput;
+        assert!(!matches!(
+            p2.app.handle(&AppEvent::Key(ctrl('c'))),
+            Ok(Some(AppEvent::Exit))
+        ));
+        p2.app.chart_modal.focus = ChartFocus::XList;
+        assert!(!p2.app.text_field_focused(), "a list is not a text field");
+
+        let (mut p3, _d3) = loaded_pump();
+        assert!(matches!(
+            p3.app.handle(&AppEvent::Key(ctrl('c'))),
+            Ok(Some(AppEvent::Exit))
+        ));
+    }
+
     /// Item 2: a `q` at the startup spinner (busy, plain table view, nothing held) quits
     /// at once; a typed `/query` is still held and typed.
     #[test]

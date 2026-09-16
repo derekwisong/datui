@@ -64,6 +64,8 @@ pub struct Glyphs {
     /// Arrows for the off-screen column hints in the table header.
     pub arrow_left: &'static str,
     pub arrow_right: &'static str,
+    /// Between the steps of a location trail: `cloud › Azure › datui-test`.
+    pub trail: &'static str,
     /// The home-screen wordmark, three rows of box drawing. `None` when the terminal
     /// cannot draw it, and the one-line title bar is used instead.
     pub wordmark: Option<&'static [&'static str]>,
@@ -96,6 +98,7 @@ const UNICODE: Glyphs = Glyphs {
     rule_h_focused: "━",
     arrow_left: "←",
     arrow_right: "→",
+    trail: "›",
     wordmark: Some(&["╺┳┓┏━┓╺┳╸╻ ╻╻", " ┃┃┣━┫ ┃ ┃ ┃┃", "╺┻┛╹ ╹ ╹ ┗━┛╹"]),
 };
 
@@ -123,6 +126,7 @@ const ASCII: Glyphs = Glyphs {
     rule_h_focused: "=",
     arrow_left: "<",
     arrow_right: ">",
+    trail: ">",
     wordmark: None,
 };
 

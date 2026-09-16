@@ -1444,12 +1444,21 @@ pub enum AppEvent {
         scanned: usize,
         limited: Option<String>,
     },
-    /// The object stores on this machine, with their buckets. Sent once per session:
-    /// enumeration is a billed network round trip per provider, and a bucket list does
-    /// not change while somebody is looking at it.
+    /// The cloud sources on this machine, with whatever was listed on an earlier run.
+    /// Sent before anything is fetched, so the rows are there on the first frame.
     #[cfg(feature = "cloud")]
-    HomeCloudReady {
-        sections: Vec<crate::home::CloudSection>,
+    HomeCloudSources {
+        sources: Vec<crate::home::CloudSource>,
+    },
+    /// One source's buckets have been listed, or could not be. Each source reports on
+    /// its own, so a slow endpoint holds up nobody else's row.
+    #[cfg(feature = "cloud")]
+    HomeCloudListed {
+        id: String,
+        buckets: Vec<PathBuf>,
+        /// `(short, detail)` when the listing failed.
+        failure: Option<(String, String)>,
+        listed_at: std::time::SystemTime,
     },
     /// A network root has been listed off-thread, or could not be.
     HomeProbeReady {
@@ -3069,6 +3078,9 @@ impl App {
     /// the session. `None` means "not knowable without a scan", which the UI reports
     /// rather than papering over.
     pub fn home_schema(&mut self, entry: &discover::Entry) -> Option<discover::SchemaPreview> {
+        if home::cloud_source_id(&entry.path).is_some() {
+            return None;
+        }
         if let Some(cached) = self.home_schema_cache.get(&entry.path) {
             return cached.clone();
         }
@@ -3197,90 +3209,152 @@ impl App {
         }
     }
 
-    /// Find the object stores this machine can read, and enumerate their buckets.
-    ///
-    /// Once per session. Every provider costs a request, and against a bucket list that
-    /// does not change while it is on screen, repeating that on each rebuild would be a
-    /// billed round trip per keystroke.
-    ///
-    /// Runs on the runtime's blocking pool rather than a detached thread. Unlike a probe
-    /// of a dead `hard` mount, an HTTP request cannot wedge forever: every call here is
-    /// bounded by a global timeout, so the task is guaranteed to end and the pool slot
-    /// comes back.
+    /// Find the cloud sources this machine and the config describe, and list their
+    /// buckets. Once per session; Ctrl+R asks again.
     #[cfg(feature = "cloud")]
     fn spawn_cloud_discovery(&mut self) {
         if self.cloud_discovery_started {
             return;
         }
         self.cloud_discovery_started = true;
+        self.list_cloud_sources(None);
+    }
+
+    /// List the buckets of every source, or of the one named.
+    ///
+    /// The rows go out first, filled from the last run's listing when the source still
+    /// points at the same place, so the home screen has its counts before any request
+    /// is made. Then the sources are listed side by side, a few at a time, and each
+    /// result is sent the moment it arrives.
+    ///
+    /// Runs on the runtime rather than a detached thread. Unlike a probe of a dead
+    /// `hard` mount, an HTTP request cannot wedge forever: every call here is bounded
+    /// by a global timeout, so the task is guaranteed to end.
+    #[cfg(feature = "cloud")]
+    fn list_cloud_sources(&mut self, only: Option<String>) {
         let tx = self.events.clone();
         let cloud = self.app_config.cloud.clone();
+        let cache = self.cache.clone();
         self.runtime.spawn(async move {
-            let providers = {
+            let mut hidden = cache.load_hidden_cloud_sources();
+            hidden.extend(cloud.hide.iter().cloned());
+            let sources: Vec<crate::cloud_sources::Source> = {
                 let env = crate::cloud_browse::Environment::current();
                 crate::cloud_sources::discover(&cloud, &env)
-            };
-            // Say what was found before saying what is in it. Enumeration is a round
-            // trip, and on a slow link the alternative is a home screen with no sign
-            // that anything cloud-shaped exists, followed by sections appearing under
-            // the cursor a second later.
-            if !providers.is_empty() {
-                let _ = tx.send(AppEvent::HomeCloudReady {
-                    sections: providers
-                        .iter()
-                        .map(|provider| crate::home::CloudSection {
-                            title: provider.label.clone(),
-                            subtitle: provider.detail(),
-                            buckets: Vec::new(),
-                            error: None,
-                            listing: true,
-                        })
-                        .collect(),
-                });
+            }
+            .into_iter()
+            .filter(|s| !hidden.contains(&s.id))
+            .collect();
+
+            if only.is_none() {
+                let listings = cache.load_cloud_listings();
+                let rows = sources
+                    .iter()
+                    .map(|source| {
+                        let cached = listings
+                            .get(&source.id)
+                            .filter(|l| l.fingerprint == source.fingerprint());
+                        home_cloud_source(source, cached)
+                    })
+                    .collect();
+                let _ = tx.send(AppEvent::HomeCloudSources { sources: rows });
             }
 
-            let mut sections = Vec::new();
-            for provider in &providers {
-                let (buckets, error) = if provider.can_list_buckets() {
-                    match crate::cloud_browse::list_buckets(provider).await {
-                        Ok(buckets) => (buckets, None),
-                        Err(e) => (Vec::new(), Some(e)),
-                    }
-                } else {
-                    // Usable for anything typed, unable to enumerate. Saying which is
-                    // the difference between "you have no buckets" and "datui cannot
-                    // ask", and only one of those is something the user can fix.
-                    (
-                        Vec::new(),
-                        Some("no project set, so buckets cannot be listed".to_string()),
-                    )
-                };
-                // An account with no buckets is a fine answer, and an unexplained empty
-                // section is not. This is not a warning, so it belongs in the note
-                // beside the title rather than in the failure slot.
-                let subtitle = match (provider.detail(), buckets.is_empty() && error.is_none()) {
-                    (Some(detail), true) => Some(format!("{detail} · no buckets")),
-                    (None, true) => Some("no buckets".to_string()),
-                    (detail, false) => detail,
-                };
-                for bucket in &buckets {
-                    crate::cloud_sources::remember_bucket(provider, bucket);
-                }
-                sections.push(crate::home::CloudSection {
-                    title: provider.label.clone(),
-                    subtitle,
-                    buckets: buckets
-                        .iter()
-                        .map(|b| PathBuf::from(provider.bucket_url(b)))
-                        .collect(),
-                    error,
-                    listing: false,
+            // Enough to keep one slow endpoint from delaying the rest, few enough that a
+            // long list of sources does not open a connection storm.
+            const LISTING_AT_ONCE: usize = 4;
+            let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(LISTING_AT_ONCE));
+            let mut listings = tokio::task::JoinSet::new();
+            for source in sources
+                .into_iter()
+                .filter(|s| only.as_ref().is_none_or(|id| &s.id == id))
+            {
+                let permits = permits.clone();
+                listings.spawn(async move {
+                    let _permit = permits.acquire_owned().await;
+                    let result = if source.can_list_buckets() {
+                        crate::cloud_browse::list_buckets(&source).await
+                    } else {
+                        Err("no GCP project is set, so buckets cannot be listed. Set \
+                             GOOGLE_CLOUD_PROJECT or DATUI_GCP_PROJECT"
+                            .to_string())
+                    };
+                    (source, result)
                 });
             }
-            if !sections.is_empty() {
-                let _ = tx.send(AppEvent::HomeCloudReady { sections });
+            while let Some(joined) = listings.join_next().await {
+                let Ok((source, result)) = joined else {
+                    continue;
+                };
+                let listed_at = std::time::SystemTime::now();
+                // Buckets named in the config are shown whether or not the login can
+                // list them; that is what naming them is for.
+                let mut names = source.buckets.clone();
+                let failure = match result {
+                    Ok(listed) => {
+                        for bucket in &listed {
+                            crate::cloud_sources::remember_bucket(&source, bucket);
+                            if !names.contains(bucket) {
+                                names.push(bucket.clone());
+                            }
+                        }
+                        cache.save_cloud_listing(
+                            &source.id,
+                            crate::cache::CloudListing {
+                                fingerprint: source.fingerprint(),
+                                buckets: names.clone(),
+                                listed_at: listed_at
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0),
+                            },
+                        );
+                        None
+                    }
+                    Err(e) => Some(summarize_cloud_failure(&e)),
+                };
+                let _ = tx.send(AppEvent::HomeCloudListed {
+                    id: source.id.clone(),
+                    buckets: names
+                        .iter()
+                        .map(|b| PathBuf::from(source.bucket_url(b)))
+                        .collect(),
+                    failure,
+                    listed_at,
+                });
             }
         });
+    }
+
+    /// Ask again for what is on screen, ignoring what is cached: the buckets of the
+    /// source being browsed, the contents of the bucket or directory being browsed, or
+    /// every source's buckets from the home listing.
+    fn home_reload(&mut self) {
+        #[cfg(feature = "cloud")]
+        {
+            let browsing = self.home.browsing.clone();
+            match browsing.as_deref().and_then(home::cloud_source_id) {
+                Some(id) => {
+                    if let Some(source) = self.home.cloud.iter_mut().find(|s| s.id == id) {
+                        source.refreshing = true;
+                    }
+                    self.list_cloud_sources(Some(id));
+                }
+                None if browsing.is_none() && !self.home.cloud.is_empty() => {
+                    for source in &mut self.home.cloud {
+                        source.refreshing = true;
+                    }
+                    self.list_cloud_sources(None);
+                }
+                None => {}
+            }
+        }
+        if let Some(dir) = self.home.browsing.clone() {
+            self.home.probed.remove(&dir);
+            self.home.unreachable.remove(&dir);
+        }
+        self.home.status = None;
+        self.home_refresh();
     }
 
     /// Start the recursive search below the working directory, if it is wanted and
@@ -3518,12 +3592,33 @@ impl App {
     /// forgetting it there would either do nothing or imply a deletion datui is not
     /// going to perform.
     fn home_forget_selected(&mut self) {
-        let in_recents = self
+        let section_title = self
             .home
             .selected_section()
             .and_then(|i| self.home.sections.get(i))
-            .map(|s| s.subtitle.is_none())
-            .unwrap_or(false);
+            .map(|s| s.title.clone())
+            .unwrap_or_default();
+        if self.home.browsing.is_none()
+            && section_title == home::HomeState::CLOUD_SECTION
+            && let Some(id) = self
+                .home
+                .selected_entry()
+                .and_then(|e| home::cloud_source_id(&e.path))
+        {
+            self.cache.hide_cloud_source(&id);
+            let label = self
+                .home
+                .cloud
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.label.clone())
+                .unwrap_or_else(|| id.clone());
+            self.home.cloud.retain(|s| s.id != id);
+            self.home.status = Some(format!("Hid {label}. --clear-cache shows it again"));
+            self.home_refresh();
+            return;
+        }
+        let in_recents = section_title == "Recent";
         if !in_recents {
             self.home.status = Some("Only entries under Recent can be forgotten".into());
             return;
@@ -3566,7 +3661,8 @@ impl App {
         let Some(current) = self.home.browsing.clone() else {
             return;
         };
-        self.home_leave_browsing(home::parent_location(&current));
+        let parent = self.home.parent_of(&current);
+        self.home_leave_browsing(parent);
     }
 
     /// Move the browse up to `to`, or back to the root listing when `None`.
@@ -3731,6 +3827,7 @@ impl App {
                 self.home.sync_search_section();
                 self.home.select_first_entry();
             }
+            KeyCode::Char('r') if ctrl => self.home_reload(),
             KeyCode::Backspace => {
                 if self.home.filter.is_empty() {
                     self.home_ascend();
@@ -8900,8 +8997,41 @@ impl App {
                 None
             }
             #[cfg(feature = "cloud")]
-            AppEvent::HomeCloudReady { sections } => {
-                self.home.cloud = sections.clone();
+            AppEvent::HomeCloudSources { sources } => {
+                self.home.cloud = sources.clone();
+                self.home_refresh();
+                None
+            }
+            #[cfg(feature = "cloud")]
+            AppEvent::HomeCloudListed {
+                id,
+                buckets,
+                failure,
+                listed_at,
+            } => {
+                if let Some(source) = self.home.cloud.iter_mut().find(|s| &s.id == id) {
+                    source.refreshing = false;
+                    match failure {
+                        // A refresh that failed keeps what the last one found: stale
+                        // buckets are more use than none, and the row says it failed.
+                        Some((short, detail)) => {
+                            for bucket in buckets {
+                                if !source.buckets.contains(bucket) {
+                                    source.buckets.push(bucket.clone());
+                                }
+                            }
+                            source.status = home::CloudStatus::Failed {
+                                short: short.clone(),
+                                detail: detail.clone(),
+                            };
+                        }
+                        None => {
+                            source.buckets = buckets.clone();
+                            source.status = home::CloudStatus::Listed;
+                            source.listed_at = Some(*listed_at);
+                        }
+                    }
+                }
                 self.home_refresh();
                 None
             }
@@ -10915,6 +11045,112 @@ impl Drop for App {
             let _ = std::fs::remove_file(path);
         }
     }
+}
+
+/// A source as a home-screen row, with the last run's buckets when they still apply.
+#[cfg(feature = "cloud")]
+fn home_cloud_source(
+    source: &crate::cloud_sources::Source,
+    cached: Option<&crate::cache::CloudListing>,
+) -> home::CloudSource {
+    let mut details: Vec<(String, String)> = vec![
+        ("source".to_string(), source.id.clone()),
+        ("api".to_string(), source.kind.scheme().to_string()),
+    ];
+    if let Some(endpoint) = &source.s3.endpoint {
+        details.push(("endpoint".to_string(), endpoint.clone()));
+    }
+    if let Some(region) = &source.s3.region {
+        details.push(("region".to_string(), region.clone()));
+    }
+    if let Some(project) = &source.project {
+        details.push(("project".to_string(), project.clone()));
+    }
+    if let Some(profile) = &source.profile {
+        details.push(("profile".to_string(), profile.clone()));
+    }
+    if source.s3.virtual_hosted.is_some() {
+        let style = if source.s3.virtual_hosted_style() {
+            "virtual-hosted"
+        } else {
+            "path-style"
+        };
+        details.push(("addressing".to_string(), style.to_string()));
+    }
+    details.push(("login".to_string(), source.origin.clone()));
+
+    let note = [source.detail(), Some(source.origin.clone())]
+        .into_iter()
+        .flatten()
+        .filter(|n| !n.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let mut names: Vec<String> = cached.map(|c| c.buckets.clone()).unwrap_or_default();
+    for bucket in &source.buckets {
+        if !names.contains(bucket) {
+            names.push(bucket.clone());
+        }
+    }
+    let status = match &source.problem {
+        Some(problem) => home::CloudStatus::Failed {
+            short: "not configured".to_string(),
+            detail: problem.clone(),
+        },
+        None if cached.is_some() => home::CloudStatus::Listed,
+        None => home::CloudStatus::Listing,
+    };
+    home::CloudSource {
+        id: source.id.clone(),
+        label: source.label.clone(),
+        api: match source.kind {
+            crate::cloud_browse::ProviderKind::S3 => "s3",
+            crate::cloud_browse::ProviderKind::Gcs => "gcs",
+        }
+        .to_string(),
+        note,
+        buckets: names
+            .iter()
+            .map(|b| PathBuf::from(source.bucket_url(b)))
+            .collect(),
+        refreshing: cached.is_some() && source.problem.is_none(),
+        listed_at: cached
+            .map(|c| std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.listed_at)),
+        status,
+        details,
+    }
+}
+
+/// A listing error as a word for the row and the full message for the details pane.
+#[cfg(feature = "cloud")]
+fn summarize_cloud_failure(error: &str) -> (String, String) {
+    let lower = error.to_lowercase();
+    let short = if lower.contains("403")
+        || lower.contains("forbidden")
+        || lower.contains("accessdenied")
+        || lower.contains("access denied")
+    {
+        "403"
+    } else if lower.contains("401")
+        || lower.contains("unauthorized")
+        || lower.contains("credential")
+        || lower.contains("invalidaccesskeyid")
+    {
+        "not logged in"
+    } else if lower.contains("no gcp project") {
+        "no project"
+    } else if lower.contains("is not set") {
+        "not configured"
+    } else if lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("connection")
+        || lower.contains("dns")
+        || lower.contains("resolve")
+    {
+        "unavailable"
+    } else {
+        "error"
+    };
+    (short.to_string(), error.to_string())
 }
 
 /// Run a future on the app's runtime from a thread outside it, and wait for the answer.

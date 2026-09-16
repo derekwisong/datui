@@ -56,7 +56,7 @@ quick-xml = { version = "0.42", optional = true }
 # than reached through object_store, whose own re-export is of an internal module of
 # the same name, not of this crate.
 http = { version = "1", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "rt", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "rt", "io-util", "sync"] }
 polars-sql = { version = "0.55", optional = true }
 ignore = "0.4.33"
 

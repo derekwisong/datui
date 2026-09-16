@@ -179,7 +179,7 @@ fn render_wordmark(
         .home
         .browsing
         .as_ref()
-        .map(|p| crate::home::display_path(p))
+        .map(|p| app.home.location_label(p))
         .or_else(|| {
             std::env::current_dir()
                 .ok()
@@ -234,7 +234,7 @@ fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &Render
         .home
         .browsing
         .as_ref()
-        .map(|p| crate::home::display_path(p))
+        .map(|p| app.home.location_label(p))
         .or_else(|| {
             std::env::current_dir()
                 .ok()
@@ -383,7 +383,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     // Counted over every section, folded or not: with everything folded the headers
     // are the content, and a hint that says there is nothing here would be wrong.
     let has_dataset = app.home.has_any_dataset();
-    let guidance = if has_dataset || !app.home.filter.is_empty() {
+    // Cloud sources are something to browse too, so they count as content.
+    let guidance = if has_dataset || !app.home.filter.is_empty() || !app.home.cloud.is_empty() {
         Vec::new()
     } else {
         vec![
@@ -433,6 +434,20 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     ctx,
                 ));
             }
+            crate::home::Row::Entry { entry, .. }
+                if crate::home::cloud_source_id(&entry.path).is_some() =>
+            {
+                let source = app.home.cloud_source_of(&entry.path);
+                lines.push(source_line(
+                    entry,
+                    source,
+                    selected,
+                    area.width as usize,
+                    app.throbber_frame as usize,
+                    &app.home.filter,
+                    ctx,
+                ));
+            }
             crate::home::Row::Entry { entry, .. } => {
                 // When a row is here because of a column rather than its name, say so:
                 // otherwise it reads as the filter having gone wrong.
@@ -448,6 +463,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     show_meta,
                     via,
                     &app.home.filter,
+                    // Inside a source the trail already names it.
+                    app.home.browsing.is_none(),
                     ctx,
                 ));
             }
@@ -607,6 +624,110 @@ fn highlight_spans(
     spans
 }
 
+/// A cloud source under `CLOUD`: its name, the API it speaks, how many buckets it
+/// has (or why it has none) and where its login came from.
+///
+/// A column layout of its own rather than a dataset's. A source has no rows, columns,
+/// size or age, and three blank metadata columns beside every source would say so on
+/// every line.
+fn source_line<'a>(
+    entry: &'a Entry,
+    source: Option<&crate::home::CloudSource>,
+    selected: bool,
+    width: usize,
+    frame: usize,
+    filter: &str,
+    ctx: &RenderContext,
+) -> Line<'a> {
+    let g = glyphs::get();
+    let base = match ctx.table_selected {
+        Some(bg) if selected => Style::default().bg(bg),
+        None if selected => Style::default().add_modifier(Modifier::REVERSED),
+        _ => Style::default(),
+    };
+    let marker = if selected {
+        g.selector
+    } else {
+        g.selector_blank
+    };
+    let name_style = if selected {
+        base.fg(ctx.text_primary).add_modifier(Modifier::BOLD)
+    } else {
+        base.fg(ctx.text_primary)
+    };
+    let hit_style = base
+        .fg(ctx.keybind_hints)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+
+    let api = source.map(|s| s.api.as_str()).unwrap_or("");
+    let count = match source {
+        Some(s) if s.busy() => {
+            let spinner = g.spinner[frame % g.spinner.len()];
+            match s.count_text() {
+                text if text.is_empty() => spinner.to_string(),
+                text => format!("{text} {spinner}"),
+            }
+        }
+        Some(s) => s.count_text(),
+        None => String::new(),
+    };
+    let failed = source.is_some_and(|s| s.failed());
+    let note = source.map(|s| s.note.clone()).unwrap_or_default();
+
+    // marker, place, name, api, count, note. The name takes what it needs up to a
+    // third of the line, the count a fixed column, and the note whatever is left.
+    const API_W: usize = 7;
+    const COUNT_W: usize = 14;
+    let place = format!("{} ", g.in_object_store);
+    let fixed = marker.chars().count() + place.chars().count() + API_W + COUNT_W + 3;
+    let name_w = entry
+        .name
+        .chars()
+        .count()
+        .min((width / 3).max(12))
+        .max(16)
+        .min(width.saturating_sub(fixed));
+    let mut name = entry.name.clone();
+    let mut positions = crate::home::fuzzy_positions(filter, &name);
+    if name.chars().count() > name_w && name_w > 1 {
+        let kept = name_w - 1;
+        name = name.chars().take(kept).collect::<String>() + g.ellipsis;
+        positions.retain(|p| *p < kept);
+    }
+    let name_pad = name_w.saturating_sub(name.chars().count());
+    let note_w = width.saturating_sub(fixed + name_w);
+    // Cut from the end: the account or endpoint leads, and it is the part that tells
+    // two sources apart.
+    let note = if note.chars().count() > note_w && note_w > 1 {
+        note.chars().take(note_w - 1).collect::<String>() + g.ellipsis
+    } else {
+        note
+    };
+
+    let mut spans = vec![
+        Span::styled(
+            marker,
+            base.fg(ctx.keybind_hints).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(place, base.fg(ctx.keybind_hints)),
+    ];
+    spans.extend(highlight_spans(&name, &positions, name_style, hit_style));
+    spans.push(Span::styled(" ".repeat(name_pad + 1), base));
+    spans.push(Span::styled(format!("{api:<API_W$}"), base.fg(ctx.dimmed)));
+    let count_style = if failed {
+        base.fg(ctx.warning)
+    } else {
+        base.fg(ctx.text_secondary)
+    };
+    let count = truncate_start(&count, COUNT_W - 1);
+    spans.push(Span::styled(format!("{count:<COUNT_W$}"), count_style));
+    spans.push(Span::styled(" ".to_string(), base));
+    let note_pad = note_w.saturating_sub(note.chars().count());
+    spans.push(Span::styled(note, base.fg(ctx.dimmed)));
+    spans.push(Span::styled(" ".repeat(note_pad + 1), base));
+    Line::from(spans)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn entry_line<'a>(
     entry: &'a Entry,
@@ -615,6 +736,7 @@ fn entry_line<'a>(
     show_meta: bool,
     matched_column: Option<&'a str>,
     filter: &str,
+    show_source: bool,
     ctx: &RenderContext,
 ) -> Line<'a> {
     // The selection marker is the loudest thing on screen, and the only thing that
@@ -635,11 +757,19 @@ fn entry_line<'a>(
     //
     // Inside an object store the service's own word is used, so a bucket reads as a
     // bucket rather than as a directory.
+    let path_text = entry.path.to_string_lossy();
+    let named_source = crate::source::split_source_id(&path_text).0;
     let kind = match entry.kind {
         EntryKind::Directory => {
             crate::home::object_place_label(&entry.path).unwrap_or_else(|| entry.kind.label())
         }
         _ => entry.kind.label(),
+    };
+    // Two stores can hold the same bucket and key, so a row from one that is named in
+    // its URL says which, where a kind would otherwise go.
+    let kind = match (named_source, kind) {
+        (Some(id), "") if show_source => id,
+        _ => kind,
     };
     // Hive and multi-file datasets wear a flat chip; the rest stay as a word.
     let kind_is_chip =
@@ -880,7 +1010,12 @@ fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'s
         };
         facts.push(("source", source.label().to_string(), style));
     }
-    let kind = entry.kind.label();
+    let kind = match entry.kind {
+        EntryKind::Directory => {
+            crate::home::object_place_label(&entry.path).unwrap_or_else(|| entry.kind.label())
+        }
+        _ => entry.kind.label(),
+    };
     if !kind.is_empty() {
         facts.push(("kind", kind.to_string(), plain));
     }
@@ -960,11 +1095,72 @@ fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'s
     lines
 }
 
+/// The details pane for a cloud source: what it points at, how it logs in, and when
+/// its buckets were listed. When listing failed, the whole message, since the row only
+/// had room for a word of it.
+fn source_details(
+    entry: &Entry,
+    source: &crate::home::CloudSource,
+    width: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    let plain = Style::default().fg(ctx.text_secondary);
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        entry.name.clone(),
+        Style::default()
+            .fg(ctx.text_primary)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    let mut facts: Vec<(String, String, Style)> = source
+        .details
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone(), plain))
+        .collect();
+    let listed = match source.listed_at.map(discover::format_age) {
+        Some(age) if age == "now" => " · listed now".to_string(),
+        Some(age) if !age.is_empty() => format!(" · listed {age} ago"),
+        _ => String::new(),
+    };
+    match &source.status {
+        crate::home::CloudStatus::Listing if source.buckets.is_empty() => {
+            facts.push(("buckets".to_string(), "listing".to_string(), plain));
+        }
+        _ => facts.push((
+            "buckets".to_string(),
+            format!("{}{listed}", source.buckets.len()),
+            plain,
+        )),
+    }
+    lines.push(Line::from(""));
+    lines.push(pane_heading("DETAILS", width, ctx));
+    let key_w = facts.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
+    for (key, value, style) in facts {
+        lines.push(fact_line(&key, value, key_w, style, ctx));
+    }
+    if let crate::home::CloudStatus::Failed { short, detail } = &source.status {
+        lines.push(Line::from(""));
+        lines.push(pane_heading(&short.to_uppercase(), width, ctx));
+        lines.push(Line::from(Span::styled(
+            detail.clone(),
+            Style::default().fg(ctx.warning),
+        )));
+    }
+    lines
+}
+
 fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
     let Some(entry) = app.home.selected_entry() else {
         return;
     };
     let width = area.width as usize;
+    if crate::home::cloud_source_id(&entry.path).is_some() {
+        if let Some(source) = app.home.cloud_source_of(&entry.path) {
+            Paragraph::new(source_details(&entry, source, width, ctx))
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .render(area, buf);
+        }
+        return;
+    }
     let g = glyphs::get();
     let mut lines = preview_head(&entry, width, ctx);
 
@@ -1077,7 +1273,7 @@ mod tests {
     fn row_spans(name: &str, filter: &str, column: Option<&str>) -> Vec<(String, bool)> {
         let ctx = RenderContext::for_test();
         let entry = Entry::for_test(std::path::Path::new("/tmp/x"), name);
-        let line = entry_line(&entry, false, 60, false, column, filter, &ctx);
+        let line = entry_line(&entry, false, 60, false, column, filter, true, &ctx);
         line.spans
             .iter()
             .skip(1) // the selection marker

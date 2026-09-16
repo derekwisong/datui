@@ -201,7 +201,12 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
     }
 
     // Stable: rows must not move when a listing lands.
-    sources.sort_by(|a, b| a.tier.cmp(&b.tier).then_with(|| a.id.cmp(&b.id)));
+    sources.sort_by(|a, b| {
+        a.tier
+            .cmp(&b.tier)
+            .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     sources
 }
 

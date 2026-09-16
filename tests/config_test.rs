@@ -1932,3 +1932,39 @@ fn the_generated_config_does_not_invent_sources() {
     assert!(!text.contains("sources"), "{text}");
     assert!(!text.contains("hide ="), "{text}");
 }
+
+#[test]
+fn cloud_listings_and_hidden_sources_survive_a_restart() {
+    use datui::CacheManager;
+    use datui::cache::CloudListing;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+    assert!(cache.load_cloud_listings().is_empty());
+
+    let lab = CloudListing {
+        fingerprint: "s3|http://127.0.0.1:9000|key||".to_string(),
+        buckets: vec!["data".to_string(), "logs".to_string()],
+        listed_at: 1_789_000_000,
+    };
+    cache.save_cloud_listing("lab", lab.clone());
+    cache.save_cloud_listing(
+        "corp",
+        CloudListing {
+            buckets: vec!["data".to_string()],
+            ..lab.clone()
+        },
+    );
+    let again = CacheManager::with_dir(temp_dir.path().to_path_buf());
+    let listings = again.load_cloud_listings();
+    assert_eq!(
+        listings.get("lab"),
+        Some(&lab),
+        "one source's save keeps the others"
+    );
+    assert_eq!(listings["corp"].buckets, ["data"]);
+
+    again.hide_cloud_source("corp");
+    again.hide_cloud_source("corp");
+    assert_eq!(again.load_hidden_cloud_sources(), ["corp"]);
+}

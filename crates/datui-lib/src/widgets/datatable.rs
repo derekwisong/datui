@@ -3585,8 +3585,8 @@ impl DataTableState {
     }
 
     /// Fit a planned buffer `[buffer_start, buffer_end)` to the caps: `max_buffered_rows`
-    /// and the byte budget around the view, then whole row groups for a remote object
-    /// whose footer is known, cut back to the byte budget when a group is over it.
+    /// and the byte budget around the view, then for a remote object whose footer is
+    /// known the row groups the view lies in, cut back to the caps inside them.
     fn fit_window(
         &self,
         view_start: usize,
@@ -3625,12 +3625,15 @@ impl DataTableState {
             *buffer_end,
             self.max_buffered_rows,
         );
-        if byte_cap > 0 {
+        // The caps hold inside a group too: a group over them is read one window at
+        // a time, the window kept inside the group so it never pulls the next one
+        // before the view reaches it.
+        if cap > 0 {
             let (floor, ceil) = (*buffer_start, *buffer_end);
             shrink_around_view(
                 view_start,
                 view_end,
-                byte_cap,
+                cap,
                 floor,
                 ceil,
                 buffer_start,
@@ -3660,16 +3663,19 @@ impl DataTableState {
     fn clamp_buffer_bytes(&self, df: DataFrame, buffer_start: usize) -> (DataFrame, usize, usize) {
         let total = df.height();
         let full_end = buffer_start + total;
-        if self.max_buffered_mb == 0 || total == 0 {
+        if total == 0 {
             return (df, buffer_start, full_end);
         }
-        let size = df.estimated_size();
-        let max_bytes = self.max_buffered_mb * 1024 * 1024;
-        if size <= max_bytes {
-            return (df, buffer_start, full_end);
+        // The row cap as well: a row group stitched on to the rows on hand can run over it.
+        let mut max_rows = total;
+        if self.max_buffered_rows > 0 {
+            max_rows = max_rows.min(self.max_buffered_rows);
         }
-        let bytes_per_row = (size / total).max(1);
-        let max_rows = (max_bytes / bytes_per_row).clamp(1, total);
+        if self.max_buffered_mb > 0 {
+            let bytes_per_row = (df.estimated_size() / total).max(1);
+            max_rows = max_rows.min(self.max_buffered_mb * 1024 * 1024 / bytes_per_row);
+        }
+        let max_rows = max_rows.max(1);
         if max_rows >= total {
             return (df, buffer_start, full_end);
         }
@@ -7340,18 +7346,20 @@ mod tests {
     }
 
     #[test]
-    fn a_remote_object_is_fetched_one_row_group_at_a_time() {
-        // Ten 1M-row groups with the default 100k-row cap: a fill is the group the view
-        // is in, paging inside it fetches nothing, and crossing into the next fetches
-        // exactly that group, stitched on to the one on hand.
+    fn a_remote_object_is_read_inside_its_row_group() {
+        // Ten 1M-row groups with the default 100k-row cap: the window is planned inside
+        // the group the view is in, so it never pulls the next group before the view
+        // reaches it; crossing fetches rows of the next group alone, stitched on to the
+        // ones on hand and trimmed back to the cap.
         const G: usize = 1_000_000;
+        const CAP: usize = DEFAULT_MAX_BUFFERED_ROWS;
         let lf = df!("a" => &[0i32]).unwrap().lazy();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.set_remote_source();
         state.set_row_groups(&[G; 10]);
         assert_eq!(state.num_rows, 10 * G);
         state.visible_rows = 40;
-        let group = |start: usize, end: usize| CollectResult {
+        let rows = |start: usize, end: usize| CollectResult {
             df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
             buffer_start: start,
             buffer_end: end,
@@ -7360,45 +7368,82 @@ mod tests {
         };
 
         let request = state.prepare_async_collect(None).expect("first fill");
-        assert_eq!((request.buffer_start, request.buffer_end), (0, G));
-        state.apply_async_collect(group(0, G));
+        assert_eq!((request.buffer_start, request.buffer_end), (0, CAP));
+        state.apply_async_collect(rows(0, CAP));
         for _ in 0..20 {
-            assert!(!state.page_down(), "a page inside the group needs no fill");
+            assert!(!state.page_down(), "a page inside the window needs no fill");
         }
 
-        // The last page of group 0 asks for a lookahead the cap refuses: nothing to do.
+        // A jump to the end of group 0 is clipped to it: group 1 is not touched yet.
         assert!(state.scroll_to(G - 60));
-        assert!(state.prepare_async_collect(None).is_none());
+        let request = state
+            .prepare_async_collect(None)
+            .expect("the end of group 0");
+        assert_eq!((request.buffer_start, request.buffer_end), (G - CAP, G));
+        state.apply_async_collect(rows(G - CAP, G));
 
-        // A view straddling the boundary fetches group 1 alone.
+        // A view straddling the boundary fetches rows of group 1 alone.
         assert!(state.scroll_to(G - 20));
-        let request = state.prepare_async_collect(None).expect("the next group");
-        assert_eq!((request.buffer_start, request.buffer_end), (G, 2 * G));
-        state.apply_async_collect(group(G, 2 * G));
-        assert_eq!((state.buffered_start(), state.buffered_end()), (0, 2 * G));
+        let request = state.prepare_async_collect(None).expect("into group 1");
+        assert_eq!((request.buffer_start, request.buffer_end), (G, G + CAP / 2));
+        state.apply_async_collect(rows(G, G + CAP / 2));
+        let (held_start, held_end) = (state.buffered_start(), state.buffered_end());
+        assert!(
+            held_start <= G - 20 && G + 20 <= held_end,
+            "the view is on hand"
+        );
+        assert_eq!(held_end - held_start, CAP, "trimmed back to the cap");
         let held = state.buffered_df.as_ref().unwrap();
-        assert_eq!(held.height(), 2 * G);
+        assert_eq!(held.height(), CAP);
         assert_eq!(
-            held.column("a").unwrap().i32().unwrap().get(G),
+            held.column("a").unwrap().i32().unwrap().get(G - held_start),
             Some(G as i32),
             "stitched in order"
         );
-
-        // Deep in group 1, an expansion near its end fits back to group 1 alone, which
-        // is on hand: group 0 is let go and nothing is fetched.
         assert!(!state.page_down());
-        assert!(state.scroll_to(2 * G - 60));
-        assert!(state.prepare_async_collect(None).is_none());
-        assert_eq!((state.buffered_start(), state.buffered_end()), (G, 2 * G));
 
-        // End and Home are one group each.
+        // End and Home are one window each.
         assert!(state.scroll_to_end());
-        let request = state.prepare_async_collect(None).expect("the last group");
-        assert_eq!((request.buffer_start, request.buffer_end), (9 * G, 10 * G));
-        state.apply_async_collect(group(9 * G, 10 * G));
+        let request = state.prepare_async_collect(None).expect("the last window");
+        assert_eq!(
+            (request.buffer_start, request.buffer_end),
+            (10 * G - CAP, 10 * G)
+        );
+        state.apply_async_collect(rows(10 * G - CAP, 10 * G));
         assert!(state.scroll_to_start());
-        let request = state.prepare_async_collect(None).expect("the first group");
-        assert_eq!((request.buffer_start, request.buffer_end), (0, G));
+        let request = state.prepare_async_collect(None).expect("the first window");
+        assert_eq!((request.buffer_start, request.buffer_end), (0, CAP));
+    }
+
+    #[test]
+    fn small_row_groups_are_fetched_whole() {
+        // 40k-row groups under a 100k cap: a fill is whole groups, as many as fit,
+        // and crossing into the next fetches exactly that group.
+        const G: usize = 40_000;
+        let lf = df!("a" => &[0i32]).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.set_remote_source();
+        state.set_row_groups(&[G; 25]);
+        state.visible_rows = 40;
+        let rows = |start: usize, end: usize| CollectResult {
+            df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
+            buffer_start: start,
+            buffer_end: end,
+            num_rows: 25 * G,
+            count_known: true,
+        };
+
+        let request = state.prepare_async_collect(None).expect("first fill");
+        assert_eq!((request.buffer_start, request.buffer_end), (0, 2 * G));
+        state.apply_async_collect(rows(0, 2 * G));
+
+        assert!(state.scroll_to(2 * G - 20));
+        let request = state.prepare_async_collect(None).expect("the next group");
+        assert_eq!((request.buffer_start, request.buffer_end), (2 * G, 3 * G));
+        state.apply_async_collect(rows(2 * G, 3 * G));
+        let (held_start, held_end) = (state.buffered_start(), state.buffered_end());
+        assert!(held_start <= 2 * G - 20 && 2 * G + 20 <= held_end);
+        assert!(held_end - held_start <= DEFAULT_MAX_BUFFERED_ROWS);
     }
 
     #[test]

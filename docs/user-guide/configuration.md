@@ -69,8 +69,8 @@ table_cell_padding = 1      # Spaces between columns
 # sidebar_width = 70        # Fixed width for every sidebar. Omit for each sidebar's own default
 pages_lookahead = 3         # Pages buffered ahead of the screen
 pages_lookback = 3          # Pages buffered behind
-max_buffered_rows = 100000  # Cap on buffered rows, 0 for none. A remote Parquet object
-                            # is buffered by whole row group; this caps the groups read ahead
+max_buffered_rows = 100000  # Cap on buffered rows, 0 for none. Remote Parquet row groups
+                            # under it are held whole, larger ones read a window at a time
 max_buffered_mb = 512       # Cap on buffer memory, 0 for none. Planned before the read
                             # from the schema, so a wide table buffers fewer rows
 unicode = "auto"            # "auto", "always" or "never": glyphs or ASCII

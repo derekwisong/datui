@@ -36,13 +36,14 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
 | <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs |
-| <kbd>Enter</kbd> | Open the dataset, enter the directory or bucket, or fold the section |
+| <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
 | <kbd>Tab</kbd> | Cycle the sort: default, size, modified, rows |
-| <kbd>Backspace</kbd> | Delete a filter character, or leave a directory |
+| <kbd>Backspace</kbd> | Delete a filter character, or go up one level |
+| <kbd>Ctrl</kbd>+<kbd>R</kbd> | List again what is on screen, ignoring what is cached |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Clear the filter |
-| <kbd>Delete</kbd> | Forget the highlighted entry (under `RECENT` only) |
+| <kbd>Delete</kbd> | Forget the highlighted entry under `RECENT`, or hide a cloud source |
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, then directory, then to the data you had open |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
@@ -59,7 +60,7 @@ Datasets are grouped by where they came from, in this order:
 |---|---|---|
 | `RECENT` | Datasets you have opened, newest first | open |
 | current directory | Where you launched datui | open |
-| cloud storage | The buckets your credentials reach, one section per provider | open |
+| `CLOUD` | One row per cloud source; <kbd>Enter</kbd> lists its buckets | open |
 | configured directories | `[data] directories`, in the order listed | open |
 | directories of recent datasets | The 8 most recent | folded |
 | `ELSEWHERE` | Directories from your desktop's recent-files list | folded |
@@ -201,61 +202,90 @@ Local disk is dimmed; the rest are colored.
 
 ## Cloud storage
 
-When this machine has credentials for an object store, its buckets are listed
-and each one can be entered with <kbd>Enter</kbd>. Prefixes descend like
-directories; objects open like files. Opened objects go into `RECENT` like any
-other path.
+Every object store datui can read is one row under `CLOUD`. <kbd>Enter</kbd> on a
+row lists its buckets; <kbd>Enter</kbd> on a bucket lists what is in it. Prefixes
+descend like directories, objects open like files, and opened objects go into
+`RECENT` like any other path.
 
 ```
-▾ GOOGLE CLOUD STORAGE  2                            project: example-project
-  example-data/ bucket
-  example-backups/ bucket
-▾ S3-COMPATIBLE (127.0.0.1:9000)  4
-  datui-sales/ bucket
+▾ CLOUD  4  ──────────────────────────────────────────────────────
+  ☁ Amazon S3       s3     3 buckets     datui config
+  ☁ Google Cloud    gcs    2 buckets     project: example-project · gcloud
+  ☁ Lab MinIO       s3     1 bucket      127.0.0.1:9000 · datui config
+  ☁ onprem          s3     403           minio.corp.example:9000 · datui config
 ```
 
-### Which credentials are used
+| Column | Shows |
+|---|---|
+| Name | The source's `label`, or its name |
+| API | `s3` or `gcs` |
+| Count | How many buckets, a spinner while listing, or why there are none |
+| Note | The endpoint, project or profile, and where the login was found |
 
-Exactly the ones datui would use to open the data, so a bucket that is listed
-is one that can be read.
+The title bar shows where you are as a trail: `cloud › Lab MinIO › data › 2024`.
+<kbd>Backspace</kbd> goes up one level, from a bucket back to its source, and
+<kbd>Esc</kbd> returns to where you started.
 
-**Google Cloud Storage** appears when any of `GOOGLE_SERVICE_ACCOUNT`,
-`GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`,
-`GOOGLE_APPLICATION_CREDENTIALS`, or the file written by
-`gcloud auth application-default login` is present. Listing buckets also needs a
-project, taken from `DATUI_GCP_PROJECT`, `GOOGLE_CLOUD_PROJECT`,
-`GCLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT` or `GCP_PROJECT`, or from the
-`quota_project_id` in the gcloud credentials file. Without one, the section
-still appears and still opens URLs you type; it just cannot list.
+The details pane for a source lists its endpoint, region, login and when its
+buckets were listed. When listing failed, the row says it in a word and the pane
+gives the whole message:
 
-**S3, and anything speaking S3**, appears when there are keys in `[cloud]` in
-your config or in `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, or an EKS
-web identity. A region alone is not enough. `AWS_PROFILE` or a `~/.aws`
-directory also shows the section, but profiles are not read yet
-([#168](https://github.com/derekwisong/datui/issues/168)), so it cannot list
-until the profile's keys are exported; see
-[Loading Data](loading-data.md#amazon-s3). An EC2 instance role is **not**
-discovered, because finding it means a metadata request that hangs on some
-networks; opening a URL still works, and keys in the config or the environment
-bring the bucket list back.
+| Row says | Means |
+|---|---|
+| `403` | The login cannot list buckets. An object can still open by its URL, `datui s3://bucket/key` |
+| `not logged in` | No usable credentials reached the store |
+| `no project` | A Google login with no project to list; set `GOOGLE_CLOUD_PROJECT` or `DATUI_GCP_PROJECT` |
+| `not configured` | A variable named in `[[cloud.sources]]` is not set |
+| `unavailable` | The endpoint did not answer |
 
-A custom endpoint is named by its host: `S3-COMPATIBLE (localhost:9000)`. The
-endpoint may come from `s3_endpoint_url` under `[cloud]` in the config,
-`AWS_ENDPOINT_URL` or `--s3-endpoint-url`, and the bucket list is fetched from
-the same one that opens the objects. See
-[Loading Data](loading-data.md#remote-data) for the settings themselves.
+### Loading
+
+The rows appear at once. The buckets listed on the last run are shown straight
+away, and every source is listed again in the background, a few at a time, each
+row updating as its answer arrives, so a slow endpoint holds up only its own row.
+<kbd>Ctrl</kbd>+<kbd>R</kbd> lists again whatever is on screen.
+
+Typing also matches bucket names already listed, from every source, in `Found`:
+`Lab MinIO › data` and `onprem › data` stay two rows.
+
+<kbd>Delete</kbd> on a source hides it until `datui --clear-cache`. To hide one
+for good:
+
+```toml
+[cloud]
+hide = ["gcs-default"]
+```
+
+### Which sources appear
+
+Exactly the ones datui can use to open the data, so a bucket that is listed is
+one that can be read.
+
+| Source | ID | Appears when |
+|---|---|---|
+| Amazon S3, or the endpoint in `[cloud]` | `s3-default` | Keys in `[cloud]` or `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, an EKS web identity, `AWS_PROFILE`, or a `~/.aws` directory |
+| Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, or the file written by `gcloud auth application-default login` |
+| Each `[[cloud.sources]]` entry | its `name` | Always |
+
+A source in the config with the same name as one of these replaces it. See
+[Loading Data](loading-data.md#several-stores-at-once) for `[[cloud.sources]]`.
+
+Google needs a project to list buckets, taken from `DATUI_GCP_PROJECT`,
+`GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT` or
+`GCP_PROJECT`, or from the `quota_project_id` in the gcloud credentials file.
+
+AWS profiles are not read yet
+([#168](https://github.com/derekwisong/datui/issues/168)): `AWS_PROFILE` or a
+`~/.aws` directory shows the row, but it cannot list until the profile's keys are
+exported; see [Loading Data](loading-data.md#amazon-s3). An EC2 instance role is
+**not** discovered, because finding it means a metadata request that hangs on some
+networks; opening a URL still works.
 
 ### What a cloud row shows
 
-Name, size and modification time: what a listing returns. Row counts and
-columns would need a read per object, which someone is billed for, so they are
-not fetched until you open one. Buckets are listed once per session.
-
-A provider that refuses to list keeps its section and says why:
-
-```
-▾ GOOGLE CLOUD STORAGE  0     403, no storage.buckets.list access
-```
+Inside a bucket: name, size and modification time, which is what a listing
+returns. Row counts and columns would need a read per object, which someone is
+billed for, so they are not fetched until you open one.
 
 ## Network locations
 

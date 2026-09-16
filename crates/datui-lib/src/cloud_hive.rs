@@ -76,11 +76,15 @@ fn footer_from_parquet_tail(tail_bytes: &[u8]) -> Result<(Schema, usize)> {
     Ok((Schema::from_arrow_schema(arrow_schema.as_ref()), rows))
 }
 
-/// The row count in one object's footer. Does not fetch the data.
-pub async fn rows_in_cloud_parquet(store: Arc<dyn ObjectStore>, key: &str) -> Result<usize> {
+/// One object's footer: its schema and row count, from a single tail read. Does not
+/// fetch the data.
+pub async fn footer_of_cloud_parquet(
+    store: Arc<dyn ObjectStore>,
+    key: &str,
+) -> Result<(Arc<Schema>, usize)> {
     read_parquet_footer(&store, &OsPath::from(key))
         .await
-        .map(|(_, rows)| rows)
+        .map(|(schema, rows)| (Arc::new(schema), rows))
 }
 
 /// Fetch the tail of one object and read its footer. Does not fetch the full file.

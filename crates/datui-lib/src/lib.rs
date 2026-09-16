@@ -121,6 +121,49 @@ mod export_format_tests {
     }
 
     #[test]
+    fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
+        use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+        use polars::prelude::IntoLazy;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let lf = polars::df!("a" => (0..100).collect::<Vec<i32>>())
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
+        state.visible_rows = 10;
+        let dataset = state.len_generation();
+        app.data_table_state = Some(state);
+        let generation = app.task_generation;
+        app.collect_inflight = Some(InflightCollect {
+            generation,
+            dataset,
+            start: 0,
+            end: 50,
+        });
+
+        // The frame that sized the table asks again: the collect on its way covers
+        // the view, so nothing new is planned.
+        assert!(app.spawn_async_collect("Loading buffer..."));
+        assert_eq!(app.task_generation, generation);
+
+        // A filter changes the data underneath; those rows no longer answer.
+        app.event(&AppEvent::Filter(vec![FilterStatement {
+            column: "a".to_string(),
+            operator: FilterOperator::Lt,
+            value: "50".to_string(),
+            logical_op: LogicalOperator::And,
+        }]));
+        assert_ne!(
+            app.task_generation, generation,
+            "a fresh collect was planned"
+        );
+        let inflight = app.collect_inflight.expect("the new collect is recorded");
+        assert_eq!(inflight.generation, app.task_generation);
+        assert_ne!(inflight.dataset, dataset);
+    }
+
+    #[test]
     fn compressed_csv_still_defaults_to_csv() {
         // `sales.csv.gz` has extension `gz`; the `.csv` that decides this is in the
         // stem. Reading the extension alone offered no export default at all.
@@ -903,7 +946,8 @@ pub struct OpenOptions {
     pub temp_dir: Option<std::path::PathBuf>,
     /// Excel sheet: 0-based index or sheet name (CLI only).
     pub excel_sheet: Option<String>,
-    /// S3/compatible overrides (env + CLI). Take precedence over config when building CloudOptions.
+    /// S3/compatible settings from the command line. They outrank the environment and
+    /// the config file; see `effective_cloud`.
     pub s3_endpoint_url_override: Option<String>,
     pub s3_access_key_id_override: Option<String>,
     pub s3_secret_access_key_override: Option<String>,
@@ -1004,14 +1048,20 @@ impl OpenOptions {
         self.parse_strings.is_none() && self.parse_dates
     }
 
-    /// The S3 settings every cloud path uses: the CLI and environment overrides laid
-    /// over the `[cloud]` config. Opening, sizing, downloading and listing all go
-    /// through this, so a bucket that is listed is reached the way it will be opened.
+    /// The S3 settings every cloud path uses: the command line over the environment
+    /// over the `[cloud]` config. `run()` folds this into the config the `App` keeps,
+    /// so opening, sizing, downloading, discovery and listing all see one answer and a
+    /// bucket that is listed is reached the way it will be opened. The environment is
+    /// read here, not when the options are built, so a caller that starts from
+    /// `OpenOptions::default()` — the Python bindings do — still honours it.
     pub fn effective_cloud(
         &self,
         cloud: &crate::config::CloudConfig,
     ) -> crate::config::CloudConfig {
         let mut merged = cloud.clone();
+        merged.merge(crate::config::CloudConfig::from_env(&|key| {
+            std::env::var(key).ok()
+        }));
         merged.merge(crate::config::CloudConfig {
             s3_endpoint_url: self.s3_endpoint_url_override.clone(),
             s3_access_key_id: self.s3_access_key_id_override.clone(),
@@ -1123,26 +1173,11 @@ impl OpenOptions {
         // Excel sheet (CLI only)
         opts.excel_sheet = args.excel_sheet.clone();
 
-        // S3/compatible overrides: env then CLI (CLI wins). Env vars match AWS SDK (AWS_ENDPOINT_URL, etc.)
-        opts.s3_endpoint_url_override = args
-            .s3_endpoint_url
-            .clone()
-            .or_else(|| std::env::var("AWS_ENDPOINT_URL_S3").ok())
-            .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok())
-            .or_else(|| std::env::var("AWS_ENDPOINT").ok());
-        opts.s3_access_key_id_override = args
-            .s3_access_key_id
-            .clone()
-            .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok());
-        opts.s3_secret_access_key_override = args
-            .s3_secret_access_key
-            .clone()
-            .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok());
-        opts.s3_region_override = args
-            .s3_region
-            .clone()
-            .or_else(|| std::env::var("AWS_REGION").ok())
-            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok());
+        // S3/compatible flags. The environment is folded in by `effective_cloud`.
+        opts.s3_endpoint_url_override = args.s3_endpoint_url.clone();
+        opts.s3_access_key_id_override = args.s3_access_key_id.clone();
+        opts.s3_secret_access_key_override = args.s3_secret_access_key.clone();
+        opts.s3_region_override = args.s3_region.clone();
 
         opts.polars_streaming = config.performance.polars_streaming;
 
@@ -2004,6 +2039,34 @@ pub(crate) struct ChartCacheXY {
     pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
 }
 
+/// The buffer collect in flight: what it will fill, and for which data.
+///
+/// The first frame after a load sets `visible_rows` and asks for a recollect while the
+/// pre-frame collect is still running; on an object store that restarted the same
+/// row-group download. A collect that already covers the view is left to land instead,
+/// provided nothing has moved underneath it: the frame generation must still be the
+/// one it was spawned under, and so must the data (`len_generation` changes with every
+/// change to `lf`, so a filter applied while it runs plans a fresh collect).
+#[derive(Clone, Copy)]
+struct InflightCollect {
+    generation: u64,
+    dataset: u64,
+    start: usize,
+    end: usize,
+}
+
+impl InflightCollect {
+    fn covers(&self, generation: u64, state: &DataTableState) -> bool {
+        // The view ends at the data when there is less than a screen of it.
+        let bound = state.num_rows_if_valid().unwrap_or(usize::MAX);
+        let view_end = (state.start_row + state.visible_rows).min(bound);
+        self.generation == generation
+            && self.dataset == state.len_generation()
+            && self.start <= state.start_row
+            && view_end <= self.end
+    }
+}
+
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// Network roots currently being listed off-thread, so a probe is not started
@@ -2124,11 +2187,8 @@ pub struct App {
     // generation (and the count is still invalid) the row count is shown as "?" rather than a
     // misleading provisional total.
     len_count_failed: Option<u64>,
-    /// The buffer collect in flight: its generation and the row range it will fill.
-    /// The first frame after a load sets `visible_rows` and asks for a recollect while
-    /// the pre-frame collect is still running; on an object store that restarted the
-    /// same row-group download. A collect that already covers the view is left to land.
-    collect_inflight: Option<(u64, usize, usize)>,
+    /// The buffer collect in flight, if any. See [`InflightCollect`].
+    collect_inflight: Option<InflightCollect>,
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
@@ -2332,21 +2392,22 @@ impl App {
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
-        if let Some((gen, start, end)) = self.collect_inflight {
-            let view_end = state.start_row + state.visible_rows;
-            if gen == self.task_generation && start <= state.start_row && view_end <= end {
-                return true;
-            }
+        if self
+            .collect_inflight
+            .is_some_and(|inflight| inflight.covers(self.task_generation, state))
+        {
+            return true;
         }
         let Some(request) = state.prepare_async_collect(None) else {
             return false;
         };
         self.task_generation = self.task_generation.wrapping_add(1);
-        self.collect_inflight = Some((
-            self.task_generation,
-            request.buffer_start,
-            request.buffer_end,
-        ));
+        self.collect_inflight = Some(InflightCollect {
+            generation: self.task_generation,
+            dataset: state.len_generation(),
+            start: request.buffer_start,
+            end: request.buffer_end,
+        });
         let collect_slot = self.pending_collect_result.clone();
         self.spawn_bg(status, move |gen, tx| {
             match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
@@ -2402,6 +2463,24 @@ impl App {
     /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
     /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
     /// the busy flag set by the key handler would gate further input forever.
+    /// Home, End and G. A jump may need a fill, so it is deferred behind a frame that
+    /// shows the throbber — setting `start_row` alone used to leave the old buffer on
+    /// screen, drawn from its first row — unless the view is already there, in which
+    /// case only the selection settles and no frame or key is spent.
+    fn jump_key(&mut self, jump: AppEvent) -> Option<AppEvent> {
+        let state = self.data_table_state.as_mut()?;
+        let (already_there, settle): (bool, fn(&mut DataTableState) -> bool) = match jump {
+            AppEvent::DoScrollHome => (state.start_row == 0, DataTableState::scroll_to_start),
+            _ => (state.at_end(), DataTableState::scroll_to_end),
+        };
+        if already_there {
+            settle(state);
+            return None;
+        }
+        self.busy = true;
+        Some(jump)
+    }
+
     fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
     where
         F: FnOnce(&mut crate::widgets::datatable::DataTableState) -> bool,
@@ -3372,12 +3451,10 @@ impl App {
         DataTableState::from_csv(path, options)
     }
 
+    /// Polars' view of the effective S3 settings, for `scan_parquet`.
     #[cfg(feature = "cloud")]
-    fn build_s3_cloud_options(
-        cloud: &crate::config::CloudConfig,
-        options: &OpenOptions,
-    ) -> CloudOptions {
-        let cloud = options.effective_cloud(cloud);
+    fn build_s3_cloud_options(cloud: &crate::config::CloudConfig) -> CloudOptions {
+        let cloud = cloud.clone();
         let configs: Vec<(AmazonS3ConfigKey, String)> = [
             (AmazonS3ConfigKey::Endpoint, cloud.s3_endpoint_url),
             (AmazonS3ConfigKey::AccessKeyId, cloud.s3_access_key_id),
@@ -3398,24 +3475,25 @@ impl App {
         }
     }
 
-    /// The bucket and key of an `s3://bucket/key` or `gs://bucket/key` URL.
+    /// The bucket and key of an `s3://bucket/key` or `gs://bucket/key` URL. The key
+    /// is empty for a bucket root.
     #[cfg(feature = "cloud")]
-    fn cloud_bucket_and_key(s3_url: &str) -> Result<(String, String)> {
-        let (path_part, _ext) = source::url_path_extension(s3_url);
-        let (bucket, key) = path_part
-            .split_once('/')
-            .ok_or_else(|| color_eyre::eyre::eyre!("S3 URL must be s3://bucket/key"))?;
-        Ok((bucket.to_string(), key.to_string()))
+    fn cloud_bucket_and_key(url: &str) -> Result<(String, String)> {
+        crate::cloud_browse::split_bucket_url(url)
+            .map(|(_, bucket, key)| (bucket, key))
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!("URL must be s3://bucket/key or gs://bucket/key")
+            })
     }
 
+    /// `cloud` is the effective config the `App` keeps (see `OpenOptions::effective_cloud`).
     #[cfg(feature = "cloud")]
     fn build_s3_object_store(
         s3_url: &str,
         cloud: &crate::config::CloudConfig,
-        options: &OpenOptions,
     ) -> Result<Arc<dyn object_store::ObjectStore>> {
         let (bucket, _key) = Self::cloud_bucket_and_key(s3_url)?;
-        let store = crate::cloud_browse::s3_builder(&bucket, &options.effective_cloud(cloud))
+        let store = crate::cloud_browse::s3_builder(&bucket, cloud)
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
         Ok(Arc::new(store))
@@ -3423,12 +3501,8 @@ impl App {
 
     #[cfg(feature = "cloud")]
     fn build_gcs_object_store(gs_url: &str) -> Result<Arc<dyn object_store::ObjectStore>> {
-        let (path_part, _ext) = source::url_path_extension(gs_url);
-        let (bucket, _key) = path_part
-            .split_once('/')
-            .ok_or_else(|| color_eyre::eyre::eyre!("GCS URL must be gs://bucket/key"))?;
+        let (bucket, _key) = Self::cloud_bucket_and_key(gs_url)?;
         let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
-            .with_url(gs_url)
             .with_bucket_name(bucket)
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
@@ -3491,7 +3565,6 @@ impl App {
     fn fetch_remote_size_s3(
         s3_url: &str,
         cloud: &crate::config::CloudConfig,
-        options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
@@ -3501,7 +3574,7 @@ impl App {
         if key.is_empty() {
             return Ok(None);
         }
-        let store = Self::build_s3_object_store(s3_url, cloud, options)?;
+        let store = Self::build_s3_object_store(s3_url, cloud)?;
         let path = OsPath::from(key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
@@ -3510,24 +3583,16 @@ impl App {
     #[cfg(feature = "cloud")]
     fn fetch_remote_size_gcs(
         gs_url: &str,
-        _options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
-        let (path_part, _ext) = source::url_path_extension(gs_url);
-        let (bucket, key) = path_part
-            .split_once('/')
-            .ok_or_else(|| color_eyre::eyre::eyre!("GCS URL must be gs://bucket/key"))?;
+        let (_bucket, key) = Self::cloud_bucket_and_key(gs_url)?;
         if key.is_empty() {
             return Ok(None);
         }
-        let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
-            .with_url(gs_url)
-            .with_bucket_name(bucket)
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
+        let store = Self::build_gcs_object_store(gs_url)?;
         let path = OsPath::from(key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
@@ -3586,7 +3651,7 @@ impl App {
                 "S3 URL must point to an object (e.g. s3://bucket/path/file.csv)"
             ));
         }
-        let store = Self::build_s3_object_store(s3_url, cloud, options)?;
+        let store = Self::build_s3_object_store(s3_url, cloud)?;
 
         let path = OsPath::from(key);
         let bytes = wait_on_runtime(runtime, async move {
@@ -3626,21 +3691,14 @@ impl App {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
-        let (path_part, ext) = source::url_path_extension(gs_url);
-        let (bucket, key) = path_part
-            .split_once('/')
-            .ok_or_else(|| color_eyre::eyre::eyre!("GCS URL must be gs://bucket/key"))?;
+        let (_path_part, ext) = source::url_path_extension(gs_url);
+        let (_bucket, key) = Self::cloud_bucket_and_key(gs_url)?;
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!(
                 "GCS URL must point to an object (e.g. gs://bucket/path/file.csv)"
             ));
         }
-
-        let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
-            .with_url(gs_url)
-            .with_bucket_name(bucket)
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
+        let store = Self::build_gcs_object_store(gs_url)?;
 
         let path = OsPath::from(key);
         let bytes = wait_on_runtime(runtime, async move {
@@ -3689,12 +3747,12 @@ impl App {
                     Self::fetch_remote_size_http(url).unwrap_or(None)
                 }
                 #[cfg(feature = "cloud")]
-                PendingDownload::S3 { url, options, .. } => {
-                    Self::fetch_remote_size_s3(url, &cloud, options, &runtime).unwrap_or(None)
+                PendingDownload::S3 { url, .. } => {
+                    Self::fetch_remote_size_s3(url, &cloud, &runtime).unwrap_or(None)
                 }
                 #[cfg(feature = "cloud")]
-                PendingDownload::Gcs { url, options, .. } => {
-                    Self::fetch_remote_size_gcs(url, options, &runtime).unwrap_or(None)
+                PendingDownload::Gcs { url, .. } => {
+                    Self::fetch_remote_size_gcs(url, &runtime).unwrap_or(None)
                 }
             };
             let _ = tx.send(AppEvent::BackgroundRemoteSizeReady {
@@ -3847,31 +3905,11 @@ impl App {
         let p = path.filter(|p| {
             let s = p.as_os_str().to_string_lossy();
             let is_cloud = s.starts_with("s3://") || s.starts_with("gs://");
-            let looks_like_hive = s.ends_with('/') || s.contains('*');
-            is_cloud && (options.hive || looks_like_hive)
+            is_cloud && (options.hive || source::is_prefix_or_glob(&s))
         })?;
 
-        let (full, cloud_opts, store) = match source::input_source(p) {
-            source::InputSource::S3(url) => {
-                let full = format!("s3://{url}");
-                let opts = Self::build_s3_cloud_options(cloud, options);
-                let store = Self::build_s3_object_store(&full, cloud, options).ok()?;
-                (full, opts, store)
-            }
-            source::InputSource::Gcs(url) => {
-                let full = format!("gs://{url}");
-                let store = Self::build_gcs_object_store(&full).ok()?;
-                (full, CloudOptions::default(), store)
-            }
-            _ => return None,
-        };
-
-        let (path_part, _) = source::url_path_extension(&full);
-        let key = path_part
-            .split_once('/')
-            .map(|(_, k)| k.trim_end_matches('/'))
-            .unwrap_or("")
-            .to_string();
+        let (full, cloud_opts, store) = Self::cloud_store_for(p, cloud).ok()?;
+        let (_bucket, key) = Self::cloud_bucket_and_key(&full).ok()?;
         let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
             cloud_hive::schema_from_one_cloud_hive(store, &key).await
         })?
@@ -3930,68 +3968,77 @@ impl App {
         runtime: &tokio::runtime::Handle,
     ) -> Result<(DataTableState, String)> {
         let (mut state, label) = Self::schema_state_by_route(lf, path, options, cloud, runtime)?;
-        // `path` is what is actually scanned: a cloud URL only when the object is read
-        // in place, not when it was downloaded to a temporary file first.
-        if path.is_some_and(|p| {
-            matches!(
-                source::input_source(p),
-                source::InputSource::S3(_) | source::InputSource::Gcs(_)
-            )
-        }) {
+        // The display path of a downloaded object is its URL too; only a scan that
+        // really reads the object store in place buffers like one.
+        if path.is_some_and(source::scans_in_place) {
             state.set_remote_source();
-            #[cfg(feature = "cloud")]
-            if let Some(rows) = Self::cloud_object_row_count(path, options, cloud, runtime) {
-                state.set_num_rows(rows);
-            }
         }
         Ok((state, label))
     }
 
-    /// The row count of one Parquet object read in place, from its footer.
-    ///
-    /// Polars answers `len()` on a cloud scan by reading the first row group rather
-    /// than the footer, so the background count that followed an open downloaded row
-    /// group 0 a second time, alongside the buffer that was showing it. The footer
-    /// has the number, and the tail read that fetches it is a few hundred kilobytes.
-    /// A prefix or glob is many footers and keeps the background count; a count that
-    /// cannot be read leaves it too.
+    /// The URL, Polars options and store for one object-store path.
     #[cfg(feature = "cloud")]
-    fn cloud_object_row_count(
-        path: Option<&Path>,
-        options: &OpenOptions,
+    fn cloud_store_for(
+        path: &Path,
         cloud: &crate::config::CloudConfig,
-        runtime: &tokio::runtime::Handle,
-    ) -> Option<usize> {
-        let p = path?;
-        let s = p.to_string_lossy();
-        if options.hive || s.ends_with('/') || s.contains('*') {
-            return None;
-        }
-        let (full, store) = match source::input_source(p) {
+    ) -> Result<(String, CloudOptions, Arc<dyn object_store::ObjectStore>)> {
+        match source::input_source(path) {
             source::InputSource::S3(url) => {
                 let full = format!("s3://{url}");
-                let store = Self::build_s3_object_store(&full, cloud, options).ok()?;
-                (full, store)
+                let store = Self::build_s3_object_store(&full, cloud)?;
+                Ok((full, Self::build_s3_cloud_options(cloud), store))
             }
             source::InputSource::Gcs(url) => {
                 let full = format!("gs://{url}");
-                let store = Self::build_gcs_object_store(&full).ok()?;
-                (full, store)
+                let store = Self::build_gcs_object_store(&full)?;
+                Ok((full, CloudOptions::default(), store))
             }
-            _ => return None,
-        };
-        let (_bucket, key) = Self::cloud_bucket_and_key(&full).ok()?;
-        if key.is_empty() {
-            return None;
+            _ => Err(color_eyre::eyre::eyre!("not an object-store URL")),
         }
-        wait_on_runtime(runtime, async move {
-            cloud_hive::rows_in_cloud_parquet(store, &key).await
-        })?
-        .ok()
     }
 
-    /// The schema routes, cheapest first: one local footer, one cloud footer, then
-    /// asking the frame.
+    /// One Parquet object read in place: schema and row count from its footer, in one
+    /// tail read through one store.
+    ///
+    /// Asking the frame for its schema fetched the footer through Polars, and Polars
+    /// answers `len()` on a cloud scan by reading the first row group rather than the
+    /// footer, so the background count that followed an open downloaded row group 0 a
+    /// second time, alongside the buffer that was showing it. The footer has both
+    /// answers for one 256 KiB range request; the schema is handed to the scan so
+    /// Polars does not fetch it again, and the count is known before the first frame.
+    /// A failure is returned, not swallowed: the caller falls back to asking the frame
+    /// and puts the reason in the debug label.
+    #[cfg(feature = "cloud")]
+    fn schema_state_from_cloud_object(
+        path: &Path,
+        options: &OpenOptions,
+        cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<DataTableState> {
+        let (full, cloud_opts, store) = Self::cloud_store_for(path, cloud)?;
+        let (_bucket, key) = Self::cloud_bucket_and_key(&full)?;
+        if key.is_empty() {
+            return Err(color_eyre::eyre::eyre!("a bucket, not an object"));
+        }
+        let (schema, rows) = wait_on_runtime(runtime, async move {
+            cloud_hive::footer_of_cloud_parquet(store, &key).await
+        })
+        .ok_or_else(|| color_eyre::eyre::eyre!("cancelled"))??;
+        let args = ScanArgsParquet {
+            schema: Some(schema.clone()),
+            cloud_options: Some(cloud_opts),
+            hive_options: polars::io::HiveOptions::default(),
+            glob: false,
+            ..Default::default()
+        };
+        let lf = LazyFrame::scan_parquet(PlPathRef::new(&full).into_owned(), args)?;
+        let mut state = DataTableState::from_schema_and_lazyframe(schema, lf, options, None)?;
+        state.set_num_rows(rows);
+        Ok(state)
+    }
+
+    /// The schema routes, cheapest first: one local footer, one cloud footer (a hive
+    /// prefix or a single object), then asking the frame.
     fn schema_state_by_route(
         lf: LazyFrame,
         path: Option<&Path>,
@@ -4008,6 +4055,22 @@ impl App {
         #[cfg(feature = "cloud")]
         if let Some(state) = Self::schema_state_from_cloud_hive(path, options, cloud, runtime) {
             return Ok((state, "one-file (cloud)".to_string()));
+        }
+        #[cfg(feature = "cloud")]
+        if let Some(p) = path.filter(|p| {
+            source::scans_in_place(p)
+                && !options.hive
+                && !source::is_prefix_or_glob(&p.to_string_lossy())
+        }) {
+            match Self::schema_state_from_cloud_object(p, options, cloud, runtime) {
+                Ok(state) => return Ok((state, "footer (cloud)".to_string())),
+                // Visible in the debug overlay, because the fallback costs a row group
+                // for the count and that should not pass for the intended path.
+                Err(e) => {
+                    return Self::schema_state_from_full_scan(lf, path, options)
+                        .map(|state| (state, format!("full scan (cloud footer: {e})")));
+                }
+            }
         }
         Self::schema_state_from_full_scan(lf, path, options)
             .map(|state| (state, "full scan".to_string()))
@@ -4043,9 +4106,9 @@ impl App {
                 #[cfg(feature = "cloud")]
                 {
                     let full = format!("s3://{url}");
-                    let cloud_opts = Self::build_s3_cloud_options(cloud, options);
+                    let cloud_opts = Self::build_s3_cloud_options(cloud);
                     let pl_path = PlPathRef::new(&full).into_owned();
-                    let is_glob = full.contains('*') || full.ends_with('/');
+                    let is_glob = source::is_prefix_or_glob(&full);
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
                     } else {
@@ -4078,7 +4141,7 @@ impl App {
                 {
                     let full = format!("gs://{url}");
                     let pl_path = PlPathRef::new(&full).into_owned();
-                    let is_glob = full.contains('*') || full.ends_with('/');
+                    let is_glob = source::is_prefix_or_glob(&full);
                     let hive_options = if is_glob {
                         polars::io::HiveOptions::new_enabled()
                     } else {
@@ -7782,32 +7845,9 @@ impl App {
                     None
                 }
             }
-            KeyCode::Home if event.is_press() => {
-                // Deferred like End. Setting `start_row` alone left the old buffer on
-                // screen, drawn from its first row rather than the dataset's, until
-                // something else happened to trigger a collect.
-                if self.data_table_state.is_some() {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollHome)
-                } else {
-                    None
-                }
-            }
-            KeyCode::End if event.is_press() => {
-                if self.data_table_state.is_some() {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollEnd)
-                } else {
-                    None
-                }
-            }
-            KeyCode::Char('G') if event.is_press() => {
-                if self.data_table_state.is_some() {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollEnd)
-                } else {
-                    None
-                }
+            KeyCode::Home if event.is_press() => self.jump_key(AppEvent::DoScrollHome),
+            KeyCode::End | KeyCode::Char('G') if event.is_press() => {
+                self.jump_key(AppEvent::DoScrollEnd)
             }
             KeyCode::Char('f')
                 if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
@@ -8473,7 +8513,7 @@ impl App {
                     if let source::InputSource::S3(ref url) = src {
                         let full = format!("s3://{url}");
                         let (_, ext) = source::url_path_extension(&full);
-                        let is_glob = full.contains('*') || full.ends_with('/');
+                        let is_glob = source::is_prefix_or_glob(&full);
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
                             return self.spawn_remote_size_probe(PendingDownload::S3 {
                                 url: full,
@@ -8486,7 +8526,7 @@ impl App {
                     if let source::InputSource::Gcs(ref url) = src {
                         let full = format!("gs://{url}");
                         let (_, ext) = source::url_path_extension(&full);
-                        let is_glob = full.contains('*') || full.ends_with('/');
+                        let is_glob = source::is_prefix_or_glob(&full);
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
                             return self.spawn_remote_size_probe(PendingDownload::Gcs {
                                 url: full,

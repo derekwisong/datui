@@ -523,19 +523,43 @@ const CLOUD_COMMENTS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The variables that name an S3 endpoint, in the order they are consulted. The AWS
+/// SDKs read the service-specific one first, then the general one; `AWS_ENDPOINT` is
+/// what `object_store` accepts.
+pub const S3_ENDPOINT_VARS: [&str; 3] = ["AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL", "AWS_ENDPOINT"];
+
+/// A value that says something. `AWS_ENDPOINT_URL=` in a shell, or an empty flag, is
+/// not an endpoint and must not erase the one in the config file.
+fn non_blank(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 impl CloudConfig {
+    /// The S3 settings the environment sets. The variable list lives here and nowhere
+    /// else, so discovery, listing and opening cannot disagree about it. `var` is the
+    /// environment, passed in so a test can supply one.
+    pub fn from_env(var: &dyn Fn(&str) -> Option<String>) -> Self {
+        let first = |keys: &[&str]| keys.iter().find_map(|key| var(key).and_then(non_blank));
+        Self {
+            s3_endpoint_url: first(&S3_ENDPOINT_VARS),
+            s3_access_key_id: first(&["AWS_ACCESS_KEY_ID"]),
+            s3_secret_access_key: first(&["AWS_SECRET_ACCESS_KEY"]),
+            s3_region: first(&["AWS_REGION", "AWS_DEFAULT_REGION"]),
+        }
+    }
+
+    /// `other` wins wherever it says something; a blank value says nothing.
     pub fn merge(&mut self, other: Self) {
-        if other.s3_endpoint_url.is_some() {
-            self.s3_endpoint_url = other.s3_endpoint_url;
-        }
-        if other.s3_access_key_id.is_some() {
-            self.s3_access_key_id = other.s3_access_key_id;
-        }
-        if other.s3_secret_access_key.is_some() {
-            self.s3_secret_access_key = other.s3_secret_access_key;
-        }
-        if other.s3_region.is_some() {
-            self.s3_region = other.s3_region;
+        for (slot, value) in [
+            (&mut self.s3_endpoint_url, other.s3_endpoint_url),
+            (&mut self.s3_access_key_id, other.s3_access_key_id),
+            (&mut self.s3_secret_access_key, other.s3_secret_access_key),
+            (&mut self.s3_region, other.s3_region),
+        ] {
+            if let Some(value) = value.and_then(non_blank) {
+                *slot = Some(value);
+            }
         }
     }
 }
@@ -1552,7 +1576,7 @@ impl Default for DisplayConfig {
             unicode: crate::glyphs::UnicodeMode::default(),
             pages_lookahead: 3,
             pages_lookback: 3,
-            max_buffered_rows: 100_000,
+            max_buffered_rows: crate::widgets::datatable::DEFAULT_MAX_BUFFERED_ROWS,
             max_buffered_mb: 512,
             row_numbers: false,
             row_start_index: 1,

@@ -29,6 +29,24 @@ pub fn input_source(path: &Path) -> InputSource {
     InputSource::Local(path.to_path_buf())
 }
 
+/// A cloud location whose shape is a prefix or a glob rather than one object.
+pub(crate) fn is_prefix_or_glob(url: &str) -> bool {
+    url.ends_with('/') || url.contains('*')
+}
+
+/// True when the path names an object-store location datui scans in place, with range
+/// requests, rather than downloads to a temporary file first: Parquet, or a prefix or
+/// glob of it. A downloaded object reaches the schema phase under its display URL, and
+/// this is what keeps it from being treated as a remote scan.
+pub(crate) fn scans_in_place(path: &Path) -> bool {
+    if !matches!(input_source(path), InputSource::S3(_) | InputSource::Gcs(_)) {
+        return false;
+    }
+    let url = path.to_string_lossy();
+    let (_, ext) = url_path_extension(&url);
+    !cloud_path_should_download(ext.as_deref(), is_prefix_or_glob(&url))
+}
+
 /// Returns the path segment and file extension for URL format inference.
 /// For S3, path part is everything after `://` (bucket/key). For HTTP/HTTPS, path part is the URL path only (host stripped).
 pub(crate) fn url_path_extension(url: &str) -> (String, Option<String>) {
@@ -147,6 +165,20 @@ mod tests {
         assert_eq!(ext.as_deref(), Some("parquet"));
         let (_, ext) = url_path_extension("https://x.com/file.csv.gz");
         assert_eq!(ext.as_deref(), Some("gz"));
+    }
+
+    #[test]
+    fn only_parquet_prefixes_and_globs_are_scanned_in_place() {
+        assert!(scans_in_place(Path::new("s3://bucket/obj.parquet")));
+        assert!(scans_in_place(Path::new("gs://bucket/prefix/")));
+        assert!(scans_in_place(Path::new("s3://bucket/year=*/*.parquet")));
+        // Downloaded first, then opened as a local file: not a remote scan.
+        assert!(!scans_in_place(Path::new("s3://bucket/data.csv")));
+        assert!(!scans_in_place(Path::new("s3://bucket/data.csv.gz")));
+        assert!(!scans_in_place(Path::new(
+            "https://example.com/data.parquet"
+        )));
+        assert!(!scans_in_place(Path::new("/data/local.parquet")));
     }
 
     #[test]

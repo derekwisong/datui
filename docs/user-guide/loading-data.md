@@ -127,7 +127,11 @@ datui --s3-endpoint-url http://localhost:9000 s3://bucket/file.parquet
 ```
 
 The command-line flags are `--s3-endpoint-url`, `--s3-access-key-id`,
-`--s3-secret-access-key` and `--s3-region`.
+`--s3-secret-access-key` and `--s3-region`. In the environment the endpoint is
+taken from the first of `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and
+`AWS_ENDPOINT` that is set, the keys from `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`, and the region from `AWS_REGION` or
+`AWS_DEFAULT_REGION`. A variable or flag that is set but empty counts as unset.
 
 ### Google Cloud Storage
 

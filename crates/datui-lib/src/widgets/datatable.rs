@@ -3493,6 +3493,11 @@ impl DataTableState {
         self.remote_source = true;
     }
 
+    /// True for a scan of an object store. See `set_remote_source`.
+    pub fn is_remote_source(&self) -> bool {
+        self.remote_source
+    }
+
     /// Record the row groups of a remote Parquet object, `rows` in each, so a buffer
     /// fill is planned as whole groups (see `align_to_row_groups`). Also the row count.
     pub fn set_row_groups(&mut self, rows: &[usize]) {

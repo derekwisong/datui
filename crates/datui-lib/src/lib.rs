@@ -165,6 +165,73 @@ mod export_format_tests {
     }
 
     #[test]
+    fn a_short_read_on_a_remote_scan_is_the_count() {
+        use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+        use polars::prelude::IntoLazy;
+
+        // A frame whose len() cannot be taken: a short read has to answer without it.
+        let unreadable = LazyFrame::scan_parquet(
+            polars::prelude::PlPath::new("/nonexistent/for-this-test.parquet"),
+            Default::default(),
+        )
+        .unwrap();
+        let job = LenCount {
+            len_generation: 7,
+            count_dir: None,
+            lf: unreadable,
+            streaming: false,
+        };
+        assert_eq!(job.after_collect(1_000, 30, 70), Ok(1_030), "short: known");
+        assert_eq!(job.after_collect(1_000, 70, 70), Err(()), "full: counted");
+
+        // Through the harness: a filtered remote frame gets its count from the
+        // collect that came back short, and the len() never runs alongside it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let lf = polars::df!("a" => (0..100).collect::<Vec<i32>>())
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
+        state.set_remote_source();
+        state.visible_rows = 10;
+        state.defer_collect = true;
+        state.filter(vec![FilterStatement {
+            column: "a".to_string(),
+            operator: FilterOperator::Lt,
+            value: "50".to_string(),
+            logical_op: LogicalOperator::And,
+        }]);
+        assert!(!state.is_num_rows_valid());
+        let dataset = state.len_generation();
+        app.data_table_state = Some(state);
+        assert!(app.spawn_async_collect("Filtering..."));
+        assert_eq!(app.len_count_inflight, Some(dataset));
+
+        let wait = std::time::Duration::from_secs(20);
+        let first = rx.recv_timeout(wait).expect("the collect lands");
+        assert!(
+            matches!(first, AppEvent::BackgroundCollectReady { .. }),
+            "the buffer comes first"
+        );
+        let second = rx.recv_timeout(wait).expect("the count follows");
+        assert!(
+            matches!(
+                second,
+                AppEvent::BackgroundLenReady {
+                    len_generation,
+                    num_rows: 50
+                } if len_generation == dataset
+            ),
+            "the short read of 50 rows is the count"
+        );
+        app.event(&first);
+        app.event(&second);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.num_rows_if_valid(), Some(50));
+        assert_eq!(app.len_count_inflight, None);
+    }
+
+    #[test]
     fn compressed_csv_still_defaults_to_csv() {
         // `sales.csv.gz` has extension `gz`; the `.csv` that decides this is in the
         // stem. Reading the extension alone offered no export default at all.
@@ -2111,6 +2178,74 @@ impl InflightCollect {
     }
 }
 
+/// The exact row count of a frame, to run off the UI thread: the footer sum for a
+/// pristine local Parquet hive directory, otherwise `len()`. Carries the
+/// `len_generation` it was spawned under, so a result for data since changed is dropped.
+struct LenCount {
+    len_generation: u64,
+    count_dir: Option<PathBuf>,
+    lf: LazyFrame,
+    streaming: bool,
+}
+
+impl LenCount {
+    fn for_state(state: &DataTableState) -> Self {
+        Self {
+            len_generation: state.len_generation(),
+            count_dir: state.parquet_count_dir(),
+            lf: state.lf_clone(),
+            streaming: state.polars_streaming_enabled(),
+        }
+    }
+
+    /// Count the rows. Blocks; `Err` when the count could not be taken.
+    fn run(&self) -> Result<usize, ()> {
+        match &self.count_dir {
+            Some(dir) => DataTableState::count_rows_from_parquet_dir(dir).map_err(|_| ()),
+            None => {
+                match crate::statistics::collect_lazy(
+                    self.lf.clone().select([len()]),
+                    self.streaming,
+                ) {
+                    Ok(df) => Ok(match df.get(0) {
+                        Some(col) => match col.first() {
+                            Some(AnyValue::UInt32(n)) => *n as usize,
+                            _ => 0,
+                        },
+                        None => 0,
+                    }),
+                    Err(_) => Err(()),
+                }
+            }
+        }
+    }
+
+    /// The count once a buffer collect of `requested` rows from `start` has returned
+    /// `returned` of them. A short read ran off the end of the data, which names the
+    /// total without a pass over it; a full one leaves the count to `run`.
+    fn after_collect(&self, start: usize, returned: usize, requested: usize) -> Result<usize, ()> {
+        if returned < requested {
+            Ok(start + returned)
+        } else {
+            self.run()
+        }
+    }
+
+    /// Report the count. A failure leaves the total provisional and allows a retry on a
+    /// later interaction; the buffer paint is unaffected either way.
+    fn send(&self, counted: Result<usize, ()>, tx: &Sender<AppEvent>) {
+        let _ = tx.send(match counted {
+            Ok(num_rows) => AppEvent::BackgroundLenReady {
+                len_generation: self.len_generation,
+                num_rows,
+            },
+            Err(()) => AppEvent::BackgroundLenFailed {
+                len_generation: self.len_generation,
+            },
+        });
+    }
+}
+
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// Network roots currently being listed off-thread, so a probe is not started
@@ -2508,61 +2643,26 @@ impl App {
             return false;
         };
 
-        // Kick off the exact row count off-thread when it isn't known, unless one is
-        // already running for this data version. This task is independent of
-        // `task_generation` (a scroll must not restart it) and does not set `busy`.
-        if !state.is_num_rows_valid() {
-            let len_gen = state.len_generation();
-            if self.len_count_inflight != Some(len_gen) {
-                // Prefer the cheap footer-sum count for a pristine local Parquet hive
-                // directory; otherwise fall back to a `len()` data scan.
-                let count_dir = state.parquet_count_dir();
-                let lf = state.lf_clone();
-                let streaming = state.polars_streaming_enabled();
-                self.len_count_inflight = Some(len_gen);
-                // A fresh attempt for this generation clears any prior failure marker.
-                if self.len_count_failed == Some(len_gen) {
-                    self.len_count_failed = None;
-                }
-                let tx = self.events.clone();
-                self.runtime.spawn_blocking(move || {
-                    let counted = match count_dir {
-                        Some(dir) => {
-                            crate::widgets::datatable::DataTableState::count_rows_from_parquet_dir(
-                                &dir,
-                            )
-                            .map_err(|_| ())
-                        }
-                        None => {
-                            match crate::statistics::collect_lazy(lf.select([len()]), streaming) {
-                                Ok(df) => Ok(match df.get(0) {
-                                    Some(col) => match col.first() {
-                                        Some(AnyValue::UInt32(n)) => *n as usize,
-                                        _ => 0,
-                                    },
-                                    None => 0,
-                                }),
-                                Err(_) => Err(()),
-                            }
-                        }
-                    };
-                    match counted {
-                        Ok(num_rows) => {
-                            let _ = tx.send(AppEvent::BackgroundLenReady {
-                                len_generation: len_gen,
-                                num_rows,
-                            });
-                        }
-                        // Count failed: leave the total provisional and allow a retry on a
-                        // later interaction. The buffer paint below is unaffected.
-                        Err(()) => {
-                            let _ = tx.send(AppEvent::BackgroundLenFailed {
-                                len_generation: len_gen,
-                            });
-                        }
-                    }
-                });
+        // The exact row count, when it isn't known and none is already running for
+        // this data version. Independent of `task_generation` (a scroll must not
+        // restart it) and does not set `busy`. On a local file it runs alongside the
+        // buffer collect; on an object store it waits for the collect, which
+        // answers it outright when the read comes back short and otherwise gets the
+        // row groups to itself first.
+        let mut count = None;
+        if !state.is_num_rows_valid() && self.len_count_inflight != Some(state.len_generation()) {
+            let job = LenCount::for_state(state);
+            self.len_count_inflight = Some(job.len_generation);
+            // A fresh attempt for this generation clears any prior failure marker.
+            if self.len_count_failed == Some(job.len_generation) {
+                self.len_count_failed = None;
             }
+            count = Some(job);
+        }
+        if let Some(job) = count.take_if(|_| !state.is_remote_source()) {
+            let tx = self.events.clone();
+            self.runtime
+                .spawn_blocking(move || job.send(job.run(), &tx));
         }
 
         // Plan and spawn the buffer collect. With the count unknown this is a top-of-data
@@ -2570,14 +2670,18 @@ impl App {
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
-        if self
+        let covered = self
             .collect_inflight
-            .is_some_and(|inflight| inflight.covers(self.task_generation, state))
-        {
-            return true;
-        }
-        let Some(request) = state.prepare_async_collect(None) else {
-            return false;
+            .is_some_and(|inflight| inflight.covers(self.task_generation, state));
+        let request = (!covered).then(|| state.prepare_async_collect(None));
+        let Some(Some(request)) = request else {
+            // No collect to wait for: a remote count runs on its own after all.
+            if let Some(job) = count {
+                let tx = self.events.clone();
+                self.runtime
+                    .spawn_blocking(move || job.send(job.run(), &tx));
+            }
+            return covered;
         };
         self.task_generation = self.task_generation.wrapping_add(1);
         self.collect_inflight = Some(InflightCollect {
@@ -2590,6 +2694,7 @@ impl App {
         self.spawn_bg(status, move |gen, tx| {
             match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
                 Ok(df) => {
+                    let returned = df.height();
                     let mut slot = collect_slot.lock().unwrap_or_else(|e| e.into_inner());
                     // Only write if no newer result is already stored.
                     let dominated = slot.as_ref().is_some_and(|(g, _)| *g > gen);
@@ -2607,12 +2712,21 @@ impl App {
                     }
                     drop(slot);
                     let _ = tx.send(AppEvent::BackgroundCollectReady { generation: gen });
+                    if let Some(job) = count {
+                        let requested = request.buffer_end - request.buffer_start;
+                        let counted = job.after_collect(request.buffer_start, returned, requested);
+                        job.send(counted, &tx);
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(AppEvent::BackgroundError {
                         generation: gen,
                         message: crate::error_display::user_message_from_polars(&e),
                     });
+                    // The count is owed regardless; a failed collect says nothing about it.
+                    if let Some(job) = count {
+                        job.send(job.run(), &tx);
+                    }
                 }
             }
         });

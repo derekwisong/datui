@@ -4180,6 +4180,7 @@ impl App {
         let mut state =
             DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
         state.set_row_groups(&footer.row_group_rows);
+        state.set_string_widths(footer.string_bytes_per_row);
         Ok(state)
     }
 

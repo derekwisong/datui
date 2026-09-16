@@ -124,6 +124,12 @@ pub struct DataTableState {
     /// True while `lf` is the data as loaded, with no query, filter, sort or reshape on
     /// it. Cleared with the row count, restored by `reset_lf_to_original`.
     pristine: bool,
+    /// Bytes per row of the string columns, from the Parquet footer, for
+    /// `bytes_per_row` before anything has been collected.
+    string_widths: Vec<(String, usize)>,
+    /// Bytes per row of the last buffer collected, which outranks the estimate from
+    /// the schema.
+    observed_bytes_per_row: Option<usize>,
     buffered_start_row: usize,
     buffered_end_row: usize,
     /// Full buffered DataFrame (all columns in column_order) for the current buffer range.
@@ -226,6 +232,45 @@ fn sort_options(n: usize, descending: bool) -> SortMultipleOptions {
     SortMultipleOptions::default()
         .with_order_descending_multi(vec![descending; n])
         .with_nulls_last_multi(vec![true; n])
+}
+
+/// A string's in-memory width when nothing says otherwise: the view plus a short value.
+const STRING_BYTES_GUESS: usize = 40;
+
+/// Bytes a row of `columns` takes in memory, estimated from the schema: the width of
+/// each fixed-size type, and for a string the footer's average in `string_widths` (or a
+/// guess) plus its view. Binary columns are buffered as a stub (see `binary_stub_exprs`).
+fn estimate_bytes_per_row(
+    schema: &Schema,
+    columns: &[String],
+    string_widths: &[(String, usize)],
+) -> usize {
+    columns
+        .iter()
+        .map(|name| match schema.get(name.as_str()) {
+            Some(DataType::String) => {
+                16 + string_widths
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map_or(STRING_BYTES_GUESS - 16, |(_, w)| *w)
+            }
+            Some(DataType::Binary) => 16 + BINARY_STUB.len(),
+            Some(DataType::Boolean) => 1,
+            Some(DataType::Null) => 0,
+            Some(dtype) if dtype.is_primitive_numeric() || dtype.is_temporal() => {
+                match dtype.to_physical() {
+                    DataType::Int8 | DataType::UInt8 => 1,
+                    DataType::Int16 | DataType::UInt16 => 2,
+                    DataType::Int32 | DataType::UInt32 | DataType::Float32 => 4,
+                    DataType::Int128 => 16,
+                    _ => 8,
+                }
+            }
+            Some(DataType::Decimal(..)) => 16,
+            _ => 64,
+        })
+        .sum::<usize>()
+        .max(1)
 }
 
 /// Shrink `[buffer_start, buffer_end)` to at most `max_len` rows, kept around the view
@@ -349,6 +394,8 @@ impl DataTableState {
             remote_source: false,
             row_group_offsets: None,
             pristine: true,
+            string_widths: Vec::new(),
+            observed_bytes_per_row: None,
             buffered_start_row: 0,
             buffered_end_row: 0,
             buffered_df: None,
@@ -442,6 +489,8 @@ impl DataTableState {
             remote_source: false,
             row_group_offsets: None,
             pristine: true,
+            string_widths: Vec::new(),
+            observed_bytes_per_row: None,
             buffered_start_row: 0,
             buffered_end_row: 0,
             buffered_df: None,
@@ -3275,6 +3324,7 @@ impl DataTableState {
         // buffer being requested and applied — keep it; don't downgrade to provisional.
         self.error = None;
 
+        self.observe_bytes_per_row(&full_df);
         let (full_df, buffer_start) = self.stitch_buffer(full_df, result.buffer_start);
         let (full_df, eff_start, eff_end) = self.clamp_buffer_bytes(full_df, buffer_start);
 
@@ -3455,6 +3505,38 @@ impl DataTableState {
         self.row_group_offsets = Some(offsets);
     }
 
+    /// Record the footer's average width of each string column, for the byte estimate
+    /// of a buffer before one has been collected.
+    pub fn set_string_widths(&mut self, widths: Vec<(String, usize)>) {
+        self.string_widths = widths;
+    }
+
+    /// Bytes a buffered row takes: measured on the last buffer collected, or until
+    /// then estimated from the schema.
+    fn bytes_per_row(&self) -> usize {
+        self.observed_bytes_per_row.unwrap_or_else(|| {
+            estimate_bytes_per_row(&self.schema, &self.column_order, &self.string_widths)
+        })
+    }
+
+    /// Rows the `max_buffered_mb` budget allows a buffer, never fewer than a screen;
+    /// 0 for no budget. Planning to this, rather than trimming the collected frame to
+    /// it, keeps a wide window from being materialised only to be cut down.
+    fn byte_cap_rows(&self) -> usize {
+        if self.max_buffered_mb == 0 {
+            return 0;
+        }
+        let max_bytes = self.max_buffered_mb * 1024 * 1024;
+        (max_bytes / self.bytes_per_row()).max(self.visible_rows.max(1))
+    }
+
+    /// Take the bytes per row of a collected buffer as the measure for the next plan.
+    fn observe_bytes_per_row(&mut self, df: &DataFrame) {
+        if df.height() > 0 {
+            self.observed_bytes_per_row = Some((df.estimated_size() / df.height()).max(1));
+        }
+    }
+
     /// True while the buffer is planned as a remote window: a scan of an object store
     /// that nothing has been applied to. A query, filter, sort or reshape reads the
     /// object through a predicate, and `slice(0, N)` then stops at the first N matches,
@@ -3491,7 +3573,8 @@ impl DataTableState {
     }
 
     /// Fit a planned buffer `[buffer_start, buffer_end)` to the caps: `max_buffered_rows`
-    /// around the view, then whole row groups for a remote object whose footer is known.
+    /// and the byte budget around the view, then whole row groups for a remote object
+    /// whose footer is known, cut back to the byte budget when a group is over it.
     fn fit_window(
         &self,
         view_start: usize,
@@ -3499,11 +3582,16 @@ impl DataTableState {
         buffer_start: &mut usize,
         buffer_end: &mut usize,
     ) {
-        if self.max_buffered_rows > 0 {
+        let byte_cap = self.byte_cap_rows();
+        let cap = match (self.max_buffered_rows, byte_cap) {
+            (0, cap) | (cap, 0) => cap,
+            (rows, bytes) => rows.min(bytes),
+        };
+        if cap > 0 {
             shrink_around_view(
                 view_start,
                 view_end,
-                self.max_buffered_rows,
+                cap,
                 0,
                 self.num_rows_bound(),
                 buffer_start,
@@ -3525,6 +3613,18 @@ impl DataTableState {
             *buffer_end,
             self.max_buffered_rows,
         );
+        if byte_cap > 0 {
+            let (floor, ceil) = (*buffer_start, *buffer_end);
+            shrink_around_view(
+                view_start,
+                view_end,
+                byte_cap,
+                floor,
+                ceil,
+                buffer_start,
+                buffer_end,
+            );
+        }
         // A view straddling two groups needs both, but one is on hand: fetch the other
         // alone and stitch it on (see `apply_async_collect`).
         if self.buffer_on_hand() {
@@ -3602,6 +3702,7 @@ impl DataTableState {
         };
 
         // Trim to the byte budget while keeping the view in range (see clamp_buffer_bytes).
+        self.observe_bytes_per_row(&full_df);
         let (full_df, effective_buffer_start, effective_buffer_end) =
             self.clamp_buffer_bytes(full_df, buffer_start);
 
@@ -7285,6 +7386,79 @@ mod tests {
         assert!(state.scroll_to_start());
         let request = state.prepare_async_collect(None).expect("the first group");
         assert_eq!((request.buffer_start, request.buffer_end), (0, G));
+    }
+
+    #[test]
+    fn a_wide_schema_is_budgeted_before_the_collect() {
+        // 1,000 Float64 columns are 8,000 bytes a row: a 512 MB budget allows 67,108
+        // rows, so the planned window is that and not the 100k row cap. The rows are
+        // never materialised only to be trimmed after the collect.
+        let columns: Vec<Column> = (0..1000)
+            .map(|i| Series::new(format!("f{i}").into(), &[0.0f64]).into())
+            .collect();
+        let lf = DataFrame::new(columns).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        assert_eq!(
+            estimate_bytes_per_row(&state.schema, &state.column_order, &[]),
+            8_000
+        );
+        state.set_remote_source();
+        state.set_row_groups(&[1_000_000; 3]);
+        state.visible_rows = 40;
+
+        let request = state.prepare_async_collect(None).expect("first fill");
+        let planned = request.buffer_end - request.buffer_start;
+        assert!(
+            planned <= 512 * 1024 * 1024 / 8_000,
+            "planned {planned} rows over the byte budget"
+        );
+        assert!(planned >= 40, "never below a screen");
+        assert_eq!(
+            request.buffer_start, 0,
+            "a window at the top starts at the top"
+        );
+
+        // The screen is the floor, whatever the budget.
+        let mut tiny = DataTableState::new(
+            df!("a" => &["x".repeat(2_000)]).unwrap().lazy(),
+            None,
+            None,
+            None,
+            Some(1),
+            true,
+        )
+        .unwrap();
+        tiny.set_string_widths(vec![("a".to_string(), 2_000)]);
+        tiny.visible_rows = 40;
+        assert_eq!(tiny.byte_cap_rows(), 1024 * 1024 / 2_016);
+        tiny.set_string_widths(vec![("a".to_string(), 1 << 20)]);
+        assert_eq!(tiny.byte_cap_rows(), 40);
+    }
+
+    #[test]
+    fn a_collected_buffer_measures_the_next_plan() {
+        // The schema guesses 40 bytes for a string; the first buffer shows the strings
+        // are 2 KB, and the next window is planned on that.
+        let big: Vec<String> = (0..100).map(|_| "z".repeat(2_000)).collect();
+        let lf = df!("a" => &big).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, Some(1), true).unwrap();
+        state.num_rows = 1_000_000;
+        state.num_rows_valid = true;
+        state.visible_rows = 40;
+        let guessed = state.byte_cap_rows();
+        assert_eq!(guessed, 1024 * 1024 / STRING_BYTES_GUESS);
+        state.apply_async_collect(CollectResult {
+            df: df!("a" => &big).unwrap(),
+            buffer_start: 0,
+            buffer_end: 100,
+            num_rows: 1_000_000,
+            count_known: true,
+        });
+        let measured = state.byte_cap_rows();
+        assert!(
+            (400..=600).contains(&measured),
+            "about 1 MB / 2 KB rows, got {measured}"
+        );
     }
 
     #[test]

@@ -1003,6 +1003,23 @@ impl OpenOptions {
     pub fn csv_try_parse_dates(&self) -> bool {
         self.parse_strings.is_none() && self.parse_dates
     }
+
+    /// The S3 settings every cloud path uses: the CLI and environment overrides laid
+    /// over the `[cloud]` config. Opening, sizing, downloading and listing all go
+    /// through this, so a bucket that is listed is reached the way it will be opened.
+    pub fn effective_cloud(
+        &self,
+        cloud: &crate::config::CloudConfig,
+    ) -> crate::config::CloudConfig {
+        let mut merged = cloud.clone();
+        merged.merge(crate::config::CloudConfig {
+            s3_endpoint_url: self.s3_endpoint_url_override.clone(),
+            s3_access_key_id: self.s3_access_key_id_override.clone(),
+            s3_secret_access_key: self.s3_secret_access_key_override.clone(),
+            s3_region: self.s3_region_override.clone(),
+        });
+        merged
+    }
 }
 
 impl OpenOptions {
@@ -1111,7 +1128,8 @@ impl OpenOptions {
             .s3_endpoint_url
             .clone()
             .or_else(|| std::env::var("AWS_ENDPOINT_URL_S3").ok())
-            .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok());
+            .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok())
+            .or_else(|| std::env::var("AWS_ENDPOINT").ok());
         opts.s3_access_key_id_override = args
             .s3_access_key_id
             .clone()
@@ -3340,72 +3358,35 @@ impl App {
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
     ) -> CloudOptions {
-        let mut opts = CloudOptions::default();
-        let mut configs: Vec<(AmazonS3ConfigKey, String)> = Vec::new();
-        let e = options
-            .s3_endpoint_url_override
-            .as_ref()
-            .or(cloud.s3_endpoint_url.as_ref());
-        let k = options
-            .s3_access_key_id_override
-            .as_ref()
-            .or(cloud.s3_access_key_id.as_ref());
-        let s = options
-            .s3_secret_access_key_override
-            .as_ref()
-            .or(cloud.s3_secret_access_key.as_ref());
-        let r = options
-            .s3_region_override
-            .as_ref()
-            .or(cloud.s3_region.as_ref());
-        if let Some(e) = e {
-            configs.push((AmazonS3ConfigKey::Endpoint, e.clone()));
+        let cloud = options.effective_cloud(cloud);
+        let configs: Vec<(AmazonS3ConfigKey, String)> = [
+            (AmazonS3ConfigKey::Endpoint, cloud.s3_endpoint_url),
+            (AmazonS3ConfigKey::AccessKeyId, cloud.s3_access_key_id),
+            (
+                AmazonS3ConfigKey::SecretAccessKey,
+                cloud.s3_secret_access_key,
+            ),
+            (AmazonS3ConfigKey::Region, cloud.s3_region),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .collect();
+        let opts = CloudOptions::default();
+        if configs.is_empty() {
+            opts
+        } else {
+            opts.with_aws(configs)
         }
-        if let Some(k) = k {
-            configs.push((AmazonS3ConfigKey::AccessKeyId, k.clone()));
-        }
-        if let Some(s) = s {
-            configs.push((AmazonS3ConfigKey::SecretAccessKey, s.clone()));
-        }
-        if let Some(r) = r {
-            configs.push((AmazonS3ConfigKey::Region, r.clone()));
-        }
-        if !configs.is_empty() {
-            opts = opts.with_aws(configs);
-        }
-        opts
     }
 
-    /// Point an S3 builder at a custom endpoint, with the two settings such an endpoint
-    /// almost always needs.
-    ///
-    /// Setting the endpoint alone was not enough, and the way it failed was the worst
-    /// available. `object_store` refuses a plain-`http` endpoint unless told otherwise,
-    /// so every operation against a MinIO container on localhost failed — and the size
-    /// probe maps any error to "size unknown", so the download confirmation appeared
-    /// as usual, said the size was unknown, and the download then failed with nothing
-    /// on screen to say why. The `[cloud]` section of the generated config suggests
-    /// `http://localhost:9000` by name, so this was broken for exactly the setup datui
-    /// tells people to use.
-    ///
-    /// Path-style addressing goes with it. Virtual-hosted style puts the bucket in the
-    /// hostname, which needs wildcard DNS that no localhost container has.
-    ///
-    /// `https` endpoints are left alone: those are real services, reached the way any
-    /// other HTTPS service is.
+    /// The bucket of an `s3://bucket/key` URL.
     #[cfg(feature = "cloud")]
-    fn apply_s3_endpoint(
-        builder: object_store::aws::AmazonS3Builder,
-        endpoint: &str,
-    ) -> object_store::aws::AmazonS3Builder {
-        let builder = builder
-            .with_endpoint(endpoint.to_string())
-            .with_virtual_hosted_style_request(false);
-        if endpoint.starts_with("http://") {
-            builder.with_allow_http(true)
-        } else {
-            builder
-        }
+    fn s3_bucket_and_key(s3_url: &str) -> Result<(String, String)> {
+        let (path_part, _ext) = source::url_path_extension(s3_url);
+        let (bucket, key) = path_part
+            .split_once('/')
+            .ok_or_else(|| color_eyre::eyre::eyre!("S3 URL must be s3://bucket/key"))?;
+        Ok((bucket.to_string(), key.to_string()))
     }
 
     #[cfg(feature = "cloud")]
@@ -3414,42 +3395,8 @@ impl App {
         cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
     ) -> Result<Arc<dyn object_store::ObjectStore>> {
-        let (path_part, _ext) = source::url_path_extension(s3_url);
-        let (bucket, _key) = path_part
-            .split_once('/')
-            .ok_or_else(|| color_eyre::eyre::eyre!("S3 URL must be s3://bucket/key"))?;
-        let mut builder = object_store::aws::AmazonS3Builder::from_env()
-            .with_url(s3_url)
-            .with_bucket_name(bucket);
-        let e = options
-            .s3_endpoint_url_override
-            .as_ref()
-            .or(cloud.s3_endpoint_url.as_ref());
-        let k = options
-            .s3_access_key_id_override
-            .as_ref()
-            .or(cloud.s3_access_key_id.as_ref());
-        let s = options
-            .s3_secret_access_key_override
-            .as_ref()
-            .or(cloud.s3_secret_access_key.as_ref());
-        let r = options
-            .s3_region_override
-            .as_ref()
-            .or(cloud.s3_region.as_ref());
-        if let Some(e) = e {
-            builder = Self::apply_s3_endpoint(builder, e);
-        }
-        if let Some(k) = k {
-            builder = builder.with_access_key_id(k);
-        }
-        if let Some(s) = s {
-            builder = builder.with_secret_access_key(s);
-        }
-        if let Some(r) = r {
-            builder = builder.with_region(r);
-        }
-        let store = builder
+        let (bucket, _key) = Self::s3_bucket_and_key(s3_url)?;
+        let store = crate::cloud_browse::s3_builder(&bucket, &options.effective_cloud(cloud))
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
         Ok(Arc::new(store))
@@ -3531,47 +3478,11 @@ impl App {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
-        let (path_part, _ext) = source::url_path_extension(s3_url);
-        let (bucket, key) = path_part
-            .split_once('/')
-            .ok_or_else(|| color_eyre::eyre::eyre!("S3 URL must be s3://bucket/key"))?;
+        let (_bucket, key) = Self::s3_bucket_and_key(s3_url)?;
         if key.is_empty() {
             return Ok(None);
         }
-        let mut builder = object_store::aws::AmazonS3Builder::from_env()
-            .with_url(s3_url)
-            .with_bucket_name(bucket);
-        let e = options
-            .s3_endpoint_url_override
-            .as_ref()
-            .or(cloud.s3_endpoint_url.as_ref());
-        let k = options
-            .s3_access_key_id_override
-            .as_ref()
-            .or(cloud.s3_access_key_id.as_ref());
-        let s = options
-            .s3_secret_access_key_override
-            .as_ref()
-            .or(cloud.s3_secret_access_key.as_ref());
-        let r = options
-            .s3_region_override
-            .as_ref()
-            .or(cloud.s3_region.as_ref());
-        if let Some(e) = e {
-            builder = Self::apply_s3_endpoint(builder, e);
-        }
-        if let Some(k) = k {
-            builder = builder.with_access_key_id(k);
-        }
-        if let Some(s) = s {
-            builder = builder.with_secret_access_key(s);
-        }
-        if let Some(r) = r {
-            builder = builder.with_region(r);
-        }
-        let store = builder
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
+        let store = Self::build_s3_object_store(s3_url, cloud, options)?;
         let path = OsPath::from(key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
@@ -3649,50 +3560,14 @@ impl App {
         use object_store::path::Path as OsPath;
         use object_store::ObjectStore;
 
-        let (path_part, ext) = source::url_path_extension(s3_url);
-        let (bucket, key) = path_part
-            .split_once('/')
-            .ok_or_else(|| color_eyre::eyre::eyre!("S3 URL must be s3://bucket/key"))?;
+        let (_path_part, ext) = source::url_path_extension(s3_url);
+        let (_bucket, key) = Self::s3_bucket_and_key(s3_url)?;
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!(
                 "S3 URL must point to an object (e.g. s3://bucket/path/file.csv)"
             ));
         }
-
-        let mut builder = object_store::aws::AmazonS3Builder::from_env()
-            .with_url(s3_url)
-            .with_bucket_name(bucket);
-        let e = options
-            .s3_endpoint_url_override
-            .as_ref()
-            .or(cloud.s3_endpoint_url.as_ref());
-        let k = options
-            .s3_access_key_id_override
-            .as_ref()
-            .or(cloud.s3_access_key_id.as_ref());
-        let s = options
-            .s3_secret_access_key_override
-            .as_ref()
-            .or(cloud.s3_secret_access_key.as_ref());
-        let r = options
-            .s3_region_override
-            .as_ref()
-            .or(cloud.s3_region.as_ref());
-        if let Some(e) = e {
-            builder = Self::apply_s3_endpoint(builder, e);
-        }
-        if let Some(k) = k {
-            builder = builder.with_access_key_id(k);
-        }
-        if let Some(s) = s {
-            builder = builder.with_secret_access_key(s);
-        }
-        if let Some(r) = r {
-            builder = builder.with_region(r);
-        }
-        let store = builder
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
+        let store = Self::build_s3_object_store(s3_url, cloud, options)?;
 
         let path = OsPath::from(key);
         let bytes = wait_on_runtime(runtime, async move {
@@ -10723,6 +10598,11 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         RunInput::Paths(_, o) => o.clone(),
         RunInput::LazyFrame(_, o) => o.clone(),
     };
+    // The home screen has no `OpenOptions` of its own, so the CLI and environment
+    // S3 overrides are folded into the config here, once, for discovery, listing and
+    // opens started from a listed bucket.
+    let mut config = config;
+    config.cloud = opts.effective_cloud(&config.cloud);
 
     let theme = Theme::from_config(&config.theme)
         .or_else(|e| Theme::from_config(&AppConfig::default().theme).map_err(|_| e))?;

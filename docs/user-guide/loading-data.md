@@ -149,6 +149,47 @@ taken from the first of `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL` and
 `AWS_SECRET_ACCESS_KEY`, and the region from `AWS_REGION` or
 `AWS_DEFAULT_REGION`. A variable or flag that is set but empty counts as unset.
 
+### Several stores at once
+
+Name each store in the config, with the environment variables that hold its keys.
+The keys themselves never go in the file.
+
+```toml
+[[cloud.sources]]
+name = "lab"                                  # lowercase letters, digits and -
+kind = "s3"
+endpoint_url = "http://localhost:9000"
+access_key_id_env = "LAB_KEY"
+secret_access_key_env = "LAB_SECRET"
+
+[[cloud.sources]]
+name = "onprem"
+label = "On-prem MinIO"
+kind = "s3"
+endpoint_url = "https://minio.corp.example:9000"
+access_key_id_env = "ONPREM_KEY"
+secret_access_key_env = "ONPREM_SECRET"
+```
+
+Open an object from a named S3-compatible store by putting its name before the
+bucket. Two servers can have a bucket with the same name, and the name says which
+one you mean:
+
+```bash
+datui s3://lab@data/sales.parquet
+datui s3://onprem@data/sales.parquet
+```
+
+| URL | Reaches |
+|---|---|
+| `s3://<name>@bucket/key` | The S3-compatible store with that name |
+| `s3://bucket/key` | The `[cloud] s3_*` settings, the `AWS_*` environment and the `--s3-*` flags, as above |
+| `gs://bucket/key` | The Google login, as below |
+
+A source of `kind = "s3"` without `endpoint_url` is a second AWS login. Its URLs stay
+`s3://bucket/key`, and a bucket you reach by browsing it opens with its keys. See
+[Configuration](configuration.md#cloud) for every field.
+
 ### Google Cloud Storage
 
 Credentials come from [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials):

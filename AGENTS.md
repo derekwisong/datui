@@ -64,8 +64,14 @@ with `task_generation`; a result whose generation is stale is dropped. Async
 cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never
 collect inside a render function.
 
-**Busy means busy.** While a background task runs, `busy` is set, the control
-bar shows a spinner, and most keys wait. Ctrl-C and Ctrl-O always act.
+**Keys typed while busy are queued.** While a background task runs, `busy` is
+set and the control bar shows a spinner. `EventPump` (`event_pump.rs`, owned by
+`run()`) holds the keys typed meanwhile and replays them in order, one per loop
+iteration, once the app is idle. Ctrl-Q, Ctrl-C outside a text field, Ctrl-O and
+confirmation-modal keys act at once; so do `q`, column scroll and help at the
+plain table view when nothing is held. Held keys are dropped when the screen
+they were typed at goes away. Change this through `classify` and its tests, not
+by gating keys in `App::key`.
 
 **Modals** each have a state struct with `active: bool`, own their focus, and
 emit an `AppEvent` when applied. Add a new one by copying an existing pair

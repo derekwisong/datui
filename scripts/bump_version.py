@@ -263,21 +263,20 @@ def update_pyproject_toml(
 
 
 def update_readme(file_path: Path, new_version: str) -> None:
-    """Update version badge in README.md to the desired version (any current value)."""
+    """Update a static version badge in README.md, if there is one.
+
+    The README now carries a live release badge, so normally there is nothing
+    to do; the static form is still handled for anyone who reinstates it.
+    """
     content = file_path.read_text()
-    # Match badge with any version: ![Version](https://img.shields.io/badge/version-X.Y.Z-orange.svg)
-    # Also match versions with -dev suffix
     pattern = r'!\[Version\]\(https://img\.shields\.io/badge/version-[^)-]+-orange\.svg\)'
-    # URL-encode the version (replace - with --)
     url_version = new_version.replace('-', '--')
     replacement = f'![Version](https://img.shields.io/badge/version-{url_version}-orange.svg)'
     new_content = re.sub(pattern, replacement, content)
 
     if new_content == content:
-        raise ValueError(
-            "Could not find version badge in README.md "
-            '(expected: ![Version](https://img.shields.io/badge/version-X.Y.Z-orange.svg))'
-        )
+        print("README.md has no static version badge; nothing to update")
+        return
 
     file_path.write_text(new_content)
     print(f"Updated README.md badge -> {new_version}")

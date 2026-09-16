@@ -229,11 +229,15 @@ project, taken from `DATUI_GCP_PROJECT`, `GOOGLE_CLOUD_PROJECT`,
 still appears and still opens URLs you type; it just cannot list.
 
 **S3, and anything speaking S3**, appears when there are keys in `[cloud]` in
-your config, `AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, a `~/.aws` directory, an ECS
-or Fargate task role, or an EKS web identity. A region alone is not enough. An
-EC2 instance role is **not** discovered, because finding it means a metadata
-request that hangs on some networks; opening a URL still works, and setting
-`AWS_PROFILE` or writing `~/.aws/config` brings the bucket list back.
+your config or in `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, or an EKS
+web identity. A region alone is not enough. `AWS_PROFILE` or a `~/.aws`
+directory also shows the section, but profiles are not read yet
+([#168](https://github.com/derekwisong/datui/issues/168)), so it cannot list
+until the profile's keys are exported; see
+[Loading Data](loading-data.md#amazon-s3). An EC2 instance role is **not**
+discovered, because finding it means a metadata request that hangs on some
+networks; opening a URL still works, and keys in the config or the environment
+bring the bucket list back.
 
 A custom endpoint is named by its host: `S3-COMPATIBLE (localhost:9000)`. The
 endpoint may come from `s3_endpoint_url` under `[cloud]` in the config,

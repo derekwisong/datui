@@ -99,16 +99,27 @@ typing URLs.
 
 ### Amazon S3
 
-Datui uses the standard AWS credential chain, in this order:
-
-1. Environment: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
-   (or `AWS_DEFAULT_REGION`), and `AWS_SESSION_TOKEN` for temporary credentials.
-2. `~/.aws/credentials` and `~/.aws/config`, with `AWS_PROFILE` to pick a profile.
-3. The instance or task role on EC2, ECS, Lambda and EKS.
+Set the keys and region in the environment:
 
 ```bash
-export AWS_PROFILE=analytics
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_REGION=us-east-1          # or AWS_DEFAULT_REGION
 datui s3://my-bucket/events/2024/
+```
+
+`AWS_SESSION_TOKEN` adds temporary credentials, and the keys under `[cloud]` in
+the config work the same way. On EC2, ECS, Lambda and EKS the instance or task
+role is used.
+
+**Named profiles are not supported yet**
+([#168](https://github.com/derekwisong/datui/issues/168)). `AWS_PROFILE` is
+ignored, and with no keys in the environment datui takes the first keys in
+`~/.aws/credentials`, whichever profile they belong to. To use a profile,
+including an SSO one, export its keys first:
+
+```bash
+eval "$(aws configure export-credentials --profile analytics --format env)"
 ```
 
 ### S3-compatible storage (MinIO, R2, Ceph)

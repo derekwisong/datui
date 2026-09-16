@@ -245,6 +245,9 @@ away, and every source is listed again in the background, a few at a time, each
 row updating as its answer arrives, so a slow endpoint holds up only its own row.
 <kbd>Ctrl</kbd>+<kbd>R</kbd> lists again whatever is on screen.
 
+A recent from a named S3-compatible source shows the name beside it, or
+`source not found: <name>` once that source has left the config.
+
 Typing also matches bucket names already listed, from every source, in `Found`:
 `Lab MinIO › data` and `onprem › data` stay two rows.
 

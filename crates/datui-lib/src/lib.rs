@@ -854,6 +854,36 @@ pub mod tests {
         .clone()
     }
 
+    /// The footer read, the size probe and a download go through the store Polars
+    /// scans with, found in its cache by bucket and options, so the same object
+    /// yields the same store.
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn one_object_store_serves_the_footer_the_probe_and_the_scan() {
+        let cloud = crate::config::CloudConfig {
+            s3_endpoint_url: Some("http://127.0.0.1:1".to_string()),
+            s3_region: Some("us-east-1".to_string()),
+            s3_access_key_id: Some("testing".to_string()),
+            s3_secret_access_key: Some("testing".to_string()),
+        };
+        let rt = test_runtime();
+        let path = std::path::Path::new("s3://bucket/obj.parquet");
+        let (url, _, store) = super::App::cloud_store_for(path, &cloud, &rt).expect("a store");
+        assert_eq!(url, "s3://bucket/obj.parquet");
+        let (_, _, again) = super::App::cloud_store_for(path, &cloud, &rt).expect("the same store");
+        assert!(
+            std::sync::Arc::ptr_eq(&store, &again),
+            "built once, served twice"
+        );
+        let (_, _, probe) =
+            super::App::cloud_store_for(std::path::Path::new("s3://bucket/"), &cloud, &rt)
+                .expect("the bucket's store");
+        assert!(
+            std::sync::Arc::ptr_eq(&store, &probe),
+            "the probe shares it"
+        );
+    }
+
     /// Quitting while a bucket listing was still out used to panic on the listing's
     /// thread. A timer stands in for the request's timeout, which is what tripped.
     #[cfg(feature = "cloud")]
@@ -3631,27 +3661,26 @@ impl App {
             })
     }
 
-    /// `cloud` is the effective config the `App` keeps (see `OpenOptions::effective_cloud`).
+    /// The store Polars itself will scan `url` through, from its cache keyed on the
+    /// bucket and `options`, so the footer read, the size probe and a download share
+    /// one credential chain, TLS client and connection pool with the scan instead of
+    /// each building a store of their own.
     #[cfg(feature = "cloud")]
-    fn build_s3_object_store(
-        s3_url: &str,
-        cloud: &crate::config::CloudConfig,
+    fn polars_object_store(
+        url: &str,
+        options: &CloudOptions,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<Arc<dyn object_store::ObjectStore>> {
-        let (bucket, _key) = Self::cloud_bucket_and_key(s3_url)?;
-        let store = crate::cloud_browse::s3_builder(&bucket, cloud)
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("S3 config failed: {}", e))?;
-        Ok(Arc::new(store))
-    }
-
-    #[cfg(feature = "cloud")]
-    fn build_gcs_object_store(gs_url: &str) -> Result<Arc<dyn object_store::ObjectStore>> {
-        let (bucket, _key) = Self::cloud_bucket_and_key(gs_url)?;
-        let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
-            .with_bucket_name(bucket)
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("GCS config failed: {}", e))?;
-        Ok(Arc::new(store))
+        let url = url.to_string();
+        let options = options.clone();
+        wait_on_runtime(runtime, async move {
+            let (_, store) =
+                polars::io::cloud::build_object_store(PlPathRef::new(&url), Some(&options), false)
+                    .await?;
+            polars::prelude::PolarsResult::Ok(store.to_dyn_object_store().await)
+        })
+        .ok_or_else(|| color_eyre::eyre::eyre!("cancelled"))?
+        .map_err(|e| color_eyre::eyre::eyre!("Object store config failed: {}", e))
     }
 
     /// Human-readable byte size for download confirmation modal.
@@ -3719,7 +3748,7 @@ impl App {
         if key.is_empty() {
             return Ok(None);
         }
-        let store = Self::build_s3_object_store(s3_url, cloud)?;
+        let (_, _, store) = Self::cloud_store_for(Path::new(s3_url), cloud, runtime)?;
         let path = OsPath::from(key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
@@ -3728,6 +3757,7 @@ impl App {
     #[cfg(feature = "cloud")]
     fn fetch_remote_size_gcs(
         gs_url: &str,
+        cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::path::Path as OsPath;
@@ -3737,7 +3767,7 @@ impl App {
         if key.is_empty() {
             return Ok(None);
         }
-        let store = Self::build_gcs_object_store(gs_url)?;
+        let (_, _, store) = Self::cloud_store_for(Path::new(gs_url), cloud, runtime)?;
         let path = OsPath::from(key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
@@ -3796,7 +3826,7 @@ impl App {
                 "S3 URL must point to an object (e.g. s3://bucket/path/file.csv)"
             ));
         }
-        let store = Self::build_s3_object_store(s3_url, cloud)?;
+        let (_, _, store) = Self::cloud_store_for(Path::new(s3_url), cloud, runtime)?;
 
         let path = OsPath::from(key);
         let bytes = wait_on_runtime(runtime, async move {
@@ -3830,6 +3860,7 @@ impl App {
     #[cfg(feature = "cloud")]
     fn download_gcs_to_temp(
         gs_url: &str,
+        cloud: &crate::config::CloudConfig,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
     ) -> Result<PathBuf> {
@@ -3843,7 +3874,7 @@ impl App {
                 "GCS URL must point to an object (e.g. gs://bucket/path/file.csv)"
             ));
         }
-        let store = Self::build_gcs_object_store(gs_url)?;
+        let (_, _, store) = Self::cloud_store_for(Path::new(gs_url), cloud, runtime)?;
 
         let path = OsPath::from(key);
         let bytes = wait_on_runtime(runtime, async move {
@@ -3897,7 +3928,7 @@ impl App {
                 }
                 #[cfg(feature = "cloud")]
                 PendingDownload::Gcs { url, .. } => {
-                    Self::fetch_remote_size_gcs(url, &runtime).unwrap_or(None)
+                    Self::fetch_remote_size_gcs(url, &cloud, &runtime).unwrap_or(None)
                 }
             };
             let _ = tx.send(AppEvent::BackgroundRemoteSizeReady {
@@ -4053,7 +4084,7 @@ impl App {
             is_cloud && (options.hive || source::is_prefix_or_glob(&s))
         })?;
 
-        let (full, cloud_opts, store) = Self::cloud_store_for(p, cloud).ok()?;
+        let (full, cloud_opts, store) = Self::cloud_store_for(p, cloud, runtime).ok()?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full).ok()?;
         let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
             cloud_hive::schema_from_one_cloud_hive(store, &key).await
@@ -4121,25 +4152,23 @@ impl App {
         Ok((state, label))
     }
 
-    /// The URL, Polars options and store for one object-store path.
+    /// The URL, Polars options and store for one object-store path. `cloud` is the
+    /// effective config the `App` keeps (see `OpenOptions::effective_cloud`).
     #[cfg(feature = "cloud")]
     fn cloud_store_for(
         path: &Path,
         cloud: &crate::config::CloudConfig,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<(String, CloudOptions, Arc<dyn object_store::ObjectStore>)> {
-        match source::input_source(path) {
+        let (full, cloud_opts) = match source::input_source(path) {
             source::InputSource::S3(url) => {
-                let full = format!("s3://{url}");
-                let store = Self::build_s3_object_store(&full, cloud)?;
-                Ok((full, Self::build_s3_cloud_options(cloud), store))
+                (format!("s3://{url}"), Self::build_s3_cloud_options(cloud))
             }
-            source::InputSource::Gcs(url) => {
-                let full = format!("gs://{url}");
-                let store = Self::build_gcs_object_store(&full)?;
-                Ok((full, CloudOptions::default(), store))
-            }
-            _ => Err(color_eyre::eyre::eyre!("not an object-store URL")),
-        }
+            source::InputSource::Gcs(url) => (format!("gs://{url}"), CloudOptions::default()),
+            _ => return Err(color_eyre::eyre::eyre!("not an object-store URL")),
+        };
+        let store = Self::polars_object_store(&full, &cloud_opts, runtime)?;
+        Ok((full, cloud_opts, store))
     }
 
     /// One Parquet object read in place: schema and row count from its footer, in one
@@ -4160,7 +4189,7 @@ impl App {
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
     ) -> Result<DataTableState> {
-        let (full, cloud_opts, store) = Self::cloud_store_for(path, cloud)?;
+        let (full, cloud_opts, store) = Self::cloud_store_for(path, cloud, runtime)?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full)?;
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!("a bucket, not an object"));
@@ -8887,9 +8916,10 @@ impl App {
                 }
                 let gs_url = gs_url.clone();
                 let options = options.clone();
+                let cloud_config = self.app_config.cloud.clone();
                 let rt = self.runtime.clone();
                 self.spawn_bg("Downloading from GCS...", move |gen, tx| {
-                    match Self::download_gcs_to_temp(&gs_url, &options, &rt) {
+                    match Self::download_gcs_to_temp(&gs_url, &cloud_config, &options, &rt) {
                         Ok(temp_path) => {
                             let _ = tx.send(AppEvent::BackgroundDownloadReady {
                                 generation: gen,

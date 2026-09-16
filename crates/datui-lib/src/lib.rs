@@ -3285,13 +3285,9 @@ impl App {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
 
         // The home screen puts every plain character into the filter — `q` has to
-        // type a `q`, or you could never search for "quarterly". So quitting is
-        // Ctrl+C, checked before anything else can swallow it, and Esc once there is
-        // no context left to back out of.
-        if ctrl && matches!(event.code, KeyCode::Char('c') | KeyCode::Char('q')) {
-            return Some(AppEvent::Exit);
-        }
-
+        // type a `q`, or you could never search for "quarterly". Quitting is Ctrl+C,
+        // handled before this is reached, and Esc once there is no context left to
+        // back out of.
         if self.home.path_input_active {
             match event.code {
                 KeyCode::Esc => {
@@ -4383,6 +4379,15 @@ impl App {
 
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
+
+        // Quit from anywhere, before any mode gets a say: these are the keys that must
+        // work when a long export or chart has the app busy, and a mode without a
+        // CONTROL arm (the chart view) used to swallow them.
+        if event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(event.code, KeyCode::Char('c') | KeyCode::Char('q'))
+        {
+            return Some(AppEvent::Exit);
+        }
 
         // F1 opens help first so no other branch (e.g. Editing) can consume it.
         if event.code == KeyCode::F(1) {
@@ -7715,9 +7720,6 @@ impl App {
 
         match event.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => Some(AppEvent::Exit),
-            KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(AppEvent::Exit)
-            }
             KeyCode::Char('R') => Some(AppEvent::Reset),
             KeyCode::Char('N') => {
                 if let Some(ref mut state) = self.data_table_state {

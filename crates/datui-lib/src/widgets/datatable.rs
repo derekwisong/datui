@@ -3324,12 +3324,15 @@ impl DataTableState {
 
         self.observe_bytes_per_row(&full_df);
         // A fill planned to be stitched on to rows since replaced (a synchronous
-        // collect re-planned while it was out) neither abuts what is held nor shows the
-        // view: installing it would draw rows under the wrong numbers. Keep what is
-        // held and plan again.
+        // collect re-planned while it was out) neither abuts what is held nor holds the
+        // view's first row: installing it would draw rows under the wrong numbers. Keep
+        // what is held and plan again. A fill that holds the first row but not the whole
+        // view (the terminal grew while it was out) is kept, and the rest fetched; a
+        // downloaded row group is too costly to throw away for a resize.
         let view_end = self.start_row + self.visible_rows.max(1);
         let shows_view = result.buffer_start <= self.start_row
-            && (view_end <= result.buffer_start + returned_rows || returned_rows < requested_rows);
+            && (self.start_row < result.buffer_start + returned_rows
+                || returned_rows < requested_rows);
         let stitched = self.abuts_buffer(result.buffer_start, returned_rows);
         if !shows_view && !stitched {
             self.needs_recollect = true;
@@ -3352,6 +3355,9 @@ impl DataTableState {
         self.slice_buffer_into_display();
         if self.table_state.selected().is_none() {
             self.table_state.select(Some(0));
+        }
+        if view_end > eff_end && eff_end < self.num_rows {
+            self.needs_recollect = true;
         }
     }
 
@@ -7704,6 +7710,42 @@ mod tests {
             "the rows on hand stay"
         );
         assert!(state.needs_recollect, "and a fill is asked for");
+    }
+
+    #[test]
+    fn a_fill_that_holds_the_first_row_is_kept_when_the_view_grew() {
+        // The terminal grew while a row group was downloading: the fill holds the view's
+        // first row but not its last. It is installed, and the rest asked for, rather than
+        // thrown away.
+        const G: usize = 1_000_000;
+        let lf = df!("a" => &[0i32]).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.set_remote_source();
+        state.set_row_groups(&[G; 10]);
+        state.visible_rows = 40;
+        assert!(state.scroll_to(G - 60));
+        let request = state
+            .prepare_async_collect(None)
+            .expect("the end of group 0");
+        assert!(request.buffer_end <= G);
+
+        state.visible_rows = 120; // resized while the fetch was out
+        state.needs_recollect = false;
+        state.apply_async_collect(CollectResult {
+            df: df!("a" => (request.buffer_start as i32..request.buffer_end as i32)
+                .collect::<Vec<i32>>())
+            .unwrap(),
+            buffer_start: request.buffer_start,
+            buffer_end: request.buffer_end,
+            num_rows: 10 * G,
+            count_known: true,
+        });
+        assert_eq!(
+            (state.buffered_start(), state.buffered_end()),
+            (request.buffer_start, request.buffer_end),
+            "the downloaded rows are kept"
+        );
+        assert!(state.needs_recollect, "and the rest of the view is fetched");
     }
 
     #[test]

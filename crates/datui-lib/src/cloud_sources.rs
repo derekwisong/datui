@@ -519,6 +519,7 @@ mod tests {
             exists: &exists,
             read: &read,
             home: Some(PathBuf::from("/home/u")),
+            windows: false,
         };
         let config = CloudConfig {
             sources: vec![minio("lab", "http://127.0.0.1:9000")],

@@ -104,6 +104,8 @@ pub struct Environment<'a> {
     pub read: &'a dyn Fn(&Path) -> Option<String>,
     /// The user's home directory, if there is one.
     pub home: Option<PathBuf>,
+    /// Tools keep their files in different places on Windows, so lookups need to know.
+    pub windows: bool,
 }
 
 impl Environment<'_> {
@@ -114,17 +116,10 @@ impl Environment<'_> {
             exists: &|path| path.exists(),
             read: &|path| std::fs::read_to_string(path).ok(),
             home: dirs::home_dir(),
+            windows: cfg!(windows),
         }
     }
 }
-
-/// Where `object_store` looks for Google's application default credentials, relative to
-/// the home directory. Kept in step with `object_store::gcp` deliberately: discovery
-/// must agree with the code that will later do the opening.
-const ADC_RELATIVE_PATHS: [&str; 2] = [
-    ".config/gcloud/application_default_credentials.json",
-    "gcloud/application_default_credentials.json",
-];
 
 /// Object stores this machine can read, in the order they should appear.
 ///
@@ -172,14 +167,20 @@ fn detect_gcs(env: &Environment<'_>) -> Option<Provider> {
     })
 }
 
-/// The application default credentials file, if one of the places `object_store` looks
-/// has it.
+/// The application default credentials file, where `object_store` reads it:
+/// `%APPDATA%\gcloud\` on Windows, `$HOME/.config/gcloud/` elsewhere. Kept in step with
+/// `object_store::gcp` deliberately: discovery must agree with the code that will later
+/// do the opening, and looking under the home directory on Windows found nothing.
 pub fn adc_path(env: &Environment<'_>) -> Option<PathBuf> {
-    let home = env.home.as_ref()?;
-    ADC_RELATIVE_PATHS
-        .iter()
-        .map(|relative| home.join(relative))
-        .find(|path| (env.exists)(path))
+    const FILE: &str = "application_default_credentials.json";
+    let path = if env.windows {
+        PathBuf::from((env.var)("APPDATA")?)
+            .join("gcloud")
+            .join(FILE)
+    } else {
+        env.home.as_ref()?.join(".config").join("gcloud").join(FILE)
+    };
+    (env.exists)(&path).then_some(path)
 }
 
 /// The project whose buckets to list.
@@ -816,6 +817,7 @@ mod tests {
                 exists: &|path| $files.iter().any(|f: &PathBuf| f == path),
                 read: &|_| None,
                 home: $home.clone(),
+                windows: false,
             }
         };
         ($vars:expr_2021, $files:expr_2021, $home:expr_2021, $contents:expr_2021) => {
@@ -824,6 +826,7 @@ mod tests {
                 exists: &|path| $files.iter().any(|f: &PathBuf| f == path),
                 read: &|_| Some($contents.to_string()),
                 home: $home.clone(),
+                windows: false,
             }
         };
     }
@@ -1292,8 +1295,40 @@ mod aws_role_tests {
             exists: &|_| false,
             read: &|_| None,
             home: Some(PathBuf::from("/home/u")),
+            windows: false,
         };
         detect(&CloudConfig::default(), &env)
+    }
+
+    #[test]
+    fn a_gcloud_login_on_windows_is_found_under_appdata() {
+        let vars: HashMap<String, String> = [("APPDATA", r"C:\Users\u\AppData\Roaming")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let adc = PathBuf::from(r"C:\Users\u\AppData\Roaming")
+            .join("gcloud")
+            .join("application_default_credentials.json");
+        let under_home = PathBuf::from(r"C:\Users\u")
+            .join(".config")
+            .join("gcloud")
+            .join("application_default_credentials.json");
+        let windows = |exists: PathBuf, windows: bool| {
+            let env = Environment {
+                var: &|key| vars.get(key).cloned(),
+                exists: &|path| path == exists,
+                read: &|_| None,
+                home: Some(PathBuf::from(r"C:\Users\u")),
+                windows,
+            };
+            detect(&CloudConfig::default(), &env)
+                .iter()
+                .any(|p| p.kind == ProviderKind::Gcs)
+        };
+        assert!(windows(adc.clone(), true));
+        // The Unix location means nothing on Windows, and the reverse.
+        assert!(!windows(under_home, true));
+        assert!(!windows(adc, false));
     }
 
     #[test]

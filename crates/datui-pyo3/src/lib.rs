@@ -12,12 +12,11 @@ use ::datui::{
     error_for_python, CompressionFormat, ErrorKindForPython, FileFormat, OpenOptions, ParseStringsTarget,
     RunInput, run,
 };
-use bincode::config::legacy;
 use polars::prelude::LazyFrame;
 use polars_plan::dsl::DslPlan;
 use pyo3::exceptions::{PyFileNotFoundError, PyPermissionError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use serde_json::{self, Value};
+use serde_json;
 
 fn parse_compression(s: &str) -> PyResult<CompressionFormat> {
     match s.to_lowercase().as_str() {
@@ -411,46 +410,6 @@ enum CompressionFormatPy {
 /// Newer Polars emits `{"inner": "/foo"}` (under "path" or other keys); polars-plan 0.52
 /// expects `{"Local": "/foo"}` or `{"Cloud": "..."}`. We recursively rewrite any object
 /// that is exactly `{"inner": "<string>"}` to `{"Local": "<string>"}`.
-fn normalize_lazyframe_json(value: Value) -> Value {
-    match value {
-        Value::Object(mut map) => {
-            let keys: Vec<String> = map.keys().cloned().collect();
-            for k in keys {
-                let v = map.get_mut(&k).expect("key exists");
-                *v = normalize_lazyframe_json(std::mem::take(v));
-                if let Some(normalized) = normalize_path_value(v.clone()) {
-                    *v = normalized;
-                }
-            }
-            // Rewrite this object if it is itself {"inner": "<string>"} (e.g. nested path enum).
-            let as_value = Value::Object(map);
-            normalize_path_value(as_value.clone()).unwrap_or(as_value)
-        }
-        Value::Array(arr) => Value::Array(
-            arr.into_iter()
-                .map(normalize_lazyframe_json)
-                .collect(),
-        ),
-        other => other,
-    }
-}
-
-/// If `value` is `{"inner": "<string>"}`, return `{"Local": "<string>"}`; else return None.
-fn normalize_path_value(value: Value) -> Option<Value> {
-    let obj = value.as_object()?;
-    if obj.len() != 1 {
-        return None;
-    }
-    let (key, val) = obj.iter().next()?;
-    if key != "inner" {
-        return None;
-    }
-    let path_str = val.as_str()?;
-    let mut m = serde_json::Map::new();
-    m.insert("Local".to_string(), Value::String(path_str.to_string()));
-    Some(Value::Object(m))
-}
-
 fn run_tui(plan: DslPlan, opts: OpenOptions) -> PyResult<()> {
     let lf = LazyFrame::from(plan);
     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
@@ -506,13 +465,26 @@ fn view_from_bytes(
     data: &[u8],
     options: Option<Bound<'_, DatuiOptionsPy>>,
 ) -> PyResult<()> {
-    let (plan, _): (DslPlan, usize) = bincode::serde::decode_from_slice(data, legacy())
-        .map_err(|e| {
-            PyValueError::new_err(format!(
-                "invalid LazyFrame binary (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
-                e
-            ))
-        })?;
+    // Python `LazyFrame.serialize()` writes a DSL version and a schema hash ahead of the
+    // plan. The version is checked. The hash is skipped: it is the digest of a file in
+    // the polars repository at the commit each release was cut from, and no PyPI wheel
+    // is cut from the commit of a crates.io release, so it never matches even within
+    // one release train. The plan itself is MessagePack with field names, so a plan
+    // from a different DSL still fails on a missing field instead of being misread.
+    const SKIP_HASH: &str = "POLARS_SKIP_DSL_HASH_VERIFICATION";
+    let previous = std::env::var_os(SKIP_HASH);
+    std::env::set_var(SKIP_HASH, "1");
+    let decoded = DslPlan::deserialize_versioned(data);
+    match previous {
+        Some(value) => std::env::set_var(SKIP_HASH, value),
+        None => std::env::remove_var(SKIP_HASH),
+    }
+    let plan = decoded.map_err(|e| {
+        PyValueError::new_err(format!(
+            "invalid LazyFrame binary (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
+            e
+        ))
+    })?;
     let opts = datui_options_to_rust(options.as_ref());
     run_tui(plan, opts)
 }
@@ -540,14 +512,7 @@ fn view_from_json(
     json_str: &str,
     options: Option<Bound<'_, DatuiOptionsPy>>,
 ) -> PyResult<()> {
-    let value: Value = serde_json::from_str(json_str).map_err(|e| {
-        PyValueError::new_err(format!(
-            "invalid LazyFrame JSON (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
-            e
-        ))
-    })?;
-    let normalized = normalize_lazyframe_json(value);
-    let plan: DslPlan = serde_json::from_value(normalized).map_err(|e| {
+    let plan: DslPlan = serde_json::from_str(json_str).map_err(|e| {
         PyValueError::new_err(format!(
             "invalid LazyFrame JSON (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
             e
@@ -693,42 +658,6 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
     let code = status.code().unwrap_or(-1);
     let _ = py.import("sys")?.getattr("exit")?.call1((code,));
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_path_value_inner_to_local() {
-        let v = serde_json::json!({"inner": "/tmp/foo.parquet"});
-        let out = normalize_path_value(v).expect("normalized");
-        let obj = out.as_object().expect("object");
-        assert_eq!(obj.len(), 1);
-        assert_eq!(obj.get("Local").and_then(Value::as_str), Some("/tmp/foo.parquet"));
-    }
-
-    #[test]
-    fn normalize_path_value_non_inner_unchanged() {
-        let v = serde_json::json!({"Local": "/already/local"});
-        assert!(normalize_path_value(v).is_none());
-    }
-
-    #[test]
-    fn normalize_lazyframe_json_rewrites_nested_path() {
-        let json = serde_json::json!({
-            "DataFrameScan": {
-                "path": {"inner": "/data/file.parquet"},
-                "other": "unchanged"
-            }
-        });
-        let out = normalize_lazyframe_json(json);
-        let scan = out.get("DataFrameScan").expect("DataFrameScan").as_object().expect("obj");
-        let path = scan.get("path").expect("path").as_object().expect("path obj");
-        assert_eq!(path.get("Local").and_then(Value::as_str), Some("/data/file.parquet"));
-        assert!(!path.contains_key("inner"));
-        assert_eq!(scan.get("other").and_then(Value::as_str), Some("unchanged"));
-    }
 }
 
 /// Native extension module. The public `datui` package is provided by Python code

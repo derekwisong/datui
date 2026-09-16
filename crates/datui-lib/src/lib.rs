@@ -466,7 +466,7 @@ mod chart_prepare_tests {
         panic!("app did not reach the expected state within 5 seconds");
     }
 
-    fn open(
+    pub(super) fn open(
         app: &mut App,
         rx: &mpsc::Receiver<AppEvent>,
         tx: &mpsc::Sender<AppEvent>,
@@ -523,6 +523,129 @@ mod chart_prepare_tests {
         let series = &app.chart_cache.xy.as_ref().unwrap().series;
         assert_eq!(series[0][4], (4.0, 400.0), "the second dataset's values");
         assert!(!app.chart_preparing());
+    }
+
+    /// A worker that dies without a result (a panic in the preparation) must not leave
+    /// the in-flight record standing for the rest of the session: the `Ready` event is
+    /// sent regardless, and an empty slot is recorded as a failure.
+    #[test]
+    fn a_ready_event_with_no_result_clears_the_inflight_record() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let request = histogram_request("a");
+        app.chart_generation = 1;
+        app.chart_inflight = Some(inflight(1, &request));
+        assert!(app.pending_chart_result.lock().unwrap().is_none());
+
+        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        assert!(app.chart_inflight.is_none());
+        assert_eq!(
+            app.chart_cache.failed.as_ref().map(|(r, _)| r),
+            Some(&request)
+        );
+    }
+
+    /// Esc leaves a worker running that cannot be cancelled; reopening the chart and
+    /// selecting again queues the new request behind it. The user is waiting on a
+    /// computation, so the throbber must show, and the request must then be prepared.
+    #[test]
+    fn a_reselection_behind_a_stale_worker_counts_as_preparing() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_xy_csv(dir.path(), "reselect.csv", 3);
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        select_xy(&mut app);
+        assert!(app.chart_preparing());
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(
+            !app.chart_preparing(),
+            "nothing is wanted while the chart is closed"
+        );
+        assert!(
+            app.chart_inflight.as_ref().is_some_and(|i| i.stale),
+            "the orphaned worker is still remembered"
+        );
+
+        select_xy(&mut app);
+        assert!(
+            app.chart_preparing(),
+            "a request waiting behind the orphan is being prepared, in effect"
+        );
+        pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+        assert!(!app.chart_preparing());
+    }
+}
+
+#[cfg(test)]
+mod template_rollback_tests {
+    use super::chart_prepare_tests::open;
+    use super::*;
+    use std::sync::mpsc;
+
+    /// A template that pivots and then fails must roll the pivot back too: otherwise the
+    /// view shows the original columns while SQL still runs against the pivot.
+    #[test]
+    fn a_failed_template_rolls_back_the_reshape() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.csv");
+        let mut body = String::from("id,key,val\n");
+        for id in 0..5 {
+            body.push_str(&format!("{id},k1,{id}\n{id},k2,{}\n", id * 10));
+        }
+        std::fs::write(&path, body).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        let mut template = app
+            .create_template_from_current_state(
+                "pivot then break".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.pivot = Some(PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "key".to_string(),
+            value_column: "val".to_string(),
+            aggregation: pivot_melt_modal::PivotAggregation::First,
+            sort_columns: None,
+        });
+        // Applied after the pivot, and referring to a column that does not exist.
+        template.settings.column_order = vec!["no_such_column".to_string()];
+
+        assert!(app.apply_template(&template).is_err());
+
+        let state = app.data_table_state.as_ref().unwrap();
+        let root: Vec<String> = state
+            .query_root()
+            .collect_schema()
+            .unwrap()
+            .iter_names()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            root,
+            vec!["id", "key", "val"],
+            "SQL root is the loaded data again"
+        );
+        assert!(state.last_pivot_spec().is_none());
+        assert!(state.reshaped_lf_clone().is_none());
     }
 }
 
@@ -1471,6 +1594,9 @@ fn active_query_settings(
 struct TemplateApplicationState {
     lf: LazyFrame,
     base_lf: LazyFrame,
+    reshaped_lf: Option<LazyFrame>,
+    pivot: Option<PivotSpec>,
+    melt: Option<MeltSpec>,
     schema: Arc<Schema>,
     active_query: String,
     active_sql_query: String,
@@ -7623,6 +7749,9 @@ impl App {
                     false
                 };
                 if drilled_up {
+                    self.sync_sort_filter_modal();
+                }
+                if drilled_up {
                     self.spawn_async_collect("Loading buffer...");
                     return None;
                 }
@@ -7829,6 +7958,9 @@ impl App {
                                 state.defer_collect = true;
                                 let ok = state.drill_down_into_group(group_index).is_ok();
                                 state.defer_collect = false;
+                                if ok {
+                                    self.sync_sort_filter_modal();
+                                }
                                 ok
                             } else {
                                 false
@@ -8103,9 +8235,32 @@ impl App {
         out
     }
 
-    /// True while chart data for the current view is being prepared off-thread.
+    /// True while chart data for the current view is being prepared off-thread — either
+    /// its worker is running, or it is waiting its turn behind an orphaned worker that
+    /// cannot be cancelled (see `ChartInflight::stale`). Either way the user is waiting
+    /// on a computation and the throbber should say so.
     pub fn chart_preparing(&self) -> bool {
-        self.chart_inflight.as_ref().is_some_and(|i| !i.stale)
+        match self.chart_inflight.as_ref() {
+            Some(inflight) if !inflight.stale => true,
+            Some(_) => self.chart_request_pending(),
+            None => false,
+        }
+    }
+
+    /// Whether the chart view wants data it does not have and cannot be told it will
+    /// never get.
+    fn chart_request_pending(&self) -> bool {
+        if self.input_mode != InputMode::Chart || !self.chart_modal.active {
+            return false;
+        }
+        ChartRequest::from_modal(&self.chart_modal).is_some_and(|request| {
+            !self.chart_cache.satisfies(&request)
+                && !self
+                    .chart_cache
+                    .failed
+                    .as_ref()
+                    .is_some_and(|(failed, _)| *failed == request)
+        })
     }
 
     /// Forget everything chart-related that belongs to the view or dataset on its way
@@ -8188,9 +8343,14 @@ impl App {
         let slot = self.pending_chart_result.clone();
         let tx = self.events.clone();
         self.runtime.spawn_blocking(move || {
-            let result = request
-                .prepare(&lf, &schema, rows)
-                .map_err(|e| crate::error_display::user_message_from_report(&e, None));
+            // A panic in the preparation must still report back: without the event the
+            // in-flight record would stand for the rest of the session and every later
+            // selection would be refused.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                request.prepare(&lf, &schema, rows)
+            }))
+            .unwrap_or_else(|_| Err(color_eyre::eyre::eyre!("Chart preparation panicked")))
+            .map_err(|e| crate::error_display::user_message_from_report(&e, None));
             let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
             // Only write if no newer result is already stored.
             let dominated = slot.as_ref().is_some_and(|(g, _)| *g > generation);
@@ -9891,24 +10051,66 @@ impl App {
         }
     }
 
-    fn apply_template(&mut self, template: &Template) -> Result<()> {
-        // Save state before applying template so we can restore on failure
-        let saved_state = self
-            .data_table_state
+    /// Bring the Sort & Filter sidebar in line with the filters and sort applied to the
+    /// frame on screen. A drill-down swaps those with the group's, and a sidebar still
+    /// showing the grouped view's would re-send a filter against a List column.
+    fn sync_sort_filter_modal(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let filters = state.view_filters().to_vec();
+        let sort_columns = state.view_sort_columns().to_vec();
+        let ascending = state.view_sort_ascending();
+        let headers: Vec<String> = state.schema.iter_names().map(|s| s.to_string()).collect();
+        let available = state.headers();
+        let locked = state.locked_columns_count();
+
+        let modal = &mut self.sort_filter_modal;
+        modal.filter.statements = filters;
+        modal.filter.available_columns = available;
+        modal.filter.new_column_idx = 0;
+        modal.sort.columns = headers
+            .iter()
+            .enumerate()
+            .map(|(i, name)| SortColumn {
+                name: name.clone(),
+                sort_order: sort_columns.iter().position(|c| c == name),
+                display_order: i,
+                is_locked: i < locked,
+                is_to_be_locked: false,
+                is_visible: true,
+            })
+            .collect();
+        modal.sort.ascending = ascending;
+    }
+
+    /// The pipeline state a failed template application is rolled back to.
+    fn snapshot_state(&self) -> Option<TemplateApplicationState> {
+        self.data_table_state
             .as_ref()
             .map(|state| TemplateApplicationState {
                 lf: state.lf.clone(),
                 base_lf: state.base_lf_clone(),
+                reshaped_lf: state.reshaped_lf_clone(),
+                pivot: state.last_pivot_spec().cloned(),
+                melt: state.last_melt_spec().cloned(),
                 schema: state.schema.clone(),
                 active_query: state.active_query.clone(),
                 active_sql_query: state.get_active_sql_query().to_string(),
                 active_fuzzy_query: state.get_active_fuzzy_query().to_string(),
-                filters: state.get_filters().to_vec(),
-                sort_columns: state.get_sort_columns().to_vec(),
-                sort_ascending: state.get_sort_ascending(),
+                // The filters and sort applied to the frame being snapshotted (`lf`),
+                // not the grouped view's when drilled.
+                filters: state.view_filters().to_vec(),
+                sort_columns: state.view_sort_columns().to_vec(),
+                sort_ascending: state.view_sort_ascending(),
                 column_order: state.get_column_order().to_vec(),
                 locked_columns_count: state.locked_columns_count(),
-            });
+            })
+    }
+
+    fn apply_template(&mut self, template: &Template) -> Result<()> {
+        // Save state before applying template so we can restore on failure
+        let saved_state = self.snapshot_state();
         let saved_active_template_id = self.active_template_id.clone();
 
         if let Some(state) = &mut self.data_table_state {
@@ -10238,6 +10440,9 @@ impl App {
             // This preserves the exact LazyFrame state from before template application
             state.lf = saved.lf;
             state.set_base_lf(saved.base_lf);
+            // Without this a template that pivoted and then failed would leave the
+            // pivot as the root SQL runs against while the view shows none.
+            state.restore_reshape(saved.reshaped_lf, saved.pivot, saved.melt);
             state.schema = saved.schema;
             state.active_query = saved.active_query;
             state.active_sql_query = saved.active_sql_query;

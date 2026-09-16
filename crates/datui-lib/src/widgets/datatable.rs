@@ -3632,16 +3632,59 @@ impl DataTableState {
     }
 
     // Getter methods for template creation
+    /// Filters for a template: while drilled into a group these are the grouped view's,
+    /// which is what a template reproduces (it cannot express a drill-down).
     pub fn get_filters(&self) -> &[FilterStatement] {
-        &self.filters
+        match &self.grouped {
+            Some(view) => &view.filters,
+            None => &self.filters,
+        }
     }
 
     pub fn get_sort_columns(&self) -> &[String] {
-        &self.sort_columns
+        match &self.grouped {
+            Some(view) => &view.sort_columns,
+            None => &self.sort_columns,
+        }
     }
 
     pub fn get_sort_ascending(&self) -> bool {
+        match &self.grouped {
+            Some(view) => view.sort_ascending,
+            None => self.sort_ascending,
+        }
+    }
+
+    /// Filters applied to the frame on screen (inside the group while drilled). This is
+    /// what the Sort & Filter sidebar shows and edits.
+    pub fn view_filters(&self) -> &[FilterStatement] {
+        &self.filters
+    }
+
+    pub fn view_sort_columns(&self) -> &[String] {
+        &self.sort_columns
+    }
+
+    pub fn view_sort_ascending(&self) -> bool {
         self.sort_ascending
+    }
+
+    /// The pivot/melt result in effect, for a snapshot that may need to put it back.
+    pub fn reshaped_lf_clone(&self) -> Option<LazyFrame> {
+        self.reshaped_lf.clone()
+    }
+
+    /// Put back a reshape taken with `reshaped_lf_clone` / `last_pivot_spec` /
+    /// `last_melt_spec`, e.g. when a template fails to apply.
+    pub fn restore_reshape(
+        &mut self,
+        lf: Option<LazyFrame>,
+        pivot: Option<PivotSpec>,
+        melt: Option<MeltSpec>,
+    ) {
+        self.reshaped_lf = lf;
+        self.last_pivot_spec = pivot;
+        self.last_melt_spec = melt;
     }
 
     pub fn get_column_order(&self) -> &[String] {
@@ -4274,6 +4317,10 @@ impl DataTableState {
                 self.active_query = query;
                 self.active_sql_query.clear();
                 self.active_fuzzy_query.clear();
+                // The view no longer shows the reshape, so nothing may run against it.
+                self.reshaped_lf = None;
+                self.last_pivot_spec = None;
+                self.last_melt_spec = None;
                 self.buffered_start_row = 0;
                 self.buffered_end_row = 0;
                 self.buffered_df = None;
@@ -4300,19 +4347,24 @@ impl DataTableState {
         }
     }
 
-    /// The data a query runs against: the pivot/melt result while one is in effect,
-    /// otherwise the data as loaded. Never the sidebar filters or sort, which go on top.
-    fn query_root(&self) -> LazyFrame {
+    /// The data a query runs against: the drilled group while drilled into one, else the
+    /// pivot/melt result while one is in effect, otherwise the data as loaded. Never the
+    /// sidebar filters or sort, which go on top, and never a previous SQL result.
+    pub fn query_root(&self) -> LazyFrame {
+        if self.grouped.is_some() {
+            // While drilled, `base_lf` is the group (see `drill_down_into_group`).
+            return self.base_lf.clone();
+        }
         self.reshaped_lf
             .clone()
             .unwrap_or_else(|| self.original_lf.clone())
     }
 
-    /// Execute a SQL query against `query_root` (registered as table "df"): the reshaped
-    /// data when a pivot/melt is in effect, otherwise the data as loaded. Sidebar filters
-    /// and sort are not baked into the result, they go on top of it. Empty SQL resets to
-    /// original state. Does not call collect(); the event loop does that via
-    /// AppEvent::Collect.
+    /// Execute a SQL query against `query_root` (registered as table "df"): the drilled
+    /// group or the reshaped data when one is in effect, otherwise the data as loaded —
+    /// never the sidebar filters or a previous SQL result. Sidebar filters and sort are
+    /// not baked into the result, they go on top of it. Empty SQL resets to original
+    /// state. Does not call collect(); the event loop does that via AppEvent::Collect.
     pub fn sql_query(&mut self, sql: String) {
         self.error = None;
         let trimmed = sql.trim();
@@ -4428,6 +4480,9 @@ impl DataTableState {
         self.active_query.clear();
         self.active_sql_query.clear();
         self.active_fuzzy_query = query;
+        self.reshaped_lf = None;
+        self.last_pivot_spec = None;
+        self.last_melt_spec = None;
         // Reset view and buffer so collect() runs on the new lf
         self.locked_columns_count = 0;
         self.start_row = 0;

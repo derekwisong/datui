@@ -2150,3 +2150,177 @@ fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
     assert_eq!(df.height(), 50);
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(98));
 }
+
+/// A DSL query after a pivot shows the loaded columns again, so SQL afterwards must run
+/// against the loaded data, not against a pivot the user no longer sees.
+#[test]
+fn test_query_after_pivot_drops_the_reshape_for_sql() {
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    let mut csv = String::from("id,key,val\n");
+    for id in 0..10 {
+        csv.push_str(&format!("{id},k1,{id}\n{id},k2,{}\n", id * 10));
+    }
+    let (mut app, rx, tx) = open_csv_with("pivot_query_sql.csv", &csv, OpenOptions::default());
+
+    app.event(&AppEvent::Pivot(PivotSpec {
+        index: vec!["id".to_string()],
+        pivot_column: "key".to_string(),
+        value_column: "val".to_string(),
+        aggregation: PivotAggregation::First,
+        sort_columns: None,
+    }));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.as_ref().unwrap().schema.contains("k1"));
+
+    app.event(&AppEvent::Search("select id, key".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 20);
+    assert!(app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .last_pivot_spec()
+        .is_none());
+
+    app.event(&AppEvent::SqlSearch("SELECT * FROM df".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    let names: Vec<String> = state.schema.iter_names().map(|s| s.to_string()).collect();
+    assert_eq!(names, vec!["id", "key", "val"], "the unpivoted columns");
+    assert_eq!(current_rows(&app), 20);
+}
+
+/// Drilling into a group swaps the applied filters and sort for the group's; the Sort &
+/// Filter sidebar must follow, or Apply would re-send the grouped view's filter against
+/// a List column. Drilling back up brings the grouped view's settings back.
+#[test]
+fn test_drill_down_resyncs_the_sort_filter_sidebar() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_sidebar.csv");
+
+    app.event(&AppEvent::Search("select by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    let statement = filter_stmt("c", FilterOperator::Gt, "0");
+    app.event(&AppEvent::Filter(vec![statement.clone()]));
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&AppEvent::Sort(vec!["c".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 2, "groups c = 1 and c = 2");
+    // What Apply would have left in the sidebar.
+    app.sort_filter_modal.filter.statements = vec![statement];
+    app.sort_filter_modal.sort.columns = vec![datui::sort_modal::SortColumn {
+        name: "c".to_string(),
+        sort_order: Some(0),
+        display_order: 0,
+        is_locked: false,
+        is_to_be_locked: false,
+        is_visible: true,
+    }];
+
+    // Enter on the highlighted group row drills in.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
+    assert!(
+        app.sort_filter_modal.filter.statements.is_empty(),
+        "no filter applies inside the group yet"
+    );
+    assert!(app
+        .sort_filter_modal
+        .sort
+        .columns
+        .iter()
+        .all(|c| c.sort_order.is_none()));
+    assert_eq!(
+        app.sort_filter_modal.filter.available_columns,
+        app.data_table_state.as_ref().unwrap().headers()
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.data_table_state.as_ref().unwrap().is_drilled_down());
+    let statements = &app.sort_filter_modal.filter.statements;
+    assert_eq!(statements.len(), 1);
+    assert_eq!(statements[0].column, "c");
+    assert_eq!(statements[0].value, "0");
+    let sorted: Vec<&str> = app
+        .sort_filter_modal
+        .sort
+        .columns
+        .iter()
+        .filter(|c| c.sort_order.is_some())
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(sorted, vec!["c"]);
+    assert!(!app.sort_filter_modal.sort.ascending);
+}
+
+/// A template saved while drilled into a group describes the grouped view, which is what
+/// it will reproduce: the getters return the grouped view's filters and sort, while the
+/// view getters describe the frame on screen.
+#[test]
+fn test_template_getters_describe_the_grouped_view_while_drilled() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_template_getters.csv");
+
+    app.event(&AppEvent::Search("select by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&AppEvent::Filter(vec![filter_stmt(
+        "c",
+        FilterOperator::Gt,
+        "0",
+    )]));
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&AppEvent::Sort(vec!["c".to_string()], false));
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.drill_down_into_group(0).unwrap();
+    assert!(state.is_drilled_down());
+    assert_eq!(state.get_filters().len(), 1);
+    assert_eq!(state.get_sort_columns(), ["c".to_string()]);
+    assert!(!state.get_sort_ascending());
+    assert!(state.view_filters().is_empty());
+    assert!(state.view_sort_columns().is_empty());
+
+    state.drill_up().unwrap();
+    assert_eq!(state.get_filters().len(), 1);
+    assert_eq!(state.view_filters().len(), 1);
+    assert_eq!(state.get_sort_columns(), ["c".to_string()]);
+}
+
+/// SQL inside a drill-down runs on the group, like the sidebar does, not on the whole
+/// loaded table.
+#[test]
+fn test_sql_inside_a_drill_down_stays_in_the_group() {
+    let (mut app, rx, tx) = open_query_filter_fixture("drill_sql.csv");
+
+    app.event(&AppEvent::Search("select by c".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .drill_down_into_group(0)
+        .unwrap();
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(current_rows(&app), 34);
+
+    app.event(&AppEvent::SqlSearch(
+        "SELECT * FROM df WHERE a < 30".to_string(),
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.error.is_none(), "{:?}", state.error);
+    assert_eq!(
+        current_rows(&app),
+        10,
+        "a in 0, 3, ..., 27: within the group"
+    );
+}

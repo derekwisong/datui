@@ -501,6 +501,9 @@ pub struct CloudSourceConfig {
     pub secret_access_key_env: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_token_env: Option<String>,
+    /// An AWS profile to take the keys, endpoint and region from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// Keys that are not recognised, kept so validation can name them.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
@@ -508,7 +511,7 @@ pub struct CloudSourceConfig {
 
 /// Field names accepted in `[[cloud.sources]]`, for error messages.
 const CLOUD_SOURCE_KEYS: &str = "name, label, kind, buckets, endpoint_url, region, addressing, \
-     access_key_id_env, secret_access_key_env, session_token_env";
+     access_key_id_env, secret_access_key_env, session_token_env, profile";
 
 /// Whether `id` can name a source: lowercase letters, digits and `-`, starting with a
 /// letter or digit, at most 40 characters. It goes into URLs and cache keys, so
@@ -578,12 +581,23 @@ impl CloudSourceConfig {
                     self.secret_access_key_env.is_some(),
                 ),
                 ("session_token_env", self.session_token_env.is_some()),
+                ("profile", self.profile.is_some()),
             ];
             if let Some((field, _)) = s3_only.iter().find(|(_, set)| *set) {
                 return Err(eyre!(
                     "cloud.sources \"{name}\": {field} applies only to kind = \"s3\""
                 ));
             }
+        }
+        if self.profile.is_some()
+            && (self.access_key_id_env.is_some()
+                || self.secret_access_key_env.is_some()
+                || self.session_token_env.is_some())
+        {
+            return Err(eyre!(
+                "cloud.sources \"{name}\": profile and the *_env keys both say where the keys \
+                 come from. Use one"
+            ));
         }
         if let Some(addressing) = self.addressing.as_deref()
             && !matches!(addressing, "path" | "virtual")

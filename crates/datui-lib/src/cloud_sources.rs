@@ -156,8 +156,14 @@ pub fn endpoint_host(endpoint: &str) -> Option<String> {
 /// Every source this machine and the config describe, in display order.
 ///
 /// `config` is the effective one, with the environment and command line folded in.
-/// A configured source whose name matches a detected one replaces it.
+/// A configured source whose name matches a detected one replaces it. Nothing here
+/// runs a command: credentials a profile gets from the AWS CLI are fetched when the
+/// source is used ([`Source::with_credentials`]).
 pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
+    let profiles = crate::aws_profiles::load(env);
+    let active = crate::aws_profiles::active_profile(env);
+    let mut default_uses_profile = false;
+
     let mut sources: Vec<Source> = crate::cloud_browse::detect(config, env)
         .into_iter()
         .map(|provider| {
@@ -166,34 +172,70 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 "~/.aws" | "gcloud" => Tier::Tools,
                 _ => Tier::Environment,
             };
-            let id = match provider.kind {
-                ProviderKind::S3 => DEFAULT_S3,
-                ProviderKind::Gcs => DEFAULT_GCS,
-            };
-            Source {
-                id: id.to_string(),
-                label: match provider.kind {
-                    ProviderKind::S3 if provider.endpoint.is_none() => "Amazon S3".to_string(),
-                    ProviderKind::S3 => "S3-compatible".to_string(),
-                    ProviderKind::Gcs => "Google Cloud".to_string(),
-                },
+            let mut source = Source {
+                id: match provider.kind {
+                    ProviderKind::S3 => DEFAULT_S3,
+                    ProviderKind::Gcs => DEFAULT_GCS,
+                }
+                .to_string(),
+                label: String::new(),
                 kind: provider.kind,
                 tier,
-                origin: provider.note,
+                origin: provider.note.clone(),
                 s3: match provider.kind {
                     ProviderKind::S3 => S3Settings::from_config(config),
                     ProviderKind::Gcs => S3Settings::default(),
                 },
                 project: provider.project,
-                profile: provider.profile,
+                profile: None,
                 buckets: Vec::new(),
                 problem: None,
+            };
+            // Found through a profile rather than keys: the active profile supplies the
+            // keys, and its endpoint and region fill whatever the config and the
+            // environment did not say.
+            if provider.kind == ProviderKind::S3
+                && matches!(provider.note.as_str(), "AWS_PROFILE" | "~/.aws")
+            {
+                default_uses_profile = true;
+                source.profile = Some(active.clone());
+                if let Some(profile) = profiles.iter().find(|p| p.name == active) {
+                    fill_from_profile(&mut source.s3, profile, env.var);
+                }
             }
+            source.label = match source.kind {
+                ProviderKind::S3 if source.s3.endpoint.is_none() => "Amazon S3".to_string(),
+                ProviderKind::S3 => "S3-compatible".to_string(),
+                ProviderKind::Gcs => "Google Cloud".to_string(),
+            };
+            source
         })
         .collect();
 
+    // Every other profile that can log in is a source of its own. The active one is
+    // already the default source when that is how the default logs in.
+    for profile in profiles.iter().filter(|p| p.has_credentials()) {
+        if default_uses_profile && profile.name == active {
+            continue;
+        }
+        let mut s3 = S3Settings::default();
+        fill_from_profile(&mut s3, profile, env.var);
+        sources.push(Source {
+            id: profile_source_id(&profile.name),
+            label: profile.name.clone(),
+            kind: ProviderKind::S3,
+            tier: Tier::Tools,
+            origin: "aws profile".to_string(),
+            s3,
+            project: None,
+            profile: Some(profile.name.clone()),
+            buckets: Vec::new(),
+            problem: None,
+        });
+    }
+
     for configured in &config.sources {
-        let source = configured_source(configured, env.var);
+        let source = configured_source(configured, env);
         match sources.iter_mut().find(|s| s.id == source.id) {
             Some(existing) => *existing = source,
             None => sources.push(source),
@@ -210,12 +252,73 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
     sources
 }
 
+/// The ID of the source for an AWS profile: `aws-` and the profile's name, lowercased,
+/// with anything that cannot go in an ID turned into `-`.
+pub fn profile_source_id(profile: &str) -> String {
+    let slug: String = profile
+        .chars()
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut id = format!("aws-{}", slug.trim_matches('-'));
+    id.truncate(40);
+    id
+}
+
+/// Take a profile's endpoint and region where `s3` does not already say.
+fn fill_from_profile(
+    s3: &mut S3Settings,
+    profile: &crate::aws_profiles::Profile,
+    var: &dyn Fn(&str) -> Option<String>,
+) {
+    if s3.endpoint.is_none() {
+        s3.endpoint = profile.s3_endpoint(var);
+    }
+    if s3.region.is_none() {
+        s3.region = profile.region.clone();
+    }
+}
+
+impl Source {
+    /// This source with the keys it signs with filled in from its AWS profile, when it
+    /// logs in through one. Runs `credential_process` or the AWS CLI when the profile
+    /// needs them, so call it on a worker.
+    pub fn with_credentials(mut self, env: &Environment<'_>) -> Result<Source, String> {
+        if let Some(problem) = &self.problem {
+            return Err(problem.clone());
+        }
+        let Some(name) = self.profile.clone() else {
+            return Ok(self);
+        };
+        if self.s3.access_key_id.is_some() {
+            return Ok(self);
+        }
+        let profiles = crate::aws_profiles::load(env);
+        let profile = profiles
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| format!("profile {name} is not in the AWS config"))?;
+        let credentials = crate::aws_profiles::credentials(profile, env)?;
+        self.s3.access_key_id = Some(credentials.access_key_id);
+        self.s3.secret_access_key = Some(credentials.secret_access_key);
+        self.s3.session_token = credentials.session_token;
+        // The keys are the profile's now; the shell's AWS_* variables must not add a
+        // session token or region from some other login.
+        self.s3.from_env = false;
+        Ok(self)
+    }
+}
+
 /// A `[[cloud.sources]]` entry as a source. The config has been validated, so the kind
 /// is one datui knows.
-fn configured_source(
-    configured: &CloudSourceConfig,
-    var: &dyn Fn(&str) -> Option<String>,
-) -> Source {
+fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> Source {
+    let var = env.var;
     let kind = match configured.kind.as_deref() {
         Some("gcs") => ProviderKind::Gcs,
         _ => ProviderKind::S3,
@@ -233,7 +336,7 @@ fn configured_source(
             }
         }
     };
-    let s3 = S3Settings {
+    let mut s3 = S3Settings {
         endpoint: configured.endpoint_url.clone(),
         access_key_id: from_named(&configured.access_key_id_env),
         secret_access_key: from_named(&configured.secret_access_key_env),
@@ -242,6 +345,17 @@ fn configured_source(
         virtual_hosted: configured.addressing.as_deref().map(|a| a == "virtual"),
         from_env: false,
     };
+    if let Some(name) = &configured.profile {
+        match crate::aws_profiles::load(env)
+            .iter()
+            .find(|p| &p.name == name)
+        {
+            Some(profile) => fill_from_profile(&mut s3, profile, var),
+            None => {
+                problem.get_or_insert_with(|| format!("profile {name} is not in the AWS config"));
+            }
+        }
+    }
     Source {
         id: configured.name.clone(),
         label: configured
@@ -253,7 +367,7 @@ fn configured_source(
         origin: "datui config".to_string(),
         s3,
         project: None,
-        profile: None,
+        profile: configured.profile.clone(),
         buckets: configured.buckets.clone(),
         problem,
     }
@@ -293,79 +407,87 @@ fn remembered(kind: ProviderKind, bucket: &str) -> Option<String> {
     bucket_sources().lock().ok()?.get(&key).cloned()
 }
 
-/// Resolve `url` against the sources in `config`, reading `*_env` variables from the
-/// process environment.
+/// Resolve `url` against the sources in `config` and on this machine. May run a
+/// credential command, so call it on a worker.
 pub fn resolve(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
-    resolve_with(url, config, &|key| std::env::var(key).ok())
+    resolve_with(url, config, &Environment::current())
 }
 
 /// As [`resolve`], with the environment supplied.
 pub fn resolve_with(
     url: &str,
     config: &CloudConfig,
-    var: &dyn Fn(&str) -> Option<String>,
+    env: &Environment<'_>,
 ) -> Result<Resolved, String> {
     let (id, plain) = crate::source::split_source_id(url);
     let (kind, bucket, _) = crate::cloud_browse::split_bucket_url(&plain)
         .ok_or_else(|| format!("not an object-store URL: {url}"))?;
-    let named = |id: &str| config.sources.iter().find(|s| s.name == id);
+    let find = |id: &str| discover(config, env).into_iter().find(|s| s.id == id);
 
     let source = match id {
         Some(id) => {
-            let Some(configured) = named(id) else {
-                return Err(unknown_source(id, config));
+            let Some(source) = find(id) else {
+                return Err(unknown_source(id, config, env));
             };
-            let source = configured_source(configured, var);
             if !source.named_in_urls() {
                 return Err(format!(
-                    "\"{id}\" has no endpoint_url, so it is not S3-compatible and its URLs are \
+                    "\"{id}\" has no endpoint, so it is not S3-compatible and its URLs are \
                      plain s3://bucket/key"
                 ));
             }
-            Some(source)
+            source
         }
-        None => remembered(kind, &bucket)
-            .and_then(|id| named(&id).map(|c| configured_source(c, var)))
-            .filter(|s| s.kind == kind),
+        None => match remembered(kind, &bucket)
+            .and_then(|id| find(&id))
+            .filter(|s| s.kind == kind)
+        {
+            Some(source) => source,
+            None => {
+                let default_id = match kind {
+                    ProviderKind::S3 => DEFAULT_S3,
+                    ProviderKind::Gcs => DEFAULT_GCS,
+                };
+                // The default source as discovered, when it was: that is what carries
+                // the active profile. Otherwise the settings as they have always been.
+                find(default_id).unwrap_or_else(|| Source {
+                    id: default_id.to_string(),
+                    label: String::new(),
+                    kind,
+                    tier: Tier::Environment,
+                    origin: String::new(),
+                    s3: match kind {
+                        ProviderKind::S3 => S3Settings::from_config(config),
+                        ProviderKind::Gcs => S3Settings::default(),
+                    },
+                    project: None,
+                    profile: None,
+                    buckets: Vec::new(),
+                    problem: None,
+                })
+            }
+        },
     };
 
-    match source {
-        Some(source) => {
-            if let Some(problem) = &source.problem {
-                return Err(format!("source \"{}\": {problem}", source.id));
-            }
-            Ok(Resolved {
-                url: plain.into_owned(),
-                kind,
-                source_id: source.id,
-                s3: source.s3,
-            })
-        }
-        None => Ok(Resolved {
-            url: plain.into_owned(),
-            kind,
-            source_id: match kind {
-                ProviderKind::S3 => DEFAULT_S3,
-                ProviderKind::Gcs => DEFAULT_GCS,
-            }
-            .to_string(),
-            s3: match kind {
-                ProviderKind::S3 => S3Settings::from_config(config),
-                ProviderKind::Gcs => S3Settings::default(),
-            },
-        }),
-    }
+    let id = source.id.clone();
+    let source = source
+        .with_credentials(env)
+        .map_err(|e| format!("source \"{id}\": {e}"))?;
+    Ok(Resolved {
+        url: plain.into_owned(),
+        kind,
+        source_id: source.id,
+        s3: source.s3,
+    })
 }
 
-fn unknown_source(id: &str, config: &CloudConfig) -> String {
-    let names: Vec<&str> = config
-        .sources
-        .iter()
-        .filter(|s| s.kind.as_deref() == Some("s3") && s.endpoint_url.is_some())
-        .map(|s| s.name.as_str())
+fn unknown_source(id: &str, config: &CloudConfig, env: &Environment<'_>) -> String {
+    let names: Vec<String> = discover(config, env)
+        .into_iter()
+        .filter(Source::named_in_urls)
+        .map(|s| s.id)
         .collect();
     if names.is_empty() {
-        format!("no S3-compatible source is named \"{id}\" in [[cloud.sources]]")
+        format!("no S3-compatible source is named \"{id}\"")
     } else {
         format!(
             "no S3-compatible source is named \"{id}\". Sources: {}",
@@ -377,6 +499,7 @@ fn unknown_source(id: &str, config: &CloudConfig) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cloud_command::CommandError;
     use std::path::{Path, PathBuf};
 
     fn minio(name: &str, endpoint: &str) -> CloudSourceConfig {
@@ -390,16 +513,42 @@ mod tests {
         }
     }
 
-    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: HashMap<String, String> = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        move |key| map.get(key).cloned()
+    /// A machine described by literals: environment variables, the text of files by
+    /// path, and a runner that fails as if nothing were installed.
+    struct Machine {
+        vars: HashMap<String, String>,
+        files: HashMap<PathBuf, String>,
     }
 
-    fn nothing_on_disk() -> (impl Fn(&Path) -> bool, impl Fn(&Path) -> Option<String>) {
-        (|_: &Path| false, |_: &Path| None)
+    impl Machine {
+        fn new(vars: &[(&str, &str)], files: &[(&str, &str)]) -> Self {
+            Machine {
+                vars: vars
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                files: files
+                    .iter()
+                    .map(|(p, t)| (PathBuf::from(p), t.to_string()))
+                    .collect(),
+            }
+        }
+    }
+
+    fn with_machine<T>(machine: &Machine, body: impl FnOnce(&Environment<'_>) -> T) -> T {
+        let var = |key: &str| machine.vars.get(key).cloned();
+        let exists = |path: &Path| machine.files.contains_key(path);
+        let read = |path: &Path| machine.files.get(path).cloned();
+        let run = |program: &str, _: &[&str]| Err(CommandError::Missing(program.to_string()));
+        let env = Environment {
+            var: &var,
+            exists: &exists,
+            read: &read,
+            home: Some(PathBuf::from("/home/u")),
+            windows: false,
+            run: &run,
+        };
+        body(&env)
     }
 
     #[test]
@@ -411,26 +560,29 @@ mod tests {
             ],
             ..Default::default()
         };
-        let var = vars(&[
-            ("LAB_KEY", "lab-key"),
-            ("LAB_SECRET", "lab-secret"),
-            ("ONPREM_KEY", "corp-key"),
-            ("ONPREM_SECRET", "corp-secret"),
-        ]);
-
-        let lab = resolve_with("s3://lab@data/sales.parquet", &config, &var).unwrap();
-        let corp = resolve_with("s3://onprem@data/sales.parquet", &config, &var).unwrap();
-
-        assert_eq!(lab.url, "s3://data/sales.parquet");
-        assert_eq!(corp.url, "s3://data/sales.parquet");
-        assert_eq!(lab.s3.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
-        assert_eq!(
-            corp.s3.endpoint.as_deref(),
-            Some("https://minio.corp.example:9000")
+        let machine = Machine::new(
+            &[
+                ("LAB_KEY", "lab-key"),
+                ("LAB_SECRET", "lab-secret"),
+                ("ONPREM_KEY", "corp-key"),
+                ("ONPREM_SECRET", "corp-secret"),
+            ],
+            &[],
         );
-        assert_eq!(lab.s3.access_key_id.as_deref(), Some("lab-key"));
-        assert_eq!(corp.s3.secret_access_key.as_deref(), Some("corp-secret"));
-        assert!(!lab.s3.from_env && !lab.s3.virtual_hosted_style());
+        with_machine(&machine, |env| {
+            let lab = resolve_with("s3://lab@data/sales.parquet", &config, env).unwrap();
+            let corp = resolve_with("s3://onprem@data/sales.parquet", &config, env).unwrap();
+            assert_eq!(lab.url, "s3://data/sales.parquet");
+            assert_eq!(corp.url, "s3://data/sales.parquet");
+            assert_eq!(lab.s3.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
+            assert_eq!(
+                corp.s3.endpoint.as_deref(),
+                Some("https://minio.corp.example:9000")
+            );
+            assert_eq!(lab.s3.access_key_id.as_deref(), Some("lab-key"));
+            assert_eq!(corp.s3.secret_access_key.as_deref(), Some("corp-secret"));
+            assert!(!lab.s3.from_env && !lab.s3.virtual_hosted_style());
+        });
     }
 
     #[test]
@@ -440,17 +592,19 @@ mod tests {
             sources: vec![minio("lab", "http://127.0.0.1:9000")],
             ..Default::default()
         };
-        let resolved = resolve_with("s3://data/key.parquet", &config, &vars(&[])).unwrap();
-        assert_eq!(resolved.source_id, DEFAULT_S3);
-        assert_eq!(resolved.url, "s3://data/key.parquet");
-        assert_eq!(
-            resolved.s3.endpoint.as_deref(),
-            Some("http://localhost:9000")
-        );
-        assert!(resolved.s3.from_env);
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let resolved = resolve_with("s3://data/key.parquet", &config, env).unwrap();
+            assert_eq!(resolved.source_id, DEFAULT_S3);
+            assert_eq!(resolved.url, "s3://data/key.parquet");
+            assert_eq!(
+                resolved.s3.endpoint.as_deref(),
+                Some("http://localhost:9000")
+            );
+            assert!(resolved.s3.from_env);
 
-        let gcs = resolve_with("gs://bucket/key", &config, &vars(&[])).unwrap();
-        assert_eq!(gcs.source_id, DEFAULT_GCS);
+            let gcs = resolve_with("gs://bucket/key", &config, env).unwrap();
+            assert_eq!(gcs.source_id, DEFAULT_GCS);
+        });
     }
 
     #[test]
@@ -459,8 +613,10 @@ mod tests {
             sources: vec![minio("lab", "http://127.0.0.1:9000")],
             ..Default::default()
         };
-        let err = resolve_with("s3://nope@data/key", &config, &vars(&[])).unwrap_err();
-        assert!(err.contains("\"nope\"") && err.contains("lab"), "{err}");
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let err = resolve_with("s3://nope@data/key", &config, env).unwrap_err();
+            assert!(err.contains("\"nope\"") && err.contains("lab"), "{err}");
+        });
     }
 
     #[test]
@@ -473,8 +629,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        let err = resolve_with("s3://second-account@data/key", &config, &vars(&[])).unwrap_err();
-        assert!(err.contains("not S3-compatible"), "{err}");
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let err = resolve_with("s3://second-account@data/key", &config, env).unwrap_err();
+            assert!(err.contains("not S3-compatible"), "{err}");
+        });
     }
 
     #[test]
@@ -483,9 +641,10 @@ mod tests {
             sources: vec![minio("lab", "http://127.0.0.1:9000")],
             ..Default::default()
         };
-        let err =
-            resolve_with("s3://lab@data/key", &config, &vars(&[("LAB_KEY", "k")])).unwrap_err();
-        assert!(err.contains("LAB_SECRET is not set"), "{err}");
+        with_machine(&Machine::new(&[("LAB_KEY", "k")], &[]), |env| {
+            let err = resolve_with("s3://lab@data/key", &config, env).unwrap_err();
+            assert!(err.contains("LAB_SECRET is not set"), "{err}");
+        });
     }
 
     #[test]
@@ -500,61 +659,209 @@ mod tests {
             }],
             ..Default::default()
         };
-        let var = vars(&[("SECOND_KEY", "k2"), ("SECOND_SECRET", "s2")]);
-        let source = configured_source(&config.sources[0], &var);
-        remember_bucket(&source, "only-in-second-account");
-
-        let resolved =
-            resolve_with("s3://only-in-second-account/x.parquet", &config, &var).unwrap();
-        assert_eq!(resolved.source_id, "second-account");
-        assert_eq!(resolved.s3.access_key_id.as_deref(), Some("k2"));
-        assert_eq!(source.bucket_url("b"), "s3://b");
+        let machine = Machine::new(&[("SECOND_KEY", "k2"), ("SECOND_SECRET", "s2")], &[]);
+        with_machine(&machine, |env| {
+            let source = configured_source(&config.sources[0], env);
+            remember_bucket(&source, "only-in-second-account");
+            let resolved =
+                resolve_with("s3://only-in-second-account/x.parquet", &config, env).unwrap();
+            assert_eq!(resolved.source_id, "second-account");
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("k2"));
+            assert_eq!(source.bucket_url("b"), "s3://b");
+        });
     }
 
     #[test]
     fn configured_sources_join_detected_ones_and_replace_a_matching_id() {
-        let (exists, read) = nothing_on_disk();
-        let var = vars(&[
-            ("AWS_ACCESS_KEY_ID", "env-key"),
-            ("LAB_KEY", "k"),
-            ("LAB_SECRET", "s"),
-        ]);
-        let env = Environment {
-            var: &var,
-            exists: &exists,
-            read: &read,
-            home: Some(PathBuf::from("/home/u")),
-            windows: false,
-        };
-        let config = CloudConfig {
-            sources: vec![minio("lab", "http://127.0.0.1:9000")],
-            ..Default::default()
-        };
-        let found = discover(&config, &env);
-        let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["lab", DEFAULT_S3]);
-        assert_eq!(found[0].bucket_url("data"), "s3://lab@data");
-        assert_eq!(found[1].label, "Amazon S3");
-
-        let replacing = CloudConfig {
-            sources: vec![CloudSourceConfig {
-                name: DEFAULT_S3.to_string(),
-                label: Some("Work AWS".to_string()),
-                kind: Some("s3".to_string()),
+        let machine = Machine::new(
+            &[
+                ("AWS_ACCESS_KEY_ID", "env-key"),
+                ("LAB_KEY", "k"),
+                ("LAB_SECRET", "s"),
+            ],
+            &[],
+        );
+        with_machine(&machine, |env| {
+            let config = CloudConfig {
+                sources: vec![minio("lab", "http://127.0.0.1:9000")],
                 ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let found = discover(&replacing, &env);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].label, "Work AWS");
-        assert_eq!(found[0].tier, Tier::Config);
+            };
+            let found = discover(&config, env);
+            let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(ids, ["lab", DEFAULT_S3]);
+            assert_eq!(found[0].bucket_url("data"), "s3://lab@data");
+            assert_eq!(found[1].label, "Amazon S3");
+
+            let replacing = CloudConfig {
+                sources: vec![CloudSourceConfig {
+                    name: DEFAULT_S3.to_string(),
+                    label: Some("Work AWS".to_string()),
+                    kind: Some("s3".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let found = discover(&replacing, env);
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].label, "Work AWS");
+            assert_eq!(found[0].tier, Tier::Config);
+        });
     }
 
     #[test]
     fn the_fingerprint_changes_with_the_endpoint() {
-        let a = configured_source(&minio("lab", "http://127.0.0.1:9000"), &vars(&[]));
-        let b = configured_source(&minio("lab", "http://127.0.0.1:9001"), &vars(&[]));
-        assert_ne!(a.fingerprint(), b.fingerprint());
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let a = configured_source(&minio("lab", "http://127.0.0.1:9000"), env);
+            let b = configured_source(&minio("lab", "http://127.0.0.1:9001"), env);
+            assert_ne!(a.fingerprint(), b.fingerprint());
+        });
+    }
+
+    const AWS_CONFIG: &str = "
+[default]
+region = us-east-1
+
+[profile work]
+region = eu-west-1
+
+[profile lab]
+endpoint_url = http://localhost:9000
+
+[profile regional-only]
+region = ap-south-1
+";
+
+    const AWS_CREDENTIALS: &str = "
+[default]
+aws_access_key_id = AKIADEFAULT
+aws_secret_access_key = default-secret
+
+[work]
+aws_access_key_id = AKIAWORK
+aws_secret_access_key = work-secret
+
+[lab]
+aws_access_key_id = minioadmin
+aws_secret_access_key = minioadmin
+";
+
+    fn aws_machine(vars: &[(&str, &str)]) -> Machine {
+        Machine::new(
+            vars,
+            &[
+                ("/home/u/.aws/config", AWS_CONFIG),
+                ("/home/u/.aws/credentials", AWS_CREDENTIALS),
+            ],
+        )
+    }
+
+    /// The bug #174 fixes: with `AWS_PROFILE=work`, the keys that sign are work's, not
+    /// the first ones in the credentials file.
+    #[test]
+    fn the_default_source_signs_with_the_active_profile() {
+        with_machine(&aws_machine(&[("AWS_PROFILE", "work")]), |env| {
+            let config = CloudConfig::from_env(env.var);
+            let resolved = resolve_with("s3://bucket/key.parquet", &config, env).unwrap();
+            assert_eq!(resolved.source_id, DEFAULT_S3);
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("AKIAWORK"));
+            assert_eq!(
+                resolved.s3.secret_access_key.as_deref(),
+                Some("work-secret")
+            );
+            assert_eq!(resolved.s3.region.as_deref(), Some("eu-west-1"));
+            assert!(!resolved.s3.from_env);
+        });
+        with_machine(&aws_machine(&[]), |env| {
+            let config = CloudConfig::from_env(env.var);
+            let resolved = resolve_with("s3://bucket/key.parquet", &config, env).unwrap();
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("AKIADEFAULT"));
+        });
+    }
+
+    #[test]
+    fn keys_in_the_environment_still_beat_a_profile() {
+        let machine = aws_machine(&[
+            ("AWS_PROFILE", "work"),
+            ("AWS_ACCESS_KEY_ID", "AKIAENV"),
+            ("AWS_SECRET_ACCESS_KEY", "env-secret"),
+        ]);
+        with_machine(&machine, |env| {
+            let config = CloudConfig::from_env(env.var);
+            let resolved = resolve_with("s3://bucket/key", &config, env).unwrap();
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("AKIAENV"));
+            let ids: Vec<String> = discover(&config, env).into_iter().map(|s| s.id).collect();
+            assert!(ids.contains(&"aws-work".to_string()), "{ids:?}");
+        });
+    }
+
+    #[test]
+    fn every_other_profile_that_can_log_in_is_a_source() {
+        with_machine(&aws_machine(&[("AWS_PROFILE", "work")]), |env| {
+            let config = CloudConfig::from_env(env.var);
+            let found = discover(&config, env);
+            let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
+            // The active profile is the default source; a profile with only a region
+            // cannot log in and is not listed.
+            assert_eq!(ids, [DEFAULT_S3, "aws-default", "aws-lab"]);
+            let lab = found.iter().find(|s| s.id == "aws-lab").unwrap();
+            assert!(
+                lab.named_in_urls(),
+                "a profile with an endpoint is S3-compatible"
+            );
+            assert_eq!(lab.origin, "aws profile");
+
+            let resolved = resolve_with("s3://aws-lab@data/x.parquet", &config, env).unwrap();
+            assert_eq!(
+                resolved.s3.endpoint.as_deref(),
+                Some("http://localhost:9000")
+            );
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("minioadmin"));
+        });
+    }
+
+    #[test]
+    fn a_configured_source_can_log_in_through_a_profile() {
+        let config = CloudConfig {
+            sources: vec![CloudSourceConfig {
+                name: "minio".to_string(),
+                kind: Some("s3".to_string()),
+                profile: Some("lab".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        with_machine(&aws_machine(&[]), |env| {
+            let resolved = resolve_with("s3://minio@data/x", &config, env).unwrap();
+            assert_eq!(
+                resolved.s3.endpoint.as_deref(),
+                Some("http://localhost:9000")
+            );
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("minioadmin"));
+        });
+        let missing = CloudConfig {
+            sources: vec![CloudSourceConfig {
+                name: "minio".to_string(),
+                kind: Some("s3".to_string()),
+                endpoint_url: Some("http://x".to_string()),
+                profile: Some("nope".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        with_machine(&aws_machine(&[]), |env| {
+            let err = resolve_with("s3://minio@data/x", &missing, env).unwrap_err();
+            assert!(
+                err.contains("profile nope is not in the AWS config"),
+                "{err}"
+            );
+        });
+    }
+
+    #[test]
+    fn profile_ids_are_valid_source_ids() {
+        assert_eq!(profile_source_id("Prod_Admin.RO"), "aws-prod-admin-ro");
+        assert!(crate::config::is_valid_source_id(&profile_source_id(
+            "a very long profile name that goes on and on"
+        )));
     }
 }

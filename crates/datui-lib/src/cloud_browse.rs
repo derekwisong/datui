@@ -106,6 +106,8 @@ pub struct Environment<'a> {
     pub home: Option<PathBuf>,
     /// Tools keep their files in different places on Windows, so lookups need to know.
     pub windows: bool,
+    /// Runs a credential command: `aws`, a profile's `credential_process`.
+    pub run: &'a crate::cloud_command::Runner<'a>,
 }
 
 impl Environment<'_> {
@@ -117,6 +119,9 @@ impl Environment<'_> {
             read: &|path| std::fs::read_to_string(path).ok(),
             home: dirs::home_dir(),
             windows: cfg!(windows),
+            run: &|program, args| {
+                crate::cloud_command::run(program, args, crate::cloud_command::CREDENTIAL_TIMEOUT)
+            },
         }
     }
 }
@@ -559,7 +564,14 @@ pub async fn list_objects(
 ) -> Result<Vec<crate::discover::Entry>, String> {
     use object_store::path::Path as OsPath;
 
-    let resolved = crate::cloud_sources::resolve(url, config)?;
+    // Resolving can run a credential command, which blocks; keep it off the runtime's
+    // own threads.
+    let resolved = {
+        let (url, config) = (url.to_string(), config.clone());
+        tokio::task::spawn_blocking(move || crate::cloud_sources::resolve(&url, &config))
+            .await
+            .map_err(|e| format!("{e}"))??
+    };
     let (kind, bucket, prefix) =
         split_bucket_url(&resolved.url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
     let store = store_for_bucket(kind, &bucket, &resolved.s3)?;
@@ -640,6 +652,13 @@ pub async fn list_buckets(source: &Source) -> Result<Vec<String>, String> {
     if let Some(problem) = &source.problem {
         return Err(problem.clone());
     }
+    let source = {
+        let source = source.clone();
+        tokio::task::spawn_blocking(move || source.with_credentials(&Environment::current()))
+            .await
+            .map_err(|e| format!("{e}"))??
+    };
+    let source = &source;
     match source.kind {
         ProviderKind::Gcs => list_gcs_buckets(source).await,
         ProviderKind::S3 => list_s3_buckets(&source.s3).await,
@@ -818,6 +837,11 @@ mod tests {
                 read: &|_| None,
                 home: $home.clone(),
                 windows: false,
+                run: &|_, _| {
+                    Err(crate::cloud_command::CommandError::Missing(
+                        "test".to_string(),
+                    ))
+                },
             }
         };
         ($vars:expr_2021, $files:expr_2021, $home:expr_2021, $contents:expr_2021) => {
@@ -827,6 +851,11 @@ mod tests {
                 read: &|_| Some($contents.to_string()),
                 home: $home.clone(),
                 windows: false,
+                run: &|_, _| {
+                    Err(crate::cloud_command::CommandError::Missing(
+                        "test".to_string(),
+                    ))
+                },
             }
         };
     }
@@ -1296,6 +1325,11 @@ mod aws_role_tests {
             read: &|_| None,
             home: Some(PathBuf::from("/home/u")),
             windows: false,
+            run: &|_, _| {
+                Err(crate::cloud_command::CommandError::Missing(
+                    "test".to_string(),
+                ))
+            },
         };
         detect(&CloudConfig::default(), &env)
     }
@@ -1320,6 +1354,11 @@ mod aws_role_tests {
                 read: &|_| None,
                 home: Some(PathBuf::from(r"C:\Users\u")),
                 windows,
+                run: &|_, _| {
+                    Err(crate::cloud_command::CommandError::Missing(
+                        "test".to_string(),
+                    ))
+                },
             };
             detect(&CloudConfig::default(), &env)
                 .iter()

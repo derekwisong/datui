@@ -25,7 +25,7 @@ use crate::{App, AppEvent, InputMode, OpenOptions};
 /// a recent that no longer exists and a dead root derived from it. Fifty runs fills the
 /// list. `DATUI_CACHE_DIR` is process-wide, so this is done once and as early as
 /// possible.
-fn isolate_cache() {
+pub(crate) fn isolate_cache() {
     static ISOLATE: std::sync::Once = std::sync::Once::new();
     ISOLATE.call_once(|| {
         let dir = std::env::temp_dir().join(format!("datui-flow-cache-{}", std::process::id()));

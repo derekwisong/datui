@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use datui::event_pump::EventPump;
 use datui::{App, AppEvent, InputMode, OpenOptions};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
@@ -1285,33 +1286,46 @@ fn test_escape_from_home_returns_to_the_dataset_that_was_open() {
 }
 
 /// Going home clears the *load's* busy state, and leaves `task_generation` alone —
-/// that counter also gates analysis and export results, which keep running.
+/// that counter also gates analysis and export results, which keep running. The keys
+/// typed at the frozen screen were meant for the load and go with it.
 #[test]
 fn test_entering_home_clears_load_state_but_not_task_generation() {
     common::ensure_sample_data();
     let path = PathBuf::from("tests/sample-data/large_dataset.parquet");
 
     let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx.clone(), common::test_runtime());
-    tx.send(AppEvent::Open(vec![path], OpenOptions::default()))
+    let app = App::new(tx.clone(), common::test_runtime());
+    let mut pump = EventPump::new(app, tx, rx);
+    pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
         .unwrap();
-    drain_like_main_loop(&mut app, &tx, &rx);
-    assert!(app.is_busy(), "a load in flight should be busy");
+    pump.drain().unwrap();
+    assert!(pump.app.is_busy(), "a load in flight should be busy");
+    for code in [KeyCode::Char('j'), KeyCode::Enter] {
+        pump.terminal_key(KeyEvent::new(code, KeyModifiers::NONE))
+            .unwrap();
+    }
+    assert_eq!(
+        pump.held_keys().count(),
+        2,
+        "keys typed at a load are held, not dropped"
+    );
 
-    let generation_before = app.task_generation();
-    app.enter_home();
+    let generation_before = pump.app.task_generation();
+    pump.terminal_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+        .unwrap();
 
-    assert_eq!(app.input_mode, InputMode::Home);
+    assert_eq!(pump.app.input_mode, InputMode::Home);
     assert!(
-        !app.is_busy(),
+        !pump.app.is_busy(),
         "abandoning should clear the load's busy flag"
     );
-    assert!(
-        app.should_drain_keys(),
+    assert_eq!(
+        pump.held_keys().count(),
+        0,
         "keys typed at the frozen screen were meant for the load"
     );
     assert_eq!(
-        app.task_generation(),
+        pump.app.task_generation(),
         generation_before,
         "going home must not cancel an in-flight export or analysis"
     );

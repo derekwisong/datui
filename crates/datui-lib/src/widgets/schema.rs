@@ -19,8 +19,8 @@ impl<'a> Widget for &'a SchemaView<'a> {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded);
 
-        let rows: Vec<Row> = if let Ok(schema) = self.lf.clone().collect_schema() {
-            schema
+        let rows: Vec<Row> = match self.lf.clone().collect_schema() {
+            Ok(schema) => schema
                 .iter()
                 .map(|(name, dtype)| {
                     let cells: Vec<Cell> = vec![
@@ -29,9 +29,10 @@ impl<'a> Widget for &'a SchemaView<'a> {
                     ];
                     Row::new(cells)
                 })
-                .collect()
-        } else {
-            vec![]
+                .collect(),
+            _ => {
+                vec![]
+            }
         };
         // iterate the schema and create two colum table,
         // one column for the name and one for the type

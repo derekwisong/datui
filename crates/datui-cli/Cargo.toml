@@ -1,7 +1,7 @@
 [package]
 name = "datui-cli"
 version = "0.4.0-dev"
-edition = "2021"
+edition = "2024"
 description = "Shared CLI definitions for datui (Args, CompressionFormat)"
 authors = ["Derek Wisong"]
 repository = "https://github.com/derekwisong/datui"

@@ -85,12 +85,11 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
                 ("Tab", "Sidebar"),
                 ("Enter", "Select"),
             ];
-            if app.sampling_threshold.is_some() {
-                if let Some(results) = app.analysis_modal.current_results() {
-                    if results.sample_size.is_some() {
-                        pairs.push(("r", "Resample"));
-                    }
-                }
+            if app.sampling_threshold.is_some()
+                && let Some(results) = app.analysis_modal.current_results()
+                && results.sample_size.is_some()
+            {
+                pairs.push(("r", "Resample"));
             }
             ControlBarSpec::Custom(pairs)
         }
@@ -191,7 +190,7 @@ pub fn home_control_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::{home_control_keys, Browse};
+    use super::{Browse, home_control_keys};
 
     /// Every combination of home-screen state the control bar can be drawn in.
     fn all_states() -> Vec<(bool, Browse, bool, bool)> {

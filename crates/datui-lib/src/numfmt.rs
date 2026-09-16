@@ -797,16 +797,20 @@ mod tests {
     fn is_noop_detects_the_free_path() {
         assert!(NumberFormat::PLAIN.is_noop());
         assert!(!thousands().is_noop());
-        assert!(!NumberFormat {
-            float_precision: Some(2),
-            ..NumberFormat::PLAIN
-        }
-        .is_noop());
-        assert!(!NumberFormat {
-            decimal_sep: ',',
-            ..NumberFormat::PLAIN
-        }
-        .is_noop());
+        assert!(
+            !NumberFormat {
+                float_precision: Some(2),
+                ..NumberFormat::PLAIN
+            }
+            .is_noop()
+        );
+        assert!(
+            !NumberFormat {
+                decimal_sep: ',',
+                ..NumberFormat::PLAIN
+            }
+            .is_noop()
+        );
     }
 
     #[test]
@@ -855,23 +859,33 @@ mod tests {
             align_numeric_right: true,
         };
         // Numeric column: formatted.
-        assert!(!settings
-            .formatter_for("chromStart", &DataType::Int64)
-            .is_passthrough());
+        assert!(
+            !settings
+                .formatter_for("chromStart", &DataType::Int64)
+                .is_passthrough()
+        );
         // Non-numeric: never formatted.
-        assert!(settings
-            .formatter_for("chrom", &DataType::String)
-            .is_passthrough());
-        assert!(settings
-            .formatter_for("when", &DataType::Date)
-            .is_passthrough());
+        assert!(
+            settings
+                .formatter_for("chrom", &DataType::String)
+                .is_passthrough()
+        );
+        assert!(
+            settings
+                .formatter_for("when", &DataType::Date)
+                .is_passthrough()
+        );
         // Excluded by glob.
-        assert!(settings
-            .formatter_for("sample_id", &DataType::Int64)
-            .is_passthrough());
-        assert!(settings
-            .formatter_for("year", &DataType::Int32)
-            .is_passthrough());
+        assert!(
+            settings
+                .formatter_for("sample_id", &DataType::Int64)
+                .is_passthrough()
+        );
+        assert!(
+            settings
+                .formatter_for("year", &DataType::Int32)
+                .is_passthrough()
+        );
     }
 
     #[test]
@@ -881,17 +895,21 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        assert!(settings
-            .formatter_for("chromStart", &DataType::Int64)
-            .is_passthrough());
+        assert!(
+            settings
+                .formatter_for("chromStart", &DataType::Int64)
+                .is_passthrough()
+        );
     }
 
     #[test]
     fn plain_format_is_always_passthrough() {
         let settings = NumberFormatSettings::default();
-        assert!(settings
-            .formatter_for("chromStart", &DataType::Int64)
-            .is_passthrough());
+        assert!(
+            settings
+                .formatter_for("chromStart", &DataType::Int64)
+                .is_passthrough()
+        );
     }
 
     #[test]
@@ -903,12 +921,16 @@ mod tests {
             },
             ..Default::default()
         };
-        assert!(!settings
-            .formatter_for("count", &DataType::Int64)
-            .is_passthrough());
-        assert!(settings
-            .formatter_for("ratio", &DataType::Float64)
-            .is_passthrough());
+        assert!(
+            !settings
+                .formatter_for("count", &DataType::Int64)
+                .is_passthrough()
+        );
+        assert!(
+            settings
+                .formatter_for("ratio", &DataType::Float64)
+                .is_passthrough()
+        );
     }
 
     #[test]

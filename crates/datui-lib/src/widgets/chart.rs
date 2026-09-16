@@ -12,8 +12,8 @@ use ratatui::{
 };
 
 use crate::chart_data::{
-    format_axis_label, format_x_axis_label, BoxPlotData, HeatmapData, HistogramData, KdeData,
-    XAxisTemporalKind,
+    BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind, format_axis_label,
+    format_x_axis_label,
 };
 use crate::chart_modal::{ChartFocus, ChartKind, ChartModal, ChartType};
 use crate::config::Theme;

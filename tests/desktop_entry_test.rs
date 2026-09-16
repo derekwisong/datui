@@ -24,10 +24,8 @@ fn entry() -> HashMap<String, String> {
             in_group = line == "[Desktop Entry]";
             continue;
         }
-        if in_group {
-            if let Some((key, value)) = line.split_once('=') {
-                map.insert(key.trim().to_string(), value.trim().to_string());
-            }
+        if in_group && let Some((key, value)) = line.split_once('=') {
+            map.insert(key.trim().to_string(), value.trim().to_string());
         }
     }
     map

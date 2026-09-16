@@ -369,216 +369,206 @@ pub fn render(
         }
     }
 
-    if app.template_modal.delete_confirm {
-        if let Some(template) = app.template_modal.selected_template() {
-            // Fixed size so the modal does not shrink with window height (message 3 lines + buttons 3 lines + title/border)
-            const DELETE_CONFIRM_WIDTH: u16 = 52;
-            const DELETE_CONFIRM_HEIGHT: u16 = 10;
-            let confirm_area =
-                centered_rect_fixed(sort_area, DELETE_CONFIRM_WIDTH, DELETE_CONFIRM_HEIGHT);
-            Clear.render(confirm_area, buf);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Delete Template")
-                .title_style(ratatui::style::Style::reset());
-            let inner_area = block.inner(confirm_area);
-            block.render(confirm_area, buf);
+    if app.template_modal.delete_confirm
+        && let Some(template) = app.template_modal.selected_template()
+    {
+        // Fixed size so the modal does not shrink with window height (message 3 lines + buttons 3 lines + title/border)
+        const DELETE_CONFIRM_WIDTH: u16 = 52;
+        const DELETE_CONFIRM_HEIGHT: u16 = 10;
+        let confirm_area =
+            centered_rect_fixed(sort_area, DELETE_CONFIRM_WIDTH, DELETE_CONFIRM_HEIGHT);
+        Clear.render(confirm_area, buf);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title("Delete Template")
+            .title_style(ratatui::style::Style::reset());
+        let inner_area = block.inner(confirm_area);
+        block.render(confirm_area, buf);
 
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(3)])
-                .split(inner_area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .split(inner_area);
 
-            let message = format!(
-                "Are you sure you want to delete the template \"{}\"?\n\nThis action cannot be undone.",
-                template.name
-            );
-            Paragraph::new(message)
-                .wrap(ratatui::widgets::Wrap { trim: false })
-                .render(chunks[0], buf);
+        let message = format!(
+            "Are you sure you want to delete the template \"{}\"?\n\nThis action cannot be undone.",
+            template.name
+        );
+        Paragraph::new(message)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .render(chunks[0], buf);
 
-            let btn_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[1]);
+        let btn_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[1]);
 
-            let mut delete_line = Line::default();
-            delete_line.spans.push(Span::styled(
-                "D",
-                Style::default()
-                    .fg(ctx.keybind_hints)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            delete_line.spans.push(Span::raw("elete"));
+        let mut delete_line = Line::default();
+        delete_line.spans.push(Span::styled(
+            "D",
+            Style::default()
+                .fg(ctx.keybind_hints)
+                .add_modifier(Modifier::BOLD),
+        ));
+        delete_line.spans.push(Span::raw("elete"));
 
-            let delete_style = if app.template_modal.delete_confirm_focus {
-                Style::default().fg(ctx.modal_border_active)
-            } else {
-                Style::default()
-            };
-            Paragraph::new(vec![delete_line])
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(delete_style),
-                )
-                .centered()
-                .render(btn_layout[0], buf);
+        let delete_style = if app.template_modal.delete_confirm_focus {
+            Style::default().fg(ctx.modal_border_active)
+        } else {
+            Style::default()
+        };
+        Paragraph::new(vec![delete_line])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(delete_style),
+            )
+            .centered()
+            .render(btn_layout[0], buf);
 
-            let cancel_style = if !app.template_modal.delete_confirm_focus {
-                Style::default().fg(ctx.modal_border_active)
-            } else {
-                Style::default()
-            };
-            Paragraph::new("Cancel")
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(cancel_style),
-                )
-                .centered()
-                .render(btn_layout[1], buf);
-        }
+        let cancel_style = if !app.template_modal.delete_confirm_focus {
+            Style::default().fg(ctx.modal_border_active)
+        } else {
+            Style::default()
+        };
+        Paragraph::new("Cancel")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(cancel_style),
+            )
+            .centered()
+            .render(btn_layout[1], buf);
     }
 
-    if app.template_modal.show_score_details {
-        if let Some((template, score)) = app
+    if app.template_modal.show_score_details
+        && let Some((template, score)) = app
             .template_modal
             .table_state
             .selected()
             .and_then(|idx| app.template_modal.templates.get(idx))
-        {
-            if let Some(ref state) = app.data_table_state {
-                if let Some(ref path) = app.path {
-                    let details_area = centered_rect(sort_area, 60, 50);
-                    Clear.render(details_area, buf);
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .title(format!("Score Details: {}", template.name))
-                        .title_style(ratatui::style::Style::reset());
-                    let inner_area = block.inner(details_area);
-                    block.render(details_area, buf);
+        && let Some(ref state) = app.data_table_state
+        && let Some(ref path) = app.path
+    {
+        let details_area = centered_rect(sort_area, 60, 50);
+        Clear.render(details_area, buf);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(format!("Score Details: {}", template.name))
+            .title_style(ratatui::style::Style::reset());
+        let inner_area = block.inner(details_area);
+        block.render(details_area, buf);
 
-                    let exact_path_match = template
-                        .match_criteria
-                        .exact_path
-                        .as_ref()
-                        .map(|exact| exact == path)
-                        .unwrap_or(false);
+        let exact_path_match = template
+            .match_criteria
+            .exact_path
+            .as_ref()
+            .map(|exact| exact == path)
+            .unwrap_or(false);
 
-                    let relative_path_match =
-                        if let Some(relative_path) = &template.match_criteria.relative_path {
-                            if let Ok(cwd) = std::env::current_dir() {
-                                if let Ok(rel_path) = path.strip_prefix(&cwd) {
-                                    rel_path.to_string_lossy() == *relative_path
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                    let exact_schema_match =
-                        if let Some(required_cols) = &template.match_criteria.schema_columns {
-                            let file_cols: std::collections::HashSet<&str> =
-                                state.schema.iter_names().map(|s| s.as_str()).collect();
-                            let required_cols_set: std::collections::HashSet<&str> =
-                                required_cols.iter().map(|s| s.as_str()).collect();
-                            required_cols_set.is_subset(&file_cols)
-                                && file_cols.len() == required_cols_set.len()
-                        } else {
-                            false
-                        };
-
-                    let mut details = format!("Total Score: {:.1}\n\n", score);
-
-                    if exact_path_match && exact_schema_match {
-                        details.push_str("Exact Path + Exact Schema: 2000.0\n");
-                    } else if exact_path_match {
-                        details.push_str("Exact Path: 1000.0\n");
-                    } else if relative_path_match && exact_schema_match {
-                        details.push_str("Relative Path + Exact Schema: 1950.0\n");
-                    } else if relative_path_match {
-                        details.push_str("Relative Path: 950.0\n");
-                    } else if exact_schema_match {
-                        details.push_str("Exact Schema: 900.0\n");
+        let relative_path_match =
+            if let Some(relative_path) = &template.match_criteria.relative_path {
+                if let Ok(cwd) = std::env::current_dir() {
+                    if let Ok(rel_path) = path.strip_prefix(&cwd) {
+                        rel_path.to_string_lossy() == *relative_path
                     } else {
-                        if let Some(pattern) = &template.match_criteria.path_pattern {
-                            if path
-                                .to_str()
-                                .map(|p| p.contains(pattern.trim_end_matches("/*")))
-                                .unwrap_or(false)
-                            {
-                                details.push_str("Path Pattern Match: 50.0+\n");
-                            }
-                        }
-                        if let Some(pattern) = &template.match_criteria.filename_pattern {
-                            if path
-                                .file_name()
-                                .and_then(|f| f.to_str())
-                                .map(|f| {
-                                    f.contains(pattern.trim_end_matches("*")) || pattern == "*"
-                                })
-                                .unwrap_or(false)
-                            {
-                                details.push_str("Filename Pattern Match: 30.0+\n");
-                            }
-                        }
-                        if let Some(required_cols) = &template.match_criteria.schema_columns {
-                            let file_cols: std::collections::HashSet<&str> =
-                                state.schema.iter_names().map(|s| s.as_str()).collect();
-                            let matching_count = required_cols
-                                .iter()
-                                .filter(|col| file_cols.contains(col.as_str()))
-                                .count();
-                            if matching_count > 0 {
-                                details.push_str(&format!(
-                                    "Partial Schema Match: {:.1} ({} columns)\n",
-                                    matching_count as f64 * 2.0,
-                                    matching_count
-                                ));
-                            }
-                        }
+                        false
                     }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
 
-                    if template.usage_count > 0 {
-                        details.push_str(&format!(
-                            "Usage Count: {:.1}\n",
-                            (template.usage_count.min(10) as f64) * 1.0
-                        ));
-                    }
-                    if let Some(last_used) = template.last_used {
-                        if let Ok(duration) = std::time::SystemTime::now().duration_since(last_used)
-                        {
-                            let days_since = duration.as_secs() / 86400;
-                            if days_since <= 7 {
-                                details.push_str("Recent Usage: 5.0\n");
-                            } else if days_since <= 30 {
-                                details.push_str("Recent Usage: 2.0\n");
-                            }
-                        }
-                    }
-                    if let Ok(duration) =
-                        std::time::SystemTime::now().duration_since(template.created)
-                    {
-                        let months_old = (duration.as_secs() / (30 * 86400)) as f64;
-                        if months_old > 0.0 {
-                            details.push_str(&format!("Age Penalty: -{:.1}\n", months_old * 1.0));
-                        }
-                    }
+        let exact_schema_match = if let Some(required_cols) =
+            &template.match_criteria.schema_columns
+        {
+            let file_cols: std::collections::HashSet<&str> =
+                state.schema.iter_names().map(|s| s.as_str()).collect();
+            let required_cols_set: std::collections::HashSet<&str> =
+                required_cols.iter().map(|s| s.as_str()).collect();
+            required_cols_set.is_subset(&file_cols) && file_cols.len() == required_cols_set.len()
+        } else {
+            false
+        };
 
-                    Paragraph::new(details)
-                        .wrap(ratatui::widgets::Wrap { trim: false })
-                        .render(inner_area, buf);
+        let mut details = format!("Total Score: {:.1}\n\n", score);
+
+        if exact_path_match && exact_schema_match {
+            details.push_str("Exact Path + Exact Schema: 2000.0\n");
+        } else if exact_path_match {
+            details.push_str("Exact Path: 1000.0\n");
+        } else if relative_path_match && exact_schema_match {
+            details.push_str("Relative Path + Exact Schema: 1950.0\n");
+        } else if relative_path_match {
+            details.push_str("Relative Path: 950.0\n");
+        } else if exact_schema_match {
+            details.push_str("Exact Schema: 900.0\n");
+        } else {
+            if let Some(pattern) = &template.match_criteria.path_pattern
+                && path
+                    .to_str()
+                    .map(|p| p.contains(pattern.trim_end_matches("/*")))
+                    .unwrap_or(false)
+            {
+                details.push_str("Path Pattern Match: 50.0+\n");
+            }
+            if let Some(pattern) = &template.match_criteria.filename_pattern
+                && path
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .map(|f| f.contains(pattern.trim_end_matches("*")) || pattern == "*")
+                    .unwrap_or(false)
+            {
+                details.push_str("Filename Pattern Match: 30.0+\n");
+            }
+            if let Some(required_cols) = &template.match_criteria.schema_columns {
+                let file_cols: std::collections::HashSet<&str> =
+                    state.schema.iter_names().map(|s| s.as_str()).collect();
+                let matching_count = required_cols
+                    .iter()
+                    .filter(|col| file_cols.contains(col.as_str()))
+                    .count();
+                if matching_count > 0 {
+                    details.push_str(&format!(
+                        "Partial Schema Match: {:.1} ({} columns)\n",
+                        matching_count as f64 * 2.0,
+                        matching_count
+                    ));
                 }
             }
         }
+
+        if template.usage_count > 0 {
+            details.push_str(&format!(
+                "Usage Count: {:.1}\n",
+                (template.usage_count.min(10) as f64) * 1.0
+            ));
+        }
+        if let Some(last_used) = template.last_used
+            && let Ok(duration) = std::time::SystemTime::now().duration_since(last_used)
+        {
+            let days_since = duration.as_secs() / 86400;
+            if days_since <= 7 {
+                details.push_str("Recent Usage: 5.0\n");
+            } else if days_since <= 30 {
+                details.push_str("Recent Usage: 2.0\n");
+            }
+        }
+        if let Ok(duration) = std::time::SystemTime::now().duration_since(template.created) {
+            let months_old = (duration.as_secs() / (30 * 86400)) as f64;
+            if months_old > 0.0 {
+                details.push_str(&format!("Age Penalty: -{:.1}\n", months_old * 1.0));
+            }
+        }
+
+        Paragraph::new(details)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .render(inner_area, buf);
     }
 }

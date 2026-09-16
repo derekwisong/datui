@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -177,23 +177,24 @@ impl TemplateManager {
             let entry = entry?;
             let path = entry.path();
 
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Ok(content) = fs::read_to_string(&path) {
-                    match serde_json::from_str::<Template>(&content) {
-                        Ok(template) => {
-                            self.templates.push(template);
-                        }
-                        Err(e) => {
-                            let filename = path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("unknown")
-                                .to_string();
-                            self.broken_templates.push(BrokenTemplate {
-                                filename,
-                                error: e.to_string(),
-                            });
-                        }
+            if path.is_file()
+                && path.extension().and_then(|s| s.to_str()) == Some("json")
+                && let Ok(content) = fs::read_to_string(&path)
+            {
+                match serde_json::from_str::<Template>(&content) {
+                    Ok(template) => {
+                        self.templates.push(template);
+                    }
+                    Err(e) => {
+                        let filename = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        self.broken_templates.push(BrokenTemplate {
+                            filename,
+                            error: e.to_string(),
+                        });
                     }
                 }
             }
@@ -282,12 +283,11 @@ impl TemplateManager {
         let mut max_num = 0;
 
         for template in &self.templates {
-            if template.name.starts_with("template") {
-                if let Some(num_str) = template.name.strip_prefix("template") {
-                    if let Ok(num) = num_str.parse::<u32>() {
-                        max_num = max_num.max(num);
-                    }
-                }
+            if template.name.starts_with("template")
+                && let Some(num_str) = template.name.strip_prefix("template")
+                && let Ok(num) = num_str.parse::<u32>()
+            {
+                max_num = max_num.max(num);
             }
         }
 
@@ -453,23 +453,21 @@ fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -
 
     // For non-exact matches, sum components
     // Path pattern match
-    if let Some(pattern) = &template.match_criteria.path_pattern {
-        if matches_pattern(file_path.to_str().unwrap_or(""), pattern) {
-            score += 50.0;
-            score += pattern_specificity_bonus(pattern);
-        }
+    if let Some(pattern) = &template.match_criteria.path_pattern
+        && matches_pattern(file_path.to_str().unwrap_or(""), pattern)
+    {
+        score += 50.0;
+        score += pattern_specificity_bonus(pattern);
     }
 
     // Filename pattern match
-    if let Some(pattern) = &template.match_criteria.filename_pattern {
-        if let Some(filename) = file_path.file_name() {
-            if let Some(filename_str) = filename.to_str() {
-                if matches_pattern(filename_str, pattern) {
-                    score += 30.0;
-                    score += pattern_specificity_bonus(pattern);
-                }
-            }
-        }
+    if let Some(pattern) = &template.match_criteria.filename_pattern
+        && let Some(filename) = file_path.file_name()
+        && let Some(filename_str) = filename.to_str()
+        && matches_pattern(filename_str, pattern)
+    {
+        score += 30.0;
+        score += pattern_specificity_bonus(pattern);
     }
 
     // Partial schema matching (only if not exact match)
@@ -487,14 +485,14 @@ fn calculate_relevance(template: &Template, file_path: &Path, schema: &Schema) -
 
     // Usage statistics
     score += (template.usage_count.min(10) as f64) * 1.0;
-    if let Some(last_used) = template.last_used {
-        if let Ok(duration) = SystemTime::now().duration_since(last_used) {
-            let days_since = duration.as_secs() / 86400;
-            if days_since <= 7 {
-                score += 5.0;
-            } else if days_since <= 30 {
-                score += 2.0;
-            }
+    if let Some(last_used) = template.last_used
+        && let Ok(duration) = SystemTime::now().duration_since(last_used)
+    {
+        let days_since = duration.as_secs() / 86400;
+        if days_since <= 7 {
+            score += 5.0;
+        } else if days_since <= 30 {
+            score += 2.0;
         }
     }
 

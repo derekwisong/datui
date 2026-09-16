@@ -14,10 +14,10 @@ mod common;
 /// Drains all pending events from the channel and processes them (for async operations).
 fn drain_events(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) {
     while let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(5000)) {
-        if let Some(next) = app.event(&ev) {
-            if let Some(next2) = app.event(&next) {
-                app.event(&next2);
-            }
+        if let Some(next) = app.event(&ev)
+            && let Some(next2) = app.event(&next)
+        {
+            app.event(&next2);
         }
     }
 }
@@ -31,19 +31,22 @@ fn pump_open_until_loaded(
 ) {
     let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
     loop {
-        if let Some(ev) = next.take() {
-            if matches!(ev, AppEvent::Crash(_)) {
-                app.event(&ev);
-                return;
-            }
-            next = app.event(&ev);
-        } else {
-            // No chained event; check the channel for background task results.
-            match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
-                Ok(ev) => {
-                    next = Some(ev);
+        match next.take() {
+            Some(ev) => {
+                if matches!(ev, AppEvent::Crash(_)) {
+                    app.event(&ev);
+                    return;
                 }
-                Err(_) => return, // Timeout or disconnected: loading complete or stuck.
+                next = app.event(&ev);
+            }
+            _ => {
+                // No chained event; check the channel for background task results.
+                match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+                    Ok(ev) => {
+                        next = Some(ev);
+                    }
+                    Err(_) => return, // Timeout or disconnected: loading complete or stuck.
+                }
             }
         }
     }
@@ -1846,12 +1849,13 @@ fn test_sidebar_filter_applies_on_top_of_query() {
     app.event(&AppEvent::Reset);
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 100);
-    assert!(app
-        .data_table_state
-        .as_ref()
-        .unwrap()
-        .get_active_query()
-        .is_empty());
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .get_active_query()
+            .is_empty()
+    );
 }
 
 /// Same for a fuzzy search: sort and filter stack on it, and clearing them keeps it.
@@ -1944,12 +1948,13 @@ fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
     ));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 30, "the SQL replaces the filter");
-    assert!(app
-        .data_table_state
-        .as_ref()
-        .unwrap()
-        .get_filters()
-        .is_empty());
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .get_filters()
+            .is_empty()
+    );
 
     app.event(&AppEvent::Filter(vec![]));
     pump_until_idle(&mut app, &rx, &tx);
@@ -2012,8 +2017,8 @@ fn test_skip_tail_rows_survives_a_sidebar_sort() {
 /// sidebar filter compares them.
 #[test]
 fn test_parse_strings_survives_a_sidebar_filter() {
-    use datui::filter_modal::FilterOperator;
     use datui::ParseStringsTarget;
+    use datui::filter_modal::FilterOperator;
     let mut csv = String::from("id,amount\n");
     for i in 0..100 {
         csv.push_str(&format!("{i},\" {} \"\n", i * 3));
@@ -2190,12 +2195,13 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
     app.event(&AppEvent::Search("select id, key".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 20);
-    assert!(app
-        .data_table_state
-        .as_ref()
-        .unwrap()
-        .last_pivot_spec()
-        .is_none());
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .last_pivot_spec()
+            .is_none()
+    );
 
     app.event(&AppEvent::SqlSearch("SELECT * FROM df".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
@@ -2244,12 +2250,13 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
         app.sort_filter_modal.filter.statements.is_empty(),
         "no filter applies inside the group yet"
     );
-    assert!(app
-        .sort_filter_modal
-        .sort
-        .columns
-        .iter()
-        .all(|c| c.sort_order.is_none()));
+    assert!(
+        app.sort_filter_modal
+            .sort
+            .columns
+            .iter()
+            .all(|c| c.sort_order.is_none())
+    );
     assert_eq!(
         app.sort_filter_modal.filter.available_columns,
         app.data_table_state.as_ref().unwrap().headers()

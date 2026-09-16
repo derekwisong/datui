@@ -1,5 +1,5 @@
-use color_eyre::eyre::Report;
 use color_eyre::Result;
+use color_eyre::eyre::Report;
 use polars::polars_compute::rolling::QuantileMethod;
 use polars::prelude::*;
 use std::collections::HashMap;
@@ -300,14 +300,15 @@ pub fn compute_statistics_with_options(
     let total_rows = {
         let count_df =
             collect_lazy(lf.clone().select([len()]), use_streaming).map_err(Report::from)?;
-        if let Some(col) = count_df.get(0) {
-            if let Some(AnyValue::UInt32(n)) = col.first() {
-                *n as usize
-            } else {
-                0
+        match count_df.get(0) {
+            Some(col) => {
+                if let Some(AnyValue::UInt32(n)) = col.first() {
+                    *n as usize
+                } else {
+                    0
+                }
             }
-        } else {
-            0
+            _ => 0,
         }
     };
 
@@ -1080,10 +1081,9 @@ fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
     let unique_count = value_counts.height();
 
     let mode = if unique_count > 0 {
-        if let Some(col) = value_counts.get(0) {
-            col.first().map(|v| v.str_value().to_string())
-        } else {
-            None
+        match value_counts.get(0) {
+            Some(col) => col.first().map(|v| v.str_value().to_string()),
+            _ => None,
         }
     } else {
         None
@@ -1091,12 +1091,12 @@ fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
 
     let mut top_values = Vec::new();
     for i in 0..unique_count.min(10) {
-        if let (Some(value_col), Some(count_col)) = (value_counts.get(0), value_counts.get(1)) {
-            if let (Some(value), Some(count)) = (value_col.get(i), count_col.get(i)) {
-                let value_str = value.str_value();
-                if let Ok(count_u32) = count.try_extract::<u32>() {
-                    top_values.push((value_str.to_string(), count_u32 as usize));
-                }
+        if let (Some(value_col), Some(count_col)) = (value_counts.get(0), value_counts.get(1))
+            && let (Some(value), Some(count)) = (value_col.get(i), count_col.get(i))
+        {
+            let value_str = value.str_value();
+            if let Ok(count_u32) = count.try_extract::<u32>() {
+                top_values.push((value_str.to_string(), count_u32 as usize));
             }
         }
     }
@@ -2481,7 +2481,7 @@ fn compute_mode(values: &[f64]) -> Option<f64> {
     let max_bin = bin_counts
         .iter()
         .enumerate()
-        .max_by_key(|(_, &count)| count)
+        .max_by_key(|&(_, &count)| count)
         .map(|(idx, _)| idx);
 
     max_bin.map(|idx| bin_sums[idx] / bin_counts[idx] as f64)
@@ -3150,8 +3150,8 @@ pub(crate) fn geometric_pmf(x: f64, p: f64) -> f64 {
     }
     // For continuous approximation, use floor(x) as the discrete value
     let k = x.floor().min(100.0); // Cap at reasonable value
-                                  // PMF: p * (1-p)^k
-                                  // Use log form: ln(PMF) = ln(p) + k * ln(1-p)
+    // PMF: p * (1-p)^k
+    // Use log form: ln(PMF) = ln(p) + k * ln(1-p)
     let log_p = p.ln();
     let log_one_minus_p = (1.0 - p).ln();
     if log_p.is_nan()
@@ -3262,11 +3262,7 @@ pub(crate) fn weibull_pdf(x: f64, shape: f64, scale: f64) -> f64 {
     let power = ratio.powf(shape);
     let pdf = (shape / scale) * ratio.powf(shape - 1.0) * (-power).exp();
     // Clamp to avoid overflow/underflow
-    if pdf.is_finite() {
-        pdf
-    } else {
-        0.0
-    }
+    if pdf.is_finite() { pdf } else { 0.0 }
 }
 
 // Calculate theoretical probability in an interval [lower, upper] for a distribution

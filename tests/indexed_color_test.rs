@@ -4,7 +4,9 @@ use ratatui::style::Color;
 #[test]
 fn test_indexed_colors_end_to_end() {
     // Clear NO_COLOR for this test
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 
     // Create config with indexed colors
     let config_toml = r#"
@@ -58,7 +60,9 @@ outlier_marker = "red"
 #[test]
 fn test_indexed_colors_in_default_config() {
     // Clear NO_COLOR for this test
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 
     // An indexed colour set in the config reaches the theme as that index.
     let mut config = AppConfig::default();
@@ -73,7 +77,9 @@ fn test_indexed_colors_in_default_config() {
 #[test]
 fn test_mixed_color_formats() {
     // Clear NO_COLOR for this test
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 
     let parser = ColorParser::new();
 

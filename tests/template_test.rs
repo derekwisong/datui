@@ -65,10 +65,12 @@ fn test_template_creation() -> Result<()> {
     assert_eq!(template.name, "test_template");
     assert_eq!(template.description, Some("Test description".to_string()));
     assert_eq!(template.usage_count, 0);
-    assert!(template
-        .created
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .is_ok());
+    assert!(
+        template
+            .created
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .is_ok()
+    );
 
     manager.load_templates()?;
     assert!(manager.template_exists("test_template"));

@@ -34,11 +34,7 @@ pub fn render(
     };
     let input_strip_height = if input_strip_visible {
         if app.input_type == Some(crate::InputType::Search) {
-            if has_error {
-                9
-            } else {
-                5
-            }
+            if has_error { 9 } else { 5 }
         } else if has_error {
             6
         } else {
@@ -68,48 +64,48 @@ pub fn render(
     match &mut app.data_table_state {
         Some(state) => {
             let mut table_area = data_area;
-            if state.is_drilled_down() {
-                if let Some(ref key_values) = state.drilled_down_group_key {
-                    let breadcrumb_layout = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(3), Constraint::Fill(1)])
-                        .split(data_area);
+            if state.is_drilled_down()
+                && let Some(ref key_values) = state.drilled_down_group_key
+            {
+                let breadcrumb_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(3), Constraint::Fill(1)])
+                    .split(data_area);
 
-                    let empty_vec = Vec::new();
-                    let key_columns = state
-                        .drilled_down_group_key_columns
-                        .as_ref()
-                        .unwrap_or(&empty_vec);
-                    let breadcrumb_parts: Vec<String> = key_columns
-                        .iter()
-                        .zip(key_values.iter())
-                        .map(|(col, val)| format!("{}={}", col, val))
-                        .collect();
-                    let breadcrumb_text = format!(
-                        "← Group: {} (Press Esc to go back)",
-                        breadcrumb_parts.join(" | ")
-                    );
+                let empty_vec = Vec::new();
+                let key_columns = state
+                    .drilled_down_group_key_columns
+                    .as_ref()
+                    .unwrap_or(&empty_vec);
+                let breadcrumb_parts: Vec<String> = key_columns
+                    .iter()
+                    .zip(key_values.iter())
+                    .map(|(col, val)| format!("{}={}", col, val))
+                    .collect();
+                let breadcrumb_text = format!(
+                    "← Group: {} (Press Esc to go back)",
+                    breadcrumb_parts.join(" | ")
+                );
 
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::default().fg(ctx.keybind_hints))
-                        .title("Breadcrumb")
-                        .title_style(ratatui::style::Style::reset())
-                        .render(breadcrumb_layout[0], buf);
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(ctx.keybind_hints))
+                    .title("Breadcrumb")
+                    .title_style(ratatui::style::Style::reset())
+                    .render(breadcrumb_layout[0], buf);
 
-                    let inner = Block::default().inner(breadcrumb_layout[0]);
-                    Paragraph::new(breadcrumb_text)
-                        .style(
-                            Style::default()
-                                .fg(ctx.keybind_hints)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                        .wrap(ratatui::widgets::Wrap { trim: true })
-                        .render(inner, buf);
+                let inner = Block::default().inner(breadcrumb_layout[0]);
+                Paragraph::new(breadcrumb_text)
+                    .style(
+                        Style::default()
+                            .fg(ctx.keybind_hints)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .render(inner, buf);
 
-                    table_area = breadcrumb_layout[1];
-                }
+                table_area = breadcrumb_layout[1];
             }
 
             Clear.render(table_area, buf);

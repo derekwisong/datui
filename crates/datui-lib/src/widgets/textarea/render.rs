@@ -80,10 +80,11 @@ impl TextArea {
     /// highlights over the base style.
     fn style_at(&self, row: usize, col: usize) -> Style {
         let mut style = self.style;
-        if let Some((start, end)) = self.selection() {
-            if (row, col) >= start && (row, col) < end {
-                style = style.patch(self.selection_style);
-            }
+        if let Some((start, end)) = self.selection()
+            && (row, col) >= start
+            && (row, col) < end
+        {
+            style = style.patch(self.selection_style);
         }
         if self.cursor_visible && self.cursor == (row, col) {
             style = style.patch(self.cursor_style);

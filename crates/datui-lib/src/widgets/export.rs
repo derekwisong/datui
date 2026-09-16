@@ -1,7 +1,7 @@
 //! Export modal rendering.
 
-use crate::export_modal::{ExportFocus, ExportFormat, ExportModal};
 use crate::CompressionFormat;
+use crate::export_modal::{ExportFocus, ExportFormat, ExportModal};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};

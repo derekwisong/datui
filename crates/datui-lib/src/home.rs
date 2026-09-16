@@ -832,10 +832,10 @@ fn apply_known_facts(
         // What it was last seen to be, rather than what its name suggests. Guessing
         // here is how the same dataset ends up reading `hive` in one section and
         // something else in another.
-        if row.kind == EntryKind::Unknown {
-            if let Some(kind) = facts.kind {
-                row.kind = kind;
-            }
+        if row.kind == EntryKind::Unknown
+            && let Some(kind) = facts.kind
+        {
+            row.kind = kind;
         }
     }
 }
@@ -1127,15 +1127,14 @@ impl HomeState {
 
         // Keep the cursor on the same dataset across a refresh; landing back at the
         // top every time a background result arrives makes the screen unusable.
-        if let Some(path) = previous {
-            if let Some(idx) = self
+        if let Some(path) = previous
+            && let Some(idx) = self
                 .visible()
                 .iter()
                 .position(|r| matches!(r, Row::Entry { entry, .. } if entry.path == path))
-            {
-                self.selected = idx;
-                return;
-            }
+        {
+            self.selected = idx;
+            return;
         }
         self.select_first_entry();
     }
@@ -1411,14 +1410,13 @@ impl HomeState {
         // Descended into a remote directory — a bucket, a prefix, a share. It is the
         // only thing on screen and its rows can come from nowhere but a probe, so it
         // is not covered by the section scan above, which only looks at roots.
-        if let Some(dir) = &self.browsing {
-            if check(dir)
-                && !self.probed.contains_key(dir)
-                && !self.unreachable.contains(dir)
-                && !out.contains(dir)
-            {
-                out.push(dir.clone());
-            }
+        if let Some(dir) = &self.browsing
+            && check(dir)
+            && !self.probed.contains_key(dir)
+            && !self.unreachable.contains(dir)
+            && !out.contains(dir)
+        {
+            out.push(dir.clone());
         }
         out
     }
@@ -1593,26 +1591,24 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         columns: Vec::new(),
         cost: Default::default(),
     };
-    if !remote {
-        if let Ok(meta) = std::fs::metadata(path) {
-            if meta.is_file() {
-                entry.size = Some(meta.len());
-            }
-            entry.modified = meta.modified().ok();
+    if !remote && let Ok(meta) = std::fs::metadata(path) {
+        if meta.is_file() {
+            entry.size = Some(meta.len());
         }
+        entry.modified = meta.modified().ok();
     }
     entry
 }
 
 /// Abbreviate a path with `~` for display.
 pub fn display_path(path: &Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(rest) = path.strip_prefix(&home) {
-            if rest.as_os_str().is_empty() {
-                return "~".to_string();
-            }
-            return format!("~/{}", rest.display());
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        if rest.as_os_str().is_empty() {
+            return "~".to_string();
         }
+        return format!("~/{}", rest.display());
     }
     path.display().to_string()
 }

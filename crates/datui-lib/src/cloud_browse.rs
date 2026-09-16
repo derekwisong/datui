@@ -230,12 +230,14 @@ fn adc_quota_project(env: &Environment<'_>) -> Option<String> {
 }
 
 /// S3, or anything that speaks it, when credentials are present.
+///
+/// `config` is the effective one, with the environment and the command line already
+/// folded in (`OpenOptions::effective_cloud`). The endpoint is taken from it alone, so
+/// the section title names the host the listing and the open actually reach; the
+/// environment is consulted only for the credential evidence that never lives in a
+/// config file.
 fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
-    let endpoint = config
-        .s3_endpoint_url
-        .clone()
-        .or_else(|| (env.var)("AWS_ENDPOINT_URL"))
-        .or_else(|| (env.var)("AWS_ENDPOINT"));
+    let endpoint = config.s3_endpoint_url.clone();
 
     let configured_keys = config.s3_access_key_id.is_some();
     let env_keys = (env.var)("AWS_ACCESS_KEY_ID").is_some();
@@ -444,13 +446,21 @@ fn agent() -> ureq::Agent {
 /// quietly dropped the configured endpoint and keys and authenticated from the
 /// environment instead. Against MinIO that fails every time, and against AWS it would
 /// silently use whichever account the environment happened to name.
-fn s3_builder(bucket: &str, config: &CloudConfig) -> object_store::aws::AmazonS3Builder {
+///
+/// `config` is the effective one, with the CLI and environment overrides already laid
+/// over the config file (`OpenOptions::effective_cloud`); nothing here reads them again.
+/// The builder is addressed by bucket name, so only `s3://bucket/key` URLs are served;
+/// a virtual-hosted URL would need `with_url`, which nothing in datui produces.
+pub fn s3_builder(bucket: &str, config: &CloudConfig) -> object_store::aws::AmazonS3Builder {
     let mut builder = object_store::aws::AmazonS3Builder::from_env().with_bucket_name(bucket);
     if let Some(endpoint) = &config.s3_endpoint_url {
-        builder = builder.with_endpoint(endpoint.clone());
         // A custom endpoint is almost always path-style: a MinIO container on localhost
-        // has no wildcard DNS to give each bucket a subdomain of its own.
-        builder = builder.with_virtual_hosted_style_request(false);
+        // has no wildcard DNS to give each bucket a subdomain of its own. And
+        // `object_store` refuses plain `http` unless told otherwise, which is exactly
+        // what such a container speaks; `https` endpoints are left alone.
+        builder = builder
+            .with_endpoint(endpoint.clone())
+            .with_virtual_hosted_style_request(false);
         if endpoint.starts_with("http://") {
             builder = builder.with_allow_http(true);
         }
@@ -458,10 +468,14 @@ fn s3_builder(bucket: &str, config: &CloudConfig) -> object_store::aws::AmazonS3
     if let Some(region) = &config.s3_region {
         builder = builder.with_region(region.clone());
     }
-    if let (Some(key), Some(secret)) = (&config.s3_access_key_id, &config.s3_secret_access_key) {
-        builder = builder
-            .with_access_key_id(key.clone())
-            .with_secret_access_key(secret.clone());
+    // Each on its own, as the Polars scan applies them: the generated config suggests
+    // the key in the file and the secret from AWS_SECRET_ACCESS_KEY, and requiring the
+    // pair here left every store but Polars' own authenticating from the environment.
+    if let Some(key) = &config.s3_access_key_id {
+        builder = builder.with_access_key_id(key.clone());
+    }
+    if let Some(secret) = &config.s3_secret_access_key {
+        builder = builder.with_secret_access_key(secret.clone());
     }
     builder
 }
@@ -691,16 +705,12 @@ async fn list_s3_buckets(config: &CloudConfig) -> Result<Vec<String>, String> {
         .await
         .map_err(|e| format!("could not obtain AWS credentials: {e}"))?;
 
-    let region = config.s3_region.clone().unwrap_or_else(|| {
-        std::env::var("AWS_REGION")
-            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-            .unwrap_or_else(|_| "us-east-1".to_string())
-    });
-    let endpoint = config
-        .s3_endpoint_url
+    // The effective config already carries AWS_REGION / AWS_DEFAULT_REGION.
+    let region = config
+        .s3_region
         .clone()
-        .unwrap_or_else(|| "https://s3.amazonaws.com".to_string());
-    let url = format!("{}/", endpoint.trim_end_matches('/'));
+        .unwrap_or_else(|| "us-east-1".to_string());
+    let url = s3_list_buckets_url(config);
 
     // Signed as an `http::Request`, which is what the authorizer understands, and then
     // replayed onto the agent datui already uses. The alternative is a second HTTP
@@ -728,6 +738,17 @@ async fn list_s3_buckets(config: &CloudConfig) -> Result<Vec<String>, String> {
     let mut buckets = parse_s3_buckets(&body)?;
     buckets.sort();
     Ok(buckets)
+}
+
+/// Where `ListBuckets` is sent: the root of the effective endpoint, AWS when there is
+/// none. The same endpoint `s3_builder` opens objects against, so the section title,
+/// the listing and the open all name one host.
+fn s3_list_buckets_url(config: &CloudConfig) -> String {
+    let endpoint = config
+        .s3_endpoint_url
+        .as_deref()
+        .unwrap_or("https://s3.amazonaws.com");
+    format!("{}/", endpoint.trim_end_matches('/'))
 }
 
 /// A paginating API that never stops handing back a token is a loop. Twenty pages of a
@@ -881,6 +902,14 @@ mod tests {
         assert_eq!(found[0].endpoint.as_deref(), Some("http://localhost:9000"));
     }
 
+    /// The config as `run()` hands it to discovery: the file's settings with the
+    /// environment folded in.
+    fn effective(config: &CloudConfig, env: &Environment<'_>) -> CloudConfig {
+        let mut merged = config.clone();
+        merged.merge(CloudConfig::from_env(env.var));
+        merged
+    }
+
     #[test]
     fn an_endpoint_from_the_environment_counts_too() {
         let (vars, files, home) = env_of(
@@ -892,8 +921,84 @@ mod tests {
             Some("/home/u"),
         );
         let env = environment!(vars, files, home);
-        let found = detect(&CloudConfig::default(), &env);
+        let config = effective(&CloudConfig::default(), &env);
+        let found = detect(&config, &env);
         assert_eq!(found[0].label, "S3-compatible (minio.internal:9000)");
+        // The bug this guards against: the title named the environment's host while
+        // the listing, reading the config alone, went to AWS.
+        assert_eq!(s3_list_buckets_url(&config), "https://minio.internal:9000/");
+    }
+
+    #[test]
+    fn the_service_specific_endpoint_variable_outranks_the_general_one() {
+        let (vars, files, home) = env_of(
+            &[
+                ("AWS_ACCESS_KEY_ID", "k"),
+                ("AWS_ENDPOINT", "http://third:1"),
+                ("AWS_ENDPOINT_URL", "http://second:2"),
+                ("AWS_ENDPOINT_URL_S3", "http://first:3"),
+            ],
+            &[],
+            None,
+        );
+        let env = environment!(vars, files, home);
+        let config = effective(&CloudConfig::default(), &env);
+        assert_eq!(s3_list_buckets_url(&config), "http://first:3/");
+        assert_eq!(detect(&config, &env)[0].label, "S3-compatible (first:3)");
+    }
+
+    #[test]
+    fn a_blank_endpoint_variable_does_not_erase_the_configured_one() {
+        let (vars, files, home) = env_of(
+            &[("AWS_ACCESS_KEY_ID", "k"), ("AWS_ENDPOINT_URL", "  ")],
+            &[],
+            None,
+        );
+        let env = environment!(vars, files, home);
+        let file = CloudConfig {
+            s3_endpoint_url: Some("http://localhost:9000".to_string()),
+            ..CloudConfig::default()
+        };
+        let config = effective(&file, &env);
+        assert_eq!(s3_list_buckets_url(&config), "http://localhost:9000/");
+        assert_eq!(
+            detect(&config, &env)[0].label,
+            "S3-compatible (localhost:9000)"
+        );
+        // A blank flag says nothing either.
+        let options = crate::OpenOptions {
+            s3_endpoint_url_override: Some(String::new()),
+            ..crate::OpenOptions::default()
+        };
+        assert_eq!(
+            options.effective_cloud(&file).s3_endpoint_url.as_deref(),
+            Some("http://localhost:9000")
+        );
+    }
+
+    #[test]
+    fn a_key_without_a_secret_still_reaches_the_builder() {
+        // The generated config recommends the key in the file and the secret from
+        // AWS_SECRET_ACCESS_KEY. Applying them only as a pair dropped the key.
+        use object_store::aws::AmazonS3ConfigKey;
+        let config = CloudConfig {
+            s3_access_key_id: Some("from-config".to_string()),
+            ..CloudConfig::default()
+        };
+        let builder = s3_builder("bucket", &config);
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::AccessKeyId),
+            Some("from-config".to_string())
+        );
+        let config = CloudConfig {
+            s3_secret_access_key: Some("from-env".to_string()),
+            ..CloudConfig::default()
+        };
+        let builder = s3_builder("bucket", &config);
+        assert_eq!(
+            builder.get_config_value(&AmazonS3ConfigKey::SecretAccessKey),
+            Some("from-env".to_string())
+        );
     }
 
     #[test]
@@ -1023,6 +1128,58 @@ mod tests {
             Some("abc")
         );
         assert!(gcs_next_page_token(r#"{"items": []}"#).is_none());
+    }
+
+    #[test]
+    fn the_listing_goes_to_amazon_when_no_endpoint_is_set() {
+        assert_eq!(
+            s3_list_buckets_url(&CloudConfig::default()),
+            "https://s3.amazonaws.com/"
+        );
+    }
+
+    #[test]
+    fn the_listing_honours_the_endpoint_override() {
+        // The bug this guards against: the section title named the override's host
+        // while `ListBuckets` went to AWS. Listing must see the same merged endpoint
+        // the open path uses, with the CLI/environment override beating the config.
+        let config = CloudConfig {
+            s3_endpoint_url: Some("http://localhost:9000/".to_string()),
+            ..CloudConfig::default()
+        };
+        let options = crate::OpenOptions {
+            s3_endpoint_url_override: Some("http://127.0.0.1:9101".to_string()),
+            ..crate::OpenOptions::default()
+        };
+        let effective = options.effective_cloud(&config);
+        assert_eq!(s3_list_buckets_url(&effective), "http://127.0.0.1:9101/");
+        // The title names the same host the listing goes to.
+        let (vars, files, home) = env_of(&[("AWS_ACCESS_KEY_ID", "testing")], &[], None);
+        let env = environment!(vars, files, home);
+        let found = detect(&effective, &env);
+        assert_eq!(found[0].label, "S3-compatible (127.0.0.1:9101)");
+
+        // Without an override the config file's endpoint stands.
+        let effective = crate::OpenOptions::default().effective_cloud(&config);
+        assert_eq!(s3_list_buckets_url(&effective), "http://localhost:9000/");
+    }
+
+    #[test]
+    fn the_override_carries_keys_and_region_too() {
+        let config = CloudConfig {
+            s3_access_key_id: Some("from-config".to_string()),
+            s3_region: Some("eu-west-1".to_string()),
+            ..CloudConfig::default()
+        };
+        let options = crate::OpenOptions {
+            s3_access_key_id_override: Some("from-cli".to_string()),
+            s3_secret_access_key_override: Some("secret".to_string()),
+            ..crate::OpenOptions::default()
+        };
+        let effective = options.effective_cloud(&config);
+        assert_eq!(effective.s3_access_key_id.as_deref(), Some("from-cli"));
+        assert_eq!(effective.s3_secret_access_key.as_deref(), Some("secret"));
+        assert_eq!(effective.s3_region.as_deref(), Some("eu-west-1"));
     }
 
     #[test]

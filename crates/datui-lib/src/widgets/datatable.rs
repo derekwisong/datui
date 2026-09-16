@@ -115,6 +115,9 @@ pub struct DataTableState {
     pages_lookback: usize,
     max_buffered_rows: usize, // 0 = no limit
     max_buffered_mb: usize,   // 0 = no limit
+    /// True for a scan of an object store, where a buffer fill is a ranged read of
+    /// whole row groups. See `set_remote_source`.
+    remote_source: bool,
     buffered_start_row: usize,
     buffered_end_row: usize,
     /// Full buffered DataFrame (all columns in column_order) for the current buffer range.
@@ -199,6 +202,10 @@ pub struct CollectResult {
     pub count_known: bool,
 }
 
+/// Rows the display buffer may hold when `display.max_buffered_rows` is not set. Also
+/// the window a remote scan buffers when the cap is switched off.
+pub const DEFAULT_MAX_BUFFERED_ROWS: usize = 100_000;
+
 /// Seeds `DataTableState::len_generation`. Unique per state, so a row count spawned
 /// for one dataset can never be mistaken for a valid result for another.
 static NEXT_LEN_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -259,8 +266,9 @@ impl DataTableState {
             drilled_down_group_key_columns: None,
             pages_lookahead: pages_lookahead.unwrap_or(3),
             pages_lookback: pages_lookback.unwrap_or(3),
-            max_buffered_rows: max_buffered_rows.unwrap_or(100_000),
+            max_buffered_rows: max_buffered_rows.unwrap_or(DEFAULT_MAX_BUFFERED_ROWS),
             max_buffered_mb: max_buffered_mb.unwrap_or(512),
+            remote_source: false,
             buffered_start_row: 0,
             buffered_end_row: 0,
             buffered_df: None,
@@ -347,8 +355,11 @@ impl DataTableState {
             drilled_down_group_key_columns: None,
             pages_lookahead: options.pages_lookahead.unwrap_or(3),
             pages_lookback: options.pages_lookback.unwrap_or(3),
-            max_buffered_rows: options.max_buffered_rows.unwrap_or(100_000),
+            max_buffered_rows: options
+                .max_buffered_rows
+                .unwrap_or(DEFAULT_MAX_BUFFERED_ROWS),
             max_buffered_mb: options.max_buffered_mb.unwrap_or(512),
+            remote_source: false,
             buffered_start_row: 0,
             buffered_end_row: 0,
             buffered_df: None,
@@ -2833,7 +2844,6 @@ impl DataTableState {
 
         // Buffer grows incrementally: initial load and each expansion add only a few pages (lookahead + lookback).
         // clamp_buffer_to_max_size caps at max_buffered_rows and slides the window when at cap.
-        let page_rows = self.visible_rows.max(1);
 
         if within_buffer {
             let dist_to_start = view_start.saturating_sub(self.buffered_start_row);
@@ -2868,13 +2878,13 @@ impl DataTableState {
             }
 
             let mut new_buffer_start = if needs_expansion_back {
-                view_start.saturating_sub(self.pages_lookback * page_rows)
+                view_start.saturating_sub(self.reach_rows(self.pages_lookback))
             } else {
                 self.buffered_start_row
             };
 
             let mut new_buffer_end = if needs_expansion_forward {
-                (view_end + self.pages_lookahead * page_rows).min(self.num_rows)
+                (view_end + self.reach_rows(self.pages_lookahead)).min(self.num_rows)
             } else {
                 self.buffered_end_row
             };
@@ -2899,23 +2909,25 @@ impl DataTableState {
             let scrolled_past_start = had_buffer && view_end <= self.buffered_start_row;
 
             let extend_forward_ok = scrolled_past_end
-                && (view_start - self.buffered_end_row) <= self.pages_lookahead * page_rows;
+                && (view_start - self.buffered_end_row) <= self.reach_rows(self.pages_lookahead);
             let extend_backward_ok = scrolled_past_start
-                && (self.buffered_start_row - view_end) <= self.pages_lookback * page_rows;
+                && (self.buffered_start_row - view_end) <= self.reach_rows(self.pages_lookback);
 
             if extend_forward_ok {
                 // View is just a few pages past buffer end; extend forward.
                 new_buffer_start = self.buffered_start_row;
-                new_buffer_end = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+                new_buffer_end =
+                    (view_end + self.reach_rows(self.pages_lookahead)).min(self.num_rows);
             } else if extend_backward_ok {
                 // View is just a few pages before buffer start; extend backward.
-                new_buffer_start = view_start.saturating_sub(self.pages_lookback * page_rows);
+                new_buffer_start = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
                 new_buffer_end = self.buffered_end_row;
             } else if scrolled_past_end || scrolled_past_start {
                 // Big jump (e.g. jump to end or jump to start): load a fresh window around the view.
-                new_buffer_start = view_start.saturating_sub(self.pages_lookback * page_rows);
-                new_buffer_end = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
-                let min_initial_len = (1 + self.pages_lookahead + self.pages_lookback) * page_rows;
+                new_buffer_start = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
+                new_buffer_end =
+                    (view_end + self.reach_rows(self.pages_lookahead)).min(self.num_rows);
+                let min_initial_len = self.min_buffer_len();
                 let current_len = new_buffer_end.saturating_sub(new_buffer_start);
                 if current_len < min_initial_len {
                     let need = min_initial_len.saturating_sub(current_len);
@@ -2933,11 +2945,12 @@ impl DataTableState {
                 }
             } else {
                 // No buffer yet or big jump: load a fresh small window (view ± a few pages).
-                new_buffer_start = view_start.saturating_sub(self.pages_lookback * page_rows);
-                new_buffer_end = (view_end + self.pages_lookahead * page_rows).min(self.num_rows);
+                new_buffer_start = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
+                new_buffer_end =
+                    (view_end + self.reach_rows(self.pages_lookahead)).min(self.num_rows);
 
                 // Ensure at least (1 + lookahead + lookback) pages so buffer size is consistent (e.g. 364 at 52 visible).
-                let min_initial_len = (1 + self.pages_lookahead + self.pages_lookback) * page_rows;
+                let min_initial_len = self.min_buffer_len();
                 let current_len = new_buffer_end.saturating_sub(new_buffer_start);
                 if current_len < min_initial_len {
                     let need = min_initial_len.saturating_sub(current_len);
@@ -3038,7 +3051,6 @@ impl DataTableState {
         let within_buffer = view_start >= self.buffered_start_row
             && view_end <= self.buffered_end_row
             && self.buffered_end_row > 0;
-        let page_rows = self.visible_rows.max(1);
 
         // Compute the buffer range using the same logic as collect().
         let (new_buffer_start, new_buffer_end) = if within_buffer {
@@ -3068,12 +3080,12 @@ impl DataTableState {
                 (self.buffered_start_row, self.buffered_end_row)
             } else {
                 let mut s = if needs_expansion_back {
-                    view_start.saturating_sub(self.pages_lookback * page_rows)
+                    view_start.saturating_sub(self.reach_rows(self.pages_lookback))
                 } else {
                     self.buffered_start_row
                 };
                 let mut e = if needs_expansion_forward {
-                    (view_end + self.pages_lookahead * page_rows).min(bound)
+                    (view_end + self.reach_rows(self.pages_lookahead)).min(bound)
                 } else {
                     self.buffered_end_row
                 };
@@ -3085,22 +3097,22 @@ impl DataTableState {
             let scrolled_past_end = had_buffer && view_start >= self.buffered_end_row;
             let scrolled_past_start = had_buffer && view_end <= self.buffered_start_row;
             let extend_forward_ok = scrolled_past_end
-                && (view_start - self.buffered_end_row) <= self.pages_lookahead * page_rows;
+                && (view_start - self.buffered_end_row) <= self.reach_rows(self.pages_lookahead);
             let extend_backward_ok = scrolled_past_start
-                && (self.buffered_start_row - view_end) <= self.pages_lookback * page_rows;
+                && (self.buffered_start_row - view_end) <= self.reach_rows(self.pages_lookback);
 
             let mut s;
             let mut e;
             if extend_forward_ok {
                 s = self.buffered_start_row;
-                e = (view_end + self.pages_lookahead * page_rows).min(bound);
+                e = (view_end + self.reach_rows(self.pages_lookahead)).min(bound);
             } else if extend_backward_ok {
-                s = view_start.saturating_sub(self.pages_lookback * page_rows);
+                s = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
                 e = self.buffered_end_row;
             } else {
-                s = view_start.saturating_sub(self.pages_lookback * page_rows);
-                e = (view_end + self.pages_lookahead * page_rows).min(bound);
-                let min_initial_len = (1 + self.pages_lookahead + self.pages_lookback) * page_rows;
+                s = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
+                e = (view_end + self.reach_rows(self.pages_lookahead)).min(bound);
+                let min_initial_len = self.min_buffer_len();
                 let current_len = e.saturating_sub(s);
                 if current_len < min_initial_len {
                     let need = min_initial_len.saturating_sub(current_len);
@@ -3270,6 +3282,45 @@ impl DataTableState {
     /// End row (exclusive) of the currently buffered range.
     pub fn buffered_end(&self) -> usize {
         self.buffered_end_row
+    }
+
+    /// Mark the scan as reading an object store in place.
+    ///
+    /// Polars fetches a Parquet row group whole for any slice that touches it and keeps
+    /// nothing between collects, so the small, proximity-driven refills that suit a
+    /// local file each download the same row group again: paging through one row group
+    /// cost a fetch of it every few pages. A remote buffer is planned as a single window
+    /// of `max_buffered_rows` around the view instead. Scrolling inside it costs
+    /// nothing; leaving it, or a jump, costs one fetch.
+    pub fn set_remote_source(&mut self) {
+        self.remote_source = true;
+    }
+
+    /// Rows the buffer reaches past the view in one direction: `pages` of it for a local
+    /// file, half the window for a remote scan (`clamp_buffer_to_max_size` trims the
+    /// two halves plus the view back to the cap).
+    fn reach_rows(&self, pages: usize) -> usize {
+        if !self.remote_source {
+            return pages * self.visible_rows.max(1);
+        }
+        let window = if self.max_buffered_rows > 0 {
+            self.max_buffered_rows
+        } else {
+            DEFAULT_MAX_BUFFERED_ROWS
+        };
+        window / 2
+    }
+
+    /// The smallest buffer worth filling: a page plus the reach either side.
+    fn min_buffer_len(&self) -> usize {
+        self.visible_rows.max(1)
+            + self.reach_rows(self.pages_lookahead)
+            + self.reach_rows(self.pages_lookback)
+    }
+
+    /// True when the view already shows the last page, so End has nothing to load.
+    pub fn at_end(&self) -> bool {
+        self.start_row == self.num_rows.saturating_sub(self.visible_rows)
     }
 
     /// Clamp buffer to max_buffered_rows; when at cap, slide window to keep view inside.
@@ -3583,6 +3634,12 @@ impl DataTableState {
             .min(self.visible_rows.saturating_sub(1));
         self.table_state.select(Some(display_idx));
         true // caller must collect
+    }
+
+    /// Jump to the first page. Returns true if a collect is needed.
+    pub fn scroll_to_start(&mut self) -> bool {
+        self.table_state.select(Some(0));
+        self.scroll_to(0)
     }
 
     /// Jump to the last page. Returns true if a collect is needed.
@@ -6907,6 +6964,49 @@ mod tests {
             eff_end - eff_start,
             "df height must match range"
         );
+    }
+
+    #[test]
+    fn a_remote_source_buffers_one_window_and_pages_inside_it_for_free() {
+        // Every buffer fill of an object-store scan downloads whole row groups, so the
+        // buffer is one window of `max_buffered_rows` rather than a few pages: paging
+        // inside it asks for nothing, and a jump asks once.
+        let lf = df!("a" => &[0i32]).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, Some(10_000), None, true).unwrap();
+        state.set_remote_source();
+        state.num_rows = 1_000_000;
+        state.num_rows_valid = true;
+        state.visible_rows = 40;
+        let window = |start: usize| CollectResult {
+            df: df!("a" => (0..10_000).collect::<Vec<i32>>()).unwrap(),
+            buffer_start: start,
+            buffer_end: start + 10_000,
+            num_rows: 1_000_000,
+            count_known: true,
+        };
+
+        let request = state.prepare_async_collect(None).expect("first fill");
+        assert_eq!((request.buffer_start, request.buffer_end), (0, 10_000));
+        state.apply_async_collect(window(0));
+        for _ in 0..20 {
+            assert!(!state.page_down(), "a page inside the window needs no fill");
+        }
+
+        assert!(state.scroll_to_end());
+        let request = state
+            .prepare_async_collect(None)
+            .expect("the jump fills once");
+        assert_eq!(
+            (request.buffer_start, request.buffer_end),
+            (990_000, 1_000_000)
+        );
+        state.apply_async_collect(window(990_000));
+
+        assert!(state.scroll_to_start(), "Home after End must fill again");
+        let request = state
+            .prepare_async_collect(None)
+            .expect("one fill at the top");
+        assert_eq!((request.buffer_start, request.buffer_end), (0, 10_000));
     }
 
     #[test]

@@ -235,11 +235,11 @@ EC2 instance role is **not** discovered, because finding it means a metadata
 request that hangs on some networks; opening a URL still works, and setting
 `AWS_PROFILE` or writing `~/.aws/config` brings the bucket list back.
 
-A custom endpoint is named by its host: `S3-COMPATIBLE (localhost:9000)`. For
-the bucket list to reach it, set `s3_endpoint_url` under `[cloud]` in the
-config; `AWS_ENDPOINT_URL` alone is enough to open a URL you type but is not
-yet used for listing. See [Loading Data](loading-data.md#remote-data) for the
-settings themselves.
+A custom endpoint is named by its host: `S3-COMPATIBLE (localhost:9000)`. The
+endpoint may come from `s3_endpoint_url` under `[cloud]` in the config,
+`AWS_ENDPOINT_URL` or `--s3-endpoint-url`, and the bucket list is fetched from
+the same one that opens the objects. See
+[Loading Data](loading-data.md#remote-data) for the settings themselves.
 
 ### What a cloud row shows
 

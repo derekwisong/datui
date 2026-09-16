@@ -80,10 +80,13 @@ analysis. The placeholder color is `binary_col` in the
 
 Pass an `s3://`, `gs://` or `https://` URL where you would pass a path. In S3
 and GCS, Parquet is read in place with range requests, one row group at a time:
-opening fetches the footer and the first row group, <kbd>End</kbd> fetches the
-last, and a query that has to look at every row transfers about the size of the
-object. Small row groups keep the first screen cheap. A prefix or glob of
-Parquet files opens as a partitioned dataset. Every other format, and anything
+opening fetches the footer and the first row group, paging inside a row group
+fetches nothing, crossing into the next fetches that group, <kbd>End</kbd>
+fetches the last, and a query that has to look at every row transfers about the
+size of the object. The buffer holds whole row groups up to the `max_buffered_mb`
+budget, so small row groups keep the first screen cheap and a wide table
+buffers fewer rows. A prefix or glob of Parquet files opens as a partitioned
+dataset, buffered as a plain window. Every other format, and anything
 over HTTP, is downloaded to a temporary file (`--temp-dir` to choose where;
 you are asked first when it is large) and then opened like a local file. One
 remote path per run.

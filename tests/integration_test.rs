@@ -323,7 +323,7 @@ fn test_chart_prepares_one_selection_at_a_time() {
     let mut results = 0;
     for _ in 0..500 {
         while let Ok(ev) = rx.try_recv() {
-            if matches!(ev, AppEvent::BackgroundChartReady { .. }) {
+            if matches!(ev, AppEvent::BackgroundChartReady) {
                 results += 1;
             }
             if let Some(next) = app.event(&ev) {

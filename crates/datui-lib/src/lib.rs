@@ -252,59 +252,28 @@ mod chart_prepare_tests {
         })
     }
 
-    fn inflight(generation: u64, request: &ChartRequest) -> ChartInflight {
+    fn inflight(request: &ChartRequest) -> ChartInflight {
         ChartInflight {
-            generation,
             dataset: None,
             request: request.clone(),
             stale: false,
         }
     }
 
-    /// A result whose generation is not the one recorded as in flight (the chart view
-    /// was reset in between) is dropped, and the one that matches is installed.
-    #[test]
-    fn a_result_from_a_superseded_generation_is_dropped() {
-        let (tx, _rx) = mpsc::channel();
-        let mut app = App::new(tx, crate::tests::test_runtime());
-        let old = histogram_request("a");
-        let new = histogram_request("b");
-        app.chart_generation = 2;
-        app.chart_inflight = Some(inflight(2, &new));
-
-        *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
-        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
-        assert!(
-            !app.chart_cache.satisfies(&old),
-            "stale result must not land"
-        );
-        assert_eq!(
-            app.chart_inflight.as_ref().map(|i| i.generation),
-            Some(2),
-            "still waiting for the newest request"
-        );
-
-        *app.pending_chart_result.lock().unwrap() = Some((2, Ok(prepared_histogram("b"))));
-        app.event(&AppEvent::BackgroundChartReady { generation: 2 });
-        assert!(app.chart_cache.satisfies(&new));
-        assert!(app.chart_inflight.is_none());
-    }
-
     /// A result computed against a dataset that is no longer the one open is dropped
-    /// even when its generation matches.
+    /// even when the record is still current.
     #[test]
     fn a_result_for_another_dataset_is_dropped() {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let request = histogram_request("a");
-        app.chart_generation = 1;
         app.chart_inflight = Some(ChartInflight {
             dataset: Some(12345),
-            ..inflight(1, &request)
+            ..inflight(&request)
         });
 
-        *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
-        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        *app.pending_chart_result.lock().unwrap() = Some(Ok(prepared_histogram("a")));
+        app.event(&AppEvent::BackgroundChartReady);
         assert!(!app.chart_cache.satisfies(&request));
         assert!(app.chart_inflight.is_none());
     }
@@ -318,8 +287,7 @@ mod chart_prepare_tests {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let request = histogram_request("a");
-        app.chart_generation = 1;
-        app.chart_inflight = Some(inflight(1, &request));
+        app.chart_inflight = Some(inflight(&request));
         app.chart_export_waiting = Some((
             PathBuf::from("/tmp/x.png"),
             ChartExportFormat::Png,
@@ -339,8 +307,8 @@ mod chart_prepare_tests {
         assert!(app.chart_export_waiting.is_none());
         assert!(!app.is_busy());
 
-        *app.pending_chart_result.lock().unwrap() = Some((1, Ok(prepared_histogram("a"))));
-        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        *app.pending_chart_result.lock().unwrap() = Some(Ok(prepared_histogram("a")));
+        app.event(&AppEvent::BackgroundChartReady);
         assert!(
             !app.chart_cache.satisfies(&request),
             "stale result is dropped"
@@ -415,11 +383,10 @@ mod chart_prepare_tests {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let request = histogram_request("a");
-        app.chart_generation = 1;
-        app.chart_inflight = Some(inflight(1, &request));
+        app.chart_inflight = Some(inflight(&request));
 
-        *app.pending_chart_result.lock().unwrap() = Some((1, Err("duplicate column".into())));
-        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        *app.pending_chart_result.lock().unwrap() = Some(Err("duplicate column".into()));
+        app.event(&AppEvent::BackgroundChartReady);
         assert!(app.chart_inflight.is_none());
         assert!(matches!(
             app.chart_cache.get(&request),
@@ -557,11 +524,10 @@ mod chart_prepare_tests {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         let request = histogram_request("a");
-        app.chart_generation = 1;
-        app.chart_inflight = Some(inflight(1, &request));
+        app.chart_inflight = Some(inflight(&request));
         assert!(app.pending_chart_result.lock().unwrap().is_none());
 
-        app.event(&AppEvent::BackgroundChartReady { generation: 1 });
+        app.event(&AppEvent::BackgroundChartReady);
         assert!(app.chart_inflight.is_none());
         assert!(matches!(app.chart_cache.get(&request), Some(Err(_))));
     }
@@ -1300,10 +1266,9 @@ pub enum AppEvent {
         debug_label: Option<String>,
     },
     /// Background task completed: chart data for one selection is prepared. The data is
-    /// in `App::pending_chart_result`; a stale generation is dropped.
-    BackgroundChartReady {
-        generation: u64,
-    },
+    /// in `App::pending_chart_result`; it belongs to `App::chart_inflight`, which says
+    /// whether it is still wanted.
+    BackgroundChartReady,
     /// Background task completed: chart written to disk.
     BackgroundChartExportWritten {
         generation: u64,
@@ -1830,14 +1795,15 @@ impl ChartRequest {
     }
 }
 
-/// (generation, outcome) handed from the chart worker to `BackgroundChartReady`.
-type ChartResultSlot = Arc<Mutex<Option<(u64, Result<ChartPrepared, String>)>>>;
+/// The outcome handed from the chart worker to `BackgroundChartReady`.
+type ChartResultSlot = Arc<Mutex<Option<Result<ChartPrepared, String>>>>;
 
 /// The chart preparation currently running. There is at most one: a burst of selection
 /// changes must not fan out into a full collect per column, so the next request waits
-/// for this one to land and then the newest selection is the one prepared.
+/// for this one to land and then the newest selection is the one prepared. Being the
+/// only one is also what ties a `BackgroundChartReady` to it, so no generation is
+/// needed to match them up.
 struct ChartInflight {
-    generation: u64,
     /// `len_generation` of the dataset the request was spawned against, so a result
     /// cannot be installed for a different dataset that happens to share column names.
     dataset: Option<u64>,
@@ -1980,19 +1946,18 @@ pub struct App {
     pub(crate) chart_cache: ChartCache,
     /// The one chart preparation allowed to run at a time. Render draws only what is in
     /// `chart_cache`; this drives the throbber while it is current. Its result is
-    /// installed only if the record is still current (not `stale`), its generation
-    /// matches and the dataset is the one it was computed from. Deliberately not
+    /// installed only if the record is still current (not `stale`) and the dataset is
+    /// the one it was computed from. Deliberately not
     /// `busy`: the sidebar stays live while the data is computed, and the newest
     /// selection is prepared once this one lands.
     chart_inflight: Option<ChartInflight>,
-    chart_generation: u64,
     /// Generation and in-flight marker of the chart export write. Separate from
     /// `task_generation`, which going home deliberately leaves alone (it also gates
     /// data exports and analysis); leaving the dataset drops this one instead.
     chart_export_generation: u64,
     chart_export_inflight: Option<u64>,
-    /// (generation, result) from the background chart preparation, like
-    /// `pending_collect_result`: the data stays out of the event.
+    /// The result of the background chart preparation, like `pending_collect_result`:
+    /// the data stays out of the event.
     pending_chart_result: ChartResultSlot,
     /// A chart export that asked for data still being prepared. `BackgroundChartReady`
     /// picks it up; `busy` stays set until then.
@@ -2475,7 +2440,6 @@ impl App {
             export_modal: ExportModal::new(),
             chart_cache: ChartCache::default(),
             chart_inflight: None,
-            chart_generation: 0,
             chart_export_generation: 0,
             chart_export_inflight: None,
             pending_chart_result: Arc::new(Mutex::new(None)),
@@ -8209,7 +8173,6 @@ impl App {
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
         self.chart_export_modal.close();
-        self.chart_generation = self.chart_generation.wrapping_add(1);
         *self
             .pending_chart_result
             .lock()
@@ -8255,10 +8218,7 @@ impl App {
         let schema = state.schema.clone();
         let dataset = Some(state.len_generation());
         let rows = self.chart_modal.effective_row_limit();
-        self.chart_generation = self.chart_generation.wrapping_add(1);
-        let generation = self.chart_generation;
         self.chart_inflight = Some(ChartInflight {
-            generation,
             dataset,
             request: request.clone(),
             stale: false,
@@ -8274,14 +8234,8 @@ impl App {
             }))
             .unwrap_or_else(|_| Err(color_eyre::eyre::eyre!("Chart preparation panicked")))
             .map_err(|e| crate::error_display::user_message_from_report(&e, None));
-            let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
-            // Only write if no newer result is already stored.
-            let dominated = slot.as_ref().is_some_and(|(g, _)| *g > generation);
-            if !dominated {
-                *slot = Some((generation, result));
-            }
-            drop(slot);
-            let _ = tx.send(AppEvent::BackgroundChartReady { generation });
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+            let _ = tx.send(AppEvent::BackgroundChartReady);
         });
     }
 
@@ -9508,16 +9462,12 @@ impl App {
                 }
                 None
             }
-            AppEvent::BackgroundChartReady { generation } => {
-                // A result is installed only for the preparation still recorded as in
-                // flight, only while that record is current (a reset marks it stale when
-                // its view or dataset goes), and only into the dataset it was computed
-                // from. Taking the record is what lets the next request start.
+            AppEvent::BackgroundChartReady => {
+                // The result belongs to the one preparation in flight. It is installed
+                // only while that record is current (a reset marks it stale when its
+                // view or dataset goes) and only into the dataset it was computed from.
+                // Taking the record is what lets the next request start.
                 let inflight = self.chart_inflight.take()?;
-                if inflight.generation != *generation {
-                    self.chart_inflight = Some(inflight);
-                    return None;
-                }
                 if inflight.stale {
                     return None;
                 }
@@ -9525,17 +9475,13 @@ impl App {
                 if dataset != inflight.dataset {
                     return None;
                 }
-                let request = inflight.request;
-                let taken = self
+                let outcome = self
                     .pending_chart_result
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .take();
-                let outcome = match taken {
-                    Some((slot_gen, result)) if slot_gen == *generation => result,
-                    _ => Err("Chart preparation produced no result".to_string()),
-                };
-                self.chart_cache.insert(request, outcome);
+                    .take()
+                    .unwrap_or_else(|| Err("Chart preparation produced no result".to_string()));
+                self.chart_cache.insert(inflight.request, outcome);
                 // An export parked on chart data resumes against the *current*
                 // selection, whatever just landed: it is written if that selection is
                 // now prepared, fails with the reason if that is the one that failed,

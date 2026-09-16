@@ -118,6 +118,12 @@ pub struct DataTableState {
     /// True for a scan of an object store, where a buffer fill is a ranged read of
     /// whole row groups. See `set_remote_source`.
     remote_source: bool,
+    /// Where each row group of a remote Parquet object starts, with the total as the
+    /// last entry, from its footer. See `set_row_groups`.
+    row_group_offsets: Option<Vec<usize>>,
+    /// True while `lf` is the data as loaded, with no query, filter, sort or reshape on
+    /// it. Cleared with the row count, restored by `reset_lf_to_original`.
+    pristine: bool,
     buffered_start_row: usize,
     buffered_end_row: usize,
     /// Full buffered DataFrame (all columns in column_order) for the current buffer range.
@@ -222,6 +228,78 @@ fn sort_options(n: usize, descending: bool) -> SortMultipleOptions {
         .with_nulls_last_multi(vec![true; n])
 }
 
+/// Shrink `[buffer_start, buffer_end)` to at most `max_len` rows, kept around the view
+/// `[view_start, view_end)` and inside `[floor, ceil)`.
+fn shrink_around_view(
+    view_start: usize,
+    view_end: usize,
+    max_len: usize,
+    floor: usize,
+    ceil: usize,
+    buffer_start: &mut usize,
+    buffer_end: &mut usize,
+) {
+    if buffer_end.saturating_sub(*buffer_start) <= max_len {
+        return;
+    }
+    let view_len = view_end.saturating_sub(view_start);
+    if view_len >= max_len {
+        *buffer_start = view_start;
+        *buffer_end = (view_start + max_len).min(ceil);
+        return;
+    }
+    let half = (max_len - view_len) / 2;
+    *buffer_end = (view_end + half).min(ceil);
+    *buffer_start = buffer_end.saturating_sub(max_len).max(floor);
+    if *buffer_start > view_start {
+        *buffer_start = view_start;
+    }
+    *buffer_end = (*buffer_start + max_len).min(ceil);
+}
+
+/// Snap `[start, end)` outward to the row groups it touches, given where each group
+/// starts (`offsets`, with the total last).
+///
+/// Polars fetches a row group whole for any slice that touches it, so the groups the
+/// view `[view_start, view_end)` lies in are always taken whole: paging inside them then
+/// costs nothing. The other groups the window reaches into are added while the result
+/// stays within `cap` rows (0 for no cap), the ones ahead of the view first.
+fn align_to_row_groups(
+    offsets: &[usize],
+    view_start: usize,
+    view_end: usize,
+    start: usize,
+    end: usize,
+    cap: usize,
+) -> (usize, usize) {
+    let Some(groups) = offsets.len().checked_sub(1).filter(|n| *n > 0) else {
+        return (start, end);
+    };
+    let group_of = |row: usize| {
+        offsets
+            .partition_point(|&o| o <= row)
+            .saturating_sub(1)
+            .min(groups - 1)
+    };
+    let last_row = |s: usize, e: usize| e.saturating_sub(1).max(s);
+    let (mut lo, mut hi) = (
+        group_of(view_start),
+        group_of(last_row(view_start, view_end)),
+    );
+    let (want_lo, want_hi) = (group_of(start), group_of(last_row(start, end)));
+    let fits = |lo: usize, hi: usize| cap == 0 || offsets[hi + 1] - offsets[lo] <= cap;
+    loop {
+        if hi < want_hi && fits(lo, hi + 1) {
+            hi += 1;
+        } else if lo > want_lo && fits(lo - 1, hi) {
+            lo -= 1;
+        } else {
+            break;
+        }
+    }
+    (offsets[lo], offsets[hi + 1])
+}
+
 impl DataTableState {
     pub fn new(
         lf: LazyFrame,
@@ -269,6 +347,8 @@ impl DataTableState {
             max_buffered_rows: max_buffered_rows.unwrap_or(DEFAULT_MAX_BUFFERED_ROWS),
             max_buffered_mb: max_buffered_mb.unwrap_or(512),
             remote_source: false,
+            row_group_offsets: None,
+            pristine: true,
             buffered_start_row: 0,
             buffered_end_row: 0,
             buffered_df: None,
@@ -360,6 +440,8 @@ impl DataTableState {
                 .unwrap_or(DEFAULT_MAX_BUFFERED_ROWS),
             max_buffered_mb: options.max_buffered_mb.unwrap_or(512),
             remote_source: false,
+            row_group_offsets: None,
+            pristine: true,
             buffered_start_row: 0,
             buffered_end_row: 0,
             buffered_df: None,
@@ -461,6 +543,11 @@ impl DataTableState {
         self.install_base(self.original_lf.clone(), schema);
         self.reshaped_lf = None;
         self.reset_view_state(0);
+        // The scan as loaded again, so its footer answers the count once more.
+        self.pristine = true;
+        if let Some(total) = self.row_group_offsets.as_ref().and_then(|o| o.last()) {
+            self.set_num_rows(*total);
+        }
     }
 
     pub fn reset(&mut self) {
@@ -2843,7 +2930,7 @@ impl DataTableState {
             && self.buffered_end_row > 0;
 
         // Buffer grows incrementally: initial load and each expansion add only a few pages (lookahead + lookback).
-        // clamp_buffer_to_max_size caps at max_buffered_rows and slides the window when at cap.
+        // fit_window caps at max_buffered_rows and slides the window when at cap.
 
         if within_buffer {
             let dist_to_start = view_start.saturating_sub(self.buffered_start_row);
@@ -2889,12 +2976,20 @@ impl DataTableState {
                 self.buffered_end_row
             };
 
-            self.clamp_buffer_to_max_size(
+            self.fit_window(
                 view_start,
                 view_end,
                 &mut new_buffer_start,
                 &mut new_buffer_end,
             );
+            if self.holds_buffer(new_buffer_start, new_buffer_end) {
+                // Fitting the expansion gave back the row group already held.
+                self.slice_buffer_into_display();
+                if self.table_state.selected().is_none() {
+                    self.table_state.select(Some(0));
+                }
+                return;
+            }
             self.load_buffer(new_buffer_start, new_buffer_end);
         } else {
             // Outside buffer: either extend the previous buffer (so it grows) or load a fresh small window.
@@ -2968,7 +3063,7 @@ impl DataTableState {
                 }
             }
 
-            self.clamp_buffer_to_max_size(
+            self.fit_window(
                 view_start,
                 view_end,
                 &mut new_buffer_start,
@@ -3063,20 +3158,6 @@ impl DataTableState {
 
             if !needs_expansion_back && !needs_expansion_forward {
                 // Buffer is fine, just re-slice display.
-                let expected_len = self
-                    .buffered_end_row
-                    .saturating_sub(self.buffered_start_row);
-                if self
-                    .buffered_df
-                    .as_ref()
-                    .is_some_and(|b| b.height() == expected_len)
-                {
-                    self.slice_buffer_into_display();
-                    if self.table_state.selected().is_none() {
-                        self.table_state.select(Some(0));
-                    }
-                    return None;
-                }
                 (self.buffered_start_row, self.buffered_end_row)
             } else {
                 let mut s = if needs_expansion_back {
@@ -3089,7 +3170,7 @@ impl DataTableState {
                 } else {
                     self.buffered_end_row
                 };
-                self.clamp_buffer_to_max_size(view_start, view_end, &mut s, &mut e);
+                self.fit_window(view_start, view_end, &mut s, &mut e);
                 (s, e)
             }
         } else {
@@ -3128,12 +3209,21 @@ impl DataTableState {
                     }
                 }
             }
-            self.clamp_buffer_to_max_size(view_start, view_end, &mut s, &mut e);
+            self.fit_window(view_start, view_end, &mut s, &mut e);
             (s, e)
         };
 
         let buffer_size = new_buffer_end.saturating_sub(new_buffer_start);
         if buffer_size == 0 {
+            return None;
+        }
+        // Already held: the view fits, or fitting the expansion to whole row groups
+        // gave back the group on hand.
+        if self.holds_buffer(new_buffer_start, new_buffer_end) {
+            self.slice_buffer_into_display();
+            if self.table_state.selected().is_none() {
+                self.table_state.select(Some(0));
+            }
             return None;
         }
 
@@ -3185,7 +3275,8 @@ impl DataTableState {
         // buffer being requested and applied — keep it; don't downgrade to provisional.
         self.error = None;
 
-        let (full_df, eff_start, eff_end) = self.clamp_buffer_bytes(full_df, result.buffer_start);
+        let (full_df, buffer_start) = self.stitch_buffer(full_df, result.buffer_start);
+        let (full_df, eff_start, eff_end) = self.clamp_buffer_bytes(full_df, buffer_start);
 
         self.buffered_start_row = eff_start;
         self.buffered_end_row = eff_end;
@@ -3195,6 +3286,29 @@ impl DataTableState {
         if self.table_state.selected().is_none() {
             self.table_state.select(Some(0));
         }
+    }
+
+    /// Join a fetched row group `df`, starting at `buffer_start`, on to the rows on hand
+    /// when it runs on from them or up to them: the fill `fit_window` planned for a view
+    /// straddling two groups. Returns the buffer to keep and its first row. A shape
+    /// mismatch (the columns changed underneath) keeps the fetched rows alone.
+    fn stitch_buffer(&mut self, df: DataFrame, buffer_start: usize) -> (DataFrame, usize) {
+        if !self.remote_window() || !self.buffer_on_hand() {
+            return (df, buffer_start);
+        }
+        let Some(mut held) = self.buffered_df.take() else {
+            return (df, buffer_start);
+        };
+        if buffer_start == self.buffered_end_row {
+            if held.vstack_mut(&df).is_ok() {
+                return (held, self.buffered_start_row);
+            }
+        } else if buffer_start + df.height() == self.buffered_start_row {
+            if let Ok(joined) = df.vstack(&held) {
+                return (joined, buffer_start);
+            }
+        }
+        (df, buffer_start)
     }
 
     /// Invalidate num_rows cache when lf is mutated. Takes a fresh `len_generation` so any
@@ -3208,6 +3322,7 @@ impl DataTableState {
         self.num_rows_valid = false;
         self.len_generation = next_len_generation();
         self.parquet_count_dir = None;
+        self.pristine = false;
     }
 
     /// Record that the current `lf` is a pristine scan of `dir` (a local Parquet hive
@@ -3274,6 +3389,38 @@ impl DataTableState {
         self.polars_streaming
     }
 
+    /// True when every row of the buffered range is on hand.
+    pub(crate) fn buffer_on_hand(&self) -> bool {
+        self.buffered_end_row > self.buffered_start_row
+            && self
+                .buffered_df
+                .as_ref()
+                .is_some_and(|b| b.height() == self.buffered_end_row - self.buffered_start_row)
+    }
+
+    /// True when the rows on hand include `[start, end)`. The buffer is then cut down
+    /// to that range, so a row group stitched on to cross into it is let go once the
+    /// view has left it, rather than fetched again when the view comes back.
+    fn holds_buffer(&mut self, start: usize, end: usize) -> bool {
+        if !self.buffer_on_hand()
+            || start < self.buffered_start_row
+            || end > self.buffered_end_row
+            || end <= start
+        {
+            return false;
+        }
+        if (start, end) != (self.buffered_start_row, self.buffered_end_row) {
+            let offset = (start - self.buffered_start_row) as i64;
+            self.buffered_df = self
+                .buffered_df
+                .as_ref()
+                .map(|b| b.slice(offset, end - start));
+            self.buffered_start_row = start;
+            self.buffered_end_row = end;
+        }
+        true
+    }
+
     /// Start row of the currently buffered range.
     pub fn buffered_start(&self) -> usize {
         self.buffered_start_row
@@ -3296,9 +3443,29 @@ impl DataTableState {
         self.remote_source = true;
     }
 
+    /// Record the row groups of a remote Parquet object, `rows` in each, so a buffer
+    /// fill is planned as whole groups (see `align_to_row_groups`). Also the row count.
+    pub fn set_row_groups(&mut self, rows: &[usize]) {
+        let mut offsets = Vec::with_capacity(rows.len() + 1);
+        offsets.push(0);
+        for n in rows {
+            offsets.push(offsets.last().unwrap_or(&0) + n);
+        }
+        self.set_num_rows(*offsets.last().unwrap_or(&0));
+        self.row_group_offsets = Some(offsets);
+    }
+
+    /// True while the buffer is planned as a remote window: a scan of an object store
+    /// that nothing has been applied to. A query, filter, sort or reshape reads the
+    /// object through a predicate, and `slice(0, N)` then stops at the first N matches,
+    /// so the page-based window costs a row group where the remote one would read forty.
+    fn remote_window(&self) -> bool {
+        self.remote_source && self.pristine
+    }
+
     /// Rows the buffer reaches past the view in one direction: `pages` of it for a local
-    /// file, half the window for a remote scan (`clamp_buffer_to_max_size` trims the
-    /// two halves plus the view back to the cap).
+    /// file, half the window for a remote scan (`fit_window` trims the two halves plus
+    /// the view back to the cap).
     fn reach_rows(&self, pages: usize) -> usize {
         if !self.remote_source {
             return pages * self.visible_rows.max(1);
@@ -3323,35 +3490,53 @@ impl DataTableState {
         self.start_row == self.num_rows.saturating_sub(self.visible_rows)
     }
 
-    /// Clamp buffer to max_buffered_rows; when at cap, slide window to keep view inside.
-    fn clamp_buffer_to_max_size(
+    /// Fit a planned buffer `[buffer_start, buffer_end)` to the caps: `max_buffered_rows`
+    /// around the view, then whole row groups for a remote object whose footer is known.
+    fn fit_window(
         &self,
         view_start: usize,
         view_end: usize,
         buffer_start: &mut usize,
         buffer_end: &mut usize,
     ) {
-        if self.max_buffered_rows == 0 {
-            return;
+        if self.max_buffered_rows > 0 {
+            shrink_around_view(
+                view_start,
+                view_end,
+                self.max_buffered_rows,
+                0,
+                self.num_rows_bound(),
+                buffer_start,
+                buffer_end,
+            );
         }
-        let max_len = self.max_buffered_rows;
-        let requested_len = buffer_end.saturating_sub(*buffer_start);
-        if requested_len <= max_len {
+        let Some(offsets) = self
+            .row_group_offsets
+            .as_deref()
+            .filter(|_| self.remote_window())
+        else {
             return;
-        }
-        let bound = self.num_rows_bound();
-        let view_len = view_end.saturating_sub(view_start);
-        if view_len >= max_len {
-            *buffer_start = view_start;
-            *buffer_end = (view_start + max_len).min(bound);
-        } else {
-            let half = (max_len - view_len) / 2;
-            *buffer_end = (view_end + half).min(bound);
-            *buffer_start = (*buffer_end).saturating_sub(max_len);
-            if *buffer_start > view_start {
-                *buffer_start = view_start;
+        };
+        (*buffer_start, *buffer_end) = align_to_row_groups(
+            offsets,
+            view_start,
+            view_end,
+            *buffer_start,
+            *buffer_end,
+            self.max_buffered_rows,
+        );
+        // A view straddling two groups needs both, but one is on hand: fetch the other
+        // alone and stitch it on (see `apply_async_collect`).
+        if self.buffer_on_hand() {
+            let (held_start, held_end) = (self.buffered_start_row, self.buffered_end_row);
+            if held_start <= *buffer_start && *buffer_start < held_end && held_end < *buffer_end {
+                *buffer_start = held_end;
+            } else if *buffer_start < held_start
+                && held_start < *buffer_end
+                && *buffer_end <= held_end
+            {
+                *buffer_end = held_start;
             }
-            *buffer_end = (*buffer_start + max_len).min(bound);
         }
     }
 
@@ -7007,6 +7192,115 @@ mod tests {
             .prepare_async_collect(None)
             .expect("one fill at the top");
         assert_eq!((request.buffer_start, request.buffer_end), (0, 10_000));
+    }
+
+    #[test]
+    fn align_to_row_groups_takes_the_view_groups_whole_and_lookahead_within_the_cap() {
+        let offsets = [0, 1_000_000, 2_000_000, 3_000_000, 3_500_000];
+        // A window inside one group is that group, whatever the row cap.
+        assert_eq!(
+            align_to_row_groups(&offsets, 50, 97, 0, 100_000, 100_000),
+            (0, 1_000_000)
+        );
+        // A view straddling a boundary takes both groups, over the cap.
+        assert_eq!(
+            align_to_row_groups(&offsets, 999_980, 1_000_020, 950_000, 1_050_000, 100_000),
+            (0, 2_000_000)
+        );
+        // Groups the window reaches into come along while they fit, the one ahead first.
+        assert_eq!(
+            align_to_row_groups(&offsets, 1_500_000, 1_500_047, 950_000, 2_050_000, 2_000_000),
+            (1_000_000, 3_000_000)
+        );
+        assert_eq!(
+            align_to_row_groups(&offsets, 1_500_000, 1_500_047, 950_000, 2_050_000, 0),
+            (0, 3_000_000)
+        );
+        // The last, short group; and a window past the data is clamped to it.
+        assert_eq!(
+            align_to_row_groups(&offsets, 3_400_000, 3_400_047, 3_350_000, 3_450_000, 100_000),
+            (3_000_000, 3_500_000)
+        );
+        // No groups known: the window is left alone.
+        assert_eq!(align_to_row_groups(&[0], 5, 10, 0, 100, 50), (0, 100));
+    }
+
+    #[test]
+    fn a_remote_object_is_fetched_one_row_group_at_a_time() {
+        // Ten 1M-row groups with the default 100k-row cap: a fill is the group the view
+        // is in, paging inside it fetches nothing, and crossing into the next fetches
+        // exactly that group, stitched on to the one on hand.
+        const G: usize = 1_000_000;
+        let lf = df!("a" => &[0i32]).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.set_remote_source();
+        state.set_row_groups(&[G; 10]);
+        assert_eq!(state.num_rows, 10 * G);
+        state.visible_rows = 40;
+        let group = |start: usize, end: usize| CollectResult {
+            df: df!("a" => (start as i32..end as i32).collect::<Vec<i32>>()).unwrap(),
+            buffer_start: start,
+            buffer_end: end,
+            num_rows: 10 * G,
+            count_known: true,
+        };
+
+        let request = state.prepare_async_collect(None).expect("first fill");
+        assert_eq!((request.buffer_start, request.buffer_end), (0, G));
+        state.apply_async_collect(group(0, G));
+        for _ in 0..20 {
+            assert!(!state.page_down(), "a page inside the group needs no fill");
+        }
+
+        // The last page of group 0 asks for a lookahead the cap refuses: nothing to do.
+        assert!(state.scroll_to(G - 60));
+        assert!(state.prepare_async_collect(None).is_none());
+
+        // A view straddling the boundary fetches group 1 alone.
+        assert!(state.scroll_to(G - 20));
+        let request = state.prepare_async_collect(None).expect("the next group");
+        assert_eq!((request.buffer_start, request.buffer_end), (G, 2 * G));
+        state.apply_async_collect(group(G, 2 * G));
+        assert_eq!((state.buffered_start(), state.buffered_end()), (0, 2 * G));
+        let held = state.buffered_df.as_ref().unwrap();
+        assert_eq!(held.height(), 2 * G);
+        assert_eq!(
+            held.column("a").unwrap().i32().unwrap().get(G),
+            Some(G as i32),
+            "stitched in order"
+        );
+
+        // Deep in group 1, an expansion near its end fits back to group 1 alone, which
+        // is on hand: group 0 is let go and nothing is fetched.
+        assert!(!state.page_down());
+        assert!(state.scroll_to(2 * G - 60));
+        assert!(state.prepare_async_collect(None).is_none());
+        assert_eq!((state.buffered_start(), state.buffered_end()), (G, 2 * G));
+
+        // End and Home are one group each.
+        assert!(state.scroll_to_end());
+        let request = state.prepare_async_collect(None).expect("the last group");
+        assert_eq!((request.buffer_start, request.buffer_end), (9 * G, 10 * G));
+        state.apply_async_collect(group(9 * G, 10 * G));
+        assert!(state.scroll_to_start());
+        let request = state.prepare_async_collect(None).expect("the first group");
+        assert_eq!((request.buffer_start, request.buffer_end), (0, G));
+    }
+
+    #[test]
+    fn a_reset_remote_scan_is_pristine_again() {
+        // A query makes the frame a predicate over the object, so the row-group window
+        // and footer count stand down; clearing it brings both back without a len().
+        let lf = df!("a" => (0..100).collect::<Vec<i32>>()).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.set_remote_source();
+        state.set_row_groups(&[60, 40]);
+        assert!(state.remote_window());
+        state.query("select a where a > 50".to_string());
+        assert!(!state.remote_window());
+        state.query(String::new());
+        assert!(state.remote_window());
+        assert_eq!(state.num_rows_if_valid(), Some(100));
     }
 
     #[test]

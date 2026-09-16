@@ -2067,10 +2067,17 @@ impl InflightCollect {
         // The view ends at the data when there is less than a screen of it.
         let bound = state.num_rows_if_valid().unwrap_or(usize::MAX);
         let view_end = (state.start_row + state.visible_rows).min(bound);
+        // A row group being stitched on to the buffer covers the view with it.
+        let (mut start, mut end) = (self.start, self.end);
+        let (held_start, held_end) = (state.buffered_start(), state.buffered_end());
+        if state.buffer_on_hand() && held_start <= end && start <= held_end {
+            start = start.min(held_start);
+            end = end.max(held_end);
+        }
         self.generation == generation
             && self.dataset == state.len_generation()
-            && self.start <= state.start_row
-            && view_end <= self.end
+            && start <= state.start_row
+            && view_end <= end
     }
 }
 
@@ -4158,20 +4165,21 @@ impl App {
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!("a bucket, not an object"));
         }
-        let (schema, rows) = wait_on_runtime(runtime, async move {
+        let footer = wait_on_runtime(runtime, async move {
             cloud_hive::footer_of_cloud_parquet(store, &key).await
         })
         .ok_or_else(|| color_eyre::eyre::eyre!("cancelled"))??;
         let args = ScanArgsParquet {
-            schema: Some(schema.clone()),
+            schema: Some(footer.schema.clone()),
             cloud_options: Some(cloud_opts),
             hive_options: polars::io::HiveOptions::default(),
             glob: false,
             ..Default::default()
         };
         let lf = LazyFrame::scan_parquet(PlPathRef::new(&full).into_owned(), args)?;
-        let mut state = DataTableState::from_schema_and_lazyframe(schema, lf, options, None)?;
-        state.set_num_rows(rows);
+        let mut state =
+            DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
+        state.set_row_groups(&footer.row_group_rows);
         Ok(state)
     }
 

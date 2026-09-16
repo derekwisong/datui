@@ -170,43 +170,40 @@ impl AnalysisModal {
     }
 
     pub fn previous_tool(&mut self) {
-        if let Some(current) = self.sidebar_state.selected() {
-            if current > 0 {
-                self.sidebar_state.select(Some(current - 1));
-            }
+        if let Some(current) = self.sidebar_state.selected()
+            && current > 0
+        {
+            self.sidebar_state.select(Some(current - 1));
         }
     }
 
     pub fn open_distribution_detail(&mut self) {
         if self.focus == AnalysisFocus::Main
             && self.selected_tool == Some(AnalysisTool::DistributionAnalysis)
+            && let Some(idx) = self.distribution_table_state.selected()
         {
-            if let Some(idx) = self.distribution_table_state.selected() {
-                if let Some(results) = &self.distribution_results {
-                    if let Some(dist_analysis) = results.distribution_analyses.get(idx) {
-                        self.selected_theoretical_distribution = dist_analysis.distribution_type;
-                    }
-                }
-                self.view = AnalysisView::DistributionDetail;
-                self.detail_section = 0;
-                self.focus = AnalysisFocus::DistributionSelector;
-                if self.selected_theoretical_distribution == DistributionType::Unknown {
-                    self.selected_theoretical_distribution = DistributionType::Normal;
-                }
-                self.distribution_selector_state.select(None);
+            if let Some(results) = &self.distribution_results
+                && let Some(dist_analysis) = results.distribution_analyses.get(idx)
+            {
+                self.selected_theoretical_distribution = dist_analysis.distribution_type;
             }
+            self.view = AnalysisView::DistributionDetail;
+            self.detail_section = 0;
+            self.focus = AnalysisFocus::DistributionSelector;
+            if self.selected_theoretical_distribution == DistributionType::Unknown {
+                self.selected_theoretical_distribution = DistributionType::Normal;
+            }
+            self.distribution_selector_state.select(None);
         }
     }
 
     pub fn open_correlation_detail(&mut self) {
         if self.focus == AnalysisFocus::Main
             && self.selected_tool == Some(AnalysisTool::CorrelationMatrix)
+            && let Some((row, col)) = self.selected_correlation
+            && row != col
         {
-            if let Some((row, col)) = self.selected_correlation {
-                if row != col {
-                    self.view = AnalysisView::CorrelationDetail;
-                }
-            }
+            self.view = AnalysisView::CorrelationDetail;
         }
     }
 
@@ -311,28 +308,28 @@ impl AnalysisModal {
         }
         match self.selected_tool {
             Some(AnalysisTool::Describe) => {
-                if let Some(current) = self.table_state.selected() {
-                    if current > 0 {
-                        self.table_state.select(Some(current - 1));
-                    }
+                if let Some(current) = self.table_state.selected()
+                    && current > 0
+                {
+                    self.table_state.select(Some(current - 1));
                 }
             }
             Some(AnalysisTool::DistributionAnalysis) => {
-                if let Some(current) = self.distribution_table_state.selected() {
-                    if current > 0 {
-                        let prev = current - 1;
-                        self.distribution_table_state.select(Some(prev));
-                        self.selected_distribution = Some(prev);
-                    }
+                if let Some(current) = self.distribution_table_state.selected()
+                    && current > 0
+                {
+                    let prev = current - 1;
+                    self.distribution_table_state.select(Some(prev));
+                    self.selected_distribution = Some(prev);
                 }
             }
             Some(AnalysisTool::CorrelationMatrix) => {
-                if let Some((row, col)) = self.selected_correlation {
-                    if row > 0 {
-                        let prev_row = row - 1;
-                        self.selected_correlation = Some((prev_row, col));
-                        self.correlation_table_state.select(Some(prev_row));
-                    }
+                if let Some((row, col)) = self.selected_correlation
+                    && row > 0
+                {
+                    let prev_row = row - 1;
+                    self.selected_correlation = Some((prev_row, col));
+                    self.correlation_table_state.select(Some(prev_row));
                 }
             }
             None => {}
@@ -455,55 +452,55 @@ impl AnalysisModal {
     }
 
     pub fn select_distribution(&mut self) {
-        if let Some(idx) = self.distribution_selector_state.selected() {
-            if let Some(results) = &self.distribution_results {
-                let dist_analysis_idx = self.distribution_table_state.selected().unwrap_or(0);
-                if let Some(dist_analysis) = results.distribution_analyses.get(dist_analysis_idx) {
-                    // Use the same distribution list and p-value lookup as the widget
-                    let distributions = [
-                        ("Normal", DistributionType::Normal),
-                        ("LogNormal", DistributionType::LogNormal),
-                        ("Uniform", DistributionType::Uniform),
-                        ("PowerLaw", DistributionType::PowerLaw),
-                        ("Exponential", DistributionType::Exponential),
-                        ("Beta", DistributionType::Beta),
-                        ("Gamma", DistributionType::Gamma),
-                        ("Chi-Squared", DistributionType::ChiSquared),
-                        ("Student's t", DistributionType::StudentsT),
-                        ("Poisson", DistributionType::Poisson),
-                        ("Bernoulli", DistributionType::Bernoulli),
-                        ("Binomial", DistributionType::Binomial),
-                        ("Geometric", DistributionType::Geometric),
-                        ("Weibull", DistributionType::Weibull),
-                    ];
+        if let Some(idx) = self.distribution_selector_state.selected()
+            && let Some(results) = &self.distribution_results
+        {
+            let dist_analysis_idx = self.distribution_table_state.selected().unwrap_or(0);
+            if let Some(dist_analysis) = results.distribution_analyses.get(dist_analysis_idx) {
+                // Use the same distribution list and p-value lookup as the widget
+                let distributions = [
+                    ("Normal", DistributionType::Normal),
+                    ("LogNormal", DistributionType::LogNormal),
+                    ("Uniform", DistributionType::Uniform),
+                    ("PowerLaw", DistributionType::PowerLaw),
+                    ("Exponential", DistributionType::Exponential),
+                    ("Beta", DistributionType::Beta),
+                    ("Gamma", DistributionType::Gamma),
+                    ("Chi-Squared", DistributionType::ChiSquared),
+                    ("Student's t", DistributionType::StudentsT),
+                    ("Poisson", DistributionType::Poisson),
+                    ("Bernoulli", DistributionType::Bernoulli),
+                    ("Binomial", DistributionType::Binomial),
+                    ("Geometric", DistributionType::Geometric),
+                    ("Weibull", DistributionType::Weibull),
+                ];
 
-                    let mut distribution_scores: Vec<(DistributionType, f64)> = distributions
-                        .iter()
-                        .map(|(_, dist_type)| {
-                            let p_value = dist_analysis
-                                .all_distribution_pvalues
-                                .get(dist_type)
-                                .copied()
-                                .unwrap_or_else(|| {
-                                    if *dist_type == DistributionType::Geometric {
-                                        0.01
-                                    } else {
-                                        0.0
-                                    }
-                                });
-                            (*dist_type, p_value)
-                        })
-                        .collect();
+                let mut distribution_scores: Vec<(DistributionType, f64)> = distributions
+                    .iter()
+                    .map(|(_, dist_type)| {
+                        let p_value = dist_analysis
+                            .all_distribution_pvalues
+                            .get(dist_type)
+                            .copied()
+                            .unwrap_or_else(|| {
+                                if *dist_type == DistributionType::Geometric {
+                                    0.01
+                                } else {
+                                    0.0
+                                }
+                            });
+                        (*dist_type, p_value)
+                    })
+                    .collect();
 
-                    distribution_scores
-                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                distribution_scores
+                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-                    let valid_idx = idx.min(distribution_scores.len().saturating_sub(1));
-                    if let Some((dist_type, _)) = distribution_scores.get(valid_idx) {
-                        self.selected_theoretical_distribution = *dist_type;
-                        if idx != valid_idx {
-                            self.distribution_selector_state.select(Some(valid_idx));
-                        }
+                let valid_idx = idx.min(distribution_scores.len().saturating_sub(1));
+                if let Some((dist_type, _)) = distribution_scores.get(valid_idx) {
+                    self.selected_theoretical_distribution = *dist_type;
+                    if idx != valid_idx {
+                        self.distribution_selector_state.select(Some(valid_idx));
                     }
                 }
             }

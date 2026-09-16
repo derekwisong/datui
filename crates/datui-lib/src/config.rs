@@ -1,6 +1,6 @@
 use crate::numfmt::{self, Glob, Grouping, NumberFormat, NumberFormatSettings};
-use color_eyre::eyre::eyre;
 use color_eyre::Result;
+use color_eyre::eyre::eyre;
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -266,14 +266,15 @@ impl ConfigManager {
             std::collections::HashMap::new();
 
         for field_path in &option_fields {
-            if !seen_fields.contains(*field_path) && comments.contains_key(*field_path) {
-                if let Some(dot_pos) = field_path.find('.') {
-                    let section = &field_path[..dot_pos];
-                    missing_by_section
-                        .entry(section.to_string())
-                        .or_default()
-                        .push(field_path);
-                }
+            if !seen_fields.contains(*field_path)
+                && comments.contains_key(*field_path)
+                && let Some(dot_pos) = field_path.find('.')
+            {
+                let section = &field_path[..dot_pos];
+                missing_by_section
+                    .entry(section.to_string())
+                    .or_default()
+                    .push(field_path);
             }
         }
 
@@ -604,7 +605,10 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
         "has_header",
         "Whether files have headers by default\nnull = auto-detect, true = has header, false = no header",
     ),
-    ("skip_lines", "Number of lines to skip at the start of files"),
+    (
+        "skip_lines",
+        "Number of lines to skip at the start of files",
+    ),
     ("skip_rows", "Number of rows to skip when reading files"),
     (
         "skip_tail_rows",
@@ -884,7 +888,10 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
         "max_buffered_mb",
         "Maximum buffer size in MB (0 = no limit)\nUses estimated memory; helps with very wide tables",
     ),
-    ("row_numbers", "Display row numbers on the left side of the table"),
+    (
+        "row_numbers",
+        "Display row numbers on the left side of the table",
+    ),
     ("row_start_index", "Starting index for row numbers (0 or 1)"),
     (
         "table_cell_padding",
@@ -978,12 +985,10 @@ pub struct ChartConfig {
 }
 
 // Field comments for ChartConfig
-const CHART_COMMENTS: &[(&str, &str)] = &[
-    (
-        "row_limit",
-        "Maximum rows used when building charts (display and export).\nSet to null for unlimited (uses full dataset). Set to a number (e.g. 10000) to cap. Can also be changed in chart view (Limit Rows). Example: row_limit = 10000",
-    ),
-];
+const CHART_COMMENTS: &[(&str, &str)] = &[(
+    "row_limit",
+    "Maximum rows used when building charts (display and export).\nSet to null for unlimited (uses full dataset). Set to a number (e.g. 10000) to cap. Can also be changed in chart view (Limit Rows). Example: row_limit = 10000",
+)];
 
 impl Default for ChartConfig {
     fn default() -> Self {
@@ -1214,8 +1219,7 @@ impl DataConfig {
     }
 }
 
-const DISPLAY_UNICODE_COMMENT: &str =
-    "Draw box-drawing and arrow characters: \"auto\" (default), \"always\", or \"never\".\n\
+const DISPLAY_UNICODE_COMMENT: &str = "Draw box-drawing and arrow characters: \"auto\" (default), \"always\", or \"never\".\n\
      \"auto\" uses them when the locale is UTF-8. Set \"never\" on a terminal that shows\n\
      replacement boxes instead — datui falls back to plain ASCII throughout.";
 
@@ -1423,7 +1427,10 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("text_inverse", "Text on light backgrounds"),
     ("table_header", "Table column header text"),
     ("table_header_bg", "Table column header background"),
-    ("row_numbers", "Row numbers column text; use \"default\" for terminal default"),
+    (
+        "row_numbers",
+        "Row numbers column text; use \"default\" for terminal default",
+    ),
     ("column_separator", "Vertical line between columns"),
     ("table_selected", "Selected row style"),
     ("sidebar_border", "Sidebar borders"),
@@ -1449,7 +1456,10 @@ const COLOR_COMMENTS: &[(&str, &str)] = &[
     ("int_col", "Main table: integer column text color"),
     ("float_col", "Main table: float column text color"),
     ("bool_col", "Main table: boolean column text color"),
-    ("temporal_col", "Main table: date/datetime/time column text color"),
+    (
+        "temporal_col",
+        "Main table: date/datetime/time column text color",
+    ),
     ("binary_col", "Main table: binary column placeholder color"),
     ("chart_series_color_1", "Chart view: first series color"),
     ("chart_series_color_2", "Chart view: second series color"),
@@ -1824,10 +1834,10 @@ fn expand_path(raw: &str) -> PathBuf {
         if let Some(home) = dirs::home_dir() {
             return home;
         }
-    } else if let Some(rest) = expanded.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    } else if let Some(rest) = expanded.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
 
     PathBuf::from(expanded)
@@ -2026,24 +2036,24 @@ impl AppConfig {
         }
 
         // Validate performance settings
-        if let Some(t) = self.performance.sampling_threshold {
-            if t == 0 {
-                return Err(eyre!("sampling_threshold must be greater than 0 when set"));
-            }
+        if let Some(t) = self.performance.sampling_threshold
+            && t == 0
+        {
+            return Err(eyre!("sampling_threshold must be greater than 0 when set"));
         }
 
         if self.performance.event_poll_interval_ms == 0 {
             return Err(eyre!("event_poll_interval_ms must be greater than 0"));
         }
 
-        if let Some(n) = self.chart.row_limit {
-            if n == 0 || n > MAX_CHART_ROW_LIMIT {
-                return Err(eyre!(
-                    "chart.row_limit must be between 1 and {} when set, got {}",
-                    MAX_CHART_ROW_LIMIT,
-                    n
-                ));
-            }
+        if let Some(n) = self.chart.row_limit
+            && (n == 0 || n > MAX_CHART_ROW_LIMIT)
+        {
+            return Err(eyre!(
+                "chart.row_limit must be between 1 and {} when set, got {}",
+                MAX_CHART_ROW_LIMIT,
+                n
+            ));
         }
 
         // Resolve number formatting so bad preset names and separator clashes
@@ -2183,7 +2193,7 @@ impl ColorConfig {
     fn validate(&self, parser: &ColorParser) -> Result<()> {
         // Helper macro to validate a color field (reports as theme.colors.<name> for config file context)
         macro_rules! validate_color {
-            ($field:expr, $name:expr) => {
+            ($field:expr_2021, $name:expr_2021) => {
                 parser.parse($field).map_err(|e| {
                     eyre!(
                         "theme.colors.{}: {}. Use a valid color name (e.g. red, cyan, bright_red), \

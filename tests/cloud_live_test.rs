@@ -292,11 +292,11 @@ fn section_named<'a>(app: &'a datui::App, title: &str) -> Option<&'a datui::home
 /// Put the cursor on the visible row with this name, and say whether it was found.
 fn select_row(app: &mut datui::App, name: &str) -> bool {
     for (index, row) in app.home.visible().iter().enumerate() {
-        if let datui::home::Row::Entry { entry, .. } = row {
-            if entry.name == name {
-                app.home.selected = index;
-                return true;
-            }
+        if let datui::home::Row::Entry { entry, .. } = row
+            && entry.name == name
+        {
+            app.home.selected = index;
+            return true;
         }
     }
     false

@@ -196,14 +196,13 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             '+' | '-' | '*' | '%' | '=' | '<' | '>' | '!' => {
                 let mut op = c.to_string();
                 chars.next();
-                if let Some(&next_c) = chars.peek() {
-                    if (c == '<' && (next_c == '=' || next_c == '>'))
+                if let Some(&next_c) = chars.peek()
+                    && ((c == '<' && (next_c == '=' || next_c == '>'))
                         || (c == '>' && next_c == '=')
-                        || (c == '!' && next_c == '=')
-                    {
-                        op.push(next_c);
-                        chars.next();
-                    }
+                        || (c == '!' && next_c == '='))
+                {
+                    op.push(next_c);
+                    chars.next();
                 }
                 tokens.push(Token::Op(op));
             }
@@ -241,17 +240,16 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 // Check for YYYY.MM.DDTHH:MM:SS timestamp literal (peek for 'T' before consuming)
                 let is_timestamp =
                     parse_date_literal(&num_str).is_some() && chars.peek() == Some(&'T');
-                if is_timestamp {
-                    if let Some((iso, format_str, time_unit)) =
+                if is_timestamp
+                    && let Some((iso, format_str, time_unit)) =
                         parse_timestamp_literal(&num_str, &mut chars)
-                    {
-                        tokens.push(Token::TimestampLiteral {
-                            iso,
-                            format_str,
-                            time_unit,
-                        });
-                        continue;
-                    }
+                {
+                    tokens.push(Token::TimestampLiteral {
+                        iso,
+                        format_str,
+                        time_unit,
+                    });
+                    continue;
                 }
                 // Check for YYYY.MM.DD date literal
                 if let Some(iso) = parse_date_literal(&num_str) {
@@ -385,7 +383,8 @@ fn apply_dt_accessor(expr: Expr, accessor: &str, _arg: Option<&str>) -> Result<E
         "month_start" => Ok(dt.month_start()),
         "month_end" => Ok(dt.month_end()),
         "format" => {
-            let fmt = _arg.ok_or("format accessor requires an argument, e.g. .format[\"%Y-%m\"]")?;
+            let fmt =
+                _arg.ok_or("format accessor requires an argument, e.g. .format[\"%Y-%m\"]")?;
             Ok(dt.to_string(fmt))
         }
         _ => Err(format!(
@@ -458,7 +457,7 @@ fn parse_accessors<'a>(
                     _ => {
                         return Err(
                             "Bracket accessor requires string or identifier argument".to_string()
-                        )
+                        );
                     }
                 };
                 (Some(arg), 5)
@@ -705,36 +704,38 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
 
     // First check if this starts with a function call (without brackets)
     // This needs to be checked before operator parsing to ensure correct precedence
-    if let Token::Identifier(name) = &tokens[0] {
-        if is_function_name(name) && tokens.len() > 1 && tokens[1] != Token::LBracket {
-            // Function call without brackets - parse the rest as the argument
-            let remaining = &tokens[1..];
-            if remaining.is_empty() {
-                return Err(format!("Function {} requires an argument", name));
-            }
-            // Parse the entire remaining expression as the function argument
-            let expr = parse_expr(remaining)?;
-            // Apply the function
-            match name.to_lowercase().as_str() {
-                "avg" | "mean" => return Ok(expr.mean()),
-                "min" => return Ok(expr.min()),
-                "max" => return Ok(expr.max()),
-                "count" => return Ok(expr.count()),
-                "std" | "stddev" => return Ok(expr.std(1)),
-                "med" | "median" => return Ok(expr.median()),
-                "sum" => return Ok(expr.sum()),
-                "first" => return Ok(expr.first()),
-                "last" => return Ok(expr.last()),
-                "len" | "length" => return Ok(expr.str().len_chars()),
-                "not" => return Ok(expr.not()),
-                "null" => return Ok(expr.is_null()),
-                "upper" => return Ok(expr.str().to_uppercase()),
-                "lower" => return Ok(expr.str().to_lowercase()),
-                "abs" => return Ok(expr.abs()),
-                "floor" => return Ok(expr.floor()),
-                "ceil" | "ceiling" => return Ok(expr.ceil()),
-                _ => {}
-            }
+    if let Token::Identifier(name) = &tokens[0]
+        && is_function_name(name)
+        && tokens.len() > 1
+        && tokens[1] != Token::LBracket
+    {
+        // Function call without brackets - parse the rest as the argument
+        let remaining = &tokens[1..];
+        if remaining.is_empty() {
+            return Err(format!("Function {} requires an argument", name));
+        }
+        // Parse the entire remaining expression as the function argument
+        let expr = parse_expr(remaining)?;
+        // Apply the function
+        match name.to_lowercase().as_str() {
+            "avg" | "mean" => return Ok(expr.mean()),
+            "min" => return Ok(expr.min()),
+            "max" => return Ok(expr.max()),
+            "count" => return Ok(expr.count()),
+            "std" | "stddev" => return Ok(expr.std(1)),
+            "med" | "median" => return Ok(expr.median()),
+            "sum" => return Ok(expr.sum()),
+            "first" => return Ok(expr.first()),
+            "last" => return Ok(expr.last()),
+            "len" | "length" => return Ok(expr.str().len_chars()),
+            "not" => return Ok(expr.not()),
+            "null" => return Ok(expr.is_null()),
+            "upper" => return Ok(expr.str().to_uppercase()),
+            "lower" => return Ok(expr.str().to_lowercase()),
+            "abs" => return Ok(expr.abs()),
+            "floor" => return Ok(expr.floor()),
+            "ceil" | "ceiling" => return Ok(expr.ceil()),
+            _ => {}
         }
     }
 
@@ -770,18 +771,18 @@ fn parse_expr(tokens: &[Token]) -> Result<Expr, String> {
                 && op == "-"
                 && !right_tokens.is_empty()
                 && matches!(right_tokens[0], Token::Number(_))
+                && let Token::Number(n) = right_tokens[0]
             {
-                if let Token::Number(n) = right_tokens[0] {
-                    let negated = lit(0).sub(lit(n));
-                    if right_tokens.len() >= 3 && matches!(right_tokens[1], Token::Op(_)) {
-                        if let Token::Op(bin_op) = &right_tokens[1] {
-                            let right_expr = parse_expr(&right_tokens[2..])?;
-                            return apply_op(negated, bin_op, right_expr);
-                        }
-                    }
-                    if right_tokens.len() == 1 {
-                        return Ok(negated);
-                    }
+                let negated = lit(0).sub(lit(n));
+                if right_tokens.len() >= 3
+                    && matches!(right_tokens[1], Token::Op(_))
+                    && let Token::Op(bin_op) = &right_tokens[1]
+                {
+                    let right_expr = parse_expr(&right_tokens[2..])?;
+                    return apply_op(negated, bin_op, right_expr);
+                }
+                if right_tokens.len() == 1 {
+                    return Ok(negated);
                 }
             }
             // Unary plus/minus when there is no left operand (e.g. -x, +x, -(a+b))
@@ -911,7 +912,7 @@ pub fn parse_query(query: &str) -> ParseQueryResult {
                         _ => {
                             return Err(
                                 "Expected string or identifier in col[] for alias".to_string()
-                            )
+                            );
                         }
                     }
                 } else {
@@ -976,7 +977,7 @@ pub fn parse_query(query: &str) -> ParseQueryResult {
                             return Err(
                                 "Expected string or identifier in col[] for alias in by clause"
                                     .to_string(),
-                            )
+                            );
                         }
                     }
                 } else {

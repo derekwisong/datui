@@ -25,19 +25,20 @@ fn load_file_with(
 ) {
     let mut next: Option<AppEvent> = Some(AppEvent::Open(vec![path], opts));
     loop {
-        if let Some(ev) = next.take() {
-            if matches!(ev, AppEvent::Crash(_)) {
-                app.event(&ev);
-                return;
+        match next.take() {
+            Some(ev) => {
+                if matches!(ev, AppEvent::Crash(_)) {
+                    app.event(&ev);
+                    return;
+                }
+                next = app.event(&ev);
             }
-            next = app.event(&ev);
-        } else {
-            match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+            _ => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
                 Ok(ev) => {
                     next = Some(ev);
                 }
                 Err(_) => return,
-            }
+            },
         }
     }
 }

@@ -423,16 +423,16 @@ fn enrich_dataset(entry: &mut Entry) {
     collect_parquet_files(&entry.path, 0, &mut files);
     if files.is_empty() || files.len() > MAX_FOOTERS_PER_DATASET {
         // Still worth knowing the shape, even when the row count is out of reach.
-        if let Some(first) = files.first() {
-            if let Some(meta) = crate::widgets::info::read_parquet_metadata(first) {
-                entry.cols = Some(meta.schema_descr.columns().len());
-                entry.columns = column_names(&meta);
-                // From one file, so it describes how the dataset is written rather
-                // than its total: codec and row-group sizing are a property of the
-                // writer and are uniform in practice.
-                physical_facts(&meta, &mut entry.cost);
-                entry.cost.uncompressed = None;
-            }
+        if let Some(first) = files.first()
+            && let Some(meta) = crate::widgets::info::read_parquet_metadata(first)
+        {
+            entry.cols = Some(meta.schema_descr.columns().len());
+            entry.columns = column_names(&meta);
+            // From one file, so it describes how the dataset is written rather
+            // than its total: codec and row-group sizing are a property of the
+            // writer and are uniform in practice.
+            physical_facts(&meta, &mut entry.cost);
+            entry.cost.uncompressed = None;
         }
         return;
     }

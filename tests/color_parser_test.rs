@@ -3,7 +3,9 @@ use ratatui::style::Color;
 
 // Helper to ensure NO_COLOR is not set for color parsing tests
 fn ensure_colors_enabled() {
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 }
 
 #[test]
@@ -172,7 +174,9 @@ fn test_no_color_environment() {
     let original = std::env::var("NO_COLOR").ok();
 
     // Set NO_COLOR
-    std::env::set_var("NO_COLOR", "1");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::set_var("NO_COLOR", "1") };
 
     // Create parser AFTER setting NO_COLOR
     let parser = ColorParser::new();
@@ -184,8 +188,12 @@ fn test_no_color_environment() {
 
     // Restore original NO_COLOR state
     match original {
-        Some(val) => std::env::set_var("NO_COLOR", val),
-        None => std::env::remove_var("NO_COLOR"),
+        // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+        // reading the environment; accepted in tests and never done outside them.
+        Some(val) => unsafe { std::env::set_var("NO_COLOR", val) },
+        // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+        // reading the environment; accepted in tests and never done outside them.
+        None => unsafe { std::env::remove_var("NO_COLOR") },
     }
 }
 
@@ -355,10 +363,12 @@ fn test_theme_with_invalid_color() {
 
     let result = Theme::from_config(&config.theme);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Unknown color name"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown color name")
+    );
 }
 
 #[test]

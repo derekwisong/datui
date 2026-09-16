@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 
 use crate::chart_data::{
-    format_axis_label, format_x_axis_label, BoxPlotData, HeatmapData, XAxisTemporalKind,
+    BoxPlotData, HeatmapData, XAxisTemporalKind, format_axis_label, format_x_axis_label,
 };
 use crate::chart_modal::ChartType;
 
@@ -161,15 +161,15 @@ pub fn write_chart_eps(
     writeln!(f, "1 setlinewidth")?;
 
     // Optional chart title at top center
-    if let Some(ref title) = bounds.chart_title {
-        if !title.is_empty() {
-            const CHAR_W: f64 = 6.0;
-            writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
-            let title_w = title.len() as f64 * CHAR_W;
-            let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
-            writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
-            writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-        }
+    if let Some(ref title) = bounds.chart_title
+        && !title.is_empty()
+    {
+        const CHAR_W: f64 = 6.0;
+        writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
+        let title_w = title.len() as f64 * CHAR_W;
+        let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
+        writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
+        writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
     }
 
     // Tick positions for grid, ticks, and labels
@@ -654,15 +654,15 @@ pub fn write_box_plot_eps(
     writeln!(f, "gsave")?;
     writeln!(f, "1 setlinewidth")?;
 
-    if let Some(ref title) = bounds.chart_title {
-        if !title.is_empty() {
-            const CHAR_W: f64 = 6.0;
-            writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
-            let title_w = title.len() as f64 * CHAR_W;
-            let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
-            writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
-            writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-        }
+    if let Some(ref title) = bounds.chart_title
+        && !title.is_empty()
+    {
+        const CHAR_W: f64 = 6.0;
+        writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
+        let title_w = title.len() as f64 * CHAR_W;
+        let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
+        writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
+        writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
     }
 
     const MAX_TICKS: usize = 8;
@@ -862,15 +862,15 @@ pub fn write_heatmap_eps(
     writeln!(f, "gsave")?;
     writeln!(f, "1 setlinewidth")?;
 
-    if let Some(ref title) = bounds.chart_title {
-        if !title.is_empty() {
-            const CHAR_W: f64 = 6.0;
-            writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
-            let title_w = title.len() as f64 * CHAR_W;
-            let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
-            writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
-            writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-        }
+    if let Some(ref title) = bounds.chart_title
+        && !title.is_empty()
+    {
+        const CHAR_W: f64 = 6.0;
+        writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
+        let title_w = title.len() as f64 * CHAR_W;
+        let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
+        writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
+        writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
     }
 
     const MAX_TICKS: usize = 8;

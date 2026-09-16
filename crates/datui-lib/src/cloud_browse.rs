@@ -795,7 +795,7 @@ mod tests {
     }
 
     macro_rules! environment {
-        ($vars:expr, $files:expr, $home:expr) => {
+        ($vars:expr_2021, $files:expr_2021, $home:expr_2021) => {
             Environment {
                 var: &|key| $vars.get(key).cloned(),
                 exists: &|path| $files.iter().any(|f: &PathBuf| f == path),
@@ -803,7 +803,7 @@ mod tests {
                 home: $home.clone(),
             }
         };
-        ($vars:expr, $files:expr, $home:expr, $contents:expr) => {
+        ($vars:expr_2021, $files:expr_2021, $home:expr_2021, $contents:expr_2021) => {
             Environment {
                 var: &|key| $vars.get(key).cloned(),
                 exists: &|path| $files.iter().any(|f: &PathBuf| f == path),

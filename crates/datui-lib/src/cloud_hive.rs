@@ -53,10 +53,11 @@ fn partition_columns_from_prefix(prefix_str: &str) -> Vec<String> {
     let mut columns = Vec::new();
     let mut seen = HashSet::new();
     for segment in prefix_str.split('/') {
-        if let Some((key, _)) = segment.split_once('=') {
-            if !key.is_empty() && seen.insert(key.to_string()) {
-                columns.push(key.to_string());
-            }
+        if let Some((key, _)) = segment.split_once('=')
+            && !key.is_empty()
+            && seen.insert(key.to_string())
+        {
+            columns.push(key.to_string());
         }
     }
     columns
@@ -207,7 +208,7 @@ mod tests {
 
     #[test]
     fn footer_from_parquet_tail_reads_schema_and_row_count() {
-        use polars::prelude::{df, ParquetWriter};
+        use polars::prelude::{ParquetWriter, df};
         let mut df = df!("a" => &[1i32, 2, 3], "b" => &["x", "y", "z"]).unwrap();
         let mut bytes = Vec::new();
         ParquetWriter::new(&mut bytes).finish(&mut df).unwrap();
@@ -218,7 +219,7 @@ mod tests {
 
     #[test]
     fn footer_from_parquet_tail_reads_row_groups_and_column_widths() {
-        use polars::prelude::{df, ParquetWriter};
+        use polars::prelude::{ParquetWriter, df};
         let ids: Vec<i32> = (0..1000).collect();
         let notes: Vec<String> = ids.iter().map(|i| format!("note-{i:04}")).collect();
         let lists: Vec<Series> = ids

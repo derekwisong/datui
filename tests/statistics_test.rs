@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use datui::statistics::{
-    compute_correlation_matrix, compute_correlation_pair, compute_statistics_with_options,
-    ComputeOptions,
+    ComputeOptions, compute_correlation_matrix, compute_correlation_pair,
+    compute_statistics_with_options,
 };
 use polars::prelude::*;
 

@@ -16,11 +16,11 @@ fn main() -> io::Result<()> {
     let dest_path = out_dir.join("datui.1");
     fs::write(&dest_path, &buffer)?;
 
-    if env::var("PROFILE").unwrap_or_default() == "release" {
-        if let Some(release_dir) = out_dir.ancestors().nth(3) {
-            let release_manpage = release_dir.join("datui.1");
-            fs::write(&release_manpage, &buffer)?;
-        }
+    if env::var("PROFILE").unwrap_or_default() == "release"
+        && let Some(release_dir) = out_dir.ancestors().nth(3)
+    {
+        let release_manpage = release_dir.join("datui.1");
+        fs::write(&release_manpage, &buffer)?;
     }
 
     Ok(())

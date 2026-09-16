@@ -14,9 +14,9 @@ use crate::analysis_modal::{AnalysisFocus, AnalysisTool, AnalysisView, Histogram
 use crate::config::Theme;
 use crate::numfmt::{self, NumberFormatSettings};
 use crate::statistics::{
-    beta_pdf, chi_squared_pdf, gamma_pdf, gamma_quantile, geometric_pmf, geometric_quantile,
-    students_t_pdf, weibull_pdf, AnalysisContext, AnalysisResults, DistributionAnalysis,
-    DistributionType,
+    AnalysisContext, AnalysisResults, DistributionAnalysis, DistributionType, beta_pdf,
+    chi_squared_pdf, gamma_pdf, gamma_quantile, geometric_pmf, geometric_quantile, students_t_pdf,
+    weibull_pdf,
 };
 use crate::widgets::datatable::DataTableState;
 use polars::prelude::{AnyValue, DataType};
@@ -651,8 +651,10 @@ fn render_statistics_table(
     let header_row = Row::new(header_cells.clone()).style(header_row_style);
 
     for col_stat in &results.column_statistics {
-        let mut cells = vec![Cell::from(col_stat.name.as_str())
-            .style(Style::default().fg(theme.get("text_primary")))];
+        let mut cells = vec![
+            Cell::from(col_stat.name.as_str())
+                .style(Style::default().fg(theme.get("text_primary"))),
+        ];
         for &stat_idx in &visible_stats {
             let stat_name = stat_names[stat_idx];
             let value = match stat_name {
@@ -1007,8 +1009,10 @@ fn render_distribution_table(
 
         // Build row with locked column name + visible stat values
         // Use explicit text_primary so column names stay visible (avoids black-on-black)
-        let mut cells = vec![Cell::from(dist_analysis.column_name.as_str())
-            .style(Style::default().fg(theme.get("text_primary")))];
+        let mut cells = vec![
+            Cell::from(dist_analysis.column_name.as_str())
+                .style(Style::default().fg(theme.get("text_primary"))),
+        ];
 
         // Add visible statistic values
         for &stat_idx in &visible_stats {

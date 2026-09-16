@@ -28,14 +28,14 @@ use polars::io::csv::read::NullValues;
 use polars::prelude::StrptimeOptions;
 use std::io::{BufReader, Read};
 
-use calamine::{open_workbook_auto, Data, Reader};
+use calamine::{Data, Reader, open_workbook_auto};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use orc_rust::ArrowReaderBuilder;
 use tempfile::NamedTempFile;
 
 use arrow::array::types::{
-    Date32Type, Date64Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
-    TimestampMillisecondType, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+    Date32Type, Date64Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
+    TimestampMillisecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow::array::{Array, AsArray};
 use arrow::record_batch::RecordBatch;
@@ -1421,12 +1421,12 @@ impl DataTableState {
                 {
                     return Some(child);
                 }
-            } else if child.is_dir() {
-                if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
-                    if name.contains('=') && first_partition_child.is_none() {
-                        first_partition_child = Some(child);
-                    }
-                }
+            } else if child.is_dir()
+                && let Some(name) = child.file_name().and_then(|n| n.to_str())
+                && name.contains('=')
+                && first_partition_child.is_none()
+            {
+                first_partition_child = Some(child);
             }
         }
         first_partition_child.and_then(|p| Self::first_parquet_file_spine(&p, depth + 1, max_depth))
@@ -1487,11 +1487,11 @@ impl DataTableState {
                         let mut sum = 0usize;
                         let mut ok = 0usize;
                         for path in chunk {
-                            if let Ok(file) = File::open(path) {
-                                if let Ok(n) = ParquetReader::new(file).num_rows() {
-                                    sum += n;
-                                    ok += 1;
-                                }
+                            if let Ok(file) = File::open(path)
+                                && let Ok(n) = ParquetReader::new(file).num_rows()
+                            {
+                                sum += n;
+                                ok += 1;
                             }
                         }
                         (sum, ok)
@@ -1620,18 +1620,17 @@ impl DataTableState {
         let mut first_partition_child: Option<std::path::PathBuf> = None;
         for entry in entries.flatten() {
             let child = entry.path();
-            if child.is_dir() {
-                if let Some(name) = child.file_name().and_then(|n| n.to_str()) {
-                    if let Some((key, _)) = name.split_once('=') {
-                        if !key.is_empty() && seen.insert(key.to_string()) {
-                            columns.push(key.to_string());
-                        }
-                        if first_partition_child.is_none() {
-                            first_partition_child = Some(child);
-                        }
-                        break;
-                    }
+            if child.is_dir()
+                && let Some(name) = child.file_name().and_then(|n| n.to_str())
+                && let Some((key, _)) = name.split_once('=')
+            {
+                if !key.is_empty() && seen.insert(key.to_string()) {
+                    columns.push(key.to_string());
                 }
+                if first_partition_child.is_none() {
+                    first_partition_child = Some(child);
+                }
+                break;
             }
         }
         if let Some(one) = first_partition_child {
@@ -1645,13 +1644,12 @@ impl DataTableState {
         let mut columns = Vec::<String>::new();
         let mut seen = HashSet::<String>::new();
         for segment in path_str.split('/') {
-            if let Some((key, rest)) = segment.split_once('=') {
-                if !key.is_empty()
-                    && (rest == "*" || !rest.contains('*'))
-                    && seen.insert(key.to_string())
-                {
-                    columns.push(key.to_string());
-                }
+            if let Some((key, rest)) = segment.split_once('=')
+                && !key.is_empty()
+                && (rest == "*" || !rest.contains('*'))
+                && seen.insert(key.to_string())
+            {
+                columns.push(key.to_string());
             }
         }
         columns
@@ -1916,13 +1914,14 @@ impl DataTableState {
         };
         let count_df = collect_lazy(lf.clone().select([len()]), options.polars_streaming)
             .map_err(color_eyre::eyre::Report::from)?;
-        let total: u32 = if let Some(col) = count_df.get(0) {
-            match col.first() {
+        let total: u32 = match count_df.get(0) {
+            Some(col) => match col.first() {
                 Some(AnyValue::UInt32(v)) => *v,
                 _ => return Ok(lf),
+            },
+            _ => {
+                return Ok(lf);
             }
-        } else {
-            return Ok(lf);
         };
         let keep = total.saturating_sub(n as u32);
         Ok(lf.slice(0, keep))
@@ -2837,10 +2836,11 @@ impl DataTableState {
         let new_start_row = if self.start_row as i64 + rows <= 0 {
             0
         } else {
-            if let Some(df) = self.df.as_ref() {
-                if rows > 0 && df.shape().0 <= self.visible_rows {
-                    return false;
-                }
+            if let Some(df) = self.df.as_ref()
+                && rows > 0
+                && df.shape().0 <= self.visible_rows
+            {
+                return false;
             }
             let unclamped = (self.start_row as i64 + rows) as usize;
             if rows > 0 {
@@ -2874,10 +2874,11 @@ impl DataTableState {
         let new_start_row = if self.start_row as i64 + rows <= 0 {
             0
         } else {
-            if let Some(df) = self.df.as_ref() {
-                if rows > 0 && df.shape().0 <= self.visible_rows {
-                    return false;
-                }
+            if let Some(df) = self.df.as_ref()
+                && rows > 0
+                && df.shape().0 <= self.visible_rows
+            {
+                return false;
             }
             let unclamped = (self.start_row as i64 + rows) as usize;
             if rows > 0 {
@@ -2930,17 +2931,16 @@ impl DataTableState {
         if !self.num_rows_valid {
             self.num_rows =
                 match collect_lazy(self.lf.clone().select([len()]), self.polars_streaming) {
-                    Ok(df) => {
-                        if let Some(col) = df.get(0) {
+                    Ok(df) => match df.get(0) {
+                        Some(col) => {
                             if let Some(AnyValue::UInt32(len)) = col.first() {
                                 *len as usize
                             } else {
                                 0
                             }
-                        } else {
-                            0
                         }
-                    }
+                        _ => 0,
+                    },
                     Err(_) => 0,
                 };
             self.num_rows_valid = true;
@@ -3380,8 +3380,10 @@ impl DataTableState {
             if held.vstack_mut(&df).is_ok() {
                 return (held, self.buffered_start_row);
             }
-        } else if let Ok(joined) = df.vstack(&held) {
-            return (joined, buffer_start);
+        } else {
+            if let Ok(joined) = df.vstack(&held) {
+                return (joined, buffer_start);
+            }
         }
         (df, buffer_start)
     }
@@ -3884,12 +3886,14 @@ impl DataTableState {
             .collect();
         if scroll_names.is_empty() {
             self.df = None;
-        } else if let Ok(scroll_df) = full_df.select(scroll_names) {
-            self.df = if self.is_grouped() {
-                self.format_grouped_dataframe(scroll_df).ok()
-            } else {
-                Some(scroll_df)
-            };
+        } else {
+            if let Ok(scroll_df) = full_df.select(scroll_names) {
+                self.df = if self.is_grouped() {
+                    self.format_grouped_dataframe(scroll_df).ok()
+                } else {
+                    Some(scroll_df)
+                };
+            }
         }
     }
 
@@ -3938,10 +3942,11 @@ impl DataTableState {
     /// Returns true if a buffer collect is needed after the scroll.
     pub fn select_next(&mut self) -> bool {
         self.table_state.select_next();
-        if let Some(selected) = self.table_state.selected() {
-            if selected >= self.visible_rows && self.visible_rows > 0 {
-                return self.slide_table(1);
-            }
+        if let Some(selected) = self.table_state.selected()
+            && selected >= self.visible_rows
+            && self.visible_rows > 0
+        {
+            return self.slide_table(1);
         }
         false
     }
@@ -4384,26 +4389,27 @@ impl DataTableState {
     }
 
     pub fn drill_up(&mut self) -> Result<()> {
-        if let Some(view) = self.grouped.take() {
-            self.invalidate_num_rows();
-            self.lf = view.lf;
-            self.base_lf = view.base_lf;
-            self.filters = view.filters;
-            self.sort_columns = view.sort_columns;
-            self.sort_ascending = view.sort_ascending;
-            self.schema = self.lf.clone().collect_schema()?;
-            self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
-            self.drilled_down_group_index = None;
-            self.drilled_down_group_key = None;
-            self.drilled_down_group_key_columns = None;
-            self.start_row = 0;
-            self.termcol_index = 0;
-            self.locked_columns_count = 0;
-            self.table_state.select(Some(0));
-            self.collect();
-            Ok(())
-        } else {
-            Err(color_eyre::eyre::eyre!("Not in drill-down mode"))
+        match self.grouped.take() {
+            Some(view) => {
+                self.invalidate_num_rows();
+                self.lf = view.lf;
+                self.base_lf = view.base_lf;
+                self.filters = view.filters;
+                self.sort_columns = view.sort_columns;
+                self.sort_ascending = view.sort_ascending;
+                self.schema = self.lf.clone().collect_schema()?;
+                self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
+                self.drilled_down_group_index = None;
+                self.drilled_down_group_key = None;
+                self.drilled_down_group_key_columns = None;
+                self.start_row = 0;
+                self.termcol_index = 0;
+                self.locked_columns_count = 0;
+                self.table_state.select(Some(0));
+                self.collect();
+                Ok(())
+            }
+            _ => Err(color_eyre::eyre::eyre!("Not in drill-down mode")),
         }
     }
 
@@ -5048,11 +5054,7 @@ impl DataTable {
 
     /// How many rows the header takes: the names, plus the type row when it is on.
     pub fn header_height(&self) -> u16 {
-        if self.dtype_row {
-            2
-        } else {
-            1
-        }
+        if self.dtype_row { 2 } else { 1 }
     }
 
     /// Style of the highlighted row: a tint when the theme gives one, else reversed video.
@@ -5416,10 +5418,11 @@ impl StatefulWidget for DataTable {
         let visible_rows_changed = new_visible_rows != state.visible_rows;
         state.visible_rows = new_visible_rows;
 
-        if let Some(selected) = state.table_state.selected() {
-            if selected >= state.visible_rows && state.visible_rows > 0 {
-                state.table_state.select(Some(state.visible_rows - 1))
-            }
+        if let Some(selected) = state.table_state.selected()
+            && selected >= state.visible_rows
+            && state.visible_rows > 0
+        {
+            state.table_state.select(Some(state.visible_rows - 1))
         }
 
         if visible_rows_changed {
@@ -5430,21 +5433,21 @@ impl StatefulWidget for DataTable {
 
         // Only show errors in main view if not suppressed (e.g., when query input is active)
         // Query errors should only be shown in the query input frame
-        if let Some(error) = state.error.as_ref() {
-            if !state.suppress_error_display {
-                Paragraph::new(format!("Error: {}", user_message_from_polars(error)))
-                    .centered()
-                    .block(
-                        Block::default()
-                            .borders(Borders::NONE)
-                            .padding(Padding::top(area.height / 2)),
-                    )
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .render(area, buf);
-                return;
-            }
-            // If suppress_error_display is true, continue rendering the table normally
+        if let Some(error) = state.error.as_ref()
+            && !state.suppress_error_display
+        {
+            Paragraph::new(format!("Error: {}", user_message_from_polars(error)))
+                .centered()
+                .block(
+                    Block::default()
+                        .borders(Borders::NONE)
+                        .padding(Padding::top(area.height / 2)),
+                )
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .render(area, buf);
+            return;
         }
+        // If suppress_error_display is true, continue rendering the table normally
 
         // Captures the scrollable area plus whether columns exist off-screen to the left/right,
         // so a header-row indicator can be drawn after the table is rendered.
@@ -5680,44 +5683,54 @@ impl StatefulWidget for DataTable {
                 .iter()
                 .map(|name| Series::new(name.as_str().into(), Vec::<String>::new()).into())
                 .collect();
-            if let Ok(empty_df) = DataFrame::new_infer_height(empty_columns) {
-                if state.row_numbers {
-                    let row_num_area = Rect {
-                        x: area.x,
-                        y: area.y,
-                        width: row_num_width,
-                        height: area.height,
-                    };
-                    self.render_row_numbers(
-                        row_num_area,
-                        buf,
-                        RowNumbersParams {
-                            start_row: 0,
-                            visible_rows: state.visible_rows,
-                            num_rows: 0,
-                            row_start_index: state.row_start_index,
-                            selected_row: None,
-                        },
-                    );
-                    let data_area = Rect {
-                        x: area.x + row_num_width,
-                        y: area.y,
-                        width: area.width.saturating_sub(row_num_width),
-                        height: area.height,
-                    };
-                    self.render_dataframe(
-                        &empty_df,
-                        data_area,
-                        buf,
-                        &mut state.table_state,
-                        false,
-                        0,
-                    );
-                } else {
-                    self.render_dataframe(&empty_df, area, buf, &mut state.table_state, false, 0);
+            match DataFrame::new_infer_height(empty_columns) {
+                Ok(empty_df) => {
+                    if state.row_numbers {
+                        let row_num_area = Rect {
+                            x: area.x,
+                            y: area.y,
+                            width: row_num_width,
+                            height: area.height,
+                        };
+                        self.render_row_numbers(
+                            row_num_area,
+                            buf,
+                            RowNumbersParams {
+                                start_row: 0,
+                                visible_rows: state.visible_rows,
+                                num_rows: 0,
+                                row_start_index: state.row_start_index,
+                                selected_row: None,
+                            },
+                        );
+                        let data_area = Rect {
+                            x: area.x + row_num_width,
+                            y: area.y,
+                            width: area.width.saturating_sub(row_num_width),
+                            height: area.height,
+                        };
+                        self.render_dataframe(
+                            &empty_df,
+                            data_area,
+                            buf,
+                            &mut state.table_state,
+                            false,
+                            0,
+                        );
+                    } else {
+                        self.render_dataframe(
+                            &empty_df,
+                            area,
+                            buf,
+                            &mut state.table_state,
+                            false,
+                            0,
+                        );
+                    }
                 }
-            } else {
-                Paragraph::new("No data").render(area, buf);
+                _ => {
+                    Paragraph::new("No data").render(area, buf);
+                }
             }
         } else {
             // Truly empty: no schema, not loaded, or blank file
@@ -5738,20 +5751,20 @@ impl StatefulWidget for DataTable {
                 cell.set_char(' ');
                 cell.set_style(header_style);
             }
-            if state.df.is_some() {
-                if let Some(sel) = state.table_state.selected() {
-                    let y = rail_area.y + header_h + sel as u16;
-                    if y < rail_area.y + rail_area.height {
-                        let cell = &mut buf[(rail_area.x, y)];
-                        cell.set_symbol(g.rail.trim_end());
-                        let mut style = Style::default()
-                            .fg(self.accent)
-                            .add_modifier(Modifier::BOLD);
-                        if let Some(bg) = self.selected_bg {
-                            style = style.bg(bg);
-                        }
-                        cell.set_style(style);
+            if state.df.is_some()
+                && let Some(sel) = state.table_state.selected()
+            {
+                let y = rail_area.y + header_h + sel as u16;
+                if y < rail_area.y + rail_area.height {
+                    let cell = &mut buf[(rail_area.x, y)];
+                    cell.set_symbol(g.rail.trim_end());
+                    let mut style = Style::default()
+                        .fg(self.accent)
+                        .add_modifier(Modifier::BOLD);
+                    if let Some(bg) = self.selected_bg {
+                        style = style.bg(bg);
                     }
+                    cell.set_style(style);
                 }
             }
         }
@@ -5760,44 +5773,45 @@ impl StatefulWidget for DataTable {
         // where nothing else lives. The right one says how many are hidden, and goes
         // on the type row when that row is on (its short labels leave room), else on
         // the name row, right-aligned into the slack after the last column.
-        if let Some((scroll_area, more_left, hidden)) = scroll_indicator {
-            if scroll_area.width > 0 && scroll_area.height > 0 {
-                let g = crate::glyphs::get();
-                let more_right = hidden > 0;
-                let hint_style = if self.header_bg == Color::Reset {
-                    Style::default()
-                        .fg(self.accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                        .bg(self.header_bg)
-                        .fg(self.accent)
-                        .add_modifier(Modifier::BOLD)
-                };
-                if more_left && rail_area.width > 0 {
-                    let cell = &mut buf[(rail_area.x, rail_area.y)];
-                    cell.set_symbol(g.arrow_left);
-                    cell.set_style(hint_style);
+        if let Some((scroll_area, more_left, hidden)) = scroll_indicator
+            && scroll_area.width > 0
+            && scroll_area.height > 0
+        {
+            let g = crate::glyphs::get();
+            let more_right = hidden > 0;
+            let hint_style = if self.header_bg == Color::Reset {
+                Style::default()
+                    .fg(self.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .bg(self.header_bg)
+                    .fg(self.accent)
+                    .add_modifier(Modifier::BOLD)
+            };
+            if more_left && rail_area.width > 0 {
+                let cell = &mut buf[(rail_area.x, rail_area.y)];
+                cell.set_symbol(g.arrow_left);
+                cell.set_style(hint_style);
+            }
+            if more_right {
+                // The count when there is room for it, the arrow alone when not.
+                let mut text = format!(" +{hidden} {}", g.arrow_right);
+                if scroll_area.width <= text.chars().count() as u16 {
+                    text = g.arrow_right.to_string();
                 }
-                if more_right {
-                    // The count when there is room for it, the arrow alone when not.
-                    let mut text = format!(" +{hidden} {}", g.arrow_right);
-                    if scroll_area.width <= text.chars().count() as u16 {
-                        text = g.arrow_right.to_string();
-                    }
-                    let w = text.chars().count() as u16;
-                    if scroll_area.width >= w {
-                        let x0 = scroll_area.x + scroll_area.width - w;
-                        let y = if header_h > 1 {
-                            scroll_area.y + 1
-                        } else {
-                            scroll_area.y
-                        };
-                        for (i, ch) in text.chars().enumerate() {
-                            let cell = &mut buf[(x0 + i as u16, y)];
-                            cell.set_char(ch);
-                            cell.set_style(hint_style);
-                        }
+                let w = text.chars().count() as u16;
+                if scroll_area.width >= w {
+                    let x0 = scroll_area.x + scroll_area.width - w;
+                    let y = if header_h > 1 {
+                        scroll_area.y + 1
+                    } else {
+                        scroll_area.y
+                    };
+                    for (i, ch) in text.chars().enumerate() {
+                        let cell = &mut buf[(x0 + i as u16, y)];
+                        cell.set_char(ch);
+                        cell.set_style(hint_style);
                     }
                 }
             }
@@ -5866,19 +5880,20 @@ mod tests {
         let mut next: Option<AppEvent> = Some(AppEvent::Open(vec![path], opts));
         let mut saw_crash = false;
         loop {
-            if let Some(ev) = next.take() {
-                if matches!(ev, AppEvent::Crash(_)) {
-                    saw_crash = true;
-                    break;
+            match next.take() {
+                Some(ev) => {
+                    if matches!(ev, AppEvent::Crash(_)) {
+                        saw_crash = true;
+                        break;
+                    }
+                    next = app.event(&ev);
                 }
-                next = app.event(&ev);
-            } else {
-                match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+                _ => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
                     Ok(ev) => {
                         next = Some(ev);
                     }
                     Err(_) => break,
-                }
+                },
             }
         }
         saw_crash
@@ -7354,7 +7369,9 @@ mod tests {
         );
         // Groups the window reaches into come along while they fit, the one ahead first.
         assert_eq!(
-            align_to_row_groups(&offsets, 1_500_000, 1_500_047, 950_000, 2_050_000, 2_000_000),
+            align_to_row_groups(
+                &offsets, 1_500_000, 1_500_047, 950_000, 2_050_000, 2_000_000
+            ),
             (1_000_000, 3_000_000)
         );
         assert_eq!(
@@ -7363,7 +7380,9 @@ mod tests {
         );
         // The last, short group; and a window past the data is clamped to it.
         assert_eq!(
-            align_to_row_groups(&offsets, 3_400_000, 3_400_047, 3_350_000, 3_450_000, 100_000),
+            align_to_row_groups(
+                &offsets, 3_400_000, 3_400_047, 3_350_000, 3_450_000, 100_000
+            ),
             (3_000_000, 3_500_000)
         );
         // No groups known: the window is left alone.

@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use datui::statistics::{compute_statistics_with_options, ComputeOptions, DistributionType};
+use datui::statistics::{ComputeOptions, DistributionType, compute_statistics_with_options};
 use polars::prelude::*;
 use std::path::Path;
 

@@ -1,5 +1,5 @@
 use datui::config::{
-    AppConfig, ConfigManager, NumberFormatConfig, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT,
+    AppConfig, ConfigManager, DEFAULT_CHART_ROW_LIMIT, MAX_CHART_ROW_LIMIT, NumberFormatConfig,
 };
 use datui::numfmt::{Grouping, NumberFormatSettings};
 use polars::prelude::DataType;
@@ -206,10 +206,12 @@ fn test_validate_config_invalid_version() {
 
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Unsupported config version"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported config version")
+    );
 }
 
 #[test]
@@ -219,10 +221,12 @@ fn test_validate_config_zero_sampling_threshold() {
 
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("sampling_threshold must be greater than 0 when set"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("sampling_threshold must be greater than 0 when set")
+    );
 }
 
 #[test]
@@ -248,16 +252,20 @@ fn test_validate_config_zero_event_poll_interval() {
 
     let result = config.validate();
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("event_poll_interval_ms must be greater than 0"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("event_poll_interval_ms must be greater than 0")
+    );
 }
 
 #[test]
 fn test_parse_full_config() {
     // Clear NO_COLOR for color validation
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 
     let full_config = r##"
 version = "0.2"
@@ -418,7 +426,9 @@ fn test_color_config_merge() {
 #[test]
 fn test_new_color_fields() {
     // Clear NO_COLOR for this test
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 
     use datui::config::{AppConfig, Theme};
     use ratatui::style::Color;
@@ -487,7 +497,9 @@ fn test_new_color_fields_custom_values() {
 
 #[test]
 fn test_validate_config_with_invalid_chart_series_color() {
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
     let mut config = AppConfig::default();
     config.theme.colors.chart_series_color_1 = "invalid_color_name".to_string();
     let result = config.validate();
@@ -499,7 +511,9 @@ fn test_validate_config_with_invalid_chart_series_color() {
 #[test]
 fn test_validate_config_with_invalid_color() {
     // Clear NO_COLOR for this test
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 
     let mut config = AppConfig::default();
     config.theme.colors.keybind_hints = "not_a_valid_color".to_string();
@@ -513,7 +527,9 @@ fn test_validate_config_with_invalid_color() {
 #[test]
 fn test_validate_config_with_valid_hex_color() {
     // Clear NO_COLOR for this test
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 
     let mut config = AppConfig::default();
     config.theme.colors.keybind_hints = "#ff0000".to_string();
@@ -526,7 +542,9 @@ fn test_validate_config_with_valid_hex_color() {
 #[test]
 fn test_validate_config_with_mixed_colors() {
     // Clear NO_COLOR for this test
-    std::env::remove_var("NO_COLOR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("NO_COLOR") };
 
     let mut config = AppConfig::default();
     config.theme.colors.keybind_hints = "cyan".to_string();
@@ -579,9 +597,11 @@ fn test_number_format_defaults_are_inert() {
     // Inert because formatting starts off -- not because there is nothing to
     // apply. Every column resolves to Passthrough while disabled.
     assert!(!settings.enabled);
-    assert!(settings
-        .formatter_for("pos", &DataType::Int64)
-        .is_passthrough());
+    assert!(
+        settings
+            .formatter_for("pos", &DataType::Int64)
+            .is_passthrough()
+    );
 
     // F still needs something to turn on, so the toggle target is Thousands.
     let toggled = NumberFormatSettings {
@@ -589,9 +609,11 @@ fn test_number_format_defaults_are_inert() {
         ..settings.clone()
     };
     assert_eq!(toggled.format.grouping, Grouping::Thousands);
-    assert!(!toggled
-        .formatter_for("pos", &DataType::Int64)
-        .is_passthrough());
+    assert!(
+        !toggled
+            .formatter_for("pos", &DataType::Int64)
+            .is_passthrough()
+    );
 
     // Alignment, unlike grouping, is on by default: it changes neither the
     // characters of a value nor a column's width.
@@ -1064,7 +1086,9 @@ fn test_import_expands_env_var() {
         "[theme.colors]\nsuccess = \"#00ff00\"\n",
     );
     // Unique name: tests in a binary share one process environment.
-    std::env::set_var("DATUI_TEST_IMPORT_DIR", temp_dir.path());
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::set_var("DATUI_TEST_IMPORT_DIR", temp_dir.path()) };
     let root = write_config(
         &temp_dir,
         "config.toml",
@@ -1072,7 +1096,9 @@ fn test_import_expands_env_var() {
     );
 
     let config = AppConfig::load_from_file(&root).expect("Config should load");
-    std::env::remove_var("DATUI_TEST_IMPORT_DIR");
+    // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+    // reading the environment; accepted in tests and never done outside them.
+    unsafe { std::env::remove_var("DATUI_TEST_IMPORT_DIR") };
 
     assert!(theme.exists());
     assert_eq!(config.theme.colors.success, "#00ff00");
@@ -1437,8 +1463,8 @@ fn test_concurrent_recents_do_not_lose_entries() {
     // terminals. Writing atomically stops the file becoming corrupt, but not one
     // instance's entry being overwritten by another's; the read and the write have
     // to be a single locked operation.
-    use datui::cache::HistoryUpdate;
     use datui::CacheManager;
+    use datui::cache::HistoryUpdate;
     use std::sync::Arc;
 
     let temp_dir = TempDir::new().expect("temp dir");
@@ -1709,16 +1735,20 @@ extensions = ["parquet"]
     // Untouched fields keep their defaults, and skip_extra adds to skip rather than
     // replacing it.
     assert!(!config.data.search.cross_filesystems);
-    assert!(config
-        .data
-        .search
-        .skipped_dirs()
-        .contains(&"node_modules".to_string()));
-    assert!(config
-        .data
-        .search
-        .skipped_dirs()
-        .contains(&"archive".to_string()));
+    assert!(
+        config
+            .data
+            .search
+            .skipped_dirs()
+            .contains(&"node_modules".to_string())
+    );
+    assert!(
+        config
+            .data
+            .search
+            .skipped_dirs()
+            .contains(&"archive".to_string())
+    );
 }
 
 /// The generated config invites an S3 access key and secret in its `[cloud]`

@@ -9,12 +9,14 @@ use std::panic;
 use std::path::{Path, PathBuf};
 
 use ::datui::{
-    error_for_python, CompressionFormat, ErrorKindForPython, FileFormat, OpenOptions, ParseStringsTarget,
-    RunInput, run,
+    CompressionFormat, ErrorKindForPython, FileFormat, OpenOptions, ParseStringsTarget, RunInput,
+    error_for_python, run,
 };
 use polars::prelude::LazyFrame;
 use polars_plan::dsl::DslPlan;
-use pyo3::exceptions::{PyFileNotFoundError, PyPermissionError, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyFileNotFoundError, PyPermissionError, PyRuntimeError, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use serde_json;
 
@@ -60,9 +62,8 @@ fn delimiter_from_py(any: &Bound<'_, pyo3::types::PyAny>) -> PyResult<Option<u8>
         return Ok(None);
     }
     if let Ok(n) = any.extract::<i64>() {
-        let b = u8::try_from(n).map_err(|_| {
-            PyValueError::new_err(format!("delimiter must be 0-255 (got {})", n))
-        })?;
+        let b = u8::try_from(n)
+            .map_err(|_| PyValueError::new_err(format!("delimiter must be 0-255 (got {})", n)))?;
         return Ok(Some(b));
     }
     if let Ok(s) = any.extract::<String>() {
@@ -90,14 +91,16 @@ fn opt_path_from_py(any: Option<&Bound<'_, pyo3::types::PyAny>>) -> PyResult<Opt
     if any.is_none() {
         return Ok(None);
     }
-    let s: String = any.extract().map_err(|_| {
-        PyTypeError::new_err("temp_dir must be str or path-like")
-    })?;
+    let s: String = any
+        .extract()
+        .map_err(|_| PyTypeError::new_err("temp_dir must be str or path-like"))?;
     Ok(Some(PathBuf::from(s)))
 }
 
 /// Convert Python value to Option<ParseStringsTarget>. None/omitted → All (default). False → disabled. True or [] → All. [str, ...] → Columns.
-fn parse_strings_from_py(any: Option<&Bound<'_, pyo3::types::PyAny>>) -> PyResult<Option<ParseStringsTarget>> {
+fn parse_strings_from_py(
+    any: Option<&Bound<'_, pyo3::types::PyAny>>,
+) -> PyResult<Option<ParseStringsTarget>> {
     let Some(any) = any else {
         return Ok(Some(ParseStringsTarget::All));
     };
@@ -115,7 +118,10 @@ fn parse_strings_from_py(any: Option<&Bound<'_, pyo3::types::PyAny>>) -> PyResul
             return Ok(Some(ParseStringsTarget::All));
         }
         return Ok(Some(ParseStringsTarget::Columns(
-            list.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect(),
+            list.into_iter()
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect(),
         )));
     }
     Err(PyTypeError::new_err(
@@ -458,6 +464,47 @@ fn run_tui(plan: DslPlan, opts: OpenOptions) -> PyResult<()> {
 ///     FileNotFoundError: If a path is used and the file is not found (internal).
 ///     PermissionError: If read access is denied (internal).
 ///     RuntimeError: If the TUI fails or panics.
+/// Where the schema hash sits in a versioned plan: after the `DSL_VERSION` magic bytes and
+/// the u16 major and minor version.
+const DSL_HASH_OFFSET: usize = b"DSL_VERSION".len() + 4;
+const DSL_HASH_LEN: usize = 64;
+
+/// This build's DSL schema hash, taken from the header of a plan it serializes itself.
+/// Empty if that fails, in which case plans are passed through unchanged.
+fn own_dsl_hash() -> &'static [u8] {
+    static HASH: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        use polars::prelude::IntoLazy;
+        let mut header = Vec::new();
+        let plan = polars::prelude::DataFrame::empty().lazy().logical_plan;
+        if plan
+            .serialize_versioned(&mut header, Default::default())
+            .is_err()
+        {
+            return Vec::new();
+        }
+        header
+            .get(DSL_HASH_OFFSET..DSL_HASH_OFFSET + DSL_HASH_LEN)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default()
+    })
+}
+
+/// A reader over `data` with its schema hash replaced by this build's own, without copying
+/// the plan (which can carry a whole DataFrame).
+fn with_own_dsl_hash(data: &[u8]) -> Box<dyn std::io::Read + '_> {
+    use std::io::Read;
+    let own = own_dsl_hash();
+    if own.len() != DSL_HASH_LEN || data.len() < DSL_HASH_OFFSET + DSL_HASH_LEN {
+        return Box::new(data);
+    }
+    Box::new(
+        data[..DSL_HASH_OFFSET]
+            .chain(own)
+            .chain(&data[DSL_HASH_OFFSET + DSL_HASH_LEN..]),
+    )
+}
+
 #[pyfunction]
 #[pyo3(signature = (data, *, options=None))]
 fn view_from_bytes(
@@ -466,19 +513,15 @@ fn view_from_bytes(
     options: Option<Bound<'_, DatuiOptionsPy>>,
 ) -> PyResult<()> {
     // Python `LazyFrame.serialize()` writes a DSL version and a schema hash ahead of the
-    // plan. The version is checked. The hash is skipped: it is the digest of a file in
-    // the polars repository at the commit each release was cut from, and no PyPI wheel
-    // is cut from the commit of a crates.io release, so it never matches even within
-    // one release train. The plan itself is MessagePack with field names, so a plan
-    // from a different DSL still fails on a missing field instead of being misread.
-    const SKIP_HASH: &str = "POLARS_SKIP_DSL_HASH_VERIFICATION";
-    let previous = std::env::var_os(SKIP_HASH);
-    std::env::set_var(SKIP_HASH, "1");
-    let decoded = DslPlan::deserialize_versioned(data);
-    match previous {
-        Some(value) => std::env::set_var(SKIP_HASH, value),
-        None => std::env::remove_var(SKIP_HASH),
-    }
+    // plan. The version is checked. The hash is not comparable: it is the digest of a file
+    // in the polars repository at the commit each release was cut from, and no PyPI wheel
+    // is cut from the commit of a crates.io release, so it never matches even within one
+    // release train. This build's own hash is spliced in its place, so the check passes
+    // without setting POLARS_SKIP_DSL_HASH_VERIFICATION, which would mean writing the
+    // environment of a process already running threads. The plan itself is MessagePack
+    // with field names, so a plan from a different DSL still fails on a missing field
+    // instead of being misread.
+    let decoded = DslPlan::deserialize_versioned(with_own_dsl_hash(data));
     let plan = decoded.map_err(|e| {
         PyValueError::new_err(format!(
             "invalid LazyFrame binary (use LazyFrame.serialize() or DataFrame.lazy().serialize()): {}",
@@ -602,9 +645,12 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
         }
     };
     // Prefer datui package __file__ (__init__.py); fallback to this extension's __file__ (_datui.so) for package dir.
-    let package_dir = file
-        .as_ref()
-        .map(|f| Path::new(f).parent().unwrap_or(Path::new(".")).to_path_buf());
+    let package_dir = file.as_ref().map(|f| {
+        Path::new(f)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    });
     let package_dir = match package_dir {
         Some(d) => d,
         None => {
@@ -623,7 +669,11 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
     };
     let binary = {
         // Wheel layout: datui/ and datui_bin/ are siblings under site-packages (include = ["datui_bin/*"]).
-        let bundled_sibling = package_dir.parent().unwrap_or(&package_dir).join("datui_bin").join(bin_name);
+        let bundled_sibling = package_dir
+            .parent()
+            .unwrap_or(&package_dir)
+            .join("datui_bin")
+            .join(bin_name);
         // Editable/dev layout: datui/datui_bin/ next to __init__.py (or _datui.so).
         let bundled_inside = package_dir.join("datui_bin").join(bin_name);
         if bundled_sibling.exists() {
@@ -641,7 +691,9 @@ fn run_cli(py: Python<'_>) -> PyResult<()> {
         }
     };
     // Refuse to run if the path is a script (e.g. venv bin/datui wrapper); prevents infinite loop.
-    if let Ok(prefix) = std::fs::read(&binary).and_then(|b| Ok(b.get(0..2).unwrap_or_default().to_vec())) {
+    if let Ok(prefix) =
+        std::fs::read(&binary).and_then(|b| Ok(b.get(0..2).unwrap_or_default().to_vec()))
+    {
         if prefix == b"#!" {
             return Err(PyRuntimeError::new_err(format!(
                 "datui CLI: {} is a script, not the datui binary. \

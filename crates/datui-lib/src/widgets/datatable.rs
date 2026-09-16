@@ -3330,15 +3330,18 @@ impl DataTableState {
         let view_end = self.start_row + self.visible_rows.max(1);
         let shows_view = result.buffer_start <= self.start_row
             && (view_end <= result.buffer_start + returned_rows || returned_rows < requested_rows);
-        if !shows_view && !self.abuts_buffer(result.buffer_start, returned_rows) {
+        let stitched = self.abuts_buffer(result.buffer_start, returned_rows);
+        if !shows_view && !stitched {
             self.needs_recollect = true;
             return;
         }
         let (full_df, buffer_start) = self.stitch_buffer(full_df, result.buffer_start);
+        let union_rows = full_df.height();
         let (mut full_df, eff_start, eff_end) = self.clamp_buffer_bytes(full_df, buffer_start);
-        if full_df.first_col_n_chunks() > 1 {
+        if stitched && eff_end - eff_start < union_rows {
             // A trim of the stitched union is a slice: without this the whole of both
-            // chunks stays allocated behind it.
+            // chunks stays allocated behind it. A plain fill is left as collected; a
+            // copy of it would be the very spike the budget guards against.
             full_df.rechunk_mut();
         }
 

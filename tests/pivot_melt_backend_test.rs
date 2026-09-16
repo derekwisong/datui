@@ -60,8 +60,8 @@ fn simulate_initial_tui_collects(app: &mut App, terminal_height: usize) {
 
 const SIMULATE_TUI_INITIAL_COLLECTS: bool = true;
 
-/// Polars 0.52 can panic in pivot_stable when the index column is Date (from_physical UInt32).
-/// We work around by casting Date/Datetime index columns to Int32 before pivot and restoring after; enabled by default.
+/// Polars 0.52's eager pivot panicked when the index column was Date (from_physical UInt32);
+/// the lazy pivot in 0.55 does not, and `workaround_pivot_date_index` is now a no-op.
 
 #[test]
 fn test_pivot_via_events() {

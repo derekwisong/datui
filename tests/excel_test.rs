@@ -63,7 +63,10 @@ fn reads_headers_and_row_count() {
 
     assert_eq!(df.height(), 1000, "people.xlsx has 1000 data rows");
     assert_eq!(
-        df.get_column_names_str(),
+        df.get_column_names()
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
         [
             "id",
             "first_name",

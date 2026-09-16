@@ -1624,7 +1624,7 @@ fn test_hive_partition_types_match_full_scan() {
     let (fast, parts) = DataTableState::schema_from_one_hive_parquet(dir.path()).unwrap();
     assert_eq!(parts, ["region", "year", "day"]);
     let mut full = LazyFrame::scan_parquet(
-        PlPath::Local(Arc::from(dir.path())),
+        PlRefPath::try_from_path(dir.path()).unwrap(),
         ScanArgsParquet {
             hive_options: polars::io::HiveOptions::new_enabled(),
             ..Default::default()
@@ -2073,7 +2073,8 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
     assert!(state.error.is_none(), "{:?}", state.error);
     let df = state.lf.clone().collect().unwrap();
     assert_eq!(df.height(), 5, "ids 5..9");
-    assert_eq!(df.get_column_names_str(), vec!["id", "k2"]);
+    let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
+    assert_eq!(names, vec!["id", "k2"]);
 }
 
 /// While drilled into a group, a sidebar filter or sort applies within the group and

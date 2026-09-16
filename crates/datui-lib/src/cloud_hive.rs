@@ -3,7 +3,7 @@
 
 use color_eyre::Result;
 use object_store::path::Path as OsPath;
-use object_store::ObjectStore;
+use object_store::{ObjectStore, ObjectStoreExt};
 use polars::prelude::{ParquetReader, Schema, SchemaExt, SerReader};
 use std::collections::HashSet;
 use std::io::Cursor;

@@ -1,6 +1,6 @@
 # Python Bindings
 
-The **datui-pyo3** crate and the **datui** Python package let you open the datui TUI from Python with a Polars `LazyFrame` or `DataFrame` (`datui.view(lf)` or `datui.view(df)`), or with paths. A frame is passed as the binary form of `LazyFrame.serialize()`, so the Python `polars` in use must produce a plan the crate's Rust Polars (currently 0.55) can read: `polars>=1.38,<1.44`, with 1.43 the release Polars pairs with 0.55. The plan's DSL version is checked; its schema hash is not, since that hash is per polars commit and no PyPI wheel shares one with a crates.io release. Move the pin in `python/pyproject.toml` and `scripts/requirements.txt` with every Rust Polars bump. The crate lives at `crates/datui-pyo3` and is excluded from the Cargo workspace; it is built with **maturin** from the `python/` directory.
+The **datui-pyo3** crate and the **datui** Python package let you open the datui TUI from Python with a Polars `LazyFrame` or `DataFrame` (`datui.view(lf)` or `datui.view(df)`), or with paths. A frame is passed as the binary form of `LazyFrame.serialize()`, so the Python `polars` in use must produce a plan the crate's Rust Polars (currently 0.55) can read: 1.43 is the release Polars pairs with 0.55, and the wheel declares `polars>=1.38` with no upper bound, so a newer polars fails per plan (1.44 refuses joins) rather than at install. The plan's DSL version is checked; its schema hash is not, since that hash is per polars commit and no PyPI wheel shares one with a crates.io release. Move the floor in `python/pyproject.toml`, `PAIRED_POLARS` in `python/datui/__init__.py` and the pin in `scripts/requirements.txt` with every Rust Polars bump. The crate lives at `crates/datui-pyo3` and is excluded from the Cargo workspace; it is built with **maturin** from the `python/` directory.
 
 ## Summary
 
@@ -32,7 +32,7 @@ source .venv/bin/activate
 
 ```bash
 pip install --upgrade pip
-pip install maturin "polars>=1.38,<1.44" "pytest>=7.0"
+pip install maturin "polars==1.43.*" "pytest>=7.0"
 ```
 
 ---

@@ -145,13 +145,13 @@ def test_compression_format_values():
     assert hasattr(datui.CompressionFormat, "Xz")
 
 
-def test_view_names_the_polars_range_for_an_unreadable_plan():
-    """A plan neither decoder accepts says which polars versions datui reads."""
+def test_view_names_the_paired_polars_for_an_unreadable_plan():
+    """A plan neither decoder accepts says which polars this datui is built for."""
     import datui
 
     class Unreadable:
         def serialize(self, format="binary"):
             return b"not a plan" if format == "binary" else "not a plan"
 
-    with pytest.raises(ValueError, match="serialized by polars"):
+    with pytest.raises(ValueError, match=f"built for polars {datui.PAIRED_POLARS}"):
         datui._view_frame(Unreadable(), options=None)

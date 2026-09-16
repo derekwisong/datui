@@ -3546,10 +3546,11 @@ impl DataTableState {
     }
 
     /// Rows the buffer reaches past the view in one direction: `pages` of it for a local
-    /// file, half the window for a remote scan (`fit_window` trims the two halves plus
+    /// file or a remote scan with something applied to it (see `remote_window`), half
+    /// the window for a pristine remote scan (`fit_window` trims the two halves plus
     /// the view back to the cap).
     fn reach_rows(&self, pages: usize) -> usize {
-        if !self.remote_source {
+        if !self.remote_window() {
             return pages * self.visible_rows.max(1);
         }
         let window = if self.max_buffered_rows > 0 {
@@ -7459,6 +7460,49 @@ mod tests {
             (400..=600).contains(&measured),
             "about 1 MB / 2 KB rows, got {measured}"
         );
+    }
+
+    #[test]
+    fn a_filtered_remote_scan_falls_back_to_the_page_window() {
+        // `filter(..).slice(0, N)` stops at the first N matches, so a window of a few
+        // pages stops at the first row group with any; the 100k window read forty.
+        use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+        let lf = df!("a" => (0..1_000i32).collect::<Vec<i32>>())
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::new(lf, None, None, Some(10_000), None, true).unwrap();
+        state.set_remote_source();
+        state.set_row_groups(&[500, 500]);
+        state.visible_rows = 40;
+        state.defer_collect = true;
+
+        let request = state.prepare_async_collect(None).expect("first fill");
+        assert_eq!(
+            (request.buffer_start, request.buffer_end),
+            (0, 1_000),
+            "both groups fit the remote window"
+        );
+
+        state.filter(vec![FilterStatement {
+            column: "a".to_string(),
+            operator: FilterOperator::Gt,
+            value: "990".to_string(),
+            logical_op: LogicalOperator::And,
+        }]);
+        let request = state.prepare_async_collect(None).expect("filtered fill");
+        assert_eq!(
+            (request.buffer_start, request.buffer_end),
+            (0, 7 * 40),
+            "a page plus three either side, not the remote window"
+        );
+
+        state.filter(Vec::new());
+        assert!(
+            !state.remote_window(),
+            "a rebuilt pipeline is not the scan as loaded"
+        );
+        state.query(String::new());
+        assert!(state.remote_window());
     }
 
     #[test]

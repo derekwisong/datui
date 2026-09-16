@@ -82,8 +82,13 @@ Pass an `s3://`, `gs://` or `https://` URL where you would pass a path. In S3
 and GCS, Parquet is read in place with range requests, one row group at a time:
 opening fetches the footer and the first row group, <kbd>End</kbd> fetches the
 last, and a query that has to look at every row transfers about the size of the
-object. Small row groups keep the first screen cheap. A prefix or glob of
-Parquet files opens as a partitioned dataset. Every other format, and anything
+object. The buffer is planned inside the row group on screen, so paging never
+pulls the next group before you reach it, and crossing into it fetches that
+group once. Row groups up to `max_buffered_rows` and the `max_buffered_mb`
+budget are held whole; a larger one is read one window at a time, so small row
+groups keep both the first screen and paging cheap. A prefix or glob of Parquet
+files opens as a partitioned dataset, buffered as a plain window. Every other
+format, and anything
 over HTTP, is downloaded to a temporary file (`--temp-dir` to choose where;
 you are asked first when it is large) and then opened like a local file. One
 remote path per run.

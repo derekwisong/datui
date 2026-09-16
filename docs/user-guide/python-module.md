@@ -45,9 +45,18 @@ They mirror the [command-line flags](../reference/command-line-options.md):
 ## Compatibility
 
 A frame is handed over as a serialized Polars plan, which the wheel reads with
-its own embedded Polars. The two need to agree on the plan format, so keep
-`polars` and `datui` current together. Paths do not go through the plan and
-work with any `polars` version.
+its own embedded Polars (0.55). The two need to agree on the plan format:
+
+| Python `polars` | Frames |
+|---|---|
+| 1.43 | The release Polars pairs with Rust 0.55; fully tested |
+| 1.38 to 1.42 | Read in testing (scan, filter, group by, join, cast, sort, unique) |
+| 1.44 and later | Refused: joins use a newer plan node |
+| 1.37 and earlier | Refused: older path format |
+
+The wheel declares `polars>=1.38,<1.44`; an incompatible plan raises
+`ValueError` before the TUI opens. Paths do not go through the plan and work
+with any `polars` version.
 
 ## Building from source
 

@@ -25,8 +25,12 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    # version important for serialization of lazyframe plans
-    "polars>=0.20",
+    # A frame reaches the wheel as the plan `LazyFrame.serialize()` writes, read by the
+    # Rust polars the wheel embeds (0.55). Polars pairs rs-0.55 with Python 1.43, and
+    # 1.38 through 1.43 decode in testing (scan, filter, group_by, join, cast, sort,
+    # unique, in-memory frames). 1.44 writes a newer join node that 0.55 cannot read;
+    # 1.37 and earlier write an older path type. Move this with the Rust polars bump.
+    "polars>=1.38,<1.44",
 ]
 
 [project.urls]

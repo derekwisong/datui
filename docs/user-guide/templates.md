@@ -1,32 +1,56 @@
 # Templates
 
-Datui's templates allow you to store the queries, filters, and transformations you
-have applied. This way, you can re-use them with other datasets!
+A template saves what you did to a table so you can do it again on the next
+one: the query, filters, sort, column order, frozen columns, and any pivot or
+melt. Templates are scored against each file you open, so the right one is at
+the top of the list.
 
+| Key | Action |
+|---|---|
+| <kbd>t</kbd> | Open the template list |
+| <kbd>T</kbd> | Apply the best-matching template without opening the list |
 
-## Creating a Template
+Or from the command line: `datui --template quarterly data.csv`.
 
-1. To save a template, press the `t` key to load the template dialog
-2. Press `s` to save the template
-3. Enter a name and an optional description
-4. Use the dialog to set additional options and save the template
+## The template list
 
-## Loading a template
+Templates are listed by how well they fit the open file. A checkmark marks the
+one currently applied.
 
-To load a template, press the `t` key to load the template dialog. Select the
-desired template from the list and press `Enter` to load it.
+| Key | Action |
+|---|---|
+| <kbd>Enter</kbd> | Apply the selected template |
+| <kbd>s</kbd> | Save the current state as a new template |
+| <kbd>e</kbd> | Edit the selected template |
+| <kbd>d</kbd> | Delete it, after confirming |
+| <kbd>Esc</kbd> | Close |
 
-## Automatically Load Best-Fit Template
+## Saving
 
-Templates are scored against your dataset by a few characteristics to determine
-if they can be applied to your loaded dataset. The template dialog will indicate
-the fit with a symbol on the left-most column of the list.
+Press <kbd>s</kbd> in the list, give the template a name and an optional
+description, and choose how it should match future files:
 
-You may automatically load the best-fit template using the `T` (capital-T) keybind.
+| Match | Fits a file when |
+|---|---|
+| Exact path | its absolute path is the same |
+| Relative path | its path relative to the current directory is the same |
+| Path pattern | its path matches a glob |
+| Filename pattern | its name matches a glob |
+| Schema | it has the same column names |
 
-## Notes
+A template with no match rules is generic and fits everything, at the lowest
+score. Exact path scores highest, then relative path, then an exact schema
+match, then patterns. Matching both a path and the schema scores higher still.
 
-- Templates save at most one *query type* at a time: the **Query** tab (DSL),
-  the **SQL** tab, or the **Fuzzy** tab. Whichever one is active when you save
-  is the one stored. Filters, sort, column order, pivot/melt, and other settings
-  are saved regardless.
+Only the active query tab is saved: **Query**, **SQL** or **Fuzzy**. Filters,
+sort, column order and reshape are saved regardless.
+
+## Applying on open
+
+```toml
+[templates]
+auto_apply = true   # apply the best match when a file opens
+```
+
+Templates are JSON files in `~/.config/datui/templates/`.
+`datui --remove-templates` deletes them all.

@@ -1,31 +1,26 @@
-# Dataset Info Panel
+# Dataset Info
 
-The **Info** panel shows technical details about the loaded dataset. Press `i` from the main view to open it. **Esc** or **i** closes it.
+Press <kbd>i</kbd> for the schema and the facts about the file. <kbd>i</kbd>
+or <kbd>Esc</kbd> closes it.
 
 ![Info Panel Demo](../demos/03-info.gif)
 
-**Navigation** (when the panel is open):
+| Tab | Shows |
+|---|---|
+| **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type and, for Parquet, its codec and compression ratio |
+| **Resources** | File size, the memory used by the buffered rows, the format, and for Parquet the overall compression ratio, row groups, version and writer |
+| **Partitions** | For a hive-partitioned dataset, the partition columns and their values |
 
-- **Tab** / **Shift+Tab**: On the Schema tab, move focus between the **tab bar** and the **schema table**. On the Resources tab, focus stays on the tab bar.
-- **Left** / **Right**: On the tab bar, switch between Schema and Resources.
-- **↑** / **↓**: When the schema table has focus (Schema tab), scroll the column list and change the selection. The first row is selected by default when the Schema tab is active.
+## Keys
 
-## Tabs
+| Key | Action |
+|---|---|
+| <kbd>←</kbd> <kbd>→</kbd> | Switch tab |
+| <kbd>Tab</kbd> | On the Schema tab, move focus between the tab bar and the column table |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Scroll the column table |
+| <kbd>?</kbd> | Help |
+| <kbd>Esc</kbd> <kbd>i</kbd> | Close |
 
-### Schema
-
-- **Rows (total)** and **Columns**: Size of the full dataset (not the visible slice).
-- **Columns by type**: Counts per data type (e.g. `Int64: 3 · Utf8: 2`).
-- **Schema: Known / Inferred**: Parquet uses a stored schema (**Known**); CSV and JSON infer types (**Inferred**).
-- **Column table**: Name, type, source, and for Parquet files optionally **Compression** (codec and ratio per column).
-
-### Resources
-
-- **File size**: Size on disk (when loaded from a file).
-- **Buffered (visible)**: Estimated memory of the currently buffered slice (not the full dataset).
-- **Parquet**: Overall compression ratio, row groups, version, and *Created by* when available.
-- **Format**: Detected format (CSV, Parquet, JSON, NDJSON).
-
-## See also
-
-- [Keyboard Shortcuts](../reference/keyboard-shortcuts.md)
+The row count is for the whole dataset, not the rows on screen. The type of
+each column is also shown in the table's second header row, which <kbd>D</kbd>
+toggles.

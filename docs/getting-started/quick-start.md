@@ -1,65 +1,76 @@
 # Quick Start
 
-Datui is used to visualize tabular data in the terminal.
+Five minutes from install to your first chart. Not installed yet? See
+[Installation](installation.md).
 
-> See the [Installation Manual](installation.md) for help installing Datui.
-
-## Opening a File
-
-To open a file, simply provide it as an argument.
+## Open something
 
 ```bash
-datui /path/to/file.csv
+datui data.parquet                          # one file
+datui part-1.csv part-2.csv                 # several files of the same shape, as one table
+datui --hive /data/events/                  # a hive-partitioned directory
+datui --hive s3://bucket/events/            # the same, in S3 (also gs:// and https://)
+datui                                       # no path: the home screen
 ```
 
-Datui will load your data into a full screen terminal display.
+With no path, the [home screen](../user-guide/home-screen.md) lists recent
+datasets, the current directory, your configured data directories and the
+buckets your credentials reach. Type to filter, <kbd>Enter</kbd> to open.
+<kbd>Ctrl</kbd>+<kbd>O</kbd> brings you back to it from anywhere.
 
-> See the [Loading Data](../user-guide/loading-data.md) section for details about supported
-> file formats and options.
+From Python:
 
-## Navigating
+```python
+import polars as pl
+import datui
 
-You may scroll through your data using the arrow keys, or familiar `vim` keybindings (`j`/`k` for
-up/down, `h`/`l` for left/right).
-
-You may also jump pages with the `Page Up` and `Page Down` keys.
-
-## Getting Help
-
-See command line arguments:
-```bash
-datui --help
+datui.view(pl.scan_parquet("data.parquet"))
 ```
 
-Activate the built-in help display at any time by pressing `?` or `F1` (`F1` works
-in text fields too, e.g. query input). Press `Esc` or `?` to close it.
+## Move around
 
-## Understanding the UI
+| Key | Action |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page at a time |
+| <kbd>Home</kbd> <kbd>End</kbd> | First and last row |
+| <kbd>:</kbd> | Go to a row number |
+| <kbd>?</kbd> | Help for the screen you are on |
+| <kbd>Esc</kbd> | Close whatever is open |
+| <kbd>q</kbd> | Quit |
 
-- The main Datui view window shows your data in full screen, with a header row at the top and a
-  toolbar across the bottom of the screen.
-- The toolbar at the bottom contains a quick reference for the keystrokes to activate the various
-  features of Datui.
-- Certain features will open pop-over menus, or change the full screen view. Press `Esc` to go
-  back to the prior page.
+The bottom bar always shows the keys that matter on the current screen.
 
-## More Examples
+## Ask a question
 
-Open a hive-partitioned directory:
-```bash
-datui --hive /path/to/directory
+Press <kbd>/</kbd> and type a query:
+
+```
+select name, city, salary where salary > 100000 by department
 ```
 
-> **Note:** The directory should contain files all of the same type
+<kbd>Enter</kbd> runs it. A `by` clause groups; press <kbd>Enter</kbd> on a
+group to drill into it and <kbd>Esc</kbd> to come back. The same prompt has a
+**SQL** tab (`SELECT * FROM df WHERE ...`) and a **Fuzzy** tab that matches text
+in any column. See [Querying Data](../user-guide/querying-data.md).
 
-Or, a glob pattern to hive-partitioned parquet:
-```bash
-datui --hive "/path/to/directory/**/*.parquet"
-```
+## Sort, filter, chart, analyze
 
-> **Note:** It is usually necessary to quote the glob pattern to prevent shell expansion.
+| Key | Opens |
+|---|---|
+| <kbd>s</kbd> | Sort and filter: order, freeze and hide columns, add row filters |
+| <kbd>c</kbd> | Charts: line, scatter, bar, histogram, box, KDE, heatmap |
+| <kbd>a</kbd> | Analysis: describe, distribution fitting, correlation matrix |
+| <kbd>p</kbd> | Pivot and melt |
+| <kbd>e</kbd> | Export the current view to a file |
+| <kbd>i</kbd> | Schema and file details |
+| <kbd>R</kbd> | Reset: clear the query, filters and sort |
 
-## Learning More
+Everything works on the data as you currently see it. Filter first, then chart,
+analyze or export the result.
 
-Now that you understand the basics, learn about the rest of Datui's features by reading the
-[User Guide](../user-guide.md).
+## Next
+
+- [Keyboard Shortcuts](../reference/keyboard-shortcuts.md) lists every key on every screen.
+- [Loading Data](../user-guide/loading-data.md) covers formats, compression, CSV options and cloud credentials.
+- [Configuration](../user-guide/configuration.md) sets defaults and colors. Start with `datui --generate-config`.

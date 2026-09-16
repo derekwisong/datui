@@ -23,7 +23,7 @@ Every tape opens a file under `demo/data`: real datasets, chosen because the
 features show better on data with a story (the heaviest meteorites, the great
 earthquakes, one name's rise and fall). `demo/build.py` downloads the public ones
 and writes them as Parquet; `demo/DATA-LICENSES.md` records where each came from,
-its licence, and what the build changed. Two snapshots (a quant-research extract
+its license, and what the build changed. Two snapshots (a quant-research extract
 and daily Bitcoin chain statistics) have no public source and are copied in with
 `--private`.
 

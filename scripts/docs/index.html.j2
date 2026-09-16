@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Datui Documentation</title>
+    {% if redirect_path %}
+    {# Visitors following "Documentation" links want the docs, not a version picker.
+       The picker stays below for browsers that do not follow the refresh. #}
+    <meta http-equiv="refresh" content="0; url={{ redirect_path }}/">
+    <link rel="canonical" href="https://derekwisong.github.io/datui/{{ redirect_path }}/">
+    {% endif %}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
@@ -219,6 +225,19 @@
             .controls {
                 display: none;
             }
+        }
+
+        .redirect-note {
+            margin: 0 0 1.5rem 0;
+            padding: 0.75rem 1rem;
+            border-left: 3px solid var(--text-color);
+            background: var(--selection-bg);
+            font-family: var(--font-mono);
+        }
+
+        .redirect-note a {
+            color: var(--text-color);
+            font-weight: 600;
         }
 
         .demo-showcase {
@@ -442,10 +461,16 @@
         </header>
 
         <main id="main-content">
+            {% if redirect_path %}
+            <p class="redirect-note">
+                Redirecting to the <a href="{{ redirect_path }}/">latest documentation</a>&hellip;
+                Or pick a version below.
+            </p>
+            {% endif %}
             <div class="demo-showcase">
                 {% if latest_stable_path %}
-                <img src="{{ (latest_permanent_path if latest_permanent_path is defined and latest_permanent_path else latest_stable_path) }}/demos/01-basic-navigation.gif"
-                     alt="Datui demo showing basic navigation"
+                <img src="{{ (latest_permanent_path if latest_permanent_path is defined and latest_permanent_path else latest_stable_path) }}/demos/11-overview.gif"
+                     alt="Datui demo: opening, querying, charting and analyzing a dataset"
                      class="demo-gif"
                      loading="lazy">
                 {% endif %}

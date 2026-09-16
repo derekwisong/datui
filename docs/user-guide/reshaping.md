@@ -1,53 +1,55 @@
 # Pivot and Melt
 
-Datui supports reshaping tabular data between **long** and **wide** formats via the **Pivot & Melt** dialog.
-Open it with **`p`** from the main view.
+Press <kbd>p</kbd> to reshape the current view between long and wide. The
+dialog has a **Pivot** tab and a **Melt** tab; <kbd>←</kbd> <kbd>→</kbd> switch
+between them when the tab bar has focus.
 
-**Pivot demo:** ![Pivot Demo](../demos/04-pivot.gif)
+| | From | To |
+|---|---|---|
+| **Pivot** (long to wide) | `id, date, key, value` | `id, date, key_A, key_B, key_C` |
+| **Melt** (wide to long) | `id, Q1, Q2, Q3` | `id, variable, value` |
 
-**Melt demo:** ![Melt Demo](../demos/05-melt.gif)
+Both work on the table as currently queried, filtered and sorted.
 
-- **Pivot** (long → wide): Turn rows with a key column into new columns. Example: `id`, `date`, `key`, `value` → `id`, `date`, `key_A`, `key_B`, `key_C`.
-- **Melt** (wide → long): Collapse many columns into `variable` and `value` columns. Example: `id`, `Q1`, `Q2`, `Q3` → `id`, `variable`, `value`.
+## Pivot
 
-Both operations run on the **current** table—i.e. the result of any filters, sorts, or queries you’ve applied. You can filter or sort first, then pivot or melt that view.
+![Pivot Demo](../demos/04-pivot.gif)
 
-## Pivot (long → wide)
+1. **Index columns**: the columns that stay as rows. Type to search, <kbd>Space</kbd> to select. Order matters.
+2. **Pivot column**: the column whose distinct values become new column names.
+3. **Value column**: the column that fills the new cells.
+4. **Aggregation**: how to combine several values per cell. `last` (default), `first`, `min`, `max`, `avg`, `med`, `std` or `count`. A string value column allows only `first` and `last`.
 
-> Pivoting a table is by nature an eager operation. To form the columns, the data must be read.
-> Be sure to filter or query the data as appropriate before pivoting to manage memory usage.
+New columns are named after the pivot column's values, sorted alphabetically.
 
-1. **Index columns**: Group columns that stay on the left (e.g. `id`, `date`). Use the filter to search, Space to toggle selection. Order matters.
-2. **Pivot column**: The column whose distinct values become new column headers (e.g. `key` → `A`, `B`, `C`). Use ↑/↓ to select.
-3. **Value column**: The column whose values fill the new cells. Use ↑/↓ to select.
-4. **Aggregation**: How to combine multiple values per group: **last**, **first**, **min**, **max**, **avg**, **med**, **std**, **count**. Default is **last**. If the value column is string-typed, only **first** and **last** are available.
+Pivoting reads every affected row into memory to discover the column names.
+On a large table, query or filter first.
 
-New column names (from the pivot column’s values) are always sorted alphabetically.
+## Melt
 
-**Apply** runs the pivot and closes the dialog. **Cancel** or **Esc** closes without changing the table. **Clear** resets the form.
+![Melt Demo](../demos/05-melt.gif)
 
-## Melt (wide → long)
+1. **Index columns**: the identifier columns to keep, selected as for pivot.
+2. **Value columns**, by one of four strategies:
+   - **All except index**: every other column.
+   - **By pattern**: a regex over column names, such as `Q[1-4]_2024` or `metric_.*`.
+   - **By type**: every numeric, string, datetime or boolean column.
+   - **Explicit list**: pick them with <kbd>Space</kbd>.
+3. **Variable name** and **Value name**: the two output columns. Default `variable` and `value`.
 
-1. **Index columns**: Columns to keep as identifiers (e.g. `id`, `date`). Same multi-select pattern as Pivot.
-2. **Value-column strategy**:
-   - **All except index**: Melt every column not in the index. Good default when you want to unpivot all measure columns.
-   - **By pattern**: Regex over column names (e.g. `Q[1-4]_2024`, `metric_.*`). Type the pattern in the **Pattern** field.
-   - **By type**: Melt all **Numeric**, **String**, **Datetime**, or **Boolean** columns (excluding index).
-   - **Explicit list**: Manually pick value columns with Space to toggle.
-3. **Variable name** / **Value name**: Output column names for the melted dimension and values. Defaults: `variable`, `value`.
+## Keys
 
-**Apply** runs the melt and closes the dialog. **Cancel** or **Esc** closes without applying. **Clear** resets the form.
-
-## Keyboard Shortcuts
-
-- **Tab / Shift+Tab**: Move focus (tab bar → form fields → Apply → Cancel → Clear → tab bar).
-- **Left / Right**: On the tab bar, switch between **Pivot** and **Melt**. In text fields (filter, pattern, variable/value names), move the cursor.
-- **↑ / ↓**: Move selection in lists (index, pivot, value, aggregation, strategy, type, explicit list).
-- **Space**: Toggle selection in index and explicit value lists.
-- **Enter**: Activate focused control (Apply, Cancel, Clear).
-- **Esc**: Close dialog without applying.
-- **?** / **F1**: Show help (F1 works in text fields).
+| Key | Action |
+|---|---|
+| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move focus: tab bar, fields, **Apply**, **Cancel**, **Clear** |
+| <kbd>←</kbd> <kbd>→</kbd> | Switch tab, or move the cursor in a text field |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move through a list |
+| <kbd>Space</kbd> | Select or deselect in a multi-select list |
+| <kbd>Enter</kbd> | Press the focused button |
+| <kbd>Esc</kbd> | Close without applying |
+| <kbd>?</kbd> | Help |
 
 ## Templates
 
-Pivot and melt settings can be saved in **templates**. When you save a template from the current view (e.g. after applying a pivot or melt), the reshape spec is stored. Applying that template (e.g. with **`T`** for the most relevant template, or from the template manager) will run query → filters → sort → pivot or melt → column order in that order, so the same reshape is applied appropriately in the lazyframe processing flow.
+A [template](templates.md) saved after a pivot or melt stores the reshape. When
+it is applied, the order is query, filters, sort, pivot or melt, column order.

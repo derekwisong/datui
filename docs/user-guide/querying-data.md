@@ -1,133 +1,91 @@
 # Querying Data
 
+Press <kbd>/</kbd> to open the query prompt. It has three tabs; <kbd>Tab</kbd>
+and <kbd>Shift</kbd>+<kbd>Tab</kbd> move between them and into the input.
+
+| Tab | What you type | Example |
+|---|---|---|
+| **Query** | Datui's own short language, described below | `select name, salary where salary > 100000 by dept` |
+| **SQL** | Standard SQL. The table is called `df` | `SELECT dept, COUNT(*) AS n FROM df GROUP BY dept ORDER BY n DESC` |
+| **Fuzzy** | Words to look for in any text column | `smith london` |
+
+<kbd>Enter</kbd> runs the query, <kbd>Esc</kbd> cancels, <kbd>↑</kbd> <kbd>↓</kbd>
+walk the history of the current tab. Submit an empty query to return to the
+full table. <kbd>R</kbd> in the main view does the same and also clears filters
+and sort.
+
 ![Querying Demo](../demos/02-querying.gif)
 
-Press **`/`** to open the query prompt. The prompt has three tabs:
+The rest of this page is about the **Query** tab. The complete grammar is in
+the [Query Syntax reference](../reference/query-syntax.md).
 
-- **SQL-Like** — Datui’s built-in query language (described below).
-- **Fuzzy** — Filter rows by typing text; matches any string column, tokens AND, case-insensitive (see [Fuzzy search](#fuzzy-search)).
-- **SQL** — Run standard SQL against the current table (see [Using the SQL tab](#using-the-sql-tab)).
+## Choosing columns
 
-Use **Tab** or **Shift+Tab** (or **Left** / **Right**) to switch tabs. Focus stays on the tab bar when you change tabs; press **Tab** to move focus into the text input for the selected tab.
+```
+select a, b, c              # these columns
+select                      # every column
+select total: price * qty   # a computed column, named with :
+select col["First Name"]    # a name with spaces
+```
 
-See the [Query Syntax Reference][query-syntax-reference] for additional detail about the structure
-of SQL-Like queries.
+## Filtering rows
+
+```
+select where a > 10                      # comparison: = != < > <= >=
+select where a > 10, b < 2               # comma is AND
+select where a > 10 | a < 5              # pipe is OR
+select where (a > 10 | a < 5), b = 2     # parentheses group
+select where name = "Smith"              # strings in double quotes
+select where null email                  # null tests
+select where not null email
+select where city.contains["York"]       # string accessors
+```
+
+## Arithmetic
+
+`+`, `-`, `*` and `%` for divide. Expressions bind **right to left**: `a * b + c`
+is `a * (b + c)`. Use parentheses when in doubt.
+
+```
+select margin: (price - cost) % price where qty > 0
+```
+
+## Dates and times
+
+Date and Datetime columns have dot accessors, and date literals are written
+`YYYY.MM.DD`.
+
+```
+select order_date.year, order_date.month, total
+select where created_at.date >= 2024.01.01, created_at.dow = 1
+select day: ts.format["%Y-%m-%d"]
+```
+
+Accessors include `date`, `time`, `year`, `month`, `week`, `day`, `dow`,
+`month_start`, `month_end` and `format["..."]`. The
+[reference](../reference/query-syntax.md#date-and-datetime-accessors) has the
+full list.
+
+## Grouping and aggregating
+
+```
+select name, salary by department                         # group: drill into a row with Enter
+select avg salary, max salary, count name by department   # aggregate
+select total: sum[price * qty] by region, year            # computed aggregates
+```
+
+A `by` clause without aggregates gives one row per group. Press <kbd>Enter</kbd>
+on a group to see its rows, <kbd>Esc</kbd> to come back. With aggregates
+(`avg`, `sum`, `min`, `max`, `count`, `std`, `med`, `first`, `last`) you get one
+summary row per group. Brackets around the argument are optional.
 
 ## Fuzzy search
 
-In the **Fuzzy** tab, type text and press **Enter** to filter rows. The search matches **any string column**: characters must appear in order (not necessarily adjacent). Space-separated words are ANDed (each must match). Matching is case-insensitive. **Up** / **Down** — browse fuzzy search history. **Esc** — cancel.
+Type on the **Fuzzy** tab and press <kbd>Enter</kbd>. A row matches when its
+text columns contain the characters of every word, in order but not necessarily
+adjacent, so `smth` finds `Smith`. Matching is case-insensitive.
 
-## Using the SQL tab
+## Saving a query
 
-When the **SQL** tab is selected and focus is in the input box, you can run SQL against the current data. The table is registered as **`df`**, so use `FROM df` in your queries.
-
-- **Up** / **Down** — Browse SQL history (stored separately from SQL-Like history).
-- **Enter** — Run the query (or submit an empty line to reset the view to the full table).
-- **Esc** — Cancel and close the prompt.
-
-Example:
-
-```sql
-SELECT * FROM df LIMIT 100
-SELECT category, COUNT(*) AS n FROM df GROUP BY category ORDER BY n DESC
-```
-
-## Selecting Columns (SQL-Like)
-
-The `select` clause can be used to select columns:
-```
-select a, b, c
-```
-
-Use `select` alone to select all columns:
-```
-select
-```
-
-Rename columns using the `:` assignment operator (creates a column `d` that is the same as `a`):
-```
-select a, b, c, d: a
-```
-
-To create, or query, columns with spaces in their names, use the `col["name"]` syntax:
-```
-select no_spaces:col["name with spaces"]
-```
-
-or
-```
-select col["name with space"]: no_spaces
-```
-
-## Filtering Results
-
-The `where` clause can be used to filter results.
-```
-select where a > 10
-```
-
-Separate `where` clause expressions with `,` (logical and).
-
-Get all data where `a > 10` and `b < 2`:
-```
-select where a > 10, b < 2
-```
-
-Use the `|` to form a logical or between a bool column and a numeric:
-```
-select where some_bool | a > 10
-```
-
-Select a, b, and c where `a > 10` and `b < 2` and (`d > 7` or `e = 2`)
-```
-select a, b, c where a > 10, b < 2, (d > 7) | (e = 2)
-```
-
-## Calculations and Transformations
-
-There is a simple expression language built-in to the query language using:
-`+`, `-`, `*`, and `%` for arithmetic (the `%` is division, **not modulo**).
-
-```
-select a, b: c+d where c > 0
-```
-
-> See the [Syntax Reference][query-syntax-reference] for important details about the expression syntax.
-
-## Working with dates and times
-
-For columns of type **Date** or **Datetime**, use **dot accessors** to extract components:
-
-```
-select event_date: timestamp.date, year: timestamp.year
-select where created_at.date > 2024.01.01, created_at.month = 12
-select order_date, order_date.month, order_date.dow by order_date.year
-```
-
-Use **YYYY.MM.DD** for date literals in comparisons (e.g. `where dt_col.date > 2021.01.01`).
-
-Available accessors include `date`, `time`, `year`, `month`, `week`, `day`, `dow` (day of week), `month_start`, `month_end`, and `tz` (timezone). See the [Query Syntax Reference][query-syntax-reference] for the full list and more examples.
-
-## Grouping and Aggregation
-
-The `by` clause in the query language allows you to group your data, or aggregate it within group.
-
-### Enabling Drill-Down with Grouping
-
-Executing a query with a `by` clause will result in a grouped table. This table can be drilled down into
-through the UI by selecting the resultant grouped row and pressing `Enter`. Go back to the grouped result
-by pressing `Esc`.
-
-```
-select name, city, state, salary by department
-```
-
-### Aggregate Queries
-
-Using the same `by` syntax, you can introduce an aggregation function to summarize your data.
-
-```
-select min_salary: min salary, avg_salary: avg salary, max_salary: max salary by department
-```
-
-[query-syntax-reference]: ../reference/query-syntax.md
+The active tab's query is saved with a [template](templates.md), along with
+filters and sort, so it can be replayed on the next file of the same shape.

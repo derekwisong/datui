@@ -10,7 +10,7 @@ Usage: datui [OPTIONS] [PATH]...
 
 | Option | Description |
 |--------|-------------|
-| `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table (not required with --generate-config, --clear-cache, or --remove-templates) |
+| `[<PATH>]` | Path(s) to the data file(s) to open. Multiple files of the same format are concatenated into one table. With no PATH, datui opens its home screen so you can pick a dataset |
 | `--skip-lines <SKIP_LINES>` | Skip this many lines when reading a file |
 | `--skip-rows <SKIP_ROWS>` | Skip this many rows when reading a file |
 | `--skip-tail-rows <N>` | Skip this many rows at the end of the file (e.g. to ignore vendor footer or trailing garbage) |
@@ -30,6 +30,7 @@ Usage: datui [OPTIONS] [PATH]...
 | `--decompress-in-memory <DECOMPRESS_IN_MEMORY>` | Decompress into memory. Default: decompress to temp file and use lazy scan |
 | `--temp-dir <DIR>` | Directory for decompression temp files (default: system temp, e.g. TMPDIR) |
 | `--sheet <SHEET>` | Excel sheet to load: 0-based index (e.g. 0) or sheet name (e.g. "Sales") |
+| `--clear-recents` | Forget every recently opened dataset and exit; other caches are kept |
 | `--clear-cache` | Clear all cache data and exit |
 | `--template <TEMPLATE>` | Apply a template by name when starting the application |
 | `--remove-templates` | Remove all templates and exit |

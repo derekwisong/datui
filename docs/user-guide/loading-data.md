@@ -1,176 +1,157 @@
 # Loading Data
 
-Load data with Datui by passing it [command line options](../reference/command-line-options.md)
-and a path to open. The path can be a **local file or directory**, an **S3 URI** (Amazon S3 or MinIO), a **GCS URI** (`gs://`), or an **HTTP/HTTPS URL**. Cloud and HTTP support are included by default.
-
-## Remote data (S3, GCS, and HTTP)
-
-You can open data from **Amazon S3**, **Google Cloud Storage (GCS)**, **S3-compatible storage** (e.g. MinIO), or **HTTP/HTTPS** by passing the appropriate URI. Support is included by default when you build or install datui.
-
-**Same behavior for all cloud and HTTP:** Parquet (and Parquet globs/prefixes) are read directly where supported; **all other formats** (CSV, JSON, NDJSON, etc.) are downloaded to a temporary file first, then loaded. That applies to AWS S3, custom S3 (MinIO, etc.), and GCS.
-
-**One remote path at a time:** If you pass more than one path and the first is a remote URL (S3, GCS, or HTTP), datui reports an error. Open a single remote URL per run; local files can still be opened as multiple paths (concatenated).
-
-### Amazon S3 (`s3://`)
-
-**Credentials:** Datui does not add its own credential system. It uses the same credentials as the rest of the AWS ecosystem:
-
-1. **Environment variables** (good for scripts and one-off use):
-   - `AWS_ACCESS_KEY_ID` — access key
-   - `AWS_SECRET_ACCESS_KEY` — secret key
-   - `AWS_REGION` (or `AWS_DEFAULT_REGION`) — e.g. `us-east-1`
-   - Optionally `AWS_SESSION_TOKEN` for temporary credentials
-
-2. **Shared config** (good for daily use):
-   - `~/.aws/credentials` — profiles and keys
-   - `~/.aws/config` — region and other settings
-
-3. **IAM roles** — If you run on EC2, ECS, Lambda, or similar, the instance/task role is used automatically; no env or config needed.
-
-Set at least one of these before running Datui. Example:
-
 ```bash
-export AWS_ACCESS_KEY_ID=AKIA...
-export AWS_SECRET_ACCESS_KEY=...
-export AWS_REGION=us-east-1
-datui s3://my-bucket/data/myfile.parquet
+datui data.parquet                             # a file
+datui jan.csv feb.csv mar.csv                  # files of the same shape, as one table
+datui --hive /data/events/                     # a hive-partitioned directory
+datui --hive "/data/events/**/*.parquet"       # or a glob (quote it)
+datui s3://bucket/path/file.parquet            # S3, GCS (gs://) or HTTP(S)
+datui --format csv https://example.com/export  # force the format when the name gives no hint
 ```
 
-### Usage
+Every option is listed in [Command Line Options](../reference/command-line-options.md).
+Defaults for most of them can be set once in the
+[configuration file](configuration.md#file-loading).
 
-- **Single Parquet file**:  
-  `datui s3://bucket-name/path/to/file.parquet`
+## Formats
 
-- **Hive-style partitioned data on S3**:  
-  Use a prefix or glob so Polars can discover partitions:
-  - `datui s3://bucket-name/prefix/`  
-  - `datui "s3://bucket-name/prefix/**/*.parquet"`
+The format is taken from the extension, or from `--format` when there is none.
 
-- **Other formats (CSV, JSON, NDJSON, etc.) on S3**:  
-  Datui downloads the object to a temporary file and then loads it like a local file. Use the same URI style:  
-  `datui s3://bucket-name/path/to/file.csv`  
-  The file is downloaded to your system temp directory (or `--temp-dir` if set), then opened normally. This is the same approach used for HTTP/HTTPS URLs.
+| Format | Extensions | Lazy | Hive partitions |
+|---|---|---|---|
+| Parquet | `.parquet` | yes | yes |
+| CSV and other delimited text | `.csv`, `.tsv`, `.psv` | yes | |
+| NDJSON | `.jsonl` | yes | |
+| Arrow IPC, Feather v2 | `.arrow`, `.ipc`, `.feather` | yes | |
+| JSON | `.json` | | |
+| Avro | `.avro` | | |
+| Excel | `.xlsx`, `.xlsm`, `.xlsb`, `.xls` | | |
+| ORC | `.orc` | | |
 
-### Configurable S3 (MinIO and other S3-compatible backends)
+**Lazy** formats are scanned, so only the rows on screen are read and a file
+larger than memory is fine. The others are read whole before the table appears.
 
-> Once an endpoint and keys are set, the backend's buckets also appear on the home
-> screen, so you can browse and open them without typing a URL. See
-> [Cloud storage](home-screen.md#cloud-storage).
+**Excel** opens the first sheet unless `--sheet` names another, by index
+(`--sheet 0`) or name (`--sheet Sales`).
 
-You can point S3 at a custom endpoint (e.g. MinIO) via **config**, **environment variables**, or **CLI options**. Priority is: **CLI > env > config**. That lets you keep a default in config and override per run when you use multiple backends.
+### CSV options
 
-**Config** — In `~/.config/datui/config.toml` add a `[cloud]` section:
+| Option | Config key | What it does |
+|---|---|---|
+| `--delimiter 9` | `delimiter` | Column separator as an ASCII code. Auto-detected when unset |
+| `--no-header true` | `has_header` | The first row is data, not names |
+| `--skip-lines N`, `--skip-rows N`, `--skip-tail-rows N` | `skip_lines`, `skip_rows` | Ignore a preamble or a footer |
+| `--null-value NA`, `--null-value amount=` | | Values to read as null, for every column or one (`COL=VAL`). Repeatable |
+| `--infer-schema-length 10000` | `infer_schema_length` | Rows used to infer column types (default 1000). Raise it when a column turns from integer to text late in the file |
+| `--ignore-errors true` | `ignore_errors` | Skip rows that fail to parse instead of failing the load |
+| `--parse-dates false` | `parse_dates` | Stop parsing date-looking strings as Date and Datetime |
+| `--parse-strings COL`, `--no-parse-strings` | | Trim and type-infer string columns; limit it to named columns, or turn it off |
+
+## Compression
+
+Files ending in `.gz`, `.zst`, `.bz2` or `.xz` are decompressed before loading.
+Use `--compression gzip|zstd|bzip2|xz` when the extension is missing or wrong.
+
+Compressed CSV is decompressed to a temporary file so it can still be scanned
+lazily. `--temp-dir` chooses where; `--decompress-in-memory true` skips the
+file and reads the whole thing into memory instead.
+
+## Hive-partitioned data
+
+A directory tree whose segments are `key=value` (`year=2024/month=01/...`)
+opens as one table with `--hive`. Pass the root directory or a glob; a glob
+usually needs quoting so your shell leaves it alone. Only Parquet is supported.
+
+Partition columns appear first in the table and on the **Partitions** tab of the
+[Info panel](dataset-info.md). A directory is faster to open than a glob.
+
+The schema is read from a single file along one partition branch, so opening a
+tree of thousands of files is quick. If files disagree on their schema, let
+Polars scan them all with `--single-spine-schema false`.
+
+## Binary columns
+
+A binary column shows a dim `‹binary›` placeholder instead of its bytes, so
+scrolling past large blobs stays fast. The bytes are still read for exports and
+analysis. The placeholder color is `binary_col` in the
+[theme](configuration.md#colors).
+
+## Remote data
+
+Pass an `s3://`, `gs://` or `https://` URL where you would pass a path. In S3
+and GCS, Parquet is read in place with range requests, one row group at a time:
+opening fetches the footer and the first row group, <kbd>End</kbd> fetches the
+last, and a query that has to look at every row transfers about the size of the
+object. Small row groups keep the first screen cheap. A prefix or glob of
+Parquet files opens as a partitioned dataset. Every other format, and anything
+over HTTP, is downloaded to a temporary file (`--temp-dir` to choose where;
+you are asked first when it is large) and then opened like a local file. One
+remote path per run.
+
+Once credentials are in place, the buckets they reach are also listed on the
+[home screen](home-screen.md#cloud-storage), so you can browse instead of
+typing URLs.
+
+### Amazon S3
+
+Datui uses the standard AWS credential chain, in this order:
+
+1. Environment: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`
+   (or `AWS_DEFAULT_REGION`), and `AWS_SESSION_TOKEN` for temporary credentials.
+2. `~/.aws/credentials` and `~/.aws/config`, with `AWS_PROFILE` to pick a profile.
+3. The instance or task role on EC2, ECS, Lambda and EKS.
+
+```bash
+export AWS_PROFILE=analytics
+datui s3://my-bucket/events/2024/
+```
+
+### S3-compatible storage (MinIO, R2, Ceph)
+
+Point datui at the endpoint. Command line beats environment beats config.
 
 ```toml
+# ~/.config/datui/config.toml
 [cloud]
-# MinIO example
 s3_endpoint_url = "http://localhost:9000"
 s3_access_key_id = "minioadmin"
 s3_secret_access_key = "minioadmin"
 s3_region = "us-east-1"
 ```
 
-**Environment variables** (override config; standard for S3 tools):
-
-- `AWS_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` — custom endpoint (e.g. `http://localhost:9000`)
-- `AWS_ACCESS_KEY_ID` — access key
-- `AWS_SECRET_ACCESS_KEY` — secret key
-- `AWS_REGION` or `AWS_DEFAULT_REGION` — region (e.g. `us-east-1`)
-
-**CLI options** (override env and config):
-
-- `--s3-endpoint-url URL`
-- `--s3-access-key-id KEY`
-- `--s3-secret-access-key SECRET`
-- `--s3-region REGION`
-
-Examples for multiple backends without editing config each time:
-
 ```bash
-# MinIO in another terminal/shell
+# or per shell
 export AWS_ENDPOINT_URL=http://localhost:9000
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-export AWS_REGION=us-east-1
-datui s3://my-bucket/file.parquet
-
-# Different MinIO or S3-compatible endpoint
-datui --s3-endpoint-url https://s3.other.example s3://other-bucket/file.parquet
+# or per run
+datui --s3-endpoint-url http://localhost:9000 s3://bucket/file.parquet
 ```
 
-### Google Cloud Storage (`gs://`)
+The command-line flags are `--s3-endpoint-url`, `--s3-access-key-id`,
+`--s3-secret-access-key` and `--s3-region`.
 
-You can open Parquet files from **Google Cloud Storage** using `gs://` URIs. Credentials use [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials):
+### Google Cloud Storage
 
-1. **User or service account key file**: set `GOOGLE_APPLICATION_CREDENTIALS` to the path of your JSON key file.
-2. **gcloud CLI**: run `gcloud auth application-default login`.
-3. **GCE/Cloud Run**: workload identity is used automatically.
-
-Example:
+Credentials come from [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials):
+`GOOGLE_APPLICATION_CREDENTIALS` pointing at a key file, the login written by
+`gcloud auth application-default login`, or workload identity on GCE and Cloud Run.
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
-datui gs://my-bucket/path/to/file.parquet
+gcloud auth application-default login
+datui gs://my-bucket/path/file.parquet
 ```
 
-- **Parquet** and **Hive-style prefixes/globs** work as for S3:  
-  `datui gs://bucket/prefix/` or `datui "gs://bucket/prefix/**/*.parquet"`.
-- **Other formats (CSV, JSON, NDJSON, etc.)** work the same as S3 and HTTP: the object is downloaded to a temporary file, then loaded. Example:  
-  `datui gs://my-bucket/path/to/file.csv`
-
-### Minimal build (no cloud)
-
-To build without S3 support and avoid the extra cloud dependencies:
+### HTTP and HTTPS
 
 ```bash
-cargo build --release --no-default-features
+datui https://example.com/data.csv
+datui --format parquet https://example.com/download?id=42
 ```
 
-If you pass an S3 or `gs://` URI to a binary built that way, you will see an error suggesting a build with default features.
+The file is downloaded, then opened. Use `--format` when the URL has no useful
+extension.
 
-## Supported Formats
+### Building without cloud support
 
-| Format | Extensions | Eager load only | Hive partitioning |
-|--------|------------|-----------------|-------------------|
-| Parquet | `.parquet` | No | Yes |
-| CSV (or other-delimited) | `.csv`, `.tsv`, `.psv`, etc. | No | No |
-| NDJSON | `.jsonl` | No | No |
-| JSON | `.json` | Yes | No |
-| Arrow IPC / Feather v2 | `.arrow`, `.ipc`, `.feather` | No | No |
-| Avro | `.avro` | Yes | No |
-| Excel | `.xls`, `.xlsx`, `.xlsm`, `.xlsb` | Yes | No |
-| ORC | `.orc` | Yes | No |
-
-**Eager load only** — The file is read fully into memory before use; no lazy streaming. **Hive partitioning** — Use the `--hive` flag with a directory or glob; see [Hive-partitioned data](#hive-partitioned-data) below.
-**Excel** — Use the `--sheet` flag to specify which sheet to open.
-
-**CSV date inference** — By default, CSV string columns that look like dates (e.g. `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`) are parsed as Polars Date/Datetime. Use `--parse-dates false` or set `parse_dates = false` in [configuration](configuration.md) to disable.
-
-## Binary columns
-
-Binary (blob) columns often hold large values (e.g. raw document bytes) that are slow to read and not meaningful to print. The table shows a `‹binary›` placeholder instead of the bytes — rendered dim and italic — so scrolling and jump-to-end stay fast. The underlying bytes are still read for exports and analysis. Customize the placeholder color with `binary_col` in [configuration](configuration.md).
-
-## Compression
-
-Compressed files are identified by extension and decompressed before loading. Use the `--compression` option to specify the format when the file has no extension or the extension is wrong.
-
-### Supported Compression Formats
-
-- gz
-- zstd
-- bzip2
-- xz
-
-## Hive-partitioned data
-
-You can load a Hive-style partitioned dataset (e.g. a directory tree with `key=value` segment names such as `year=2024/month=01/`) by using the `--hive` flag and passing a **directory** or a **glob pattern** instead of a single file.
-
-- **Directory**: point at the partition root, e.g. `datui --hive /path/to/data`
-- **Glob**: use a pattern that matches the partition layout, e.g. `datui --hive /path/to/data/**/*.parquet`  
-  You may need to quote the glob so your shell does not expand it (e.g. `datui --hive "/path/to/data/**/*.parquet"`).
-
-Only Parquet is supported for hive-partitioned loading. If you pass a single file with `--hive`, it is loaded as usual and the flag is ignored.
-
-**Schema from one file (default):** For faster loading, datui infers the Parquet schema from a single file along one partition branch (single-spine) instead of scanning all files. This applies to both local Hive directories and S3/GCS prefixes (e.g. `s3://bucket/prefix/` or `gs://bucket/prefix/`). If your dataset has inconsistent schemas or other complications and you prefer Polars to discover the schema over all files, disable this with `--single-spine-schema=false` or set `single_spine_schema = false` under `[file_loading]` in [configuration](configuration.md).
-
-Partition columns (the keys from the path, e.g. `year`, `month`) are shown first in the table and listed in the Info panel under the **Partitioned data** tab.
+`cargo build --release --no-default-features` leaves out the cloud
+dependencies. A binary built that way rejects remote URLs with a message
+saying so.

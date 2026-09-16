@@ -51,12 +51,13 @@ its own embedded Polars (0.55). The two need to agree on the plan format:
 |---|---|
 | 1.43 | The release Polars pairs with Rust 0.55; fully tested |
 | 1.38 to 1.42 | Read in testing (scan, filter, group by, join, cast, sort, unique) |
-| 1.44 and later | Refused: joins use a newer plan node |
+| 1.44 and later | Most plans read; 1.44 writes joins 0.55 cannot read |
 | 1.37 and earlier | Refused: older path format |
 
-The wheel declares `polars>=1.38,<1.44`; an incompatible plan raises
-`ValueError` before the TUI opens. Paths do not go through the plan and work
-with any `polars` version.
+The wheel declares `polars>=1.38` and never downgrades the `polars` you have. A
+plan the wheel cannot read raises `ValueError` before the TUI opens, naming the
+release it is built for. Paths do not go through the plan and work with any
+`polars` version.
 
 ## Building from source
 

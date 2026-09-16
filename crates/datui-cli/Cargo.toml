@@ -2,6 +2,7 @@
 name = "datui-cli"
 version = "0.4.0-dev"
 edition = "2024"
+rust-version = "1.95"
 description = "Shared CLI definitions for datui (Args, CompressionFormat)"
 authors = ["Derek Wisong"]
 repository = "https://github.com/derekwisong/datui"

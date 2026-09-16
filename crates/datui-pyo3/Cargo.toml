@@ -9,6 +9,7 @@
 name = "datui-pyo3"
 version = "0.4.0-dev"
 edition = "2024"
+rust-version = "1.95"
 description = "Python bindings for datui (view LazyFrame in the TUI)"
 license = "MIT"
 

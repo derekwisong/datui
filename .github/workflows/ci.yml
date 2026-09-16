@@ -113,6 +113,42 @@ jobs:
       - name: Replay corpus
         run: ./scripts/code/fuzz.sh replay
 
+  # Build with the oldest Rust the manifests declare, so a newer language feature or
+  # std API cannot creep in unnoticed. A check is enough: stable runs clippy and the
+  # tests above; this job only proves the tree still compiles at the floor.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          VERSION=$(sed -n '/^\[package\]/,/^\[/p' Cargo.toml | grep -E '^\s*rust-version\s*=' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      # Its own cache key: artifacts from a different compiler are not shareable.
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: msrv
+
+      - name: Check
+        run: cargo check --workspace --locked
+
   linux:
     runs-on: ubuntu-latest
     needs: [check]
@@ -378,7 +414,7 @@ jobs:
   ci-passed:
     name: CI passed
     runs-on: ubuntu-latest
-    needs: [check, fuzz, linux, windows, macos]
+    needs: [check, fuzz, msrv, linux, windows, macos]
     if: always()
     steps:
       - name: Check that every job passed or was skipped

@@ -1,7 +1,8 @@
 [package]
 name = "datui-lib"
 version = "0.4.0-dev"
-edition = "2021"
+edition = "2024"
+rust-version = "1.95"
 description = "Data Exploration in the Terminal (library)"
 authors = ["Derek Wisong"]
 homepage = "https://derekwisong.github.io/datui"

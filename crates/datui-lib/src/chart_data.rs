@@ -137,11 +137,11 @@ pub fn prepare_chart_x_range(
     let mut x_min = f64::INFINITY;
     let mut x_max = f64::NEG_INFINITY;
     for i in 0..n_rows {
-        if let Some(v) = x_f64.get(i) {
-            if v.is_finite() {
-                x_min = x_min.min(v);
-                x_max = x_max.max(v);
-            }
+        if let Some(v) = x_f64.get(i)
+            && v.is_finite()
+        {
+            x_min = x_min.min(v);
+            x_max = x_max.max(v);
         }
     }
 
@@ -316,10 +316,10 @@ fn collect_numeric_values(lf: &LazyFrame, column: &str, row_limit: usize) -> Res
     let series = df.column(column)?.f64()?;
     let mut values = Vec::with_capacity(series.len());
     for i in 0..series.len() {
-        if let Some(v) = series.get(i) {
-            if v.is_finite() {
-                values.push(v);
-            }
+        if let Some(v) = series.get(i)
+            && v.is_finite()
+        {
+            values.push(v);
         }
     }
     Ok(values)
@@ -349,10 +349,10 @@ fn collect_numeric_columns(
         let series = df.column(col_name)?.f64()?;
         let mut values = Vec::with_capacity(series.len());
         for i in 0..series.len() {
-            if let Some(v) = series.get(i) {
-                if v.is_finite() {
-                    values.push(v);
-                }
+            if let Some(v) = series.get(i)
+                && v.is_finite()
+            {
+                values.push(v);
             }
         }
         out.push(values);
@@ -715,7 +715,7 @@ pub fn prepare_heatmap_data(
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_chart_data, XAxisTemporalKind};
+    use super::{XAxisTemporalKind, prepare_chart_data};
     use polars::prelude::*;
 
     #[test]
@@ -779,7 +779,7 @@ mod tests {
 
 #[cfg(test)]
 mod x_range_tests {
-    use super::{prepare_chart_x_range, XAxisTemporalKind};
+    use super::{XAxisTemporalKind, prepare_chart_x_range};
     use polars::prelude::*;
 
     #[test]

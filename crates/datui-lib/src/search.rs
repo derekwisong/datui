@@ -9,7 +9,7 @@
 //! Every limit exists because some real directory violates it. See [`Limits`].
 
 use crate::config::SearchConfig;
-use crate::discover::{is_data_file, Entry, EntryKind};
+use crate::discover::{Entry, EntryKind, is_data_file};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 

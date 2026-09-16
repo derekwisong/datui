@@ -406,10 +406,11 @@ mod tests {
             p.app.handle(&AppEvent::Key(plain(KeyCode::Char('j')))),
             Err(k) if k.code == KeyCode::Char('j')
         ));
-        assert!(p
-            .app
-            .event(&AppEvent::Key(plain(KeyCode::Char('j'))))
-            .is_none());
+        assert!(
+            p.app
+                .event(&AppEvent::Key(plain(KeyCode::Char('j'))))
+                .is_none()
+        );
         p.app.busy = false;
         assert!(matches!(
             p.app.handle(&AppEvent::Key(plain(KeyCode::Char('j')))),

@@ -27,9 +27,9 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use datui_lib::numfmt::{
-    display_width, format_any_value, CellFormatter, NumberFormat, NumberFormatSettings,
+    CellFormatter, NumberFormat, NumberFormatSettings, display_width, format_any_value,
 };
 use polars::prelude::{AnyValue, DataType};
 

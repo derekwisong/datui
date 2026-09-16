@@ -1,7 +1,7 @@
 //! Export modal state and focus management.
 
-use crate::widgets::text_input::TextInput;
 use crate::CompressionFormat;
+use crate::widgets::text_input::TextInput;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {

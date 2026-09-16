@@ -1,7 +1,7 @@
 //! Home screen: dataset discovery, roots, and filtering.
 
 use datui::discover::{self, EntryKind};
-use datui::home::{fuzzy_score, HomeState, RootOrigin, Row};
+use datui::home::{HomeState, RootOrigin, Row, fuzzy_score};
 use std::fs;
 use tempfile::TempDir;
 
@@ -1349,7 +1349,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
     // The listing is produced by a free function taking a request, so it can run on
     // a worker. If this ever needs `&HomeState`, the interface thread is doing the
     // reading again.
-    use datui::home::{build_listing, ListingRequest};
+    use datui::home::{ListingRequest, build_listing};
 
     let tmp = TempDir::new().unwrap();
     touch(tmp.path(), "sales.parquet");
@@ -1543,7 +1543,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
     // from a real read — a stale row count beats an empty one, and these are the
     // datasets that are hardest to reach and most worth remembering.
     use datui::cache::{CacheManager, DatasetFacts};
-    use datui::home::{build_listing, ListingRequest};
+    use datui::home::{ListingRequest, build_listing};
 
     let tmp = TempDir::new().unwrap();
     let remote_root = tmp.path().join("PRETEND_REMOTE/quant");
@@ -1613,7 +1613,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
     // The local half of the same rule: a fingerprint that no longer matches is not
     // trusted, so a dataset that has been rewritten is measured again.
     use datui::cache::{CacheManager, DatasetFacts};
-    use datui::home::{build_listing, ListingRequest};
+    use datui::home::{ListingRequest, build_listing};
 
     let tmp = TempDir::new().unwrap();
     let dataset = touch(tmp.path(), "sales.parquet");
@@ -2076,9 +2076,11 @@ fn test_search_results_only_appear_once_there_is_a_filter() {
         .find(|s| s.title == HomeState::SEARCH_SECTION)
         .expect("typing should surface the search section");
     assert_eq!(section.rows.len(), 1);
-    assert!(visible_names(&home)
-        .iter()
-        .any(|n| n == "a/b/buried.parquet"));
+    assert!(
+        visible_names(&home)
+            .iter()
+            .any(|n| n == "a/b/buried.parquet")
+    );
 }
 
 #[test]
@@ -2199,10 +2201,11 @@ fn test_clearing_the_filter_takes_the_search_section_away() {
     home.search.results = vec![datui::discover::Entry::for_test(&deep, "a/x.parquet")];
     home.search.done = true;
     home.sync_search_section();
-    assert!(home
-        .sections
-        .iter()
-        .any(|s| s.title == HomeState::SEARCH_SECTION));
+    assert!(
+        home.sections
+            .iter()
+            .any(|s| s.title == HomeState::SEARCH_SECTION)
+    );
 
     home.filter.clear();
     home.sync_search_section();
@@ -2547,7 +2550,7 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
     // Recent, where you are, the cloud, what you configured, and only then the
     // directories derived from recents and the desktop's places -- folded, since they
     // repeat what Recent shows or are places rather than datasets.
-    use datui::home::{build_listing, CloudSection, ListingRequest};
+    use datui::home::{CloudSection, ListingRequest, build_listing};
 
     let tmp = TempDir::new().unwrap();
     let configured = tmp.path().join("configured");
@@ -2616,10 +2619,11 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
     for i in 0..home.sections.len() {
         home.set_collapsed(i, true);
     }
-    assert!(home
-        .visible()
-        .iter()
-        .all(|r| matches!(r, Row::Header { .. })));
+    assert!(
+        home.visible()
+            .iter()
+            .all(|r| matches!(r, Row::Header { .. }))
+    );
     assert!(home.has_any_dataset(), "folded is not empty");
 }
 

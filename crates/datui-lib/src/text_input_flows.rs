@@ -30,7 +30,9 @@ pub(crate) fn isolate_cache() {
     ISOLATE.call_once(|| {
         let dir = std::env::temp_dir().join(format!("datui-flow-cache-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
-        std::env::set_var("DATUI_CACHE_DIR", &dir);
+        // SAFETY: test-only. Tests run on parallel threads, so this can race another test
+        // reading the environment; accepted in tests and never done outside them.
+        unsafe { std::env::set_var("DATUI_CACHE_DIR", &dir) };
     });
 }
 

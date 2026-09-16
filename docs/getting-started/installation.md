@@ -58,7 +58,7 @@ sudo dnf install https://github.com/derekwisong/datui/releases/download/vX.Y.Z/d
 
 ## From source
 
-Needs a [Rust toolchain](https://www.rust-lang.org/tools/install).
+Needs a [Rust toolchain](https://www.rust-lang.org/tools/install), 1.95 or newer.
 
 ```bash
 git clone https://github.com/derekwisong/datui.git

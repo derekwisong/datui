@@ -72,11 +72,11 @@ impl CacheManager {
     pub fn clear_all(&self) -> Result<()> {
         for filename in CACHE_FILES {
             let file_path = self.cache_file(filename);
-            if file_path.exists() {
-                if let Err(_e) = fs::remove_file(&file_path) {
-                    // Silently ignore cache file removal failures — this runs in a TUI
-                    // context where stderr output would corrupt the terminal display.
-                }
+            if file_path.exists()
+                && let Err(_e) = fs::remove_file(&file_path)
+            {
+                // Silently ignore cache file removal failures — this runs in a TUI
+                // context where stderr output would corrupt the terminal display.
             }
         }
 

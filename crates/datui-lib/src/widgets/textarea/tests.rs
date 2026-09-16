@@ -435,10 +435,12 @@ fn the_cursor_is_drawn_past_the_end_of_a_line() {
     let rect = Rect::new(0, 0, 4, 1);
     let mut buf = Buffer::empty(rect);
     (&area).render(rect, &mut buf);
-    assert!(buf[(2, 0)]
-        .style()
-        .add_modifier
-        .contains(Modifier::REVERSED));
+    assert!(
+        buf[(2, 0)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    );
 }
 
 #[test]

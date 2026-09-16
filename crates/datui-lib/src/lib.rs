@@ -8987,44 +8987,21 @@ impl App {
                 None
             }
             #[cfg(feature = "cloud")]
-            AppEvent::DoDownloadS3ToTemp(s3_url, options) => {
+            AppEvent::DoDownloadS3ToTemp(url, options)
+            | AppEvent::DoDownloadGcsToTemp(url, options) => {
                 if !self.load_active {
                     return None;
                 }
-                let s3_url = s3_url.clone();
-                let cloud_config = self.app_config.cloud.clone();
-                let options = options.clone();
-                let rt = self.runtime.clone();
-                self.spawn_bg("Downloading from S3...", move |gen, tx| {
-                    match Self::download_cloud_to_temp(&s3_url, &cloud_config, &options, &rt) {
-                        Ok(temp_path) => {
-                            let _ = tx.send(AppEvent::BackgroundDownloadReady {
-                                generation: gen,
-                                temp_path,
-                                options,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = tx.send(AppEvent::BackgroundError {
-                                generation: gen,
-                                message: crate::error_display::user_message_from_report(&e, None),
-                            });
-                        }
-                    }
-                });
-                None
-            }
-            #[cfg(feature = "cloud")]
-            AppEvent::DoDownloadGcsToTemp(gs_url, options) => {
-                if !self.load_active {
-                    return None;
-                }
-                let gs_url = gs_url.clone();
+                let url = url.clone();
                 let options = options.clone();
                 let cloud_config = self.app_config.cloud.clone();
                 let rt = self.runtime.clone();
-                self.spawn_bg("Downloading from GCS...", move |gen, tx| {
-                    match Self::download_cloud_to_temp(&gs_url, &cloud_config, &options, &rt) {
+                let status = match source::input_source(Path::new(&url)) {
+                    source::InputSource::Gcs(_) => "Downloading from GCS...",
+                    _ => "Downloading from S3...",
+                };
+                self.spawn_bg(status, move |gen, tx| {
+                    match Self::download_cloud_to_temp(&url, &cloud_config, &options, &rt) {
                         Ok(temp_path) => {
                             let _ = tx.send(AppEvent::BackgroundDownloadReady {
                                 generation: gen,

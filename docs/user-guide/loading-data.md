@@ -112,15 +112,28 @@ datui s3://my-bucket/events/2024/
 the config work the same way. On EC2, ECS, Lambda and EKS the instance or task
 role is used.
 
-**Named profiles are not supported yet**
-([#168](https://github.com/derekwisong/datui/issues/168)). `AWS_PROFILE` is
-ignored, and with no keys in the environment datui takes the first keys in
-`~/.aws/credentials`, whichever profile they belong to. To use a profile,
-including an SSO one, export its keys first:
+### AWS profiles
+
+With no keys in the environment or the config, datui uses the profile the AWS
+tools would: `AWS_PROFILE`, else `default`.
 
 ```bash
-eval "$(aws configure export-credentials --profile analytics --format env)"
+AWS_PROFILE=analytics datui s3://analytics-exports/2024/
 ```
+
+| Profile holds | datui |
+|---|---|
+| `aws_access_key_id` and `aws_secret_access_key` | Uses them |
+| `credential_process` | Runs it (aws-vault, granted, 1Password and the like) |
+| `sso_session`, `role_arn`, `credential_source` or `web_identity_token_file` | Runs `aws configure export-credentials --profile <name>`, so the AWS CLI must be installed |
+
+The files are `AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE`, else
+`~/.aws/config` and `~/.aws/credentials`. A profile's `region` and `endpoint_url`
+(or an `s3` `endpoint_url` under its `services` section) apply too, after
+`AWS_ENDPOINT_URL_S3` and `AWS_ENDPOINT_URL`. Every other profile that can log in
+is its own source on the [home screen](home-screen.md#cloud-storage), named
+`aws-<profile>`; one with an endpoint is S3-compatible, so its URLs are
+`s3://aws-<profile>@bucket/key`.
 
 ### S3-compatible storage (MinIO, R2, Ceph)
 

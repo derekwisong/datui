@@ -87,18 +87,9 @@ def _to_path_strings(data: str | Path | list[PathLike] | tuple[PathLike, ...]) -
     return paths
 
 
-def _polars_requirement() -> str:
-    """The polars range this datui declares, from its own package metadata."""
-    try:
-        from importlib.metadata import requires
-
-        for requirement in requires("datui") or []:
-            spec = requirement.split(";")[0].strip()
-            if spec.startswith("polars"):
-                return spec
-    except Exception:
-        pass
-    return "the polars version this datui release was built for"
+# The Python polars release paired with the Rust polars this wheel embeds. Plans it writes
+# are the ones the wheel is tested against; move it with the Rust polars bump.
+PAIRED_POLARS = "1.43"
 
 
 def _view_frame(lf: pl.LazyFrame, *, options: DatuiOptions | None) -> None:
@@ -136,7 +127,7 @@ def _view_frame(lf: pl.LazyFrame, *, options: DatuiOptions | None) -> None:
     version = getattr(pl, "__version__", "unknown")
     raise ValueError(
         f"datui cannot read this LazyFrame: it was serialized by polars {version}, and this "
-        f"datui reads plans from {_polars_requirement()}. Install a matching polars, or pass "
+        f"datui is built for polars {PAIRED_POLARS}. Install polars {PAIRED_POLARS}, or pass "
         "a file path to datui.view() instead."
     ) from binary_error
 

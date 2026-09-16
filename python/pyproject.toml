@@ -26,11 +26,13 @@ classifiers = [
 ]
 dependencies = [
     # A frame reaches the wheel as the plan `LazyFrame.serialize()` writes, read by the
-    # Rust polars the wheel embeds (0.55). Polars pairs rs-0.55 with Python 1.43, and
-    # 1.38 through 1.43 decode in testing (scan, filter, group_by, join, cast, sort,
-    # unique, in-memory frames). 1.44 writes a newer join node that 0.55 cannot read;
-    # 1.37 and earlier write an older path type. Move this with the Rust polars bump.
-    "polars>=1.38,<1.44",
+    # Rust polars the wheel embeds (0.55). Polars pairs rs-0.55 with Python 1.43, and 1.38
+    # through 1.43 decode in testing; 1.37 and earlier write an older path type. There is
+    # no upper bound: a newer polars reads most plans (1.44 refuses only joins), a plan it
+    # cannot read raises ValueError naming the paired release, and a path works with any
+    # polars. Pinning above would make `pip install datui` downgrade the user's polars.
+    # Move the floor and PAIRED_POLARS in datui/__init__.py with the Rust polars bump.
+    "polars>=1.38",
 ]
 
 [project.urls]

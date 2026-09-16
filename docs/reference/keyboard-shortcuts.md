@@ -3,7 +3,9 @@
 <kbd>?</kbd> or <kbd>F1</kbd> shows the keys for whatever is on screen;
 <kbd>F1</kbd> works inside text fields too. The bar at the bottom of the
 screen shows the ones that matter most. A spinner in that bar means datui is
-busy.
+busy; keys you type at it are queued and replayed once the work is done, so
+typing ahead is never lost, while <kbd>Ctrl</kbd>+<kbd>Q</kbd>,
+<kbd>Ctrl</kbd>+<kbd>C</kbd> and <kbd>Ctrl</kbd>+<kbd>O</kbd> still act at once.
 
 ## Table
 
@@ -32,7 +34,7 @@ busy.
 | <kbd>D</kbd> | Toggle the type row under the headers |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | [Home screen](../user-guide/home-screen.md) |
 | <kbd>?</kbd> <kbd>F1</kbd> | Help |
-| <kbd>q</kbd> | Quit |
+| <kbd>q</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit (<kbd>Ctrl</kbd>+<kbd>Q</kbd> works from anywhere, including a long load) |
 
 The three toggles last for the session; the config file sets the state at
 launch.
@@ -57,7 +59,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>Shift</kbd>+<kbd>Delete</kbd> | Forget every recent entry, after confirming |
 | <kbd>Esc</kbd> | Back out one layer: filter, directory, then to the open data |
 | <kbd>Ctrl</kbd>+<kbd>O</kbd> | Return here from anywhere, including during a load |
-| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Quit |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> or <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |
 
 ## Query prompt
 
@@ -81,6 +83,7 @@ Every text field, from the query prompt to a file path, edits the same way:
 | <kbd>Ctrl</kbd>+<kbd>K</kbd> | Delete to the end of the line |
 | <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Paste the last deletion |
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> | Undo |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selection (does not quit while a text field is focused) |
 | <kbd>F1</kbd> | Help |
 
 ## Sort and filter

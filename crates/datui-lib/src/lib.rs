@@ -42,6 +42,7 @@ mod cloud_hive;
 pub mod config;
 pub mod discover;
 pub mod error_display;
+pub mod event_pump;
 pub mod export_modal;
 pub mod filter_modal;
 pub mod fuzzy;
@@ -1437,6 +1438,12 @@ pub enum AppEvent {
     },
 }
 
+/// What [`App::handle`] did with an event: `Ok` carries the follow-up event to send,
+/// if any; `Err` returns a key that arrived while the app was busy. Nothing was done
+/// with that key and it was not dropped: the caller keeps it and offers it again once
+/// the app is idle.
+pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
+
 /// Input for the shared run loop: open from file paths or from an existing LazyFrame (e.g. Python binding).
 #[derive(Clone)]
 pub enum RunInput {
@@ -2192,9 +2199,17 @@ pub struct App {
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
-    busy: bool,                     // When true, show throbber and ignore keys
+    /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
+    /// holds them until this clears.
+    busy: bool,
+    /// Bumped whenever the screen the user was typing at is replaced without a key of
+    /// theirs asking for it: going home, abandoning a load. Keys held while busy carry
+    /// the value they were typed under and are dropped if it has moved on.
+    screen_generation: u64,
+    /// Set by the main loop when it had to drop a key typed while busy, shown beside
+    /// the status message until the held keys have been replayed.
+    input_dropped: bool,
     throbber_frame: u8,             // Spinner frame index (0..3) for control bar
-    drain_keys_on_next_loop: bool,  // Main loop drains crossterm key buffer when true
     status_message: Option<String>, // Status text shown in control bar when busy (replaces keybindings)
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
@@ -2225,14 +2240,140 @@ impl App {
         self.path.as_deref()
     }
 
-    /// Returns true when the main loop should drain the crossterm key buffer after render.
-    pub fn should_drain_keys(&self) -> bool {
-        self.drain_keys_on_next_loop
+    /// See the `screen_generation` field.
+    pub fn screen_generation(&self) -> u64 {
+        self.screen_generation
     }
 
-    /// Clears the drain-keys request after the main loop has drained the buffer.
-    pub fn clear_drain_keys_request(&mut self) {
-        self.drain_keys_on_next_loop = false;
+    /// True while a message is in front of the user that has to be dismissed.
+    pub fn modal_showing(&self) -> bool {
+        self.error_modal.active || self.success_modal.active || self.confirmation_modal.active
+    }
+
+    /// See the `input_dropped` field.
+    pub fn set_input_dropped(&mut self, dropped: bool) {
+        self.input_dropped = dropped;
+    }
+
+    /// The escapes that act at once while busy and jump ahead of anything queued: Ctrl-Q
+    /// (and Ctrl-C outside a text field) quit, Ctrl-O goes home, so a slow load never
+    /// traps the user; a confirmation modal keeps its keys so it can be answered; and the
+    /// home screen is never busy on its own account (only work left running behind it sets
+    /// `busy`), so it keeps every key.
+    pub fn hard_escape_while_busy(&self, key: &KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let quit = ctrl
+            && (key.code == KeyCode::Char('q')
+                || (key.code == KeyCode::Char('c') && !self.text_field_focused()));
+        let home = ctrl && key.code == KeyCode::Char('o');
+        quit || home || self.confirmation_modal.active || self.input_mode == InputMode::Home
+    }
+
+    /// Whether a key may act while the app is busy. `App::handle` gates on this; the main
+    /// loop applies the extra "nothing queued" condition for the second group.
+    ///
+    /// The hard escapes always qualify. Beyond them, in the plain Normal-mode table view
+    /// (no text field, no modal), the harmless view keys act — quit, column scroll (never
+    /// collects), and help — because the first key held in that view cannot be part of a
+    /// typed `/query`. Everything else, letters included, is type-ahead and waits; a bare
+    /// Enter or Esc there confirms nothing and is dropped by the caller. Nothing is
+    /// classified by keycode alone: the `h` in a typed `/hello` never scrolls.
+    pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {
+        if self.hard_escape_while_busy(key) {
+            return true;
+        }
+        self.in_normal_table_view()
+            && matches!(
+                key.code,
+                KeyCode::Char('q')
+                    | KeyCode::Char('Q')
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('l')
+                    | KeyCode::F(1)
+                    | KeyCode::Char('?')
+            )
+    }
+
+    /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
+    /// (template, analysis) drawn over it.
+    pub fn in_normal_table_view(&self) -> bool {
+        self.input_mode == InputMode::Normal
+            && !self.show_help
+            && !self.template_modal.active
+            && !self.analysis_modal.active
+            && !self.error_modal.active
+            && !self.success_modal.active
+            && !self.confirmation_modal.active
+    }
+
+    /// Whether a text field currently owns typed characters, so Ctrl-C copies rather than
+    /// quits. The home filter is deliberately excluded: Ctrl-C quits from the home screen.
+    pub fn text_field_focused(&self) -> bool {
+        match self.input_mode {
+            InputMode::Editing => true,
+            InputMode::Export => matches!(
+                self.export_modal.focus,
+                ExportFocus::PathInput | ExportFocus::CsvDelimiter
+            ),
+            InputMode::SortFilter => {
+                self.sort_filter_modal.focus == SortFilterFocus::Body
+                    && match self.sort_filter_modal.active_tab {
+                        SortFilterTab::Filter => {
+                            self.sort_filter_modal.filter.focus == FilterFocus::Value
+                        }
+                        SortFilterTab::Sort => {
+                            self.sort_filter_modal.sort.focus == SortFocus::Filter
+                        }
+                    }
+            }
+            InputMode::PivotMelt => matches!(
+                self.pivot_melt_modal.focus,
+                PivotMeltFocus::PivotFilter
+                    | PivotMeltFocus::MeltFilter
+                    | PivotMeltFocus::MeltPattern
+                    | PivotMeltFocus::MeltVarName
+                    | PivotMeltFocus::MeltValName
+            ),
+            InputMode::Chart => {
+                if self.chart_export_modal.active {
+                    matches!(
+                        self.chart_export_modal.focus,
+                        ChartExportFocus::PathInput
+                            | ChartExportFocus::TitleInput
+                            | ChartExportFocus::WidthInput
+                            | ChartExportFocus::HeightInput
+                    )
+                } else {
+                    // The column search boxes above each list.
+                    matches!(
+                        self.chart_modal.focus,
+                        ChartFocus::XInput
+                            | ChartFocus::YInput
+                            | ChartFocus::HistInput
+                            | ChartFocus::BoxInput
+                            | ChartFocus::KdeInput
+                            | ChartFocus::HeatmapXInput
+                            | ChartFocus::HeatmapYInput
+                    )
+                }
+            }
+            InputMode::Normal => {
+                self.template_modal.active
+                    && self.template_modal.mode != TemplateModalMode::List
+                    && matches!(
+                        self.template_modal.create_focus,
+                        CreateFocus::Name
+                            | CreateFocus::Description
+                            | CreateFocus::ExactPath
+                            | CreateFocus::RelativePath
+                            | CreateFocus::PathPattern
+                            | CreateFocus::FilenamePattern
+                    )
+            }
+            InputMode::Home | InputMode::Info => false,
+        }
     }
 
     pub fn send_event(&mut self, event: AppEvent) -> Result<()> {
@@ -2490,7 +2631,6 @@ impl App {
             self.busy = false;
             self.status_message = None;
         }
-        self.drain_keys_on_next_loop = true;
         None
     }
 
@@ -2694,7 +2834,8 @@ impl App {
             pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
             throbber_frame: 0,
-            drain_keys_on_next_loop: false,
+            screen_generation: 0,
+            input_dropped: false,
             status_message: None,
             analysis_computation: None,
             app_config,
@@ -3096,8 +3237,9 @@ impl App {
             self.busy = false;
             self.status_message = None;
         }
-        // Keys typed at the frozen screen were meant for the load, not for home.
-        self.drain_keys_on_next_loop = true;
+        // Keys typed at the frozen screen were meant for the load, not for home:
+        // replayed there they could open a dataset nobody asked for.
+        self.screen_generation = self.screen_generation.wrapping_add(1);
     }
 
     pub fn enter_home(&mut self) {
@@ -3285,13 +3427,9 @@ impl App {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
 
         // The home screen puts every plain character into the filter — `q` has to
-        // type a `q`, or you could never search for "quarterly". So quitting is
-        // Ctrl+C, checked before anything else can swallow it, and Esc once there is
-        // no context left to back out of.
-        if ctrl && matches!(event.code, KeyCode::Char('c') | KeyCode::Char('q')) {
-            return Some(AppEvent::Exit);
-        }
-
+        // type a `q`, or you could never search for "quarterly". Quitting is Ctrl+C,
+        // handled before this is reached, and Esc once there is no context left to
+        // back out of.
         if self.home.path_input_active {
             match event.code {
                 KeyCode::Esc => {
@@ -4384,6 +4522,19 @@ impl App {
     fn key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         self.debug.on_key(event);
 
+        let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
+        // Ctrl-Q quits from anywhere, before any mode gets a say — including a mode
+        // with no CONTROL arm of its own (the chart view) that would otherwise swallow
+        // it while busy.
+        if ctrl && event.code == KeyCode::Char('q') {
+            return Some(AppEvent::Exit);
+        }
+        // Ctrl-C also quits from anywhere, except in a focused text field, where it is
+        // the textarea's Copy binding and must reach it.
+        if ctrl && event.code == KeyCode::Char('c') && !self.text_field_focused() {
+            return Some(AppEvent::Exit);
+        }
+
         // F1 opens help first so no other branch (e.g. Editing) can consume it.
         if event.code == KeyCode::F(1) {
             self.open_help_overlay();
@@ -4636,49 +4787,8 @@ impl App {
 
         if event.code == KeyCode::Char('?') {
             let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
-            let in_text_input = match self.input_mode {
-                InputMode::Editing => true,
-                // The home screen is always accepting characters, into either the
-                // filter or the path input.
-                InputMode::Home => true,
-                InputMode::Export => matches!(
-                    self.export_modal.focus,
-                    ExportFocus::PathInput | ExportFocus::CsvDelimiter
-                ),
-                InputMode::SortFilter => {
-                    let on_body = self.sort_filter_modal.focus == SortFilterFocus::Body;
-                    let filter_tab = self.sort_filter_modal.active_tab == SortFilterTab::Filter;
-                    on_body
-                        && filter_tab
-                        && self.sort_filter_modal.filter.focus == FilterFocus::Value
-                }
-                InputMode::PivotMelt => matches!(
-                    self.pivot_melt_modal.focus,
-                    PivotMeltFocus::PivotFilter
-                        | PivotMeltFocus::MeltFilter
-                        | PivotMeltFocus::MeltPattern
-                        | PivotMeltFocus::MeltVarName
-                        | PivotMeltFocus::MeltValName
-                ),
-                InputMode::Info | InputMode::Chart => false,
-                InputMode::Normal => {
-                    if self.template_modal.active
-                        && self.template_modal.mode != TemplateModalMode::List
-                    {
-                        matches!(
-                            self.template_modal.create_focus,
-                            CreateFocus::Name
-                                | CreateFocus::Description
-                                | CreateFocus::ExactPath
-                                | CreateFocus::RelativePath
-                                | CreateFocus::PathPattern
-                                | CreateFocus::FilenamePattern
-                        )
-                    } else {
-                        false
-                    }
-                }
-            };
+            // The home screen always accepts characters, into its filter or path input.
+            let in_text_input = self.text_field_focused() || self.input_mode == InputMode::Home;
             // Ctrl-? always opens help; bare ? only when not in a text field
             if ctrl_help || !in_text_input {
                 self.open_help_overlay();
@@ -7715,9 +7825,6 @@ impl App {
 
         match event.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => Some(AppEvent::Exit),
-            KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(AppEvent::Exit)
-            }
             KeyCode::Char('R') => Some(AppEvent::Reset),
             KeyCode::Char('N') => {
                 if let Some(ref mut state) = self.data_table_state {
@@ -8228,10 +8335,23 @@ impl App {
         }
     }
 
-    pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+    /// Handle one event. A key that arrives while the app is busy is not acted on and
+    /// not dropped either: it comes back as `Err(key)` for the caller to hold until the
+    /// app is idle. The main loop ([`event_pump::EventPump`]) does exactly that;
+    /// [`App::event`] is the same call for callers that have nowhere to hold a key.
+    pub fn handle(&mut self, event: &AppEvent) -> EventOutcome {
+        if let AppEvent::Key(key) = event {
+            if self.busy && !self.key_acts_while_busy(key) {
+                return Err(*key);
+            }
+        }
         let out = self.dispatch_event(event);
         self.ensure_chart_data();
-        out
+        Ok(out)
+    }
+
+    pub fn event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+        self.handle(event).unwrap_or(None)
     }
 
     /// True while chart data for the current view is being prepared off-thread — either
@@ -8339,35 +8459,7 @@ impl App {
         self.debug.num_events += 1;
 
         match event {
-            AppEvent::Key(key) => {
-                let is_column_scroll = matches!(
-                    key.code,
-                    KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l')
-                );
-                let is_help_key = key.code == KeyCode::F(1) || key.code == KeyCode::Char('?');
-                // Quit must always work, even mid-load — otherwise a slow collect leaves the user
-                // stuck with only Ctrl-C (which kills via SIGINT rather than quitting cleanly).
-                let is_quit_key = matches!(key.code, KeyCode::Char('q') | KeyCode::Char('Q'))
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL));
-                // Going home must work mid-load too, or a slow dataset traps you in it
-                // and browsing stops being cheap.
-                let is_home_key = (key.code == KeyCode::Char('o')
-                    && key.modifiers.contains(KeyModifiers::CONTROL))
-                    || self.input_mode == InputMode::Home;
-                // When busy (e.g. loading), still process quit, column scroll, help,
-                // home, and confirmation modal keys.
-                if self.busy
-                    && !is_column_scroll
-                    && !is_help_key
-                    && !is_quit_key
-                    && !is_home_key
-                    && !self.confirmation_modal.active
-                {
-                    return None;
-                }
-                self.key(key)
-            }
+            AppEvent::Key(key) => self.key(key),
             AppEvent::Open(paths, options) => {
                 if paths.is_empty() {
                     return Some(AppEvent::Crash("No paths provided".to_string()));
@@ -8963,7 +9055,6 @@ impl App {
                 if !self.spawn_async_collect("Loading buffer...") {
                     self.loading_state = LoadingState::Idle;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9124,7 +9215,6 @@ impl App {
                 } else {
                     self.analysis_modal.computing = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9165,7 +9255,6 @@ impl App {
                 } else {
                     self.analysis_modal.computing = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9217,7 +9306,6 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 // Stale results (generation mismatch) are silently ignored —
                 // busy stays true until the current generation's result arrives.
@@ -9254,7 +9342,6 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 // Stale message (generation mismatch) — ignore entirely.
                 None
@@ -9268,7 +9355,6 @@ impl App {
                     self.analysis_modal.computing = None;
                     self.status_message = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9281,7 +9367,6 @@ impl App {
                     self.analysis_modal.computing = None;
                     self.status_message = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9294,7 +9379,6 @@ impl App {
                     self.analysis_modal.computing = None;
                     self.status_message = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9342,7 +9426,6 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                     match result {
                         Ok(()) => {
                             self.success_modal
@@ -9368,7 +9451,6 @@ impl App {
                     self.loading_state = LoadingState::Idle;
                     self.status_message = None;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                     // Kept so the home screen can say why, if that is where dismissing
                     // the error lands the user.
                     self.last_load_error = Some(message.clone());
@@ -9677,7 +9759,6 @@ impl App {
                 } else {
                     self.loading_state = LoadingState::Idle;
                     self.busy = false;
-                    self.drain_keys_on_next_loop = true;
                 }
                 None
             }
@@ -9689,7 +9770,6 @@ impl App {
                     }
                 }
                 self.busy = false;
-                self.drain_keys_on_next_loop = true;
                 None
             }
             _ => None,
@@ -9977,7 +10057,6 @@ impl App {
         self.loading_state = LoadingState::Idle;
         self.status_message = None;
         self.busy = false;
-        self.drain_keys_on_next_loop = true;
         match result {
             Ok(()) => {
                 self.success_modal.show(format!(
@@ -10592,6 +10671,13 @@ impl Widget for &mut App {
                 }
             }
         };
+        let status_msg = status_msg.map(|msg| {
+            if self.input_dropped {
+                format!("{msg}  input dropped while busy")
+            } else {
+                msg
+            }
+        });
         controls = controls.with_status_message(status_msg);
 
         match crate::render::main_view::control_bar_spec(self, main_view_content) {
@@ -10719,7 +10805,27 @@ where
 }
 
 /// Run the TUI with either file paths or an existing LazyFrame. Single event loop used by CLI and Python binding.
+/// Folds one channel drain into the loop: records whether the app changed, or restores
+/// the terminal and returns how `run` should end.
+fn finish_drain(drained: event_pump::Drained, updated: &mut bool) -> Option<Result<()>> {
+    match drained {
+        event_pump::Drained::Continue { updated: changed } => {
+            *updated |= changed;
+            None
+        }
+        event_pump::Drained::Exit => {
+            ratatui::restore();
+            Some(Ok(()))
+        }
+        event_pump::Drained::Crash(msg) => {
+            ratatui::restore();
+            Some(Err(color_eyre::eyre::eyre!(msg)))
+        }
+    }
+}
+
 pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
+    use event_pump::EventPump;
     use std::io::Write;
     use std::sync::{mpsc, Mutex, Once};
 
@@ -10838,19 +10944,31 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         }
     }
     app.busy = !starting_at_home;
-    terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
+    let mut pump = EventPump::new(app, tx, rx);
+    terminal.draw(|frame| frame.render_widget(&mut pump.app, frame.area()))?;
     let _ = std::io::stdout().flush();
 
-    // Main event loop: poll for input, drain queued events, redraw.
+    // Main event loop: replay one held key, poll for input, drain the channel, redraw.
     loop {
+        let mut updated = pump.replay_one()?;
+        // A replayed key may have queued a follow-up (a Search, an Export); handle it
+        // before the terminal is read so a key typed now cannot overtake it.
+        if let Some(done) = finish_drain(pump.drain()?, &mut updated) {
+            return done;
+        }
+        let app = &pump.app;
+
         // Poll with a shorter timeout when busy so the throbber animates (~30fps).
-        // 33ms is plenty for a spinner and halves redraw load vs. 60fps.
+        // 33ms is plenty for a spinner and halves redraw load vs. 60fps. Held keys
+        // waiting on an idle app replay one per iteration, so then there is no wait.
         let spinning = app.busy
             || app.len_count_inflight.is_some()
             || app.chart_preparing()
             || (app.input_mode == InputMode::Home
                 && (app.home.awaiting_listing().is_some() || app.home.sections_waiting()));
-        let poll_ms = if spinning {
+        let poll_ms = if pump.replaying() {
+            0
+        } else if spinning {
             33
         } else {
             config.performance.event_poll_interval_ms
@@ -10859,47 +10977,19 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         if crossterm::event::poll(std::time::Duration::from_millis(poll_ms))? {
             match crossterm::event::read()? {
                 crossterm::event::Event::Key(key) if key.is_press() => {
-                    tx.send(AppEvent::Key(key))?;
+                    updated |= pump.terminal_key(key)?;
                 }
                 crossterm::event::Event::Resize(cols, rows) => {
-                    tx.send(AppEvent::Resize(cols, rows))?;
+                    pump.send(AppEvent::Resize(cols, rows))?;
                 }
                 _ => {}
             }
         }
 
-        // Drain ALL pending events per iteration.
-        let mut updated = false;
-        loop {
-            match rx.try_recv() {
-                Ok(AppEvent::Exit) => {
-                    ratatui::restore();
-                    return Ok(());
-                }
-                Ok(AppEvent::Crash(msg)) => {
-                    ratatui::restore();
-                    return Err(color_eyre::eyre::eyre!(msg));
-                }
-                Ok(event) => {
-                    updated = true;
-                    if let Some(next) = app.event(&event) {
-                        tx.send(next)?;
-                        // A handler that returns a follow-up event is deferring work so
-                        // the UI can show the current phase first — the `Do*` events all
-                        // rely on this. Draining the follow-up in the same pass defeats
-                        // that: the phase label never renders and the throbber never
-                        // moves. Break so a frame is drawn and keys are polled first.
-                        // Order is unaffected; the follow-up was appended to the queue.
-                        break;
-                    }
-                }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    ratatui::restore();
-                    return Ok(());
-                }
-            }
+        if let Some(done) = finish_drain(pump.drain()?, &mut updated) {
+            return done;
         }
+        let app = &mut pump.app;
 
         // Animate throbber when busy or while the background row count is still resolving
         // (that count doesn't set `busy` but drives the row-count spinner).
@@ -10917,40 +11007,13 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
         }
 
         if updated {
-            terminal.draw(|frame| frame.render_widget(&mut app, frame.area()))?;
-            // Rows on the home screen are measured a few per frame; ask for another
-            // frame while any remain, so the columns fill in rather than stalling the
-            // first paint.
+            terminal.draw(|frame| frame.render_widget(&mut *app, frame.area()))?;
             // After render, check if visible_rows changed and trigger async buffer re-collect.
             if let Some(state) = &mut app.data_table_state {
                 if state.needs_recollect {
                     state.needs_recollect = false;
                     app.spawn_async_collect("Loading buffer...");
                 }
-            }
-            if app.should_drain_keys() {
-                // Keys typed *at* a busy screen are usually accidental — a held arrow
-                // key, an impatient double-tap — so they get dropped. But the two keys
-                // that mean "get me out of here" must survive: discarding those is
-                // exactly the moment a user needs them to work.
-                let mut escape: Option<crossterm::event::KeyEvent> = None;
-                while crossterm::event::poll(std::time::Duration::from_millis(0))? {
-                    if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
-                        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                        if ctrl
-                            && matches!(
-                                key.code,
-                                KeyCode::Char('c') | KeyCode::Char('q') | KeyCode::Char('o')
-                            )
-                        {
-                            escape = Some(key);
-                        }
-                    }
-                }
-                if let Some(key) = escape {
-                    tx.send(AppEvent::Key(key))?;
-                }
-                app.clear_drain_keys_request();
             }
         }
     }

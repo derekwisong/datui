@@ -1006,3 +1006,81 @@ fn an_aws_bucket_browses_and_opens_through_the_active_profile() {
     println!("{headers:?}");
     assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
 }
+
+/// Open every file under `edge/` in the test container and bucket: names with spaces,
+/// non-ASCII, `+ = & #`, `%`, an uppercase extension, no extension, deep folders.
+///
+/// ```bash
+/// DATUI_LIVE_EDGE="abfss://datui-test@<account>.dfs.core.windows.net/edge/,s3://<bucket>/edge/" \
+///   cargo test --test cloud_live_test -- --ignored --nocapture awkward_names
+/// ```
+#[test]
+#[ignore = "opens awkwardly named objects in real stores; set DATUI_LIVE_EDGE"]
+fn awkward_names_list_and_open() {
+    let Ok(roots) = std::env::var("DATUI_LIVE_EDGE") else {
+        eprintln!("skipped: set DATUI_LIVE_EDGE to comma-separated edge/ URLs to run");
+        return;
+    };
+    let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
+    let runtime = common::test_runtime();
+    let mut failures = Vec::new();
+    for root in roots.split(',') {
+        let mut pending = vec![root.to_string()];
+        let mut files = Vec::new();
+        while let Some(dir) = pending.pop() {
+            let rows = runtime
+                .block_on(cloud_browse::list_objects(&dir, &config))
+                .unwrap_or_else(|e| panic!("listing {dir}: {e}"));
+            for row in rows {
+                let path = row.path.to_string_lossy().into_owned();
+                match row.kind {
+                    datui::discover::EntryKind::Directory => pending.push(path),
+                    _ => files.push((row.name, path)),
+                }
+            }
+        }
+        println!("{root}: {} files", files.len());
+        for (name, url) in files {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut app = datui::App::new_with_config(
+                tx,
+                common::test_runtime(),
+                datui::Theme {
+                    colors: std::collections::HashMap::new(),
+                },
+                datui::config::AppConfig {
+                    cloud: config.clone(),
+                    ..Default::default()
+                },
+            );
+            let mut options = datui::OpenOptions::default();
+            if name == "no-extension" {
+                options.format = Some(datui::FileFormat::Parquet);
+            }
+            let open = datui::AppEvent::Open(vec![std::path::PathBuf::from(&url)], options);
+            if let Some(crash) = drive(&mut app, open) {
+                failures.push(format!("{url}: {crash}"));
+                continue;
+            }
+            let done = pump_until(&mut app, &rx, 60, |app| {
+                app.awaiting_download_confirmation()
+                    || (app.data_table_state.is_some() && !app.is_busy())
+            });
+            if app.awaiting_download_confirmation() {
+                app.event(&key(crossterm::event::KeyCode::Left));
+                drive(&mut app, key(crossterm::event::KeyCode::Enter));
+                pump_until(&mut app, &rx, 60, |app| {
+                    app.data_table_state.is_some() && !app.is_busy()
+                });
+            }
+            match app.data_table_state.as_ref() {
+                Some(state) if done => println!("  ok   {name}: {} columns", state.headers().len()),
+                _ => failures.push(format!(
+                    "{url}: did not load (status {:?})",
+                    app.home.status
+                )),
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

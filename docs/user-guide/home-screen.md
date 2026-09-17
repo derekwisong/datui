@@ -267,6 +267,7 @@ one that can be read.
 | Source | ID | Appears when |
 |---|---|---|
 | Amazon S3, or the endpoint in `[cloud]` | `s3-default` | Keys in `[cloud]` or `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, an EKS web identity, `AWS_PROFILE`, or a `~/.aws` directory |
+| Each other AWS profile that can log in | `aws-<profile>` | Keys, `credential_process`, SSO or a role in the profile |
 | Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, or the file written by `gcloud auth application-default login` |
 | Each `[[cloud.sources]]` entry | its `name` | Always |
 
@@ -277,11 +278,10 @@ Google needs a project to list buckets, taken from `DATUI_GCP_PROJECT`,
 `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT` or
 `GCP_PROJECT`, or from the `quota_project_id` in the gcloud credentials file.
 
-AWS profiles are not read yet
-([#168](https://github.com/derekwisong/datui/issues/168)): `AWS_PROFILE` or a
-`~/.aws` directory shows the row, but it cannot list until the profile's keys are
-exported; see [Loading Data](loading-data.md#amazon-s3). An EC2 instance role is
-**not** discovered, because finding it means a metadata request that hangs on some
+A profile that needs the AWS CLI shows `needs the AWS CLI` when it is not
+installed, and an expired SSO login shows the CLI's message; see
+[Loading Data](loading-data.md#aws-profiles). An EC2 instance role is **not**
+discovered, because finding it means a metadata request that hangs on some
 networks; opening a URL still works.
 
 ### What a cloud row shows

@@ -189,6 +189,7 @@ buckets = ["sales", "logs"]
 | `region` | s3 | Region to sign for |
 | `addressing` | s3 | `path` or `virtual`. Default: `path` with an endpoint, `virtual` without |
 | `access_key_id_env`, `secret_access_key_env`, `session_token_env` | s3 | Names of the environment variables holding the keys |
+| `profile` | s3 | An AWS profile to take the keys, endpoint and region from, instead of the `*_env` keys |
 
 A secret written directly into a source (`secret_access_key = "..."`) is refused,
 and so is any key datui does not recognize, with the key named. A variable that is

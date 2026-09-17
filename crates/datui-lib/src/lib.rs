@@ -29,6 +29,8 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use ratatui::widgets::{Block, Clear};
 
 pub mod analysis_modal;
+#[cfg(feature = "cloud")]
+pub mod aws_profiles;
 pub mod cache;
 pub mod chart_data;
 pub mod chart_export;
@@ -37,6 +39,8 @@ pub mod chart_modal;
 pub mod cli;
 #[cfg(feature = "cloud")]
 pub mod cloud_browse;
+#[cfg(feature = "cloud")]
+pub mod cloud_command;
 #[cfg(feature = "cloud")]
 mod cloud_hive;
 #[cfg(feature = "cloud")]
@@ -11124,6 +11128,10 @@ fn home_cloud_source(
 #[cfg(feature = "cloud")]
 fn summarize_cloud_failure(error: &str) -> (String, String) {
     let lower = error.to_lowercase();
+    // A missing tool is already as short as it gets: `needs the AWS CLI`.
+    if let Some(start) = lower.find("needs ") {
+        return (error[start..].to_string(), error.to_string());
+    }
     let short = if lower.contains("403")
         || lower.contains("forbidden")
         || lower.contains("accessdenied")
@@ -11134,6 +11142,8 @@ fn summarize_cloud_failure(error: &str) -> (String, String) {
         || lower.contains("unauthorized")
         || lower.contains("credential")
         || lower.contains("invalidaccesskeyid")
+        || lower.contains("expired")
+        || lower.contains("sso")
     {
         "not logged in"
     } else if lower.contains("no gcp project") {

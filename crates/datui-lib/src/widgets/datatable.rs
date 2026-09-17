@@ -127,6 +127,13 @@ pub struct DataTableState {
     /// What the footers said about a many-file dataset's columns: where the schema came
     /// from, and which columns are not in every file. `None` for a single file.
     dataset_schema: Option<crate::schema_union::DatasetSchema>,
+    /// Whether the frame still carries the scan's hidden drift column. True from the
+    /// open of a dataset whose files differ; false once a query or reshape has built a
+    /// new frame, which has no file behind each row any more.
+    drift_column_present: bool,
+    /// What each drift group is missing, shared with the renderer so a frame costs no
+    /// allocation. Indexed by the drift column's values.
+    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -472,6 +479,8 @@ impl DataTableState {
             row_group_offsets: None,
             remote_files: None,
             dataset_schema: None,
+            drift_column_present: false,
+            drift_groups: Arc::new(Vec::new()),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -566,6 +575,8 @@ impl DataTableState {
             row_group_offsets: None,
             remote_files: None,
             dataset_schema: None,
+            drift_column_present: false,
+            drift_groups: Arc::new(Vec::new()),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -600,6 +611,9 @@ impl DataTableState {
     /// with `schema` as its schema and every column in view. Row counts are invalidated.
     fn install_base(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
         self.invalidate_num_rows();
+        // A new frame is the user's own projection of the data; its rows no longer
+        // stand for rows of a file, so nulls in it are just nulls.
+        self.drift_column_present = false;
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
         self.observed_bytes_per_row = None;
@@ -3722,7 +3736,33 @@ impl DataTableState {
 
     /// Record what the footers said about the dataset's columns. See `DatasetSchema`.
     pub fn set_dataset_schema(&mut self, schema: crate::schema_union::DatasetSchema) {
+        // The scan stamps the drift column exactly when the files differ.
+        self.drift_column_present = schema.drifts();
+        self.drift_groups = Arc::new(schema.groups.clone());
         self.dataset_schema = Some(schema);
+    }
+
+    /// The frame as the user sees it: `lf` without the hidden drift column. Everything
+    /// that exports, reshapes, groups or analyses the data reads this; only the display
+    /// buffer reads `lf` itself, and it lifts the column back out after collecting.
+    pub fn visible_lf(&self) -> LazyFrame {
+        if self.drift_column_present {
+            self.lf
+                .clone()
+                .drop(by_name([crate::schema_union::DRIFT_COLUMN], false, false))
+        } else {
+            self.lf.clone()
+        }
+    }
+
+    /// Whether rows still know which file they came from.
+    pub fn drifts(&self) -> bool {
+        self.drift_column_present
+    }
+
+    /// What each drift group is missing, for the renderer. Empty when nothing drifts.
+    pub fn drift_groups(&self) -> Arc<Vec<crate::schema_union::DriftGroup>> {
+        self.drift_groups.clone()
     }
 
     /// What the footers said about the dataset's columns, when it is many files.
@@ -3771,7 +3811,10 @@ impl DataTableState {
     /// The frame for buffer rows `[start, start + len)`, columns in display order. For a
     /// remote dataset whose files are counted, a scan of only the files holding them.
     fn buffer_lf(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
-        let all_columns = self.binary_stub_exprs();
+        let mut all_columns = self.binary_stub_exprs();
+        if self.drift_column_present {
+            all_columns.push(col(crate::schema_union::DRIFT_COLUMN));
+        }
         if let Some((files, offsets)) = self
             .remote_files
             .as_ref()
@@ -4493,6 +4536,33 @@ impl DataTableState {
         }
     }
 
+    /// The drift group of each row on screen, when the dataset's files differ.
+    ///
+    /// Empty once a query or reshape has replaced the frame: those rows stand for no
+    /// file, so their nulls are ordinary nulls. The window is a screen tall, so this
+    /// is a few dozen values.
+    pub fn display_drift(&self) -> Vec<u32> {
+        if !self.drift_column_present {
+            return Vec::new();
+        }
+        let Some(df) = self.buffered_df.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(column) = df.column(crate::schema_union::DRIFT_COLUMN) else {
+            return Vec::new();
+        };
+        let offset = self.start_row.saturating_sub(self.buffered_start_row);
+        let len = self.visible_rows.min(column.len().saturating_sub(offset));
+        if len == 0 {
+            return Vec::new();
+        }
+        let slice = column.slice(offset as i64, len);
+        match slice.u32() {
+            Ok(values) => values.iter().map(|v| v.unwrap_or(0)).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Maximum buffer size in rows (0 = no limit).
     pub fn max_buffered_rows(&self) -> usize {
         self.max_buffered_rows
@@ -4508,7 +4578,7 @@ impl DataTableState {
             return Ok(());
         }
 
-        let grouped_df = collect_lazy(self.lf.clone(), self.polars_streaming)?;
+        let grouped_df = collect_lazy(self.visible_lf(), self.polars_streaming)?;
 
         if group_index >= grouped_df.height() {
             return Err(color_eyre::eyre::eyre!("Group index out of bounds"));
@@ -4627,7 +4697,7 @@ impl DataTableState {
                 self.filters = view.filters;
                 self.sort_columns = view.sort_columns;
                 self.sort_ascending = view.sort_ascending;
-                self.schema = self.lf.clone().collect_schema()?;
+                self.schema = self.visible_lf().collect_schema()?;
                 self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
                 self.drilled_down_group_index = None;
                 self.drilled_down_group_key = None;
@@ -4644,7 +4714,7 @@ impl DataTableState {
     }
 
     pub fn get_analysis_dataframe(&self) -> Result<DataFrame> {
-        Ok(collect_lazy(self.lf.clone(), self.polars_streaming)?)
+        Ok(collect_lazy(self.visible_lf(), self.polars_streaming)?)
     }
 
     pub fn get_analysis_context(&self) -> crate::statistics::AnalysisContext {
@@ -4681,7 +4751,7 @@ impl DataTableState {
         } else {
             by_name(spec.index.iter().map(String::as_str), true, false)
         };
-        let pivoted = self.lf.clone().pivot(
+        let pivoted = self.visible_lf().pivot(
             by_name([on], true, false),
             Arc::new(on_columns),
             index,
@@ -4708,7 +4778,7 @@ impl DataTableState {
             variable_name: Some(PlSmallStr::from(spec.variable_name.as_str())),
             value_name: Some(PlSmallStr::from(spec.value_name.as_str())),
         };
-        let lf = self.lf.clone().unpivot(args);
+        let lf = self.visible_lf().unpivot(args);
         self.last_melt_spec = Some(spec.clone());
         self.last_pivot_spec = None;
         self.replace_lf_after_reshape(lf)?;
@@ -5112,6 +5182,11 @@ pub struct DataTable {
     pub accent: Color,
     /// Null cells and the type row.
     pub dimmed: Color,
+    /// Per row on screen, its file's drift group. Empty when the dataset's files agree,
+    /// or when the rows no longer stand for rows of a file.
+    pub drift_rows: Vec<u32>,
+    /// What each drift group is missing. Indexed by the values in `drift_rows`.
+    pub drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
 }
 
 impl Default for DataTable {
@@ -5136,6 +5211,8 @@ impl Default for DataTable {
             selected_bg: None,
             accent: Color::Cyan,
             dimmed: Color::DarkGray,
+            drift_rows: Vec::new(),
+            drift_groups: Arc::new(Vec::new()),
         }
     }
 }
@@ -5280,6 +5357,56 @@ impl DataTable {
     }
 
     /// The tint under the selected row, the rail colour, and the dim colour for nulls.
+    /// Tell the table which rows came from files missing which columns, so a cell the
+    /// file never had draws differently from a null the data holds.
+    pub fn with_drift(
+        mut self,
+        rows: Vec<u32>,
+        groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    ) -> Self {
+        self.drift_rows = rows;
+        self.drift_groups = groups;
+        self
+    }
+
+    /// The footnote mark after a column's name, when it is not in every file or the
+    /// files disagree on its type. Empty otherwise.
+    fn drift_mark_for(&self, column: &str) -> &'static str {
+        let drifts = self.drift_groups.iter().any(|group| {
+            group.absent.iter().any(|c| c == column) || group.unread.iter().any(|c| c == column)
+        });
+        if drifts {
+            crate::glyphs::get().drift_mark
+        } else {
+            ""
+        }
+    }
+
+    /// What a null in `column` draws as, per drift group: the plain null glyph, the
+    /// absent glyph for a group whose files never had the column, or the conflict
+    /// glyph for one whose files hold it in another type. Empty when nothing drifts.
+    fn null_glyphs_for(
+        &self,
+        column: &str,
+        g: &'static crate::glyphs::Glyphs,
+    ) -> Vec<&'static str> {
+        if self.drift_rows.is_empty() {
+            return Vec::new();
+        }
+        self.drift_groups
+            .iter()
+            .map(|group| {
+                if group.absent.iter().any(|c| c == column) {
+                    g.absent
+                } else if group.unread.iter().any(|c| c == column) {
+                    g.conflict
+                } else {
+                    g.null
+                }
+            })
+            .collect()
+    }
+
     pub fn with_selection_colors(
         mut self,
         selected_bg: Option<Color>,
@@ -5359,7 +5486,8 @@ impl DataTable {
             .iter()
             .enumerate()
             .map(|(i, name)| {
-                let name_w = name.chars().count() as u16;
+                let mark_w = self.drift_mark_for(name.as_str()).chars().count() as u16;
+                let name_w = name.chars().count() as u16 + mark_w;
                 let type_w = dtype_labels
                     .get(i)
                     .map(|l| l.chars().count() as u16)
@@ -5423,11 +5551,22 @@ impl DataTable {
                 && numfmt::is_right_aligned_dtype(col_data.dtype());
             right_aligned_cols[col_index] = right_align;
 
+            // A null in this column means different things in different files: the
+            // data's own null, a file written without the column, or a file that
+            // stores it in another type. Resolved once per column, by group.
+            let null_glyph_by_group = self.null_glyphs_for(col_names[col_index].as_str(), g);
+
             for (row_index, row) in rows.iter_mut().take(max_rows).enumerate() {
                 let value = col_data.get(row_index).unwrap();
                 if matches!(value, AnyValue::Null) {
-                    max_len = max_len.max(g.null.chars().count() as u16);
-                    let line = Line::from(Span::styled(g.null, null_style));
+                    let glyph = self
+                        .drift_rows
+                        .get(row_index)
+                        .and_then(|group| null_glyph_by_group.get(*group as usize))
+                        .copied()
+                        .unwrap_or(g.null);
+                    max_len = max_len.max(glyph.chars().count() as u16);
+                    let line = Line::from(Span::styled(glyph, null_style));
                     row.push(Cell::from(if right_align {
                         line.right_aligned()
                     } else {
@@ -5516,7 +5655,12 @@ impl DataTable {
                     Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
                     None => Style::default().add_modifier(Modifier::BOLD),
                 };
-                let mut lines = vec![Line::from(Span::styled(name.to_string(), name_style))];
+                let mut heading = vec![Span::styled(name.to_string(), name_style)];
+                let mark = self.drift_mark_for(name.as_str());
+                if !mark.is_empty() {
+                    heading.push(Span::styled(mark, Style::default().fg(self.dimmed)));
+                }
+                let mut lines = vec![Line::from(heading)];
                 if self.dtype_row {
                     let type_style = match colour {
                         Some(c) => Style::default().fg(c),

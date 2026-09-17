@@ -91,7 +91,29 @@ pub struct DatasetSchema {
     pub unreadable: Vec<usize>,
     /// Files whose footer was read, readable or not.
     pub files: usize,
+    /// The distinct ways this dataset's files differ from its schema. Group 0 is
+    /// always "nothing missing", which is what a file not read counts as.
+    pub groups: Vec<DriftGroup>,
+    /// Per file, in the order given, its group in `groups`.
+    pub file_group: Vec<u32>,
     pub origin: SchemaOrigin,
+}
+
+/// What a file is missing relative to the dataset's schema. Files that are missing the
+/// same things share a group, so a row need only carry its group to know how to draw.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct DriftGroup {
+    /// Columns the file does not have. Their cells are absent, not null.
+    pub absent: Vec<PlSmallStr>,
+    /// Columns the file has in a type the dataset's column cannot hold, so they are
+    /// not read from it. Their cells are a conflict, not null.
+    pub unread: Vec<PlSmallStr>,
+}
+
+impl DriftGroup {
+    pub fn is_empty(&self) -> bool {
+        self.absent.is_empty() && self.unread.is_empty()
+    }
 }
 
 impl DatasetSchema {
@@ -99,6 +121,12 @@ impl DatasetSchema {
     pub fn drifting(&self) -> impl Iterator<Item = &ColumnDrift> {
         let readable = self.files - self.unreadable.len();
         self.columns.iter().filter(move |c| !c.is_uniform(readable))
+    }
+
+    /// Whether any file is missing anything. When nothing is, the scan is one plain
+    /// read and rows need carry nothing.
+    pub fn drifts(&self) -> bool {
+        self.groups.iter().any(|g| !g.is_empty())
     }
 }
 
@@ -142,10 +170,13 @@ pub fn union_sampled(
     };
     let mut union = union_file_schemas(footers, origin);
     let mut omitted = vec![Vec::new(); files];
-    for (columns, &index) in union.omitted.iter().zip(read) {
+    let mut file_group = vec![0u32; files];
+    for ((columns, group), &index) in union.omitted.iter().zip(union.file_group.iter()).zip(read) {
         omitted[index] = columns.clone();
+        file_group[index] = *group;
     }
     union.omitted = omitted;
+    union.file_group = file_group;
     union.unreadable = union
         .unreadable
         .iter()
@@ -221,19 +252,39 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         schema.with_column(name.clone(), chosen);
     }
 
-    let omitted = files
-        .iter()
-        .map(|file| {
-            let Some(file) = file else {
-                return Vec::new();
-            };
-            file.schema
-                .iter()
-                .filter(|(name, dtype)| schema.get(name).is_some_and(|target| !fits(dtype, target)))
-                .map(|(name, _)| name.clone())
-                .collect()
-        })
-        .collect();
+    // What each file is missing, and which files are missing the same things. Group 0
+    // is "nothing missing", so a file that was never read falls into it and draws as
+    // an ordinary file would.
+    let mut groups: Vec<DriftGroup> = vec![DriftGroup::default()];
+    let mut group_of: HashMap<DriftGroup, u32> = HashMap::from([(DriftGroup::default(), 0)]);
+    let mut file_group = Vec::with_capacity(files.len());
+    let mut omitted = Vec::with_capacity(files.len());
+    for file in files {
+        let Some(file) = file else {
+            file_group.push(0);
+            omitted.push(Vec::new());
+            continue;
+        };
+        let unread: Vec<PlSmallStr> = file
+            .schema
+            .iter()
+            .filter(|(name, dtype)| schema.get(name).is_some_and(|target| !fits(dtype, target)))
+            .map(|(name, _)| name.clone())
+            .collect();
+        let absent: Vec<PlSmallStr> = schema
+            .iter_names()
+            .filter(|name| !file.schema.contains(name))
+            .cloned()
+            .collect();
+        omitted.push(unread.clone());
+        let group = DriftGroup { absent, unread };
+        let next = groups.len() as u32;
+        let id = *group_of.entry(group.clone()).or_insert_with(|| {
+            groups.push(group);
+            next
+        });
+        file_group.push(id);
+    }
 
     DatasetSchema {
         schema: Arc::new(schema),
@@ -241,6 +292,8 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         omitted,
         unreadable,
         files: files.len(),
+        groups,
+        file_group,
         origin,
     }
 }
@@ -403,10 +456,53 @@ pub fn with_partition_columns(
     merged
 }
 
-/// Columns a file is not read for, because it stores them in a type the dataset's
-/// column cannot hold. Keyed by the path or URL the scan names the file by; a file
-/// that is not a key is read whole.
-pub type OmittedColumns = HashMap<String, Vec<PlSmallStr>>;
+/// The column the scan stamps each row's drift group into, so a cell knows whether its
+/// file had the column at all. Never shown, filtered, sorted or exported:
+/// `DataTableState` lifts it out of the buffer as soon as it is collected.
+pub const DRIFT_COLUMN: &str = "__datui_drift";
+
+/// How a dataset's files differ, in the form the scan needs: each file's drift group by
+/// the path or URL the scan names it by, and the groups themselves.
+#[derive(Debug, Clone, Default)]
+pub struct ScanDrift {
+    group_of: HashMap<String, u32>,
+    pub groups: Vec<DriftGroup>,
+}
+
+impl ScanDrift {
+    /// `None` when every file agrees with the schema, which is the common case: the
+    /// scan is then one plain read and rows carry nothing extra.
+    pub fn new(paths: &[String], dataset: &DatasetSchema) -> Option<Self> {
+        if !dataset.drifts() {
+            return None;
+        }
+        let group_of = paths
+            .iter()
+            .zip(dataset.file_group.iter())
+            .filter(|(_, group)| **group != 0)
+            .map(|(path, group)| (path.clone(), *group))
+            .collect();
+        Some(ScanDrift {
+            group_of,
+            groups: dataset.groups.clone(),
+        })
+    }
+
+    /// The group of the file the scan names `path`. Group 0 is "nothing missing".
+    pub fn group(&self, path: &str) -> u32 {
+        self.group_of.get(path).copied().unwrap_or(0)
+    }
+
+    fn group_at(&self, path: &str) -> &DriftGroup {
+        const NOTHING: &DriftGroup = &DriftGroup {
+            absent: Vec::new(),
+            unread: Vec::new(),
+        };
+        self.groups
+            .get(self.group(path) as usize)
+            .unwrap_or(NOTHING)
+    }
+}
 
 /// A scan of `paths` into `schema` that reads files written at different times:
 /// columns and nested fields a file lacks are filled with nulls, ones it has beyond the
@@ -414,33 +510,34 @@ pub type OmittedColumns = HashMap<String, Vec<PlSmallStr>>;
 /// `scan_parquet` offers only the first of those, and a Bitcoin transactions file from
 /// 2015 fails against the 2026 schema without the rest.
 ///
-/// A column in `omit` is left out of the files that store it in another type and reads
-/// as null there. Consecutive files omitting the same columns are one scan; the scans
-/// are concatenated in file order, so the dataset still reads in key order.
+/// When `drift` is given, a column a file stores in another type is left out of that
+/// file's read and comes back null, and every row carries its file's drift group in
+/// [`DRIFT_COLUMN`] so a null can be told from a column the file never had. Consecutive
+/// files in the same group are one scan; the scans are concatenated in file order, so
+/// the dataset still reads in key order.
 pub fn lenient_scan(
-    urls: &[String],
+    paths: &[String],
     schema: Arc<Schema>,
     cloud_options: Option<polars::io::cloud::CloudOptions>,
-    omit: &OmittedColumns,
+    drift: Option<&ScanDrift>,
 ) -> PolarsResult<LazyFrame> {
-    let omitted_here = |url: &String| omit.get(url).map(Vec::as_slice).unwrap_or(&[]);
-    if urls.iter().all(|url| omitted_here(url).is_empty()) {
-        return scan_run(urls, &schema, cloud_options, &[], false);
-    }
+    let Some(drift) = drift else {
+        return scan_run(paths, &schema, cloud_options, &DriftGroup::default(), None);
+    };
     let mut runs: Vec<LazyFrame> = Vec::new();
     let mut start = 0;
-    while start < urls.len() {
-        let columns = omitted_here(&urls[start]);
-        let end = urls[start..]
+    while start < paths.len() {
+        let id = drift.group(&paths[start]);
+        let end = paths[start..]
             .iter()
-            .position(|url| omitted_here(url) != columns)
-            .map_or(urls.len(), |offset| start + offset);
+            .position(|path| drift.group(path) != id)
+            .map_or(paths.len(), |offset| start + offset);
         runs.push(scan_run(
-            &urls[start..end],
+            &paths[start..end],
             &schema,
             cloud_options.clone(),
-            columns,
-            true,
+            drift.group_at(&paths[start]),
+            Some(id),
         )?);
         start = end;
     }
@@ -457,15 +554,17 @@ pub fn lenient_scan(
     }
 }
 
-/// One run of files read with the same columns omitted. `align` selects the dataset's
-/// column order, so runs concatenate.
+/// One run of files that are missing the same things. `stamp` is the group to write
+/// into [`DRIFT_COLUMN`], and its presence also means the run selects the dataset's
+/// column order so the runs concatenate.
 fn scan_run(
     urls: &[String],
     schema: &Arc<Schema>,
     cloud_options: Option<polars::io::cloud::CloudOptions>,
-    omit: &[PlSmallStr],
-    align: bool,
+    group: &DriftGroup,
+    stamp: Option<u32>,
 ) -> PolarsResult<LazyFrame> {
+    let omit = group.unread.as_slice();
     use polars::lazy::dsl::{
         CastColumnsPolicy, DslBuilder, ExtraColumnsPolicy, MissingColumnsPolicy, ScanSources,
         UnifiedScanArgs,
@@ -525,12 +624,19 @@ fn scan_run(
             .collect();
         lf = lf.with_columns(nulls);
     }
-    if align {
-        let ordered: Vec<Expr> = schema.iter_names().map(|name| col(name.clone())).collect();
+    if let Some(group) = stamp {
+        lf = lf.with_column(
+            lit(group)
+                .cast(polars::prelude::DataType::UInt32)
+                .alias(DRIFT_COLUMN),
+        );
+        let mut ordered: Vec<Expr> = schema.iter_names().map(|name| col(name.clone())).collect();
+        ordered.push(col(DRIFT_COLUMN));
         lf = lf.select(ordered);
     }
     Ok(lf)
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

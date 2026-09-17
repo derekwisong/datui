@@ -82,6 +82,20 @@ The **Schema** tab of the [Info panel](dataset-info.md) says which footers the
 schema came from. Past 20,000 files, a sample spread evenly across them stands
 in and the tab says so.
 
+An empty cell says which kind of empty it is, so a gap in the data is never
+confused with a gap in the files:
+
+| Cell | Means |
+|---|---|
+| `∅` | A null the data holds |
+| `·` | The file this row came from has no such column |
+| `≠` | The file holds the column in another type, so it was not read from that file |
+
+A mark after a column's name means it is not in every file, or the files
+disagree on its type. The distinction survives a filter and a sort. A group-by,
+pivot or SQL query builds new rows that stand for no one file, so their nulls
+are plain nulls again, and an export writes every empty cell as null.
+
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file, as it does for a glob.
 

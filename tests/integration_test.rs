@@ -1036,6 +1036,192 @@ fn write_parquet(dir: &std::path::Path, sub: &str, mut df: polars::prelude::Data
     ParquetWriter::new(f).finish(&mut df).unwrap();
 }
 
+/// Render a loaded app and return what the table area shows.
+fn painted(app: &mut App, area: Rect) -> String {
+    let mut buf = Buffer::empty(area);
+    for _ in 0..40 {
+        app.render(area, &mut buf);
+        let needs = app
+            .data_table_state
+            .as_mut()
+            .map(|s| {
+                let n = s.needs_recollect;
+                s.needs_recollect = false;
+                n
+            })
+            .unwrap_or(false);
+        if !needs {
+            break;
+        }
+        app.spawn_async_collect("Loading buffer...");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    buf.content().iter().map(|cell| cell.symbol()).collect()
+}
+
+/// Three kinds of empty cell that used to look identical: a null the data holds, a
+/// column the file was written without, and a column the file stores as text while the
+/// dataset reads it as a number.
+#[test]
+fn test_absent_null_and_conflicting_cells_differ_on_screen() {
+    let g = datui::glyphs::get();
+    let dir = tempfile::tempdir().unwrap();
+    // File one has `note` and a real null in it; it has no `extra` at all.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64], "note" => &[None::<&str>], "n" => &[10i64]).unwrap(),
+    );
+    // File two has every column, and stores `n` as text, which the dataset reads as
+    // the integer that most of its rows are.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "note" => &["hi"], "extra" => &["x"], "n" => &["oops"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[3i64], "note" => &["yo"], "extra" => &["y"], "n" => &[30i64]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let area = Rect::new(0, 0, 100, 20);
+    let text = painted(&mut app, area);
+
+    assert!(
+        text.contains(g.absent),
+        "a file written without `extra` should show the absent glyph {:?}, got:\n{}",
+        g.absent,
+        text
+    );
+    assert!(
+        text.contains(g.null),
+        "the real null in `note` should still show the null glyph {:?}",
+        g.null
+    );
+    assert!(
+        text.contains(g.conflict),
+        "the file storing `n` as text should show the conflict glyph {:?}",
+        g.conflict
+    );
+    assert!(
+        text.contains(&format!("extra{}", g.drift_mark)),
+        "and `extra` is marked in the header as not being in every file"
+    );
+    assert!(
+        !text.contains(&format!("id{}", g.drift_mark)),
+        "while `id`, which every file has, is not"
+    );
+}
+
+/// Sorting reorders rows across files, so a row's position no longer says which file
+/// it came from. The scan's drift column rides along with the row, so the distinction
+/// survives.
+#[test]
+fn test_absent_cells_still_read_as_absent_after_a_sort() {
+    let g = datui::glyphs::get();
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64, 4], "note" => &[None::<&str>, None]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64, 3], "note" => &["hi", "yo"], "extra" => &["x", "y"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let area = Rect::new(0, 0, 100, 20);
+    assert!(
+        painted(&mut app, area).contains(g.absent),
+        "absent before the sort"
+    );
+
+    // Descending by id interleaves the two files: 4, 3, 2, 1.
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(vec!["id".to_string()], false);
+    state.collect();
+    assert!(state.error.is_none(), "the sort itself must succeed");
+
+    let text = painted(&mut app, area);
+    assert!(
+        text.contains(g.absent),
+        "the rows from the file without `extra` are still absent, not null"
+    );
+    assert!(text.contains(g.null), "and the real nulls are still nulls");
+}
+
+/// The control for the test above: a folder whose files agree shows neither glyph, so
+/// the assertions there are about the data and not about some other part of the screen.
+#[test]
+fn test_a_uniform_dataset_shows_no_absent_or_conflicting_cells() {
+    let g = datui::glyphs::get();
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64], "note" => &[None::<&str>]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "note" => &["hi"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let text = painted(&mut app, Rect::new(0, 0, 100, 20));
+    assert!(text.contains(g.null), "the real null still shows");
+    assert!(!text.contains(g.absent), "nothing is absent here");
+    assert!(!text.contains(g.conflict), "nothing conflicts here");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.drifts(), "and the scan stamped no drift column");
+}
+
+/// The drift column is the state's own bookkeeping. It must not reach the schema, the
+/// column order, or an export.
+#[test]
+fn test_the_hidden_drift_column_is_never_part_of_the_data() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.drifts(), "this dataset does drift");
+
+    let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["date", "id", "extra"],
+        "no hidden column in the schema"
+    );
+    assert!(
+        !state.get_column_order().iter().any(|c| c.starts_with("__")),
+        "nor in the column order"
+    );
+
+    let exported = polars::prelude::IntoLazy::lazy(state.visible_lf().collect().unwrap())
+        .collect()
+        .unwrap();
+    let exported_names: Vec<&str> = exported
+        .get_column_names()
+        .iter()
+        .map(|n| n.as_str())
+        .collect();
+    assert_eq!(
+        exported_names,
+        ["date", "id", "extra"],
+        "nor in what an export writes"
+    );
+}
+
 /// Counting a many-file scan's rows must not kill the app.
 ///
 /// A dataset whose files disagree on a column's type is read as a union of scans, one

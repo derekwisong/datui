@@ -4599,16 +4599,18 @@ impl App {
         None
     }
 
-    /// Put hive partition columns first, ahead of the file's own columns.
+    /// Put hive partition columns first, ahead of the file's own columns. `drifts` keeps
+    /// the scan's hidden drift column, which the select would otherwise drop.
     fn hoist_partition_columns(
         lf: LazyFrame,
         schema: &Schema,
         partition_columns: &[String],
+        drifts: bool,
     ) -> LazyFrame {
         if partition_columns.is_empty() {
             return lf;
         }
-        let exprs: Vec<_> = partition_columns
+        let mut exprs: Vec<_> = partition_columns
             .iter()
             .map(|s| col(s.as_str()))
             .chain(
@@ -4619,6 +4621,9 @@ impl App {
                     .map(|s| col(s.as_str())),
             )
             .collect();
+        if drifts {
+            exprs.push(col(crate::schema_union::DRIFT_COLUMN));
+        }
         lf.select(exprs)
     }
 
@@ -4656,15 +4661,11 @@ impl App {
             .iter()
             .map(|f| f.to_string_lossy().into_owned())
             .collect();
-        let omit: crate::schema_union::OmittedColumns = paths
-            .iter()
-            .zip(dataset.omitted.iter())
-            .filter(|(_, columns)| !columns.is_empty())
-            .map(|(path, columns)| (path.clone(), columns.clone()))
-            .collect();
+        let drift = crate::schema_union::ScanDrift::new(&paths, &dataset);
         let schema = dataset.schema.clone();
-        let lf = crate::schema_union::lenient_scan(&paths, schema.clone(), None, &omit).ok()?;
-        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns);
+        let lf =
+            crate::schema_union::lenient_scan(&paths, schema.clone(), None, drift.as_ref()).ok()?;
+        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, drift.is_some());
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
@@ -4714,7 +4715,7 @@ impl App {
             ..Default::default()
         };
         let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args).ok()?;
-        let lf = Self::hoist_partition_columns(lf, &merged_schema, &partition_columns);
+        let lf = Self::hoist_partition_columns(lf, &merged_schema, &partition_columns, false);
         DataTableState::from_schema_and_lazyframe(
             merged_schema,
             lf,
@@ -4761,20 +4762,25 @@ impl App {
             return None;
         }
         // A file that stores a column in a type the dataset's column cannot hold is not
-        // read for it; its rows are null there rather than failing the scan.
-        let omit: cloud_hive::OmittedColumns = urls
-            .iter()
-            .zip(dataset.omitted.iter())
-            .filter(|(_, columns)| !columns.is_empty())
-            .map(|(url, columns)| (url.clone(), columns.clone()))
-            .collect();
+        // read for it; its rows are null there rather than failing the scan, and carry
+        // their file's drift group so the null can be told from a real one.
+        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset);
         let schema = dataset.schema.clone();
         let scan: crate::widgets::datatable::FileScan = {
-            let (schema, partition_columns, omit) =
-                (schema.clone(), partition_columns.clone(), Arc::new(omit));
+            let (schema, partition_columns, drift) = (
+                schema.clone(),
+                partition_columns.clone(),
+                drift.map(Arc::new),
+            );
             Arc::new(move |urls: &[String]| {
-                cloud_hive::lenient_scan(urls, schema.clone(), Some(cloud_opts.clone()), &omit)
-                    .map(|lf| Self::hoist_partition_columns(lf, &schema, &partition_columns))
+                let drifts = drift.is_some();
+                cloud_hive::lenient_scan(
+                    urls,
+                    schema.clone(),
+                    Some(cloud_opts.clone()),
+                    drift.as_deref(),
+                )
+                .map(|lf| Self::hoist_partition_columns(lf, &schema, &partition_columns, drifts))
             })
         };
         let count: crate::widgets::datatable::FileCounter = {
@@ -4834,7 +4840,7 @@ impl App {
                 .collect::<Vec<_>>(),
             None => Vec::new(),
         };
-        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns);
+        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, false);
         let part_cols = (!partition_columns.is_empty()).then_some(partition_columns);
         DataTableState::from_schema_and_lazyframe(schema, lf, options, part_cols)
     }
@@ -11385,7 +11391,7 @@ impl App {
         format: ExportFormat,
         options: &ExportOptions,
     ) -> Result<()> {
-        let mut df = crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)?;
+        let mut df = crate::statistics::collect_lazy(state.visible_lf(), state.polars_streaming)?;
         Self::export_data_from_df(&mut df, path, format, options)
     }
 

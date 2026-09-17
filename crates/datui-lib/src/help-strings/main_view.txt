@@ -47,3 +47,14 @@ While busy:
   Keys typed at a spinner are queued and replayed once the work is done, so
   typing ahead is never lost. Ctrl+Q/Ctrl+C quit and Ctrl+O abandons a load
   at once.
+
+Empty cells:
+  A folder of Parquet files may hold files that disagree, so an empty cell
+  says which kind of empty it is:
+    null         the data's own null
+    absent       the file this row came from has no such column
+    conflicting  the file holds the column in another type, so it was not
+                 read from that file
+  A column whose name is followed by a mark is not in every file, or the
+  files disagree on its type. The Info panel's Schema tab says where the
+  schema came from.

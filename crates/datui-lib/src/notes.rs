@@ -83,7 +83,18 @@ fn distinct_names(types: &[&DataType]) -> Vec<String> {
         return shown;
     }
     // Two structs are both `struct[1]`, and only the fields tell them apart.
-    types.iter().map(|t| format!("{t:?}")).collect()
+    let spelled: Vec<String> = types.iter().map(|t| format!("{t:?}")).collect();
+    if !collides(&spelled) {
+        return spelled;
+    }
+    // Polars prints every `Enum` as `Enum([...])` whatever its categories, so even the
+    // full form can collide. Numbering them says less than naming them, but "the first
+    // and the second" is at least two things rather than one said twice.
+    spelled
+        .iter()
+        .enumerate()
+        .map(|(i, name)| format!("{name} #{}", i + 1))
+        .collect()
 }
 
 /// What the footers said, as notes. Empty when every file agrees, which is the common
@@ -134,7 +145,7 @@ fn absence_note(
     }
     Some(Note {
         summary: format!(
-            "{} is in {} of {}; absent elsewhere, not null",
+            "{} is in {} of {}; absent from the rest, not null",
             column.name,
             group_chrome(column.present_in),
             denominator
@@ -259,7 +270,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("x", str.clone())], 1),
                 ],
                 sampled: None,
-                expected: vec!["x is in 1 of 2 files; absent elsewhere, not null"],
+                expected: vec!["x is in 1 of 2 files; absent from the rest, not null"],
             },
             Shape {
                 what: "absent, sampled",
@@ -268,7 +279,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("x", str.clone())], 1),
                 ],
                 sampled: Some(200_000),
-                expected: vec!["x is in 1 of the 2 footers read; absent elsewhere, not null"],
+                expected: vec!["x is in 1 of the 2 footers read; absent from the rest, not null"],
             },
             Shape {
                 what: "absent, with an unreadable footer",
@@ -279,7 +290,7 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "x is in 1 of the 2 files that could be read; absent elsewhere, not null",
+                    "x is in 1 of the 2 files that could be read; absent from the rest, not null",
                     "1 file could not be read and was left out of the schema",
                 ],
             },
@@ -292,7 +303,7 @@ mod tests {
                 ],
                 sampled: Some(200_000),
                 expected: vec![
-                    "x is in 1 of the 2 footers that could be read; absent elsewhere, not null",
+                    "x is in 1 of the 2 footers that could be read; absent from the rest, not null",
                     "1 footer could not be read and was left out of the schema",
                 ],
             },
@@ -359,8 +370,8 @@ mod tests {
                 sampled: None,
                 // Schema order: the newest file's columns lead, so `id` comes first.
                 expected: vec![
-                    "id is in 1 of 3 files; absent elsewhere, not null",
-                    "n is in 2 of 3 files; absent elsewhere, not null",
+                    "id is in 1 of 3 files; absent from the rest, not null",
+                    "n is in 2 of 3 files; absent from the rest, not null",
                     "n is str in 1 file; read as i64 and not read there",
                 ],
             },
@@ -373,7 +384,7 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "n is in 2 of 3 files; absent elsewhere, not null",
+                    "n is in 2 of 3 files; absent from the rest, not null",
                     "n is stored as more than one type; read as i64",
                 ],
             },
@@ -483,7 +494,7 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "n is in 3 of 4 files; absent elsewhere, not null",
+                    "n is in 3 of 4 files; absent from the rest, not null",
                     "n is str in 1 file; read as i64 and not read there",
                     "n is stored as more than one type; read as i64",
                 ],
@@ -560,7 +571,7 @@ mod tests {
         assert_eq!(
             about_n,
             [
-                "n is in 2 of 3 files; absent elsewhere, not null",
+                "n is in 2 of 3 files; absent from the rest, not null",
                 "n is str in 1 file; read as i64 and not read there",
             ]
         );

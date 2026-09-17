@@ -1509,7 +1509,7 @@ fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
     assert_eq!(notes.len(), 1, "one column is not in every file");
     assert_eq!(
         notes[0].summary,
-        "extra is in 1 of 2 files; absent elsewhere, not null"
+        "extra is in 1 of 2 files; absent from the rest, not null"
     );
     assert_eq!(
         notes[0].scope, "in all 2 footers",
@@ -1592,8 +1592,8 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
 
     assert!(
-        screen.contains("4 below"),
-        "two of the six notes fit whole, so four are out of view, got:\n{screen}"
+        screen.contains("3 below"),
+        "three of the six notes fit whole, so three are out of view, got:\n{screen}"
     );
     assert!(
         screen.contains("a is in 1 of 2 files"),
@@ -1652,8 +1652,8 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
             if !row.contains("is in 1 of 2 files") {
                 continue;
             }
-            // The scope follows the summary, after the detail when this is the note
-            // the cursor is on, and always before the next note begins.
+            // The line a note rests on follows its summary, and always before the
+            // next note begins.
             let found = rows[i + 1..]
                 .iter()
                 .take_while(|later| !later.contains("is in 1 of 2 files"))

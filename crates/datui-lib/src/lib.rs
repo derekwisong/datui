@@ -6856,12 +6856,10 @@ impl App {
                     self.info_modal.schema_table_up(total_rows, visible);
                 }
                 KeyCode::Down | KeyCode::Char('j') if event.is_press() && notes_tab => {
-                    let shown = self.info_modal.notes_visible;
-                    self.info_modal.notes_move(1, notes, shown);
+                    self.info_modal.notes_move(1, notes);
                 }
                 KeyCode::Up | KeyCode::Char('k') if event.is_press() && notes_tab => {
-                    let shown = self.info_modal.notes_visible;
-                    self.info_modal.notes_move(-1, notes, shown);
+                    self.info_modal.notes_move(-1, notes);
                 }
                 _ => {}
             }

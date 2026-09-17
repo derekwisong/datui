@@ -24,6 +24,93 @@ use ratatui::widgets::{
 use super::datatable::DataTableState;
 use crate::export_modal::ExportFormat;
 
+/// One drawn line of the Notes tab.
+struct NoteRow {
+    text: String,
+    /// Drawn in the panel's dim colour: the detail and the scope, not the summary.
+    dim: bool,
+    /// Which note it belongs to, so the cursor can bring a whole note into view.
+    /// `usize::MAX` for the blank line between notes, which belongs to neither.
+    note: usize,
+    /// The first row of its note, so counting notes out of view counts notes.
+    starts: bool,
+}
+
+/// Every line the Notes tab would draw, in order.
+///
+/// Built whole rather than clipped as it goes: the count of what is out of view has to
+/// be in notes, and a note's rows have to be found by index to scroll to it. Text is
+/// wrapped to the panel, so a detail sentence is never cut off mid-word and left
+/// reading as though it finished.
+fn note_rows(notes: &[crate::notes::Note], selected: usize, width: usize) -> Vec<NoteRow> {
+    let mut rows = Vec::new();
+    for (index, note) in notes.iter().enumerate() {
+        if index > 0 {
+            rows.push(NoteRow {
+                text: String::new(),
+                dim: false,
+                note: usize::MAX,
+                starts: false,
+            });
+        }
+        let marker = if index == selected { "› " } else { "  " };
+        let mut first = true;
+        for line in wrap_to(&note.summary, width.saturating_sub(2)) {
+            rows.push(NoteRow {
+                text: format!("{}{line}", if first { marker } else { "  " }),
+                dim: false,
+                note: index,
+                starts: std::mem::take(&mut first),
+            });
+        }
+        let detail = if index == selected {
+            note.detail.as_slice()
+        } else {
+            &[]
+        };
+        for text in detail.iter().chain(std::iter::once(&note.scope)) {
+            for line in wrap_to(text, width.saturating_sub(4)) {
+                rows.push(NoteRow {
+                    text: format!("    {line}"),
+                    dim: true,
+                    note: index,
+                    starts: false,
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// Break `text` on spaces so no line runs past `width`. A word longer than the panel
+/// is left whole rather than split mid-word; the terminal clips it, which is the one
+/// case where clipping says what it means.
+fn wrap_to(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let room = if line.is_empty() {
+            width
+        } else {
+            width.saturating_sub(line.chars().count() + 1)
+        };
+        if word.chars().count() > room && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// Human-readable byte size (e.g. "1.2 MiB", "456 KiB").
 pub fn format_bytes(n: u64) -> String {
     const K: u64 = 1024;
@@ -115,9 +202,9 @@ pub struct InfoModal {
     /// The note the cursor is on, and the first note drawn. A note's detail is shown
     /// only for the one the cursor is on, so the list stays one or two lines a note.
     pub notes_selected_index: usize,
+    /// The first row of the notes list on screen; the render keeps the selected note
+    /// inside the window.
     pub notes_scroll_offset: usize,
-    /// How many notes the last render fitted, so the cursor can page by what is shown.
-    pub notes_visible: usize,
 }
 
 impl InfoModal {
@@ -178,9 +265,11 @@ impl InfoModal {
         }
     }
 
-    /// Move the cursor through the notes, bringing the one it lands on into view.
-    /// Returns true when something changed.
-    pub fn notes_move(&mut self, delta: isize, total: usize, visible: usize) -> bool {
+    /// Move the cursor through the notes. Returns true when something changed.
+    ///
+    /// Only the index moves: the render scrolls to whatever is selected, so how tall a
+    /// note happens to be can never decide how far the cursor may go.
+    pub fn notes_move(&mut self, delta: isize, total: usize) -> bool {
         if total == 0 {
             return false;
         }
@@ -190,11 +279,6 @@ impl InfoModal {
             return false;
         }
         self.notes_selected_index = next;
-        if next < self.notes_scroll_offset {
-            self.notes_scroll_offset = next;
-        } else if visible > 0 && next >= self.notes_scroll_offset + visible {
-            self.notes_scroll_offset = next + 1 - visible;
-        }
         true
     }
 
@@ -692,107 +776,109 @@ impl<'a> DataTableInfo<'a> {
         }
     }
 
-    /// What datui noticed: one line each, with its scope under it, and the detail of
-    /// the note the cursor is on.
+    /// What datui noticed: each note's summary, the detail of the one the cursor is
+    /// on, and the line saying what it is based on.
     ///
-    /// Deliberately plain: no error styling, no counts of problems, nothing that reads
-    /// as an alarm. These are observations about the data, not faults in it. The last
-    /// line says how many notes are out of view rather than dropping them silently.
+    /// Laid out as a flat list of rows and scrolled by row, so a note's height never
+    /// feeds back into how far the cursor moves. An earlier version scrolled by note
+    /// and measured "how many fit" during the render, which meant selecting a taller
+    /// note could make it the thing that no longer fitted — and at some heights the
+    /// last note became permanently unreachable.
+    ///
+    /// Deliberately plain: no error styling, nothing that reads as an alarm. These are
+    /// observations about the data, not faults in it.
     fn render_notes_tab(&mut self, area: Rect, buf: &mut Buffer) {
         let notes = self.state.notes();
-        if area.height == 0 {
-            // No room is not the same as nothing to say, and there is nowhere to say
-            // either without drawing over the panel's border.
-            self.modal.notes_visible = 0;
+        if area.height == 0 || area.width <= 4 || notes.is_empty() {
             return;
         }
-        if notes.is_empty() {
-            Paragraph::new("Nothing to note.").render(Rect { height: 1, ..area }, buf);
-            self.modal.notes_visible = 0;
-            return;
-        }
-        let dim = Style::default().fg(self.border_color);
         let selected = self.modal.notes_selected_index.min(notes.len() - 1);
-        // The last row carries the count of what is out of view, so the notes get the
-        // rest. With a single row there is nothing to spare and the count gives way.
-        let reserve_indicator = area.height > 1;
-        let body = Rect {
-            height: if reserve_indicator {
-                area.height - 1
-            } else {
-                area.height
-            },
-            ..area
-        };
+        let width = area.width as usize;
+        let mut rows = note_rows(notes, selected, width);
 
-        let mut y = body.y;
-        let mut drawn = 0usize;
-        let first = self.modal.notes_scroll_offset.min(notes.len() - 1);
-        let bottom = body.y + body.height;
-        let mut line = |text: String, style: Option<Style>, y: &mut u16| {
-            if *y >= bottom {
-                return false;
-            }
-            let at = Rect {
-                y: *y,
-                height: 1,
-                ..body
-            };
-            match style {
-                Some(style) => {
-                    Paragraph::new(Line::from(Span::styled(text, style))).render(at, buf)
-                }
-                None => Paragraph::new(text).render(at, buf),
-            }
-            *y += 1;
-            true
-        };
-
-        for (index, note) in notes.iter().enumerate().skip(first) {
-            // A note is drawn whole or not at all. A summary without the scope line
-            // under it is the very misreading the scope line is there to prevent, so a
-            // note that will not fit is left for the count below instead.
-            let detail = if index == selected {
-                note.detail.len()
+        // The last line counts what is out of view, so the notes get the rest.
+        let show = |rows: &[NoteRow]| {
+            if rows.len() > area.height as usize {
+                area.height.saturating_sub(1).max(1) as usize
             } else {
-                0
-            };
-            let needed = 1 + detail + 1;
-            if y + needed as u16 > bottom {
-                break;
+                area.height as usize
             }
-            let marker = if index == selected { "› " } else { "  " };
-            line(format!("{marker}{}", note.summary), None, &mut y);
-            if index == selected {
-                for detail in &note.detail {
-                    line(format!("    {detail}"), Some(dim), &mut y);
-                }
-            }
-            line(format!("    {}", note.scope), Some(dim), &mut y);
-            drawn += 1;
-            if y < bottom {
-                y += 1;
-            }
+        };
+        // When the selected note's detail will not fit beside it, the detail goes
+        // before the line saying what the note is based on does: a summary without its
+        // basis is the misreading that line exists to prevent.
+        let block = |rows: &[NoteRow]| rows.iter().filter(|r| r.note == selected).count();
+        if block(&rows) > show(&rows) {
+            rows = note_rows(notes, usize::MAX, width);
         }
-
-        self.modal.notes_visible = drawn.max(1);
-        let unseen = notes.len() - first - drawn;
-        if unseen > 0 && drawn == 0 {
-            // Not even one note fits whole. Say that rather than draw half of one.
+        let show = show(&rows);
+        if block(&rows) > show {
+            // Not even a summary and its basis. Say that rather than draw half a note.
             Paragraph::new(Line::from(Span::styled(
                 format!("{} notes; no room to show one", group_chrome(notes.len())),
-                dim,
+                Style::default().fg(self.border_color),
             )))
             .render(Rect { height: 1, ..area }, buf);
             return;
         }
-        if reserve_indicator && (unseen > 0 || first > 0) {
-            let hidden = if first > 0 && unseen > 0 {
-                format!("{first} above, {unseen} below")
-            } else if first > 0 {
-                format!("{first} above")
-            } else {
-                format!("{unseen} below")
+
+        // Bring the selected note's rows into view: its first row if the block is
+        // taller than the panel, otherwise the whole block.
+        let first_of = |note: usize| rows.iter().position(|r| r.note == note).unwrap_or(0);
+        let last_of = |note: usize| {
+            rows.iter()
+                .rposition(|r| r.note == note)
+                .unwrap_or(rows.len() - 1)
+        };
+        let (top, bottom) = (first_of(selected), last_of(selected));
+        let mut offset = self
+            .modal
+            .notes_scroll_offset
+            .min(rows.len().saturating_sub(1));
+        if top < offset {
+            offset = top;
+        } else if bottom >= offset + show {
+            offset = (bottom + 1 - show).min(top);
+        }
+        self.modal.notes_scroll_offset = offset;
+
+        // Stop at a note boundary: a summary without the line saying what it is based
+        // on is the misreading that line exists to prevent. A note taller than the
+        // whole panel is the exception — it is shown as far as it goes, since leaving
+        // it out entirely would make it unreachable.
+        let mut end = (offset + show).min(rows.len());
+        if end < rows.len() {
+            let cut = rows[end - 1].note;
+            if cut != usize::MAX && rows[end].note == cut {
+                let starts_at = rows.iter().position(|r| r.note == cut).unwrap_or(offset);
+                if starts_at > offset {
+                    end = starts_at;
+                }
+            }
+        }
+
+        let dim = Style::default().fg(self.border_color);
+        for (line, row) in rows[offset..end].iter().enumerate() {
+            let at = Rect {
+                y: area.y + line as u16,
+                height: 1,
+                ..area
+            };
+            let style = if row.dim { Some(dim) } else { None };
+            match style {
+                Some(style) => Paragraph::new(Line::from(Span::styled(row.text.clone(), style)))
+                    .render(at, buf),
+                None => Paragraph::new(row.text.as_str()).render(at, buf),
+            }
+        }
+
+        let above = rows[..offset].iter().filter(|r| r.starts).count();
+        let below = rows[end..].iter().filter(|r| r.starts).count();
+        if above > 0 || below > 0 {
+            let hidden = match (above, below) {
+                (0, n) => format!("{} below", group_chrome(n)),
+                (n, 0) => format!("{} above", group_chrome(n)),
+                (a, b) => format!("{} above, {} below", group_chrome(a), group_chrome(b)),
             };
             Paragraph::new(Line::from(Span::styled(hidden, dim)))
                 .right_aligned()
@@ -1003,29 +1089,96 @@ mod tests {
     }
 
     #[test]
-    fn the_notes_cursor_moves_and_brings_its_note_into_view() {
+    fn the_notes_cursor_moves_within_the_list() {
         let mut modal = InfoModal::new();
-        assert!(!modal.notes_move(1, 0, 3), "nothing to move through");
+        assert!(!modal.notes_move(1, 0), "nothing to move through");
 
-        assert!(modal.notes_move(1, 5, 2));
+        assert!(modal.notes_move(1, 5));
         assert_eq!(modal.notes_selected_index, 1);
-        assert_eq!(modal.notes_scroll_offset, 0, "still on screen");
-
-        assert!(modal.notes_move(1, 5, 2));
-        assert_eq!(modal.notes_selected_index, 2);
-        assert_eq!(modal.notes_scroll_offset, 1, "scrolled to keep it visible");
-
-        assert!(modal.notes_move(-1, 5, 2));
-        assert_eq!(modal.notes_selected_index, 1);
-        assert_eq!(modal.notes_scroll_offset, 1);
-        assert!(modal.notes_move(-1, 5, 2));
-        assert_eq!(modal.notes_scroll_offset, 0, "and back up");
-
-        assert!(!modal.notes_move(-1, 5, 2), "already at the top");
+        assert!(modal.notes_move(-1, 5));
+        assert_eq!(modal.notes_selected_index, 0);
+        assert!(!modal.notes_move(-1, 5), "already at the top");
         for _ in 0..10 {
-            modal.notes_move(1, 5, 2);
+            modal.notes_move(1, 5);
         }
         assert_eq!(modal.notes_selected_index, 4, "and stops at the last");
+    }
+
+    fn note(summary: &str, detail: &[&str]) -> crate::notes::Note {
+        crate::notes::Note {
+            summary: summary.to_string(),
+            scope: "in all 2 footers".to_string(),
+            detail: detail.iter().map(|d| d.to_string()).collect(),
+        }
+    }
+
+    /// Every note must be reachable at every panel height. An earlier layout measured
+    /// how many notes fitted during the render and fed that back into how far the
+    /// cursor could move, so selecting a taller note could make it the one that no
+    /// longer fitted — and at some heights the last note could never be reached.
+    #[test]
+    fn every_note_can_be_scrolled_to_at_every_height() {
+        let notes = vec![
+            note("first", &["one line of detail"]),
+            note("second", &["two lines", "of detail here"]),
+            note("third", &[]),
+            note("fourth", &["a", "b", "c"]),
+        ];
+        for width in [40usize, 70] {
+            for selected in 0..notes.len() {
+                let rows = note_rows(&notes, selected, width);
+                let first = rows.iter().position(|r| r.note == selected).unwrap();
+                assert!(
+                    rows[first].starts,
+                    "a note's first row is the one that starts it"
+                );
+                // Whatever the window, scrolling to `first` puts the note on screen.
+                for height in 1..=rows.len() {
+                    let window = &rows[first..(first + height).min(rows.len())];
+                    assert!(
+                        window.iter().any(|r| r.note == selected),
+                        "note {selected} is off screen at width {width}, height {height}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A detail sentence cut off mid-word reads as though it finished.
+    #[test]
+    fn long_detail_is_wrapped_rather_than_cut() {
+        let long = "The column is not read from the files that disagree, so its cells \
+                    there are a conflict rather than a null.";
+        let notes = vec![note("x is in 1 of 2 files", &[long])];
+        let rows = note_rows(&notes, 0, 68);
+        for row in &rows {
+            assert!(
+                row.text.chars().count() <= 68,
+                "a row ran past the panel: {:?}",
+                row.text
+            );
+        }
+        let joined: String = rows
+            .iter()
+            .filter(|r| r.dim)
+            .map(|r| r.text.trim().to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            joined.contains("a conflict rather than a null."),
+            "the end of the sentence survives the wrap: {joined}"
+        );
+    }
+
+    #[test]
+    fn wrapping_keeps_every_word() {
+        assert_eq!(wrap_to("one two three", 9), ["one two", "three"]);
+        assert_eq!(wrap_to("", 10), [""], "an empty line is still a line");
+        assert_eq!(
+            wrap_to("supercalifragilistic", 5),
+            ["supercalifragilistic"],
+            "a word longer than the panel is left whole rather than broken"
+        );
     }
 
     #[test]

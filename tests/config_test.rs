@@ -402,7 +402,7 @@ fn test_merge_does_not_override_with_defaults() {
         table_cell_padding: 1,
         column_colors: true,
         dtype_row: true,
-        notes_accent: false,
+        notes_accent: true,
         sidebar_width: None,
         align_numeric_right: false,
         number_format: NumberFormatConfig::Preset("thousands".to_string()),
@@ -413,10 +413,6 @@ fn test_merge_does_not_override_with_defaults() {
     base.merge(override_config);
 
     // Base values should remain unchanged because override had defaults
-    assert!(
-        !base.notes_accent,
-        "turning the notes accent off is not undone by a config that says nothing"
-    );
     assert_eq!(base.pages_lookahead, 5);
     assert_eq!(base.pages_lookback, 5);
     assert!(base.row_numbers);

@@ -35,7 +35,7 @@ datui says so:
 |---|---|
 | A column is not in every file | The footers |
 | Files disagree on a column's type, beyond what widening settles | The footers |
-| A column is stored in more than one width | The footers |
+| A column is stored as more than one type the scan can read into one | The footers |
 | A file's footer could not be read, so it was left out | The footers |
 
 Every note says what it is based on — `in all 6,541 footers`, or

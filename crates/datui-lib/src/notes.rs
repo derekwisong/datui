@@ -13,6 +13,7 @@
 use crate::numfmt::group_chrome;
 use crate::schema_union::{ColumnDrift, DatasetSchema, SchemaOrigin};
 use crate::widgets::datatable::dtype_label;
+use polars::prelude::DataType;
 
 /// One thing datui noticed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,12 +87,15 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
                 }
             ),
             scope: scope.clone(),
-            detail: vec![
-                "The rest of the dataset opened without them.".to_string(),
-                "Their columns are not in the schema; what the scan makes of their rows \
-                 is up to the reader."
-                    .to_string(),
-            ],
+            detail: vec![if dataset.unreadable.len() == 1 {
+                "Its columns are not in the schema; what the scan makes of its rows \
+                     is up to the reader."
+                    .to_string()
+            } else {
+                "Their columns are not in the schema; what the scan makes of their \
+                     rows is up to the reader."
+                    .to_string()
+            }],
         });
     }
 
@@ -129,19 +133,35 @@ fn conflict_note(column: &ColumnDrift, dataset: &DatasetSchema, scope: &str) -> 
     if column.conflicting_files == 0 {
         return None;
     }
-    let others: Vec<String> = column.conflicting_types.iter().map(dtype_label).collect();
+    // `dtype_label` is the table header's word for a type, and two types can share
+    // one: `datetime` for either time zone, `struct` for any set of fields. A note
+    // reading "t is datetime in 1 file; read as datetime" says nothing, so where the
+    // short words collide the note spells the types out.
+    let chosen = dtype_label(&column.dtype);
+    let collides = column
+        .conflicting_types
+        .iter()
+        .any(|other| dtype_label(other) == chosen);
+    let name_of = |dtype: &DataType| {
+        if collides {
+            format!("{dtype}")
+        } else {
+            dtype_label(dtype)
+        }
+    };
+    let others: Vec<String> = column.conflicting_types.iter().map(&name_of).collect();
     Some(Note {
         summary: format!(
             "{} is {} in {}; read as {}",
             column.name,
             others.join(" or "),
             how_many(dataset, column.conflicting_files),
-            dtype_label(&column.dtype)
+            name_of(&column.dtype)
         ),
         scope: scope.to_string(),
         detail: vec![
             format!(
-                "{} is the type most of its rows have.",
+                "{} is the type that covers the most rows.",
                 dtype_label(&column.dtype)
             ),
             "The column is not read from the files that disagree, so its cells there are \
@@ -151,19 +171,28 @@ fn conflict_note(column: &ColumnDrift, dataset: &DatasetSchema, scope: &str) -> 
     })
 }
 
-/// A column stored in more than one width, which widening settles without loss.
+/// A column the files store in more than one type, where the scan can read them all
+/// into one.
+///
+/// Says only that: not "width", since a datetime unit, a struct that gained a field and
+/// a file that never typed the column all land here, and not "without loss", since a
+/// very large integer read as a float, or a millisecond datetime read as nanoseconds
+/// past the year 2262, is not exact.
 fn widening_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
     if !column.widened {
         return None;
     }
     Some(Note {
         summary: format!(
-            "{} is stored in more than one width; read as {}",
+            "{} is stored as more than one type; read as {}",
             column.name,
             dtype_label(&column.dtype)
         ),
         scope: scope.to_string(),
-        detail: vec!["Widening it loses nothing.".to_string()],
+        detail: vec![format!(
+            "Every file's type is read as {}.",
+            dtype_label(&column.dtype)
+        )],
     })
 }
 
@@ -171,7 +200,7 @@ fn widening_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
 mod tests {
     use super::*;
     use crate::schema_union::{FileSchema, union_file_schemas};
-    use polars::prelude::{DataType, Schema};
+    use polars::prelude::{DataType, Schema, TimeUnit, TimeZone};
     use std::sync::Arc;
 
     fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileSchema> {
@@ -325,7 +354,7 @@ mod tests {
                 what: "widened",
                 files: with_n(i32.clone(), i64.clone()),
                 sampled: None,
-                expected: vec!["n is stored in more than one width; read as i64"],
+                expected: vec!["n is stored as more than one type; read as i64"],
             },
             // --- and the combinations, each saying all of what is true ---
             Shape {
@@ -353,7 +382,7 @@ mod tests {
                 sampled: None,
                 expected: vec![
                     "n is in 2 of 3 files",
-                    "n is stored in more than one width; read as i64",
+                    "n is stored as more than one type; read as i64",
                 ],
             },
             Shape {
@@ -366,8 +395,41 @@ mod tests {
                 sampled: None,
                 expected: vec![
                     "n is str in 1 file; read as i64",
-                    "n is stored in more than one width; read as i64",
+                    "n is stored as more than one type; read as i64",
                 ],
+            },
+            Shape {
+                what: "a chosen type no file stores",
+                files: vec![
+                    file(&[("n", i32.clone())], 50),
+                    file(&[("n", DataType::Float32)], 50),
+                    file(&[("n", str.clone())], 5),
+                ],
+                sampled: None,
+                expected: vec![
+                    "n is str in 1 file; read as f64",
+                    "n is stored as more than one type; read as f64",
+                ],
+            },
+            Shape {
+                what: "two types the table spells the same way",
+                files: vec![
+                    file(
+                        &[("t", DataType::Datetime(TimeUnit::Nanoseconds, None))],
+                        10,
+                    ),
+                    file(
+                        &[(
+                            "t",
+                            DataType::Datetime(TimeUnit::Nanoseconds, Some(TimeZone::UTC)),
+                        )],
+                        90,
+                    ),
+                ],
+                sampled: None,
+                // `datetime in 1 file; read as datetime` would say nothing, so the
+                // note spells the types out where the short words collide.
+                expected: vec!["t is datetime[ns] in 1 file; read as datetime[ns, UTC]"],
             },
             Shape {
                 what: "absent, conflicting and widened",
@@ -381,7 +443,7 @@ mod tests {
                 expected: vec![
                     "n is in 3 of 4 files",
                     "n is str in 1 file; read as i64",
-                    "n is stored in more than one width; read as i64",
+                    "n is stored as more than one type; read as i64",
                 ],
             },
         ];

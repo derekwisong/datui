@@ -43,11 +43,12 @@ Every note says what it is based on — `in all 6,541 footers`, or
 datui has not looked at. None of them costs a read of its own: they come from
 the footers the schema and the row count already needed.
 
-Each note shows its scope beneath it, and the one the cursor is on shows its
-detail; <kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller
-than the panel, the corner says how many notes are out of view. A note is drawn
-whole or not at all: a summary without its basis under it would be the misreading
-the basis is there to prevent.
+A note is one sentence and the line beneath it saying what it is based on;
+<kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller than the
+panel, the corner says how many notes are out of view. The panel begins and ends
+at a note: half a note is worse than none, since a claim with no basis under it,
+or a basis with no claim above it, is the misreading the basis is there to
+prevent.
 
 A note describes the dataset as opened. A query, a pivot or a drill-down builds
 rows of its own, so the notes step aside; resetting or drilling back up brings

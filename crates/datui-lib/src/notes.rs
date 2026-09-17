@@ -5,10 +5,12 @@
 //! pop-up, no error styling — and every one says what it is based on, so "in 1 of 3
 //! files" is never mistaken for a claim about files datui has not looked at.
 //!
-//! Only one note states a ratio, and one function decides what that ratio is over.
-//! Four rounds of review found a wrong denominator here, each in a case the last fix
-//! had not considered; the others now count without dividing, which is a claim that
-//! cannot be wrong.
+//! A note is one sentence and the line it rests on. Six rounds of review found false
+//! or empty statements here, and every one of them was in prose that went beyond the
+//! sentence: a denominator over the wrong population, an explanatory line that
+//! contradicted the note above it, a type named by a word two types share. What is
+//! left is what can be checked: one claim per note, and one function deciding the only
+//! ratio any of them states.
 
 use crate::numfmt::group_chrome;
 use crate::schema_union::{ColumnDrift, DatasetSchema, SchemaOrigin};
@@ -22,8 +24,6 @@ pub struct Note {
     pub summary: String,
     /// What the note is based on, so its reach is never overstated.
     pub scope: String,
-    /// The particulars, shown when the note is opened.
-    pub detail: Vec<String>,
 }
 
 /// Whether a dataset's schema came from a sample of its files.
@@ -58,6 +58,34 @@ fn out_of(dataset: &DatasetSchema) -> String {
     }
 }
 
+/// Names for a set of types that tell them apart.
+///
+/// `dtype_label` is the word the table header uses, and several types share one:
+/// `datetime` whatever the unit or zone, `struct` whatever the fields. A note reading
+/// "t is datetime in 1 file; read as datetime and not read there" says nothing, so where any two of the
+/// types in hand share a word, all of them are spelled out in full. Polars' `Display`
+/// collapses too — a struct is `struct[1]` — so the full form is its `Debug`.
+fn distinct_names(types: &[&DataType]) -> Vec<String> {
+    let collides = |names: &[String]| {
+        names
+            .iter()
+            .enumerate()
+            .any(|(i, name)| names[i + 1..].contains(name))
+    };
+    let short: Vec<String> = types.iter().map(|t| dtype_label(t)).collect();
+    if !collides(&short) {
+        return short;
+    }
+    // `datetime[ns]` and `datetime[ns, UTC]` tell those two apart and still read like
+    // the rest of the UI.
+    let shown: Vec<String> = types.iter().map(|t| format!("{t}")).collect();
+    if !collides(&shown) {
+        return shown;
+    }
+    // Two structs are both `struct[1]`, and only the fields tell them apart.
+    types.iter().map(|t| format!("{t:?}")).collect()
+}
+
 /// What the footers said, as notes. Empty when every file agrees, which is the common
 /// case and the one where there is nothing to say.
 pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
@@ -68,8 +96,8 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
 
     for column in dataset.drifting() {
         // A column can be missing from some files, stored differently in others, and
-        // stored in two widths among the rest. Each is true on its own, so each is
-        // said on its own: nothing here suppresses anything else.
+        // stored in a narrower type among the rest. Each is true on its own, so each
+        // is said on its own: nothing here suppresses anything else.
         notes.extend(absence_note(column, readable, &denominator, &scope));
         notes.extend(conflict_note(column, dataset, &scope));
         notes.extend(widening_note(column, &scope));
@@ -78,7 +106,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
             summary: format!(
-                "{} could not be read and {} left out",
+                "{} could not be read and {} left out of the schema",
                 how_many(dataset, dataset.unreadable.len()),
                 if dataset.unreadable.len() == 1 {
                     "was"
@@ -87,15 +115,6 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
                 }
             ),
             scope: scope.clone(),
-            detail: vec![if dataset.unreadable.len() == 1 {
-                "Its columns are not in the schema; what the scan makes of its rows \
-                     is up to the reader."
-                    .to_string()
-            } else {
-                "Their columns are not in the schema; what the scan makes of their \
-                     rows is up to the reader."
-                    .to_string()
-            }],
         });
     }
 
@@ -115,64 +134,41 @@ fn absence_note(
     }
     Some(Note {
         summary: format!(
-            "{} is in {} of {}",
+            "{} is in {} of {}; absent elsewhere, not null",
             column.name,
             group_chrome(column.present_in),
             denominator
         ),
         scope: scope.to_string(),
-        detail: vec!["Files written without it show the column as absent, not null.".to_string()],
     })
 }
 
 /// A column whose files disagree on its type beyond what widening can settle.
 ///
-/// Counts without dividing: how many files hold it in the type that lost is a fact
-/// about those files, and needs no total to be true.
+/// Counts without dividing: how many files hold it in a type that lost is a fact about
+/// those files, and needs no total to be true.
 fn conflict_note(column: &ColumnDrift, dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     if column.conflicting_files == 0 {
         return None;
     }
-    // `dtype_label` is the table header's word for a type, and two types can share
-    // one: `datetime` for either time zone, `struct` for any set of fields. A note
-    // reading "t is datetime in 1 file; read as datetime" says nothing, so where the
-    // short words collide the note spells the types out.
-    let chosen = dtype_label(&column.dtype);
-    let collides = column
-        .conflicting_types
-        .iter()
-        .any(|other| dtype_label(other) == chosen);
-    let name_of = |dtype: &DataType| {
-        if collides {
-            format!("{dtype}")
-        } else {
-            dtype_label(dtype)
-        }
-    };
-    let others: Vec<String> = column.conflicting_types.iter().map(&name_of).collect();
+    let mut types: Vec<&DataType> = vec![&column.dtype];
+    types.extend(column.conflicting_types.iter());
+    let names = distinct_names(&types);
+    let (chosen, others) = names.split_first()?;
     Some(Note {
         summary: format!(
-            "{} is {} in {}; read as {}",
+            "{} is {} in {}; read as {} and not read there",
             column.name,
             others.join(" or "),
             how_many(dataset, column.conflicting_files),
-            name_of(&column.dtype)
+            chosen
         ),
         scope: scope.to_string(),
-        detail: vec![
-            format!(
-                "{} is the type that covers the most rows.",
-                dtype_label(&column.dtype)
-            ),
-            "The column is not read from the files that disagree, so its cells there are \
-             a conflict rather than a null."
-                .to_string(),
-        ],
     })
 }
 
-/// A column the files store in more than one type, where the scan can read them all
-/// into one.
+/// A column the files store in more than one type, where the scan reads them all into
+/// one.
 ///
 /// Says only that: not "width", since a datetime unit, a struct that gained a field and
 /// a file that never typed the column all land here, and not "without loss", since a
@@ -182,17 +178,13 @@ fn widening_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
     if !column.widened {
         return None;
     }
+    let names = distinct_names(&[&column.dtype]);
     Some(Note {
         summary: format!(
             "{} is stored as more than one type; read as {}",
-            column.name,
-            dtype_label(&column.dtype)
+            column.name, names[0]
         ),
         scope: scope.to_string(),
-        detail: vec![format!(
-            "Every file's type is read as {}.",
-            dtype_label(&column.dtype)
-        )],
     })
 }
 
@@ -200,7 +192,7 @@ fn widening_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
 mod tests {
     use super::*;
     use crate::schema_union::{FileSchema, union_file_schemas};
-    use polars::prelude::{DataType, Schema, TimeUnit, TimeZone};
+    use polars::prelude::{DataType, Field, Schema, TimeUnit, TimeZone};
     use std::sync::Arc;
 
     fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileSchema> {
@@ -267,7 +259,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("x", str.clone())], 1),
                 ],
                 sampled: None,
-                expected: vec!["x is in 1 of 2 files"],
+                expected: vec!["x is in 1 of 2 files; absent elsewhere, not null"],
             },
             Shape {
                 what: "absent, sampled",
@@ -276,7 +268,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("x", str.clone())], 1),
                 ],
                 sampled: Some(200_000),
-                expected: vec!["x is in 1 of the 2 footers read"],
+                expected: vec!["x is in 1 of the 2 footers read; absent elsewhere, not null"],
             },
             Shape {
                 what: "absent, with an unreadable footer",
@@ -287,8 +279,8 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "x is in 1 of the 2 files that could be read",
-                    "1 file could not be read and was left out",
+                    "x is in 1 of the 2 files that could be read; absent elsewhere, not null",
+                    "1 file could not be read and was left out of the schema",
                 ],
             },
             Shape {
@@ -300,8 +292,8 @@ mod tests {
                 ],
                 sampled: Some(200_000),
                 expected: vec![
-                    "x is in 1 of the 2 footers that could be read",
-                    "1 footer could not be read and was left out",
+                    "x is in 1 of the 2 footers that could be read; absent elsewhere, not null",
+                    "1 footer could not be read and was left out of the schema",
                 ],
             },
             // --- a type the files disagree about: counted, never divided ---
@@ -312,7 +304,7 @@ mod tests {
                     file(&[("n", i64.clone())], 90),
                 ],
                 sampled: None,
-                expected: vec!["n is str in 1 file; read as i64"],
+                expected: vec!["n is str in 1 file; read as i64 and not read there"],
             },
             Shape {
                 what: "conflicting, sampled",
@@ -321,7 +313,7 @@ mod tests {
                     file(&[("n", i64.clone())], 90),
                 ],
                 sampled: Some(200_000),
-                expected: vec!["n is str in 1 footer; read as i64"],
+                expected: vec!["n is str in 1 footer; read as i64 and not read there"],
             },
             Shape {
                 what: "conflicting, with an unreadable footer",
@@ -332,8 +324,8 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "n is str in 1 file; read as i64",
-                    "1 file could not be read and was left out",
+                    "n is str in 1 file; read as i64 and not read there",
+                    "1 file could not be read and was left out of the schema",
                 ],
             },
             Shape {
@@ -345,8 +337,8 @@ mod tests {
                 ],
                 sampled: Some(200_000),
                 expected: vec![
-                    "n is str in 1 footer; read as i64",
-                    "1 footer could not be read and was left out",
+                    "n is str in 1 footer; read as i64 and not read there",
+                    "1 footer could not be read and was left out of the schema",
                 ],
             },
             // --- widening, which settles without loss ---
@@ -367,9 +359,9 @@ mod tests {
                 sampled: None,
                 // Schema order: the newest file's columns lead, so `id` comes first.
                 expected: vec![
-                    "id is in 1 of 3 files",
-                    "n is in 2 of 3 files",
-                    "n is str in 1 file; read as i64",
+                    "id is in 1 of 3 files; absent elsewhere, not null",
+                    "n is in 2 of 3 files; absent elsewhere, not null",
+                    "n is str in 1 file; read as i64 and not read there",
                 ],
             },
             Shape {
@@ -381,7 +373,7 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "n is in 2 of 3 files",
+                    "n is in 2 of 3 files; absent elsewhere, not null",
                     "n is stored as more than one type; read as i64",
                 ],
             },
@@ -394,7 +386,7 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "n is str in 1 file; read as i64",
+                    "n is str in 1 file; read as i64 and not read there",
                     "n is stored as more than one type; read as i64",
                 ],
             },
@@ -407,7 +399,7 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "n is str in 1 file; read as f64",
+                    "n is str in 1 file; read as f64 and not read there",
                     "n is stored as more than one type; read as f64",
                 ],
             },
@@ -429,7 +421,57 @@ mod tests {
                 sampled: None,
                 // `datetime in 1 file; read as datetime` would say nothing, so the
                 // note spells the types out where the short words collide.
-                expected: vec!["t is datetime[ns] in 1 file; read as datetime[ns, UTC]"],
+                expected: vec![
+                    "t is datetime[ns] in 1 file; read as datetime[ns, UTC] and not read there",
+                ],
+            },
+            Shape {
+                what: "two conflicting types the table spells the same way",
+                files: vec![
+                    file(
+                        &[("t", DataType::Datetime(TimeUnit::Nanoseconds, None))],
+                        10,
+                    ),
+                    file(
+                        &[(
+                            "t",
+                            DataType::Datetime(TimeUnit::Nanoseconds, Some(TimeZone::UTC)),
+                        )],
+                        10,
+                    ),
+                    file(&[("t", str.clone())], 90),
+                ],
+                sampled: None,
+                // The two that lost share a word as much as either shares one with the
+                // winner, so all three are spelled out.
+                expected: vec![
+                    "t is datetime[ns] or datetime[ns, UTC] in 2 files; read as str and not read there",
+                ],
+            },
+            Shape {
+                what: "two structs, which Display also spells the same way",
+                files: vec![
+                    file(
+                        &[(
+                            "s",
+                            DataType::Struct(vec![Field::new("a".into(), i64.clone())]),
+                        )],
+                        90,
+                    ),
+                    file(
+                        &[(
+                            "s",
+                            DataType::Struct(vec![Field::new("a".into(), str.clone())]),
+                        )],
+                        10,
+                    ),
+                ],
+                sampled: None,
+                // `struct[1]` for both, so only the fields tell them apart.
+                expected: vec![
+                    "s is Struct({'a': String}) in 1 file; \
+                     read as Struct({'a': Int64}) and not read there",
+                ],
             },
             Shape {
                 what: "absent, conflicting and widened",
@@ -441,8 +483,8 @@ mod tests {
                 ],
                 sampled: None,
                 expected: vec![
-                    "n is in 3 of 4 files",
-                    "n is str in 1 file; read as i64",
+                    "n is in 3 of 4 files; absent elsewhere, not null",
+                    "n is str in 1 file; read as i64 and not read there",
                     "n is stored as more than one type; read as i64",
                 ],
             },
@@ -500,30 +542,8 @@ mod tests {
         }
     }
 
-    /// The detail of the unreadable note claims only what the scan guarantees: the
-    /// columns are gone, but the rows may well still be read.
-    #[test]
-    fn the_unreadable_note_claims_nothing_about_the_rows() {
-        let files = [
-            file(&[("id", DataType::Int64)], 1),
-            None,
-            file(&[("id", DataType::Int64)], 1),
-        ];
-        let dataset = union_file_schemas(&files, SchemaOrigin::AllFooters(3));
-        let notes = from_dataset(&dataset);
-        let detail = notes[0].detail.join(" ");
-        assert!(
-            detail.contains("columns are not in the schema"),
-            "got: {detail}"
-        );
-        assert!(
-            !detail.contains("rows are not counted"),
-            "the scan is handed those files too, so this was never true: {detail}"
-        );
-    }
-
-    /// Two notes about one column must not both say "the other files" and mean
-    /// different sets.
+    /// Two notes about one column must each say which files they mean, rather than
+    /// both saying "the others" about different sets.
     #[test]
     fn the_notes_about_one_column_do_not_talk_past_each_other() {
         let files = [
@@ -534,13 +554,15 @@ mod tests {
         let dataset = union_file_schemas(&files, SchemaOrigin::AllFooters(3));
         let about_n: Vec<String> = from_dataset(&dataset)
             .into_iter()
-            .filter(|note| note.summary.starts_with('n'))
-            .flat_map(|note| note.detail)
+            .map(|note| note.summary)
+            .filter(|summary| summary.starts_with('n'))
             .collect();
-        assert_eq!(about_n.len(), 3, "an absence note and a conflict note");
-        assert!(
-            !about_n.iter().any(|d| d.contains("the other files")),
-            "each says which files it means: {about_n:?}"
+        assert_eq!(
+            about_n,
+            [
+                "n is in 2 of 3 files; absent elsewhere, not null",
+                "n is str in 1 file; read as i64 and not read there",
+            ]
         );
     }
 }

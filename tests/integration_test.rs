@@ -1507,7 +1507,10 @@ fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
     let state = app.data_table_state.as_ref().unwrap();
     let notes = state.notes();
     assert_eq!(notes.len(), 1, "one column is not in every file");
-    assert_eq!(notes[0].summary, "extra is in 1 of 2 files");
+    assert_eq!(
+        notes[0].summary,
+        "extra is in 1 of 2 files; absent elsewhere, not null"
+    );
     assert_eq!(
         notes[0].scope, "in all 2 footers",
         "and says what it is based on"

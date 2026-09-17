@@ -217,6 +217,63 @@ fn within_rest(url: &str, root: &str) -> String {
         .to_string()
 }
 
+/// Whether `path` is a place in an object store: `s3://`, `gs://`, or Azure.
+pub fn is_object_store_url(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    let scheme = text
+        .split_once("://")
+        .map(|(s, _)| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(scheme.as_str(), "s3" | "s3a" | "gs" | "gcs")
+        || crate::source::azure_parts(&text).is_some()
+}
+
+/// The URL that opens a cloud folder as one dataset: with its trailing slash, which is
+/// what makes it a prefix to scan rather than an object to fetch.
+pub fn folder_dataset_url(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if text.ends_with('/') {
+        path.to_path_buf()
+    } else {
+        PathBuf::from(format!("{text}/"))
+    }
+}
+
+/// A row for the cloud folder being browsed, when what it holds makes it one dataset.
+#[cfg(feature = "cloud")]
+fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
+    if !is_object_store_url(dir) || cloud_account(dir).is_some() {
+        return None;
+    }
+    let folders: Vec<String> = rows
+        .iter()
+        .filter(|r| r.kind != EntryKind::File)
+        .map(|r| format!("{}/", r.name))
+        .collect();
+    let objects: Vec<(String, u64)> = rows
+        .iter()
+        .filter(|r| r.kind == EntryKind::File)
+        .map(|r| (r.path.to_string_lossy().into_owned(), r.size.unwrap_or(1)))
+        .collect();
+    let kind = crate::cloud_browse::classify_listing(&folders, &objects);
+    let what = match kind {
+        EntryKind::Hive => "all partitions",
+        EntryKind::MultiFile => "all files",
+        _ => return None,
+    };
+    let text = dir.to_string_lossy();
+    let name = text
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let mut entry = Entry::directory(&folder_dataset_url(dir));
+    entry.kind = kind;
+    entry.name = format!("{name} ({what})");
+    Some(entry)
+}
+
 /// Whether `path` is one of datui's own `cloud://` places rather than a real location.
 pub fn is_cloud_place(path: &Path) -> bool {
     path.to_string_lossy().starts_with(CLOUD_PLACE)
@@ -551,6 +608,9 @@ pub struct HomeState {
     pub unreachable: std::collections::HashSet<PathBuf>,
     /// Why a cloud listing was refused, when the service said.
     pub probe_errors: std::collections::HashMap<PathBuf, String>,
+    /// What cloud folders turned out to hold when peeked into: `hive` or `multi`.
+    /// Kept for the session, so a folder is peeked at once however often it is listed.
+    pub cloud_kinds: std::collections::HashMap<PathBuf, EntryKind>,
     /// How rows are ordered inside each section.
     pub sort: SortMode,
     /// True while a listing is being built on a worker. The previous listing stays on
@@ -630,6 +690,7 @@ impl Default for HomeState {
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
             probe_errors: std::collections::HashMap::new(),
+            cloud_kinds: std::collections::HashMap::new(),
             pending_enrich: false,
             waiting_since: None,
             enriched: std::collections::HashMap::new(),
@@ -759,6 +820,16 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             discover::scan_dir(&dir)
         };
         let unavailable = remote && unreachable.contains(&dir);
+        // Inside a cloud folder of partitions or Parquet files: a row that opens the
+        // whole folder as one dataset, since Enter on the rows opens only one part.
+        #[cfg(feature = "cloud")]
+        let rows = {
+            let mut rows = rows;
+            if let Some(whole) = whole_folder_row(&dir, &rows) {
+                rows.insert(0, whole);
+            }
+            rows
+        };
         sections.push(Section {
             // The URL without a source ID: the title bar's trail already says which
             // source, and `s3://lab@data` is not a name anyone would write. An Azure
@@ -1943,7 +2014,40 @@ impl HomeState {
     pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>) {
         self.unreachable.remove(&root);
         self.probe_errors.remove(&root);
-        self.probed.insert(root, rows);
+        self.probed.insert(root.clone(), rows);
+        self.apply_cloud_kinds(&root);
+    }
+
+    /// Label the rows of a cloud listing with what peeking inside them found.
+    pub fn apply_cloud_kinds(&mut self, root: &Path) {
+        let Some(rows) = self.probed.get_mut(root) else {
+            return;
+        };
+        for row in rows.iter_mut() {
+            if row.kind == EntryKind::Directory
+                && let Some(kind) = self.cloud_kinds.get(&row.path)
+            {
+                row.kind = *kind;
+            }
+        }
+    }
+
+    /// The folders of a cloud listing not yet peeked into, at most `limit`, in the order
+    /// they are listed.
+    pub fn cloud_folders_to_peek(&self, root: &Path, limit: usize) -> Vec<PathBuf> {
+        if !is_object_store_url(root) {
+            return Vec::new();
+        }
+        self.probed
+            .get(root)
+            .into_iter()
+            .flatten()
+            .filter(|row| {
+                row.kind == EntryKind::Directory && !self.cloud_kinds.contains_key(&row.path)
+            })
+            .take(limit)
+            .map(|row| row.path.clone())
+            .collect()
     }
 
     /// Record that a probe could not read the root.

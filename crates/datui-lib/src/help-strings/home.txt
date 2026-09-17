@@ -4,7 +4,9 @@ where Ctrl+O returns you from anywhere.
 NAVIGATION
   ↑ / ↓             Move the selection (Ctrl+P / Ctrl+N as well)
   Ctrl+↑ / Ctrl+↓   Previous or next section
-  ← / →             Collapse or expand a section; the choice is remembered
+  ← / →             Collapse or expand a section; the choice is remembered.
+                    → on a cloud folder labelled hive or multi goes inside it
+                    instead of opening it
   PgUp / PgDn       Move ten rows
 
   Every letter types into the filter, so none is a key here: "json" finds json.
@@ -12,7 +14,8 @@ NAVIGATION
                     where the cursor is: "recent" under Recent, "name" under a
                     directory, or size / modified / rows once chosen.
   Enter             Open the dataset, enter the directory, source or bucket, or
-                    fold the section
+                    fold the section. A cloud folder labelled hive or multi
+                    opens as one dataset
   Backspace         Leave a directory you descended into; from a bucket, back
                     to its cloud source
   Ctrl+R            List again what is on screen: every cloud source, the one

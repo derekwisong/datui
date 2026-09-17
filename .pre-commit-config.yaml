@@ -23,6 +23,8 @@ repos:
     hooks:
       - id: check-added-large-files
         name: check added large files
+        # Generated demo GIFs are intentionally versioned; keep the guard everywhere else.
+        exclude: ^demos/.*\.gif$
       - id: trailing-whitespace
         name: trailing whitespace
         args: [--markdown-linebreak-ext=md]

@@ -5,11 +5,9 @@ Set Height 800
 Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
-# Isolated fixture from make-home-fixture.py. vhs 0.11 has no Set Env.
+# Isolated fixture and environment from generate_demos.py.
 Hide
-Type "export HOME=/tmp/datui-demo/home DATUI_CACHE_DIR=/tmp/datui-demo/cache XDG_CONFIG_HOME=/tmp/datui-demo/config"
-Enter
-Type "cd /tmp/datui-demo/data/quant-research"
+Type "cd /tmp/datui-demo/data"
 Enter
 Type "clear"
 Enter
@@ -29,22 +27,18 @@ Down
 Sleep 1.8s
 
 # Fuzzy filter.
-Type "fact"
+Type "park"
 Sleep 2.5s
-Type "or"
+Type "_weather"
 Sleep 2.5s
 
 # Column search.
 Ctrl+U
 Sleep 0.8s
-Type "ticker"
+Type "species"
 Sleep 2.5s
 
 # Open one.
-Ctrl+U
-Sleep 0.8s
-Type "returns"
-Sleep 1.5s
 Enter
 Sleep 3s
 

@@ -42,7 +42,7 @@ contents on screen. That is a privacy problem before it is anything else: the de
 list in particular holds whatever you last opened anywhere, which is regularly
 something you would not publish.
 
-So `12-home-screen.tape` and `13-light-theme.tape` record against a fixture, built by
+So the home-screen tapes (`12` through `16`) record against a fixture, built by
 [`make-home-fixture.py`][home-fixture], which the generator runs first:
 
 - its own workspace under `/tmp/datui-demo`: a copy of `demo/data`, so the home
@@ -51,10 +51,14 @@ So `12-home-screen.tape` and `13-light-theme.tape` record against a fixture, bui
 - its own `DATUI_CACHE_DIR`, so `Recent` is seeded rather than inherited;
 - its own `XDG_CONFIG_HOME` holding a config with `use_desktop_recents = false`, which
   is the line that matters: that list is the one input which can put a file from
-  anywhere on the machine into the recording.
+  anywhere on the machine into the recording;
+- its own empty `HOME`, with inherited cloud credential variables removed before VHS
+  starts, so only the built-in public datasets appear under `CLOUD`.
 
-The tape exports those two variables itself, with `Hide` … `Show` around them, because
-VHS 0.11 has no `Set Env`.
+The generator gives VHS those variables directly. The tape only changes into the
+fixture workspace while its terminal is hidden. It also removes `NO_COLOR` and sets
+`COLORTERM=truecolor`, so the recording uses datui's palette even when it is generated
+from colorless automation.
 
 The upshot is that regenerating this GIF gives the same result on any checkout, and
 shows nothing belonging to whoever ran it.

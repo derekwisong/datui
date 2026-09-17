@@ -17,26 +17,34 @@ DEMO_DATA = Path(__file__).resolve().parents[2] / "demo" / "data"
 
 
 def build_workspace(workspace: Path) -> None:
-    if not (DEMO_DATA / "quant-research").is_dir():
+    required = [
+        "central_park_weather.parquet",
+        "earthquakes_m6.parquet",
+        "gapminder.parquet",
+        "penguins.parquet",
+        "space_launches.parquet",
+    ]
+    missing = [name for name in required if not (DEMO_DATA / name).is_file()]
+    if missing:
         raise SystemExit(
-            f"{DEMO_DATA} is missing the demo datasets. Run demo/build.py "
-            "(with --private for the snapshots) before recording."
+            f"{DEMO_DATA} is missing {', '.join(missing)}. "
+            "Run demo/build.py before recording."
         )
     shutil.copytree(DEMO_DATA, workspace)
     # A non-data file, which the home screen should not list.
-    (workspace / "quant-research" / "README.md").write_text(
-        "# quant-research\n\nA trimmed extract for the datui demos.\n"
+    (workspace / "README.md").write_text(
+        "# Datui demo data\n\nPublic datasets used by the datui demos.\n"
     )
 
 
 def seed_cache(cache: Path, workspace: Path) -> None:
     cache.mkdir(parents=True, exist_ok=True)
     recents = [
-        workspace / "quant-research/returns",
-        workspace / "quant-research/factor_ic",
+        workspace / "central_park_weather.parquet",
         workspace / "earthquakes_m6.parquet",
-        workspace / "quant-research/risk_factor_cov.parquet",
-        workspace / "bitcoin_daily.parquet",
+        workspace / "penguins.parquet",
+        workspace / "gapminder.parquet",
+        workspace / "space_launches.parquet",
     ]
     (cache / "recents_history.txt").write_text(
         "\n".join(str(p) for p in recents) + "\n"
@@ -53,6 +61,10 @@ def write_config(config_home: Path, workspace: Path) -> None:
                 "[data]",
                 f'directories = ["{workspace}"]',
                 "use_desktop_recents = false",
+                "",
+                "[cloud]",
+                'hide = ["s3-default", "gcs-default", "az", "azure-env"]',
+                "instance_identity = false",
                 "",
             ]
         )

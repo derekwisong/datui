@@ -10,8 +10,8 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use crate::schema_union::FileSchema;
+pub use crate::schema_union::lenient_scan;
 use crate::schema_union::with_partition_columns;
-pub use crate::schema_union::{OmittedColumns, lenient_scan};
 
 const MAX_PARTITION_DEPTH: usize = 64;
 const PARQUET_FOOTER_TAIL_BYTES: usize = 256 * 1024;
@@ -569,23 +569,18 @@ mod tests {
             let files = list_dataset_files(&store, "data").await.unwrap();
             schema_of(&store, &files).await.0.schema
         });
-        let df = lenient_scan(&urls, schema, None, &OmittedColumns::new())
+        let df = lenient_scan(&urls, schema, None, None)
             .unwrap()
             .collect()
             .unwrap();
         assert_eq!(df.height(), 7);
         let fees = df.column("fee").unwrap();
         assert_eq!(fees.null_count(), 2, "the old file has no fee");
-        let second_file = lenient_scan(
-            &urls[1..],
-            df.schema().clone(),
-            None,
-            &OmittedColumns::new(),
-        )
-        .unwrap()
-        .slice(3, 2)
-        .collect()
-        .unwrap();
+        let second_file = lenient_scan(&urls[1..], df.schema().clone(), None, None)
+            .unwrap()
+            .slice(3, 2)
+            .collect()
+            .unwrap();
         assert_eq!(
             second_file
                 .column("id")
@@ -618,24 +613,31 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
-        let (dataset, listed) = rt.block_on(async {
+        let (dataset, listed, file_rows) = rt.block_on(async {
             let listed = list_dataset_files(&store, "data").await.unwrap();
-            (schema_of(&store, &listed).await.0, listed)
+            let read: Vec<usize> = (0..listed.len()).collect();
+            let footers = footers_of_files(&store, &listed, &read).await;
+            let rows: Vec<usize> = footers
+                .iter()
+                .map(|f| {
+                    f.as_ref()
+                        .map(|f| f.row_group_rows.iter().sum())
+                        .unwrap_or(0)
+                })
+                .collect();
+            (schema_of(&store, &listed).await.0, listed, rows)
         });
         let urls: Vec<String> = listed
             .iter()
             .map(|f| dir.path().join(&f.key).to_string_lossy().into_owned())
             .collect();
-        let omit: OmittedColumns = urls
-            .iter()
-            .zip(dataset.omitted.iter())
-            .filter(|(_, columns)| !columns.is_empty())
-            .map(|(url, columns)| (url.clone(), columns.clone()))
-            .collect();
-        let df = lenient_scan(&urls, dataset.schema.clone(), None, &omit)
+        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
+        let mut df = lenient_scan(&urls, dataset.schema.clone(), None, drift.as_ref())
             .unwrap()
             .collect()
             .unwrap();
+        // The hidden drift column is the state's business, not this test's.
+        let _ = df.drop_in_place(crate::schema_union::DRIFT_COLUMN);
         (dataset, df, dir)
     }
 

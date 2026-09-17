@@ -56,6 +56,16 @@ pub struct Glyphs {
     /// A null cell. Blank is what a null used to be, and blank is also what an empty
     /// string is, so the two were indistinguishable.
     pub null: &'static str,
+    /// A cell whose file has no such column: not a null the data holds, but a column
+    /// that file was written without. One character wide, like `null`, so a column of
+    /// them lines up.
+    pub absent: &'static str,
+    /// A cell whose file stores the column in a type the column cannot hold, so it was
+    /// not read from that file. A value is there; it is not this type.
+    pub conflict: &'static str,
+    /// After a column's name in the header: this column is not in every file, or the
+    /// files disagree on its type. A footnote mark, and the Info panel is the note.
+    pub drift_mark: &'static str,
     /// The rail down the left edge of the row the cursor is on.
     pub rail: &'static str,
     /// Rule drawn beside a section title: resting, and under the cursor.
@@ -93,6 +103,9 @@ const UNICODE: Glyphs = Glyphs {
     in_object_store: "☁",
     place_unknown: "◌",
     null: "∅",
+    absent: "·",
+    conflict: "≠",
+    drift_mark: "*",
     rail: "▎",
     rule_h: "─",
     rule_h_focused: "━",
@@ -121,6 +134,9 @@ const ASCII: Glyphs = Glyphs {
     in_object_store: "@",
     place_unknown: "?",
     null: "~",
+    absent: ".",
+    conflict: "!",
+    drift_mark: "*",
     rail: ">",
     rule_h: "-",
     rule_h_focused: "=",

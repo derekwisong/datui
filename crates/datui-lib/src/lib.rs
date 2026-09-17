@@ -746,7 +746,7 @@ mod chart_prepare_tests {
     }
 
     /// Drive background results back into the app until `done`.
-    fn pump(
+    pub(super) fn pump(
         app: &mut App,
         rx: &mpsc::Receiver<AppEvent>,
         tx: &mpsc::Sender<AppEvent>,
@@ -945,6 +945,76 @@ mod template_rollback_tests {
         );
         assert!(state.last_pivot_spec().is_none());
         assert!(state.reshaped_lf_clone().is_none());
+    }
+
+    /// Rolling a failed template back restores the frame, and the frame's rows still
+    /// stand for rows of a file — so what the state believes about them has to be
+    /// rolled back with it, or the cells go back to reading as plain nulls.
+    #[test]
+    fn a_failed_template_rolls_back_what_the_rows_knew() {
+        use polars::prelude::{ParquetWriter, df};
+        let dir = tempfile::tempdir().unwrap();
+        let write = |sub: &str, mut frame: polars::prelude::DataFrame| {
+            let d = dir.path().join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        };
+        write("date=2024-01-01", df!("id" => &[1i64, 4]).unwrap());
+        write(
+            "date=2024-01-02",
+            df!("id" => &[2i64, 3], "extra" => &["x", "y"]).unwrap(),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        app.input_mode = InputMode::Normal;
+        let opts = OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        };
+        if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+            let _ = tx.send(next);
+        }
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
+            a.data_table_state.is_some() && !a.is_busy()
+        });
+        assert!(
+            app.data_table_state.as_ref().unwrap().drifts(),
+            "the folder drifts to begin with"
+        );
+
+        let mut template = app
+            .create_template_from_current_state(
+                "query then break".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query = Some("select * from df".to_string());
+        // Applied after the query, and referring to a column that does not exist.
+        template.settings.column_order = vec!["no_such_column".to_string()];
+
+        assert!(app.apply_template(&template).is_err());
+
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.drifts(),
+            "the rollback puts back what the restored frame carries"
+        );
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["date", "id", "extra"],
+            "and no hidden column with it"
+        );
     }
 }
 
@@ -1992,6 +2062,10 @@ struct TemplateApplicationState {
     sort_ascending: bool,
     column_order: Vec<String>,
     locked_columns_count: usize,
+    /// Whether `lf` carries the hidden drift column, and what its groups mean. Rolling
+    /// the frame back without these would leave the two disagreeing.
+    drift: bool,
+    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
 }
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
@@ -4599,16 +4673,18 @@ impl App {
         None
     }
 
-    /// Put hive partition columns first, ahead of the file's own columns.
+    /// Put hive partition columns first, ahead of the file's own columns. `drifts` keeps
+    /// the scan's hidden drift column, which the select would otherwise drop.
     fn hoist_partition_columns(
         lf: LazyFrame,
         schema: &Schema,
         partition_columns: &[String],
+        drifts: bool,
     ) -> LazyFrame {
         if partition_columns.is_empty() {
             return lf;
         }
-        let exprs: Vec<_> = partition_columns
+        let mut exprs: Vec<_> = partition_columns
             .iter()
             .map(|s| col(s.as_str()))
             .chain(
@@ -4619,6 +4695,9 @@ impl App {
                     .map(|s| col(s.as_str())),
             )
             .collect();
+        if drifts {
+            exprs.push(col(crate::schema_union::DRIFT_COLUMN));
+        }
         lf.select(exprs)
     }
 
@@ -4656,19 +4735,26 @@ impl App {
             .iter()
             .map(|f| f.to_string_lossy().into_owned())
             .collect();
-        let omit: crate::schema_union::OmittedColumns = paths
-            .iter()
-            .zip(dataset.omitted.iter())
-            .filter(|(_, columns)| !columns.is_empty())
-            .map(|(path, columns)| (path.clone(), columns.clone()))
-            .collect();
+        // Numbering rows needs every file's row count; a sampled dataset has not read
+        // them all, so it forgoes the distinction rather than guessing at it.
+        let file_rows: Vec<usize> = if read.len() == files.len() {
+            footers
+                .iter()
+                .map(|f| f.as_ref().map(|f| f.rows))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let drift = crate::schema_union::ScanDrift::new(&paths, &dataset, &file_rows);
         let schema = dataset.schema.clone();
-        let lf = crate::schema_union::lenient_scan(&paths, schema.clone(), None, &omit).ok()?;
-        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns);
+        let lf =
+            crate::schema_union::lenient_scan(&paths, schema.clone(), None, drift.as_ref()).ok()?;
+        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, drift.is_some());
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
-        state.set_dataset_schema(dataset);
+        state.set_dataset_schema(dataset, &file_rows);
         Some(state)
     }
 
@@ -4714,7 +4800,7 @@ impl App {
             ..Default::default()
         };
         let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args).ok()?;
-        let lf = Self::hoist_partition_columns(lf, &merged_schema, &partition_columns);
+        let lf = Self::hoist_partition_columns(lf, &merged_schema, &partition_columns, false);
         DataTableState::from_schema_and_lazyframe(
             merged_schema,
             lf,
@@ -4761,20 +4847,34 @@ impl App {
             return None;
         }
         // A file that stores a column in a type the dataset's column cannot hold is not
-        // read for it; its rows are null there rather than failing the scan.
-        let omit: cloud_hive::OmittedColumns = urls
-            .iter()
-            .zip(dataset.omitted.iter())
-            .filter(|(_, columns)| !columns.is_empty())
-            .map(|(url, columns)| (url.clone(), columns.clone()))
-            .collect();
+        // read for it; its rows are null there rather than failing the scan, and carry
+        // their file's drift group so the null can be told from a real one.
+        let file_rows: Vec<usize> = if read.len() == file_count {
+            footers
+                .iter()
+                .map(|f| f.as_ref().map(|f| f.row_group_rows.iter().sum()))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
         let schema = dataset.schema.clone();
         let scan: crate::widgets::datatable::FileScan = {
-            let (schema, partition_columns, omit) =
-                (schema.clone(), partition_columns.clone(), Arc::new(omit));
+            let (schema, partition_columns, drift) = (
+                schema.clone(),
+                partition_columns.clone(),
+                drift.map(Arc::new),
+            );
             Arc::new(move |urls: &[String]| {
-                cloud_hive::lenient_scan(urls, schema.clone(), Some(cloud_opts.clone()), &omit)
-                    .map(|lf| Self::hoist_partition_columns(lf, &schema, &partition_columns))
+                let drifts = drift.is_some();
+                cloud_hive::lenient_scan(
+                    urls,
+                    schema.clone(),
+                    Some(cloud_opts.clone()),
+                    drift.as_deref(),
+                )
+                .map(|lf| Self::hoist_partition_columns(lf, &schema, &partition_columns, drifts))
             })
         };
         let count: crate::widgets::datatable::FileCounter = {
@@ -4811,7 +4911,7 @@ impl App {
                 .collect();
             state.set_file_row_groups(&row_groups);
         }
-        state.set_dataset_schema(dataset);
+        state.set_dataset_schema(dataset, &file_rows);
         Some(state)
     }
 
@@ -4834,7 +4934,7 @@ impl App {
                 .collect::<Vec<_>>(),
             None => Vec::new(),
         };
-        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns);
+        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, false);
         let part_cols = (!partition_columns.is_empty()).then_some(partition_columns);
         DataTableState::from_schema_and_lazyframe(schema, lf, options, part_cols)
     }
@@ -10644,7 +10744,7 @@ impl App {
             }
             AppEvent::DoExportCollect(path, format, options) => {
                 if let Some(state) = &self.data_table_state {
-                    let lf = state.lf.clone();
+                    let lf = state.visible_lf();
                     let streaming = state.polars_streaming;
                     let path = path.clone();
                     let format = *format;
@@ -11064,6 +11164,8 @@ impl App {
                 sort_ascending: state.view_sort_ascending(),
                 column_order: state.get_column_order().to_vec(),
                 locked_columns_count: state.locked_columns_count(),
+                drift: state.drifts(),
+                drift_groups: state.drift_groups(),
             })
     }
 
@@ -11385,7 +11487,7 @@ impl App {
         format: ExportFormat,
         options: &ExportOptions,
     ) -> Result<()> {
-        let mut df = crate::statistics::collect_lazy(state.lf.clone(), state.polars_streaming)?;
+        let mut df = crate::statistics::collect_lazy(state.visible_lf(), state.polars_streaming)?;
         Self::export_data_from_df(&mut df, path, format, options)
     }
 
@@ -11424,6 +11526,7 @@ impl App {
             // Restore the exact saved lf and schema (in case filter/sort modified them)
             state.lf = saved_lf;
             state.schema = saved_schema;
+            state.restore_drift(saved.drift, saved.drift_groups);
             state.collect();
         }
     }

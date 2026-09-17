@@ -122,7 +122,8 @@ pub fn render(
                 .with_binary_columns(state.binary_column_names())
                 .with_number_format(ctx.number_format.clone())
                 .with_dtype_row(ctx.dtype_row)
-                .with_selection_colors(ctx.table_selected, ctx.accent, ctx.dimmed);
+                .with_selection_colors(ctx.table_selected, ctx.accent, ctx.dimmed)
+                .with_drift(state.display_drift(), state.drift_groups());
             if ctx.column_colors {
                 dt = dt.with_column_type_colors(
                     ctx.str_col,

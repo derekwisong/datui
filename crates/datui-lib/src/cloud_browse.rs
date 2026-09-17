@@ -110,6 +110,8 @@ pub struct Environment<'a> {
     pub windows: bool,
     /// Runs a credential command: `aws`, a profile's `credential_process`.
     pub run: &'a crate::cloud_command::Runner<'a>,
+    /// Every environment variable, for the ones named by pattern: `MC_HOST_<alias>`.
+    pub all_vars: &'a dyn Fn() -> Vec<(String, String)>,
 }
 
 impl Environment<'_> {
@@ -124,6 +126,7 @@ impl Environment<'_> {
             run: &|program, args| {
                 crate::cloud_command::run(program, args, crate::cloud_command::CREDENTIAL_TIMEOUT)
             },
+            all_vars: &|| std::env::vars().collect(),
         }
     }
 }
@@ -1043,6 +1046,7 @@ mod tests {
                         "test".to_string(),
                     ))
                 },
+                all_vars: &|| Vec::new(),
             }
         };
         ($vars:expr_2021, $files:expr_2021, $home:expr_2021, $contents:expr_2021) => {
@@ -1057,6 +1061,7 @@ mod tests {
                         "test".to_string(),
                     ))
                 },
+                all_vars: &|| Vec::new(),
             }
         };
     }
@@ -1531,6 +1536,7 @@ mod aws_role_tests {
                     "test".to_string(),
                 ))
             },
+            all_vars: &|| Vec::new(),
         };
         detect(&CloudConfig::default(), &env)
     }
@@ -1560,6 +1566,7 @@ mod aws_role_tests {
                         "test".to_string(),
                     ))
                 },
+                all_vars: &|| Vec::new(),
             };
             detect(&CloudConfig::default(), &env)
                 .iter()

@@ -1084,3 +1084,76 @@ fn awkward_names_list_and_open() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// An `mc` alias and an s3cmd config pointing at the two servers of
+/// `DATUI_LIVE_S3_PAIR` appear as sources with no datui config, list, and open.
+#[test]
+#[ignore = "talks to two local S3-compatible servers; set DATUI_LIVE_S3_PAIR"]
+fn mc_and_s3cmd_configs_are_sources_that_open() {
+    let Ok(pair) = std::env::var("DATUI_LIVE_S3_PAIR") else {
+        eprintln!("skipped: set DATUI_LIVE_S3_PAIR=<endpoint>,<endpoint> to run");
+        return;
+    };
+    let (first, second) = pair.split_once(',').expect("two endpoints");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    std::fs::write(
+        dir.path().join("config.json"),
+        format!(
+            r#"{{"version": "10", "aliases": {{"lab": {{"url": "{first}", "accessKey": "key9101", "secretKey": "secret9101", "api": "S3v4", "path": "auto"}}}}}}"#
+        ),
+    )
+    .unwrap();
+    let host = second.split_once("://").map_or(second, |(_, h)| h);
+    std::fs::write(
+        dir.path().join("s3cfg"),
+        format!(
+            "[default]\naccess_key = key9102\nsecret_key = secret9102\nhost_base = {host}\nhost_bucket = {host}\nuse_https = False\n"
+        ),
+    )
+    .unwrap();
+    // SAFETY: set before the runtime starts; run with --test-threads=1.
+    unsafe {
+        std::env::set_var("MC_CONFIG_DIR", dir.path());
+        std::env::set_var("S3CMD_CONFIG", dir.path().join("s3cfg"));
+    }
+    let config = CloudConfig::default();
+    let runtime = common::test_runtime();
+    let sources = cloud_sources::discover(&config, &Environment::current());
+    for id in ["mc-lab", "s3cfg"] {
+        let source = sources.iter().find(|s| s.id == id).unwrap_or_else(|| {
+            panic!(
+                "{id} in {:?}",
+                sources.iter().map(|s| &s.id).collect::<Vec<_>>()
+            )
+        });
+        let buckets = runtime
+            .block_on(cloud_browse::list_buckets(source))
+            .expect("listing buckets");
+        assert!(buckets.contains(&"data".to_string()), "{id}: {buckets:?}");
+    }
+    let open = |url: &str| -> Vec<String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = datui::App::new_with_config(
+            tx,
+            common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            datui::config::AppConfig::default(),
+        );
+        let event = datui::AppEvent::Open(
+            vec![std::path::PathBuf::from(url)],
+            datui::OpenOptions::default(),
+        );
+        if let Some(crash) = drive(&mut app, event) {
+            panic!("{url}: {crash}");
+        }
+        assert!(pump_until(&mut app, &rx, 60, |app| app
+            .data_table_state
+            .is_some()
+            && !app.is_busy()));
+        app.data_table_state.as_ref().unwrap().headers()
+    };
+    assert!(open("s3://mc-lab@data/table.parquet").contains(&"first_name".to_string()));
+    assert!(open("s3://s3cfg@data/table.parquet").contains(&"product".to_string()));
+}

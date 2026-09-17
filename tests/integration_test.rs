@@ -1070,6 +1070,39 @@ fn test_counting_a_union_of_scans_does_not_panic() {
     );
 }
 
+/// Analysis counts the rows itself, which is the same `len()` over a union of scans
+/// that crashed the table. Its panic is worse: it happens inside `spawn_blocking`,
+/// where tokio swallows it, so the panel never finishes and the app wedges on
+/// "Computing statistics…" with the panic text over the raw-mode screen.
+#[test]
+fn test_analysing_a_union_of_scans_does_not_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64, 4], "n" => &["a", "b"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64, 3], "n" => &[10i64, 20]).unwrap(),
+    );
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let results = datui::statistics::compute_statistics_with_options(
+        &state.lf_clone(),
+        None,
+        0,
+        datui::statistics::ComputeOptions {
+            polars_streaming: true,
+            ..Default::default()
+        },
+    )
+    .expect("analysis runs over a many-file scan");
+    assert_eq!(results.total_rows, 4, "and counts every row");
+}
+
 /// A column only a middle file has used to vanish: the schema was one file's, and that
 /// file did not have it.
 #[test]

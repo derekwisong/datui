@@ -4991,8 +4991,10 @@ impl App {
                             e
                         )
                     })?;
-                    let state = DataTableState::from_lazyframe(lf, options)?;
-                    return Ok(state.lf);
+                    // The frame alone. Building a state here would ask Polars for the
+                    // schema, which lists every file under a prefix, and the schema
+                    // phase that follows lists them once more for itself.
+                    return Ok(lf);
                 }
                 #[cfg(not(feature = "cloud"))]
                 {
@@ -5025,8 +5027,7 @@ impl App {
                             e
                         )
                     })?;
-                    let state = DataTableState::from_lazyframe(lf, options)?;
-                    return Ok(state.lf);
+                    return Ok(lf);
                 }
                 #[cfg(not(feature = "cloud"))]
                 {
@@ -5058,8 +5059,7 @@ impl App {
                             )
                         },
                     )?;
-                    let state = DataTableState::from_lazyframe(lf, options)?;
-                    return Ok(state.lf);
+                    return Ok(lf);
                 }
                 #[cfg(not(feature = "cloud"))]
                 {

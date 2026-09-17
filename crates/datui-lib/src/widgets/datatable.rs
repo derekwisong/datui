@@ -5447,15 +5447,23 @@ impl DataTable {
 
     /// The footnote mark after a column's name, when it is not in every file or the
     /// files disagree on its type. Empty otherwise.
-    fn drift_mark_for(&self, column: &str) -> &'static str {
-        let drifts = self.drift_groups.iter().any(|group| {
-            group.absent.iter().any(|c| c == column) || group.unread.iter().any(|c| c == column)
-        });
-        if drifts {
+    fn drift_mark_for(&self, column: &str, drifting: &HashSet<&str>) -> &'static str {
+        if drifting.contains(column) {
             crate::glyphs::get().drift_mark
         } else {
             ""
         }
+    }
+
+    /// Every column some file is missing, gathered once a frame. Most columns are in
+    /// every file, and this keeps them to one hash lookup rather than a walk of every
+    /// group's lists.
+    fn drifting_columns(&self) -> HashSet<&str> {
+        self.drift_groups
+            .iter()
+            .flat_map(|group| group.absent.iter().chain(group.unread.iter()))
+            .map(|name| name.as_str())
+            .collect()
     }
 
     /// What a null in `column` draws as, per drift group: the plain null glyph, the
@@ -5465,8 +5473,9 @@ impl DataTable {
         &self,
         column: &str,
         g: &'static crate::glyphs::Glyphs,
+        drifting: &HashSet<&str>,
     ) -> Vec<&'static str> {
-        if self.drift_rows.is_empty() {
+        if self.drift_rows.is_empty() || !drifting.contains(column) {
             return Vec::new();
         }
         self.drift_groups
@@ -5557,13 +5566,18 @@ impl DataTable {
             Vec::new()
         };
 
+        let drifting = self.drifting_columns();
+
         // widths starts at the length of each column name
         let mut widths: Vec<u16> = df
             .get_column_names()
             .iter()
             .enumerate()
             .map(|(i, name)| {
-                let mark_w = self.drift_mark_for(name.as_str()).chars().count() as u16;
+                let mark_w = self
+                    .drift_mark_for(name.as_str(), &drifting)
+                    .chars()
+                    .count() as u16;
                 let name_w = name.chars().count() as u16 + mark_w;
                 let type_w = dtype_labels
                     .get(i)
@@ -5631,7 +5645,8 @@ impl DataTable {
             // A null in this column means different things in different files: the
             // data's own null, a file written without the column, or a file that
             // stores it in another type. Resolved once per column, by group.
-            let null_glyph_by_group = self.null_glyphs_for(col_names[col_index].as_str(), g);
+            let null_glyph_by_group =
+                self.null_glyphs_for(col_names[col_index].as_str(), g, &drifting);
 
             for (row_index, row) in rows.iter_mut().take(max_rows).enumerate() {
                 let value = col_data.get(row_index).unwrap();
@@ -5733,7 +5748,7 @@ impl DataTable {
                     None => Style::default().add_modifier(Modifier::BOLD),
                 };
                 let mut heading = vec![Span::styled(name.to_string(), name_style)];
-                let mark = self.drift_mark_for(name.as_str());
+                let mark = self.drift_mark_for(name.as_str(), &drifting);
                 if !mark.is_empty() {
                     heading.push(Span::styled(mark, Style::default().fg(self.dimmed)));
                 }

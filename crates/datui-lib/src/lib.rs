@@ -746,7 +746,7 @@ mod chart_prepare_tests {
     }
 
     /// Drive background results back into the app until `done`.
-    fn pump(
+    pub(super) fn pump(
         app: &mut App,
         rx: &mpsc::Receiver<AppEvent>,
         tx: &mpsc::Sender<AppEvent>,
@@ -945,6 +945,76 @@ mod template_rollback_tests {
         );
         assert!(state.last_pivot_spec().is_none());
         assert!(state.reshaped_lf_clone().is_none());
+    }
+
+    /// Rolling a failed template back restores the frame, and the frame's rows still
+    /// stand for rows of a file — so what the state believes about them has to be
+    /// rolled back with it, or the cells go back to reading as plain nulls.
+    #[test]
+    fn a_failed_template_rolls_back_what_the_rows_knew() {
+        use polars::prelude::{ParquetWriter, df};
+        let dir = tempfile::tempdir().unwrap();
+        let write = |sub: &str, mut frame: polars::prelude::DataFrame| {
+            let d = dir.path().join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        };
+        write("date=2024-01-01", df!("id" => &[1i64, 4]).unwrap());
+        write(
+            "date=2024-01-02",
+            df!("id" => &[2i64, 3], "extra" => &["x", "y"]).unwrap(),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        app.input_mode = InputMode::Normal;
+        let opts = OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        };
+        if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+            let _ = tx.send(next);
+        }
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
+            a.data_table_state.is_some() && !a.is_busy()
+        });
+        assert!(
+            app.data_table_state.as_ref().unwrap().drifts(),
+            "the folder drifts to begin with"
+        );
+
+        let mut template = app
+            .create_template_from_current_state(
+                "query then break".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query = Some("select * from df".to_string());
+        // Applied after the query, and referring to a column that does not exist.
+        template.settings.column_order = vec!["no_such_column".to_string()];
+
+        assert!(app.apply_template(&template).is_err());
+
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.drifts(),
+            "the rollback puts back what the restored frame carries"
+        );
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["date", "id", "extra"],
+            "and no hidden column with it"
+        );
     }
 }
 

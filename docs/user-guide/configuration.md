@@ -161,6 +161,8 @@ s3_secret_access_key = "..."
 s3_region = "us-east-1"
 public_datasets = true                      # the built-in Public datasets source; false hides it
 azure_account_keys = true                   # read Azure with the account key after a sign-in is refused for want of a data role
+env_files = [".env"]                        # read cloud variables from these files; off unless listed
+instance_identity = false                   # use the EC2, GCE or Azure VM's own identity
 ```
 
 Environment variables override these, and command-line flags override both.
@@ -195,6 +197,8 @@ buckets = ["sales", "logs"]
 | `profile` | s3 | An AWS profile to take the keys, endpoint and region from, instead of the `*_env` keys |
 | `account` | azure | Required, except with `connection_string_env`. The storage account |
 | `account_key_env`, `sas_env`, `connection_string_env` | azure | The environment variable holding the account key, a SAS token, or a connection string. At most one; with none, `az` or Azure PowerShell signs in |
+| `secret_command` | s3, azure | A program that prints the secret: the S3 secret access key (with `access_key_id_env`), or the Azure account key (with `account`). Instead of `secret_access_key_env` or `account_key_env` |
+| `credentials_file` | gcs | A service account key or application-default login file, absolute or under `~`. Its project is listed first |
 | `configuration` | gcs | A `gcloud` configuration whose login to use. Without it, the application-default login |
 | `project` | gcs | The project listed first, and the one listed when projects cannot be searched |
 
@@ -210,6 +214,48 @@ buckets = [
   "abfss://release@overturemapswestus2.dfs.core.windows.net/",
 ]
 ```
+
+#### Secrets that live elsewhere
+
+A password manager or vault can supply a secret without it touching the config or
+the environment:
+
+```toml
+[[cloud.sources]]
+name = "onprem"
+kind = "s3"
+endpoint_url = "https://minio.corp.example:9000"
+access_key_id_env = "ONPREM_KEY"
+secret_command = "pass show minio/onprem"        # or: op read op://vault/minio/secret
+
+[[cloud.sources]]
+name = "analytics"
+kind = "gcs"
+credentials_file = "~/keys/analytics-sa.json"   # a path, never the key itself
+```
+
+`secret_command` runs the program directly, split into arguments like a shell would
+but with no shell, so `|`, `$VAR` and globs mean nothing. It runs once, the first
+time the source is used, with a 30-second limit. What it prints is kept in memory
+for the session and never written, logged or shown; when it fails, only its error
+output is reported. On Windows, a `.cmd` or `.bat` wrapper works.
+
+`env_files` reads variables from files such as a project's `.env`, relative to the
+directory datui starts in (or under `~`). Only cloud variable names are taken: the
+`AWS_*`, `GOOGLE_*` and `AZURE_*` ones datui reads, `MC_HOST_<alias>`, and the
+names `[[cloud.sources]]` point at with `*_env`. Anything else in the file, a
+database password for one, is ignored. A variable already set in the environment
+wins, and nothing is exported, so no program datui starts sees them. It is off
+unless you list files: reading whatever `.env` sits in the current directory,
+unasked, would be reading secrets you did not mean to hand over.
+
+`instance_identity = true` lets datui ask the cloud VM it runs on for credentials:
+an EC2 instance role, a GCE service account, an Azure VM's managed identity. That
+means a request to a link-local metadata address, which on other networks can hang
+until it times out, so it is off by default. Cloud Run and Cloud Functions, and
+Azure App Service, Functions and Container Apps, set variables that say an identity
+is there (`K_SERVICE`, `IDENTITY_ENDPOINT`, `MSI_ENDPOINT`), and are used without
+the setting.
 
 A secret written directly into a source (`secret_access_key = "..."`) is refused,
 and so is any key datui does not recognize, with the key named. A variable that is

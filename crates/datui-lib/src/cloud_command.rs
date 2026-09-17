@@ -42,6 +42,38 @@ pub type Runner<'a> = dyn Fn(&str, &[&str]) -> Result<String, CommandError> + 'a
 /// anything slower than this is waiting on something that is not coming.
 pub const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The secret a `secret_command` prints, run once per session: split into arguments with
+/// no shell, through `env`'s runner, its output trimmed and kept in memory. An error
+/// never includes what the command printed on its standard output.
+pub fn secret(command: &str, env: &crate::cloud_browse::Environment<'_>) -> Result<String, String> {
+    static SECRETS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, String>>,
+    > = std::sync::OnceLock::new();
+    let secrets = SECRETS.get_or_init(Default::default);
+    if let Some(secret) = secrets.lock().ok().and_then(|s| s.get(command).cloned()) {
+        return Ok(secret);
+    }
+    let words = split_command_line(command)
+        .filter(|w| !w.is_empty())
+        .ok_or_else(|| "secret_command is not a command line".to_string())?;
+    let args: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+    let output = (env.run)(&words[0], &args).map_err(|e| match e {
+        CommandError::Failed(message) => format!(
+            "secret_command failed: {}",
+            message.lines().next().unwrap_or("").trim()
+        ),
+        other => format!("secret_command: {other}"),
+    })?;
+    let secret = output.trim().to_string();
+    if secret.is_empty() {
+        return Err("secret_command printed nothing".to_string());
+    }
+    if let Ok(mut secrets) = secrets.lock() {
+        secrets.insert(command.to_string(), secret.clone());
+    }
+    Ok(secret)
+}
+
 /// Run `program` with `args` and return what it printed.
 pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, CommandError> {
     let path = std::env::var_os("PATH").unwrap_or_default();

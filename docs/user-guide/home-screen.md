@@ -301,10 +301,14 @@ projects is refused.
 
 A profile that needs the AWS CLI shows `needs the AWS CLI` when it is not
 installed, and an expired SSO login shows the CLI's message; see
-[Loading Data](loading-data.md#aws-profiles). An EC2 instance role is **not**
-discovered, because finding it means a metadata request that hangs on some
-networks; with no other AWS login, a URL is read unsigned, which reaches public
-buckets only.
+[Loading Data](loading-data.md#aws-profiles). A cloud VM's identity (an EC2
+instance role, a GCE service account, an Azure managed identity) is **not**
+discovered unless `[cloud] instance_identity = true`, because finding it means a
+metadata request that hangs on some networks. Cloud Run and Cloud Functions
+(`K_SERVICE`) and Azure App Service, Functions and Container Apps
+(`IDENTITY_ENDPOINT`, `MSI_ENDPOINT`) say so themselves, and are used without it.
+Otherwise, with no other login, a URL is read unsigned, which reaches public data
+only.
 
 ### Public datasets
 

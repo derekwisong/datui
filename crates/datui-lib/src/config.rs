@@ -477,6 +477,14 @@ pub struct CloudConfig {
     /// the Portal does. On unless set to `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub azure_account_keys: Option<bool>,
+    /// Files to read cloud variables from, relative to the working directory: `.env`.
+    /// Only known cloud variable names are taken, and nothing is exported.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env_files: Vec<String>,
+    /// Use the identity of the cloud VM datui runs on (EC2, GCE, Azure). Finding it is a
+    /// request to a metadata service, so it is off unless the platform says so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_identity: Option<bool>,
 }
 
 /// One store in `[[cloud.sources]]`. Names and pointers only: a secret comes from the
@@ -531,6 +539,13 @@ pub struct CloudSourceConfig {
     pub sas_env: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_string_env: Option<String>,
+    /// A program that prints the secret: the S3 secret access key, or the Azure account
+    /// key. Run without a shell, its output kept in memory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_command: Option<String>,
+    /// A Google service account or application-default JSON file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials_file: Option<String>,
     /// Keys that are not recognised, kept so validation can name them.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
@@ -539,7 +554,8 @@ pub struct CloudSourceConfig {
 /// Field names accepted in `[[cloud.sources]]`, for error messages.
 const CLOUD_SOURCE_KEYS: &str = "name, label, kind, public, buckets, endpoint_url, region, \
      addressing, access_key_id_env, secret_access_key_env, session_token_env, profile, \
-     configuration, project, account, account_key_env, sas_env, connection_string_env";
+     configuration, project, account, account_key_env, sas_env, connection_string_env, \
+     secret_command, credentials_file";
 
 /// Whether `id` can name a source: lowercase letters, digits and `-`, starting with a
 /// letter or digit, at most 40 characters. It goes into URLs and cache keys, so
@@ -610,6 +626,62 @@ impl CloudSourceConfig {
                 ));
             }
         };
+        if let Some(command) = &self.secret_command {
+            if !matches!(kind, "s3" | "azure") {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": secret_command applies only to kind = \"s3\" or \"azure\""
+                ));
+            }
+            if command.trim().is_empty() {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": secret_command is not a command line"
+                ));
+            }
+            let clash = if kind == "s3" {
+                [
+                    (
+                        "secret_access_key_env",
+                        self.secret_access_key_env.is_some(),
+                    ),
+                    ("profile", self.profile.is_some()),
+                    ("", false),
+                ]
+            } else {
+                [
+                    ("account_key_env", self.account_key_env.is_some()),
+                    ("sas_env", self.sas_env.is_some()),
+                    (
+                        "connection_string_env",
+                        self.connection_string_env.is_some(),
+                    ),
+                ]
+            };
+            if let Some((field, _)) = clash.iter().find(|(_, set)| *set) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": secret_command and {field} both say where the \
+                     secret comes from. Use one"
+                ));
+            }
+            if kind == "s3" && self.access_key_id_env.is_none() {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": secret_command prints the secret; name the key \
+                     ID with access_key_id_env"
+                ));
+            }
+        }
+        if let Some(_file) = &self.credentials_file {
+            if kind != "gcs" {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": credentials_file applies only to kind = \"gcs\""
+                ));
+            }
+            if self.configuration.is_some() {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": credentials_file and configuration both say how \
+                     to log in. Use one"
+                ));
+            }
+        }
         if kind != "azure" {
             let azure_only = [
                 ("account", self.account.is_some()),
@@ -734,6 +806,8 @@ impl CloudSourceConfig {
                 "connection_string_env",
                 self.connection_string_env.is_some(),
             ),
+            ("secret_command", self.secret_command.is_some()),
+            ("credentials_file", self.credentials_file.is_some()),
         ];
         if let Some((field, _)) = signing.iter().find(|(_, set)| *set) {
             return Err(eyre!(
@@ -882,6 +956,14 @@ impl CloudConfig {
         }
         if other.azure_account_keys.is_some() {
             self.azure_account_keys = other.azure_account_keys;
+        }
+        for file in other.env_files {
+            if !self.env_files.contains(&file) {
+                self.env_files.push(file);
+            }
+        }
+        if other.instance_identity.is_some() {
+            self.instance_identity = other.instance_identity;
         }
     }
 

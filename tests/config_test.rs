@@ -1928,6 +1928,38 @@ fn cloud_sources_name_the_problem() {
         "{azure_only}"
     );
 
+    let secret_twice = cloud_error(
+        "[[cloud.sources]]\nname = \"m\"\nkind = \"s3\"\naccess_key_id_env = \"K\"\nsecret_access_key_env = \"S\"\nsecret_command = \"pass show m\"\n",
+    );
+    assert!(secret_twice.contains("Use one"), "{secret_twice}");
+    let no_key_id = cloud_error(
+        "[[cloud.sources]]\nname = \"m\"\nkind = \"s3\"\nsecret_command = \"pass show m\"\n",
+    );
+    assert!(no_key_id.contains("access_key_id_env"), "{no_key_id}");
+    let gcs_command = cloud_error(
+        "[[cloud.sources]]\nname = \"g\"\nkind = \"gcs\"\nsecret_command = \"pass show g\"\n",
+    );
+    assert!(
+        gcs_command.contains("secret_command applies only"),
+        "{gcs_command}"
+    );
+    let file_and_configuration = cloud_error(
+        "[[cloud.sources]]\nname = \"g\"\nkind = \"gcs\"\ncredentials_file = \"~/sa.json\"\nconfiguration = \"work\"\n",
+    );
+    assert!(
+        file_and_configuration.contains("Use one"),
+        "{file_and_configuration}"
+    );
+    let s3_file = cloud_error(
+        "[[cloud.sources]]\nname = \"m\"\nkind = \"s3\"\ncredentials_file = \"~/sa.json\"\n",
+    );
+    assert!(s3_file.contains("only to kind = \"gcs\""), "{s3_file}");
+    cloud_config(
+        "[cloud]\nenv_files = [\".env\"]\ninstance_identity = true\n[[cloud.sources]]\nname = \"m\"\nkind = \"s3\"\naccess_key_id_env = \"K\"\nsecret_command = \"pass show m\"\n",
+    )
+    .validate()
+    .expect("opt-ins");
+
     let google_only =
         cloud_error("[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nproject = \"p\"\n");
     assert!(

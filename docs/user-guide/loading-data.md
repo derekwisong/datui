@@ -86,8 +86,17 @@ object. The buffer is planned inside the row group on screen, so paging never
 pulls the next group before you reach it, and crossing into it fetches that
 group once. Row groups up to `max_buffered_rows` and the `max_buffered_mb`
 budget are held whole; a larger one is read one window at a time, so small row
-groups keep both the first screen and paging cheap. A prefix or glob of Parquet
-files opens as a partitioned dataset, buffered as a plain window. Every other
+groups keep both the first screen and paging cheap.
+
+A prefix of Parquet files (`s3://bucket/events/`) opens as one dataset. Its files
+are listed once, and its schema is the newest file's, so a dataset whose files
+gained columns or nested fields over the years opens with all of them; older files
+read those as empty. The row count comes from the files' footers, read many at
+once, not from the data. Once it is in, reading any part of the dataset opens only
+the few files holding those rows, so <kbd>End</kbd> or a jump to the middle of a
+billion rows costs a few files. <kbd>End</kbd> pressed before the count is in waits
+for it. A glob (`s3://bucket/events/*/*.parquet`) is still expanded and counted by
+Polars itself, which reads files in order. Every other
 format, and anything
 over HTTP, is downloaded to a temporary file (`--temp-dir` to choose where;
 you are asked first when it is large) and then opened like a local file. One

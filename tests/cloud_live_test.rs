@@ -1871,6 +1871,28 @@ fn partitioned_cloud_folders_are_hive_datasets() {
     println!("{headers:?}");
     assert!(headers.iter().any(|h| h == "date"), "{headers:?}");
 
+    // End goes to the last block: counted from the files' footers, then read from the
+    // last files alone.
+    let _ = screen_text(&mut app, 160, 30);
+    let pressed = std::time::Instant::now();
+    if let Some(crash) = drive(&mut app, key(crossterm::event::KeyCode::End)) {
+        panic!("End: {crash}");
+    }
+    let at_end = pump_until(&mut app, &rx, 120, |app| {
+        !app.is_busy()
+            && app.data_table_state.as_ref().is_some_and(|s| {
+                s.num_rows_if_valid()
+                    .is_some_and(|n| n > 900_000 && s.start_row + s.visible_rows >= n)
+            })
+    });
+    let text = screen_text(&mut app, 160, 30);
+    println!("End after {:?}\n{text}", pressed.elapsed());
+    assert!(at_end, "End reaches the last block");
+    assert!(
+        !text.contains("2009-01-"),
+        "the last rows, not the first: {text}"
+    );
+
     // A folder of Parquet part files with no extension is one dataset too.
     let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
     let runtime = common::test_runtime();
@@ -1891,4 +1913,78 @@ fn partitioned_cloud_folders_are_hive_datasets() {
     );
     let headers = open_url(&format!("{parts}/"), &config).expect("the part files open as one");
     assert!(headers.iter().any(|h| h == "gbifid"), "{headers:?}");
+}
+
+/// Bitcoin transactions: 1.4 billion rows over thousands of daily files whose nested
+/// columns grew over the years. They open, count from footers, and read their end and
+/// their middle without a schema error.
+///
+/// Not in the weekly workflow: the count reads a footer from every file, about 100 MB.
+///
+/// ```bash
+/// DATUI_LIVE_PUBLIC=1 cargo test --release --test cloud_live_test -- --ignored --nocapture bitcoin_transactions
+/// ```
+#[test]
+#[ignore = "reads 100 MB of public footers; set DATUI_LIVE_PUBLIC=1"]
+fn bitcoin_transactions_open_count_and_reach_any_row() {
+    if std::env::var("DATUI_LIVE_PUBLIC").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
+        return;
+    }
+    let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        datui::config::AppConfig {
+            cloud: config,
+            ..Default::default()
+        },
+    );
+    let started = std::time::Instant::now();
+    let open = datui::AppEvent::Open(
+        vec![std::path::PathBuf::from(
+            "s3://aws-public-blockchain/v1.0/btc/transactions/",
+        )],
+        datui::OpenOptions::default(),
+    );
+    if let Some(crash) = drive(&mut app, open) {
+        panic!("{crash}");
+    }
+    assert!(pump_until(&mut app, &rx, 120, |app| app
+        .data_table_state
+        .is_some()
+        && !app.is_busy()));
+    let headers = app.data_table_state.as_ref().unwrap().headers();
+    println!("opened after {:?}: {headers:?}", started.elapsed());
+    assert!(headers.iter().any(|h| h == "inputs"), "{headers:?}");
+
+    let _ = screen_text(&mut app, 200, 30);
+    drive(&mut app, key(crossterm::event::KeyCode::End));
+    let at_end = pump_until(&mut app, &rx, 300, |app| {
+        !app.is_busy()
+            && app.data_table_state.as_ref().is_some_and(|s| {
+                s.num_rows_if_valid()
+                    .is_some_and(|n| n > 1_000_000_000 && s.start_row + s.visible_rows >= n)
+            })
+    });
+    println!("at the end after {:?}", started.elapsed());
+    assert!(at_end, "End reaches the last transaction");
+
+    let middle = {
+        let state = app.data_table_state.as_mut().unwrap();
+        let middle = state.num_rows / 2;
+        state.scroll_to(middle);
+        middle
+    };
+    drive(&mut app, datui::AppEvent::Collect);
+    pump_until(&mut app, &rx, 2, |_| false);
+    assert!(pump_until(&mut app, &rx, 180, |app| !app.is_busy()));
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.start_row, middle);
+    assert!(state.error.is_none(), "{:?}", state.error);
+    println!("{}", screen_text(&mut app, 200, 12));
 }

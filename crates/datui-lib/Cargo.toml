@@ -17,7 +17,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["cloud", "http", "sql", "streaming"]
-cloud = ["polars/aws", "polars/azure", "polars/gcp", "dep:object_store", "dep:quick-xml", "dep:ureq", "dep:http"]
+cloud = ["polars/aws", "polars/azure", "polars/gcp", "dep:object_store", "dep:quick-xml", "dep:ureq", "dep:http", "dep:futures"]
 http = ["dep:ureq"]
 sql = ["polars/sql", "dep:polars-sql"]
 streaming = ["polars/streaming"]
@@ -56,6 +56,8 @@ quick-xml = { version = "0.42", optional = true }
 # than reached through object_store, whose own re-export is of an internal module of
 # the same name, not of this crate.
 http = { version = "1", optional = true }
+# Already in the tree through object_store; used for its stream helpers.
+futures = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "rt", "io-util", "sync"] }
 polars-sql = { version = "0.55", optional = true }
 ignore = "0.4.33"

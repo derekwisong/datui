@@ -191,13 +191,23 @@ mod export_format_tests {
         let job = LenCount {
             len_generation: 7,
             count_dir: None,
+            files: None,
             lf: unreadable,
             streaming: false,
         };
-        assert_eq!(job.after_collect(1_000, 30, 70), Ok(1_030), "short: known");
-        assert_eq!(job.after_collect(1_000, 70, 70), Err(()), "full: counted");
+        let rows = |counted: Result<Counted, ()>| counted.map(|c| c.rows);
         assert_eq!(
-            job.after_collect(1_000, 0, 70),
+            rows(job.after_collect(1_000, 30, 70)),
+            Ok(1_030),
+            "short: known"
+        );
+        assert_eq!(
+            rows(job.after_collect(1_000, 70, 70)),
+            Err(()),
+            "full: counted"
+        );
+        assert_eq!(
+            rows(job.after_collect(1_000, 0, 70)),
             Err(()),
             "deep and empty: counted"
         );
@@ -237,7 +247,8 @@ mod export_format_tests {
                 second,
                 AppEvent::BackgroundLenReady {
                     len_generation,
-                    num_rows: 50
+                    num_rows: 50,
+                    ..
                 } if len_generation == dataset
             ),
             "the short read of 50 rows is the count"
@@ -247,6 +258,64 @@ mod export_format_tests {
         let state = app.data_table_state.as_ref().unwrap();
         assert_eq!(state.num_rows_if_valid(), Some(50));
         assert_eq!(app.len_count_inflight, None);
+    }
+
+    #[test]
+    fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
+        use polars::prelude::IntoLazy;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let lf = polars::df!("a" => (0..1_000).collect::<Vec<i32>>())
+            .unwrap()
+            .lazy();
+        let whole = lf.clone();
+        let mut state = DataTableState::from_lazyframe(lf, &opts()).unwrap();
+        state.set_remote_source();
+        state.set_remote_files(crate::widgets::datatable::RemoteFiles {
+            urls: Arc::new(vec!["one".to_string(), "two".to_string()]),
+            scan: Arc::new(move |urls: &[String]| {
+                Ok(if urls.len() == 2 {
+                    whole.clone()
+                } else if urls[0] == "one" {
+                    whole.clone().slice(0, 400)
+                } else {
+                    whole.clone().slice(400, 600)
+                })
+            }),
+            count: Arc::new(|| Ok(vec![vec![400], vec![300, 300]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        let dataset = state.len_generation();
+        app.data_table_state = Some(state);
+
+        // No jump to a guess: the count starts, and nothing is busy.
+        assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+        assert!(!app.busy);
+        assert_eq!(app.end_after_count, Some(dataset));
+        assert_eq!(app.len_count_inflight, Some(dataset));
+        assert_eq!(app.data_table_state.as_ref().unwrap().start_row, 0);
+
+        let counted = rx
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the count");
+        assert!(matches!(
+            &counted,
+            AppEvent::BackgroundLenReady {
+                num_rows: 1_000,
+                file_row_groups: Some(_),
+                ..
+            }
+        ));
+        // With the count in, End goes.
+        let next = app.event(&counted);
+        assert!(
+            matches!(next, Some(AppEvent::DoScrollEnd)),
+            "the jump follows the count"
+        );
+        assert_eq!(app.end_after_count, None);
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.num_rows_if_valid(), Some(1_000));
     }
 
     #[test]
@@ -1562,6 +1631,9 @@ pub enum AppEvent {
     BackgroundLenReady {
         len_generation: u64,
         num_rows: usize,
+        /// For a remote dataset of many files, the rows in each row group of each file,
+        /// from their footers.
+        file_row_groups: Option<Vec<Vec<usize>>>,
     },
     /// Background row count failed. Clears the in-flight marker so the count can be retried
     /// on a later interaction; the total stays provisional in the meantime.
@@ -2278,13 +2350,30 @@ impl InflightCollect {
 }
 
 /// The exact row count of a frame, to run off the UI thread: the footer sum for a
-/// pristine local Parquet hive directory, otherwise `len()`. Carries the
-/// `len_generation` it was spawned under, so a result for data since changed is dropped.
+/// pristine local Parquet hive directory or remote dataset of many files, otherwise
+/// `len()`. Carries the `len_generation` it was spawned under, so a result for data since
+/// changed is dropped.
 struct LenCount {
     len_generation: u64,
     count_dir: Option<PathBuf>,
+    files: Option<crate::widgets::datatable::FileCounter>,
     lf: LazyFrame,
     streaming: bool,
+}
+
+/// A count, and for a remote dataset of many files the row groups it was summed from.
+struct Counted {
+    rows: usize,
+    file_row_groups: Option<Vec<Vec<usize>>>,
+}
+
+impl From<usize> for Counted {
+    fn from(rows: usize) -> Self {
+        Counted {
+            rows,
+            file_row_groups: None,
+        }
+    }
 }
 
 impl LenCount {
@@ -2292,15 +2381,33 @@ impl LenCount {
         Self {
             len_generation: state.len_generation(),
             count_dir: state.parquet_count_dir(),
+            files: state.remote_files_counter(),
             lf: state.lf_clone(),
             streaming: state.polars_streaming_enabled(),
         }
     }
 
+    /// Whether this count reads only footers, and so can run beside a buffer read
+    /// rather than waiting for it.
+    fn reads_footers(&self) -> bool {
+        self.files.is_some() || self.count_dir.is_some()
+    }
+
     /// Count the rows. Blocks; `Err` when the count could not be taken.
-    fn run(&self) -> Result<usize, ()> {
+    fn run(&self) -> Result<Counted, ()> {
+        // A dataset's footers, many at once. Should one not read, the scan counts itself.
+        if let Some(count) = &self.files
+            && let Ok(groups) = count()
+        {
+            return Ok(Counted {
+                rows: groups.iter().flatten().sum(),
+                file_row_groups: Some(groups),
+            });
+        }
         match &self.count_dir {
-            Some(dir) => DataTableState::count_rows_from_parquet_dir(dir).map_err(|_| ()),
+            Some(dir) => DataTableState::count_rows_from_parquet_dir(dir)
+                .map(Counted::from)
+                .map_err(|_| ()),
             None => {
                 match crate::statistics::collect_lazy(
                     self.lf.clone().select([len()]),
@@ -2312,7 +2419,8 @@ impl LenCount {
                             _ => 0,
                         },
                         None => 0,
-                    }),
+                    }
+                    .into()),
                     Err(_) => Err(()),
                 }
             }
@@ -2324,9 +2432,14 @@ impl LenCount {
     /// finding at least a row — ran off its end, which names the total without a pass
     /// over it. A full read, or a slice deep in a frame that found nothing and may lie
     /// past the data entirely, leaves the count to `run`.
-    fn after_collect(&self, start: usize, returned: usize, requested: usize) -> Result<usize, ()> {
+    fn after_collect(
+        &self,
+        start: usize,
+        returned: usize,
+        requested: usize,
+    ) -> Result<Counted, ()> {
         if returned < requested && (start == 0 || returned > 0) {
-            Ok(start + returned)
+            Ok((start + returned).into())
         } else {
             self.run()
         }
@@ -2334,11 +2447,12 @@ impl LenCount {
 
     /// Report the count. A failure leaves the total provisional and allows a retry on a
     /// later interaction; the buffer paint is unaffected either way.
-    fn send(&self, counted: Result<usize, ()>, tx: &Sender<AppEvent>) {
+    fn send(&self, counted: Result<Counted, ()>, tx: &Sender<AppEvent>) {
         let _ = tx.send(match counted {
-            Ok(num_rows) => AppEvent::BackgroundLenReady {
+            Ok(counted) => AppEvent::BackgroundLenReady {
                 len_generation: self.len_generation,
-                num_rows,
+                num_rows: counted.rows,
+                file_row_groups: counted.file_row_groups,
             },
             Err(()) => AppEvent::BackgroundLenFailed {
                 len_generation: self.len_generation,
@@ -2467,6 +2581,9 @@ pub struct App {
     // generation (and the count is still invalid) the row count is shown as "?" rather than a
     // misleading provisional total.
     len_count_failed: Option<u64>,
+    /// End was pressed on a remote dataset before its rows were counted: go there when
+    /// the count for this generation arrives, rather than to a guess.
+    end_after_count: Option<u64>,
     /// The buffer collect in flight, if any. See [`InflightCollect`].
     collect_inflight: Option<InflightCollect>,
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
@@ -2760,7 +2877,8 @@ impl App {
             }
             count = Some(job);
         }
-        if let Some(job) = count.take_if(|_| !state.is_remote_source()) {
+        // A footer count runs now too, remote or not: it reads no data.
+        if let Some(job) = count.take_if(|job| !state.is_remote_source() || job.reads_footers()) {
             let tx = self.events.clone();
             self.runtime
                 .spawn_blocking(move || job.send(job.run(), &tx));
@@ -2865,6 +2983,26 @@ impl App {
     /// screen, drawn from its first row — unless the view is already there, in which
     /// case only the selection settles and no frame or key is spent.
     fn jump_key(&mut self, jump: AppEvent) -> Option<AppEvent> {
+        // The end of a remote dataset is not known until its rows are counted, and a
+        // jump to a guess reads every file up to it. Wait for the count instead; keys
+        // keep working meanwhile.
+        if matches!(jump, AppEvent::DoScrollEnd)
+            && let Some(state) = self.data_table_state.as_ref()
+            && state.is_remote_source()
+            && !state.is_num_rows_valid()
+        {
+            let generation = state.len_generation();
+            self.end_after_count = Some(generation);
+            self.status_message = Some("Counting rows to find the end…".to_string());
+            if self.len_count_inflight != Some(generation) {
+                let job = LenCount::for_state(state);
+                self.len_count_inflight = Some(generation);
+                let tx = self.events.clone();
+                self.runtime
+                    .spawn_blocking(move || job.send(job.run(), &tx));
+            }
+            return None;
+        }
         let state = self.data_table_state.as_mut()?;
         let (already_there, settle): (bool, fn(&mut DataTableState) -> bool) = match jump {
             AppEvent::DoScrollHome => (state.start_row == 0, DataTableState::scroll_to_start),
@@ -3086,6 +3224,7 @@ impl App {
             len_count_inflight: None,
             collect_inflight: None,
             len_count_failed: None,
+            end_after_count: None,
             pending_collect_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             busy: false,
             throbber_frame: 0,
@@ -4524,12 +4663,18 @@ impl App {
         // is already a hive scan by shape.
         let p = path.filter(|p| {
             let s = p.as_os_str().to_string_lossy();
-            let is_cloud = s.starts_with("s3://") || s.starts_with("gs://");
-            is_cloud && (options.hive || source::is_prefix_or_glob(&s))
+            home::is_object_store_url(p) && (options.hive || source::is_prefix_or_glob(&s))
         })?;
 
         let (full, cloud_opts, store) = Self::cloud_store_for(p, cloud, runtime).ok()?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full).ok()?;
+        // A prefix: every file listed once, and the scan, the schema and the count all
+        // work from that list. A glob keeps the older route, which Polars expands.
+        if !full.contains('*') {
+            return Self::schema_state_from_cloud_files(
+                &full, key, store, cloud_opts, options, runtime,
+            );
+        }
         let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
             cloud_hive::schema_from_one_cloud_hive(store, &key).await
         })?
@@ -4552,6 +4697,69 @@ impl App {
             Some(partition_columns),
         )
         .ok()
+    }
+
+    /// A cloud prefix of Parquet files as one dataset, from a single listing of it.
+    ///
+    /// The files are scanned by name, so Polars does not list the prefix again, and
+    /// leniently (see `cloud_hive::lenient_scan`), since files written years apart
+    /// differ. The state keeps the list, so the count reads footers rather than data
+    /// and a buffer reads only the files holding its rows (see `RemoteFiles`).
+    #[cfg(feature = "cloud")]
+    fn schema_state_from_cloud_files(
+        full: &str,
+        key: String,
+        store: Arc<dyn object_store::ObjectStore>,
+        cloud_opts: CloudOptions,
+        options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
+    ) -> Option<DataTableState> {
+        let listed = {
+            let store = store.clone();
+            wait_on_runtime(runtime, async move {
+                let files = cloud_hive::list_dataset_files(&store, &key).await?;
+                let schema = cloud_hive::dataset_schema(&store, &files).await?;
+                color_eyre::Result::<_>::Ok((files, schema))
+            })?
+            .ok()?
+        };
+        let (files, (schema, partition_columns)) = listed;
+        let urls: Vec<String> = files
+            .iter()
+            .filter_map(|f| cloud_hive::url_of_key(full, &f.key))
+            .collect();
+        if urls.is_empty() || urls.len() != files.len() {
+            return None;
+        }
+        let scan: crate::widgets::datatable::FileScan = {
+            let (schema, partition_columns) = (schema.clone(), partition_columns.clone());
+            Arc::new(move |urls: &[String]| {
+                cloud_hive::lenient_scan(urls, schema.clone(), Some(cloud_opts.clone()))
+                    .map(|lf| Self::hoist_partition_columns(lf, &schema, &partition_columns))
+            })
+        };
+        let count: crate::widgets::datatable::FileCounter = {
+            let (runtime, files) = (runtime.clone(), Arc::new(files));
+            Arc::new(move || {
+                let (store, files) = (store.clone(), files.clone());
+                wait_on_runtime(&runtime, async move {
+                    cloud_hive::row_groups_of_files(&store, &files).await
+                })
+                .ok_or_else(|| "cancelled".to_string())?
+                .map_err(|e| e.to_string())
+            })
+        };
+        let lf = scan(&urls).ok()?;
+        let mut state =
+            DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
+                .ok()?;
+        state.set_remote_files(crate::widgets::datatable::RemoteFiles {
+            urls: Arc::new(urls),
+            scan,
+            count,
+            offsets: None,
+        });
+        Some(state)
     }
 
     /// General schema route: ask the frame itself. Slow for a wide hive dataset, which
@@ -9926,6 +10134,7 @@ impl App {
             AppEvent::BackgroundLenReady {
                 len_generation,
                 num_rows,
+                file_row_groups,
             } => {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
@@ -9940,13 +10149,26 @@ impl App {
                 if let Some(state) = self.data_table_state.as_mut()
                     && state.len_generation() == *len_generation
                 {
-                    state.set_num_rows(*num_rows);
+                    match file_row_groups {
+                        Some(groups) => state.set_file_row_groups(groups),
+                        None => state.set_num_rows(*num_rows),
+                    }
+                    // End was pressed before there was an end to go to.
+                    if self.end_after_count == Some(*len_generation) {
+                        self.end_after_count = None;
+                        self.status_message = None;
+                        return self.jump_key(AppEvent::DoScrollEnd);
+                    }
                 }
                 None
             }
             AppEvent::BackgroundLenFailed { len_generation } => {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
+                }
+                if self.end_after_count.take().is_some() {
+                    self.status_message =
+                        Some("Could not count the rows to find the end".to_string());
                 }
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total.

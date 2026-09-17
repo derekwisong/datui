@@ -121,6 +121,8 @@ pub struct DataTableState {
     /// Where each row group of a remote Parquet object starts, with the total as the
     /// last entry, from its footer. See `set_row_groups`.
     row_group_offsets: Option<Vec<usize>>,
+    /// The files of a remote dataset, when it is many. See `RemoteFiles`.
+    remote_files: Option<RemoteFiles>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -198,6 +200,26 @@ pub struct CollectRequest {
     /// Whether `num_rows` is the true total. False for a first buffer rendered before
     /// the background `len()` count has resolved; in that case `num_rows` is provisional.
     pub count_known: bool,
+}
+
+/// Builds a scan of some of a dataset's files, as the full scan reads them.
+pub type FileScan = Arc<dyn Fn(&[String]) -> PolarsResult<LazyFrame> + Send + Sync>;
+/// Counts the rows in each row group of every file of a dataset. Blocks.
+pub type FileCounter = Arc<dyn Fn() -> Result<Vec<Vec<usize>>, String> + Send + Sync>;
+
+/// A remote dataset of many files, and how to read only some of them.
+///
+/// Polars reads a scan of many files in order: row 900,000 is reached by reading every
+/// file before it, and a count is a read of all of them. Once each file's rows are
+/// known, from its footer, a buffer is a scan of just the files holding its rows.
+#[derive(Clone)]
+pub struct RemoteFiles {
+    /// Every file, in scan order.
+    pub urls: Arc<Vec<String>>,
+    pub scan: FileScan,
+    pub count: FileCounter,
+    /// Where each file's rows start, with the total last. Known once counted.
+    pub offsets: Option<Vec<usize>>,
 }
 
 /// Result of a background buffer load. Consumed by `apply_async_collect()`.
@@ -300,6 +322,59 @@ fn shrink_around_view(
     *buffer_end = (*buffer_start + max_len).min(ceil);
 }
 
+/// The most files one buffer read opens, beyond those the view itself spans.
+const MAX_FILES_PER_BUFFER: usize = 16;
+
+/// Narrow `[start, end)` to at most `max_files` files, keeping every file the view
+/// `[view_start, view_end)` lies in and adding the ones after it first.
+fn limit_files(
+    offsets: &[usize],
+    view_start: usize,
+    view_end: usize,
+    start: usize,
+    end: usize,
+    max_files: usize,
+) -> (usize, usize) {
+    let (Some((first, last)), Some((view_first, view_last))) = (
+        files_holding(offsets, start, end.saturating_sub(start)),
+        files_holding(
+            offsets,
+            view_start,
+            view_end.saturating_sub(view_start).max(1),
+        ),
+    ) else {
+        return (start, end);
+    };
+    if last - first < max_files {
+        return (start, end);
+    }
+    let (mut lo, mut hi) = (view_first.max(first), view_last.min(last));
+    while hi - lo + 1 < max_files && (hi < last || lo > first) {
+        if hi < last {
+            hi += 1;
+        }
+        if hi - lo + 1 < max_files && lo > first {
+            lo -= 1;
+        }
+    }
+    (start.max(offsets[lo]), end.min(offsets[hi + 1]))
+}
+
+/// The first and last files holding rows `[start, start + len)`, given where each file's
+/// rows start (`offsets`, with the total last). `None` when the rows lie past the end.
+fn files_holding(offsets: &[usize], start: usize, len: usize) -> Option<(usize, usize)> {
+    let files = offsets.len().checked_sub(1)?;
+    let total = *offsets.last()?;
+    if files == 0 || len == 0 || start >= total {
+        return None;
+    }
+    let end = (start + len).min(total);
+    // The file a row is in: the last one starting at or before it. Empty files start
+    // where the next one does and are skipped over.
+    let file_of = |row: usize| offsets.partition_point(|&o| o <= row).saturating_sub(1);
+    Some((file_of(start), file_of(end - 1).min(files - 1)))
+}
+
 /// Snap `[start, end)` outward to the row groups it touches, given where each group
 /// starts (`offsets`, with the total last).
 ///
@@ -391,6 +466,7 @@ impl DataTableState {
             max_buffered_mb: max_buffered_mb.unwrap_or(512),
             remote_source: false,
             row_group_offsets: None,
+            remote_files: None,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -483,6 +559,7 @@ impl DataTableState {
             max_buffered_mb: options.max_buffered_mb.unwrap_or(512),
             remote_source: false,
             row_group_offsets: None,
+            remote_files: None,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -3268,12 +3345,13 @@ impl DataTableState {
             return None;
         }
 
-        let all_columns = self.binary_stub_exprs();
-        let lf = self
-            .lf
-            .clone()
-            .select(all_columns)
-            .slice(new_buffer_start as i64, buffer_size as u32);
+        let lf = match self.buffer_lf(new_buffer_start, buffer_size) {
+            Ok(lf) => lf,
+            Err(e) => {
+                self.error = Some(e);
+                return None;
+            }
+        };
 
         Some(CollectRequest {
             lf,
@@ -3575,6 +3653,72 @@ impl DataTableState {
         self.row_group_offsets = Some(offsets);
     }
 
+    /// Record that the data is a remote dataset of many files. See `RemoteFiles`.
+    pub fn set_remote_files(&mut self, files: RemoteFiles) {
+        self.remote_files = Some(files);
+    }
+
+    /// The counter for a remote dataset's files, while its count would be the data's:
+    /// the frame is the scan as loaded, and the files have not been counted yet.
+    pub fn remote_files_counter(&self) -> Option<FileCounter> {
+        self.remote_files
+            .as_ref()
+            .filter(|f| f.offsets.is_none() && self.is_pristine())
+            .map(|f| f.count.clone())
+    }
+
+    /// Record the rows in each row group of each file of a remote dataset: the total,
+    /// the row groups a buffer is planned in, and which files hold which rows.
+    pub fn set_file_row_groups(&mut self, groups: &[Vec<usize>]) {
+        let Some(files) = self.remote_files.as_mut() else {
+            return;
+        };
+        if groups.len() != files.urls.len() {
+            return;
+        }
+        let mut offsets = Vec::with_capacity(groups.len() + 1);
+        offsets.push(0);
+        for file in groups {
+            offsets.push(offsets.last().unwrap_or(&0) + file.iter().sum::<usize>());
+        }
+        files.offsets = Some(offsets);
+        let flat: Vec<usize> = groups.iter().flatten().copied().collect();
+        if self.is_pristine() {
+            self.set_row_groups(&flat);
+        } else {
+            // Kept for when the frame is the scan again (`restore_footer_count`).
+            let mut row_offsets = Vec::with_capacity(flat.len() + 1);
+            row_offsets.push(0);
+            for n in &flat {
+                row_offsets.push(row_offsets.last().unwrap_or(&0) + n);
+            }
+            self.row_group_offsets = Some(row_offsets);
+        }
+    }
+
+    /// The frame for buffer rows `[start, start + len)`, columns in display order. For a
+    /// remote dataset whose files are counted, a scan of only the files holding them.
+    fn buffer_lf(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
+        let all_columns = self.binary_stub_exprs();
+        if let Some((files, offsets)) = self
+            .remote_files
+            .as_ref()
+            .filter(|_| self.remote_window())
+            .and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
+            && let Some((first, last)) = files_holding(offsets, start, len)
+        {
+            let lf = (files.scan)(&files.urls[first..=last])?;
+            return Ok(lf
+                .select(all_columns)
+                .slice((start - offsets[first]) as i64, len as u32));
+        }
+        Ok(self
+            .lf
+            .clone()
+            .select(all_columns)
+            .slice(start as i64, len as u32))
+    }
+
     /// Record the footer's average uncompressed width of each column, for the byte
     /// estimate of a buffer before one has been collected.
     pub fn set_column_widths(&mut self, widths: Vec<(String, usize)>) {
@@ -3616,11 +3760,15 @@ impl DataTableState {
     }
 
     /// Rows the buffer reaches past the view in one direction: `pages` of it for a local
-    /// file or a remote scan with something applied to it (see `remote_window`), half
-    /// the window for a pristine remote scan (`fit_window` trims the two halves plus
-    /// the view back to the cap).
+    /// file, a remote scan with something applied to it (see `remote_window`), or a
+    /// remote dataset of many files; half the window for a pristine remote object
+    /// (`fit_window` trims the two halves plus the view back to the cap).
+    ///
+    /// Many files are read a few at a time instead: what a read costs there is the
+    /// files it opens, not its rows, and a wide window over a dataset of small files
+    /// (a day of blocks in 2009 is a few rows) is hundreds of downloads.
     fn reach_rows(&self, pages: usize) -> usize {
-        if !self.remote_window() {
+        if !self.remote_window() || self.remote_files.is_some() {
             return pages * self.visible_rows.max(1);
         }
         let window = if self.max_buffered_rows > 0 {
@@ -3699,6 +3847,17 @@ impl DataTableState {
                 buffer_end,
             );
         }
+        // Over many files, at most a few of them, around the view's.
+        if let Some(file_offsets) = self.remote_files.as_ref().and_then(|f| f.offsets.as_ref()) {
+            (*buffer_start, *buffer_end) = limit_files(
+                file_offsets,
+                view_start,
+                view_end,
+                *buffer_start,
+                *buffer_end,
+                MAX_FILES_PER_BUFFER,
+            );
+        }
         // A view straddling two groups needs both, but one is on hand: fetch the other
         // alone and stitch it on (see `apply_async_collect`).
         if self.buffer_on_hand() {
@@ -3761,16 +3920,15 @@ impl DataTableState {
             return;
         }
 
-        let all_columns = self.binary_stub_exprs();
-
         let use_streaming = self.polars_streaming;
-        let full_df = match collect_lazy(
-            self.lf
-                .clone()
-                .select(all_columns)
-                .slice(buffer_start as i64, buffer_size as u32),
-            use_streaming,
-        ) {
+        let lf = match self.buffer_lf(buffer_start, buffer_size) {
+            Ok(lf) => lf,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+        let full_df = match collect_lazy(lf, use_streaming) {
             Ok(df) => df,
             Err(e) => {
                 self.error = Some(e);
@@ -7308,6 +7466,100 @@ mod tests {
             sliced.height(),
             eff_end - eff_start,
             "df height must match range"
+        );
+    }
+
+    #[test]
+    fn the_files_holding_a_range_of_rows() {
+        let offsets = [0, 100, 100, 250, 400];
+        assert_eq!(files_holding(&offsets, 0, 10), Some((0, 0)));
+        assert_eq!(
+            files_holding(&offsets, 95, 10),
+            Some((0, 2)),
+            "the empty file is skipped"
+        );
+        assert_eq!(files_holding(&offsets, 100, 10), Some((2, 2)));
+        assert_eq!(files_holding(&offsets, 390, 50), Some((3, 3)));
+        assert_eq!(files_holding(&offsets, 400, 10), None);
+        assert_eq!(files_holding(&[0], 0, 10), None);
+    }
+
+    #[test]
+    fn a_buffer_over_many_small_files_opens_a_few() {
+        // A thousand files of ten rows each.
+        let offsets: Vec<usize> = (0..=1000).map(|i| i * 10).collect();
+        // A window of 2,000 rows around row 5,000 spans 200 files; it keeps 16.
+        let (start, end) = limit_files(&offsets, 5_000, 5_040, 4_000, 6_000, 16);
+        assert_eq!(
+            files_holding(&offsets, start, end - start).map(|(a, b)| b - a + 1),
+            Some(16)
+        );
+        assert!(
+            start <= 5_000 && 5_040 <= end,
+            "the view stays: {start}..{end}"
+        );
+        // A view spanning more files than the limit keeps all of them.
+        let (start, end) = limit_files(&offsets, 0, 400, 0, 400, 16);
+        assert_eq!((start, end), (0, 400));
+        // Few files: unchanged.
+        assert_eq!(limit_files(&offsets, 0, 40, 0, 100, 16), (0, 100));
+    }
+
+    #[test]
+    fn a_counted_remote_dataset_reads_only_the_files_a_buffer_needs() {
+        use polars::prelude::IntoLazy;
+        let part = |from: i32| {
+            polars::df!("n" => (from..from + 100).collect::<Vec<i32>>())
+                .unwrap()
+                .lazy()
+        };
+        let urls: Vec<String> = (0..5).map(|i| format!("file{i}")).collect();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+        let scan: FileScan = {
+            let asked = asked.clone();
+            Arc::new(move |urls: &[String]| {
+                asked.lock().unwrap().push(urls.to_vec());
+                let frames: Vec<LazyFrame> = urls
+                    .iter()
+                    .map(|u| part(u.trim_start_matches("file").parse::<i32>().unwrap() * 100))
+                    .collect();
+                polars::prelude::concat(frames, Default::default())
+            })
+        };
+        let full = scan(&urls).unwrap();
+        asked.lock().unwrap().clear();
+        let mut state =
+            DataTableState::from_lazyframe(full, &crate::OpenOptions::default()).unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(urls),
+            scan,
+            count: Arc::new(|| Ok(vec![vec![50, 50]; 5])),
+            offsets: None,
+        });
+        let groups = (state.remote_files_counter().unwrap())().unwrap();
+        state.set_file_row_groups(&groups);
+        assert_eq!(state.num_rows_if_valid(), Some(500));
+        assert!(state.remote_files_counter().is_none(), "counted once");
+
+        let df = collect_lazy(state.buffer_lf(350, 20).unwrap(), false).unwrap();
+        let values: Vec<i32> = df
+            .column("n")
+            .unwrap()
+            .i32()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        assert_eq!(values, (350..370).collect::<Vec<i32>>());
+        assert_eq!(*asked.lock().unwrap(), vec![vec!["file3".to_string()]]);
+
+        asked.lock().unwrap().clear();
+        let df = collect_lazy(state.buffer_lf(190, 20).unwrap(), false).unwrap();
+        assert_eq!(df.height(), 20);
+        assert_eq!(
+            *asked.lock().unwrap(),
+            vec![vec!["file1".to_string(), "file2".to_string()]],
+            "a range across a boundary reads both files"
         );
     }
 

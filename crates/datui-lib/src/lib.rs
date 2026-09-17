@@ -4,7 +4,7 @@ use polars::datatypes::AnyValue;
 use polars::datatypes::DataType;
 #[cfg(feature = "cloud")]
 use polars::io::cloud::{AmazonS3ConfigKey, CloudOptions};
-use polars::prelude::{DataFrame, LazyFrame, Schema, col, len};
+use polars::prelude::{DataFrame, LazyFrame, Schema, col};
 #[cfg(feature = "cloud")]
 use polars::prelude::{PlRefPath, ScanArgsParquet};
 use std::collections::HashMap;
@@ -10067,12 +10067,12 @@ impl App {
                         let total_rows = match cached_rows {
                             Some(n) => n,
                             None => match crate::statistics::collect_lazy(
-                                lf.clone().select([len()]),
+                                crate::widgets::datatable::row_count_lf(&lf),
                                 streaming,
                             ) {
                                 Ok(count_df) => match count_df.get(0) {
                                     Some(col) => match col.first() {
-                                        Some(AnyValue::UInt32(n)) => *n as usize,
+                                        Some(AnyValue::UInt64(n)) => *n as usize,
                                         _ => 0,
                                     },
                                     None => 0,

@@ -298,16 +298,13 @@ pub fn compute_statistics_with_options(
     let use_streaming = options.polars_streaming;
     // Always count actual rows, regardless of sample_size parameter
     let total_rows = {
-        let count_df =
-            collect_lazy(lf.clone().select([len()]), use_streaming).map_err(Report::from)?;
+        let count_df = collect_lazy(crate::widgets::datatable::row_count_lf(lf), use_streaming)
+            .map_err(Report::from)?;
         match count_df.get(0) {
-            Some(col) => {
-                if let Some(AnyValue::UInt32(n)) = col.first() {
-                    *n as usize
-                } else {
-                    0
-                }
-            }
+            Some(col) => match col.first() {
+                Some(AnyValue::UInt64(n)) => *n as usize,
+                _ => 0,
+            },
             _ => 0,
         }
     };

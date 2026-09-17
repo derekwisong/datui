@@ -83,7 +83,7 @@ fn gcs_is_discovered_and_its_buckets_listed() {
     println!("source: {} ({})", gcs.label, gcs.origin);
     println!("project: {:?}", gcs.project);
     assert!(
-        gcs.can_list_buckets(),
+        gcs.project.is_some(),
         "a logged-in gcloud writes quota_project_id, so a project should have been found"
     );
 
@@ -1407,4 +1407,184 @@ fn public_data_quirks() {
         "{:?}",
         spark.iter().map(|r| &r.name).collect::<Vec<_>>()
     );
+}
+
+/// Google Cloud through `gcloud`: the login lists its projects, a project lists its
+/// buckets, and an object opens with the same token.
+///
+/// ```bash
+/// gcloud auth login
+/// DATUI_LIVE_GCLOUD=1 cargo test --test cloud_live_test -- --ignored --nocapture gcloud
+/// # only `gcloud auth login`, no application-default login:
+/// HOME=$(mktemp -d) CLOUDSDK_CONFIG=~/.config/gcloud RUSTUP_HOME=~/.rustup DATUI_LIVE_GCLOUD=1 \
+///   cargo test --test cloud_live_test -- --ignored --nocapture gcloud
+/// ```
+#[test]
+#[ignore = "talks to Google Cloud through gcloud; set DATUI_LIVE_GCLOUD=1"]
+fn gcloud_lists_projects_and_their_buckets_and_opens() {
+    if std::env::var("DATUI_LIVE_GCLOUD").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_GCLOUD=1 to run");
+        return;
+    }
+    let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
+    let sources = cloud_sources::discover(&config, &Environment::current());
+    let google = sources
+        .iter()
+        .find(|s| s.id == cloud_sources::DEFAULT_GCS)
+        .expect("a Google source");
+    println!(
+        "{}: origin {}, configuration {:?}",
+        google.id, google.origin, google.gcloud
+    );
+    let runtime = common::test_runtime();
+    let projects = runtime
+        .block_on(cloud_browse::list_first_level(google))
+        .expect("projects list");
+    println!("{} projects", projects.len());
+    assert!(!projects.is_empty());
+    assert!(projects.iter().all(|p| {
+        p.place
+            .to_string_lossy()
+            .starts_with("cloud://gcs-default/")
+    }));
+    let mut buckets = 0;
+    for project in &projects {
+        let rows = runtime
+            .block_on(cloud_browse::list_account(
+                &google.id,
+                &project.name,
+                &config,
+            ))
+            .unwrap_or_else(|e| panic!("{}: {e}", project.name));
+        assert!(
+            rows.iter()
+                .all(|r| r.path.to_string_lossy().starts_with("gs://"))
+        );
+        buckets += rows.len();
+    }
+    println!("{buckets} buckets across them");
+    assert!(buckets > 0, "no buckets in any project proves nothing");
+    let first = projects
+        .iter()
+        .find_map(|project| {
+            runtime
+                .block_on(cloud_browse::list_account(
+                    &google.id,
+                    &project.name,
+                    &config,
+                ))
+                .ok()
+                .and_then(|rows| rows.into_iter().next())
+        })
+        .expect("a bucket");
+    let inside = runtime
+        .block_on(cloud_browse::list_objects(
+            &first.path.to_string_lossy(),
+            &config,
+        ))
+        .expect("a bucket of the login's lists with its token");
+    println!("the first bucket holds {} rows at the top", inside.len());
+
+    // Public, but outside the built-in dataset. Remembered as signed, so the open goes
+    // through the login's token provider rather than finding the object public. (Not
+    // proof the token is good: Google ignores a bad token on a URL whose bucket name is
+    // percent-encoded, which is how object_store sends it. The listing above is.)
+    cloud_sources::remember_access("gs://cloud-samples-data", false);
+    let headers = open_url(
+        "gs://cloud-samples-data/ml-engine/iris/classification/evaluate.csv",
+        &config,
+    )
+    .expect("opens");
+    assert!(!headers.is_empty(), "{headers:?}");
+}
+
+/// The Google Cloud row on the home screen steps into a project and then a bucket.
+/// Prints nothing: the names are the login's own.
+#[test]
+#[ignore = "talks to Google Cloud through gcloud; set DATUI_LIVE_GCLOUD=1"]
+fn gcloud_projects_browse_from_the_home_screen() {
+    if std::env::var("DATUI_LIVE_GCLOUD").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_GCLOUD=1 to run");
+        return;
+    }
+    let (mut app, rx) = live_app();
+    assert!(
+        enter_source(&mut app, &rx, "gcs-default"),
+        "{:?}",
+        app.home.cloud
+    );
+    let rows = |app: &datui::App| -> Vec<(String, std::path::PathBuf)> {
+        app.home
+            .visible()
+            .iter()
+            .filter_map(|row| match row {
+                datui::home::Row::Entry { entry, .. } => {
+                    Some((entry.name.clone(), entry.path.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let projects = rows(&app);
+    assert!(
+        projects
+            .iter()
+            .all(|(_, p)| p.to_string_lossy().starts_with("cloud://gcs-default/"))
+    );
+    let text = screen_text(&mut app, 120, 30);
+    assert!(text.contains("project"), "rows say project");
+    // Into each project until one has a bucket.
+    let mut entered_bucket = false;
+    for (name, _) in projects {
+        // The listing is rebuilt on a worker after Backspace.
+        pump_until(&mut app, &rx, 10, |app| {
+            rows(app).iter().any(|(n, _)| n == &name)
+        });
+        assert!(select_row(&mut app, &name));
+        app.event(&key(crossterm::event::KeyCode::Enter));
+        pump_until(&mut app, &rx, 30, |app| {
+            app.home.browsing.as_ref().is_some_and(|b| {
+                app.home.probed.contains_key(b) || app.home.probe_errors.contains_key(b)
+            })
+        });
+        let sep = datui::glyphs::get().trail;
+        let text = screen_text(&mut app, 160, 30);
+        assert!(
+            text.contains(&format!("Google Cloud {sep} {name}")),
+            "the trail names the project"
+        );
+        pump_until(&mut app, &rx, 5, |app| {
+            !rows(app).is_empty() || app.home.sections.iter().any(|s| s.unavailable)
+        });
+        let buckets = rows(&app);
+        if let Some((bucket, path)) = buckets.first().cloned() {
+            assert!(path.to_string_lossy().starts_with("gs://"));
+            assert!(select_row(&mut app, &bucket));
+            app.event(&key(crossterm::event::KeyCode::Enter));
+            pump_until(&mut app, &rx, 30, |app| {
+                app.home
+                    .browsing
+                    .as_ref()
+                    .is_some_and(|b| app.home.probed.contains_key(b))
+            });
+            let text = screen_text(&mut app, 160, 30);
+            assert!(
+                text.contains(&format!("{name} {sep} {bucket}")),
+                "the trail goes through the project"
+            );
+            app.event(&key(crossterm::event::KeyCode::Backspace));
+            assert_eq!(
+                app.home
+                    .browsing
+                    .as_deref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                Some(format!("cloud://gcs-default/{name}")),
+                "Backspace from a bucket returns to its project"
+            );
+            entered_bucket = true;
+            break;
+        }
+        app.event(&key(crossterm::event::KeyCode::Backspace));
+    }
+    assert!(entered_bucket, "no project had a bucket");
 }

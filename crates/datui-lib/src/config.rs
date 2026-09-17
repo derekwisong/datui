@@ -511,6 +511,13 @@ pub struct CloudSourceConfig {
     /// An AWS profile to take the keys, endpoint and region from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
+    /// A `gcloud` configuration whose login to use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<String>,
+    /// The Google Cloud project listed first, and the one listed when projects cannot
+    /// be searched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     /// Keys that are not recognised, kept so validation can name them.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
@@ -518,7 +525,8 @@ pub struct CloudSourceConfig {
 
 /// Field names accepted in `[[cloud.sources]]`, for error messages.
 const CLOUD_SOURCE_KEYS: &str = "name, label, kind, public, buckets, endpoint_url, region, \
-     addressing, access_key_id_env, secret_access_key_env, session_token_env, profile";
+     addressing, access_key_id_env, secret_access_key_env, session_token_env, profile, \
+     configuration, project";
 
 /// Whether `id` can name a source: lowercase letters, digits and `-`, starting with a
 /// letter or digit, at most 40 characters. It goes into URLs and cache keys, so
@@ -599,6 +607,17 @@ impl CloudSourceConfig {
                 ));
             }
         }
+        if kind != "gcs" {
+            let gcs_only = [
+                ("configuration", self.configuration.is_some()),
+                ("project", self.project.is_some()),
+            ];
+            if let Some((field, _)) = gcs_only.iter().find(|(_, set)| *set) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": {field} applies only to kind = \"gcs\""
+                ));
+            }
+        }
         if self.profile.is_some()
             && (self.access_key_id_env.is_some()
                 || self.secret_access_key_env.is_some()
@@ -645,6 +664,8 @@ impl CloudSourceConfig {
             ),
             ("session_token_env", self.session_token_env.is_some()),
             ("profile", self.profile.is_some()),
+            ("configuration", self.configuration.is_some()),
+            ("project", self.project.is_some()),
         ];
         if let Some((field, _)) = signing.iter().find(|(_, set)| *set) {
             return Err(eyre!(

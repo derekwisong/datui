@@ -192,6 +192,8 @@ buckets = ["sales", "logs"]
 | `addressing` | s3 | `path` or `virtual`. Default: `path` with an endpoint, `virtual` without |
 | `access_key_id_env`, `secret_access_key_env`, `session_token_env` | s3 | Names of the environment variables holding the keys |
 | `profile` | s3 | An AWS profile to take the keys, endpoint and region from, instead of the `*_env` keys |
+| `configuration` | gcs | A `gcloud` configuration whose login to use. Without it, the application-default login |
+| `project` | gcs | The project listed first, and the one listed when projects cannot be searched |
 
 A public source lists data from any cloud and reads it unsigned:
 

@@ -3303,6 +3303,12 @@ impl App {
             }
             .into_iter()
             .filter(|s| !hidden.contains(&s.id))
+            .map(|mut source| {
+                if source.id == crate::cloud_sources::PUBLIC {
+                    add_public_places(&mut source, &cache.load_public_places());
+                }
+                source
+            })
             .collect();
 
             if only.is_none() {
@@ -3357,8 +3363,14 @@ impl App {
                             if !item.details.is_empty() {
                                 details.push((item.place.clone(), item.details));
                             }
-                            if !names.contains(&item.name) {
-                                names.push(item.name);
+                            // A public source's rows are URLs, not bucket names.
+                            let name = if source.public {
+                                item.place.to_string_lossy().into_owned()
+                            } else {
+                                item.name
+                            };
+                            if !names.contains(&name) {
+                                names.push(name);
                             }
                         }
                         cache.save_cloud_listing(
@@ -3388,6 +3400,46 @@ impl App {
                 });
             }
         });
+    }
+
+    /// Public buckets and containers read since the last look: remembered for later runs,
+    /// and listed with the public datasets now.
+    #[cfg(feature = "cloud")]
+    fn absorb_public_places(&mut self) {
+        let places = crate::cloud_sources::take_public_places();
+        if places.is_empty() {
+            return;
+        }
+        let cache = self.cache.clone();
+        let saved = places.clone();
+        std::thread::spawn(move || {
+            for place in saved {
+                cache.remember_public_place(&place);
+            }
+        });
+        let Some(row) = self
+            .home
+            .cloud
+            .iter_mut()
+            .find(|s| s.id == crate::cloud_sources::PUBLIC)
+        else {
+            return;
+        };
+        for place in places {
+            let path = PathBuf::from(&place);
+            if row
+                .buckets
+                .iter()
+                .any(|b| crate::cloud_sources::is_within(&place, &b.to_string_lossy()))
+            {
+                continue;
+            }
+            let dataset = crate::cloud_sources::dataset_for_url(&place);
+            row.names.insert(path.clone(), dataset.name.clone());
+            row.place_details
+                .insert(path.clone(), public_place_details(&dataset));
+            row.buckets.push(path);
+        }
     }
 
     /// Ask again for what is on screen, ignoring what is cached: the buckets of the
@@ -3480,6 +3532,8 @@ impl App {
 
     /// Rebuild the home listing from the filesystem.
     fn home_refresh(&mut self) {
+        #[cfg(feature = "cloud")]
+        self.absorb_public_places();
         self.home_generation = self.home_generation.wrapping_add(1);
         let generation = self.home_generation;
 
@@ -3984,6 +4038,10 @@ impl App {
             (AmazonS3ConfigKey::Token, settings.session_token),
             (AmazonS3ConfigKey::Region, settings.region),
             (AmazonS3ConfigKey::VirtualHostedStyleRequest, virtual_hosted),
+            (
+                AmazonS3ConfigKey::SkipSignature,
+                settings.skip_signature.then(|| "true".to_string()),
+            ),
         ]
         .into_iter()
         .filter_map(|(key, value)| value.map(|v| (key, v)))
@@ -4455,10 +4513,16 @@ impl App {
         cloud: &crate::config::CloudConfig,
     ) -> Result<(String, CloudOptions)> {
         let text = path.to_string_lossy();
-        let resolved =
-            crate::cloud_sources::resolve(&text, cloud).map_err(|e| color_eyre::eyre::eyre!(e))?;
+        let resolved = crate::cloud_sources::resolve_for_open(&text, cloud)
+            .map_err(|e| color_eyre::eyre::eyre!(e))?;
         let options = match resolved.kind {
             crate::cloud_browse::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
+            crate::cloud_browse::ProviderKind::Gcs
+                if resolved.signing == crate::cloud_sources::Signing::Unsigned =>
+            {
+                CloudOptions::default()
+                    .with_gcp([(polars::io::cloud::GoogleConfigKey::SkipSignature, "true")])
+            }
             crate::cloud_browse::ProviderKind::Gcs => CloudOptions::default(),
             crate::cloud_browse::ProviderKind::Azure => {
                 let (account, _, _) = source::azure_parts(&resolved.url)
@@ -4715,7 +4779,18 @@ impl App {
             }
         }
 
-        let effective_format = options.format.or_else(|| FileFormat::from_path(path));
+        // A file with no extension may still be Parquet: a part file in a folder named
+        // `.parquet`, or anything whose bytes say so. A regular file is only read when
+        // nothing else settled it.
+        let effective_format = options
+            .format
+            .or_else(|| FileFormat::from_path(path))
+            .or_else(|| {
+                (path.extension().is_none()
+                    && (crate::discover::is_parquet_key(&path.to_string_lossy())
+                        || (path.is_file() && crate::discover::has_parquet_magic(path))))
+                .then_some(FileFormat::Parquet)
+            });
 
         let lf = if paths.len() > 1 {
             match effective_format {
@@ -11209,12 +11284,46 @@ impl Drop for App {
     }
 }
 
+/// Add public places read on earlier runs to a public source's datasets, skipping any
+/// that one of its datasets already covers.
+#[cfg(feature = "cloud")]
+fn add_public_places(source: &mut crate::cloud_sources::Source, places: &[String]) {
+    for place in places {
+        if source
+            .datasets
+            .iter()
+            .any(|d| crate::cloud_sources::is_within(place, &d.url))
+        {
+            continue;
+        }
+        source
+            .datasets
+            .push(crate::cloud_sources::dataset_for_url(place));
+    }
+}
+
+/// Details-pane lines for a public place that is not one of the built-in datasets.
+#[cfg(feature = "cloud")]
+fn public_place_details(dataset: &crate::cloud_sources::Dataset) -> Vec<(String, String)> {
+    let mut lines = crate::cloud_browse::dataset_details(dataset);
+    if dataset.description.is_empty() {
+        lines.insert(
+            0,
+            ("about".to_string(), "read with no login before".to_string()),
+        );
+    }
+    lines
+}
+
 /// A source as a home-screen row, with the last run's buckets when they still apply.
 #[cfg(feature = "cloud")]
 fn home_cloud_source(
     source: &crate::cloud_sources::Source,
     cached: Option<&crate::cache::CloudListing>,
 ) -> home::CloudSource {
+    if source.public {
+        return public_home_source(source);
+    }
     let mut details: Vec<(String, String)> = vec![
         ("source".to_string(), source.id.clone()),
         (
@@ -11288,7 +11397,50 @@ fn home_cloud_source(
             .map(|c| std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.listed_at)),
         status,
         details,
+        names: Default::default(),
         place_details: Default::default(),
+    }
+}
+
+/// A public source as a home-screen row. Its datasets are known without asking anyone,
+/// so the row is complete before any request.
+#[cfg(feature = "cloud")]
+fn public_home_source(source: &crate::cloud_sources::Source) -> home::CloudSource {
+    let mut names = std::collections::HashMap::new();
+    let mut place_details = std::collections::HashMap::new();
+    let buckets = source
+        .datasets
+        .iter()
+        .map(|dataset| {
+            let place = PathBuf::from(&dataset.url);
+            names.insert(place.clone(), dataset.name.clone());
+            place_details.insert(place.clone(), public_place_details(dataset));
+            place
+        })
+        .collect();
+    home::CloudSource {
+        id: source.id.clone(),
+        label: source.label.clone(),
+        api: "public".to_string(),
+        note: source.origin.clone(),
+        buckets,
+        status: match &source.problem {
+            Some(problem) => home::CloudStatus::Failed {
+                short: "not configured".to_string(),
+                detail: problem.clone(),
+            },
+            None => home::CloudStatus::Listed,
+        },
+        listed_at: None,
+        refreshing: false,
+        details: vec![
+            ("source".to_string(), source.id.clone()),
+            ("api".to_string(), "s3, gcs, azure".to_string()),
+            ("login".to_string(), "none: public data".to_string()),
+            ("from".to_string(), source.origin.clone()),
+        ],
+        names,
+        place_details,
     }
 }
 

@@ -192,6 +192,31 @@ pub fn cloud_account(path: &Path) -> Option<(String, String)> {
         .then(|| (id.to_string(), account.to_string()))
 }
 
+/// Whether `url` is `root` or inside it, for URLs of any provider.
+fn within(url: &str, root: &str) -> bool {
+    #[cfg(feature = "cloud")]
+    {
+        crate::cloud_sources::is_within(url, root)
+    }
+    #[cfg(not(feature = "cloud"))]
+    {
+        let (url, root) = (url.trim_end_matches('/'), root.trim_end_matches('/'));
+        url == root || url.strip_prefix(root).is_some_and(|r| r.starts_with('/'))
+    }
+}
+
+/// What is left of `url` below `root`, which it is [`within`].
+fn within_rest(url: &str, root: &str) -> String {
+    let canonical = |u: &str| match crate::source::azure_parts(u) {
+        Some((account, container, path)) => crate::source::azure_url(&account, &container, &path),
+        None => u.to_string(),
+    };
+    let (url, root) = (canonical(url), canonical(root));
+    url.strip_prefix(root.trim_end_matches('/'))
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Whether `path` is one of datui's own `cloud://` places rather than a real location.
 pub fn is_cloud_place(path: &Path) -> bool {
     path.to_string_lossy().starts_with(CLOUD_PLACE)
@@ -330,7 +355,7 @@ pub struct CloudSource {
     pub id: String,
     /// The row's name.
     pub label: String,
-    /// The API spoken: `s3`, `gcs`.
+    /// The API spoken: `s3`, `gcs`, `azure`, or `public` for public datasets.
     pub api: String,
     /// The account, endpoint or project, and where the login came from.
     pub note: String,
@@ -346,9 +371,37 @@ pub struct CloudSource {
     /// Lines for the details pane of places inside the source: an Azure account's
     /// subscription, region and namespace.
     pub place_details: std::collections::HashMap<PathBuf, Vec<(String, String)>>,
+    /// Names for places that are not named by their URL: a public dataset.
+    pub names: std::collections::HashMap<PathBuf, String>,
 }
 
 impl CloudSource {
+    /// Whether this source's first level is public datasets rather than buckets.
+    pub fn is_public(&self) -> bool {
+        self.api == "public"
+    }
+
+    /// The row for one of this source's places.
+    fn entry(&self, place: &Path) -> Entry {
+        let mut entry = bucket_entry(place);
+        if let Some(name) = self.names.get(place) {
+            entry.name = name.clone();
+        }
+        entry
+    }
+
+    /// The dataset `path` is in, when this is a public source: its place as listed.
+    fn dataset_of(&self, path: &Path) -> Option<&PathBuf> {
+        if !self.is_public() {
+            return None;
+        }
+        let text = path.to_string_lossy();
+        self.buckets
+            .iter()
+            .filter(|place| within(&text, &place.to_string_lossy()))
+            // The innermost, when one dataset is inside another.
+            .max_by_key(|place| place.as_os_str().len())
+    }
     /// What the row says instead of a size: the bucket count, or why there is none.
     pub fn count_text(&self) -> String {
         match &self.status {
@@ -357,6 +410,8 @@ impl CloudSource {
             _ => {
                 let (one, many) = if self.api == "azure" {
                     ("account", "accounts")
+                } else if self.is_public() {
+                    ("dataset", "datasets")
                 } else {
                     ("bucket", "buckets")
                 };
@@ -663,7 +718,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     if let Some(id) = browsing.as_deref().and_then(cloud_source_id) {
         let source = cloud.iter().find(|s| s.id == id);
         let rows = source
-            .map(|s| s.buckets.iter().map(|b| bucket_entry(b)).collect())
+            .map(|s| s.buckets.iter().map(|b| s.entry(b)).collect())
             .unwrap_or_default();
         let failure = source.and_then(|s| match &s.status {
             CloudStatus::Failed { short, .. } => Some(short.clone()),
@@ -708,7 +763,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // account or container is titled by name, not by its long URL.
             title: {
                 let text = dir.to_string_lossy();
-                if let Some((_, account)) = cloud_account(&dir) {
+                if let Some(name) = cloud.iter().find_map(|s| s.names.get(&dir)) {
+                    name.clone()
+                } else if let Some((_, account)) = cloud_account(&dir) {
                     account
                 } else if let Some((_, container, key)) = crate::source::azure_parts(&text) {
                     format!("{container}/{}", key.trim_matches('/'))
@@ -1384,6 +1441,9 @@ impl HomeState {
         if let Some(id) = cloud_source_id(path) {
             return self.cloud.iter().find(|s| s.id == id);
         }
+        if let Some((source, _)) = self.dataset_of(path) {
+            return Some(source);
+        }
         if let Some((id, _)) = cloud_account(path) {
             return self.cloud.iter().find(|s| s.id == id);
         }
@@ -1408,6 +1468,25 @@ impl HomeState {
     pub fn parent_of(&self, path: &Path) -> Option<PathBuf> {
         if cloud_source_id(path).is_some() {
             return None;
+        }
+        // Out of a dataset's root is back to the datasets, not up into a bucket that
+        // may not be listable at all.
+        if let Some((source, place)) = self.dataset_of(path) {
+            let text = path.to_string_lossy();
+            if text.trim_end_matches('/') == place.to_string_lossy().trim_end_matches('/') {
+                return Some(cloud_place(&source.id));
+            }
+            let up = self.parent_within(path)?;
+            // The dataset's own place, as listed, so its listing is found again.
+            return Some(
+                if up.to_string_lossy().trim_end_matches('/')
+                    == place.to_string_lossy().trim_end_matches('/')
+                {
+                    place.clone()
+                } else {
+                    up
+                },
+            );
         }
         if let Some((id, _)) = cloud_account(path) {
             return Some(cloud_place(&id));
@@ -1434,6 +1513,31 @@ impl HomeState {
         parent_location(path)
     }
 
+    /// One level up inside a bucket or container, whatever the provider.
+    fn parent_within(&self, path: &Path) -> Option<PathBuf> {
+        let text = path.to_string_lossy();
+        if let Some((account, container, key)) = crate::source::azure_parts(&text) {
+            let key = key.trim_matches('/');
+            let up = key.rsplit_once('/').map(|(up, _)| up).unwrap_or("");
+            let up = if up.is_empty() {
+                String::new()
+            } else {
+                format!("{up}/")
+            };
+            return Some(PathBuf::from(crate::source::azure_url(
+                &account, &container, &up,
+            )));
+        }
+        parent_location(path)
+    }
+
+    /// The public source and dataset `path` is in.
+    fn dataset_of(&self, path: &Path) -> Option<(&CloudSource, &PathBuf)> {
+        self.cloud
+            .iter()
+            .find_map(|source| source.dataset_of(path).map(|place| (source, place)))
+    }
+
     /// The place of an Azure account, from whichever source lists it.
     fn azure_account_place(&self, account: &str) -> Option<PathBuf> {
         self.cloud
@@ -1441,6 +1545,14 @@ impl HomeState {
             .flat_map(|s| s.buckets.iter())
             .find(|place| cloud_account(place).is_some_and(|(_, a)| a == account))
             .cloned()
+    }
+
+    /// What to call a place a source names itself: a public dataset.
+    pub fn place_kind(&self, path: &Path) -> Option<&'static str> {
+        self.cloud
+            .iter()
+            .any(|s| s.is_public() && s.names.contains_key(path))
+            .then_some("dataset")
     }
 
     /// Details-pane lines for a place a cloud source listed, when it has any.
@@ -1459,7 +1571,15 @@ impl HomeState {
         if let Some(source) = self.cloud_source_of(path) {
             let mut parts = vec!["cloud".to_string(), source.label.clone()];
             let text = path.to_string_lossy();
-            if let Some((_, account)) = cloud_account(path) {
+            if let Some(place) = source.dataset_of(path) {
+                parts.push(source.entry(place).name);
+                let rest = within_rest(&text, &place.to_string_lossy());
+                parts.extend(
+                    rest.split('/')
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_string),
+                );
+            } else if let Some((_, account)) = cloud_account(path) {
                 parts.push(account);
             } else if let Some((account, container, key)) = crate::source::azure_parts(&text) {
                 parts.push(account);
@@ -1498,7 +1618,7 @@ impl HomeState {
                 .iter()
                 .flat_map(|source| {
                     source.buckets.iter().map(move |bucket| {
-                        let mut entry = bucket_entry(bucket);
+                        let mut entry = source.entry(bucket);
                         entry.name = format!(
                             "{} {} {}",
                             source.label,

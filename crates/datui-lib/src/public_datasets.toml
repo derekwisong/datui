@@ -1,0 +1,57 @@
+# The built-in `Public datasets` cloud source.
+#
+# Each entry is data its owner hosts and maintains; datui hosts none of it. An entry
+# must be readable and listable with no credentials, must not be requester-pays, and
+# must not carry a non-commercial license. Prefer tabular data (Parquet first) and
+# stable roots that survive the publisher's next release.
+#
+# The weekly `Public datasets` workflow lists every entry anonymously and opens an
+# issue when one stops answering.
+
+[[dataset]]
+name = "NOAA daily weather (GHCN-D)"
+url = "s3://noaa-ghcn-pds/parquet/"
+description = "Worldwide weather station observations, by year and by station"
+publisher = "NOAA"
+license = "CC0"
+homepage = "https://registry.opendata.aws/noaa-ghcn/"
+
+[[dataset]]
+name = "Bitcoin and Ethereum"
+url = "s3://aws-public-blockchain/v1.0/"
+description = "Blocks and transactions, partitioned by date"
+publisher = "AWS Public Blockchain Data"
+license = "AWS sample-code license"
+homepage = "https://registry.opendata.aws/aws-public-blockchain/"
+
+[[dataset]]
+name = "OpenAlex"
+url = "s3://openalex/data/parquet/"
+description = "Scholarly works, authors, institutions and topics"
+publisher = "OurResearch"
+license = "CC0"
+homepage = "https://openalex.org"
+
+[[dataset]]
+name = "Overture Maps"
+url = "abfss://release@overturemapswestus2.dfs.core.windows.net/"
+description = "Places, buildings, addresses, roads and boundaries, by release"
+publisher = "Overture Maps Foundation"
+license = "ODbL; places CDLA Permissive 2.0 and Apache 2.0"
+homepage = "https://docs.overturemaps.org"
+
+[[dataset]]
+name = "Google Open Buildings"
+url = "gs://open-buildings-data/v3/"
+description = "1.8 billion building footprints"
+publisher = "Google Research"
+license = "CC BY 4.0 or ODbL"
+homepage = "https://sites.research.google/open-buildings/"
+
+[[dataset]]
+name = "BigQuery sample data"
+url = "gs://cloud-samples-data/bigquery/"
+description = "Small samples Google's documentation uses: US states, flights, hive-partitioned files"
+publisher = "Google Cloud"
+license = "Not stated"
+homepage = "https://cloud.google.com/bigquery/docs"

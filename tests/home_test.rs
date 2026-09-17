@@ -2819,6 +2819,77 @@ fn test_typing_finds_bucket_names_from_every_source() {
 }
 
 #[test]
+fn test_public_datasets_are_named_rows_and_backspace_returns_to_them() {
+    use datui::home::{CloudSource, CloudStatus};
+    use std::path::{Path, PathBuf};
+    let noaa = PathBuf::from("s3://noaa-ghcn-pds/parquet/");
+    let overture = PathBuf::from("abfss://release@overturemapswestus2.dfs.core.windows.net/");
+    let mut home = HomeState {
+        cloud: vec![CloudSource {
+            id: "public".to_string(),
+            label: "Public datasets".to_string(),
+            api: "public".to_string(),
+            buckets: vec![noaa.clone(), overture.clone()],
+            names: [
+                (noaa.clone(), "NOAA daily weather".to_string()),
+                (overture.clone(), "Overture Maps".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            status: CloudStatus::Listed,
+            ..Default::default()
+        }],
+        network_check: |_| false,
+        ..Default::default()
+    };
+    assert_eq!(home.cloud[0].count_text(), "2 datasets");
+
+    home.browsing = Some(PathBuf::from("cloud://public"));
+    home.rebuild(&[], &[]);
+    let names: Vec<&str> = home.sections[0]
+        .rows
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    assert_eq!(names, ["NOAA daily weather", "Overture Maps"]);
+
+    let year = Path::new("s3://noaa-ghcn-pds/parquet/by_year");
+    assert_eq!(
+        home.parent_of(year),
+        Some(noaa.clone()),
+        "the dataset as listed"
+    );
+    assert_eq!(
+        home.parent_of(Path::new("s3://noaa-ghcn-pds/parquet")),
+        Some(PathBuf::from("cloud://public")),
+        "a dataset's root goes back to the datasets, not up the bucket"
+    );
+    assert_eq!(
+        home.parent_of(&overture),
+        Some(PathBuf::from("cloud://public"))
+    );
+    assert_eq!(
+        home.cloud_source_of(Path::new(
+            "abfss://release@overturemapswestus2.dfs.core.windows.net/2026-08-19.0/"
+        ))
+        .map(|s| s.id.as_str()),
+        Some("public")
+    );
+
+    let sep = datui::glyphs::get().trail;
+    assert_eq!(
+        home.location_label(Path::new("s3://noaa-ghcn-pds/parquet/by_year/YEAR=2020")),
+        format!(
+            "cloud {sep} Public datasets {sep} NOAA daily weather {sep} by_year {sep} YEAR=2020"
+        )
+    );
+
+    home.browsing = Some(year.to_path_buf());
+    home.browse_start = Some(PathBuf::from("cloud://public"));
+    assert!(home.below_browse_start());
+}
+
+#[test]
 fn test_azure_steps_through_account_container_and_folder() {
     use datui::home::{CloudSource, CloudStatus, object_place_label};
     use std::path::{Path, PathBuf};

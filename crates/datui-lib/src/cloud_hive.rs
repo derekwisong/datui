@@ -30,7 +30,7 @@ async fn first_parquet_key_spine(
 
     for obj in &result.objects {
         let loc = obj.location.as_ref();
-        if loc.ends_with(".parquet") {
+        if crate::discover::is_parquet_key(loc) {
             return Ok(Some(obj.location.clone()));
         }
     }

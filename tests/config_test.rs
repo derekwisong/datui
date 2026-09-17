@@ -1911,6 +1911,49 @@ fn cloud_sources_name_the_problem() {
 }
 
 #[test]
+fn public_sources_take_urls_and_nothing_that_signs() {
+    let config = cloud_config(
+        r#"
+[cloud]
+public_datasets = false
+
+[[cloud.sources]]
+name = "open-data"
+public = true
+buckets = [
+  "s3://noaa-ghcn-pds/parquet/",
+  "gs://cloud-samples-data/bigquery/",
+  "abfss://release@overturemapswestus2.dfs.core.windows.net/",
+]
+"#,
+    );
+    config.validate().expect("a valid public source");
+    assert_eq!(config.cloud.public_datasets, Some(false));
+    assert_eq!(config.cloud.sources[0].public, Some(true));
+
+    let signing = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"s3://b/\"]\naccess_key_id_env = \"K\"\n",
+    );
+    assert!(
+        signing.contains("does not apply to a public source"),
+        "{signing}"
+    );
+
+    let empty = cloud_error("[[cloud.sources]]\nname = \"p\"\npublic = true\n");
+    assert!(empty.contains("as URLs"), "{empty}");
+
+    let not_url = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"noaa-ghcn-pds\"]\n",
+    );
+    assert!(not_url.contains("is not an s3://"), "{not_url}");
+
+    let forgot = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\nkind = \"s3\"\nbuckets = [\"s3://noaa-ghcn-pds/\"]\n",
+    );
+    assert!(forgot.contains("add public = true"), "{forgot}");
+}
+
+#[test]
 fn a_later_layer_replaces_a_source_by_name() {
     let mut base = cloud_config(
         "[cloud]\nhide = [\"a\"]\n[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"one\"\n",
@@ -1967,4 +2010,11 @@ fn cloud_listings_and_hidden_sources_survive_a_restart() {
     again.hide_cloud_source("corp");
     again.hide_cloud_source("corp");
     assert_eq!(again.load_hidden_cloud_sources(), ["corp"]);
+
+    again.remember_public_place("s3://gbif-open-data-us-east-1/");
+    again.remember_public_place("s3://gbif-open-data-us-east-1/");
+    assert_eq!(
+        CacheManager::with_dir(temp_dir.path().to_path_buf()).load_public_places(),
+        ["s3://gbif-open-data-us-east-1/"]
+    );
 }

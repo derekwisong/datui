@@ -470,6 +470,9 @@ pub struct CloudConfig {
     /// Source IDs never shown on the home screen.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<String>,
+    /// The built-in `Public datasets` source. On unless set to `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_datasets: Option<bool>,
 }
 
 /// One store in `[[cloud.sources]]`. Names and pointers only: a secret comes from the
@@ -485,7 +488,11 @@ pub struct CloudSourceConfig {
     /// `s3` or `gcs`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    /// Buckets to show when the credentials can read but not list.
+    /// Data anyone can read: `buckets` are URLs of any kind, read with no signature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public: Option<bool>,
+    /// Buckets to show when the credentials can read but not list. For a public
+    /// source, URLs of buckets, containers or folders.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub buckets: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -510,8 +517,8 @@ pub struct CloudSourceConfig {
 }
 
 /// Field names accepted in `[[cloud.sources]]`, for error messages.
-const CLOUD_SOURCE_KEYS: &str = "name, label, kind, buckets, endpoint_url, region, addressing, \
-     access_key_id_env, secret_access_key_env, session_token_env, profile";
+const CLOUD_SOURCE_KEYS: &str = "name, label, kind, public, buckets, endpoint_url, region, \
+     addressing, access_key_id_env, secret_access_key_env, session_token_env, profile";
 
 /// Whether `id` can name a source: lowercase letters, digits and `-`, starting with a
 /// letter or digit, at most 40 characters. It goes into URLs and cache keys, so
@@ -556,6 +563,9 @@ impl CloudSourceConfig {
                 keys.join(", "),
                 CLOUD_SOURCE_KEYS
             ));
+        }
+        if self.public == Some(true) {
+            return self.validate_public();
         }
         let kind = match self.kind.as_deref() {
             Some(kind @ ("s3" | "gcs")) => kind,
@@ -609,10 +619,63 @@ impl CloudSourceConfig {
         }
         if let Some(bucket) = self.buckets.iter().find(|b| b.contains(['/', '@'])) {
             return Err(eyre!(
-                "cloud.sources \"{name}\": \"{bucket}\" is not a bucket name"
+                "cloud.sources \"{name}\": \"{bucket}\" is not a bucket name{}",
+                if bucket.contains("://") {
+                    ". For public data, add public = true"
+                } else {
+                    ""
+                }
             ));
         }
         Ok(())
+    }
+
+    /// A `public = true` source: URLs, and nothing that signs.
+    fn validate_public(&self) -> Result<()> {
+        let name = &self.name;
+        let signing = [
+            ("kind", self.kind.is_some()),
+            ("endpoint_url", self.endpoint_url.is_some()),
+            ("region", self.region.is_some()),
+            ("addressing", self.addressing.is_some()),
+            ("access_key_id_env", self.access_key_id_env.is_some()),
+            (
+                "secret_access_key_env",
+                self.secret_access_key_env.is_some(),
+            ),
+            ("session_token_env", self.session_token_env.is_some()),
+            ("profile", self.profile.is_some()),
+        ];
+        if let Some((field, _)) = signing.iter().find(|(_, set)| *set) {
+            return Err(eyre!(
+                "cloud.sources \"{name}\": {field} does not apply to a public source, whose \
+                 buckets are URLs read with no login"
+            ));
+        }
+        if self.buckets.is_empty() {
+            return Err(eyre!(
+                "cloud.sources \"{name}\": a public source lists its data in buckets, as URLs"
+            ));
+        }
+        if let Some(bucket) = self.buckets.iter().find(|b| !public_url_is_valid(b)) {
+            return Err(eyre!(
+                "cloud.sources \"{name}\": \"{bucket}\" is not an s3://, gs:// or Azure URL"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Whether a public source's entry is a URL datui can read without a login: a bucket,
+/// container or folder on S3, Google Cloud or Azure. A source ID has no place in it.
+fn public_url_is_valid(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let host = rest.split('/').next().unwrap_or("");
+    match scheme {
+        "s3" | "gs" => !host.is_empty() && !host.contains('@'),
+        _ => crate::source::azure_parts(url).is_some(),
     }
 }
 
@@ -724,6 +787,9 @@ impl CloudConfig {
             if !self.hide.contains(&id) {
                 self.hide.push(id);
             }
+        }
+        if other.public_datasets.is_some() {
+            self.public_datasets = other.public_datasets;
         }
     }
 

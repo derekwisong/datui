@@ -208,18 +208,19 @@ descend like directories, objects open like files, and opened objects go into
 `RECENT` like any other path.
 
 ```
-▾ CLOUD  4  ──────────────────────────────────────────────────────
-  ☁ Amazon S3       s3     3 buckets     datui config
-  ☁ Google Cloud    gcs    2 buckets     project: example-project · gcloud
-  ☁ Lab MinIO       s3     1 bucket      127.0.0.1:9000 · datui config
-  ☁ onprem          s3     403           minio.corp.example:9000 · datui config
+▾ CLOUD  5  ──────────────────────────────────────────────────────
+  ☁ Amazon S3         s3      3 buckets     datui config
+  ☁ Google Cloud      gcs     2 buckets     project: example-project · gcloud
+  ☁ Lab MinIO         s3      1 bucket      127.0.0.1:9000 · datui config
+  ☁ onprem            s3      403           minio.corp.example:9000 · datui config
+  ☁ Public datasets   public  6 datasets    built in
 ```
 
 | Column | Shows |
 |---|---|
 | Name | The source's `label`, or its name |
-| API | `s3`, `gcs` or `azure` |
-| Count | How many buckets (accounts, for Azure), a spinner while listing, or why there are none |
+| API | `s3`, `gcs`, `azure`, or `public` |
+| Count | How many buckets (accounts for Azure, datasets for public data), a spinner while listing, or why there are none |
 | Note | The endpoint, project or profile, and where the login was found |
 
 The title bar shows where you are as a trail: `cloud › Lab MinIO › data › 2024`.
@@ -273,6 +274,7 @@ one that can be read.
 | Azure | `az` | The Azure CLI has been used (`~/.azure`, or `AZURE_CONFIG_DIR`). Its rows are storage accounts, found across your subscriptions |
 | One Azure account | `azure-env` | `AZURE_STORAGE_CONNECTION_STRING`, or `AZURE_STORAGE_ACCOUNT_NAME` with a key or SAS token |
 | Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, or the file written by `gcloud auth application-default login` |
+| Public datasets | `public` | Always, unless `public_datasets = false` under `[cloud]` |
 | Each `[[cloud.sources]]` entry | its `name` | Always |
 
 A source in the config with the same name as one of these replaces it. The same
@@ -289,7 +291,31 @@ A profile that needs the AWS CLI shows `needs the AWS CLI` when it is not
 installed, and an expired SSO login shows the CLI's message; see
 [Loading Data](loading-data.md#aws-profiles). An EC2 instance role is **not**
 discovered, because finding it means a metadata request that hangs on some
-networks; opening a URL still works.
+networks; with no other AWS login, a URL is read unsigned, which reaches public
+buckets only.
+
+### Public datasets
+
+`Public datasets` lists data its publishers host and keep up to date, readable with
+no login. Nothing is requested until you open one.
+
+| Dataset | Data | License |
+|---|---|---|
+| NOAA daily weather (GHCN-D) | Weather station observations worldwide, as Parquet by year and by station | CC0 |
+| Bitcoin and Ethereum | Blocks and transactions, as Parquet by date | AWS sample-code license |
+| OpenAlex | Scholarly works, authors, institutions and topics, as Parquet | CC0 |
+| Overture Maps | Places, buildings, addresses, roads and boundaries, as GeoParquet by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
+| Google Open Buildings | 1.8 billion building footprints, as CSV | CC BY 4.0 or ODbL |
+| BigQuery sample data | The small samples Google's documentation uses | Not stated |
+
+The details pane gives each one's publisher, license and homepage. The license is
+the publisher's: check it before you use the data. <kbd>Backspace</kbd> at a
+dataset's top returns to the list. A public bucket or container you have browsed or
+opened unsigned is added to the list. For a list of your own, see
+[Loading Data](loading-data.md#public-data).
+
+Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
+objects some tools leave to stand for folders.
 
 ### What a cloud row shows
 

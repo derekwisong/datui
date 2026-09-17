@@ -25,6 +25,66 @@ pub const DEFAULT_AZURE_LOGIN: &str = "az";
 /// An Azure account named in the environment: a connection string, or an account with a
 /// key or SAS token.
 pub const DEFAULT_AZURE_ENV: &str = "azure-env";
+/// The built-in `Public datasets` source.
+pub const PUBLIC: &str = "public";
+
+/// Data anyone can read: a bucket, container or folder, with what the details pane says
+/// about it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct Dataset {
+    pub name: String,
+    pub url: String,
+    pub description: String,
+    pub publisher: String,
+    pub license: String,
+    pub homepage: String,
+}
+
+/// The datasets of the built-in source, from `public_datasets.toml`.
+pub fn builtin_datasets() -> Vec<Dataset> {
+    #[derive(serde::Deserialize)]
+    struct File {
+        dataset: Vec<Dataset>,
+    }
+    toml::from_str::<File>(include_str!("public_datasets.toml"))
+        .map(|file| file.dataset)
+        .unwrap_or_default()
+}
+
+/// A dataset for a URL someone named or opened, with nothing known about it but where
+/// it is: named by its bucket or container and the path inside.
+pub fn dataset_for_url(url: &str) -> Dataset {
+    let name = match crate::source::azure_parts(url) {
+        Some((account, container, path)) => {
+            format!("{account}/{container}/{}", path.trim_matches('/'))
+        }
+        None => url
+            .split_once("://")
+            .map_or(url, |(_, rest)| rest)
+            .to_string(),
+    };
+    Dataset {
+        name: name.trim_end_matches('/').to_string(),
+        url: url.to_string(),
+        ..Default::default()
+    }
+}
+
+/// Whether `url` is `root` or somewhere inside it. Azure URLs are compared in their
+/// canonical form, and a trailing slash does not matter.
+pub fn is_within(url: &str, root: &str) -> bool {
+    let canonical = |u: &str| match crate::source::azure_parts(u) {
+        Some((account, container, path)) => crate::source::azure_url(&account, &container, &path),
+        None => u.to_string(),
+    };
+    let (url, root) = (canonical(url), canonical(root));
+    let (url, root) = (url.trim_end_matches('/'), root.trim_end_matches('/'));
+    url == root
+        || url
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
 
 /// Where a source came from. Lower wins when the same ID turns up twice, and sources
 /// are listed in this order.
@@ -36,6 +96,8 @@ pub enum Tier {
     Environment,
     /// Files other tools keep: `~/.aws`, the `gcloud` login.
     Tools,
+    /// Shipped with datui: the public datasets.
+    BuiltIn,
 }
 
 /// How to reach one S3 or S3-compatible store.
@@ -53,6 +115,8 @@ pub struct S3Settings {
     /// in the config names its own keys, and borrowing the shell's would sign its
     /// requests as somebody else.
     pub from_env: bool,
+    /// Send requests with no signature at all, as public data is read.
+    pub skip_signature: bool,
 }
 
 impl S3Settings {
@@ -66,6 +130,7 @@ impl S3Settings {
             region: cloud.s3_region.clone(),
             virtual_hosted: None,
             from_env: true,
+            skip_signature: false,
         }
     }
 
@@ -100,18 +165,29 @@ pub struct Source {
     pub buckets: Vec<String>,
     /// Why this source cannot be used, when something in its own definition says so.
     pub problem: Option<String>,
+    /// Public data, read with no login. Its first level is `datasets`, which may be on
+    /// any provider; `kind` means nothing for it.
+    pub public: bool,
+    pub datasets: Vec<Dataset>,
 }
 
 impl Source {
     /// Whether URLs from this source carry its ID. Only an S3-compatible server other
     /// than the default one needs to: its buckets are named only within its endpoint.
     pub fn named_in_urls(&self) -> bool {
-        self.kind == ProviderKind::S3 && self.id != DEFAULT_S3 && self.s3.endpoint.is_some()
+        !self.public
+            && self.kind == ProviderKind::S3
+            && self.id != DEFAULT_S3
+            && self.s3.endpoint.is_some()
     }
 
     /// The URL of one of this source's buckets. For Azure, the first level is storage
     /// accounts, and an account has no URL of its own, so it is a home-screen place.
     pub fn bucket_url(&self, bucket: &str) -> String {
+        // A public source's datasets are URLs already.
+        if self.public {
+            return bucket.to_string();
+        }
         if self.kind == ProviderKind::Azure {
             return format!("cloud://{}/{bucket}", self.id);
         }
@@ -134,6 +210,9 @@ impl Source {
 
     /// True when this source can enumerate its own buckets.
     pub fn can_list_buckets(&self) -> bool {
+        if self.public {
+            return true;
+        }
         match self.kind {
             ProviderKind::Gcs => self.project.is_some(),
             ProviderKind::S3 | ProviderKind::Azure => true,
@@ -150,6 +229,12 @@ impl Source {
             self.project.as_deref().unwrap_or(""),
             self.profile.as_deref().unwrap_or(""),
             self.azure.account.as_deref().unwrap_or(""),
+            &self
+                .datasets
+                .iter()
+                .map(|d| d.url.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
         ]
         .join("|")
     }
@@ -203,6 +288,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 profile: None,
                 buckets: Vec::new(),
                 problem: None,
+                public: false,
+                datasets: Vec::new(),
                 azure: Default::default(),
             };
             // Found through a profile rather than keys: the active profile supplies the
@@ -246,6 +333,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             profile: Some(profile.name.clone()),
             buckets: Vec::new(),
             problem: None,
+            public: false,
+            datasets: Vec::new(),
             azure: Default::default(),
         });
     }
@@ -295,6 +384,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             profile: None,
             buckets: Vec::new(),
             problem: None,
+            public: false,
+            datasets: Vec::new(),
             azure: settings,
         });
     }
@@ -310,10 +401,30 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             profile: None,
             buckets: Vec::new(),
             problem: None,
+            public: false,
+            datasets: Vec::new(),
             azure: crate::azure::AzureSettings {
                 auth: crate::azure::AzureAuth::AzCli,
                 ..Default::default()
             },
+        });
+    }
+
+    if config.public_datasets != Some(false) {
+        sources.push(Source {
+            id: PUBLIC.to_string(),
+            label: "Public datasets".to_string(),
+            kind: ProviderKind::S3,
+            tier: Tier::BuiltIn,
+            origin: "built in".to_string(),
+            s3: S3Settings::default(),
+            azure: Default::default(),
+            project: None,
+            profile: None,
+            buckets: Vec::new(),
+            problem: None,
+            public: true,
+            datasets: builtin_datasets(),
         });
     }
 
@@ -394,11 +505,14 @@ fn tool_source(server: crate::s3_tools::ToolServer, tier: Tier) -> Source {
             region: server.region,
             virtual_hosted: server.virtual_hosted,
             from_env: false,
+            skip_signature: false,
         },
         project: None,
         profile: None,
         buckets: Vec::new(),
         problem: None,
+        public: false,
+        datasets: Vec::new(),
         azure: Default::default(),
     }
 }
@@ -474,6 +588,30 @@ impl Source {
 /// A `[[cloud.sources]]` entry as a source. The config has been validated, so the kind
 /// is one datui knows.
 fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> Source {
+    if configured.public == Some(true) {
+        return Source {
+            id: configured.name.clone(),
+            label: configured
+                .label
+                .clone()
+                .unwrap_or_else(|| configured.name.clone()),
+            kind: ProviderKind::S3,
+            tier: Tier::Config,
+            origin: "datui config".to_string(),
+            s3: S3Settings::default(),
+            azure: Default::default(),
+            project: None,
+            profile: None,
+            buckets: Vec::new(),
+            problem: None,
+            public: true,
+            datasets: configured
+                .buckets
+                .iter()
+                .map(|url| dataset_for_url(url))
+                .collect(),
+        };
+    }
     let var = env.var;
     let kind = match configured.kind.as_deref() {
         Some("gcs") => ProviderKind::Gcs,
@@ -500,6 +638,7 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
         region: configured.region.clone(),
         virtual_hosted: configured.addressing.as_deref().map(|a| a == "virtual"),
         from_env: false,
+        skip_signature: false,
     };
     if let Some(name) = &configured.profile {
         match crate::aws_profiles::load(env)
@@ -527,6 +666,8 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
         buckets: configured.buckets.clone(),
         problem,
         azure: Default::default(),
+        public: false,
+        datasets: Vec::new(),
     }
 }
 
@@ -541,6 +682,106 @@ pub struct Resolved {
     pub s3: S3Settings,
     /// For an Azure URL, the settings with a token in place of `az`.
     pub azure: crate::azure::AzureSettings,
+    pub signing: Signing,
+    /// The bucket or container, as [`access_key`] names it.
+    pub place: String,
+}
+
+/// Whether requests to a place carry a signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signing {
+    Signed,
+    /// No signature: public data, or no login for this provider at all.
+    Unsigned,
+    /// Signed, by a login that may have nothing to do with this place. A refusal is
+    /// tried again with no signature, since the place may be public: Azure refuses a
+    /// public container to a token from another tenant.
+    Try,
+}
+
+impl Resolved {
+    /// The same place, read with no signature.
+    pub fn unsigned(mut self) -> Self {
+        self.s3 = S3Settings {
+            endpoint: self.s3.endpoint.take(),
+            region: self.s3.region.take(),
+            virtual_hosted: self.s3.virtual_hosted,
+            skip_signature: true,
+            ..Default::default()
+        };
+        self.azure.auth = crate::azure::AzureAuth::None;
+        self.signing = Signing::Unsigned;
+        self
+    }
+}
+
+/// The bucket or container `url` is in, as one string: `s3://bucket`, `s3://<id>@bucket`,
+/// `gs://bucket`, `abfss://container@account`. What is learned about signing is kept
+/// per place.
+pub fn access_key(url: &str) -> Option<String> {
+    if let Some((account, container, _)) = crate::source::azure_parts(url) {
+        return Some(format!("abfss://{container}@{account}"));
+    }
+    let (id, _) = crate::source::split_source_id(url);
+    let (kind, bucket, _) = crate::cloud_browse::split_bucket_url(url)?;
+    Some(match id {
+        Some(id) => format!("{}://{id}@{bucket}", kind.scheme()),
+        None => format!("{}://{bucket}", kind.scheme()),
+    })
+}
+
+fn access() -> &'static Mutex<HashMap<String, bool>> {
+    static MAP: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    MAP.get_or_init(Default::default)
+}
+
+/// Remember for the session whether `place` (an [`access_key`]) is read unsigned.
+pub fn remember_access(place: &str, unsigned: bool) {
+    if let Ok(mut map) = access().lock() {
+        map.insert(place.to_string(), unsigned);
+    }
+    if unsigned {
+        found_public(place);
+    }
+}
+
+fn public_places() -> &'static Mutex<Vec<String>> {
+    static PLACES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    PLACES.get_or_init(Default::default)
+}
+
+/// Note that the place (an [`access_key`]) was read with no signature, for the public
+/// source to list from now on.
+pub fn found_public(place: &str) {
+    if let Ok(mut places) = public_places().lock()
+        && !places.iter().any(|p| p == place)
+    {
+        places.push(place.to_string());
+    }
+}
+
+/// The public places found since the last call, as URLs of their roots.
+pub fn take_public_places() -> Vec<String> {
+    let places = public_places()
+        .lock()
+        .map(|mut places| std::mem::take(&mut *places))
+        .unwrap_or_default();
+    places
+        .into_iter()
+        .map(
+            |place| match crate::source::azure_parts(&format!("{place}.dfs.core.windows.net/")) {
+                Some((account, container, _)) => crate::source::azure_url(&account, &container, ""),
+                None => format!("{place}/"),
+            },
+        )
+        .collect()
+}
+
+/// What this session learned about signing requests to the place `url` is in: `true`
+/// for unsigned.
+pub fn known_access(url: &str) -> Option<bool> {
+    let key = access_key(url)?;
+    access().lock().ok()?.get(&key).copied()
 }
 
 /// Which source a plain `s3://bucket` belongs to, when a source other than the default
@@ -552,7 +793,11 @@ fn bucket_sources() -> &'static Mutex<HashMap<String, String>> {
 
 /// Remember that `source` reaches `bucket`, for URLs that do not name their source.
 pub fn remember_bucket(source: &Source, bucket: &str) {
-    if source.named_in_urls() || source.id == DEFAULT_S3 || source.id == DEFAULT_GCS {
+    if source.public
+        || source.named_in_urls()
+        || source.id == DEFAULT_S3
+        || source.id == DEFAULT_GCS
+    {
         return;
     }
     let key = format!("{}://{bucket}", source.kind.scheme());
@@ -566,10 +811,55 @@ fn remembered(kind: ProviderKind, bucket: &str) -> Option<String> {
     bucket_sources().lock().ok()?.get(&key).cloned()
 }
 
-/// Resolve `url` against the sources in `config` and on this machine. May run a
-/// credential command, so call it on a worker.
+/// Resolve `url` against the sources in `config` and on this machine, with an Amazon
+/// S3 bucket's own region. May run a credential command and ask S3 where the bucket is,
+/// so call it on a worker.
 pub fn resolve(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
-    resolve_with(url, config, &Environment::current())
+    let mut resolved = resolve_with(url, config, &Environment::current())?;
+    if resolved.kind == ProviderKind::S3
+        && resolved.s3.endpoint.is_none()
+        && let Some((_, bucket, _)) = crate::cloud_browse::split_bucket_url(&resolved.url)
+        && let Some(region) = crate::cloud_browse::s3_bucket_region(&bucket)
+    {
+        resolved.s3.region = Some(region);
+    }
+    Ok(resolved)
+}
+
+/// As [`resolve`], for opening an object. A place whose signing is still [`Signing::Try`]
+/// is settled first with one unsigned request, since the libraries that open it make
+/// many requests and cannot retry them without a signature.
+pub fn resolve_for_open(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
+    let resolved = resolve(url, config)?;
+    if resolved.signing != Signing::Try {
+        return Ok(resolved);
+    }
+    Ok(match crate::cloud_browse::probe_unsigned(&resolved) {
+        Some(true) => {
+            remember_access(&resolved.place, true);
+            resolved.unsigned()
+        }
+        Some(false) => {
+            remember_access(&resolved.place, false);
+            Resolved {
+                signing: Signing::Signed,
+                ..resolved
+            }
+        }
+        None => resolved,
+    })
+}
+
+/// The public source whose datasets hold `url`.
+fn public_source_for<'a>(url: &str, sources: &'a [Source]) -> Option<&'a Source> {
+    let (id, plain) = crate::source::split_source_id(url);
+    if id.is_some() {
+        return None;
+    }
+    sources
+        .iter()
+        .filter(|s| s.public)
+        .find(|s| s.datasets.iter().any(|d| is_within(&plain, &d.url)))
 }
 
 /// As [`resolve`], with the environment supplied.
@@ -578,13 +868,50 @@ pub fn resolve_with(
     config: &CloudConfig,
     env: &Environment<'_>,
 ) -> Result<Resolved, String> {
+    let sources = discover(config, env);
+    let place = access_key(url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
+    if let Some(public) = public_source_for(url, &sources) {
+        let resolved = match crate::source::azure_parts(url) {
+            Some((account, container, path)) => Resolved {
+                url: crate::source::azure_url(&account, &container, &path),
+                kind: ProviderKind::Azure,
+                source_id: public.id.clone(),
+                s3: S3Settings::default(),
+                azure: Default::default(),
+                signing: Signing::Unsigned,
+                place,
+            },
+            None => {
+                let (kind, _, _) = crate::cloud_browse::split_bucket_url(url)
+                    .ok_or_else(|| format!("not an object-store URL: {url}"))?;
+                Resolved {
+                    url: url.to_string(),
+                    kind,
+                    source_id: public.id.clone(),
+                    s3: S3Settings::default(),
+                    azure: Default::default(),
+                    signing: Signing::Unsigned,
+                    place,
+                }
+            }
+        };
+        return Ok(resolved.unsigned());
+    }
+    let known = access()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&place).copied());
     if let Some((account, container, path)) = crate::source::azure_parts(url) {
-        return resolve_azure(&account, &container, &path, config, env);
+        return resolve_azure(&account, &container, &path, &sources, known, place, env);
     }
     let (id, plain) = crate::source::split_source_id(url);
     let (kind, bucket, _) = crate::cloud_browse::split_bucket_url(&plain)
         .ok_or_else(|| format!("not an object-store URL: {url}"))?;
-    let find = |id: &str| discover(config, env).into_iter().find(|s| s.id == id);
+    let find = |id: &str| sources.iter().find(|s| s.id == id).cloned();
+    // A source that lists this bucket, or is named in the URL, owns it: its login is
+    // the one to read it with. The default login may be anybody's.
+    let mut owned = true;
+    let mut no_login = false;
 
     let source = match id {
         Some(id) => {
@@ -611,7 +938,10 @@ pub fn resolve_with(
                     ProviderKind::Azure => DEFAULT_AZURE_LOGIN,
                 };
                 // The default source as discovered, when it was: that is what carries
-                // the active profile. Otherwise the settings as they have always been.
+                // the active profile. Otherwise there is no login for this provider, and
+                // the settings are only where to send an unsigned request.
+                owned = false;
+                no_login = find(default_id).is_none();
                 find(default_id).unwrap_or_else(|| Source {
                     id: default_id.to_string(),
                     label: String::new(),
@@ -626,22 +956,41 @@ pub fn resolve_with(
                     profile: None,
                     buckets: Vec::new(),
                     problem: None,
+                    public: false,
+                    datasets: Vec::new(),
                     azure: Default::default(),
                 })
             }
         },
     };
 
+    let signing = match known {
+        Some(true) => Signing::Unsigned,
+        Some(false) => Signing::Signed,
+        // Never a metadata service: a machine with no login reads public data.
+        None if no_login => Signing::Unsigned,
+        None if owned => Signing::Signed,
+        None => Signing::Try,
+    };
+    let resolved = Resolved {
+        url: plain.into_owned(),
+        kind,
+        source_id: source.id.clone(),
+        s3: source.s3.clone(),
+        azure: Default::default(),
+        signing,
+        place,
+    };
+    if signing == Signing::Unsigned {
+        return Ok(resolved.unsigned());
+    }
     let id = source.id.clone();
     let source = source
         .with_credentials(env)
         .map_err(|e| format!("source \"{id}\": {e}"))?;
     Ok(Resolved {
-        url: plain.into_owned(),
-        kind,
-        source_id: source.id,
         s3: source.s3,
-        azure: Default::default(),
+        ..resolved
     })
 }
 
@@ -651,32 +1000,41 @@ fn resolve_azure(
     account: &str,
     container: &str,
     path: &str,
-    config: &CloudConfig,
+    sources: &[Source],
+    known: Option<bool>,
+    place: String,
     env: &Environment<'_>,
 ) -> Result<Resolved, String> {
-    let sources = discover(config, env);
     let named = sources
         .iter()
         .find(|s| s.kind == ProviderKind::Azure && s.azure.account.as_deref() == Some(account));
     let login = sources.iter().find(|s| s.id == DEFAULT_AZURE_LOGIN);
-    let (source_id, settings) = match named.or(login) {
-        Some(source) => (
-            source.id.clone(),
-            source
+    let signing = match (known, named, login) {
+        (Some(true), _, _) | (None, None, None) => Signing::Unsigned,
+        (Some(false), _, _) | (None, Some(_), _) => Signing::Signed,
+        (None, None, Some(_)) => Signing::Try,
+    };
+    let resolved = Resolved {
+        url: crate::source::azure_url(account, container, path),
+        kind: ProviderKind::Azure,
+        source_id: String::new(),
+        s3: S3Settings::default(),
+        azure: Default::default(),
+        signing,
+        place,
+    };
+    match named.or(login) {
+        Some(source) if signing != Signing::Unsigned => Ok(Resolved {
+            source_id: source.id.clone(),
+            azure: source
                 .azure
                 .clone()
                 .with_token(env)
                 .map_err(|e| format!("source \"{}\": {e}", source.id))?,
-        ),
-        None => (String::new(), crate::azure::AzureSettings::default()),
-    };
-    Ok(Resolved {
-        url: crate::source::azure_url(account, container, path),
-        kind: ProviderKind::Azure,
-        source_id,
-        s3: S3Settings::default(),
-        azure: settings,
-    })
+            ..resolved
+        }),
+        _ => Ok(resolved.unsigned()),
+    }
 }
 
 fn unknown_source(id: &str, config: &CloudConfig, env: &Environment<'_>) -> String {
@@ -796,6 +1154,7 @@ mod tests {
     fn a_plain_url_is_the_default_source_as_before() {
         let config = CloudConfig {
             s3_endpoint_url: Some("http://localhost:9000".to_string()),
+            s3_access_key_id: Some("key".to_string()),
             sources: vec![minio("lab", "http://127.0.0.1:9000")],
             ..Default::default()
         };
@@ -808,10 +1167,167 @@ mod tests {
                 Some("http://localhost:9000")
             );
             assert!(resolved.s3.from_env);
-
-            let gcs = resolve_with("gs://bucket/key", &config, env).unwrap();
-            assert_eq!(gcs.source_id, DEFAULT_GCS);
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("key"));
+            assert_eq!(resolved.signing, Signing::Try);
         });
+    }
+
+    #[test]
+    fn with_no_login_for_a_provider_its_urls_are_read_unsigned() {
+        let config = CloudConfig {
+            s3_endpoint_url: Some("http://localhost:9000".to_string()),
+            ..Default::default()
+        };
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let s3 = resolve_with("s3://nologin-data/key.parquet", &config, env).unwrap();
+            assert_eq!(s3.signing, Signing::Unsigned);
+            assert!(s3.s3.skip_signature && !s3.s3.from_env);
+            assert_eq!(
+                s3.s3.endpoint.as_deref(),
+                Some("http://localhost:9000"),
+                "still sent to the configured server"
+            );
+            let gcs = resolve_with("gs://nologin-bucket/key", &config, env).unwrap();
+            assert_eq!(gcs.source_id, DEFAULT_GCS);
+            assert_eq!(gcs.signing, Signing::Unsigned);
+            let azure = resolve_with(
+                "abfss://c@nologinacct.dfs.core.windows.net/k.parquet",
+                &config,
+                env,
+            )
+            .unwrap();
+            assert_eq!(azure.signing, Signing::Unsigned);
+            assert_eq!(azure.azure.auth, crate::azure::AzureAuth::None);
+        });
+    }
+
+    #[test]
+    fn a_login_that_may_not_own_the_place_tries_then_remembers() {
+        let machine = Machine::new(
+            &[
+                ("AWS_ACCESS_KEY_ID", "AKIA"),
+                ("AWS_SECRET_ACCESS_KEY", "s"),
+            ],
+            &[],
+        );
+        with_machine(&machine, |env| {
+            let config = CloudConfig::from_env(env.var);
+            let first = resolve_with("s3://tries-bucket/a.parquet", &config, env).unwrap();
+            assert_eq!(first.signing, Signing::Try);
+            assert_eq!(first.place, "s3://tries-bucket");
+            assert_eq!(first.s3.access_key_id.as_deref(), Some("AKIA"));
+
+            let unsigned = first.unsigned();
+            assert!(unsigned.s3.skip_signature);
+            assert_eq!(unsigned.s3.access_key_id, None, "no key goes with it");
+
+            remember_access("s3://tries-bucket", true);
+            let again = resolve_with("s3://tries-bucket/b/c.parquet", &config, env).unwrap();
+            assert_eq!(again.signing, Signing::Unsigned);
+            assert!(take_public_places().contains(&"s3://tries-bucket/".to_string()));
+
+            remember_access("s3://signed-bucket", false);
+            let signed = resolve_with("s3://signed-bucket/x", &config, env).unwrap();
+            assert_eq!(signed.signing, Signing::Signed);
+        });
+    }
+
+    #[test]
+    fn public_datasets_are_built_in_and_read_unsigned() {
+        let machine = Machine::new(
+            &[
+                ("AWS_ACCESS_KEY_ID", "AKIA"),
+                ("AWS_SECRET_ACCESS_KEY", "s"),
+            ],
+            &[],
+        );
+        with_machine(&machine, |env| {
+            let config = CloudConfig::from_env(env.var);
+            let public = discover(&config, env)
+                .into_iter()
+                .find(|s| s.id == PUBLIC)
+                .expect("on by default");
+            assert!(public.public && public.datasets.len() >= 6);
+            assert!(
+                public
+                    .datasets
+                    .iter()
+                    .all(|d| !d.name.is_empty() && !d.license.is_empty() && !d.homepage.is_empty())
+            );
+            for dataset in &public.datasets {
+                let resolved = resolve_with(&dataset.url, &config, env).unwrap();
+                assert_eq!(resolved.signing, Signing::Unsigned, "{}", dataset.url);
+                assert_eq!(resolved.source_id, PUBLIC);
+                assert_eq!(resolved.s3.access_key_id, None);
+            }
+            let inside = resolve_with(
+                "s3://noaa-ghcn-pds/parquet/by_year/YEAR=2020/",
+                &config,
+                env,
+            )
+            .unwrap();
+            assert_eq!(inside.signing, Signing::Unsigned);
+            // The rest of the bucket is not a dataset.
+            let beside = resolve_with("s3://noaa-ghcn-pds/csv/", &config, env).unwrap();
+            assert_eq!(beside.signing, Signing::Try);
+
+            let off = CloudConfig {
+                public_datasets: Some(false),
+                ..config.clone()
+            };
+            assert!(discover(&off, env).iter().all(|s| s.id != PUBLIC));
+        });
+    }
+
+    #[test]
+    fn a_configured_public_source_mixes_providers() {
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let config = CloudConfig {
+                sources: vec![CloudSourceConfig {
+                    name: "open-data".to_string(),
+                    public: Some(true),
+                    buckets: vec![
+                        "s3://gbif-open-data-us-east-1/occurrence/".to_string(),
+                        "abfss://nyctlc@azureopendatastorage.dfs.core.windows.net/".to_string(),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let source = discover(&config, env)
+                .into_iter()
+                .find(|s| s.id == "open-data")
+                .unwrap();
+            assert!(source.public && !source.named_in_urls());
+            assert_eq!(
+                source.datasets[0].name,
+                "gbif-open-data-us-east-1/occurrence"
+            );
+            assert_eq!(source.datasets[1].name, "azureopendatastorage/nyctlc");
+            assert_eq!(
+                source.bucket_url(&source.datasets[0].url),
+                "s3://gbif-open-data-us-east-1/occurrence/"
+            );
+            let azure = resolve_with(
+                "abfss://nyctlc@azureopendatastorage.dfs.core.windows.net/yellow/",
+                &config,
+                env,
+            )
+            .unwrap();
+            assert_eq!(azure.source_id, "open-data");
+            assert_eq!(azure.signing, Signing::Unsigned);
+        });
+    }
+
+    #[test]
+    fn urls_within_a_root() {
+        assert!(is_within("s3://b/parquet/x", "s3://b/parquet/"));
+        assert!(is_within("s3://b/parquet", "s3://b/parquet/"));
+        assert!(!is_within("s3://b/parquetx", "s3://b/parquet/"));
+        assert!(is_within(
+            "https://acct.blob.core.windows.net/release/2026/",
+            "abfss://release@acct.dfs.core.windows.net/"
+        ));
     }
 
     #[test]
@@ -895,7 +1411,7 @@ mod tests {
             };
             let found = discover(&config, env);
             let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
-            assert_eq!(ids, ["lab", DEFAULT_S3]);
+            assert_eq!(ids, ["lab", DEFAULT_S3, PUBLIC]);
             assert_eq!(found[0].bucket_url("data"), "s3://lab@data");
             assert_eq!(found[1].label, "Amazon S3");
 
@@ -909,7 +1425,11 @@ mod tests {
                 ..Default::default()
             };
             let found = discover(&replacing, env);
-            assert_eq!(found.len(), 1);
+            assert_eq!(
+                found.len(),
+                2,
+                "the replaced source and the public datasets"
+            );
             assert_eq!(found[0].label, "Work AWS");
             assert_eq!(found[0].tier, Tier::Config);
         });
@@ -1009,7 +1529,7 @@ aws_secret_access_key = minioadmin
             let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
             // The active profile is the default source; a profile with only a region
             // cannot log in and is not listed.
-            assert_eq!(ids, [DEFAULT_S3, "aws-default", "aws-lab"]);
+            assert_eq!(ids, [DEFAULT_S3, "aws-default", "aws-lab", PUBLIC]);
             let lab = found.iter().find(|s| s.id == "aws-lab").unwrap();
             assert!(
                 lab.named_in_urls(),
@@ -1080,7 +1600,7 @@ aws_secret_access_key = minioadmin
             let found = discover(&config, env);
             let mut ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
             ids.sort();
-            assert_eq!(ids, ["mc-corp-minio", "mc-lab", "s3cfg"]);
+            assert_eq!(ids, ["mc-corp-minio", "mc-lab", PUBLIC, "s3cfg"]);
             let lab = found.iter().find(|s| s.id == "mc-lab").unwrap();
             assert_eq!(
                 lab.origin, "MC_HOST_lab",
@@ -1124,7 +1644,7 @@ aws_secret_access_key = minioadmin
             };
             let found = discover(&config, env);
             let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
-            assert_eq!(ids, ["lab"], "the config's source stays");
+            assert_eq!(ids, ["lab", PUBLIC], "the config's source stays");
             assert_eq!(found[0].origin, "datui config, mc alias");
         });
     }

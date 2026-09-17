@@ -845,7 +845,8 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
         })
     });
     assert!(listed, "both sources should list: {:?}", app.home.cloud);
-    let home = screen_text(&mut app, 110, 30);
+    // Tall enough for the CLOUD rows below whatever earlier tests left in Recent.
+    let home = screen_text(&mut app, 110, 60);
     println!("{home}");
     assert!(home.contains("CLOUD"), "one CLOUD section");
     assert!(
@@ -1156,4 +1157,254 @@ fn mc_and_s3cmd_configs_are_sources_that_open() {
     };
     assert!(open("s3://mc-lab@data/table.parquet").contains(&"first_name".to_string()));
     assert!(open("s3://s3cfg@data/table.parquet").contains(&"product".to_string()));
+}
+
+/// Open `url` in a fresh app, confirming a download when asked, and return the headers.
+fn open_url(url: &str, config: &CloudConfig) -> Result<Vec<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        datui::config::AppConfig {
+            cloud: config.clone(),
+            ..Default::default()
+        },
+    );
+    let open = datui::AppEvent::Open(
+        vec![std::path::PathBuf::from(url)],
+        datui::OpenOptions::default(),
+    );
+    if let Some(crash) = drive(&mut app, open) {
+        return Err(crash);
+    }
+    pump_until(&mut app, &rx, 120, |app| {
+        app.awaiting_download_confirmation() || (app.data_table_state.is_some() && !app.is_busy())
+    });
+    if app.awaiting_download_confirmation() {
+        app.event(&key(crossterm::event::KeyCode::Left));
+        drive(&mut app, key(crossterm::event::KeyCode::Enter));
+        pump_until(&mut app, &rx, 120, |app| {
+            app.data_table_state.is_some() && !app.is_busy()
+        });
+    }
+    match app.data_table_state.as_ref() {
+        Some(state) if !app.is_busy() => Ok(state.headers()),
+        _ => Err(format!("did not load: {:?}", app.home.status)),
+    }
+}
+
+/// The first data file under `root`: down the first few prefixes of each level, taking
+/// Parquet of any size (only its footer is read) or anything else under 8 MB.
+fn first_openable(
+    root: &str,
+    config: &CloudConfig,
+    runtime: &tokio::runtime::Handle,
+) -> Result<Option<String>, String> {
+    let mut pending = vec![root.to_string()];
+    let mut listings = 0;
+    while let Some(dir) = pending.pop() {
+        listings += 1;
+        if listings > 30 {
+            break;
+        }
+        let rows = runtime
+            .block_on(cloud_browse::list_objects(&dir, config))
+            .map_err(|e| format!("listing {dir}: {e}"))?;
+        if listings == 1 && rows.is_empty() {
+            return Err(format!("{dir} lists nothing"));
+        }
+        let parquet =
+            |r: &datui::discover::Entry| datui::discover::is_parquet_key(&r.path.to_string_lossy());
+        if let Some(row) = rows
+            .iter()
+            .filter(|r| r.kind == datui::discover::EntryKind::File)
+            .find(|r| parquet(r) || r.size.is_some_and(|s| s < 8 << 20))
+        {
+            return Ok(Some(row.path.to_string_lossy().into_owned()));
+        }
+        let mut dirs: Vec<String> = rows
+            .iter()
+            .filter(|r| r.kind == datui::discover::EntryKind::Directory)
+            .take(3)
+            .map(|r| r.path.to_string_lossy().into_owned())
+            .collect();
+        dirs.reverse();
+        pending.extend(dirs);
+    }
+    Ok(None)
+}
+
+/// Every built-in public dataset lists and opens, with whatever credentials this
+/// machine has for other stores, or none. The weekly `Public datasets` workflow runs
+/// this with none.
+///
+/// ```bash
+/// DATUI_LIVE_PUBLIC=1 cargo test --test cloud_live_test -- --ignored --nocapture public
+/// ```
+#[test]
+#[ignore = "reads public datasets over the network; set DATUI_LIVE_PUBLIC=1"]
+fn every_public_dataset_lists_and_opens() {
+    if std::env::var("DATUI_LIVE_PUBLIC").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
+        return;
+    }
+    let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
+    let runtime = common::test_runtime();
+    let mut failures = Vec::new();
+    for dataset in cloud_sources::builtin_datasets() {
+        let started = std::time::Instant::now();
+        let found = match first_openable(&dataset.url, &config, &runtime) {
+            Ok(Some(url)) => url,
+            Ok(None) => {
+                failures.push(format!("{}: no data file found", dataset.name));
+                continue;
+            }
+            Err(e) => {
+                failures.push(format!("{}: {e}", dataset.name));
+                continue;
+            }
+        };
+        match open_url(&found, &config) {
+            Ok(headers) if !headers.is_empty() => println!(
+                "ok   {} ({:.1}s): {found}, {} columns",
+                dataset.name,
+                started.elapsed().as_secs_f32(),
+                headers.len()
+            ),
+            Ok(_) => failures.push(format!("{}: {found} has no columns", dataset.name)),
+            Err(e) => failures.push(format!("{}: {found}: {e}", dataset.name)),
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The public datasets as the home screen shows them: a row under CLOUD, datasets by
+/// name, and a file opened from inside one. The trail names the dataset, and Backspace
+/// from the dataset's root returns to the datasets.
+#[test]
+#[ignore = "reads public datasets over the network; set DATUI_LIVE_PUBLIC=1"]
+fn public_datasets_browse_and_open_from_the_home_screen() {
+    if std::env::var("DATUI_LIVE_PUBLIC").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
+        return;
+    }
+    let (mut app, rx) = live_app();
+    let headers = open_through_home(
+        &mut app,
+        &rx,
+        "public",
+        &["BigQuery sample data", "us-states", "us-states.parquet"],
+    );
+    assert!(headers.iter().any(|h| h == "name"), "{headers:?}");
+
+    let (mut app, rx) = live_app();
+    assert!(enter_source(&mut app, &rx, "public"));
+    let text = screen_text(&mut app, 120, 30);
+    assert!(
+        text.contains("NOAA daily weather") && text.contains("CC0"),
+        "{text}"
+    );
+    assert!(select_row(&mut app, "BigQuery sample data"));
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    assert!(pump_until(&mut app, &rx, 60, |app| app
+        .home
+        .visible()
+        .iter()
+        .any(
+            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "us-states")
+        )));
+    let sep = datui::glyphs::get().trail;
+    let text = screen_text(&mut app, 120, 30);
+    assert!(
+        text.contains(&format!("Public datasets {sep} BigQuery sample data")),
+        "{text}"
+    );
+    app.event(&key(crossterm::event::KeyCode::Backspace));
+    assert_eq!(
+        app.home.browsing,
+        Some(std::path::PathBuf::from("cloud://public")),
+        "back to the datasets"
+    );
+}
+
+/// The quirks the public list is chosen to exercise: a bucket in another region, Parquet
+/// with no extension, folder markers and Spark files, and a public bucket that is not on
+/// the list at all, which is tried and remembered.
+#[test]
+#[ignore = "reads public datasets over the network; set DATUI_LIVE_PUBLIC=1"]
+fn public_data_quirks() {
+    if std::env::var("DATUI_LIVE_PUBLIC").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
+        return;
+    }
+    let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
+    let runtime = common::test_runtime();
+
+    assert_eq!(
+        cloud_browse::s3_bucket_region("aws-public-blockchain").as_deref(),
+        Some("us-east-2")
+    );
+
+    // GBIF: CC BY-NC, so not on the list, and Parquet part files with no extension.
+    let snapshots = runtime
+        .block_on(cloud_browse::list_objects(
+            "s3://gbif-open-data-us-east-1/occurrence/",
+            &config,
+        ))
+        .expect("GBIF lists");
+    let latest = snapshots
+        .iter()
+        .map(|r| r.path.to_string_lossy().into_owned())
+        .max()
+        .expect("a snapshot");
+    let parts = runtime
+        .block_on(cloud_browse::list_objects(
+            &format!("{latest}/occurrence.parquet/"),
+            &config,
+        ))
+        .expect("the snapshot's part files list");
+    let part = parts
+        .iter()
+        .filter(|r| r.name.chars().all(|c| c.is_ascii_digit()))
+        .min_by_key(|r| r.size)
+        .expect("a part file with no extension");
+    let headers = open_url(&part.path.to_string_lossy(), &config).expect("the part file opens");
+    assert!(headers.iter().any(|h| h == "gbifid"), "{headers:?}");
+    let places = cloud_sources::take_public_places();
+    println!("public places found: {places:?}");
+
+    // Azure Open Datasets: hive folders with marker blobs beside them.
+    let yellow = runtime
+        .block_on(cloud_browse::list_objects(
+            "abfss://nyctlc@azureopendatastorage.dfs.core.windows.net/yellow/",
+            &config,
+        ))
+        .expect("nyctlc lists");
+    assert!(
+        yellow
+            .iter()
+            .all(|r| r.kind == datui::discover::EntryKind::Directory),
+        "folder markers are not files: {:?}",
+        yellow
+            .iter()
+            .filter(|r| r.kind != datui::discover::EntryKind::Directory)
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
+    );
+    let spark = runtime
+        .block_on(cloud_browse::list_objects(
+            "abfss://nyctlc@azureopendatastorage.dfs.core.windows.net/yellow/puYear=2018/puMonth=1/",
+            &config,
+        ))
+        .expect("a partition lists");
+    assert!(
+        spark
+            .iter()
+            .all(|r| !cloud_browse::is_job_file(&r.name) && !r.name.starts_with('_')),
+        "{:?}",
+        spark.iter().map(|r| &r.name).collect::<Vec<_>>()
+    );
 }

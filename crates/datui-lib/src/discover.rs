@@ -194,6 +194,60 @@ impl Entry {
     }
 }
 
+/// Whether an object key or path is Parquet: named `.parquet`, or a part file with no
+/// extension inside a folder named `.parquet`, as Spark and GBIF write them
+/// (`occurrence.parquet/000001`). Hidden and job files (`_SUCCESS`, `.crc`) are not.
+pub fn is_parquet_key(key: &str) -> bool {
+    let key = key.trim_end_matches('/');
+    let (folder, name) = match key.rsplit_once('/') {
+        Some((folder, name)) => (folder, name),
+        None => ("", key),
+    };
+    if name.starts_with(['_', '.']) {
+        return false;
+    }
+    if name.to_ascii_lowercase().ends_with(".parquet") {
+        return true;
+    }
+    let folder_name = folder.rsplit('/').next().unwrap_or(folder);
+    !name.contains('.') && folder_name.to_ascii_lowercase().ends_with(".parquet")
+}
+
+#[cfg(test)]
+mod parquet_key_tests {
+    use super::is_parquet_key;
+
+    #[test]
+    fn parquet_without_an_extension_is_known_by_its_folder() {
+        assert!(is_parquet_key(
+            "occurrence/2026-09-01/occurrence.parquet/000001"
+        ));
+        assert!(is_parquet_key("data/part-0.parquet"));
+        assert!(is_parquet_key("DATA/PART-0.PARQUET"));
+        assert!(!is_parquet_key(
+            "occurrence/2026-09-01/occurrence.parquet/_SUCCESS"
+        ));
+        assert!(!is_parquet_key("occurrence.parquet/.part-0.crc"));
+        assert!(!is_parquet_key("occurrence/2026-09-01/citation.txt"));
+        assert!(!is_parquet_key("notes/000001"));
+    }
+}
+
+/// Whether a local file is Parquet by its contents: `PAR1` at both ends.
+pub fn has_parquet_magic(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 4];
+    let mut tail = [0u8; 4];
+    file.read_exact(&mut head).is_ok()
+        && file.seek(SeekFrom::End(-4)).is_ok()
+        && file.read_exact(&mut tail).is_ok()
+        && &head == b"PAR1"
+        && &tail == b"PAR1"
+}
+
 /// Whether a path looks like something datui can open.
 pub fn is_data_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {

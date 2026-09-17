@@ -21,7 +21,7 @@
 //! filesystem roots use. A bucket list is a network round trip, and a round trip on the
 //! event thread is a frozen interface.
 
-use crate::cloud_sources::{S3Settings, Source};
+use crate::cloud_sources::{S3Settings, Signing, Source};
 use crate::config::CloudConfig;
 use std::path::{Path, PathBuf};
 
@@ -467,12 +467,15 @@ pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::Ama
     // Only the default source borrows the shell's AWS variables. A source from the
     // config names its own keys, and filling its gaps from the environment would sign
     // its requests as whoever the shell happens to be.
-    let builder = if settings.from_env {
+    let builder = if settings.from_env && !settings.skip_signature {
         object_store::aws::AmazonS3Builder::from_env()
     } else {
         object_store::aws::AmazonS3Builder::new()
     };
     let mut builder = builder.with_bucket_name(bucket);
+    if settings.skip_signature {
+        builder = builder.with_skip_signature(true);
+    }
     if let Some(endpoint) = &settings.endpoint {
         // `object_store` refuses plain `http` unless told otherwise, which is exactly
         // what a MinIO container speaks; `https` endpoints are left alone.
@@ -522,10 +525,18 @@ pub fn store_for_bucket(
     kind: ProviderKind,
     bucket: &str,
     settings: &S3Settings,
+    unsigned: bool,
 ) -> Result<std::sync::Arc<dyn object_store::ObjectStore>, String> {
     match kind {
         ProviderKind::Gcs => {
-            let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+            // Unsigned means no credential lookup at all, so a machine with no Google
+            // login never waits on a metadata service that is not there.
+            let builder = if unsigned {
+                object_store::gcp::GoogleCloudStorageBuilder::new().with_skip_signature(true)
+            } else {
+                object_store::gcp::GoogleCloudStorageBuilder::from_env()
+            };
+            let store = builder
                 .with_bucket_name(bucket)
                 .build()
                 .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))?;
@@ -587,12 +598,94 @@ pub async fn list_objects(
             .await
             .map_err(|e| format!("{e}"))??
     };
+    let signing = resolved.signing;
+    let place = resolved.place.clone();
+    match list_level(url, &resolved).await {
+        Err(refused) if signing == Signing::Try && is_refusal(&refused) => {
+            // Perhaps public, and refused only because the request was signed by a
+            // login from somewhere else.
+            let rows = list_level(url, &resolved.unsigned())
+                .await
+                .map_err(|_| refused)?;
+            crate::cloud_sources::remember_access(&place, true);
+            Ok(rows)
+        }
+        Ok(rows) => {
+            match signing {
+                Signing::Try => crate::cloud_sources::remember_access(&place, false),
+                // Read with no login, and not one of the public datasets already.
+                Signing::Unsigned if !is_public_source(&resolved.source_id, config) => {
+                    crate::cloud_sources::found_public(&place)
+                }
+                _ => {}
+            }
+            Ok(rows)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether `id` names a source of public datasets, whose places are listed already.
+fn is_public_source(id: &str, config: &CloudConfig) -> bool {
+    id == crate::cloud_sources::PUBLIC
+        || config
+            .sources
+            .iter()
+            .any(|s| s.name == id && s.public == Some(true))
+}
+
+/// Whether an error is the service refusing the request, rather than failing to answer.
+pub fn is_refusal(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    [
+        "403",
+        "401",
+        "forbidden",
+        "unauthorized",
+        "accessdenied",
+        "access denied",
+        "permissiondenied",
+        "authorizationfailure",
+        "authenticationfailed",
+        "invalidauthenticationinfo",
+        "noauthenticationinformation",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+/// Files that jobs leave beside their output, and markers that stand in for folders.
+/// Neither is data, and neither is worth a row.
+pub fn is_job_file(name: &str) -> bool {
+    name == "_SUCCESS"
+        || name.starts_with("_committed_")
+        || name.starts_with("_started_")
+        || name.ends_with("_$folder$")
+}
+
+/// An empty object with no extension: a marker some tool left for a folder, whether or
+/// not the folder still has anything in it (`yellow/year=2032` beside no `year=2032/`).
+/// Nothing datui opens is both empty and nameless.
+pub fn is_empty_marker(name: &str, size: u64) -> bool {
+    size == 0 && !name.contains('.')
+}
+
+/// One level of a place, signed or not as `resolved` says.
+async fn list_level(
+    url: &str,
+    resolved: &crate::cloud_sources::Resolved,
+) -> Result<Vec<crate::discover::Entry>, String> {
     if resolved.kind == ProviderKind::Azure {
-        return list_azure_objects(&resolved).await;
+        return list_azure_objects(resolved).await;
     }
     let (kind, bucket, prefix) =
         split_bucket_url(&resolved.url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
-    let store = store_for_bucket(kind, &bucket, &resolved.s3)?;
+    let store = store_for_bucket(
+        kind,
+        &bucket,
+        &resolved.s3,
+        resolved.signing == Signing::Unsigned,
+    )?;
 
     let os_prefix = if prefix.is_empty() {
         None
@@ -614,6 +707,11 @@ pub async fn list_objects(
 
     // Prefixes first. They are the directories of an object store, and putting them
     // above the objects matches what every local listing does.
+    let prefixes: Vec<String> = result
+        .common_prefixes
+        .iter()
+        .map(|p| p.as_ref().to_string())
+        .collect();
     for common in result.common_prefixes {
         let name = common
             .as_ref()
@@ -638,8 +736,14 @@ pub async fn list_objects(
         let location = object.location.as_ref().to_string();
         let name = location.rsplit('/').next().unwrap_or(&location).to_string();
         // A key ending in a slash is how consoles fake a folder. It is not data, and
-        // offering it as openable would be offering a zero-byte file.
-        if name.is_empty() {
+        // offering it as openable would be offering a zero-byte file. So is an empty
+        // object named like a folder beside it, or like the folder being listed.
+        if name.is_empty()
+            || is_job_file(&name)
+            || crate::azure::is_folder_marker(&location, object.size, &prefixes)
+            || is_empty_marker(&name, object.size)
+            || (object.size == 0 && location.trim_end_matches('/') == prefix)
+        {
             continue;
         }
         rows.push(crate::discover::Entry {
@@ -697,7 +801,12 @@ async fn list_azure_objects(
     for object in result.objects {
         let location = object.location.as_ref().to_string();
         let name = location.rsplit('/').next().unwrap_or(&location).to_string();
-        if name.is_empty() || crate::azure::is_folder_marker(&location, object.size, &prefixes) {
+        if name.is_empty()
+            || is_job_file(&name)
+            || crate::azure::is_folder_marker(&location, object.size, &prefixes)
+            || is_empty_marker(&name, object.size)
+            || (object.size == 0 && location.trim_end_matches('/') == prefix)
+        {
             continue;
         }
         rows.push(crate::discover::Entry {
@@ -728,6 +837,18 @@ pub struct Listed {
 
 /// Everything at the top of a source.
 pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
+    // Known in advance: nothing to ask anyone.
+    if source.public {
+        return Ok(source
+            .datasets
+            .iter()
+            .map(|dataset| Listed {
+                name: dataset.name.clone(),
+                place: PathBuf::from(&dataset.url),
+                details: dataset_details(dataset),
+            })
+            .collect());
+    }
     if source.kind != ProviderKind::Azure {
         // The bucket listings send their request with a blocking client. On a thread
         // of its own, a server that never answers holds up only its own source, not
@@ -793,6 +914,162 @@ pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
     })
     .await
     .map_err(|e| format!("{e}"))?
+}
+
+/// Details-pane lines for a public dataset.
+pub fn dataset_details(dataset: &crate::cloud_sources::Dataset) -> Vec<(String, String)> {
+    [
+        ("about", &dataset.description),
+        ("publisher", &dataset.publisher),
+        ("license", &dataset.license),
+        ("homepage", &dataset.homepage),
+        ("url", &dataset.url),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .map(|(key, value)| (key.to_string(), value.clone()))
+    .collect()
+}
+
+/// Where Amazon S3 keeps `bucket`, from the `x-amz-bucket-region` header S3 sends with
+/// no credentials, whatever the status. Asked once per bucket per session, and `None`
+/// when S3 does not say.
+pub fn s3_bucket_region(bucket: &str) -> Option<String> {
+    static REGIONS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
+    > = std::sync::OnceLock::new();
+    let regions = REGIONS.get_or_init(Default::default);
+    if let Some(known) = regions.lock().ok()?.get(bucket) {
+        return known.clone();
+    }
+    // A bucket with a dot in its name does not match the wildcard certificate.
+    let url = if bucket.contains('.') {
+        format!("https://s3.amazonaws.com/{bucket}")
+    } else {
+        format!("https://{bucket}.s3.amazonaws.com/")
+    };
+    let response = probe_agent().head(&url).call();
+    let region = match response {
+        Ok(response) => response
+            .headers()
+            .get("x-amz-bucket-region")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        // No answer is not an answer: ask again next time.
+        Err(_) => return None,
+    };
+    if let Ok(mut map) = regions.lock() {
+        map.insert(bucket.to_string(), region.clone());
+    }
+    region
+}
+
+/// A client for one short request whose status is the answer: errors are statuses,
+/// redirects are not followed.
+fn probe_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build()
+        .into()
+}
+
+/// Whether the place `resolved` points at can be read with no signature: `Some(true)`
+/// when an unsigned request succeeds, `Some(false)` when it is refused, `None` when the
+/// answer says neither (no network, a missing object, a custom endpoint).
+///
+/// One request: a `HEAD` of an object, or a one-key listing of a prefix.
+pub fn probe_unsigned(resolved: &crate::cloud_sources::Resolved) -> Option<bool> {
+    let url = probe_url(resolved)?;
+    let agent = probe_agent();
+    let mut request = if url.contains('?') {
+        agent.get(&url)
+    } else {
+        agent.head(&url)
+    };
+    if resolved.kind == ProviderKind::Azure {
+        request = request.header("x-ms-version", crate::azure::API_VERSION);
+    }
+    let response = request.call().ok()?;
+    match response.status().as_u16() {
+        200..=299 => Some(true),
+        401 | 403 => Some(false),
+        _ => None,
+    }
+}
+
+/// The plain HTTPS URL for an unsigned look at `resolved`'s place. `None` for a custom
+/// endpoint or an emulator, which are left to the signed path.
+fn probe_url(resolved: &crate::cloud_sources::Resolved) -> Option<String> {
+    let encode = |key: &str| key.split('/').map(urlencode).collect::<Vec<_>>().join("/");
+    // The object, or for a prefix or glob the folder part to list one key from.
+    let split = |key: &str| -> (String, bool) {
+        let before_glob = key.split('*').next().unwrap_or("");
+        if key.contains('*') || key.is_empty() || key.ends_with('/') {
+            let folder = match before_glob.rsplit_once('/') {
+                Some((folder, _)) => format!("{folder}/"),
+                None => String::new(),
+            };
+            (folder, true)
+        } else {
+            (key.to_string(), false)
+        }
+    };
+    match resolved.kind {
+        ProviderKind::S3 => {
+            if resolved.s3.endpoint.is_some() {
+                return None;
+            }
+            let (_, bucket, _) = split_bucket_url(&resolved.url)?;
+            let key = resolved.url.split_once("://")?.1;
+            let key = key.split_once('/').map_or("", |(_, key)| key);
+            let region = resolved.s3.region.as_deref().unwrap_or("us-east-1");
+            let base = if bucket.contains('.') {
+                format!("https://s3.{region}.amazonaws.com/{bucket}")
+            } else {
+                format!("https://{bucket}.s3.{region}.amazonaws.com")
+            };
+            Some(match split(key) {
+                (folder, true) => format!(
+                    "{base}/?list-type=2&max-keys=1&prefix={}",
+                    urlencode(&folder)
+                ),
+                (object, false) => format!("{base}/{}", encode(&object)),
+            })
+        }
+        ProviderKind::Gcs => {
+            let (_, bucket, _) = split_bucket_url(&resolved.url)?;
+            let key = resolved.url.split_once("://")?.1;
+            let key = key.split_once('/').map_or("", |(_, key)| key);
+            Some(match split(key) {
+                (folder, true) => format!(
+                    "https://storage.googleapis.com/storage/v1/b/{bucket}/o?maxResults=1&prefix={}",
+                    urlencode(&folder)
+                ),
+                (object, false) => {
+                    format!(
+                        "https://storage.googleapis.com/{bucket}/{}",
+                        encode(&object)
+                    )
+                }
+            })
+        }
+        ProviderKind::Azure => {
+            if resolved.azure.blob_endpoint.is_some() || resolved.azure.use_emulator {
+                return None;
+            }
+            let (account, container, key) = crate::source::azure_parts(&resolved.url)?;
+            let base = format!("https://{account}.blob.core.windows.net/{container}");
+            Some(match split(&key) {
+                (folder, true) => format!(
+                    "{base}?restype=container&comp=list&maxresults=1&prefix={}",
+                    urlencode(&folder)
+                ),
+                (object, false) => format!("{base}/{}", encode(&object)),
+            })
+        }
+    }
 }
 
 /// The containers of one account in an Azure source, as rows to step into.
@@ -997,6 +1274,72 @@ pub(crate) fn urlencode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn resolved(url: &str, kind: ProviderKind) -> crate::cloud_sources::Resolved {
+        crate::cloud_sources::Resolved {
+            url: url.to_string(),
+            kind,
+            source_id: String::new(),
+            s3: S3Settings::default(),
+            azure: Default::default(),
+            signing: Signing::Try,
+            place: crate::cloud_sources::access_key(url).unwrap(),
+        }
+    }
+
+    #[test]
+    fn the_unsigned_look_is_one_small_request() {
+        let mut s3 = resolved("s3://aws-public-blockchain/v1.0/btc/", ProviderKind::S3);
+        s3.s3.region = Some("us-east-2".to_string());
+        assert_eq!(
+            probe_url(&s3).unwrap(),
+            "https://aws-public-blockchain.s3.us-east-2.amazonaws.com/?list-type=2&max-keys=1&prefix=v1.0%2Fbtc%2F"
+        );
+        let object = resolved("s3://my.dotted.bucket/a b/100%.parquet", ProviderKind::S3);
+        assert_eq!(
+            probe_url(&object).unwrap(),
+            "https://s3.us-east-1.amazonaws.com/my.dotted.bucket/a%20b/100%25.parquet"
+        );
+        let glob = resolved("gs://bucket/year=*/part-*.parquet", ProviderKind::Gcs);
+        assert_eq!(
+            probe_url(&glob).unwrap(),
+            "https://storage.googleapis.com/storage/v1/b/bucket/o?maxResults=1&prefix="
+        );
+        let azure = resolved(
+            "abfss://release@overturemapswestus2.dfs.core.windows.net/2026-08-19.0/",
+            ProviderKind::Azure,
+        );
+        assert_eq!(
+            probe_url(&azure).unwrap(),
+            "https://overturemapswestus2.blob.core.windows.net/release?restype=container&comp=list&maxresults=1&prefix=2026-08-19.0%2F"
+        );
+        let mut minio = resolved("s3://data/x.parquet", ProviderKind::S3);
+        minio.s3.endpoint = Some("http://127.0.0.1:9000".to_string());
+        assert_eq!(probe_url(&minio), None, "a custom endpoint is not probed");
+    }
+
+    #[test]
+    fn refusals_and_job_files() {
+        assert!(is_refusal(
+            "Client error with status 403 Forbidden: <Code>AccessDenied</Code>"
+        ));
+        assert!(is_refusal(
+            "Server returned 401 NoAuthenticationInformation"
+        ));
+        assert!(!is_refusal("error sending request: connection refused"));
+        for name in [
+            "_SUCCESS",
+            "_committed_123",
+            "_started_123",
+            "yellow_$folder$",
+        ] {
+            assert!(is_job_file(name), "{name}");
+        }
+        assert!(!is_job_file("part-0000.parquet"));
+        assert!(is_empty_marker("year=2032", 0));
+        assert!(!is_empty_marker("year=2032", 10));
+        assert!(!is_empty_marker("empty.csv", 0));
+    }
 
     #[test]
     fn a_key_is_taken_as_the_service_stores_it() {

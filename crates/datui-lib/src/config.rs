@@ -55,8 +55,10 @@ impl ConfigManager {
         Ok(subdir_path)
     }
 
-    /// Generate default configuration template as a string with comments
-    /// All fields are commented out so defaults are used, but users can uncomment to override
+    /// Generate the default configuration template.
+    ///
+    /// Ordinary settings are commented out so defaults continue to apply. The built-in
+    /// public catalog is active: deleting one of its dataset tables must remove that dataset.
     pub fn generate_default_config(&self) -> String {
         // Serialize default config to TOML
         let config = AppConfig::default();
@@ -66,8 +68,18 @@ impl ConfigManager {
         // Build comment map from all struct comment constants
         let comments = Self::collect_all_comments();
 
-        // Comment out all fields and add comments
-        Self::comment_all_fields(toml_str, comments)
+        // Comment out ordinary fields, then append the public catalog as live TOML. Keeping
+        // the catalog separate also avoids teaching the generic formatter about arrays of
+        // tables and their nested arrays.
+        let mut result = Self::comment_all_fields(toml_str, comments);
+        result.push_str(
+            "\n# Built-in public datasets\n\
+             #\n\
+             # This active catalog is a snapshot. Delete or edit a dataset table to curate it;\n\
+             # configs generated today do not automatically receive future catalog updates.\n",
+        );
+        result.push_str(&serialize_public_catalog());
+        result
     }
 
     /// Collect all field comments from struct constants into a map
@@ -507,6 +519,9 @@ pub struct CloudSourceConfig {
     /// source, URLs of buckets, containers or folders.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub buckets: Vec<String>,
+    /// Named public datasets with optional descriptive metadata.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub datasets: Vec<PublicDatasetConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -551,8 +566,27 @@ pub struct CloudSourceConfig {
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
 }
 
+/// One entry in a public source's `[[cloud.sources.datasets]]` catalog.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct PublicDatasetConfig {
+    pub name: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub publisher: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub license: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub homepage: String,
+    /// Keys that are not recognised, kept so validation can name them.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
 /// Field names accepted in `[[cloud.sources]]`, for error messages.
-const CLOUD_SOURCE_KEYS: &str = "name, label, kind, public, buckets, endpoint_url, region, \
+const CLOUD_SOURCE_KEYS: &str = "name, label, kind, public, buckets, datasets, endpoint_url, region, \
      addressing, access_key_id_env, secret_access_key_env, session_token_env, profile, \
      configuration, project, account, account_key_env, sas_env, connection_string_env, \
      secret_command, credentials_file";
@@ -603,6 +637,11 @@ impl CloudSourceConfig {
         }
         if self.public == Some(true) {
             return self.validate_public();
+        }
+        if !self.datasets.is_empty() {
+            return Err(eyre!(
+                "cloud.sources \"{name}\": datasets applies only to a public source"
+            ));
         }
         for secret in ["account_key", "sas", "sas_token", "connection_string"] {
             if self.unknown.contains_key(secret) {
@@ -812,21 +851,130 @@ impl CloudSourceConfig {
         if let Some((field, _)) = signing.iter().find(|(_, set)| *set) {
             return Err(eyre!(
                 "cloud.sources \"{name}\": {field} does not apply to a public source, whose \
-                 buckets are URLs read with no login"
+                 datasets are URLs read with no login"
             ));
         }
-        if self.buckets.is_empty() {
+        if self.buckets.is_empty() && self.datasets.is_empty() {
             return Err(eyre!(
-                "cloud.sources \"{name}\": a public source lists its data in buckets, as URLs"
+                "cloud.sources \"{name}\": a public source lists its data in buckets or datasets"
             ));
         }
-        if let Some(bucket) = self.buckets.iter().find(|b| !public_url_is_valid(b)) {
-            return Err(eyre!(
-                "cloud.sources \"{name}\": \"{bucket}\" is not an s3://, gs:// or Azure URL"
-            ));
+        let mut names = std::collections::HashSet::new();
+        let mut urls = std::collections::HashSet::new();
+        for url in &self.buckets {
+            if !public_url_is_valid(url) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": \"{url}\" is not an s3://, gs:// or Azure URL"
+                ));
+            }
+            if !urls.insert(url.as_str()) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": dataset URL \"{url}\" is used twice"
+                ));
+            }
+            let dataset_name = public_dataset_name(url);
+            if !names.insert(dataset_name.clone()) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": dataset name \"{dataset_name}\" is used twice"
+                ));
+            }
+        }
+        for dataset in &self.datasets {
+            if !dataset.unknown.is_empty() {
+                let keys: Vec<String> = dataset
+                    .unknown
+                    .keys()
+                    .map(|key| format!("'{key}'"))
+                    .collect();
+                return Err(eyre!(
+                    "cloud.sources \"{name}\" dataset: unknown key{} {}. Expected one of: \
+                     name, url, description, publisher, license, homepage",
+                    if keys.len() > 1 { "s" } else { "" },
+                    keys.join(", ")
+                ));
+            }
+            if dataset.name.trim().is_empty() {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": every dataset needs a nonempty name"
+                ));
+            }
+            if !public_url_is_valid(&dataset.url) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\" dataset \"{}\": \"{}\" is not an s3://, \
+                     gs:// or Azure URL",
+                    dataset.name,
+                    dataset.url
+                ));
+            }
+            if !names.insert(dataset.name.clone()) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": dataset name \"{}\" is used twice",
+                    dataset.name
+                ));
+            }
+            if !urls.insert(dataset.url.as_str()) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": dataset URL \"{}\" is used twice",
+                    dataset.url
+                ));
+            }
         }
         Ok(())
     }
+}
+
+/// The built-in catalog in the same shape accepted from a user config.
+pub fn builtin_public_source() -> CloudSourceConfig {
+    #[derive(Deserialize)]
+    struct Catalog {
+        cloud: CloudConfig,
+    }
+
+    let mut sources = toml::from_str::<Catalog>(include_str!("public_datasets.toml"))
+        .expect("built-in public dataset catalog must be valid TOML")
+        .cloud
+        .sources;
+    assert_eq!(sources.len(), 1, "built-in catalog must contain one source");
+    let source = sources.remove(0);
+    assert_eq!(
+        source.name, "public",
+        "built-in catalog must preserve the public source ID"
+    );
+    source
+        .validate()
+        .expect("built-in public dataset catalog must validate");
+    source
+}
+
+fn serialize_public_catalog() -> String {
+    #[derive(Serialize)]
+    struct Catalog {
+        cloud: CatalogCloud,
+    }
+    #[derive(Serialize)]
+    struct CatalogCloud {
+        sources: Vec<CloudSourceConfig>,
+    }
+
+    toml::to_string_pretty(&Catalog {
+        cloud: CatalogCloud {
+            sources: vec![builtin_public_source()],
+        },
+    })
+    .expect("built-in public dataset catalog must serialize")
+}
+
+fn public_dataset_name(url: &str) -> String {
+    let name = match crate::source::azure_parts(url) {
+        Some((account, container, path)) => {
+            format!("{account}/{container}/{}", path.trim_matches('/'))
+        }
+        None => url
+            .split_once("://")
+            .map_or(url, |(_, rest)| rest)
+            .to_string(),
+    };
+    name.trim_end_matches('/').to_string()
 }
 
 /// Whether a public source's entry is a URL datui can read without a login: a bucket,

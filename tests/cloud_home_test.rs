@@ -65,6 +65,77 @@ fn source(name: &str, endpoint: &str) -> datui::config::CloudSourceConfig {
 }
 
 #[test]
+fn structured_public_dataset_metadata_reaches_the_home_screen() {
+    common::isolate_cache();
+    let mut config = datui::config::AppConfig::default();
+    config.data.use_desktop_recents = false;
+    config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
+    config.cloud.sources = vec![datui::config::CloudSourceConfig {
+        name: "public".to_string(),
+        label: Some("Curated public data".to_string()),
+        public: Some(true),
+        datasets: vec![datui::config::PublicDatasetConfig {
+            name: "Weather".to_string(),
+            url: "s3://weather/parquet/".to_string(),
+            description: "Daily observations".to_string(),
+            publisher: "Example agency".to_string(),
+            license: "CC0".to_string(),
+            homepage: "https://example.com/weather".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && !app.home.cloud.iter().any(|source| source.id == "public") {
+        if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                next = app.event(&event);
+            }
+        }
+    }
+
+    let source = app
+        .home
+        .cloud
+        .iter()
+        .find(|source| source.id == "public")
+        .expect("configured public source");
+    let place = std::path::PathBuf::from("s3://weather/parquet/");
+    assert_eq!(source.label, "Curated public data");
+    assert_eq!(source.buckets, std::slice::from_ref(&place));
+    assert_eq!(
+        source.names.get(&place).map(String::as_str),
+        Some("Weather")
+    );
+    let details = source.place_details.get(&place).expect("dataset details");
+    assert!(
+        details
+            .iter()
+            .any(|(key, value)| key == "about" && value == "Daily observations")
+    );
+    assert!(
+        details
+            .iter()
+            .any(|(key, value)| key == "license" && value == "CC0")
+    );
+}
+
+#[test]
 fn a_source_that_never_answers_does_not_hold_up_the_others() {
     common::isolate_cache();
     // SAFETY: the only test in this binary, and set before the runtime starts.

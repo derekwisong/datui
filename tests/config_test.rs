@@ -1904,6 +1904,30 @@ fn cloud_sources_name_the_problem() {
     let no_kind = cloud_error("[[cloud.sources]]\nname = \"lab\"\n");
     assert!(no_kind.contains("kind is required"), "{no_kind}");
 
+    let azure = cloud_config(
+        "[[cloud.sources]]\nname = \"research\"\nkind = \"azure\"\naccount = \"datuiresearch\"\nsas_env = \"RESEARCH_SAS\"\n",
+    );
+    azure.validate().expect("an azure source");
+    let two_secrets = cloud_error(
+        "[[cloud.sources]]\nname = \"r\"\nkind = \"azure\"\naccount = \"a\"\nsas_env = \"S\"\naccount_key_env = \"K\"\n",
+    );
+    assert!(two_secrets.contains("Use one"), "{two_secrets}");
+    let no_account = cloud_error("[[cloud.sources]]\nname = \"r\"\nkind = \"azure\"\n");
+    assert!(no_account.contains("needs account"), "{no_account}");
+    let literal = cloud_error(
+        "[[cloud.sources]]\nname = \"r\"\nkind = \"azure\"\naccount = \"a\"\naccount_key = \"c2VjcmV0\"\n",
+    );
+    assert!(
+        literal.contains("account_key_env") && !literal.contains("c2VjcmV0"),
+        "{literal}"
+    );
+    let azure_only =
+        cloud_error("[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\naccount = \"a\"\n");
+    assert!(
+        azure_only.contains("only to kind = \"azure\""),
+        "{azure_only}"
+    );
+
     let google_only =
         cloud_error("[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nproject = \"p\"\n");
     assert!(

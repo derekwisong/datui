@@ -11,8 +11,18 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 
 The script downloads the latest release for your platform and installs it: a
 `.deb` on Debian and Ubuntu, an `.rpm` on Fedora and RHEL, the binary elsewhere.
-It asks before using `sudo`. Prefer not to pipe to a shell? Any method below
-does the same thing.
+Prefer not to pipe to a shell? Any method below does the same thing.
+
+### Without root
+
+Where there is no `sudo`, as in Azure Cloud Shell, the script installs the binary
+into `~/.local/bin` (or `$XDG_BIN_HOME`) instead, and says how to put that on your
+`PATH` if it is not there. Pass `--user` to do the same on a machine that has
+`sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh -s -- --user
+```
 
 ## Package managers
 

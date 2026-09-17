@@ -443,8 +443,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
         }
     }
 
-    // Azure: an account named in the environment, and a signed-in `az`, which reaches
-    // every account it can see.
+    // Azure: an account or a service principal named in the environment, and a
+    // signed-in `az` or Azure PowerShell, which reaches every account it can see.
     if let Some((settings, origin)) = crate::azure::from_environment(env.var) {
         sources.push(Source {
             id: DEFAULT_AZURE_ENV.to_string(),
@@ -466,23 +466,35 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             azure: settings,
         });
     }
-    if crate::azure::az_login_evidence(env) {
+    let az = crate::azure::az_login_evidence(env);
+    let powershell = crate::azure::powershell_login_evidence(env);
+    let not_signed_in = crate::azure::not_signed_in(env);
+    if az || powershell || not_signed_in.is_some() {
+        let auth = if az || !powershell {
+            crate::azure::AzureAuth::AzCli
+        } else {
+            crate::azure::AzureAuth::PowerShell
+        };
         sources.push(Source {
             id: DEFAULT_AZURE_LOGIN.to_string(),
             label: "Azure".to_string(),
             kind: ProviderKind::Azure,
             tier: Tier::Tools,
-            origin: "az login".to_string(),
+            origin: if not_signed_in.is_some() {
+                "not signed in".to_string()
+            } else {
+                auth.describe().to_string()
+            },
             s3: S3Settings::default(),
             project: None,
             profile: None,
             buckets: Vec::new(),
-            problem: None,
+            problem: not_signed_in,
             public: false,
             datasets: Vec::new(),
             gcloud: None,
             azure: crate::azure::AzureSettings {
-                auth: crate::azure::AzureAuth::AzCli,
+                auth,
                 ..Default::default()
             },
         });
@@ -668,6 +680,9 @@ impl Source {
 /// A `[[cloud.sources]]` entry as a source. The config has been validated, so the kind
 /// is one datui knows.
 fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> Source {
+    if configured.kind.as_deref() == Some("azure") {
+        return configured_azure_source(configured, env);
+    }
     if configured.kind.as_deref() == Some("gcs") {
         return Source {
             id: configured.name.clone(),
@@ -771,6 +786,73 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
         buckets: configured.buckets.clone(),
         problem,
         azure: Default::default(),
+        public: false,
+        datasets: Vec::new(),
+        gcloud: None,
+    }
+}
+
+/// A `kind = "azure"` source: one account, signed in with the named key, SAS or
+/// connection string, or else through `az` or Azure PowerShell.
+fn configured_azure_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> Source {
+    use crate::azure::{AzureAuth, AzureSettings};
+    let named = |name: &Option<String>| -> Option<Result<String, String>> {
+        let name = name.as_deref()?;
+        Some(
+            (env.var)(name)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| format!("{name} is not set")),
+        )
+    };
+    let mut problem = None;
+    let mut settings = AzureSettings {
+        account: configured.account.clone(),
+        auth: AzureAuth::AzCli,
+        ..Default::default()
+    };
+    if let Some(key) = named(&configured.account_key_env) {
+        match key {
+            Ok(key) => settings.auth = AzureAuth::Key(key),
+            Err(e) => problem = Some(e),
+        }
+    } else if let Some(sas) = named(&configured.sas_env) {
+        match sas {
+            Ok(sas) => settings.auth = AzureAuth::Sas(sas.trim_start_matches('?').to_string()),
+            Err(e) => problem = Some(e),
+        }
+    } else if let Some(text) = named(&configured.connection_string_env) {
+        match text.map(|t| crate::azure::parse_connection_string(&t)) {
+            Ok(Some(parsed)) => {
+                settings = AzureSettings {
+                    account: configured.account.clone().or(parsed.account.clone()),
+                    ..parsed
+                }
+            }
+            Ok(None) => {
+                problem = Some("the connection string names no account and key or SAS".to_string())
+            }
+            Err(e) => problem = Some(e),
+        }
+    } else if !crate::azure::az_login_evidence(env) && crate::azure::powershell_login_evidence(env)
+    {
+        settings.auth = AzureAuth::PowerShell;
+    }
+    Source {
+        id: configured.name.clone(),
+        label: configured
+            .label
+            .clone()
+            .unwrap_or_else(|| configured.name.clone()),
+        kind: ProviderKind::Azure,
+        tier: Tier::Config,
+        origin: "datui config".to_string(),
+        s3: S3Settings::default(),
+        azure: settings,
+        project: None,
+        profile: None,
+        buckets: Vec::new(),
+        problem,
         public: false,
         datasets: Vec::new(),
         gcloud: None,
@@ -939,11 +1021,54 @@ pub fn resolve(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
 /// is settled first with one unsigned request, since the libraries that open it make
 /// many requests and cannot retry them without a signature.
 pub fn resolve_for_open(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
-    let resolved = resolve(url, config)?;
-    if resolved.signing != Signing::Try {
-        return Ok(resolved);
+    let resolved = settle_signing(resolve(url, config)?);
+    Ok(with_azure_key_if_refused(resolved, config))
+}
+
+/// An Azure place signed with a sign-in's token that the account refuses for want of a
+/// data role: checked with one listing request, once per account, and read with the
+/// account's key from then on, when the fallback is on.
+fn with_azure_key_if_refused(resolved: Resolved, config: &CloudConfig) -> Resolved {
+    let enabled = config.azure_account_keys != Some(false);
+    if resolved.kind != ProviderKind::Azure
+        || resolved.signing == Signing::Unsigned
+        || resolved.azure.identity.is_none()
+        || !matches!(resolved.azure.auth, crate::azure::AzureAuth::Bearer(_))
+        || !enabled
+    {
+        return resolved;
     }
-    Ok(match crate::cloud_browse::probe_unsigned(&resolved) {
+    let Some((account, container, path)) = crate::source::azure_parts(&resolved.url) else {
+        return resolved;
+    };
+    if crate::azure::token_reads(&account) {
+        return resolved;
+    }
+    match crate::azure::check_read(&account, &container, &path, &resolved.azure) {
+        Ok(()) => {
+            crate::azure::remember_token_reads(&account);
+            resolved
+        }
+        Err(refusal) => match crate::azure::with_account_key(
+            &account,
+            &resolved.azure,
+            &refusal,
+            enabled,
+            &Environment::current(),
+        ) {
+            Ok(azure) => Resolved { azure, ..resolved },
+            // The open itself fails with the same refusal, and says why.
+            Err(_) => resolved,
+        },
+    }
+}
+
+/// A place still [`Signing::Try`] settled with one unsigned request.
+fn settle_signing(resolved: Resolved) -> Resolved {
+    if resolved.signing != Signing::Try {
+        return resolved;
+    }
+    match crate::cloud_browse::probe_unsigned(&resolved) {
         Some(true) => {
             remember_access(&resolved.place, true);
             resolved.unsigned()
@@ -956,7 +1081,64 @@ pub fn resolve_for_open(url: &str, config: &CloudConfig) -> Result<Resolved, Str
             }
         }
         None => resolved,
-    })
+    }
+}
+
+/// An `az://`, `adl://` or `azure://` URL, `container/path`, as its canonical `abfss://`
+/// form. These name no account, so it comes from where the URL was typed (inside an
+/// account on the home screen), the environment, or the one account in the config.
+/// Every other path comes back as it is.
+pub fn expand_azure_short_url(
+    path: &std::path::Path,
+    config: &CloudConfig,
+    browsing: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    let text = path.to_string_lossy();
+    let Some((scheme, rest)) = text.split_once("://") else {
+        return Ok(path.to_path_buf());
+    };
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "az" | "adl" | "azure") {
+        return Ok(path.to_path_buf());
+    }
+    let (container, key) = rest.split_once('/').unwrap_or((rest, ""));
+    // `az://container@account.dfs.core.windows.net/path` names its account after all.
+    if container.contains('@')
+        && let Some((account, container, key)) =
+            crate::source::azure_parts(&format!("abfss://{rest}"))
+    {
+        return Ok(std::path::PathBuf::from(crate::source::azure_url(
+            &account, &container, &key,
+        )));
+    }
+    if container.is_empty() {
+        return Err(format!("{text} names no container"));
+    }
+    let from_browsing = browsing.and_then(|place| {
+        crate::home::cloud_account(place)
+            .map(|(_, account)| account)
+            .or_else(|| crate::source::azure_parts(&place.to_string_lossy()).map(|(a, _, _)| a))
+    });
+    let configured: Vec<&str> = config
+        .sources
+        .iter()
+        .filter(|s| s.kind.as_deref() == Some("azure"))
+        .filter_map(|s| s.account.as_deref())
+        .collect();
+    let account = from_browsing
+        .or_else(|| {
+            crate::azure::from_environment(&|k| std::env::var(k).ok())
+                .and_then(|(settings, _)| settings.account)
+        })
+        .or_else(|| (configured.len() == 1).then(|| configured[0].to_string()))
+        .ok_or_else(|| {
+            format!(
+                "{text} does not say which storage account. Use \
+                 abfss://{container}@<account>.dfs.core.windows.net/{key}"
+            )
+        })?;
+    Ok(std::path::PathBuf::from(crate::source::azure_url(
+        &account, container, key,
+    )))
 }
 
 /// The public source whose datasets hold `url`.
@@ -1147,15 +1329,33 @@ fn resolve_azure(
         gcloud: None,
     };
     match named.or(login) {
-        Some(source) if signing != Signing::Unsigned => Ok(Resolved {
-            source_id: source.id.clone(),
-            azure: source
-                .azure
-                .clone()
-                .with_token(env)
-                .map_err(|e| format!("source \"{}\": {e}", source.id))?,
-            ..resolved
-        }),
+        Some(source) if signing != Signing::Unsigned => {
+            // A sign-in refused for want of a data role reads with the account's key,
+            // once the key has been fetched this session.
+            if source.azure.auth.is_identity()
+                && let Some(key) = crate::azure::remembered_key(account)
+            {
+                return Ok(Resolved {
+                    source_id: source.id.clone(),
+                    azure: crate::azure::AzureSettings {
+                        identity: Some(source.azure.auth.clone()),
+                        auth: crate::azure::AzureAuth::Key(key),
+                        ..source.azure.clone()
+                    },
+                    signing: Signing::Signed,
+                    ..resolved
+                });
+            }
+            Ok(Resolved {
+                source_id: source.id.clone(),
+                azure: source
+                    .azure
+                    .clone()
+                    .with_token(env)
+                    .map_err(|e| format!("source \"{}\": {e}", source.id))?,
+                ..resolved
+            })
+        }
         _ => Ok(resolved.unsigned()),
     }
 }
@@ -1555,6 +1755,126 @@ mod tests {
                 "cloud://research/research-prod"
             );
         });
+    }
+
+    #[test]
+    fn configured_azure_sources() {
+        let azure = |name: &str| CloudSourceConfig {
+            name: name.to_string(),
+            kind: Some("azure".to_string()),
+            account: Some(format!("{name}acct")),
+            ..Default::default()
+        };
+        let config = CloudConfig {
+            sources: vec![
+                CloudSourceConfig {
+                    account_key_env: Some("RESEARCH_KEY".to_string()),
+                    ..azure("research")
+                },
+                CloudSourceConfig {
+                    sas_env: Some("SHARED_SAS".to_string()),
+                    ..azure("shared")
+                },
+                CloudSourceConfig {
+                    account: None,
+                    connection_string_env: Some("APP_STORAGE".to_string()),
+                    ..azure("app")
+                },
+                azure("signin"),
+                CloudSourceConfig {
+                    account_key_env: Some("UNSET_KEY".to_string()),
+                    ..azure("broken")
+                },
+            ],
+            ..Default::default()
+        };
+        let machine = Machine::new(
+            &[
+                ("RESEARCH_KEY", "a2V5"),
+                ("SHARED_SAS", "?sv=2024&sig=x"),
+                (
+                    "APP_STORAGE",
+                    "DefaultEndpointsProtocol=https;AccountName=appdata;AccountKey=a2V5;EndpointSuffix=core.windows.net",
+                ),
+            ],
+            &[],
+        );
+        with_machine(&machine, |env| {
+            let found = discover(&config, env);
+            let get = |id: &str| found.iter().find(|s| s.id == id).unwrap();
+            use crate::azure::AzureAuth;
+            assert_eq!(
+                get("research").azure.auth,
+                AzureAuth::Key("a2V5".to_string())
+            );
+            assert_eq!(
+                get("shared").azure.auth,
+                AzureAuth::Sas("sv=2024&sig=x".to_string())
+            );
+            assert_eq!(get("app").azure.account.as_deref(), Some("appdata"));
+            assert_eq!(get("signin").azure.auth, AzureAuth::AzCli);
+            assert_eq!(
+                get("broken").problem.as_deref(),
+                Some("UNSET_KEY is not set")
+            );
+            assert!(
+                found
+                    .iter()
+                    .all(|s| s.kind != ProviderKind::Azure || !s.named_in_urls())
+            );
+
+            // A key fetched after a 403 is used for the account from then on.
+            crate::azure::remember_key_for_test("signinacct", "a2V5Mg==");
+            let resolved = resolve_with(
+                "abfss://data@signinacct.dfs.core.windows.net/x.parquet",
+                &config,
+                env,
+            )
+            .unwrap();
+            assert_eq!(resolved.source_id, "signin");
+            assert_eq!(resolved.azure.auth, AzureAuth::Key("a2V5Mg==".to_string()));
+            assert_eq!(resolved.azure.identity, Some(AzureAuth::AzCli));
+        });
+    }
+
+    #[test]
+    fn azure_urls_without_an_account() {
+        let config = CloudConfig {
+            sources: vec![CloudSourceConfig {
+                name: "research".to_string(),
+                kind: Some("azure".to_string()),
+                account: Some("datuiresearch".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let expand = |url: &str, browsing: Option<&str>| {
+            expand_azure_short_url(Path::new(url), &config, browsing.map(Path::new))
+        };
+        assert_eq!(
+            expand("az://raw/2024/a.parquet", None).unwrap(),
+            PathBuf::from("abfss://raw@datuiresearch.dfs.core.windows.net/2024/a.parquet")
+        );
+        assert_eq!(
+            expand("adl://raw/x.csv", Some("cloud://az/lake001")).unwrap(),
+            PathBuf::from("abfss://raw@lake001.dfs.core.windows.net/x.csv"),
+            "typed inside an account"
+        );
+        assert_eq!(
+            expand("azure://raw@other.blob.core.windows.net/x.csv", None).unwrap(),
+            PathBuf::from("abfss://raw@other.dfs.core.windows.net/x.csv")
+        );
+        assert_eq!(
+            expand("s3://bucket/key", None).unwrap(),
+            PathBuf::from("s3://bucket/key")
+        );
+        let none =
+            expand_azure_short_url(Path::new("az://raw/x.csv"), &CloudConfig::default(), None);
+        if std::env::var("AZURE_STORAGE_ACCOUNT_NAME").is_err()
+            && std::env::var("AZURE_STORAGE_CONNECTION_STRING").is_err()
+        {
+            assert!(none.unwrap_err().contains("abfss://raw@<account>"));
+        }
     }
 
     #[test]

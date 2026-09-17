@@ -160,6 +160,7 @@ s3_access_key_id = "..."
 s3_secret_access_key = "..."
 s3_region = "us-east-1"
 public_datasets = true                      # the built-in Public datasets source; false hides it
+azure_account_keys = true                   # read Azure with the account key after a sign-in is refused for want of a data role
 ```
 
 Environment variables override these, and command-line flags override both.
@@ -184,7 +185,7 @@ buckets = ["sales", "logs"]
 |---|---|---|
 | `name` | all | Required. Lowercase letters, digits and `-`, at most 40 characters. Used in `s3://<name>@bucket/key` |
 | `label` | all | Shown instead of the name |
-| `kind` | all | Required, except with `public`. `s3` or `gcs` |
+| `kind` | all | Required, except with `public`. `s3`, `gcs` or `azure` |
 | `public` | | `true` for data anyone can read. `buckets` are then URLs (`s3://`, `gs://`, `abfss://`) of buckets, containers or folders, and no other field but `label` applies |
 | `buckets` | all | Buckets to show when the keys can read but not list |
 | `endpoint_url` | s3 | An S3-compatible server. Without it, the source is AWS |
@@ -192,6 +193,8 @@ buckets = ["sales", "logs"]
 | `addressing` | s3 | `path` or `virtual`. Default: `path` with an endpoint, `virtual` without |
 | `access_key_id_env`, `secret_access_key_env`, `session_token_env` | s3 | Names of the environment variables holding the keys |
 | `profile` | s3 | An AWS profile to take the keys, endpoint and region from, instead of the `*_env` keys |
+| `account` | azure | Required, except with `connection_string_env`. The storage account |
+| `account_key_env`, `sas_env`, `connection_string_env` | azure | The environment variable holding the account key, a SAS token, or a connection string. At most one; with none, `az` or Azure PowerShell signs in |
 | `configuration` | gcs | A `gcloud` configuration whose login to use. Without it, the application-default login |
 | `project` | gcs | The project listed first, and the one listed when projects cannot be searched |
 

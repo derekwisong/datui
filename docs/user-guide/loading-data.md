@@ -110,9 +110,9 @@ datui s3://my-bucket/events/2024/
 
 `AWS_SESSION_TOKEN` adds temporary credentials, and the keys under `[cloud]` in
 the config work the same way. On ECS, Lambda and EKS the task role is used. An EC2
-instance role is not found on its own, since finding it means a request that hangs
-on some networks; with no other AWS login, datui reads S3 unsigned, which reaches
-public buckets only.
+instance role is used only with `[cloud] instance_identity = true`, since finding it
+means a request that hangs on some networks; with no other AWS login, datui reads S3
+unsigned, which reaches public buckets only.
 
 Each bucket is read in its own region, asked of S3 once per session, so one login
 reaches buckets in every region.

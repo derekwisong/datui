@@ -37,6 +37,10 @@ pub enum AzureAuth {
     PowerShell,
     /// A service principal or workload identity from `AZURE_CLIENT_ID` and friends.
     ServicePrincipal(ServicePrincipal),
+    /// The managed identity of the VM, App Service or Function datui runs on.
+    ManagedIdentity,
+    /// The account key, printed by a `secret_command`.
+    KeyCommand(String),
     /// An Entra ID token.
     Bearer(String),
     /// The account's shared key.
@@ -73,7 +77,10 @@ impl AzureAuth {
     pub fn is_identity(&self) -> bool {
         matches!(
             self,
-            AzureAuth::AzCli | AzureAuth::PowerShell | AzureAuth::ServicePrincipal(_)
+            AzureAuth::AzCli
+                | AzureAuth::PowerShell
+                | AzureAuth::ServicePrincipal(_)
+                | AzureAuth::ManagedIdentity
         )
     }
 
@@ -85,6 +92,8 @@ impl AzureAuth {
             AzureAuth::PowerShell => "Azure PowerShell",
             AzureAuth::ServicePrincipal(sp) if sp.token_file.is_some() => "workload identity",
             AzureAuth::ServicePrincipal(_) => "service principal",
+            AzureAuth::ManagedIdentity => "managed identity",
+            AzureAuth::KeyCommand(_) => "secret_command",
             AzureAuth::Bearer(_) => "token",
             AzureAuth::Key(_) => "access key",
             AzureAuth::Sas(_) => "SAS token",
@@ -121,6 +130,9 @@ impl AzureSettings {
     /// These settings with a token in place of an identity. Runs `az` or PowerShell, or
     /// asks Entra ID.
     pub fn with_token(mut self, env: &Environment<'_>) -> Result<Self, String> {
+        if let AzureAuth::KeyCommand(command) = &self.auth {
+            self.auth = AzureAuth::Key(crate::cloud_command::secret(command, env)?);
+        }
         if self.auth.is_identity() {
             let token = identity_token(&self.auth, STORAGE_SCOPE, env)?;
             self.identity = Some(std::mem::replace(&mut self.auth, AzureAuth::Bearer(token)));
@@ -334,8 +346,9 @@ pub fn identity_token(
         },
         AzureAuth::PowerShell => powershell_token(scope, env),
         AzureAuth::ServicePrincipal(sp) => service_principal_token(sp, scope, env),
+        AzureAuth::ManagedIdentity => managed_identity_token(scope, env),
         AzureAuth::Bearer(token) => Ok(token.clone()),
-        AzureAuth::None | AzureAuth::Key(_) | AzureAuth::Sas(_) => {
+        AzureAuth::None | AzureAuth::Key(_) | AzureAuth::Sas(_) | AzureAuth::KeyCommand(_) => {
             Err("this login has no tokens".to_string())
         }
     }
@@ -544,15 +557,75 @@ fn service_principal_token(
     Ok(token)
 }
 
+/// A token for `scope` from the platform's managed identity: App Service and Functions'
+/// `IDENTITY_ENDPOINT` (or the older `MSI_ENDPOINT`), else the VM's instance metadata
+/// service. Only reached when the platform or `instance_identity` allows it.
+fn managed_identity_token(scope: &str, env: &Environment<'_>) -> Result<String, String> {
+    let key = format!("managed {scope}");
+    if let Some(token) = cached_token(&key) {
+        return Ok(token);
+    }
+    let resource = crate::cloud_browse::urlencode(scope.trim_end_matches(".default"));
+    let client = (env.var)("AZURE_CLIENT_ID")
+        .map(|id| format!("&client_id={}", crate::cloud_browse::urlencode(&id)))
+        .unwrap_or_default();
+    let set = |k: &str| (env.var)(k).filter(|v| !v.trim().is_empty());
+    let (url, header) = if let (Some(endpoint), Some(secret)) =
+        (set("IDENTITY_ENDPOINT"), set("IDENTITY_HEADER"))
+    {
+        (
+            format!("{endpoint}?api-version=2019-08-01&resource={resource}{client}"),
+            ("X-IDENTITY-HEADER", secret),
+        )
+    } else if let (Some(endpoint), Some(secret)) = (set("MSI_ENDPOINT"), set("MSI_SECRET")) {
+        (
+            format!("{endpoint}?api-version=2017-09-01&resource={resource}{client}"),
+            ("secret", secret),
+        )
+    } else {
+        (
+            format!(
+                "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource={resource}{client}"
+            ),
+            ("Metadata", "true".to_string()),
+        )
+    };
+    let mut response = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .http_status_as_error(false)
+        .build()
+        .new_agent()
+        .get(&url)
+        .header(header.0, &header.1)
+        .call()
+        .map_err(|e| format!("no managed identity answered: {e}"))?;
+    let status = response.status().as_u16();
+    let text = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("could not read the response: {e}"))?;
+    let (token, expires) = parse_entra_token(&text)
+        .ok_or_else(|| format!("the managed identity returned no token ({status})"))?;
+    cache_token(&key, token.clone(), Some(expires));
+    Ok(token)
+}
+
 /// The access token and expiry from an Entra ID token response.
 pub fn parse_entra_token(text: &str) -> Option<(String, SystemTime)> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
     let token = value.get("access_token")?.as_str()?.to_string();
-    let expires_in = value
-        .get("expires_in")
-        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
-        .unwrap_or(300);
-    (!token.is_empty()).then(|| (token, SystemTime::now() + Duration::from_secs(expires_in)))
+    let number = |key: &str| {
+        value
+            .get(key)
+            .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+    };
+    // Managed identity endpoints give `expires_on` in seconds since the epoch.
+    let expires = match (number("expires_on"), number("expires_in")) {
+        (Some(on), _) => SystemTime::UNIX_EPOCH + Duration::from_secs(on),
+        (None, Some(within)) => SystemTime::now() + Duration::from_secs(within),
+        (None, None) => SystemTime::now() + Duration::from_secs(300),
+    };
+    (!token.is_empty()).then_some((token, expires))
 }
 
 fn cached_token(key: &str) -> Option<String> {
@@ -904,7 +977,9 @@ fn send_signed(url: &str, account: &str, settings: &AzureSettings) -> Result<Str
         | AzureAuth::None
         | AzureAuth::AzCli
         | AzureAuth::PowerShell
-        | AzureAuth::ServicePrincipal(_) => {}
+        | AzureAuth::ServicePrincipal(_)
+        | AzureAuth::ManagedIdentity
+        | AzureAuth::KeyCommand(_) => {}
     }
     let mut call = crate::cloud_browse::http_agent()
         .get(&url)
@@ -1016,7 +1091,9 @@ pub fn store(
         AzureAuth::None
         | AzureAuth::AzCli
         | AzureAuth::PowerShell
-        | AzureAuth::ServicePrincipal(_) => builder.with_skip_signature(true),
+        | AzureAuth::ServicePrincipal(_)
+        | AzureAuth::ManagedIdentity
+        | AzureAuth::KeyCommand(_) => builder.with_skip_signature(true),
     };
     let store = builder
         .build()
@@ -1044,7 +1121,9 @@ pub fn polars_options(
         AzureAuth::None
         | AzureAuth::AzCli
         | AzureAuth::PowerShell
-        | AzureAuth::ServicePrincipal(_) => {
+        | AzureAuth::ServicePrincipal(_)
+        | AzureAuth::ManagedIdentity
+        | AzureAuth::KeyCommand(_) => {
             options.push((AzureConfigKey::SkipSignature, "true".to_string()))
         }
     }
@@ -1196,6 +1275,55 @@ mod tests {
         );
         assert!(
             request.contains("grant_type=client_credentials"),
+            "{request}"
+        );
+    }
+
+    #[test]
+    fn a_managed_identity_token_from_the_platform() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/msi/token", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                tx.send(String::from_utf8_lossy(&buf[..n]).into_owned())
+                    .unwrap();
+                let body = r#"{"access_token":"eyJ.mi","expires_on":"4102444800","resource":"https://storage.azure.com/","token_type":"Bearer"}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let vars: HashMap<&str, String> = [
+            ("IDENTITY_ENDPOINT", endpoint),
+            ("IDENTITY_HEADER", "header-secret".to_string()),
+        ]
+        .into();
+        let files = HashMap::new();
+        let run = |p: &str, _: &[&str]| Err(CommandError::Missing(p.to_string()));
+        env_with(&vars, &files, &run, |env| {
+            let token = identity_token(
+                &AzureAuth::ManagedIdentity,
+                "https://management.azure.com/.default",
+                env,
+            )
+            .unwrap();
+            assert_eq!(token, "eyJ.mi");
+        });
+        let request = rx.recv().unwrap().to_ascii_lowercase();
+        assert!(request.contains("api-version=2019-08-01"), "{request}");
+        assert!(
+            request.contains("resource=https%3a%2f%2fmanagement.azure.com%2f"),
+            "{request}"
+        );
+        assert!(
+            request.contains("x-identity-header: header-secret"),
             "{request}"
         );
     }

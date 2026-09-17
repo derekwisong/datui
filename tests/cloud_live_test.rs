@@ -1735,3 +1735,77 @@ fn azurite_through_a_development_connection_string() {
     assert!(!headers.is_empty());
     unsafe { std::env::remove_var("AZURE_STORAGE_CONNECTION_STRING") };
 }
+
+/// The opt-ins against real services: a `secret_command` supplying the secret for the
+/// first server of `DATUI_LIVE_S3_PAIR` (keys `key9101`/`secret9101`), a `.env` from
+/// `[cloud] env_files` naming the second, and, with `DATUI_LIVE_GCS=1`, a Google source
+/// logging in with `credentials_file` pointed at the application-default login.
+#[test]
+#[ignore = "talks to two local S3-compatible servers; set DATUI_LIVE_S3_PAIR"]
+fn secret_commands_env_files_and_credentials_files() {
+    let Ok(pair) = std::env::var("DATUI_LIVE_S3_PAIR") else {
+        eprintln!("skipped: set DATUI_LIVE_S3_PAIR=<endpoint>,<endpoint> to run");
+        return;
+    };
+    let (first, second) = pair.split_once(',').expect("two endpoints");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let secret_file = dir.path().join("lab-secret");
+    std::fs::write(&secret_file, "secret9101\n").unwrap();
+    std::fs::write(
+        dir.path().join(".env"),
+        format!(
+            "# not a cloud variable, so not read\nDATABASE_URL=postgres://x\n\
+             export AWS_ACCESS_KEY_ID=key9102\nAWS_SECRET_ACCESS_KEY=secret9102\n\
+             AWS_ENDPOINT_URL={second}\nAWS_REGION=us-east-1\nLAB_KEY=key9101\n"
+        ),
+    )
+    .unwrap();
+    let file_config = CloudConfig {
+        env_files: vec![".env".to_string()],
+        sources: vec![datui::config::CloudSourceConfig {
+            name: "lab".to_string(),
+            kind: Some("s3".to_string()),
+            endpoint_url: Some(first.to_string()),
+            region: Some("us-east-1".to_string()),
+            access_key_id_env: Some("LAB_KEY".to_string()),
+            secret_command: Some(format!("cat {}", secret_file.display())),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(datui::cloud_env::load(&file_config, dir.path()).is_empty());
+    assert_eq!(datui::cloud_env::var("DATABASE_URL"), None);
+    assert!(std::env::var("LAB_KEY").is_err(), "nothing is exported");
+    let config = datui::OpenOptions::default().effective_cloud(&file_config);
+    assert_eq!(config.s3_endpoint_url.as_deref(), Some(second));
+
+    let lab = open_url("s3://lab@data/table.parquet", &config).expect("secret_command");
+    assert!(lab.contains(&"first_name".to_string()), "{lab:?}");
+    let default = open_url("s3://data/table.parquet", &config).expect("the .env's server");
+    assert!(default.contains(&"product".to_string()), "{default:?}");
+
+    if std::env::var("DATUI_LIVE_GCS").is_ok() {
+        let google = CloudConfig {
+            sources: vec![datui::config::CloudSourceConfig {
+                name: "adc-file".to_string(),
+                kind: Some("gcs".to_string()),
+                credentials_file: Some(
+                    "~/.config/gcloud/application_default_credentials.json".to_string(),
+                ),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let source = cloud_sources::discover(&google, &Environment::current())
+            .into_iter()
+            .find(|s| s.id == "adc-file")
+            .unwrap();
+        assert_eq!(source.problem, None);
+        let projects = common::test_runtime()
+            .block_on(cloud_browse::list_first_level(&source))
+            .expect("projects list with the credentials file");
+        println!("{} projects through credentials_file", projects.len());
+        assert!(!projects.is_empty());
+    }
+    datui::cloud_env::load(&CloudConfig::default(), dir.path());
+}

@@ -172,6 +172,10 @@ pub struct Source {
     /// The `gcloud` configuration whose token a Google source signs with. `None` is
     /// object_store's own login: the environment or the application-default file.
     pub gcloud: Option<String>,
+    /// A program that prints an S3 source's secret access key.
+    pub secret_command: Option<String>,
+    /// The Google service account or application-default file a source logs in with.
+    pub google_credentials: Option<std::path::PathBuf>,
 }
 
 impl Source {
@@ -292,6 +296,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 public: false,
                 datasets: Vec::new(),
                 gcloud: None,
+                secret_command: None,
+                google_credentials: None,
                 azure: Default::default(),
             };
             // Found through a profile rather than keys: the active profile supplies the
@@ -315,6 +321,21 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             source
         })
         .collect();
+
+    // A credentials file named in the environment is passed along by path, so a value
+    // from `[cloud] env_files`, which object_store cannot see, reaches it too. Keys from
+    // the environment bring their session token the same way.
+    if let Some(google) = sources.iter_mut().find(|s| s.id == DEFAULT_GCS)
+        && let Some(path) = (env.var)("GOOGLE_APPLICATION_CREDENTIALS")
+    {
+        google.google_credentials = Some(std::path::PathBuf::from(path));
+    }
+    if let Some(s3) = sources.iter_mut().find(|s| s.id == DEFAULT_S3)
+        && s3.s3.access_key_id.is_some()
+        && s3.s3.access_key_id == (env.var)("AWS_ACCESS_KEY_ID")
+    {
+        s3.s3.session_token = (env.var)("AWS_SESSION_TOKEN");
+    }
 
     // Google through `gcloud`: the active configuration is the default login when
     // object_store has none of its own, or one it cannot read; every configuration
@@ -357,6 +378,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                     public: false,
                     datasets: Vec::new(),
                     gcloud: Some(configuration.name.clone()),
+                    secret_command: None,
+                    google_credentials: None,
                 });
             }
         }
@@ -386,6 +409,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             public: false,
             datasets: Vec::new(),
             gcloud: Some(configuration.name.clone()),
+            secret_command: None,
+            google_credentials: None,
         });
     }
 
@@ -411,6 +436,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             public: false,
             datasets: Vec::new(),
             gcloud: None,
+            secret_command: None,
+            google_credentials: None,
             azure: Default::default(),
         });
     }
@@ -445,7 +472,21 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
 
     // Azure: an account or a service principal named in the environment, and a
     // signed-in `az` or Azure PowerShell, which reaches every account it can see.
-    if let Some((settings, origin)) = crate::azure::from_environment(env.var) {
+    let from_environment = crate::azure::from_environment(env.var).or_else(|| {
+        crate::cloud_browse::instance_identity(config, env)
+            .azure
+            .then(|| {
+                (
+                    crate::azure::AzureSettings {
+                        account: (env.var)("AZURE_STORAGE_ACCOUNT_NAME"),
+                        auth: crate::azure::AzureAuth::ManagedIdentity,
+                        ..Default::default()
+                    },
+                    "managed identity".to_string(),
+                )
+            })
+    });
+    if let Some((settings, origin)) = from_environment {
         sources.push(Source {
             id: DEFAULT_AZURE_ENV.to_string(),
             label: settings
@@ -463,6 +504,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             public: false,
             datasets: Vec::new(),
             gcloud: None,
+            secret_command: None,
+            google_credentials: None,
             azure: settings,
         });
     }
@@ -493,6 +536,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             public: false,
             datasets: Vec::new(),
             gcloud: None,
+            secret_command: None,
+            google_credentials: None,
             azure: crate::azure::AzureSettings {
                 auth,
                 ..Default::default()
@@ -516,6 +561,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             public: true,
             datasets: builtin_datasets(),
             gcloud: None,
+            secret_command: None,
+            google_credentials: None,
         });
     }
 
@@ -605,6 +652,8 @@ fn tool_source(server: crate::s3_tools::ToolServer, tier: Tier) -> Source {
         public: false,
         datasets: Vec::new(),
         gcloud: None,
+        secret_command: None,
+        google_credentials: None,
         azure: Default::default(),
     }
 }
@@ -655,6 +704,11 @@ impl Source {
         if let Some(problem) = &self.problem {
             return Err(problem.clone());
         }
+        if let Some(command) = &self.secret_command
+            && self.s3.secret_access_key.is_none()
+        {
+            self.s3.secret_access_key = Some(crate::cloud_command::secret(command, env)?);
+        }
         let Some(name) = self.profile.clone() else {
             return Ok(self);
         };
@@ -684,6 +738,18 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
         return configured_azure_source(configured, env);
     }
     if configured.kind.as_deref() == Some("gcs") {
+        let google_credentials = configured
+            .credentials_file
+            .as_deref()
+            .map(|file| expand_home(file, env));
+        let problem = google_credentials
+            .as_ref()
+            .filter(|path| !(env.exists)(path))
+            .map(|path| format!("credentials_file {} does not exist", path.display()));
+        let file_project = google_credentials
+            .as_ref()
+            .and_then(|path| (env.read)(path))
+            .and_then(|text| google_file_project(&text));
         return Source {
             id: configured.name.clone(),
             label: configured
@@ -698,13 +764,16 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
             project: configured
                 .project
                 .clone()
+                .or(file_project)
                 .or_else(|| crate::cloud_browse::gcp_project(env)),
             profile: None,
             buckets: configured.buckets.clone(),
-            problem: None,
+            problem,
             public: false,
             datasets: Vec::new(),
             gcloud: configured.configuration.clone(),
+            secret_command: None,
+            google_credentials,
         };
     }
     if configured.public == Some(true) {
@@ -730,6 +799,8 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
                 .map(|url| dataset_for_url(url))
                 .collect(),
             gcloud: None,
+            secret_command: None,
+            google_credentials: None,
         };
     }
     let var = env.var;
@@ -789,7 +860,30 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
         public: false,
         datasets: Vec::new(),
         gcloud: None,
+        secret_command: configured.secret_command.clone(),
+        google_credentials: None,
     }
+}
+
+/// `~/x` under the home directory; anything else as written.
+fn expand_home(file: &str, env: &Environment<'_>) -> std::path::PathBuf {
+    match (
+        file.strip_prefix("~/").or_else(|| file.strip_prefix("~\\")),
+        &env.home,
+    ) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => std::path::PathBuf::from(file),
+    }
+}
+
+/// The project a Google credentials file names: a service account's `project_id`, or
+/// an application-default login's `quota_project_id`.
+fn google_file_project(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    ["project_id", "quota_project_id"]
+        .iter()
+        .find_map(|key| value.get(*key)?.as_str().map(str::to_string))
+        .filter(|p| !p.is_empty())
 }
 
 /// A `kind = "azure"` source: one account, signed in with the named key, SAS or
@@ -834,6 +928,8 @@ fn configured_azure_source(configured: &CloudSourceConfig, env: &Environment<'_>
             }
             Err(e) => problem = Some(e),
         }
+    } else if let Some(command) = &configured.secret_command {
+        settings.auth = AzureAuth::KeyCommand(command.clone());
     } else if !crate::azure::az_login_evidence(env) && crate::azure::powershell_login_evidence(env)
     {
         settings.auth = AzureAuth::PowerShell;
@@ -856,6 +952,8 @@ fn configured_azure_source(configured: &CloudSourceConfig, env: &Environment<'_>
         public: false,
         datasets: Vec::new(),
         gcloud: None,
+        secret_command: None,
+        google_credentials: None,
     }
 }
 
@@ -875,6 +973,8 @@ pub struct Resolved {
     pub place: String,
     /// For a Google URL signed through `gcloud`: the configuration, and its token.
     pub gcloud: Option<(String, String)>,
+    /// For a Google URL signed with a credentials file.
+    pub google_credentials: Option<std::path::PathBuf>,
 }
 
 /// Whether requests to a place carry a signature.
@@ -901,6 +1001,7 @@ impl Resolved {
         };
         self.azure.auth = crate::azure::AzureAuth::None;
         self.gcloud = None;
+        self.google_credentials = None;
         self.signing = Signing::Unsigned;
         self
     }
@@ -1172,6 +1273,7 @@ pub fn resolve_with(
                 signing: Signing::Unsigned,
                 place,
                 gcloud: None,
+                google_credentials: None,
             },
             None => {
                 let (kind, _, _) = crate::cloud_browse::split_bucket_url(url)
@@ -1185,6 +1287,7 @@ pub fn resolve_with(
                     signing: Signing::Unsigned,
                     place,
                     gcloud: None,
+                    google_credentials: None,
                 }
             }
         };
@@ -1252,6 +1355,8 @@ pub fn resolve_with(
                     public: false,
                     datasets: Vec::new(),
                     gcloud: None,
+                    secret_command: None,
+                    google_credentials: None,
                     azure: Default::default(),
                 })
             }
@@ -1275,6 +1380,7 @@ pub fn resolve_with(
         signing,
         place,
         gcloud: None,
+        google_credentials: None,
     };
     if signing == Signing::Unsigned {
         return Ok(resolved.unsigned());
@@ -1291,9 +1397,14 @@ pub fn resolve_with(
     let source = source
         .with_credentials(env)
         .map_err(|e| format!("source \"{id}\": {e}"))?;
+    let google_credentials = match kind {
+        ProviderKind::Gcs => source.google_credentials.clone(),
+        _ => None,
+    };
     Ok(Resolved {
         s3: source.s3,
         gcloud,
+        google_credentials,
         ..resolved
     })
 }
@@ -1340,6 +1451,7 @@ fn resolve_azure(
         signing,
         place,
         gcloud: None,
+        google_credentials: None,
     };
     match named.or(login) {
         Some(source) if signing != Signing::Unsigned => {
@@ -1924,6 +2036,180 @@ mod tests {
         {
             assert!(none.unwrap_err().contains("abfss://raw@<account>"));
         }
+    }
+
+    /// A machine whose runner answers `pass show …` with a secret, and fails otherwise.
+    fn with_secret_runner<T>(machine: &Machine, body: impl FnOnce(&Environment<'_>) -> T) -> T {
+        let var = |key: &str| machine.vars.get(key).cloned();
+        let exists = |path: &Path| machine.files.contains_key(path);
+        let read = |path: &Path| machine.files.get(path).cloned();
+        let run = |program: &str, args: &[&str]| match (program, args) {
+            ("pass", ["show", "minio/onprem"]) => Ok("s3cr3t-from-pass\n".to_string()),
+            ("op", ["read", "op://vault/azure/key"]) => Ok("YWNjb3VudC1rZXk=".to_string()),
+            ("pass", _) => Err(CommandError::Failed(
+                "Error: minio/missing is not in the password store.".to_string(),
+            )),
+            _ => Err(CommandError::Missing(program.to_string())),
+        };
+        let all_vars = Vec::new;
+        let list = |_: &Path| Vec::new();
+        body(&Environment {
+            var: &var,
+            exists: &exists,
+            read: &read,
+            home: Some(PathBuf::from("/home/u")),
+            windows: false,
+            run: &run,
+            all_vars: &all_vars,
+            list: &list,
+        })
+    }
+
+    #[test]
+    fn secret_commands_supply_the_secret() {
+        let config = CloudConfig {
+            sources: vec![
+                CloudSourceConfig {
+                    secret_access_key_env: None,
+                    secret_command: Some("pass show minio/onprem".to_string()),
+                    ..minio("onprem", "https://minio.corp.example:9000")
+                },
+                CloudSourceConfig {
+                    secret_access_key_env: None,
+                    secret_command: Some("pass show minio/missing".to_string()),
+                    ..minio("broken", "https://minio.corp.example:9000")
+                },
+                CloudSourceConfig {
+                    name: "research".to_string(),
+                    kind: Some("azure".to_string()),
+                    account: Some("research".to_string()),
+                    secret_command: Some("op read op://vault/azure/key".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let machine = Machine::new(&[("ONPREM_KEY", "AKIAONPREM"), ("BROKEN_KEY", "k")], &[]);
+        with_secret_runner(&machine, |env| {
+            let found = discover(&config, env);
+            let onprem = found.iter().find(|s| s.id == "onprem").unwrap();
+            assert_eq!(
+                onprem.problem, None,
+                "the command runs when the source is used"
+            );
+            let resolved = resolve_with("s3://onprem@data/x.parquet", &config, env).unwrap();
+            assert_eq!(
+                resolved.s3.secret_access_key.as_deref(),
+                Some("s3cr3t-from-pass")
+            );
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("AKIAONPREM"));
+
+            let err = resolve_with("s3://broken@data/x.parquet", &config, env).unwrap_err();
+            assert!(
+                err.contains("secret_command failed: Error: minio/missing"),
+                "{err}"
+            );
+
+            let research = found.iter().find(|s| s.id == "research").unwrap();
+            let settings = research.azure.clone().with_token(env).unwrap();
+            assert_eq!(
+                settings.auth,
+                crate::azure::AzureAuth::Key("YWNjb3VudC1rZXk=".to_string())
+            );
+        });
+    }
+
+    #[test]
+    fn a_credentials_file_logs_a_google_source_in() {
+        let config = CloudConfig {
+            sources: vec![
+                CloudSourceConfig {
+                    name: "analytics".to_string(),
+                    kind: Some("gcs".to_string()),
+                    credentials_file: Some("~/keys/analytics-sa.json".to_string()),
+                    ..Default::default()
+                },
+                CloudSourceConfig {
+                    name: "gone".to_string(),
+                    kind: Some("gcs".to_string()),
+                    credentials_file: Some("/nowhere/sa.json".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let machine = Machine::new(
+            &[],
+            &[(
+                "/home/u/keys/analytics-sa.json",
+                r#"{"type": "service_account", "project_id": "analytics-prod"}"#,
+            )],
+        );
+        with_machine(&machine, |env| {
+            let found = discover(&config, env);
+            let analytics = found.iter().find(|s| s.id == "analytics").unwrap();
+            assert_eq!(
+                analytics.google_credentials.as_deref(),
+                Some(Path::new("/home/u/keys/analytics-sa.json"))
+            );
+            assert_eq!(analytics.project.as_deref(), Some("analytics-prod"));
+            let gone = found.iter().find(|s| s.id == "gone").unwrap();
+            assert!(gone.problem.as_deref().unwrap().contains("does not exist"));
+        });
+    }
+
+    #[test]
+    fn instance_identity_only_when_asked_or_the_platform_says() {
+        let ids = |config: &CloudConfig, vars: &[(&str, &str)]| -> Vec<(String, String)> {
+            with_machine(&Machine::new(vars, &[]), |env| {
+                discover(config, env)
+                    .into_iter()
+                    .filter(|s| !s.public)
+                    .map(|s| (s.id, s.origin))
+                    .collect()
+            })
+        };
+        assert!(
+            ids(&CloudConfig::default(), &[]).is_empty(),
+            "nothing asks a metadata service"
+        );
+        let opted_in = CloudConfig {
+            instance_identity: Some(true),
+            ..Default::default()
+        };
+        let found = ids(&opted_in, &[]);
+        for (id, origin) in [
+            (DEFAULT_S3, "instance role"),
+            (DEFAULT_GCS, "instance identity"),
+            (DEFAULT_AZURE_ENV, "managed identity"),
+        ] {
+            assert!(
+                found.contains(&(id.to_string(), origin.to_string())),
+                "{id} in {found:?}"
+            );
+        }
+        assert_eq!(
+            ids(&CloudConfig::default(), &[("K_SERVICE", "api")]),
+            [(DEFAULT_GCS.to_string(), "instance identity".to_string())],
+            "Cloud Run"
+        );
+        assert_eq!(
+            ids(
+                &CloudConfig::default(),
+                &[("IDENTITY_ENDPOINT", "http://localhost:8081/msi/token")]
+            ),
+            [(
+                DEFAULT_AZURE_ENV.to_string(),
+                "managed identity".to_string()
+            )],
+            "App Service"
+        );
+        // Without the opt-in, a no-login URL is unsigned: no metadata request.
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let resolved =
+                resolve_with("s3://instance-test/key", &CloudConfig::default(), env).unwrap();
+            assert_eq!(resolved.signing, Signing::Unsigned);
+        });
     }
 
     #[test]

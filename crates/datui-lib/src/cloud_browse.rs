@@ -121,7 +121,7 @@ impl Environment<'_> {
     /// The real environment.
     pub fn current() -> Environment<'static> {
         Environment {
-            var: &|key| std::env::var(key).ok(),
+            var: &crate::cloud_env::var,
             exists: &|path| path.exists(),
             read: &|path| std::fs::read_to_string(path).ok(),
             home: dirs::home_dir(),
@@ -129,7 +129,7 @@ impl Environment<'_> {
             run: &|program, args| {
                 crate::cloud_command::run(program, args, crate::cloud_command::CREDENTIAL_TIMEOUT)
             },
-            all_vars: &|| std::env::vars().collect(),
+            all_vars: &crate::cloud_env::vars,
             list: &|dir| {
                 std::fs::read_dir(dir)
                     .map(|entries| entries.flatten().map(|e| e.path()).collect())
@@ -145,7 +145,7 @@ impl Environment<'_> {
 /// failure. Nothing here prompts, installs or logs in.
 pub fn detect(config: &CloudConfig, env: &Environment<'_>) -> Vec<Provider> {
     let mut providers = Vec::new();
-    if let Some(gcs) = detect_gcs(env) {
+    if let Some(gcs) = detect_gcs(config, env) {
         providers.push(gcs);
     }
     if let Some(s3) = detect_s3(config, env) {
@@ -155,7 +155,7 @@ pub fn detect(config: &CloudConfig, env: &Environment<'_>) -> Vec<Provider> {
 }
 
 /// Google Cloud Storage, when credentials `object_store` accepts are present.
-fn detect_gcs(env: &Environment<'_>) -> Option<Provider> {
+fn detect_gcs(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     // Order matters only for the note: an explicit service account is worth naming
     // ahead of the ambient developer login, because it is the one someone chose.
     let note = if (env.var)("GOOGLE_SERVICE_ACCOUNT").is_some()
@@ -171,6 +171,8 @@ fn detect_gcs(env: &Environment<'_>) -> Option<Provider> {
         // line, and "gcloud application default credentials" truncated from the front
         // to "…lication default credentials" says less than one word does.
         "gcloud"
+    } else if instance_identity(config, env).gcp {
+        "instance identity"
     } else {
         return None;
     };
@@ -183,6 +185,29 @@ fn detect_gcs(env: &Environment<'_>) -> Option<Provider> {
         profile: None,
         endpoint: None,
     })
+}
+
+/// Which clouds' VM or platform identity may be used. Finding one is a request to a
+/// metadata service that hangs on some networks, so it is only made when the config
+/// asks, or where the platform itself says it is there: `K_SERVICE` on Cloud Run and
+/// Cloud Functions, `IDENTITY_ENDPOINT` or `MSI_ENDPOINT` on Azure App Service,
+/// Functions and Container Apps. ECS and EKS need neither: they are found by their
+/// own variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InstanceIdentity {
+    pub aws: bool,
+    pub gcp: bool,
+    pub azure: bool,
+}
+
+pub fn instance_identity(config: &CloudConfig, env: &Environment<'_>) -> InstanceIdentity {
+    let opted_in = config.instance_identity == Some(true);
+    let set = |key: &str| (env.var)(key).is_some_and(|v| !v.trim().is_empty());
+    InstanceIdentity {
+        aws: opted_in,
+        gcp: opted_in || set("K_SERVICE"),
+        azure: opted_in || set("IDENTITY_ENDPOINT") || set("MSI_ENDPOINT"),
+    }
 }
 
 /// The credential type of a Google login object_store cannot read, when that is what the
@@ -296,6 +321,8 @@ fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
         "web identity"
     } else if shared_credentials {
         "~/.aws"
+    } else if instance_identity(config, env).aws {
+        "instance role"
     } else {
         // An EC2 instance role is the one credential source with no local evidence at
         // all: the only way to know is to ask the instance metadata service, which is a
@@ -545,6 +572,7 @@ pub fn store_for_bucket(
     settings: &S3Settings,
     unsigned: bool,
     google_token: Option<&str>,
+    google_credentials: Option<&Path>,
 ) -> Result<std::sync::Arc<dyn object_store::ObjectStore>, String> {
     match kind {
         ProviderKind::Gcs => {
@@ -562,7 +590,11 @@ pub fn store_for_bucket(
                             },
                         ),
                     )),
-                (false, None) => object_store::gcp::GoogleCloudStorageBuilder::from_env(),
+                (false, None) => match google_credentials {
+                    Some(file) => object_store::gcp::GoogleCloudStorageBuilder::new()
+                        .with_application_credentials(file.to_string_lossy()),
+                    None => object_store::gcp::GoogleCloudStorageBuilder::from_env(),
+                },
             };
             let store = builder
                 .with_bucket_name(bucket)
@@ -754,6 +786,7 @@ async fn list_level(
         &resolved.s3,
         resolved.signing == Signing::Unsigned,
         resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
+        resolved.google_credentials.as_deref(),
     )?;
 
     let os_prefix = if prefix.is_empty() {
@@ -1308,7 +1341,12 @@ async fn google_bearer(source: &Source) -> Result<String, String> {
     }
     // Building a store needs a bucket name, and there is none: the store is built only
     // to be asked for a credential.
-    let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+    let builder = match &source.google_credentials {
+        Some(file) => object_store::gcp::GoogleCloudStorageBuilder::new()
+            .with_application_credentials(file.to_string_lossy()),
+        None => object_store::gcp::GoogleCloudStorageBuilder::from_env(),
+    };
+    let store = builder
         .with_bucket_name("datui-credential-probe")
         .build()
         .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))?;
@@ -1475,6 +1513,7 @@ mod tests {
             signing: Signing::Try,
             place: crate::cloud_sources::access_key(url).unwrap(),
             gcloud: None,
+            google_credentials: None,
         }
     }
 

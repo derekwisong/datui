@@ -43,6 +43,7 @@ pub mod cli;
 pub mod cloud_browse;
 #[cfg(feature = "cloud")]
 pub mod cloud_command;
+pub mod cloud_env;
 #[cfg(feature = "cloud")]
 mod cloud_hive;
 #[cfg(feature = "cloud")]
@@ -1224,9 +1225,7 @@ impl OpenOptions {
         cloud: &crate::config::CloudConfig,
     ) -> crate::config::CloudConfig {
         let mut merged = cloud.clone();
-        merged.merge(crate::config::CloudConfig::from_env(&|key| {
-            std::env::var(key).ok()
-        }));
+        merged.merge(crate::config::CloudConfig::from_env(&crate::cloud_env::var));
         merged.merge(crate::config::CloudConfig {
             s3_endpoint_url: self.s3_endpoint_url_override.clone(),
             s3_access_key_id: self.s3_access_key_id_override.clone(),
@@ -4524,7 +4523,13 @@ impl App {
                 // outlives the one fetched here.
                 Some((configuration, _)) => CloudOptions::default()
                     .with_credential_provider(Some(crate::gcloud::polars_provider(configuration))),
-                None => CloudOptions::default(),
+                None => match &resolved.google_credentials {
+                    Some(file) => CloudOptions::default().with_gcp([(
+                        polars::io::cloud::GoogleConfigKey::ApplicationCredentials,
+                        file.to_string_lossy().into_owned(),
+                    )]),
+                    None => CloudOptions::default(),
+                },
             },
             crate::cloud_browse::ProviderKind::Azure => {
                 let (account, _, _) = source::azure_parts(&resolved.url)
@@ -11599,6 +11604,12 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
     // S3 overrides are folded into the config here, once, for discovery, listing and
     // opens started from a listed bucket.
     let mut config = config;
+    // Variables from `[cloud] env_files` first, so everything below sees them.
+    if let Ok(dir) = std::env::current_dir() {
+        for note in crate::cloud_env::load(&config.cloud, &dir) {
+            eprintln!("datui: {note}");
+        }
+    }
     config.cloud = opts.effective_cloud(&config.cloud);
 
     let theme = Theme::from_config(&config.theme)

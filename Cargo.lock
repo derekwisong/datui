@@ -1352,6 +1352,7 @@ dependencies = [
  "dirs 7.0.0",
  "flate2",
  "fs2",
+ "futures",
  "http",
  "ignore",
  "object_store",

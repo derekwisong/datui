@@ -4719,15 +4719,16 @@ impl App {
             let store = store.clone();
             wait_on_runtime(runtime, async move {
                 let files = cloud_hive::list_dataset_files(&store, &key).await?;
-                let footers = cloud_hive::footers_of_files(&store, &files).await;
-                color_eyre::Result::<_>::Ok((files, footers))
+                let read = crate::schema_union::footers_to_read(files.len());
+                let footers = cloud_hive::footers_of_files(&store, &files, &read).await;
+                color_eyre::Result::<_>::Ok((files, read, footers))
             })?
             .ok()?
         };
-        let (files, footers) = listed;
-        let origin = crate::schema_union::SchemaOrigin::AllFooters(files.len());
+        let (files, read, footers) = listed;
+        let file_count = files.len();
         let (dataset, partition_columns) =
-            cloud_hive::dataset_schema_from_footers(&files, &footers, origin).ok()?;
+            cloud_hive::dataset_schema_from_footers(&files, &read, &footers).ok()?;
         let urls: Vec<String> = files
             .iter()
             .filter_map(|f| cloud_hive::url_of_key(full, &f.key))
@@ -4773,16 +4774,19 @@ impl App {
             count,
             offsets: None,
         });
-        // The footers just read hold the count too, so the dataset opens counted.
-        let row_groups: Vec<Vec<usize>> = footers
-            .iter()
-            .map(|f| {
-                f.as_ref()
-                    .map(|f| f.row_group_rows.clone())
-                    .unwrap_or_default()
-            })
-            .collect();
-        state.set_file_row_groups(&row_groups);
+        // The footers just read hold the count too, so the dataset opens counted — but
+        // only when every file was read. A footer that was sampled past or failed would
+        // count as no rows, which both undercounts the dataset and puts that file's rows
+        // out of reach of a windowed scan; leaving the count to `RemoteFiles::count`
+        // means it is retried instead.
+        if read.len() == file_count && footers.iter().all(Option::is_some) {
+            let row_groups: Vec<Vec<usize>> = footers
+                .iter()
+                .flatten()
+                .map(|f| f.row_group_rows.clone())
+                .collect();
+            state.set_file_row_groups(&row_groups);
+        }
         state.set_dataset_schema(dataset);
         Some(state)
     }

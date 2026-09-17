@@ -65,9 +65,25 @@ usually needs quoting so your shell leaves it alone. Only Parquet is supported.
 Partition columns appear first in the table and on the **Partitions** tab of the
 [Info panel](dataset-info.md). A directory is faster to open than a glob.
 
-The schema is read from a single file along one partition branch, so opening a
-tree of thousands of files is quick. If files disagree on their schema, let
-Polars scan them all with `--single-spine-schema false`.
+### Files that disagree
+
+The table has every column any file has. datui reads each file's Parquet footer
+— a small read at the end of the file, never the data — and folds them into one
+schema:
+
+| Across the files | In the table |
+|---|---|
+| A column only some files have | Shown; the other files' rows read null |
+| `Int32` and `Int64`, `Int` and `Float`, `ms` and `ns` | The wider type |
+| Types that cannot meet, such as a number and text | The type most rows have; the column is not read from the other files |
+| A file whose footer cannot be read | Left out; the rest still opens |
+
+The **Schema** tab of the [Info panel](dataset-info.md) says which footers the
+schema came from. Past 20,000 files, a sample spread evenly across them stands
+in and the tab says so.
+
+`--single-spine-schema false` skips the footer pass and lets Polars decide the
+schema from one file, as it does for a glob.
 
 ## Binary columns
 

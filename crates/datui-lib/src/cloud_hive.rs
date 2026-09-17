@@ -263,8 +263,8 @@ pub async fn list_dataset_files(
 /// rules; [`lenient_scan`] does the reading.
 pub fn dataset_schema_from_footers(
     files: &[DatasetFile],
+    read: &[usize],
     footers: &[Option<FileFooter>],
-    origin: SchemaOrigin,
 ) -> Result<(crate::schema_union::DatasetSchema, Vec<String>)> {
     let (first, newest) = match files {
         [] => {
@@ -284,12 +284,32 @@ pub fn dataset_schema_from_footers(
             })
         })
         .collect();
+    let origin = if read.len() == files.len() {
+        SchemaOrigin::AllFooters(files.len())
+    } else {
+        SchemaOrigin::FooterSample {
+            read: read.len(),
+            total: files.len(),
+        }
+    };
     let mut union = crate::schema_union::union_file_schemas(&per_file, origin);
     if union.schema.is_empty() {
         return Err(color_eyre::eyre::eyre!(
             "No readable parquet footer in cloud prefix"
         ));
     }
+    // The union is over the footers read; the scan is over every file, so spread the
+    // per-file findings back across the full list. A file not read omits nothing.
+    let mut omitted = vec![Vec::new(); files.len()];
+    for (columns, &index) in union.omitted.iter().zip(read) {
+        omitted[index] = columns.clone();
+    }
+    union.omitted = omitted;
+    union.unreadable = union
+        .unreadable
+        .iter()
+        .filter_map(|i| read.get(*i).copied())
+        .collect();
 
     let partition_columns = partition_columns_from_prefix(&newest.key);
     let values: Vec<(String, String)> = [&first.key, &newest.key]
@@ -348,20 +368,26 @@ pub struct FileFooter {
 pub async fn footers_of_files(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
+    read: &[usize],
 ) -> Vec<Option<FileFooter>> {
     let permits = Arc::new(tokio::sync::Semaphore::new(FOOTERS_AT_ONCE));
     let mut reads = tokio::task::JoinSet::new();
-    for (index, file) in files.iter().cloned().enumerate() {
+    for (slot, file) in read
+        .iter()
+        .filter_map(|i| files.get(*i))
+        .cloned()
+        .enumerate()
+    {
         let (store, permits) = (store.clone(), permits.clone());
         reads.spawn(async move {
             let _permit = permits.acquire_owned().await;
-            (index, footer_of_file(&store, &file).await.ok())
+            (slot, footer_of_file(&store, &file).await.ok())
         });
     }
-    let mut out = vec![None; files.len()];
+    let mut out = vec![None; read.len()];
     while let Some(joined) = reads.join_next().await {
-        if let Ok((index, footer)) = joined {
-            out[index] = footer;
+        if let Ok((slot, footer)) = joined {
+            out[slot] = footer;
         }
     }
     out
@@ -373,11 +399,13 @@ pub async fn row_groups_of_files(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
 ) -> Result<Vec<Vec<usize>>> {
-    Ok(footers_of_files(store, files)
-        .await
-        .into_iter()
-        .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
-        .collect())
+    Ok(
+        footers_of_files(store, files, &(0..files.len()).collect::<Vec<_>>())
+            .await
+            .into_iter()
+            .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
+            .collect(),
+    )
 }
 
 async fn footer_of_file(store: &Arc<dyn ObjectStore>, file: &DatasetFile) -> Result<FileFooter> {
@@ -592,8 +620,9 @@ mod tests {
         store: &Arc<dyn ObjectStore>,
         files: &[DatasetFile],
     ) -> (crate::schema_union::DatasetSchema, Vec<String>) {
-        let footers = footers_of_files(store, files).await;
-        dataset_schema_from_footers(files, &footers, SchemaOrigin::AllFooters(files.len())).unwrap()
+        let read: Vec<usize> = (0..files.len()).collect();
+        let footers = footers_of_files(store, files, &read).await;
+        dataset_schema_from_footers(files, &read, &footers).unwrap()
     }
 
     /// Two days of a dataset whose files grew: the first has no `fee` and a struct

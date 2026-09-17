@@ -32,13 +32,8 @@ pub struct FileSchema {
 pub enum SchemaOrigin {
     /// Every file's footer was read.
     AllFooters(usize),
-    /// Past `max_footer_reads`: a spread sample of the files.
+    /// Too many files to read every footer: a sample spread evenly across them.
     FooterSample { read: usize, total: usize },
-    /// One file, as before this module existed (`single_spine_schema = false`, or a
-    /// dataset of one file).
-    OneFile,
-    /// A glob, left to Polars to expand.
-    PolarsScan,
 }
 
 impl std::fmt::Display for SchemaOrigin {
@@ -54,8 +49,6 @@ impl std::fmt::Display for SchemaOrigin {
                 crate::numfmt::group_chrome(*read),
                 crate::numfmt::group_chrome(*total)
             ),
-            SchemaOrigin::OneFile => write!(f, "one file"),
-            SchemaOrigin::PolarsScan => write!(f, "Polars scan"),
         }
     }
 }
@@ -93,15 +86,37 @@ pub struct DatasetSchema {
     pub omitted: Vec<Vec<PlSmallStr>>,
     /// Files whose footer could not be read, by index into the files given.
     pub unreadable: Vec<usize>,
+    /// Files whose footer was read, readable or not.
+    pub files: usize,
     pub origin: SchemaOrigin,
 }
 
 impl DatasetSchema {
     /// Columns that are not in every file, or whose type had to give way.
     pub fn drifting(&self) -> impl Iterator<Item = &ColumnDrift> {
-        let files = self.columns.iter().map(|c| c.present_in).max().unwrap_or(0);
-        self.columns.iter().filter(move |c| !c.is_uniform(files))
+        let readable = self.files - self.unreadable.len();
+        self.columns.iter().filter(move |c| !c.is_uniform(readable))
     }
+}
+
+/// Footers read before a dataset opens. Past this many files the reads cost more than
+/// the schema is worth, so a spread sample stands in for the rest. Documented in
+/// `docs/user-guide/loading-data.md`; a fixed threshold, not a setting.
+pub const MAX_FOOTER_READS: usize = 20_000;
+
+/// Which of a dataset's `files` footers to read: all of them, or — past
+/// [`MAX_FOOTER_READS`] — a sample spread evenly across them, always including the
+/// first and the newest. Indices are ascending.
+pub fn footers_to_read(files: usize) -> Vec<usize> {
+    if files <= MAX_FOOTER_READS {
+        return (0..files).collect();
+    }
+    let last = files - 1;
+    let mut sample: Vec<usize> = (0..MAX_FOOTER_READS)
+        .map(|i| i * last / (MAX_FOOTER_READS - 1))
+        .collect();
+    sample.dedup();
+    sample
 }
 
 /// Fold every file's footer into one schema. `files` is in scan order, so the last
@@ -190,6 +205,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         columns,
         omitted,
         unreadable,
+        files: files.len(),
         origin,
     }
 }
@@ -259,15 +275,11 @@ pub fn widen(a: &DataType, b: &DataType) -> Option<DataType> {
     }
     match (a, b) {
         (Null, other) | (other, Null) => Some(other.clone()),
-        (String, Categorical(_, _) | Enum(_, _)) | (Categorical(_, _) | Enum(_, _), String) => {
-            Some(String)
-        }
         _ if a.is_integer() && b.is_integer() => widen_integers(a, b),
         _ if (a.is_integer() || a.is_float()) && (b.is_integer() || b.is_float()) => Some(Float64),
         (Datetime(a_unit, a_zone), Datetime(b_unit, b_zone)) if a_zone == b_zone => {
             Some(Datetime(finer_unit(*a_unit, *b_unit), a_zone.clone()))
         }
-        (Duration(a_unit), Duration(b_unit)) => Some(Duration(finer_unit(*a_unit, *b_unit))),
         (List(a_inner), List(b_inner)) => widen(a_inner, b_inner).map(|t| List(Box::new(t))),
         (Struct(a_fields), Struct(b_fields)) => widen_structs(a_fields, b_fields),
         _ => None,
@@ -514,7 +526,41 @@ mod tests {
             .to_string(),
             "5,000 of 200,000 footers (sample)"
         );
-        assert_eq!(SchemaOrigin::OneFile.to_string(), "one file");
+    }
+
+    #[test]
+    fn a_sample_spans_the_files_and_keeps_the_first_and_newest() {
+        assert_eq!(footers_to_read(3), [0, 1, 2]);
+        assert_eq!(footers_to_read(MAX_FOOTER_READS).len(), MAX_FOOTER_READS);
+        let sample = footers_to_read(MAX_FOOTER_READS * 10);
+        assert_eq!(sample.len(), MAX_FOOTER_READS);
+        assert_eq!(sample.first(), Some(&0));
+        assert_eq!(sample.last(), Some(&(MAX_FOOTER_READS * 10 - 1)));
+        assert!(sample.windows(2).all(|w| w[0] < w[1]), "ascending");
+    }
+
+    /// The scan's cast policy has no way to read either of these into the other, so
+    /// they must stay conflicts and be omitted rather than widened into a type the
+    /// read would then fail on.
+    #[test]
+    fn types_the_scan_cannot_cast_are_not_widened() {
+        let ms = DataType::Duration(TimeUnit::Milliseconds);
+        let us = DataType::Duration(TimeUnit::Microseconds);
+        assert_eq!(widen(&ms, &us), None);
+        assert_eq!(widen(&DataType::Binary, &DataType::String), None);
+        assert_eq!(widen(&DataType::Date, &ms), None);
+    }
+
+    #[test]
+    fn drifting_counts_against_the_files_read_not_the_busiest_column() {
+        // No column is in both files; both are drift.
+        let files = [
+            file(&[("a", DataType::Int64)], 1),
+            file(&[("b", DataType::Int64)], 1),
+        ];
+        let union = union(&files);
+        let drifting: Vec<_> = union.drifting().map(|c| c.name.to_string()).collect();
+        assert_eq!(drifting, ["b", "a"]);
     }
 
     #[test]

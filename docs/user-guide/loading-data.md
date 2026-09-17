@@ -214,6 +214,33 @@ gcloud auth application-default login
 datui gs://my-bucket/path/file.parquet
 ```
 
+### Azure Blob Storage
+
+Sign in with the Azure CLI, and every storage account the login can see is listed
+on the [home screen](home-screen.md#cloud-storage).
+
+```bash
+az login
+datui abfss://datui-test@datalake001.dfs.core.windows.net/demo/penguins.parquet
+```
+
+| URL | Also accepted |
+|---|---|
+| `abfss://<container>@<account>.dfs.core.windows.net/<path>` | `abfs://`, and `https://<account>.blob.core.windows.net/<container>/<path>` or its `dfs` form |
+
+datui writes and remembers the `abfss://` form, which Polars, Spark and DuckDB
+read too. Without `az`, name one account in the environment:
+
+| Variable | Holds |
+|---|---|
+| `AZURE_STORAGE_CONNECTION_STRING` | A connection string with `AccountKey` or `SharedAccessSignature`; `UseDevelopmentStorage=true` for Azurite |
+| `AZURE_STORAGE_ACCOUNT_NAME` with `AZURE_STORAGE_ACCOUNT_KEY` or `AZURE_STORAGE_SAS_TOKEN` | An account and its key or SAS token |
+
+Reading blobs with a sign-in needs the *Storage Blob Data Reader* role on the
+account. Owner or Contributor on the subscription is not enough, except on an
+account with hierarchical namespace where your login owns the container. A
+refused read says which.
+
 ### HTTP and HTTPS
 
 ```bash

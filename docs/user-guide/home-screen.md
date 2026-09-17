@@ -268,12 +268,17 @@ one that can be read.
 |---|---|---|
 | Amazon S3, or the endpoint in `[cloud]` | `s3-default` | Keys in `[cloud]` or `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, an EKS web identity, `AWS_PROFILE`, or a `~/.aws` directory |
 | Each other AWS profile that can log in | `aws-<profile>` | Keys, `credential_process`, SSO or a role in the profile |
+| Each MinIO client alias | `mc-<alias>` | An alias with keys in `mc`'s `config.json` (`~/.mc/`, `~/.mcli/`, or `MC_CONFIG_DIR`), or `MC_HOST_<alias>` in the environment, which wins |
+| s3cmd's server | `s3cfg` | Keys in the `[default]` section of `~/.s3cfg` (`%APPDATA%\s3cmd.ini` on Windows, or `S3CMD_CONFIG`) |
 | Azure | `az` | The Azure CLI has been used (`~/.azure`, or `AZURE_CONFIG_DIR`). Its rows are storage accounts, found across your subscriptions |
 | One Azure account | `azure-env` | `AZURE_STORAGE_CONNECTION_STRING`, or `AZURE_STORAGE_ACCOUNT_NAME` with a key or SAS token |
 | Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, or the file written by `gcloud auth application-default login` |
 | Each `[[cloud.sources]]` entry | its `name` | Always |
 
-A source in the config with the same name as one of these replaces it. See
+A source in the config with the same name as one of these replaces it. The same
+server with the same key found in several places is one row, from the first of:
+the config, the environment, other tools' files; its note lists every place.
+`mc`'s placeholder aliases and its public `play` server are left out. See
 [Loading Data](loading-data.md#several-stores-at-once) for `[[cloud.sources]]`.
 
 Google needs a project to list buckets, taken from `DATUI_GCP_PROJECT`,

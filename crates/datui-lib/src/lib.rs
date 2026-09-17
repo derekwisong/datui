@@ -60,6 +60,8 @@ pub mod home;
 pub mod locality;
 pub mod numfmt;
 pub mod pivot_melt_modal;
+#[cfg(feature = "cloud")]
+pub mod s3_tools;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
 // hand-written and runs on whatever the user types, so it is fuzzed directly.
 pub mod query;

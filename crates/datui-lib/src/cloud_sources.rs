@@ -250,6 +250,34 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
         });
     }
 
+    // S3-compatible servers other tools describe. An `MC_HOST_<alias>` in the
+    // environment replaces the alias of the same name in `mc`'s config, as it does
+    // for `mc` itself.
+    let mut tool_sources: Vec<Source> = Vec::new();
+    for path in crate::s3_tools::mc_config_paths(env) {
+        if let Some(text) = (env.read)(&path) {
+            for server in crate::s3_tools::parse_mc_config(&text) {
+                tool_sources.push(tool_source(server, Tier::Tools));
+            }
+        }
+    }
+    for server in crate::s3_tools::mc_hosts(&(env.all_vars)()) {
+        let source = tool_source(server, Tier::Environment);
+        tool_sources.retain(|s| s.id != source.id);
+        tool_sources.push(source);
+    }
+    if let Some(server) = crate::s3_tools::s3cfg_path(env)
+        .and_then(|path| (env.read)(&path))
+        .and_then(|text| crate::s3_tools::parse_s3cfg(&text))
+    {
+        tool_sources.push(tool_source(server, Tier::Tools));
+    }
+    for source in tool_sources {
+        if !sources.iter().any(|s| s.id == source.id) {
+            sources.push(source);
+        }
+    }
+
     // Azure: an account named in the environment, and a signed-in `az`, which reaches
     // every account it can see.
     if let Some((settings, origin)) = crate::azure::from_environment(env.var) {
@@ -304,13 +332,86 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
             .then_with(|| a.id.cmp(&b.id))
     });
-    sources
+
+    // The same server with the same key is one source, however many tools describe it:
+    // the one from the highest tier stays, and its note says where else it was found.
+    let mut kept: Vec<Source> = Vec::new();
+    for source in sources {
+        let same_as = kept.iter_mut().find(|k| {
+            k.kind == ProviderKind::S3
+                && source.kind == ProviderKind::S3
+                && k.s3.access_key_id.is_some()
+                && k.s3.access_key_id == source.s3.access_key_id
+                && normalized_endpoint(&k.s3) == normalized_endpoint(&source.s3)
+        });
+        match same_as {
+            Some(existing) => {
+                if !existing.origin.contains(&source.origin) {
+                    existing.origin = format!("{}, {}", existing.origin, source.origin);
+                }
+            }
+            None => kept.push(source),
+        }
+    }
+    kept
+}
+
+fn normalized_endpoint(s3: &S3Settings) -> String {
+    s3.endpoint
+        .as_deref()
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+/// A server another tool describes, as a source: `mc-<alias>`, or `s3cfg`.
+fn tool_source(server: crate::s3_tools::ToolServer, tier: Tier) -> Source {
+    let id = if server.origin == "s3cmd" {
+        "s3cfg".to_string()
+    } else {
+        slug_id("mc", &server.name)
+    };
+    let label = if server.origin == "s3cmd" {
+        server
+            .endpoint
+            .as_deref()
+            .and_then(endpoint_host)
+            .unwrap_or_else(|| "s3cmd".to_string())
+    } else {
+        server.name.clone()
+    };
+    Source {
+        id,
+        label,
+        kind: ProviderKind::S3,
+        tier,
+        origin: server.origin,
+        s3: S3Settings {
+            endpoint: server.endpoint,
+            access_key_id: Some(server.access_key_id),
+            secret_access_key: Some(server.secret_access_key),
+            session_token: server.session_token,
+            region: server.region,
+            virtual_hosted: server.virtual_hosted,
+            from_env: false,
+        },
+        project: None,
+        profile: None,
+        buckets: Vec::new(),
+        problem: None,
+        azure: Default::default(),
+    }
 }
 
 /// The ID of the source for an AWS profile: `aws-` and the profile's name, lowercased,
 /// with anything that cannot go in an ID turned into `-`.
 pub fn profile_source_id(profile: &str) -> String {
-    let slug: String = profile
+    slug_id("aws", profile)
+}
+
+/// `<prefix>-<name>`, lowercased, with anything that cannot go in an ID turned into `-`.
+fn slug_id(prefix: &str, name: &str) -> String {
+    let slug: String = name
         .chars()
         .map(|c| {
             let c = c.to_ascii_lowercase();
@@ -321,7 +422,7 @@ pub fn profile_source_id(profile: &str) -> String {
             }
         })
         .collect();
-    let mut id = format!("aws-{}", slug.trim_matches('-'));
+    let mut id = format!("{prefix}-{}", slug.trim_matches('-'));
     id.truncate(40);
     id
 }
@@ -638,6 +739,13 @@ mod tests {
         let exists = |path: &Path| machine.files.contains_key(path);
         let read = |path: &Path| machine.files.get(path).cloned();
         let run = |program: &str, _: &[&str]| Err(CommandError::Missing(program.to_string()));
+        let all_vars = || {
+            machine
+                .vars
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        };
         let env = Environment {
             var: &var,
             exists: &exists,
@@ -645,6 +753,7 @@ mod tests {
             home: Some(PathBuf::from("/home/u")),
             windows: false,
             run: &run,
+            all_vars: &all_vars,
         };
         body(&env)
     }
@@ -952,6 +1061,71 @@ aws_secret_access_key = minioadmin
                 err.contains("profile nope is not in the AWS config"),
                 "{err}"
             );
+        });
+    }
+
+    #[test]
+    fn mc_aliases_mc_host_and_s3cmd_are_sources() {
+        let mc = r#"{"version": "10", "aliases": {
+            "lab": {"url": "http://127.0.0.1:9000", "accessKey": "minioadmin", "secretKey": "minioadmin", "api": "S3v4", "path": "auto"},
+            "Corp MinIO": {"url": "https://minio.corp.example", "accessKey": "corp", "secretKey": "s", "api": "S3v4", "path": "on"}
+        }}"#;
+        let s3cfg = "[default]\naccess_key = CEPH\nsecret_key = s\nhost_base = ceph.example:7480\nhost_bucket = ceph.example:7480\n";
+        let machine = Machine::new(
+            &[("MC_HOST_lab", "http://envkey:envsecret@127.0.0.1:9100")],
+            &[("/home/u/.mc/config.json", mc), ("/home/u/.s3cfg", s3cfg)],
+        );
+        with_machine(&machine, |env| {
+            let config = CloudConfig::default();
+            let found = discover(&config, env);
+            let mut ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
+            ids.sort();
+            assert_eq!(ids, ["mc-corp-minio", "mc-lab", "s3cfg"]);
+            let lab = found.iter().find(|s| s.id == "mc-lab").unwrap();
+            assert_eq!(
+                lab.origin, "MC_HOST_lab",
+                "the environment replaces the alias"
+            );
+            assert_eq!(lab.s3.endpoint.as_deref(), Some("http://127.0.0.1:9100"));
+            let ceph = found.iter().find(|s| s.id == "s3cfg").unwrap();
+            assert_eq!(ceph.label, "ceph.example:7480");
+            assert!(ceph.named_in_urls());
+
+            let resolved = resolve_with("s3://mc-corp-minio@data/x.parquet", &config, env).unwrap();
+            assert_eq!(
+                resolved.s3.endpoint.as_deref(),
+                Some("https://minio.corp.example")
+            );
+            assert_eq!(resolved.s3.access_key_id.as_deref(), Some("corp"));
+            assert_eq!(resolved.s3.virtual_hosted, Some(false));
+        });
+    }
+
+    #[test]
+    fn one_server_found_twice_is_one_source() {
+        let mc = r#"{"version": "10", "aliases": {
+            "lab": {"url": "http://127.0.0.1:9000/", "accessKey": "minioadmin", "secretKey": "minioadmin"}
+        }}"#;
+        let machine = Machine::new(
+            &[("LAB_KEY", "minioadmin"), ("LAB_SECRET", "minioadmin")],
+            &[("/home/u/.mc/config.json", mc)],
+        );
+        with_machine(&machine, |env| {
+            let config = CloudConfig {
+                sources: vec![CloudSourceConfig {
+                    name: "lab".to_string(),
+                    kind: Some("s3".to_string()),
+                    endpoint_url: Some("http://127.0.0.1:9000".to_string()),
+                    access_key_id_env: Some("LAB_KEY".to_string()),
+                    secret_access_key_env: Some("LAB_SECRET".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let found = discover(&config, env);
+            let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(ids, ["lab"], "the config's source stays");
+            assert_eq!(found[0].origin, "datui config, mc alias");
         });
     }
 

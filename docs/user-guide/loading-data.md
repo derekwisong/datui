@@ -184,6 +184,9 @@ access_key_id_env = "ONPREM_KEY"
 secret_access_key_env = "ONPREM_SECRET"
 ```
 
+Servers already set up in the MinIO client (`mc alias set`, or `MC_HOST_<alias>`)
+or in s3cmd need no config: they are the sources `mc-<alias>` and `s3cfg`.
+
 Open an object from a named S3-compatible store by putting its name before the
 bucket. Two servers can have a bucket with the same name, and the name says which
 one you mean:

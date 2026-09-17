@@ -467,6 +467,7 @@ aws_secret_access_key = minioadmin
             home: Some(PathBuf::from("/home/u")),
             windows: false,
             run,
+            all_vars: &|| Vec::new(),
         }
     }
 

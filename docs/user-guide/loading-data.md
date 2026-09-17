@@ -92,11 +92,12 @@ confused with a gap in the files:
 | `≠` | The file holds the column in another type, so it was not read from that file |
 
 A mark after a column's name means it is not in every file, or the files
-disagree on its type. The distinction survives a filter and a sort. Past 20,000
-files, where the schema comes from a sample, datui has not counted every file
-and every empty cell reads as `∅`. A group-by,
-pivot or SQL query builds new rows that stand for no one file, so their nulls
-are plain nulls again, and an export writes every empty cell as null.
+disagree on its type. The distinction survives a filter and a sort. Telling the
+three apart needs every file's row count, so where datui does not have one —
+past 20,000 files, where the schema comes from a sample, or when a footer could
+not be read — the marks still appear but every empty cell reads as `∅`. A group-by,
+pivot or SQL query builds new rows that stand for no one file, so their nulls are
+plain nulls again, and an export writes every empty cell as null.
 
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file, as it does for a glob.

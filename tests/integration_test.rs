@@ -1043,11 +1043,23 @@ fn write_parquet(dir: &std::path::Path, sub: &str, mut df: polars::prelude::Data
     ParquetWriter::new(f).finish(&mut df).unwrap();
 }
 
-/// Render a loaded app and return what the table area shows.
-fn painted(app: &mut App, area: Rect) -> String {
+/// Render a loaded app until its buffer stops growing, and return what the table area
+/// shows. Drains the app's events each pass: a buffer fill lands as one, so without it
+/// the screen is whatever the first synchronous collect managed.
+fn painted(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    area: Rect,
+) -> String {
     let mut buf = Buffer::empty(area);
-    for _ in 0..40 {
+    for _ in 0..60 {
         app.render(area, &mut buf);
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
         let needs = app
             .data_table_state
             .as_mut()
@@ -1057,12 +1069,15 @@ fn painted(app: &mut App, area: Rect) -> String {
                 n
             })
             .unwrap_or(false);
-        if !needs {
+        if !needs && !app.is_busy() {
             break;
         }
-        app.spawn_async_collect("Loading buffer...");
+        if needs {
+            app.spawn_async_collect("Loading buffer...");
+        }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    app.render(area, &mut buf);
     buf.content().iter().map(|cell| cell.symbol()).collect()
 }
 
@@ -1092,9 +1107,9 @@ fn test_absent_null_and_conflicting_cells_differ_on_screen() {
         df!("id" => &[3i64], "note" => &["yo"], "extra" => &["y"], "n" => &[30i64]).unwrap(),
     );
 
-    let mut app = open_local_dataset(dir.path());
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let area = Rect::new(0, 0, 100, 20);
-    let text = painted(&mut app, area);
+    let text = painted(&mut app, &rx, &tx, area);
 
     assert!(
         text.contains(g.absent),
@@ -1140,10 +1155,10 @@ fn test_absent_cells_still_read_as_absent_after_a_sort() {
         df!("id" => &[2i64, 3], "note" => &["hi", "yo"], "extra" => &["x", "y"]).unwrap(),
     );
 
-    let mut app = open_local_dataset(dir.path());
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let area = Rect::new(0, 0, 100, 20);
     assert!(
-        painted(&mut app, area).contains(g.absent),
+        painted(&mut app, &rx, &tx, area).contains(g.absent),
         "absent before the sort"
     );
 
@@ -1153,12 +1168,66 @@ fn test_absent_cells_still_read_as_absent_after_a_sort() {
     state.collect();
     assert!(state.error.is_none(), "the sort itself must succeed");
 
-    let text = painted(&mut app, area);
+    let text = painted(&mut app, &rx, &tx, area);
     assert!(
         text.contains(g.absent),
         "the rows from the file without `extra` are still absent, not null"
     );
     assert!(text.contains(g.null), "and the real nulls are still nulls");
+}
+
+/// Pins the row arithmetic that everything else rests on.
+///
+/// The scan numbers each run's rows from where that run's first file begins in the
+/// dataset. Every other fixture here has files of one or two rows, which makes a run's
+/// starting row and its file's *index* the same number — so using one for the other
+/// would go unnoticed. These files hold 3, 5 and 2 rows, and the third conflicts, which
+/// splits the scan after row 8.
+#[test]
+fn test_each_row_takes_its_glyph_from_the_file_it_came_from() {
+    let dir = tempfile::tempdir().unwrap();
+    // No `n` at all: its cells are absent.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2]).unwrap(),
+    );
+    // `n` as an integer, and the most rows, so the dataset reads it as one.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4, 5, 6, 7], "n" => &[30i64, 40, 50, 60, 70]).unwrap(),
+    );
+    // `n` as text: it cannot be read from here, so its cells conflict.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[8i64, 9], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let dataset = state.dataset_schema().expect("read from the footers");
+    let (first, middle, last) = (
+        dataset.file_group[0],
+        dataset.file_group[1],
+        dataset.file_group[2],
+    );
+    assert_eq!(middle, 0, "the middle file is missing nothing");
+    assert_ne!(first, middle, "the first file has no `n`");
+    assert_ne!(last, middle, "the last file holds `n` as text");
+
+    let groups = state.display_drift();
+    assert_eq!(
+        groups,
+        vec![
+            first, first, first, middle, middle, middle, middle, middle, last, last
+        ],
+        "three rows from the first file, five from the second, two from the third"
+    );
 }
 
 /// The control for the test above: a folder whose files agree shows neither glyph, so
@@ -1178,8 +1247,8 @@ fn test_a_uniform_dataset_shows_no_absent_or_conflicting_cells() {
         df!("id" => &[2i64], "note" => &["hi"]).unwrap(),
     );
 
-    let mut app = open_local_dataset(dir.path());
-    let text = painted(&mut app, Rect::new(0, 0, 100, 20));
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let text = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 20));
     assert!(text.contains(g.null), "the real null still shows");
     assert!(!text.contains(g.absent), "nothing is absent here");
     assert!(!text.contains(g.conflict), "nothing conflicts here");
@@ -1328,9 +1397,12 @@ fn test_a_reset_brings_back_the_absent_cells() {
         df!("id" => &[2i64, 3], "extra" => &["x", "y"]).unwrap(),
     );
 
-    let mut app = open_local_dataset(dir.path());
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let area = Rect::new(0, 0, 100, 20);
-    assert!(painted(&mut app, area).contains(g.absent), "absent at open");
+    assert!(
+        painted(&mut app, &rx, &tx, area).contains(g.absent),
+        "absent at open"
+    );
 
     let state = app.data_table_state.as_mut().unwrap();
     state.sql_query("select * from df".to_string());
@@ -1347,7 +1419,7 @@ fn test_a_reset_brings_back_the_absent_cells() {
     assert!(state.error.is_none(), "the reset: {:?}", state.error);
     assert!(state.drifts(), "and the reset puts the files back");
     assert!(
-        painted(&mut app, area).contains(g.absent),
+        painted(&mut app, &rx, &tx, area).contains(g.absent),
         "so the absent cells read as absent again"
     );
 }

@@ -123,6 +123,9 @@ pub struct DataTableState {
     row_group_offsets: Option<Vec<usize>>,
     /// The files of a remote dataset, when it is many. See `RemoteFiles`.
     remote_files: Option<RemoteFiles>,
+    /// What the footers said about a many-file dataset's columns: where the schema came
+    /// from, and which columns are not in every file. `None` for a single file.
+    dataset_schema: Option<crate::schema_union::DatasetSchema>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -467,6 +470,7 @@ impl DataTableState {
             remote_source: false,
             row_group_offsets: None,
             remote_files: None,
+            dataset_schema: None,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -560,6 +564,7 @@ impl DataTableState {
             remote_source: false,
             row_group_offsets: None,
             remote_files: None,
+            dataset_schema: None,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -3656,6 +3661,16 @@ impl DataTableState {
     /// Record that the data is a remote dataset of many files. See `RemoteFiles`.
     pub fn set_remote_files(&mut self, files: RemoteFiles) {
         self.remote_files = Some(files);
+    }
+
+    /// Record what the footers said about the dataset's columns. See `DatasetSchema`.
+    pub fn set_dataset_schema(&mut self, schema: crate::schema_union::DatasetSchema) {
+        self.dataset_schema = Some(schema);
+    }
+
+    /// What the footers said about the dataset's columns, when it is many files.
+    pub fn dataset_schema(&self) -> Option<&crate::schema_union::DatasetSchema> {
+        self.dataset_schema.as_ref()
     }
 
     /// The counter for a remote dataset's files, while its count would be the data's:

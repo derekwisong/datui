@@ -1045,7 +1045,7 @@ const FILE_LOADING_COMMENTS: &[(&str, &str)] = &[
     ),
     (
         "single_spine_schema",
-        "When true (default), infer Hive/partitioned Parquet schema from one file for faster load. When false, use full schema scan (Polars collect_schema).",
+        "When true (default), a partitioned Parquet dataset's schema is every column any of its files has, read from their footers. When false, Polars decides it from one file.",
     ),
     (
         "null_values",

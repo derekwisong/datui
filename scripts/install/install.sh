@@ -18,11 +18,13 @@ MANPAGE_NAME="${BINARY_NAME}.1"
 MANPAGE_GZ_NAME="${MANPAGE_NAME}.gz"
 GITHUB_URL="https://github.com/$REPO/releases/latest/download"
 
-# Does the user want to assume yes?
+# Does the user want to assume yes, or an install into their home directory?
 for arg in "$@"; do
   if [ "$arg" = "-y" ] || [ "$arg" = "--yes" ]; then
     ASSUME_YES=true
-    break
+  fi
+  if [ "$arg" = "--user" ]; then
+    USER_INSTALL=true
   fi
 done
 
@@ -33,6 +35,14 @@ if [ ! -t 0 ] || [ "$ASSUME_YES" = true ]; then
 else
     NONINTERACTIVE=""
 fi
+
+# Without root and without sudo (Azure Cloud Shell, many shared hosts), install the
+# tarball into the home directory instead of failing on the first privileged step.
+if [ "$(id -u)" != 0 ] && ! command -v sudo > /dev/null 2>&1; then
+    USER_INSTALL=true
+fi
+USER_BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+USER_MAN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/man/man1"
 
 # Use sudo only when not root (e.g. containers often run as root and may not have sudo).
 run_priv() {
@@ -84,7 +94,11 @@ VERSION="${TAG#v}"
 # Detect Package Manager / Format
 case "$OS" in
     linux*)
-        if [ -f /etc/debian_version ]; then
+        if [ "$USER_INSTALL" = true ]; then
+            # Packages need root; the tarball does not.
+            FORMAT="tar.gz"
+            FILENAME="${BINARY_NAME}-${VERSION}-${ARCH}.tar.gz"
+        elif [ -f /etc/debian_version ]; then
             # on ubuntu/debian-based systems use the APT repository
             FORMAT="apt"
         elif [ -f /etc/redhat-release ] || [ -f /etc/fedora-release ]; then
@@ -171,7 +185,6 @@ download_tarball() {
 }
 
 install_tarball() {
-    echo "Extracting binary to /usr/local/bin..."
     tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
 
     if [ -f "$TMP_DIR/$MANPAGE_NAME" ]; then
@@ -182,6 +195,18 @@ install_tarball() {
         MANPAGE_PATH="$TMP_DIR/target/release/$MANPAGE_GZ_NAME"
     fi
 
+    if [ "$USER_INSTALL" = true ]; then
+        echo "Installing into $USER_BIN_DIR (no root needed)..."
+        install -d "$USER_BIN_DIR"
+        install -m 755 "$TMP_DIR/$BINARY_NAME" "$USER_BIN_DIR/$BINARY_NAME"
+        if [ -f "$MANPAGE_PATH" ]; then
+            install -d "$USER_MAN_DIR"
+            install -m 644 "$MANPAGE_PATH" "$USER_MAN_DIR/"
+        fi
+        return
+    fi
+
+    echo "Installing into /usr/local/bin..."
     run_priv install -d /usr/local/bin
     run_priv install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
     run_priv install -d /usr/local/share/man/man1
@@ -254,9 +279,24 @@ case "$FORMAT" in
         ;;
 esac
 
+INSTALLED="$BINARY_NAME"
+if [ "$USER_INSTALL" = true ]; then
+    INSTALLED="$USER_BIN_DIR/$BINARY_NAME"
+fi
+
 echo ""
-echo "--- $($BINARY_NAME --version) installed successfully! ---"
+echo "--- $("$INSTALLED" --version) installed successfully! ---"
 echo ""
+if [ "$USER_INSTALL" = true ]; then
+    case ":$PATH:" in
+        *":$USER_BIN_DIR:"*) ;;
+        *)
+            echo "$USER_BIN_DIR is not on your PATH. Add it, for example in ~/.bashrc:"
+            echo "  export PATH=\"$USER_BIN_DIR:\$PATH\""
+            echo ""
+            ;;
+    esac
+fi
 echo "For instructions, see: $BINARY_NAME --help"
 # if linux or macos, suggest the man page
 if [ "$OS" = "linux" ] || [ "$OS" = "macos" ]; then

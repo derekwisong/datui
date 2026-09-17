@@ -8906,6 +8906,27 @@ impl App {
                 if paths.is_empty() {
                     return Some(AppEvent::Crash("No paths provided".to_string()));
                 }
+                // `az://container/path` and its kin name no account; where they were
+                // typed, or the config, does.
+                #[cfg(feature = "cloud")]
+                let expanded = match paths
+                    .iter()
+                    .map(|p| {
+                        crate::cloud_sources::expand_azure_short_url(
+                            p,
+                            &self.app_config.cloud,
+                            self.home.browsing.as_deref(),
+                        )
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                {
+                    Ok(expanded) => expanded,
+                    Err(message) => return Some(AppEvent::Crash(message)),
+                };
+                #[cfg(feature = "cloud")]
+                if &expanded != paths {
+                    return Some(AppEvent::Open(expanded, options.clone()));
+                }
                 #[cfg(any(feature = "http", feature = "cloud"))]
                 if let Some(ref p) = self.http_temp_path.take() {
                     let _ = std::fs::remove_file(p);
@@ -9265,6 +9286,26 @@ impl App {
                 match rows {
                     Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
                     None => self.home.probe_failed(root.clone()),
+                }
+                // An account read with its keys because the sign-in has no data role
+                // says so beside the account.
+                #[cfg(feature = "cloud")]
+                if let Some((account, _, _)) = source::azure_parts(&root.to_string_lossy())
+                    && crate::azure::remembered_key(&account).is_some()
+                {
+                    for source in &mut self.home.cloud {
+                        let place = source
+                            .buckets
+                            .iter()
+                            .find(|b| home::cloud_account(b).is_some_and(|(_, a)| a == account))
+                            .cloned();
+                        if let Some(place) = place {
+                            let lines = source.place_details.entry(place).or_default();
+                            if !lines.iter().any(|(k, _)| k == "access") {
+                                lines.push(("access".to_string(), "access key".to_string()));
+                            }
+                        }
+                    }
                 }
                 // Rebuild so the listing picks the result up; the probe is the only
                 // thing that ever reads a remote root.
@@ -11377,7 +11418,14 @@ fn home_cloud_source(
     }
     let status = match &source.problem {
         Some(problem) => home::CloudStatus::Failed {
-            short: "not configured".to_string(),
+            short: if problem.starts_with("not signed in") {
+                "not signed in"
+            } else if problem.starts_with("unsupported login") {
+                "unsupported login"
+            } else {
+                "not configured"
+            }
+            .to_string(),
             detail: problem.clone(),
         },
         None if cached.is_some() => home::CloudStatus::Listed,

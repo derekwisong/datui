@@ -1200,7 +1200,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
     if let Some(details) = app.home.place_details(&entry.path) {
         let key_w = details.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
         for (key, value) in details {
-            let style = if key == "network" || key == "shared keys" {
+            let style = if key == "network" || key == "shared keys" || key == "access" {
                 Style::default().fg(ctx.warning)
             } else {
                 Style::default().fg(ctx.text_secondary)

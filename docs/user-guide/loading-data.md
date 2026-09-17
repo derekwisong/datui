@@ -236,30 +236,51 @@ search for projects.
 
 ### Azure Blob Storage
 
-Sign in with the Azure CLI, and every storage account the login can see is listed
-on the [home screen](home-screen.md#cloud-storage).
+Sign in, and every storage account the login can see is listed on the
+[home screen](home-screen.md#cloud-storage).
 
 ```bash
-az login
+az login                  # the Azure CLI
+Connect-AzAccount         # or Azure PowerShell
 datui abfss://datui-test@datalake001.dfs.core.windows.net/demo/penguins.parquet
 ```
 
 | URL | Also accepted |
 |---|---|
 | `abfss://<container>@<account>.dfs.core.windows.net/<path>` | `abfs://`, and `https://<account>.blob.core.windows.net/<container>/<path>` or its `dfs` form |
+| | `az://<container>/<path>`, `adl://` and `azure://`, when the account is known: typed inside an account on the home screen, named in the environment, or the only `kind = "azure"` source |
 
 datui writes and remembers the `abfss://` form, which Polars, Spark and DuckDB
-read too. Without `az`, name one account in the environment:
+read too.
 
-| Variable | Holds |
+| Login | Found by |
 |---|---|
+| `az login` | `~/.azure` (or `AZURE_CONFIG_DIR`); datui runs `az account get-access-token` |
+| Azure PowerShell, `Connect-AzAccount` | `~/.Azure/AzureRmContext.json`; datui runs `pwsh` (or `powershell.exe`) once for its tokens. When `az` is signed in too, `az` is used |
+| A service principal or AKS workload identity | `AZURE_TENANT_ID` and `AZURE_CLIENT_ID`, with `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`. With `AZURE_STORAGE_ACCOUNT_NAME` it reads that account; without, it finds its accounts like a sign-in |
 | `AZURE_STORAGE_CONNECTION_STRING` | A connection string with `AccountKey` or `SharedAccessSignature`; `UseDevelopmentStorage=true` for Azurite |
 | `AZURE_STORAGE_ACCOUNT_NAME` with `AZURE_STORAGE_ACCOUNT_KEY` or `AZURE_STORAGE_SAS_TOKEN` | An account and its key or SAS token |
 
+With Azure tools installed but nobody signed in, the Azure row says
+`not signed in` and names the command to run.
+
 Reading blobs with a sign-in needs the *Storage Blob Data Reader* role on the
 account. Owner or Contributor on the subscription is not enough, except on an
-account with hierarchical namespace where your login owns the container. A
-refused read says which.
+account with hierarchical namespace where your login owns the container. When a
+read is refused for that reason and your login may fetch the account's access keys
+(Owner and Contributor may), datui reads that account with its key instead, as the
+Azure Portal does. The details pane then says `access key`. The key stays in
+memory. Accounts with shared-key access disabled are never read this way, and the
+refusal says so. To read only as your sign-in:
+
+```toml
+[cloud]
+azure_account_keys = false
+```
+
+In **Azure Cloud Shell**, `az` is already signed in, so the Azure row lists your
+accounts with no setup. The install script puts datui in `~/.local/bin` there; see
+[Installation](../getting-started/installation.md#without-root).
 
 ### Public data
 

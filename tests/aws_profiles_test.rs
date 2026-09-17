@@ -153,8 +153,13 @@ fn listing_and_opening_sign_with_the_active_profile() {
     while let Some(event) = next {
         next = app.event(&event);
     }
+    // Until the object itself is asked for: the second profile's listing can land after
+    // the snapshot above and would otherwise end the wait early.
     pump(&mut app, 20, &|_| {
-        seen.lock().unwrap().len() > requests_before
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.contains("/work-bucket/data.parquet"))
     });
 
     let seen = seen.lock().unwrap().clone();

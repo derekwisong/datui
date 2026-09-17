@@ -473,6 +473,10 @@ pub struct CloudConfig {
     /// The built-in `Public datasets` source. On unless set to `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_datasets: Option<bool>,
+    /// Read an Azure account with its access keys when a sign-in has no data role, as
+    /// the Portal does. On unless set to `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub azure_account_keys: Option<bool>,
 }
 
 /// One store in `[[cloud.sources]]`. Names and pointers only: a secret comes from the
@@ -518,6 +522,15 @@ pub struct CloudSourceConfig {
     /// be searched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The Azure storage account.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_key_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sas_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_string_env: Option<String>,
     /// Keys that are not recognised, kept so validation can name them.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
@@ -526,7 +539,7 @@ pub struct CloudSourceConfig {
 /// Field names accepted in `[[cloud.sources]]`, for error messages.
 const CLOUD_SOURCE_KEYS: &str = "name, label, kind, public, buckets, endpoint_url, region, \
      addressing, access_key_id_env, secret_access_key_env, session_token_env, profile, \
-     configuration, project";
+     configuration, project, account, account_key_env, sas_env, connection_string_env";
 
 /// Whether `id` can name a source: lowercase letters, digits and `-`, starting with a
 /// letter or digit, at most 40 characters. It goes into URLs and cache keys, so
@@ -575,19 +588,67 @@ impl CloudSourceConfig {
         if self.public == Some(true) {
             return self.validate_public();
         }
+        for secret in ["account_key", "sas", "sas_token", "connection_string"] {
+            if self.unknown.contains_key(secret) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": {secret} cannot be written in the config. Put it \
+                     in an environment variable and name that with {}_env",
+                    secret.trim_end_matches("_token")
+                ));
+            }
+        }
         let kind = match self.kind.as_deref() {
-            Some(kind @ ("s3" | "gcs")) => kind,
+            Some(kind @ ("s3" | "gcs" | "azure")) => kind,
             Some(other) => {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": kind \"{other}\" is not supported. Expected s3 or gcs"
+                    "cloud.sources \"{name}\": kind \"{other}\" is not supported. Expected s3, gcs or azure"
                 ));
             }
             None => {
                 return Err(eyre!(
-                    "cloud.sources \"{name}\": kind is required (s3 or gcs)"
+                    "cloud.sources \"{name}\": kind is required (s3, gcs or azure)"
                 ));
             }
         };
+        if kind != "azure" {
+            let azure_only = [
+                ("account", self.account.is_some()),
+                ("account_key_env", self.account_key_env.is_some()),
+                ("sas_env", self.sas_env.is_some()),
+                (
+                    "connection_string_env",
+                    self.connection_string_env.is_some(),
+                ),
+            ];
+            if let Some((field, _)) = azure_only.iter().find(|(_, set)| *set) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": {field} applies only to kind = \"azure\""
+                ));
+            }
+        } else {
+            let secrets = [
+                self.account_key_env.is_some(),
+                self.sas_env.is_some(),
+                self.connection_string_env.is_some(),
+            ];
+            if secrets.iter().filter(|set| **set).count() > 1 {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": account_key_env, sas_env and \
+                     connection_string_env each say how to sign in. Use one"
+                ));
+            }
+            if self.account.is_none() && self.connection_string_env.is_none() {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": an azure source needs account, or \
+                     connection_string_env"
+                ));
+            }
+            if !self.buckets.is_empty() {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": buckets does not apply to kind = \"azure\""
+                ));
+            }
+        }
         if kind != "s3" {
             let s3_only = [
                 ("endpoint_url", self.endpoint_url.is_some()),
@@ -666,6 +727,13 @@ impl CloudSourceConfig {
             ("profile", self.profile.is_some()),
             ("configuration", self.configuration.is_some()),
             ("project", self.project.is_some()),
+            ("account", self.account.is_some()),
+            ("account_key_env", self.account_key_env.is_some()),
+            ("sas_env", self.sas_env.is_some()),
+            (
+                "connection_string_env",
+                self.connection_string_env.is_some(),
+            ),
         ];
         if let Some((field, _)) = signing.iter().find(|(_, set)| *set) {
             return Err(eyre!(
@@ -811,6 +879,9 @@ impl CloudConfig {
         }
         if other.public_datasets.is_some() {
             self.public_datasets = other.public_datasets;
+        }
+        if other.azure_account_keys.is_some() {
+            self.azure_account_keys = other.azure_account_keys;
         }
     }
 

@@ -628,7 +628,47 @@ pub async fn list_objects(
     };
     let signing = resolved.signing;
     let place = resolved.place.clone();
-    match list_level(url, &resolved).await {
+    let listed = list_level(url, &resolved).await;
+    // A sign-in with no data role on an Azure account: its keys, as the Portal does.
+    let (listed, resolved) = match listed {
+        Err(refusal)
+            if resolved.kind == ProviderKind::Azure
+                && crate::azure::is_permission_mismatch(&refusal)
+                && resolved.azure.identity.is_some() =>
+        {
+            let enabled = config.azure_account_keys != Some(false);
+            let keyed = {
+                let (resolved, refusal) = (resolved.clone(), refusal.clone());
+                tokio::task::spawn_blocking(move || {
+                    let (account, _, _) =
+                        crate::source::azure_parts(&resolved.url).ok_or_else(|| refusal.clone())?;
+                    crate::azure::with_account_key(
+                        &account,
+                        &resolved.azure,
+                        &refusal,
+                        enabled,
+                        &Environment::current(),
+                    )
+                    .map(|azure| crate::cloud_sources::Resolved { azure, ..resolved })
+                })
+                .await
+                .map_err(|e| format!("{e}"))?
+            };
+            match keyed {
+                Ok(keyed) => (list_level(url, &keyed).await, keyed),
+                Err(why) => (Err(why), resolved),
+            }
+        }
+        other => (other, resolved),
+    };
+    if resolved.kind == ProviderKind::Azure
+        && listed.is_ok()
+        && matches!(resolved.azure.auth, crate::azure::AzureAuth::Bearer(_))
+        && let Some((account, _, _)) = crate::source::azure_parts(&resolved.url)
+    {
+        crate::azure::remember_token_reads(&account);
+    }
+    match listed {
         Err(refused) if signing == Signing::Try && is_refusal(&refused) => {
             // Perhaps public, and refused only because the request was signed by a
             // login from somewhere else.
@@ -918,7 +958,8 @@ pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
                 details: Vec::new(),
             }]);
         }
-        let accounts = crate::azure::discover_accounts(&Environment::current())?;
+        let accounts =
+            crate::azure::discover_accounts(&source.azure.auth, &Environment::current())?;
         Ok(accounts
             .into_iter()
             .map(|account| {

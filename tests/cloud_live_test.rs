@@ -1588,3 +1588,150 @@ fn gcloud_projects_browse_from_the_home_screen() {
     }
     assert!(entered_bucket, "no project had a bucket");
 }
+
+/// The same `datui-test` container read three more ways: with the key the fallback
+/// fetches (Resource Graph, then `listKeys`), through a connection string built from it,
+/// and through a SAS token. The key is never printed.
+///
+/// ```bash
+/// SAS=$(az storage container generate-sas --account-name <account> --name datui-test \
+///   --permissions rl --expiry $(date -u -d '+1 hour' +%Y-%m-%dT%H:%MZ) --auth-mode login \
+///   --as-user -o tsv)
+/// DATUI_LIVE_AZURE_KEYS=<account> DATUI_LIVE_AZURE_SAS="$SAS" \
+///   cargo test --test cloud_live_test -- --ignored --nocapture --test-threads=1 azure_keys
+/// ```
+#[test]
+#[ignore = "fetches a real account's keys; set DATUI_LIVE_AZURE_KEYS=<account>"]
+fn azure_keys_connection_strings_and_sas_tokens_open() {
+    let Ok(account) = std::env::var("DATUI_LIVE_AZURE_KEYS") else {
+        eprintln!("skipped: set DATUI_LIVE_AZURE_KEYS to a storage account to run");
+        return;
+    };
+    let url = format!("abfss://datui-test@{account}.dfs.core.windows.net/demo/penguins.parquet");
+    let key = datui::azure::fetch_account_key(
+        &account,
+        &datui::azure::AzureAuth::AzCli,
+        &Environment::current(),
+    )
+    .expect("the signed-in owner can fetch the account's keys");
+    assert!(!key.is_empty());
+    assert_eq!(
+        datui::azure::remembered_key(&account).as_deref(),
+        Some(key.as_str())
+    );
+
+    // With the key remembered, the az source reads with it.
+    let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
+    let resolved = cloud_sources::resolve(&url, &config).expect("resolves");
+    assert!(matches!(
+        resolved.azure.auth,
+        datui::azure::AzureAuth::Key(_)
+    ));
+    let headers = open_url(&url, &config).expect("opens with the key");
+    assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
+
+    // A connection string in the environment, and a source naming it.
+    let connection = format!(
+        "DefaultEndpointsProtocol=https;AccountName={account};AccountKey={key};EndpointSuffix=core.windows.net"
+    );
+    // SAFETY: run with --test-threads=1.
+    unsafe { std::env::set_var("DATUI_LIVE_CONNECTION", &connection) };
+    let config = CloudConfig {
+        sources: vec![datui::config::CloudSourceConfig {
+            name: "connstr".to_string(),
+            kind: Some("azure".to_string()),
+            connection_string_env: Some("DATUI_LIVE_CONNECTION".to_string()),
+            ..Default::default()
+        }],
+        ..config
+    };
+    let listed = common::test_runtime()
+        .block_on(cloud_browse::list_account("connstr", &account, &config))
+        .expect("containers list with the connection string");
+    assert!(listed.iter().any(|r| r.name == "datui-test"));
+    let headers = open_url(&url, &config).expect("opens with the connection string");
+    assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
+
+    if let Ok(sas) = std::env::var("DATUI_LIVE_AZURE_SAS") {
+        unsafe { std::env::set_var("DATUI_LIVE_SAS", &sas) };
+        let config = CloudConfig {
+            sources: vec![datui::config::CloudSourceConfig {
+                name: "sas".to_string(),
+                kind: Some("azure".to_string()),
+                account: Some(account.clone()),
+                sas_env: Some("DATUI_LIVE_SAS".to_string()),
+                ..Default::default()
+            }],
+            ..CloudConfig::default()
+        };
+        let rows = common::test_runtime()
+            .block_on(cloud_browse::list_objects(
+                &format!("abfss://datui-test@{account}.dfs.core.windows.net/demo/"),
+                &config,
+            ))
+            .expect("a folder lists with the SAS");
+        assert!(rows.iter().any(|r| r.name == "penguins.parquet"));
+    }
+}
+
+/// Azurite through `AZURE_STORAGE_CONNECTION_STRING=UseDevelopmentStorage=true`: the
+/// account lists its containers, a folder lists, and a Parquet file opens.
+///
+/// ```bash
+/// npx azurite-blob --location /tmp/azurite --blobPort 10000 &
+/// az storage container create --name demo --connection-string "UseDevelopmentStorage=true"
+/// az storage blob upload --container-name demo --name small/data.parquet \
+///   --file tests/sample-data/people.parquet --connection-string "UseDevelopmentStorage=true"
+/// DATUI_LIVE_AZURITE=1 cargo test --test cloud_live_test -- --ignored --nocapture azurite
+/// ```
+#[test]
+#[ignore = "talks to a local Azurite; set DATUI_LIVE_AZURITE=1"]
+fn azurite_through_a_development_connection_string() {
+    if std::env::var("DATUI_LIVE_AZURITE").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_AZURITE=1 to run");
+        return;
+    }
+    // SAFETY: run with --test-threads=1.
+    unsafe {
+        std::env::set_var(
+            "AZURE_STORAGE_CONNECTION_STRING",
+            "UseDevelopmentStorage=true",
+        )
+    };
+    let config = CloudConfig::default();
+    let sources = cloud_sources::discover(&config, &Environment::current());
+    let source = sources
+        .iter()
+        .find(|s| s.id == cloud_sources::DEFAULT_AZURE_ENV)
+        .expect("the environment's account");
+    let runtime = common::test_runtime();
+    let accounts = runtime
+        .block_on(cloud_browse::list_first_level(source))
+        .expect("the account");
+    assert_eq!(accounts[0].name, "devstoreaccount1");
+    let containers = runtime
+        .block_on(cloud_browse::list_account(
+            cloud_sources::DEFAULT_AZURE_ENV,
+            "devstoreaccount1",
+            &config,
+        ))
+        .expect("containers list");
+    assert!(
+        containers.iter().any(|c| c.name == "demo"),
+        "{containers:?}"
+    );
+    let rows = runtime
+        .block_on(cloud_browse::list_objects(
+            "abfss://demo@devstoreaccount1.dfs.core.windows.net/small/",
+            &config,
+        ))
+        .expect("a folder lists");
+    assert!(rows.iter().any(|r| r.name == "data.parquet"), "{rows:?}");
+    let headers = open_url(
+        "abfss://demo@devstoreaccount1.dfs.core.windows.net/small/data.parquet",
+        &config,
+    )
+    .expect("opens");
+    assert!(!headers.is_empty());
+    unsafe { std::env::remove_var("AZURE_STORAGE_CONNECTION_STRING") };
+}

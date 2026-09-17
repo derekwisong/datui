@@ -66,6 +66,9 @@ jobs:
           # A runner has no cloud login, but make sure: nothing here may be read signed.
           unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE \
             GOOGLE_APPLICATION_CREDENTIALS AZURE_STORAGE_CONNECTION_STRING
+          # An empty home, so no tool's login file is found. rustup finds its toolchains
+          # through HOME unless told otherwise.
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
           export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
           cargo test --test cloud_live_test -- --ignored --nocapture --test-threads=1 \
             every_public_dataset_lists_and_opens \

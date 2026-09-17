@@ -109,8 +109,13 @@ datui s3://my-bucket/events/2024/
 ```
 
 `AWS_SESSION_TOKEN` adds temporary credentials, and the keys under `[cloud]` in
-the config work the same way. On EC2, ECS, Lambda and EKS the instance or task
-role is used.
+the config work the same way. On ECS, Lambda and EKS the task role is used. An EC2
+instance role is not found on its own, since finding it means a request that hangs
+on some networks; with no other AWS login, datui reads S3 unsigned, which reaches
+public buckets only.
+
+Each bucket is read in its own region, asked of S3 once per session, so one login
+reaches buckets in every region.
 
 ### AWS profiles
 
@@ -243,6 +248,44 @@ Reading blobs with a sign-in needs the *Storage Blob Data Reader* role on the
 account. Owner or Contributor on the subscription is not enough, except on an
 account with hierarchical namespace where your login owns the container. A
 refused read says which.
+
+### Public data
+
+Public buckets and containers open with no login at all:
+
+```bash
+datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/
+datui gs://cloud-samples-data/bigquery/us-states/us-states.parquet
+datui abfss://release@overturemapswestus2.dfs.core.windows.net/
+```
+
+| Machine has | datui |
+|---|---|
+| No login for that cloud | Reads unsigned straight away |
+| A login | Signs with it. If the place refuses, datui tries once more unsigned, and remembers for the session which one worked |
+
+The retry matters most on Azure, which refuses a public container to a login from
+another tenant. A public bucket or container read this way is listed with the
+[public datasets](home-screen.md#public-datasets) from then on.
+
+A few well-known datasets are built in; see the
+[home screen](home-screen.md#public-datasets). To keep your own list, add a
+source with `public = true` and its data as URLs of any cloud:
+
+```toml
+# GBIF occurrence snapshots: CC BY-NC 4.0, see https://www.gbif.org/terms
+[[cloud.sources]]
+name = "gbif"
+label = "GBIF"
+public = true
+buckets = ["s3://gbif-open-data-us-east-1/occurrence/"]
+```
+
+A license is the publisher's, not datui's: check it before you use the data.
+
+Parquet part files with no extension, like GBIF's `occurrence.parquet/000001`,
+open as Parquet. So does a local file with no extension that starts and ends with
+`PAR1`.
 
 ### HTTP and HTTPS
 

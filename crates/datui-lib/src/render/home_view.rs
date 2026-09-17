@@ -478,6 +478,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                         .browsing
                         .is_none()
                         .then_some(known_sources.as_slice()),
+                    app.home.place_kind(&entry.path),
                     ctx,
                 ));
             }
@@ -750,6 +751,7 @@ fn entry_line<'a>(
     matched_column: Option<&'a str>,
     filter: &str,
     known_sources: Option<&[String]>,
+    place_kind: Option<&'static str>,
     ctx: &RenderContext,
 ) -> Line<'a> {
     // The selection marker is the loudest thing on screen, and the only thing that
@@ -773,9 +775,9 @@ fn entry_line<'a>(
     let path_text = entry.path.to_string_lossy();
     let named_source = crate::source::split_source_id(&path_text).0;
     let kind = match entry.kind {
-        EntryKind::Directory => {
-            crate::home::object_place_label(&entry.path).unwrap_or_else(|| entry.kind.label())
-        }
+        EntryKind::Directory => place_kind
+            .or_else(|| crate::home::object_place_label(&entry.path))
+            .unwrap_or_else(|| entry.kind.label()),
         _ => entry.kind.label(),
     };
     // Two stores can hold the same bucket and key, so a row from one that is named in
@@ -986,7 +988,12 @@ fn ratio_of(size: Option<u64>, uncompressed: Option<u64>) -> Option<f64> {
 /// The name, the path, and everything known about the dataset.
 ///
 /// Split out from the pane so it can be checked without an application behind it.
-fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'static>> {
+fn preview_head(
+    entry: &Entry,
+    place_kind: Option<&'static str>,
+    width: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
     let g = glyphs::get();
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
@@ -1031,9 +1038,9 @@ fn preview_head(entry: &Entry, width: usize, ctx: &RenderContext) -> Vec<Line<'s
         facts.push(("source", source.label().to_string(), style));
     }
     let kind = match entry.kind {
-        EntryKind::Directory => {
-            crate::home::object_place_label(&entry.path).unwrap_or_else(|| entry.kind.label())
-        }
+        EntryKind::Directory => place_kind
+            .or_else(|| crate::home::object_place_label(&entry.path))
+            .unwrap_or_else(|| entry.kind.label()),
         _ => entry.kind.label(),
     };
     if !kind.is_empty() {
@@ -1141,12 +1148,17 @@ fn source_details(
         Some(age) if !age.is_empty() => format!(" · listed {age} ago"),
         _ => String::new(),
     };
+    let noun = match source.api.as_str() {
+        "azure" => "accounts",
+        "public" => "datasets",
+        _ => "buckets",
+    };
     match &source.status {
         crate::home::CloudStatus::Listing if source.buckets.is_empty() => {
-            facts.push(("buckets".to_string(), "listing".to_string(), plain));
+            facts.push((noun.to_string(), "listing".to_string(), plain));
         }
         _ => facts.push((
-            "buckets".to_string(),
+            noun.to_string(),
             format!("{}{listed}", source.buckets.len()),
             plain,
         )),
@@ -1182,7 +1194,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
         return;
     }
     let g = glyphs::get();
-    let mut lines = preview_head(&entry, width, ctx);
+    let mut lines = preview_head(&entry, app.home.place_kind(&entry.path), width, ctx);
     // What the source's listing said about this place: an Azure account's
     // subscription, region and namespace.
     if let Some(details) = app.home.place_details(&entry.path) {
@@ -1309,7 +1321,7 @@ mod tests {
         let mut entry = Entry::for_test(path, "sales.parquet");
         entry.kind = EntryKind::Unknown;
         let text = |known: Option<&[String]>| -> String {
-            entry_line(&entry, false, 80, false, None, "", known, &ctx)
+            entry_line(&entry, false, 80, false, None, "", known, None, &ctx)
                 .spans
                 .iter()
                 .map(|s| s.content.to_string())
@@ -1326,7 +1338,17 @@ mod tests {
     fn row_spans(name: &str, filter: &str, column: Option<&str>) -> Vec<(String, bool)> {
         let ctx = RenderContext::for_test();
         let entry = Entry::for_test(std::path::Path::new("/tmp/x"), name);
-        let line = entry_line(&entry, false, 60, false, column, filter, Some(&[]), &ctx);
+        let line = entry_line(
+            &entry,
+            false,
+            60,
+            false,
+            column,
+            filter,
+            Some(&[]),
+            None,
+            &ctx,
+        );
         line.spans
             .iter()
             .skip(1) // the selection marker
@@ -1349,7 +1371,7 @@ mod tests {
 
     fn preview_text(entry: &Entry, width: usize) -> String {
         let ctx = RenderContext::for_test();
-        preview_head(entry, width, &ctx)
+        preview_head(entry, None, width, &ctx)
             .iter()
             .map(|l| {
                 l.spans
@@ -1499,7 +1521,7 @@ mod tests {
         );
         for width in [24usize, 40, 80] {
             let ctx = RenderContext::for_test();
-            for line in preview_head(&e, width, &ctx) {
+            for line in preview_head(&e, None, width, &ctx) {
                 // The pane wraps rather than clips, so a long value is allowed to run
                 // on; what must not happen is a *heading* bar overrunning its width.
                 let text: String = l_text(&line);

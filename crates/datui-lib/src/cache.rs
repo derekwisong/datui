@@ -440,6 +440,21 @@ impl CacheManager {
         self.load_history_file("cloud_hidden").unwrap_or_default()
     }
 
+    /// Public buckets and containers read on an earlier run, as URLs.
+    pub fn load_public_places(&self) -> Vec<String> {
+        self.load_history_file("cloud_public").unwrap_or_default()
+    }
+
+    /// Remember a public bucket or container, so it is listed with the public datasets.
+    pub fn remember_public_place(&self, url: &str) {
+        let url = url.to_string();
+        let _ = self.update_history_file("cloud_public", |places| {
+            if !places.contains(&url) {
+                places.push(url.clone());
+            }
+        });
+    }
+
     /// Hide a source from the home screen until the cache is cleared.
     pub fn hide_cloud_source(&self, id: &str) {
         let id = id.to_string();

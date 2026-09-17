@@ -1,0 +1,97 @@
+name: Public datasets
+
+# The built-in `Public datasets` cloud source points at data other organisations host.
+# datui hosts none of it, so nothing tells us when a publisher moves or retires a
+# dataset except checking. Once a week, and on pull requests that touch the cloud code
+# or the list, list and open every entry with no credentials at all, the way a new
+# user sees them. A scheduled failure opens an issue, or comments on the open one.
+#
+# No secrets: the data is public, and the point is to read it as someone with no login.
+
+on:
+  schedule:
+    # Mondays at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'crates/datui-lib/src/public_datasets.toml'
+      - 'crates/datui-lib/src/cloud_sources.rs'
+      - 'crates/datui-lib/src/cloud_browse.rs'
+      - 'crates/datui-lib/src/azure.rs'
+      - 'tests/cloud_live_test.rs'
+      - '.github/workflows/public-datasets.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config libfontconfig1-dev
+
+      - name: Cache cargo dependencies
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          save-if: false
+
+      - name: List and open every public dataset with no credentials
+        env:
+          DATUI_LIVE_PUBLIC: "1"
+        run: |
+          # A runner has no cloud login, but make sure: nothing here may be read signed.
+          unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE \
+            GOOGLE_APPLICATION_CREDENTIALS AZURE_STORAGE_CONNECTION_STRING
+          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
+          cargo test --test cloud_live_test -- --ignored --nocapture --test-threads=1 \
+            every_public_dataset_lists_and_opens \
+            public_datasets_browse_and_open_from_the_home_screen \
+            public_data_quirks
+
+  report:
+    needs: check
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Public datasets check failed"
+          existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          body="The weekly check of the built-in public datasets failed: $RUN_URL
+
+          A dataset may have moved, been retired, or changed its access. Update \`crates/datui-lib/src/public_datasets.toml\`, or fix whatever in datui stopped reading it."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

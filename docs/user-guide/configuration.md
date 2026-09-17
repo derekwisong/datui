@@ -159,6 +159,7 @@ s3_endpoint_url = "http://localhost:9000"   # MinIO, R2, Ceph and other S3-compa
 s3_access_key_id = "..."
 s3_secret_access_key = "..."
 s3_region = "us-east-1"
+public_datasets = true                      # the built-in Public datasets source; false hides it
 ```
 
 Environment variables override these, and command-line flags override both.
@@ -183,13 +184,27 @@ buckets = ["sales", "logs"]
 |---|---|---|
 | `name` | all | Required. Lowercase letters, digits and `-`, at most 40 characters. Used in `s3://<name>@bucket/key` |
 | `label` | all | Shown instead of the name |
-| `kind` | all | Required. `s3` or `gcs` |
+| `kind` | all | Required, except with `public`. `s3` or `gcs` |
+| `public` | | `true` for data anyone can read. `buckets` are then URLs (`s3://`, `gs://`, `abfss://`) of buckets, containers or folders, and no other field but `label` applies |
 | `buckets` | all | Buckets to show when the keys can read but not list |
 | `endpoint_url` | s3 | An S3-compatible server. Without it, the source is AWS |
 | `region` | s3 | Region to sign for |
 | `addressing` | s3 | `path` or `virtual`. Default: `path` with an endpoint, `virtual` without |
 | `access_key_id_env`, `secret_access_key_env`, `session_token_env` | s3 | Names of the environment variables holding the keys |
 | `profile` | s3 | An AWS profile to take the keys, endpoint and region from, instead of the `*_env` keys |
+
+A public source lists data from any cloud and reads it unsigned:
+
+```toml
+[[cloud.sources]]
+name = "open-data"
+public = true
+buckets = [
+  "s3://noaa-ghcn-pds/parquet/",
+  "gs://cloud-samples-data/bigquery/",
+  "abfss://release@overturemapswestus2.dfs.core.windows.net/",
+]
+```
 
 A secret written directly into a source (`secret_access_key = "..."`) is refused,
 and so is any key datui does not recognize, with the key named. A variable that is

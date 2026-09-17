@@ -1589,8 +1589,8 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
 
     assert!(
-        screen.contains("3 below"),
-        "three of the six notes fit, so three are out of view, got:\n{screen}"
+        screen.contains("4 below"),
+        "two of the six notes fit whole, so four are out of view, got:\n{screen}"
     );
     assert!(
         screen.contains("a is in 1 of 2 files"),
@@ -1632,19 +1632,46 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
         );
     }
 
-    // With room for exactly one note, the note gets the row rather than the count of
-    // the notes it is hiding.
+    // A summary without its scope line under it is the misreading the scope line
+    // exists to prevent, so no height may produce one.
+    for height in 3u16..26 {
+        let area = Rect::new(0, 0, 100, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<String> = (0..height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        for (i, row) in rows.iter().enumerate() {
+            if !row.contains("is in 1 of 2 files") {
+                continue;
+            }
+            // The scope follows the summary, after the detail when this is the note
+            // the cursor is on, and always before the next note begins.
+            let found = rows[i + 1..]
+                .iter()
+                .take_while(|later| !later.contains("is in 1 of 2 files"))
+                .any(|later| later.contains("in all 2 footers"));
+            assert!(
+                found,
+                "at height {height}, a note is drawn with no basis under it:\n{}",
+                row.trim_end()
+            );
+        }
+    }
+
+    // A note needs its summary and its basis, so one row cannot hold one. Say that
+    // rather than draw half a note.
     let area = Rect::new(0, 0, 100, 4);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
     assert!(
-        screen.contains("is in 1 of 2 files"),
-        "the one note that fits is drawn whole, got:\n{screen}"
-    );
-    assert!(
-        !screen.contains("below"),
-        "and the count gives way rather than sitting on top of it, got:\n{screen}"
+        screen.contains("6 notes; no room to show one"),
+        "too short for a whole note says so, got:\n{screen}"
     );
 }
 

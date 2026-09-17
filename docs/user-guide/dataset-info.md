@@ -45,8 +45,9 @@ the footers the schema and the row count already needed.
 
 Each note shows its scope beneath it, and the one the cursor is on shows its
 detail; <kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller
-than the panel, the corner says how many notes are out of view — unless the
-panel is a single row, where the note itself gets it.
+than the panel, the corner says how many notes are out of view. A note is drawn
+whole or not at all: a summary without its basis under it would be the misreading
+the basis is there to prevent.
 
 A note describes the dataset as opened. A query, a pivot or a drill-down builds
 rows of its own, so the notes step aside; resetting or drilling back up brings

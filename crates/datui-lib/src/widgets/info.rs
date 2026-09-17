@@ -1,6 +1,8 @@
 //! Info panel: tabbed Schema and Resources view for dataset technical info.
 
 use std::collections::HashMap;
+
+use crate::numfmt::group_chrome;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -747,10 +749,20 @@ impl<'a> DataTableInfo<'a> {
         };
 
         for (index, note) in notes.iter().enumerate().skip(first) {
-            let marker = if index == selected { "› " } else { "  " };
-            if !line(format!("{marker}{}", note.summary), None, &mut y) {
+            // A note is drawn whole or not at all. A summary without the scope line
+            // under it is the very misreading the scope line is there to prevent, so a
+            // note that will not fit is left for the count below instead.
+            let detail = if index == selected {
+                note.detail.len()
+            } else {
+                0
+            };
+            let needed = 1 + detail + 1;
+            if y + needed as u16 > bottom {
                 break;
             }
+            let marker = if index == selected { "› " } else { "  " };
+            line(format!("{marker}{}", note.summary), None, &mut y);
             if index == selected {
                 for detail in &note.detail {
                     line(format!("    {detail}"), Some(dim), &mut y);
@@ -765,6 +777,15 @@ impl<'a> DataTableInfo<'a> {
 
         self.modal.notes_visible = drawn.max(1);
         let unseen = notes.len() - first - drawn;
+        if unseen > 0 && drawn == 0 {
+            // Not even one note fits whole. Say that rather than draw half of one.
+            Paragraph::new(Line::from(Span::styled(
+                format!("{} notes; no room to show one", group_chrome(notes.len())),
+                dim,
+            )))
+            .render(Rect { height: 1, ..area }, buf);
+            return;
+        }
         if reserve_indicator && (unseen > 0 || first > 0) {
             let hidden = if first > 0 && unseen > 0 {
                 format!("{first} above, {unseen} below")

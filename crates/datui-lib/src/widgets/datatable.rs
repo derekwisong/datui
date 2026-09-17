@@ -137,6 +137,10 @@ pub struct DataTableState {
     /// The two above as the dataset was opened, so a reset returns to them.
     drift_at_open: bool,
     groups_at_open: Arc<Vec<crate::schema_union::DriftGroup>>,
+    /// Where each file's rows begin in the dataset, and the drift group of each file.
+    /// Together they turn a row's place in the dataset into what its file was missing.
+    drift_file_starts: Vec<usize>,
+    drift_file_group: Vec<u32>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -490,6 +494,8 @@ impl DataTableState {
             drift_groups: Arc::new(Vec::new()),
             drift_at_open: false,
             groups_at_open: Arc::new(Vec::new()),
+            drift_file_starts: Vec::new(),
+            drift_file_group: Vec::new(),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -588,6 +594,8 @@ impl DataTableState {
             drift_groups: Arc::new(Vec::new()),
             drift_at_open: false,
             groups_at_open: Arc::new(Vec::new()),
+            drift_file_starts: Vec::new(),
+            drift_file_group: Vec::new(),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -3750,18 +3758,34 @@ impl DataTableState {
     }
 
     /// Record what the footers said about the dataset's columns. See `DatasetSchema`.
-    pub fn set_dataset_schema(&mut self, schema: crate::schema_union::DatasetSchema) {
-        // The scan stamps the drift column exactly when the files differ.
-        self.drift_column_present = schema.drifts();
+    /// `file_rows` is each file's row count, in scan order, and empty when they are not
+    /// all known — the same condition under which the scan numbers its rows.
+    pub fn set_dataset_schema(
+        &mut self,
+        schema: crate::schema_union::DatasetSchema,
+        file_rows: &[usize],
+    ) {
+        // The scan numbers rows exactly when the files differ and every one is counted.
+        self.drift_column_present = schema.drifts() && file_rows.len() == schema.file_group.len();
         self.drift_groups = Arc::new(schema.groups.clone());
+        self.drift_file_group = schema.file_group.clone();
+        self.drift_file_starts = Vec::with_capacity(file_rows.len());
+        let mut row = 0usize;
+        for rows in file_rows {
+            self.drift_file_starts.push(row);
+            row += rows;
+        }
         self.drift_at_open = self.drift_column_present;
         self.groups_at_open = self.drift_groups.clone();
         self.dataset_schema = Some(schema);
     }
 
-    /// The frame as the user sees it: `lf` without the hidden drift column. Everything
-    /// that exports, reshapes, groups or analyses the data reads this; only the display
-    /// buffer reads `lf` itself, and it lifts the column back out after collecting.
+    /// The frame as the user sees it: `lf` without the hidden row-index column.
+    ///
+    /// Everything that exports, reshapes, groups or analyses the data reads this. The
+    /// buffer reads `lf` itself and keeps the column, which is how `display_drift`
+    /// traces a row back to its file; it stays invisible because the display is only
+    /// ever a projection of `column_order`, which never names it.
     pub fn visible_lf(&self) -> LazyFrame {
         Self::without_drift(self.lf.clone())
     }
@@ -4592,10 +4616,22 @@ impl DataTableState {
             return Vec::new();
         }
         let slice = column.slice(offset as i64, len);
-        match slice.u32() {
-            Ok(values) => values.iter().map(|v| v.unwrap_or(0)).collect(),
-            Err(_) => Vec::new(),
-        }
+        let Ok(rows) = slice.u32() else {
+            return Vec::new();
+        };
+        // The column holds each row's place in the dataset. The file it came from is
+        // the last one starting at or before it, and the file says what it is missing.
+        let starts = &self.drift_file_starts;
+        let groups = &self.drift_file_group;
+        rows.iter()
+            .map(|row| {
+                let row = row.unwrap_or(0) as usize;
+                let file = starts
+                    .partition_point(|&start| start <= row)
+                    .saturating_sub(1);
+                groups.get(file).copied().unwrap_or(0)
+            })
+            .collect()
     }
 
     /// Maximum buffer size in rows (0 = no limit).

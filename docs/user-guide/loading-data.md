@@ -92,7 +92,9 @@ confused with a gap in the files:
 | `≠` | The file holds the column in another type, so it was not read from that file |
 
 A mark after a column's name means it is not in every file, or the files
-disagree on its type. The distinction survives a filter and a sort. A group-by,
+disagree on its type. The distinction survives a filter and a sort. Past 20,000
+files, where the schema comes from a sample, datui has not counted every file
+and every empty cell reads as `∅`. A group-by,
 pivot or SQL query builds new rows that stand for no one file, so their nulls
 are plain nulls again, and an export writes every empty cell as null.
 

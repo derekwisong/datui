@@ -456,30 +456,36 @@ pub fn with_partition_columns(
     merged
 }
 
-/// The column the scan stamps each row's drift group into, so a cell knows whether its
-/// file had the column at all. Never shown, filtered, sorted or exported:
-/// `DataTableState` lifts it out of the buffer as soon as it is collected.
-pub const DRIFT_COLUMN: &str = "__datui_drift";
+/// The column the scan writes each row's position in the dataset into, so a cell can be
+/// traced back to the file it came from and told whether that file had the column at
+/// all. Never shown, filtered, sorted or exported: it is in the buffer the display is
+/// sliced from, and the display only ever projects the column order.
+pub const DRIFT_COLUMN: &str = "__datui_row";
 
 /// A file that is missing nothing, for a group id with no entry of its own.
-const NOTHING_MISSING: DriftGroup = DriftGroup {
+static NOTHING_MISSING: DriftGroup = DriftGroup {
     absent: Vec::new(),
     unread: Vec::new(),
 };
 
-/// How a dataset's files differ, in the form the scan needs: each file's drift group by
-/// the path or URL the scan names it by, and the groups themselves.
+/// How a dataset's files differ, in the form the scan needs: what each file is missing,
+/// and where its rows begin in the dataset, by the path or URL the scan names it by.
 #[derive(Debug, Clone, Default)]
 pub struct ScanDrift {
     group_of: HashMap<String, u32>,
+    /// Where each file's rows start in the dataset. The scan numbers a run's rows from
+    /// its first file's entry, so the numbering survives reading only a window of files.
+    row_of: HashMap<String, usize>,
     pub groups: Vec<DriftGroup>,
 }
 
 impl ScanDrift {
-    /// `None` when every file agrees with the schema, which is the common case: the
-    /// scan is then one plain read and rows carry nothing extra.
-    pub fn new(paths: &[String], dataset: &DatasetSchema) -> Option<Self> {
-        if !dataset.drifts() {
+    /// `None` when every file agrees with the schema, or when the rows of each file are
+    /// not known — either way the scan is one plain read and rows carry nothing extra.
+    ///
+    /// `file_rows` is each file's row count, in the order of `paths`.
+    pub fn new(paths: &[String], dataset: &DatasetSchema, file_rows: &[usize]) -> Option<Self> {
+        if !dataset.drifts() || file_rows.len() != paths.len() {
             return None;
         }
         let group_of = paths
@@ -488,8 +494,15 @@ impl ScanDrift {
             .filter(|(_, group)| **group != 0)
             .map(|(path, group)| (path.clone(), *group))
             .collect();
+        let mut row = 0usize;
+        let mut row_of = HashMap::with_capacity(paths.len());
+        for (path, rows) in paths.iter().zip(file_rows) {
+            row_of.insert(path.clone(), row);
+            row += rows;
+        }
         Some(ScanDrift {
             group_of,
+            row_of,
             groups: dataset.groups.clone(),
         })
     }
@@ -497,6 +510,20 @@ impl ScanDrift {
     /// The group of the file the scan names `path`. Group 0 is "nothing missing".
     pub fn group(&self, path: &str) -> u32 {
         self.group_of.get(path).copied().unwrap_or(0)
+    }
+
+    /// Where the rows of the file the scan names `path` begin in the dataset.
+    fn first_row(&self, path: &str) -> usize {
+        self.row_of.get(path).copied().unwrap_or(0)
+    }
+
+    /// Which columns a file is not read for, which is the only reason to split the scan.
+    fn unread(&self, path: &str) -> &[PlSmallStr] {
+        self.groups
+            .get(self.group(path) as usize)
+            .unwrap_or(&NOTHING_MISSING)
+            .unread
+            .as_slice()
     }
 }
 
@@ -506,11 +533,15 @@ impl ScanDrift {
 /// `scan_parquet` offers only the first of those, and a Bitcoin transactions file from
 /// 2015 fails against the 2026 schema without the rest.
 ///
-/// When `drift` is given, a column a file stores in another type is left out of that
-/// file's read and comes back null, and every row carries its file's drift group in
-/// [`DRIFT_COLUMN`] so a null can be told from a column the file never had. Consecutive
-/// files in the same group are one scan; the scans are concatenated in file order, so
-/// the dataset still reads in key order.
+/// When `drift` is given, every row carries its position in the dataset in
+/// [`DRIFT_COLUMN`], which is what lets a cell be traced to its file and a null told
+/// from a column that file never had.
+///
+/// The scan splits only where it has to: a column a file stores in another type must be
+/// left out of *that* file's read, so consecutive files omitting the same columns are
+/// one scan and the scans are concatenated in file order. A file merely missing a
+/// column needs no split — `MissingColumnsPolicy::Insert` already reads it as null —
+/// so the common case stays a single scan however many files disagree.
 pub fn lenient_scan(
     paths: &[String],
     schema: Arc<Schema>,
@@ -518,22 +549,22 @@ pub fn lenient_scan(
     drift: Option<&ScanDrift>,
 ) -> PolarsResult<LazyFrame> {
     let Some(drift) = drift else {
-        return scan_run(paths, &schema, cloud_options, &DriftGroup::default(), None);
+        return scan_run(paths, &schema, cloud_options, &[], None);
     };
     let mut runs: Vec<LazyFrame> = Vec::new();
     let mut start = 0;
     while start < paths.len() {
-        let id = drift.group(&paths[start]);
+        let unread = drift.unread(&paths[start]);
         let end = paths[start..]
             .iter()
-            .position(|path| drift.group(path) != id)
+            .position(|path| drift.unread(path) != unread)
             .map_or(paths.len(), |offset| start + offset);
         runs.push(scan_run(
             &paths[start..end],
             &schema,
             cloud_options.clone(),
-            drift.groups.get(id as usize).unwrap_or(&NOTHING_MISSING),
-            Some(id),
+            unread,
+            Some(drift.first_row(&paths[start])),
         )?);
         start = end;
     }
@@ -557,10 +588,9 @@ fn scan_run(
     urls: &[String],
     schema: &Arc<Schema>,
     cloud_options: Option<polars::io::cloud::CloudOptions>,
-    group: &DriftGroup,
-    stamp: Option<u32>,
+    omit: &[PlSmallStr],
+    first_row: Option<usize>,
 ) -> PolarsResult<LazyFrame> {
-    let omit = group.unread.as_slice();
     use polars::lazy::dsl::{
         CastColumnsPolicy, DslBuilder, ExtraColumnsPolicy, MissingColumnsPolicy, ScanSources,
         UnifiedScanArgs,
@@ -605,6 +635,13 @@ fn scan_run(
         },
         missing_columns_policy: MissingColumnsPolicy::Insert,
         extra_columns_policy: ExtraColumnsPolicy::Ignore,
+        // Numbering the rows from where this run begins costs one column and no extra
+        // read, and it is what survives a sort: a row keeps its place in the dataset
+        // however the view is reordered.
+        row_index: first_row.map(|first| polars::io::RowIndex {
+            name: DRIFT_COLUMN.into(),
+            offset: first as polars::prelude::IdxSize,
+        }),
         ..Default::default()
     };
     let mut lf: LazyFrame = DslBuilder::scan_parquet(sources, options, args)?
@@ -620,12 +657,9 @@ fn scan_run(
             .collect();
         lf = lf.with_columns(nulls);
     }
-    if let Some(group) = stamp {
-        lf = lf.with_column(
-            lit(group)
-                .cast(polars::prelude::DataType::UInt32)
-                .alias(DRIFT_COLUMN),
-        );
+    if first_row.is_some() {
+        // Runs concatenate only if they agree on column order, and the row index
+        // arrives first, so put it back at the end where the state expects it.
         let mut ordered: Vec<Expr> = schema.iter_names().map(|name| col(name.clone())).collect();
         ordered.push(col(DRIFT_COLUMN));
         lf = lf.select(ordered);
@@ -654,6 +688,64 @@ mod tests {
 
     fn names(schema: &Schema) -> Vec<String> {
         schema.iter_names().map(|n| n.to_string()).collect()
+    }
+
+    /// Files merely missing a column must not split the scan.
+    ///
+    /// Splitting is only needed to leave a column out of a file that holds it in
+    /// another type. When a column is simply absent the read is already lenient, so a
+    /// dataset whose files alternate between having it and not — the worst case for
+    /// run-splitting — must still be one scan.
+    #[test]
+    fn absent_columns_alone_never_split_the_scan() {
+        let files = 64;
+        let per_file: Vec<Option<FileSchema>> = (0..files)
+            .map(|i| {
+                let mut s = Schema::with_capacity(2);
+                s.with_column("id".into(), DataType::Int64);
+                if i % 2 == 1 {
+                    s.with_column("extra".into(), DataType::String);
+                }
+                Some(FileSchema {
+                    schema: Arc::new(s),
+                    rows: 1,
+                })
+            })
+            .collect();
+        let paths: Vec<String> = (0..files).map(|i| format!("part-{i:05}.parquet")).collect();
+        let read: Vec<usize> = (0..files).collect();
+        let dataset = union_sampled(files, &read, &per_file);
+        let rows = vec![1usize; files];
+        let drift = ScanDrift::new(&paths, &dataset, &rows).expect("this dataset drifts");
+        assert!(dataset.drifts());
+        assert_eq!(
+            runs_of(&paths, &drift),
+            1,
+            "absent columns need no split, however they alternate"
+        );
+
+        // A type conflict does need one, and only around the files that have it.
+        let mut with_conflict = per_file.clone();
+        let mut odd = Schema::with_capacity(2);
+        odd.with_column("id".into(), DataType::String);
+        with_conflict[7] = Some(FileSchema {
+            schema: Arc::new(odd),
+            rows: 1,
+        });
+        let dataset = union_sampled(files, &read, &with_conflict);
+        let drift = ScanDrift::new(&paths, &dataset, &rows).unwrap();
+        assert_eq!(runs_of(&paths, &drift), 3, "before it, it, and after it");
+    }
+
+    /// How many separate scans `lenient_scan` would build for these paths.
+    fn runs_of(paths: &[String], drift: &ScanDrift) -> usize {
+        let mut runs = 1;
+        for pair in paths.windows(2) {
+            if drift.unread(&pair[0]) != drift.unread(&pair[1]) {
+                runs += 1;
+            }
+        }
+        runs
     }
 
     #[test]

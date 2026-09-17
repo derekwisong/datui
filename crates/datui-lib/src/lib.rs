@@ -4665,7 +4665,18 @@ impl App {
             .iter()
             .map(|f| f.to_string_lossy().into_owned())
             .collect();
-        let drift = crate::schema_union::ScanDrift::new(&paths, &dataset);
+        // Numbering rows needs every file's row count; a sampled dataset has not read
+        // them all, so it forgoes the distinction rather than guessing at it.
+        let file_rows: Vec<usize> = if read.len() == files.len() {
+            footers
+                .iter()
+                .map(|f| f.as_ref().map(|f| f.rows))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let drift = crate::schema_union::ScanDrift::new(&paths, &dataset, &file_rows);
         let schema = dataset.schema.clone();
         let lf =
             crate::schema_union::lenient_scan(&paths, schema.clone(), None, drift.as_ref()).ok()?;
@@ -4673,7 +4684,7 @@ impl App {
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
-        state.set_dataset_schema(dataset);
+        state.set_dataset_schema(dataset, &file_rows);
         Some(state)
     }
 
@@ -4768,7 +4779,16 @@ impl App {
         // A file that stores a column in a type the dataset's column cannot hold is not
         // read for it; its rows are null there rather than failing the scan, and carry
         // their file's drift group so the null can be told from a real one.
-        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset);
+        let file_rows: Vec<usize> = if read.len() == file_count {
+            footers
+                .iter()
+                .map(|f| f.as_ref().map(|f| f.row_group_rows.iter().sum()))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
         let schema = dataset.schema.clone();
         let scan: crate::widgets::datatable::FileScan = {
             let (schema, partition_columns, drift) = (
@@ -4821,7 +4841,7 @@ impl App {
                 .collect();
             state.set_file_row_groups(&row_groups);
         }
-        state.set_dataset_schema(dataset);
+        state.set_dataset_schema(dataset, &file_rows);
         Some(state)
     }
 

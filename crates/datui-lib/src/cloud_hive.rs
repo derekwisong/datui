@@ -613,15 +613,25 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
-        let (dataset, listed) = rt.block_on(async {
+        let (dataset, listed, file_rows) = rt.block_on(async {
             let listed = list_dataset_files(&store, "data").await.unwrap();
-            (schema_of(&store, &listed).await.0, listed)
+            let read: Vec<usize> = (0..listed.len()).collect();
+            let footers = footers_of_files(&store, &listed, &read).await;
+            let rows: Vec<usize> = footers
+                .iter()
+                .map(|f| {
+                    f.as_ref()
+                        .map(|f| f.row_group_rows.iter().sum())
+                        .unwrap_or(0)
+                })
+                .collect();
+            (schema_of(&store, &listed).await.0, listed, rows)
         });
         let urls: Vec<String> = listed
             .iter()
             .map(|f| dir.path().join(&f.key).to_string_lossy().into_owned())
             .collect();
-        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset);
+        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
         let mut df = lenient_scan(&urls, dataset.schema.clone(), None, drift.as_ref())
             .unwrap()
             .collect()

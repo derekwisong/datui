@@ -112,6 +112,9 @@ pub struct Environment<'a> {
     pub run: &'a crate::cloud_command::Runner<'a>,
     /// Every environment variable, for the ones named by pattern: `MC_HOST_<alias>`.
     pub all_vars: &'a dyn Fn() -> Vec<(String, String)>,
+    /// The entries of a directory, for tools that keep one file per login: `gcloud`
+    /// configurations. Empty when it cannot be read.
+    pub list: &'a dyn Fn(&Path) -> Vec<PathBuf>,
 }
 
 impl Environment<'_> {
@@ -127,6 +130,11 @@ impl Environment<'_> {
                 crate::cloud_command::run(program, args, crate::cloud_command::CREDENTIAL_TIMEOUT)
             },
             all_vars: &|| std::env::vars().collect(),
+            list: &|dir| {
+                std::fs::read_dir(dir)
+                    .map(|entries| entries.flatten().map(|e| e.path()).collect())
+                    .unwrap_or_default()
+            },
         }
     }
 }
@@ -177,6 +185,16 @@ fn detect_gcs(env: &Environment<'_>) -> Option<Provider> {
     })
 }
 
+/// The credential type of a Google login object_store cannot read, when that is what the
+/// environment or the application-default file holds: workload identity federation,
+/// an impersonated service account.
+pub fn unreadable_google_login(env: &Environment<'_>) -> Option<String> {
+    let path = (env.var)("GOOGLE_APPLICATION_CREDENTIALS")
+        .map(PathBuf::from)
+        .or_else(|| adc_path(env))?;
+    crate::gcloud::unsupported_credential_type(&(env.read)(&path)?)
+}
+
 /// The application default credentials file, where `object_store` reads it:
 /// `%APPDATA%\gcloud\` on Windows, `$HOME/.config/gcloud/` elsewhere. Kept in step with
 /// `object_store::gcp` deliberately: discovery must agree with the code that will later
@@ -207,7 +225,7 @@ pub fn adc_path(env: &Environment<'_>) -> Option<PathBuf> {
 /// internal state is the kind of cleverness that breaks silently when that tool
 /// changes. The credentials file is different: it is a documented format, and
 /// `object_store` already reads it.
-fn gcp_project(env: &Environment<'_>) -> Option<String> {
+pub(crate) fn gcp_project(env: &Environment<'_>) -> Option<String> {
     for key in [
         "DATUI_GCP_PROJECT",
         "GOOGLE_CLOUD_PROJECT",
@@ -526,15 +544,25 @@ pub fn store_for_bucket(
     bucket: &str,
     settings: &S3Settings,
     unsigned: bool,
+    google_token: Option<&str>,
 ) -> Result<std::sync::Arc<dyn object_store::ObjectStore>, String> {
     match kind {
         ProviderKind::Gcs => {
             // Unsigned means no credential lookup at all, so a machine with no Google
             // login never waits on a metadata service that is not there.
-            let builder = if unsigned {
-                object_store::gcp::GoogleCloudStorageBuilder::new().with_skip_signature(true)
-            } else {
-                object_store::gcp::GoogleCloudStorageBuilder::from_env()
+            let builder = match (unsigned, google_token) {
+                (true, _) => {
+                    object_store::gcp::GoogleCloudStorageBuilder::new().with_skip_signature(true)
+                }
+                (false, Some(token)) => object_store::gcp::GoogleCloudStorageBuilder::new()
+                    .with_credentials(std::sync::Arc::new(
+                        object_store::StaticCredentialProvider::new(
+                            object_store::gcp::GcpCredential {
+                                bearer: token.to_string(),
+                            },
+                        ),
+                    )),
+                (false, None) => object_store::gcp::GoogleCloudStorageBuilder::from_env(),
             };
             let store = builder
                 .with_bucket_name(bucket)
@@ -685,6 +713,7 @@ async fn list_level(
         &bucket,
         &resolved.s3,
         resolved.signing == Signing::Unsigned,
+        resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
     )?;
 
     let os_prefix = if prefix.is_empty() {
@@ -848,6 +877,14 @@ pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
                 details: dataset_details(dataset),
             })
             .collect());
+    }
+    if source.kind == ProviderKind::Gcs {
+        let source = source.clone();
+        return tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(list_gcs_projects(&source))
+        })
+        .await
+        .map_err(|e| format!("{e}"))?;
     }
     if source.kind != ProviderKind::Azure {
         // The bucket listings send their request with a blocking client. On a thread
@@ -1079,12 +1116,44 @@ pub async fn list_account(
     config: &CloudConfig,
 ) -> Result<Vec<crate::discover::Entry>, String> {
     let (source_id, account, config) = (source_id.to_string(), account.to_string(), config.clone());
+    let source = {
+        let (source_id, config) = (source_id.clone(), config.clone());
+        tokio::task::spawn_blocking(move || {
+            crate::cloud_sources::discover(&config, &Environment::current())
+                .into_iter()
+                .find(|s| s.id == source_id)
+                .ok_or_else(|| format!("source not found: {source_id}"))
+        })
+        .await
+        .map_err(|e| format!("{e}"))??
+    };
+    if source.kind == ProviderKind::Gcs {
+        let blocking = Source {
+            project: Some(account.clone()),
+            ..source.clone()
+        };
+        let buckets = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(list_gcs_buckets(&blocking))
+        })
+        .await
+        .map_err(|e| format!("{e}"))??;
+        return Ok(buckets
+            .into_iter()
+            .map(|bucket| {
+                // Opening a bucket found here has to use the login that found it.
+                crate::cloud_sources::remember_bucket(&source, &bucket);
+                let mut entry =
+                    crate::discover::Entry::directory(Path::new(&format!("gs://{bucket}")));
+                entry.name = bucket;
+                entry
+            })
+            .collect());
+    }
     tokio::task::spawn_blocking(move || {
         let env = Environment::current();
-        let source = crate::cloud_sources::discover(&config, &env)
-            .into_iter()
-            .find(|s| s.id == source_id && s.kind == ProviderKind::Azure)
-            .ok_or_else(|| format!("source not found: {source_id}"))?;
+        if source.kind != ProviderKind::Azure {
+            return Err(format!("{source_id} has no accounts"));
+        }
         let settings = source.azure.with_token(&env)?;
         let containers = crate::azure::list_containers(&account, &settings)?;
         Ok(containers
@@ -1141,16 +1210,7 @@ async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
          GOOGLE_CLOUD_PROJECT or DATUI_GCP_PROJECT."
             .to_string()
     })?;
-
-    let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
-        .with_bucket_name("datui-credential-probe")
-        .build()
-        .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))?;
-    let credential = store
-        .credentials()
-        .get_credential()
-        .await
-        .map_err(|e| format!("could not obtain Google credentials: {e}"))?;
+    let bearer = google_bearer(source).await?;
 
     let mut buckets = Vec::new();
     let mut page_token: Option<String> = None;
@@ -1164,14 +1224,22 @@ async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
         if let Some(token) = &page_token {
             url.push_str(&format!("&pageToken={}", urlencode(token)));
         }
-        let body = http_agent()
+        let mut response = http_agent()
             .get(&url)
-            .header("Authorization", &format!("Bearer {}", credential.bearer))
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .header("Authorization", &format!("Bearer {bearer}"))
             .call()
-            .map_err(|e| format!("{e}"))?
+            .map_err(|e| format!("{e}"))?;
+        let status = response.status().as_u16();
+        let body = response
             .body_mut()
             .read_to_string()
             .map_err(|e| format!("could not read the response: {e}"))?;
+        if status != 200 {
+            return Err(crate::gcloud::describe_error(status, &body));
+        }
 
         buckets.extend(parse_gcs_buckets(&body)?);
         match gcs_next_page_token(&body) {
@@ -1182,6 +1250,87 @@ async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
 
     buckets.sort();
     Ok(buckets)
+}
+
+/// A bearer token for a Google source: from `gcloud` when it logs in through a
+/// configuration, else from object_store's own credential chain.
+async fn google_bearer(source: &Source) -> Result<String, String> {
+    if let Some(problem) = &source.problem {
+        return Err(problem.clone());
+    }
+    if let Some(configuration) = source.gcloud.clone() {
+        return tokio::task::spawn_blocking(move || {
+            crate::gcloud::token(&configuration, &Environment::current()).map(|(token, _)| token)
+        })
+        .await
+        .map_err(|e| format!("{e}"))?;
+    }
+    // Building a store needs a bucket name, and there is none: the store is built only
+    // to be asked for a credential.
+    let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+        .with_bucket_name("datui-credential-probe")
+        .build()
+        .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))?;
+    store
+        .credentials()
+        .get_credential()
+        .await
+        .map(|credential| credential.bearer.clone())
+        .map_err(|e| format!("could not obtain Google credentials: {e}"))
+}
+
+/// A Google source's projects, as the first level: every project Resource Manager
+/// finds, with the configured project first. When projects cannot be searched (no
+/// permission, or an application-default login without a quota project), the
+/// configured project alone.
+async fn list_gcs_projects(source: &Source) -> Result<Vec<Listed>, String> {
+    let bearer = google_bearer(source).await?;
+    let searched = {
+        let bearer = bearer.clone();
+        tokio::task::spawn_blocking(move || crate::gcloud::search_projects(&bearer))
+            .await
+            .map_err(|e| format!("{e}"))?
+    };
+    let mut projects = match (searched, &source.project) {
+        (Ok(projects), _) => projects,
+        (Err(_), Some(project)) => vec![crate::gcloud::Project {
+            id: project.clone(),
+            name: None,
+        }],
+        (Err(e), None) => return Err(e),
+    };
+    if let Some(configured) = &source.project {
+        match projects.iter().position(|p| &p.id == configured) {
+            Some(i) => {
+                let first = projects.remove(i);
+                projects.insert(0, first);
+            }
+            None => projects.insert(
+                0,
+                crate::gcloud::Project {
+                    id: configured.clone(),
+                    name: None,
+                },
+            ),
+        }
+    }
+    Ok(projects
+        .into_iter()
+        .map(|project| {
+            let mut details = Vec::new();
+            if let Some(name) = project.name.filter(|n| n != &project.id) {
+                details.push(("name".to_string(), name));
+            }
+            if source.project.as_deref() == Some(project.id.as_str()) {
+                details.push(("project".to_string(), "configured".to_string()));
+            }
+            Listed {
+                place: PathBuf::from(source.bucket_url(&project.id)),
+                name: project.id,
+                details,
+            }
+        })
+        .collect())
 }
 
 /// S3 buckets, through `ListBuckets` on the endpoint root.
@@ -1284,6 +1433,7 @@ mod tests {
             azure: Default::default(),
             signing: Signing::Try,
             place: crate::cloud_sources::access_key(url).unwrap(),
+            gcloud: None,
         }
     }
 
@@ -1390,6 +1540,7 @@ mod tests {
                     ))
                 },
                 all_vars: &|| Vec::new(),
+                list: &|_| Vec::new(),
             }
         };
         ($vars:expr_2021, $files:expr_2021, $home:expr_2021, $contents:expr_2021) => {
@@ -1405,6 +1556,7 @@ mod tests {
                     ))
                 },
                 all_vars: &|| Vec::new(),
+                list: &|_| Vec::new(),
             }
         };
     }
@@ -1880,6 +2032,7 @@ mod aws_role_tests {
                 ))
             },
             all_vars: &|| Vec::new(),
+            list: &|_| Vec::new(),
         };
         detect(&CloudConfig::default(), &env)
     }
@@ -1910,6 +2063,7 @@ mod aws_role_tests {
                     ))
                 },
                 all_vars: &|| Vec::new(),
+                list: &|_| Vec::new(),
             };
             detect(&CloudConfig::default(), &env)
                 .iter()

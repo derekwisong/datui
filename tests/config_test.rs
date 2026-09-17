@@ -1904,6 +1904,13 @@ fn cloud_sources_name_the_problem() {
     let no_kind = cloud_error("[[cloud.sources]]\nname = \"lab\"\n");
     assert!(no_kind.contains("kind is required"), "{no_kind}");
 
+    let google_only =
+        cloud_error("[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nproject = \"p\"\n");
+    assert!(
+        google_only.contains("only to kind = \"gcs\""),
+        "{google_only}"
+    );
+
     let addressing = cloud_error(
         "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\naddressing = \"sideways\"\n",
     );

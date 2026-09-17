@@ -2819,6 +2819,57 @@ fn test_typing_finds_bucket_names_from_every_source() {
 }
 
 #[test]
+fn test_google_steps_through_project_bucket_and_prefix() {
+    use datui::home::{CloudSource, CloudStatus};
+    use std::path::{Path, PathBuf};
+    let project = PathBuf::from("cloud://gcs-default/analytics");
+    let mut home = HomeState {
+        cloud: vec![CloudSource {
+            id: "gcs-default".to_string(),
+            label: "Google Cloud".to_string(),
+            api: "gcs".to_string(),
+            buckets: vec![
+                project.clone(),
+                PathBuf::from("cloud://gcs-default/billing"),
+            ],
+            status: CloudStatus::Listed,
+            ..Default::default()
+        }],
+        network_check: |_| false,
+        ..Default::default()
+    };
+    assert_eq!(home.cloud[0].count_text(), "2 projects");
+    assert_eq!(home.place_kind(&project), Some("project"));
+
+    // The project's listing is what ties a bucket to it.
+    home.probe_ready(
+        project.clone(),
+        vec![datui::discover::Entry::directory(Path::new("gs://events"))],
+    );
+    let prefix = Path::new("gs://events/2024/");
+    assert_eq!(
+        home.parent_of(Path::new("gs://events")),
+        Some(project.clone())
+    );
+    assert_eq!(
+        home.parent_of(&project),
+        Some(PathBuf::from("cloud://gcs-default"))
+    );
+    assert_eq!(
+        home.cloud_source_of(prefix).map(|s| s.id.as_str()),
+        Some("gcs-default")
+    );
+    let sep = datui::glyphs::get().trail;
+    assert_eq!(
+        home.location_label(prefix),
+        format!("cloud {sep} Google Cloud {sep} analytics {sep} events {sep} 2024")
+    );
+    home.browsing = Some(prefix.to_path_buf());
+    home.browse_start = Some(PathBuf::from("cloud://gcs-default"));
+    assert!(home.below_browse_start());
+}
+
+#[test]
 fn test_public_datasets_are_named_rows_and_backspace_returns_to_them() {
     use datui::home::{CloudSource, CloudStatus};
     use std::path::{Path, PathBuf};

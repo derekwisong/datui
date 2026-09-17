@@ -203,14 +203,20 @@ Local disk is dimmed; the rest are colored.
 ## Cloud storage
 
 Every object store datui can read is one row under `CLOUD`. <kbd>Enter</kbd> on a
-row lists its buckets; <kbd>Enter</kbd> on a bucket lists what is in it. Prefixes
-descend like directories, objects open like files, and opened objects go into
-`RECENT` like any other path.
+row lists what is inside, one level at a time; prefixes descend like directories,
+objects open like files, and opened objects go into `RECENT` like any other path.
+
+| Source | Levels |
+|---|---|
+| S3 and S3-compatible | source › bucket › prefix › object |
+| Google Cloud | source › project › bucket › prefix › object |
+| Azure | source › account › container › folder › blob |
+| Public datasets | source › dataset › prefix › object |
 
 ```
 ▾ CLOUD  5  ──────────────────────────────────────────────────────
   ☁ Amazon S3         s3      3 buckets     datui config
-  ☁ Google Cloud      gcs     2 buckets     project: example-project · gcloud
+  ☁ Google Cloud      gcs     4 projects    project: example-project · gcloud
   ☁ Lab MinIO         s3      1 bucket      127.0.0.1:9000 · datui config
   ☁ onprem            s3      403           minio.corp.example:9000 · datui config
   ☁ Public datasets   public  6 datasets    built in
@@ -220,7 +226,7 @@ descend like directories, objects open like files, and opened objects go into
 |---|---|
 | Name | The source's `label`, or its name |
 | API | `s3`, `gcs`, `azure`, or `public` |
-| Count | How many buckets (accounts for Azure, datasets for public data), a spinner while listing, or why there are none |
+| Count | How many buckets (projects for Google Cloud, accounts for Azure, datasets for public data), a spinner while listing, or why there are none |
 | Note | The endpoint, project or profile, and where the login was found |
 
 The title bar shows where you are as a trail: `cloud › Lab MinIO › data › 2024`.
@@ -235,7 +241,9 @@ gives the whole message:
 |---|---|
 | `403` | The login cannot list buckets. An object can still open by its URL, `datui s3://bucket/key` |
 | `not logged in` | No usable credentials reached the store |
-| `no project` | A Google login with no project to list; set `GOOGLE_CLOUD_PROJECT` or `DATUI_GCP_PROJECT` |
+| `no project` | A Google login that cannot search for projects, and no project is named; set `GOOGLE_CLOUD_PROJECT` or `DATUI_GCP_PROJECT` |
+| `unsupported login` | An application-default login datui cannot use itself (workload identity federation, impersonation), and no `gcloud` to ask |
+| `needs gcloud` | A login through `gcloud`, which is not installed |
 | `not configured` | A variable named in `[[cloud.sources]]` is not set |
 | `unavailable` | The endpoint did not answer |
 
@@ -273,7 +281,8 @@ one that can be read.
 | s3cmd's server | `s3cfg` | Keys in the `[default]` section of `~/.s3cfg` (`%APPDATA%\s3cmd.ini` on Windows, or `S3CMD_CONFIG`) |
 | Azure | `az` | The Azure CLI has been used (`~/.azure`, or `AZURE_CONFIG_DIR`). Its rows are storage accounts, found across your subscriptions |
 | One Azure account | `azure-env` | `AZURE_STORAGE_CONNECTION_STRING`, or `AZURE_STORAGE_ACCOUNT_NAME` with a key or SAS token |
-| Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, or the file written by `gcloud auth application-default login` |
+| Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, the file written by `gcloud auth application-default login`, or else the active `gcloud` configuration's login. Its rows are projects |
+| Each other `gcloud` configuration with a different account | `gcloud-<configuration>` | An `account` in `configurations/config_<name>` under `~/.config/gcloud` (`%APPDATA%\gcloud` on Windows, or `CLOUDSDK_CONFIG`) |
 | Public datasets | `public` | Always, unless `public_datasets = false` under `[cloud]` |
 | Each `[[cloud.sources]]` entry | its `name` | Always |
 
@@ -283,9 +292,11 @@ the config, the environment, other tools' files; its note lists every place.
 `mc`'s placeholder aliases and its public `play` server are left out. See
 [Loading Data](loading-data.md#several-stores-at-once) for `[[cloud.sources]]`.
 
-Google needs a project to list buckets, taken from `DATUI_GCP_PROJECT`,
-`GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT` or
-`GCP_PROJECT`, or from the `quota_project_id` in the gcloud credentials file.
+Google Cloud lists every project the login can find. The project in
+`DATUI_GCP_PROJECT`, `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, `CLOUDSDK_CORE_PROJECT`
+or `GCP_PROJECT`, the `quota_project_id` in the gcloud credentials file, or the
+active configuration's project comes first, and is listed alone when searching for
+projects is refused.
 
 A profile that needs the AWS CLI shows `needs the AWS CLI` when it is not
 installed, and an expired SSO login shows the CLI's message; see

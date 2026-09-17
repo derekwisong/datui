@@ -468,6 +468,7 @@ aws_secret_access_key = minioadmin
             windows: false,
             run,
             all_vars: &|| Vec::new(),
+            list: &|_| Vec::new(),
         }
     }
 

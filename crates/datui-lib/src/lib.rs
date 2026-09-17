@@ -54,6 +54,8 @@ pub mod event_pump;
 pub mod export_modal;
 pub mod filter_modal;
 pub mod fuzzy;
+#[cfg(feature = "cloud")]
+pub mod gcloud;
 pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
@@ -3337,13 +3339,7 @@ impl App {
                 let permits = permits.clone();
                 listings.spawn(async move {
                     let _permit = permits.acquire_owned().await;
-                    let result = if source.can_list_buckets() {
-                        crate::cloud_browse::list_first_level(&source).await
-                    } else {
-                        Err("no GCP project is set, so buckets cannot be listed. Set \
-                             GOOGLE_CLOUD_PROJECT or DATUI_GCP_PROJECT"
-                            .to_string())
-                    };
+                    let result = crate::cloud_browse::list_first_level(&source).await;
                     (source, result)
                 });
             }
@@ -4523,7 +4519,13 @@ impl App {
                 CloudOptions::default()
                     .with_gcp([(polars::io::cloud::GoogleConfigKey::SkipSignature, "true")])
             }
-            crate::cloud_browse::ProviderKind::Gcs => CloudOptions::default(),
+            crate::cloud_browse::ProviderKind::Gcs => match &resolved.gcloud {
+                // The token comes from `gcloud` whenever Polars asks, so a long scan
+                // outlives the one fetched here.
+                Some((configuration, _)) => CloudOptions::default()
+                    .with_credential_provider(Some(crate::gcloud::polars_provider(configuration))),
+                None => CloudOptions::default(),
+            },
             crate::cloud_browse::ProviderKind::Azure => {
                 let (account, _, _) = source::azure_parts(&resolved.url)
                     .ok_or_else(|| color_eyre::eyre::eyre!("not an Azure URL"))?;
@@ -11348,6 +11350,9 @@ fn home_cloud_source(
     if let Some(profile) = &source.profile {
         details.push(("profile".to_string(), profile.clone()));
     }
+    if let Some(configuration) = &source.gcloud {
+        details.push(("configuration".to_string(), configuration.clone()));
+    }
     if source.s3.virtual_hosted.is_some() {
         let style = if source.s3.virtual_hosted_style() {
             "virtual-hosted"
@@ -11467,6 +11472,8 @@ fn summarize_cloud_failure(error: &str) -> (String, String) {
         || lower.contains("az login")
     {
         "not logged in"
+    } else if lower.contains("unsupported login") {
+        "unsupported login"
     } else if lower.contains("no gcp project") {
         "no project"
     } else if lower.contains("is not set") {

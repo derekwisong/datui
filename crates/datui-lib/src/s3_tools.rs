@@ -321,6 +321,7 @@ mod tests {
                     windows,
                     run: &run,
                     all_vars: &|| Vec::new(),
+                    list: &|_| Vec::new(),
                 };
                 f(&env);
             }

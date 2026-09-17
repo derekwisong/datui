@@ -213,14 +213,26 @@ A source of `kind = "s3"` without `endpoint_url` is a second AWS login. Its URLs
 
 ### Google Cloud Storage
 
-Credentials come from [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials):
-`GOOGLE_APPLICATION_CREDENTIALS` pointing at a key file, the login written by
-`gcloud auth application-default login`, or workload identity on GCE and Cloud Run.
+Either login works:
 
 ```bash
-gcloud auth application-default login
+gcloud auth login                         # the gcloud CLI's own login
+gcloud auth application-default login     # or Application Default Credentials
 datui gs://my-bucket/path/file.parquet
 ```
+
+| Login | datui |
+|---|---|
+| `GOOGLE_APPLICATION_CREDENTIALS`, a service account variable, or `gcloud auth application-default login` | Uses it directly |
+| Only `gcloud auth login` | Asks `gcloud` for a token, for the active configuration |
+| Workload identity federation or an impersonated service account in the application-default file | Asks `gcloud`; without it, the row says `unsupported login` |
+| Another `gcloud` configuration with a different account | Its own source, `gcloud-<configuration>` |
+
+Every project the login can see is listed on the
+[home screen](home-screen.md#cloud-storage), so no project setting is needed. A
+project in `GOOGLE_CLOUD_PROJECT` (or `DATUI_GCP_PROJECT`, or the active `gcloud`
+configuration's) is listed first, and it is the one listed when the login cannot
+search for projects.
 
 ### Azure Blob Storage
 

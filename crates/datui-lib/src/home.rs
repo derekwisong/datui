@@ -410,6 +410,8 @@ impl CloudSource {
             _ => {
                 let (one, many) = if self.api == "azure" {
                     ("account", "accounts")
+                } else if self.api == "gcs" {
+                    ("project", "projects")
                 } else if self.is_public() {
                     ("dataset", "datasets")
                 } else {
@@ -1456,6 +1458,12 @@ impl HomeState {
         if let (Some(id), _) = crate::source::split_source_id(&text) {
             return self.cloud.iter().find(|s| s.id == id);
         }
+        if let Some(project) =
+            Self::google_bucket_root(path).and_then(|b| self.project_of_bucket(&b))
+        {
+            return cloud_account(&project)
+                .and_then(|(id, _)| self.cloud.iter().find(|s| s.id == id));
+        }
         let (_, plain) = crate::source::split_source_id(&text);
         let (scheme, rest) = plain.split_once("://")?;
         let bucket = rest.split('/').next()?;
@@ -1508,6 +1516,10 @@ impl HomeState {
             )));
         }
         if is_bucket_root(path) {
+            // A Google bucket's parent is the project it was listed under.
+            if let Some(project) = self.project_of_bucket(path) {
+                return Some(project);
+            }
             return self.cloud_source_of(path).map(|s| cloud_place(&s.id));
         }
         parent_location(path)
@@ -1549,10 +1561,41 @@ impl HomeState {
 
     /// What to call a place a source names itself: a public dataset.
     pub fn place_kind(&self, path: &Path) -> Option<&'static str> {
+        if let Some((id, _)) = cloud_account(path) {
+            return self
+                .cloud
+                .iter()
+                .any(|s| s.id == id && s.api == "gcs")
+                .then_some("project");
+        }
         self.cloud
             .iter()
             .any(|s| s.is_public() && s.names.contains_key(path))
             .then_some("dataset")
+    }
+
+    /// The project place a Google bucket was listed under, when it was.
+    fn project_of_bucket(&self, bucket_root: &Path) -> Option<PathBuf> {
+        let root = bucket_root.to_string_lossy();
+        let root = root.trim_end_matches('/');
+        self.probed
+            .iter()
+            .filter(|(place, _)| cloud_account(place).is_some())
+            .find(|(_, rows)| {
+                rows.iter()
+                    .any(|row| row.path.to_string_lossy().trim_end_matches('/') == root)
+            })
+            .map(|(place, _)| place.clone())
+    }
+
+    /// The bucket root of a Google URL: `gs://bucket`.
+    fn google_bucket_root(path: &Path) -> Option<PathBuf> {
+        let text = path.to_string_lossy();
+        let rest = text
+            .strip_prefix("gs://")
+            .or_else(|| text.strip_prefix("gcs://"))?;
+        let bucket = rest.split('/').next().filter(|b| !b.is_empty())?;
+        Some(PathBuf::from(format!("gs://{bucket}")))
     }
 
     /// Details-pane lines for a place a cloud source listed, when it has any.
@@ -1586,6 +1629,13 @@ impl HomeState {
                 parts.push(container);
                 parts.extend(key.split('/').filter(|p| !p.is_empty()).map(str::to_string));
             } else if cloud_source_id(path).is_none() {
+                if let Some((_, project)) = Self::google_bucket_root(path)
+                    .and_then(|b| self.project_of_bucket(&b))
+                    .as_deref()
+                    .and_then(cloud_account)
+                {
+                    parts.push(project);
+                }
                 let (_, plain) = crate::source::split_source_id(&text);
                 if let Some((_, rest)) = plain.split_once("://") {
                     parts.extend(

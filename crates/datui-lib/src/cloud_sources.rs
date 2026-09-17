@@ -169,6 +169,9 @@ pub struct Source {
     /// any provider; `kind` means nothing for it.
     pub public: bool,
     pub datasets: Vec<Dataset>,
+    /// The `gcloud` configuration whose token a Google source signs with. `None` is
+    /// object_store's own login: the environment or the application-default file.
+    pub gcloud: Option<String>,
 }
 
 impl Source {
@@ -188,7 +191,9 @@ impl Source {
         if self.public {
             return bucket.to_string();
         }
-        if self.kind == ProviderKind::Azure {
+        // Azure's first level is storage accounts and Google's is projects; neither
+        // has a URL of its own.
+        if matches!(self.kind, ProviderKind::Azure | ProviderKind::Gcs) {
             return format!("cloud://{}/{bucket}", self.id);
         }
         let scheme = self.kind.scheme();
@@ -208,22 +213,18 @@ impl Source {
         }
     }
 
-    /// True when this source can enumerate its own buckets.
-    pub fn can_list_buckets(&self) -> bool {
-        if self.public {
-            return true;
-        }
-        match self.kind {
-            ProviderKind::Gcs => self.project.is_some(),
-            ProviderKind::S3 | ProviderKind::Azure => true,
-        }
-    }
-
     /// What this source points at. Anything cached under the source's ID is stale
     /// once this changes: an endpoint moved to another server lists other buckets.
     pub fn fingerprint(&self) -> String {
         [
-            self.kind.scheme(),
+            // Google's first level became projects; a listing of buckets from before
+            // is not one of projects.
+            if self.kind == ProviderKind::Gcs {
+                "gs-projects"
+            } else {
+                self.kind.scheme()
+            },
+            self.gcloud.as_deref().unwrap_or(""),
             self.s3.endpoint.as_deref().unwrap_or(""),
             self.s3.access_key_id.as_deref().unwrap_or(""),
             self.project.as_deref().unwrap_or(""),
@@ -290,6 +291,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 problem: None,
                 public: false,
                 datasets: Vec::new(),
+                gcloud: None,
                 azure: Default::default(),
             };
             // Found through a profile rather than keys: the active profile supplies the
@@ -314,6 +316,79 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
         })
         .collect();
 
+    // Google through `gcloud`: the active configuration is the default login when
+    // object_store has none of its own, or one it cannot read; every configuration
+    // with another account is a source of its own.
+    let configurations = crate::gcloud::configurations(env);
+    let active_name = crate::gcloud::active_name(env);
+    let active_configuration = configurations
+        .iter()
+        .find(|c| c.name == active_name && c.account.is_some());
+    match sources.iter_mut().find(|s| s.id == DEFAULT_GCS) {
+        Some(default) => {
+            if let Some(kind) = crate::cloud_browse::unreadable_google_login(env) {
+                match active_configuration {
+                    Some(configuration) => {
+                        default.gcloud = Some(configuration.name.clone());
+                        default.origin = "gcloud".to_string();
+                    }
+                    None => default.problem = Some(format!("unsupported login: {kind}")),
+                }
+            }
+            if default.project.is_none() {
+                default.project = active_configuration.and_then(|c| c.project.clone());
+            }
+        }
+        None => {
+            if let Some(configuration) = active_configuration {
+                sources.push(Source {
+                    id: DEFAULT_GCS.to_string(),
+                    label: "Google Cloud".to_string(),
+                    kind: ProviderKind::Gcs,
+                    tier: Tier::Tools,
+                    origin: "gcloud".to_string(),
+                    s3: S3Settings::default(),
+                    azure: Default::default(),
+                    project: crate::cloud_browse::gcp_project(env)
+                        .or_else(|| configuration.project.clone()),
+                    profile: None,
+                    buckets: Vec::new(),
+                    problem: None,
+                    public: false,
+                    datasets: Vec::new(),
+                    gcloud: Some(configuration.name.clone()),
+                });
+            }
+        }
+    }
+    let default_account = active_configuration.and_then(|c| c.account.clone());
+    let mut accounts_seen: Vec<String> = default_account.into_iter().collect();
+    for configuration in &configurations {
+        let Some(account) = &configuration.account else {
+            continue;
+        };
+        if accounts_seen.contains(account) {
+            continue;
+        }
+        accounts_seen.push(account.clone());
+        sources.push(Source {
+            id: slug_id("gcloud", &configuration.name),
+            label: configuration.name.clone(),
+            kind: ProviderKind::Gcs,
+            tier: Tier::Tools,
+            origin: "gcloud configuration".to_string(),
+            s3: S3Settings::default(),
+            azure: Default::default(),
+            project: configuration.project.clone(),
+            profile: None,
+            buckets: Vec::new(),
+            problem: None,
+            public: false,
+            datasets: Vec::new(),
+            gcloud: Some(configuration.name.clone()),
+        });
+    }
+
     // Every other profile that can log in is a source of its own. The active one is
     // already the default source when that is how the default logs in.
     for profile in profiles.iter().filter(|p| p.has_credentials()) {
@@ -335,6 +410,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             problem: None,
             public: false,
             datasets: Vec::new(),
+            gcloud: None,
             azure: Default::default(),
         });
     }
@@ -386,6 +462,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             problem: None,
             public: false,
             datasets: Vec::new(),
+            gcloud: None,
             azure: settings,
         });
     }
@@ -403,6 +480,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             problem: None,
             public: false,
             datasets: Vec::new(),
+            gcloud: None,
             azure: crate::azure::AzureSettings {
                 auth: crate::azure::AzureAuth::AzCli,
                 ..Default::default()
@@ -425,6 +503,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             problem: None,
             public: true,
             datasets: builtin_datasets(),
+            gcloud: None,
         });
     }
 
@@ -513,6 +592,7 @@ fn tool_source(server: crate::s3_tools::ToolServer, tier: Tier) -> Source {
         problem: None,
         public: false,
         datasets: Vec::new(),
+        gcloud: None,
         azure: Default::default(),
     }
 }
@@ -588,6 +668,30 @@ impl Source {
 /// A `[[cloud.sources]]` entry as a source. The config has been validated, so the kind
 /// is one datui knows.
 fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> Source {
+    if configured.kind.as_deref() == Some("gcs") {
+        return Source {
+            id: configured.name.clone(),
+            label: configured
+                .label
+                .clone()
+                .unwrap_or_else(|| configured.name.clone()),
+            kind: ProviderKind::Gcs,
+            tier: Tier::Config,
+            origin: "datui config".to_string(),
+            s3: S3Settings::default(),
+            azure: Default::default(),
+            project: configured
+                .project
+                .clone()
+                .or_else(|| crate::cloud_browse::gcp_project(env)),
+            profile: None,
+            buckets: configured.buckets.clone(),
+            problem: None,
+            public: false,
+            datasets: Vec::new(),
+            gcloud: configured.configuration.clone(),
+        };
+    }
     if configured.public == Some(true) {
         return Source {
             id: configured.name.clone(),
@@ -610,6 +714,7 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
                 .iter()
                 .map(|url| dataset_for_url(url))
                 .collect(),
+            gcloud: None,
         };
     }
     let var = env.var;
@@ -668,6 +773,7 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
         azure: Default::default(),
         public: false,
         datasets: Vec::new(),
+        gcloud: None,
     }
 }
 
@@ -685,6 +791,8 @@ pub struct Resolved {
     pub signing: Signing,
     /// The bucket or container, as [`access_key`] names it.
     pub place: String,
+    /// For a Google URL signed through `gcloud`: the configuration, and its token.
+    pub gcloud: Option<(String, String)>,
 }
 
 /// Whether requests to a place carry a signature.
@@ -710,6 +818,7 @@ impl Resolved {
             ..Default::default()
         };
         self.azure.auth = crate::azure::AzureAuth::None;
+        self.gcloud = None;
         self.signing = Signing::Unsigned;
         self
     }
@@ -880,6 +989,7 @@ pub fn resolve_with(
                 azure: Default::default(),
                 signing: Signing::Unsigned,
                 place,
+                gcloud: None,
             },
             None => {
                 let (kind, _, _) = crate::cloud_browse::split_bucket_url(url)
@@ -892,6 +1002,7 @@ pub fn resolve_with(
                     azure: Default::default(),
                     signing: Signing::Unsigned,
                     place,
+                    gcloud: None,
                 }
             }
         };
@@ -958,6 +1069,7 @@ pub fn resolve_with(
                     problem: None,
                     public: false,
                     datasets: Vec::new(),
+                    gcloud: None,
                     azure: Default::default(),
                 })
             }
@@ -980,16 +1092,26 @@ pub fn resolve_with(
         azure: Default::default(),
         signing,
         place,
+        gcloud: None,
     };
     if signing == Signing::Unsigned {
         return Ok(resolved.unsigned());
     }
     let id = source.id.clone();
+    let gcloud = match &source.gcloud {
+        Some(configuration) if kind == ProviderKind::Gcs => {
+            let (token, _) = crate::gcloud::token(configuration, env)
+                .map_err(|e| format!("source \"{id}\": {e}"))?;
+            Some((configuration.clone(), token))
+        }
+        _ => None,
+    };
     let source = source
         .with_credentials(env)
         .map_err(|e| format!("source \"{id}\": {e}"))?;
     Ok(Resolved {
         s3: source.s3,
+        gcloud,
         ..resolved
     })
 }
@@ -1022,6 +1144,7 @@ fn resolve_azure(
         azure: Default::default(),
         signing,
         place,
+        gcloud: None,
     };
     match named.or(login) {
         Some(source) if signing != Signing::Unsigned => Ok(Resolved {
@@ -1104,6 +1227,14 @@ mod tests {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect()
         };
+        let list = |dir: &Path| {
+            machine
+                .files
+                .keys()
+                .filter(|path| path.parent() == Some(dir))
+                .cloned()
+                .collect()
+        };
         let env = Environment {
             var: &var,
             exists: &exists,
@@ -1112,6 +1243,7 @@ mod tests {
             windows: false,
             run: &run,
             all_vars: &all_vars,
+            list: &list,
         };
         body(&env)
     }
@@ -1316,6 +1448,112 @@ mod tests {
             .unwrap();
             assert_eq!(azure.source_id, "open-data");
             assert_eq!(azure.signing, Signing::Unsigned);
+        });
+    }
+
+    #[test]
+    fn gcloud_configurations_are_logins() {
+        let dir = "/home/u/.config/gcloud";
+        let machine = Machine::new(
+            &[],
+            &[
+                (&format!("{dir}/active_config") as &str, "work\n"),
+                (
+                    &format!("{dir}/configurations/config_work"),
+                    "[core]\naccount = a@example.com\nproject = analytics\n",
+                ),
+                (
+                    &format!("{dir}/configurations/config_other-project"),
+                    "[core]\naccount = a@example.com\nproject = billing\n",
+                ),
+                (
+                    &format!("{dir}/configurations/config_Personal"),
+                    "[core]\naccount = me@example.org\n",
+                ),
+                (&format!("{dir}/configurations/config_empty"), "[core]\n"),
+            ],
+        );
+        with_machine(&machine, |env| {
+            let found = discover(&CloudConfig::default(), env);
+            let google: Vec<(&str, Option<&str>, Option<&str>)> = found
+                .iter()
+                .filter(|s| s.kind == ProviderKind::Gcs)
+                .map(|s| (s.id.as_str(), s.gcloud.as_deref(), s.project.as_deref()))
+                .collect();
+            // Only `gcloud auth login`: the active configuration is the default login,
+            // one more account is a source, and a second configuration of the same
+            // account is not.
+            assert_eq!(
+                google,
+                [
+                    (DEFAULT_GCS, Some("work"), Some("analytics")),
+                    ("gcloud-personal", Some("Personal"), None),
+                ]
+            );
+            let err = resolve_with("gs://some-bucket/key.parquet", &CloudConfig::default(), env)
+                .unwrap_err();
+            assert!(err.contains("needs gcloud"), "{err}");
+        });
+    }
+
+    #[test]
+    fn a_google_login_object_store_cannot_read_goes_through_gcloud() {
+        let adc = "/home/u/.config/gcloud/application_default_credentials.json";
+        let federated = r#"{"type": "external_account", "audience": "//iam.googleapis.com/x"}"#;
+        let with_gcloud = Machine::new(
+            &[],
+            &[
+                (adc, federated),
+                (
+                    "/home/u/.config/gcloud/configurations/config_default",
+                    "[core]\naccount = a@example.com\n",
+                ),
+            ],
+        );
+        with_machine(&with_gcloud, |env| {
+            let google = discover(&CloudConfig::default(), env)
+                .into_iter()
+                .find(|s| s.id == DEFAULT_GCS)
+                .unwrap();
+            assert_eq!(google.gcloud.as_deref(), Some("default"));
+            assert_eq!(google.problem, None);
+        });
+        let without = Machine::new(&[], &[(adc, federated)]);
+        with_machine(&without, |env| {
+            let google = discover(&CloudConfig::default(), env)
+                .into_iter()
+                .find(|s| s.id == DEFAULT_GCS)
+                .unwrap();
+            assert_eq!(
+                google.problem.as_deref(),
+                Some("unsupported login: external_account")
+            );
+        });
+    }
+
+    #[test]
+    fn a_configured_google_source_names_its_configuration_and_project() {
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let config = CloudConfig {
+                sources: vec![CloudSourceConfig {
+                    name: "research".to_string(),
+                    kind: Some("gcs".to_string()),
+                    configuration: Some("research".to_string()),
+                    project: Some("research-prod".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let source = discover(&config, env)
+                .into_iter()
+                .find(|s| s.id == "research")
+                .unwrap();
+            assert_eq!(source.gcloud.as_deref(), Some("research"));
+            assert_eq!(source.project.as_deref(), Some("research-prod"));
+            assert_eq!(
+                source.bucket_url("research-prod"),
+                "cloud://research/research-prod"
+            );
         });
     }
 

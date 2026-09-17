@@ -218,8 +218,8 @@ descend like directories, objects open like files, and opened objects go into
 | Column | Shows |
 |---|---|
 | Name | The source's `label`, or its name |
-| API | `s3` or `gcs` |
-| Count | How many buckets, a spinner while listing, or why there are none |
+| API | `s3`, `gcs` or `azure` |
+| Count | How many buckets (accounts, for Azure), a spinner while listing, or why there are none |
 | Note | The endpoint, project or profile, and where the login was found |
 
 The title bar shows where you are as a trail: `cloud › Lab MinIO › data › 2024`.
@@ -268,6 +268,8 @@ one that can be read.
 |---|---|---|
 | Amazon S3, or the endpoint in `[cloud]` | `s3-default` | Keys in `[cloud]` or `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, an EKS web identity, `AWS_PROFILE`, or a `~/.aws` directory |
 | Each other AWS profile that can log in | `aws-<profile>` | Keys, `credential_process`, SSO or a role in the profile |
+| Azure | `az` | The Azure CLI has been used (`~/.azure`, or `AZURE_CONFIG_DIR`). Its rows are storage accounts, found across your subscriptions |
+| One Azure account | `azure-env` | `AZURE_STORAGE_CONNECTION_STRING`, or `AZURE_STORAGE_ACCOUNT_NAME` with a key or SAS token |
 | Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, or the file written by `gcloud auth application-default login` |
 | Each `[[cloud.sources]]` entry | its `name` | Always |
 

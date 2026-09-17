@@ -31,6 +31,8 @@ use ratatui::widgets::{Block, Clear};
 pub mod analysis_modal;
 #[cfg(feature = "cloud")]
 pub mod aws_profiles;
+#[cfg(feature = "cloud")]
+pub mod azure;
 pub mod cache;
 pub mod chart_data;
 pub mod chart_export;
@@ -1460,6 +1462,8 @@ pub enum AppEvent {
     HomeCloudListed {
         id: String,
         buckets: Vec<PathBuf>,
+        /// Lines for the details pane of each listed place that has any.
+        details: Vec<(PathBuf, Vec<(String, String)>)>,
         /// `(short, detail)` when the listing failed.
         failure: Option<(String, String)>,
         listed_at: std::time::SystemTime,
@@ -1468,6 +1472,11 @@ pub enum AppEvent {
     HomeProbeReady {
         root: PathBuf,
         rows: Option<Vec<crate::discover::Entry>>,
+    },
+    /// A cloud listing was refused, with the service's reason.
+    HomeProbeFailed {
+        root: PathBuf,
+        message: String,
     },
     /// Background scan finished; the LazyFrame is waiting in `pending_lazyframe_result`.
     BackgroundLazyFrameReady {
@@ -1784,6 +1793,12 @@ pub enum PendingDownload {
         size: Option<u64>,
         options: OpenOptions,
     },
+    #[cfg(feature = "cloud")]
+    Azure {
+        url: String,
+        size: Option<u64>,
+        options: OpenOptions,
+    },
 }
 
 #[cfg(any(feature = "http", feature = "cloud"))]
@@ -1798,6 +1813,8 @@ impl PendingDownload {
             PendingDownload::S3 { url, size, options } => (url, *size, options),
             #[cfg(feature = "cloud")]
             PendingDownload::Gcs { url, size, options } => (url, *size, options),
+            #[cfg(feature = "cloud")]
+            PendingDownload::Azure { url, size, options } => (url, *size, options),
         }
     }
 
@@ -1810,6 +1827,8 @@ impl PendingDownload {
             PendingDownload::S3 { size, .. } => *size = found,
             #[cfg(feature = "cloud")]
             PendingDownload::Gcs { size, .. } => *size = found,
+            #[cfg(feature = "cloud")]
+            PendingDownload::Azure { size, .. } => *size = found,
         }
         self
     }
@@ -3178,13 +3197,47 @@ impl App {
                 // machine, and what would cost a ranged read per row against an object
                 // store somebody pays egress on.
                 #[cfg(feature = "cloud")]
-                if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some() {
+                if let Some((id, account)) = home::cloud_account(&root) {
+                    let listed = wait_on_runtime(&runtime, async move {
+                        crate::cloud_browse::list_account(&id, &account, &cloud).await
+                    });
+                    match listed {
+                        Some(Ok(rows)) => {
+                            let _ = tx.send(AppEvent::HomeProbeReady {
+                                root,
+                                rows: Some(rows),
+                            });
+                        }
+                        Some(Err(message)) => {
+                            let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
+                        }
+                        None => {
+                            let _ = tx.send(AppEvent::HomeProbeReady { root, rows: None });
+                        }
+                    }
+                    return;
+                }
+                #[cfg(feature = "cloud")]
+                if crate::cloud_browse::split_bucket_url(&root.to_string_lossy()).is_some()
+                    || source::azure_parts(&root.to_string_lossy()).is_some()
+                {
                     let url = root.to_string_lossy().into_owned();
                     let listed = wait_on_runtime(&runtime, async move {
                         crate::cloud_browse::list_objects(&url, &cloud).await
-                    })
-                    .and_then(Result::ok);
-                    let _ = tx.send(AppEvent::HomeProbeReady { root, rows: listed });
+                    });
+                    // A refused listing says why, rather than reading as a place that
+                    // stopped answering.
+                    match listed {
+                        Some(Err(message)) => {
+                            let _ = tx.send(AppEvent::HomeProbeFailed { root, message });
+                        }
+                        other => {
+                            let _ = tx.send(AppEvent::HomeProbeReady {
+                                root,
+                                rows: other.and_then(Result::ok),
+                            });
+                        }
+                    }
                     return;
                 }
                 let rows = if std::fs::read_dir(&root).is_ok() {
@@ -3277,7 +3330,7 @@ impl App {
                 listings.spawn(async move {
                     let _permit = permits.acquire_owned().await;
                     let result = if source.can_list_buckets() {
-                        crate::cloud_browse::list_buckets(&source).await
+                        crate::cloud_browse::list_first_level(&source).await
                     } else {
                         Err("no GCP project is set, so buckets cannot be listed. Set \
                              GOOGLE_CLOUD_PROJECT or DATUI_GCP_PROJECT"
@@ -3294,12 +3347,16 @@ impl App {
                 // Buckets named in the config are shown whether or not the login can
                 // list them; that is what naming them is for.
                 let mut names = source.buckets.clone();
+                let mut details = Vec::new();
                 let failure = match result {
                     Ok(listed) => {
-                        for bucket in &listed {
-                            crate::cloud_sources::remember_bucket(&source, bucket);
-                            if !names.contains(bucket) {
-                                names.push(bucket.clone());
+                        for item in listed {
+                            crate::cloud_sources::remember_bucket(&source, &item.name);
+                            if !item.details.is_empty() {
+                                details.push((item.place.clone(), item.details));
+                            }
+                            if !names.contains(&item.name) {
+                                names.push(item.name);
                             }
                         }
                         cache.save_cloud_listing(
@@ -3323,6 +3380,7 @@ impl App {
                         .iter()
                         .map(|b| PathBuf::from(source.bucket_url(b)))
                         .collect(),
+                    details,
                     failure,
                     listed_at,
                 });
@@ -3437,6 +3495,7 @@ impl App {
             browsing: self.home.browsing.clone(),
             probed: self.home.probed.clone(),
             unreachable: self.home.unreachable.clone(),
+            probe_errors: self.home.probe_errors.clone(),
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
             known: self.cache.load_dataset_facts(),
@@ -3939,6 +3998,9 @@ impl App {
     /// is empty for a bucket root.
     #[cfg(feature = "cloud")]
     fn cloud_bucket_and_key(url: &str) -> Result<(String, String)> {
+        if let Some((_, container, key)) = source::azure_parts(url) {
+            return Ok((container, key.trim_matches('/').to_string()));
+        }
         crate::cloud_browse::split_bucket_url(url)
             .map(|(_, bucket, key)| (bucket, key))
             .ok_or_else(|| {
@@ -4031,14 +4093,13 @@ impl App {
         runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::ObjectStoreExt;
-        use object_store::path::Path as OsPath;
 
         let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
         if key.is_empty() {
             return Ok(None);
         }
         let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
-        let path = OsPath::from(key);
+        let path = crate::cloud_browse::object_path(&key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
@@ -4089,13 +4150,16 @@ impl App {
         runtime: &tokio::runtime::Handle,
     ) -> Result<PathBuf> {
         use object_store::ObjectStoreExt;
-        use object_store::path::Path as OsPath;
 
         let (label, example) = match source::input_source(Path::new(url)) {
             source::InputSource::Gcs(_) => ("GCS", "gs://bucket/path/file.csv"),
+            source::InputSource::Azure(_) => (
+                "Azure",
+                "abfss://container@account.dfs.core.windows.net/path/file.csv",
+            ),
             _ => ("S3", "s3://bucket/path/file.csv"),
         };
-        let (_path_part, ext) = source::url_path_extension(url);
+        let ext = source::download_suffix(url);
         let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!(
@@ -4104,7 +4168,7 @@ impl App {
         }
         let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
 
-        let path = OsPath::from(key);
+        let path = crate::cloud_browse::object_path(&key);
         let bytes = wait_on_runtime(runtime, async move {
             let get_result = store.get(&path).await.map_err(|e| {
                 color_eyre::eyre::eyre!(
@@ -4154,7 +4218,9 @@ impl App {
                     Self::fetch_remote_size_http(url).unwrap_or(None)
                 }
                 #[cfg(feature = "cloud")]
-                PendingDownload::S3 { url, .. } | PendingDownload::Gcs { url, .. } => {
+                PendingDownload::S3 { url, .. }
+                | PendingDownload::Gcs { url, .. }
+                | PendingDownload::Azure { url, .. } => {
                     Self::fetch_remote_size_cloud(url, &cloud, &runtime).unwrap_or(None)
                 }
             };
@@ -4392,6 +4458,12 @@ impl App {
         let options = match resolved.kind {
             crate::cloud_browse::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
             crate::cloud_browse::ProviderKind::Gcs => CloudOptions::default(),
+            crate::cloud_browse::ProviderKind::Azure => {
+                let (account, _, _) = source::azure_parts(&resolved.url)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("not an Azure URL"))?;
+                CloudOptions::default()
+                    .with_azure(crate::azure::polars_options(&account, &resolved.azure))
+            }
         };
         Ok((resolved.url, options))
     }
@@ -4581,6 +4653,40 @@ impl App {
                 {
                     return Err(color_eyre::eyre::eyre!(
                         "GCS (gs://) is not supported in this build. Rebuild with default features."
+                    ));
+                }
+            }
+            source::InputSource::Azure(url) => {
+                #[cfg(feature = "cloud")]
+                {
+                    let (full, cloud_opts) = Self::resolve_cloud_url(Path::new(&url), cloud)?;
+                    let is_glob = source::is_prefix_or_glob(&full);
+                    let args = ScanArgsParquet {
+                        cloud_options: Some(cloud_opts),
+                        hive_options: if is_glob {
+                            polars::io::HiveOptions::new_enabled()
+                        } else {
+                            polars::io::HiveOptions::default()
+                        },
+                        glob: is_glob,
+                        ..Default::default()
+                    };
+                    let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args).map_err(
+                        |e| {
+                            color_eyre::eyre::eyre!(
+                                "Could not read from Azure. Check credentials and URL: {}",
+                                e
+                            )
+                        },
+                    )?;
+                    let state = DataTableState::from_lazyframe(lf, options)?;
+                    return Ok(state.lf);
+                }
+                #[cfg(not(feature = "cloud"))]
+                {
+                    let _ = url;
+                    return Err(color_eyre::eyre::eyre!(
+                        "Azure is not supported in this build. Rebuild with default features."
                     ));
                 }
             }
@@ -4903,7 +5009,8 @@ impl App {
                                     AppEvent::DoDownloadS3ToTemp(url, options)
                                 }
                                 #[cfg(feature = "cloud")]
-                                PendingDownload::Gcs { url, options, .. } => {
+                                PendingDownload::Gcs { url, options, .. }
+                                | PendingDownload::Azure { url, options, .. } => {
                                     AppEvent::DoDownloadGcsToTemp(url, options)
                                 }
                             });
@@ -8752,6 +8859,7 @@ impl App {
                     }
                     source::InputSource::S3(_)
                     | source::InputSource::Gcs(_)
+                    | source::InputSource::Azure(_)
                     | source::InputSource::Http(_) => 0,
                 };
                 let path_str = first.as_os_str().to_string_lossy();
@@ -8801,6 +8909,12 @@ impl App {
                         source::InputSource::Gcs(_) => {
                             return Some(AppEvent::Crash(
                                 "Only one GCS URL at a time. Open a single gs:// path.".to_string(),
+                            ));
+                        }
+                        source::InputSource::Azure(_) => {
+                            return Some(AppEvent::Crash(
+                                "Only one Azure URL at a time. Open a single abfss:// path."
+                                    .to_string(),
                             ));
                         }
                         source::InputSource::Http(_) => {
@@ -8865,6 +8979,18 @@ impl App {
                         if source::cloud_path_should_download(ext.as_deref(), is_glob) {
                             return self.spawn_remote_size_probe(PendingDownload::S3 {
                                 url: full,
+                                size: None,
+                                options: options.clone(),
+                            });
+                        }
+                    }
+                    #[cfg(feature = "cloud")]
+                    if let source::InputSource::Azure(ref url) = src {
+                        let (_, ext) = source::url_path_extension(url);
+                        let is_glob = source::is_prefix_or_glob(url);
+                        if source::cloud_path_should_download(ext.as_deref(), is_glob) {
+                            return self.spawn_remote_size_probe(PendingDownload::Azure {
+                                url: url.clone(),
                                 size: None,
                                 options: options.clone(),
                             });
@@ -9010,11 +9136,15 @@ impl App {
             AppEvent::HomeCloudListed {
                 id,
                 buckets,
+                details,
                 failure,
                 listed_at,
             } => {
                 if let Some(source) = self.home.cloud.iter_mut().find(|s| &s.id == id) {
                     source.refreshing = false;
+                    for (place, lines) in details {
+                        source.place_details.insert(place.clone(), lines.clone());
+                    }
                     match failure {
                         // A refresh that failed keeps what the last one found: stale
                         // buckets are more use than none, and the row says it failed.
@@ -9036,6 +9166,13 @@ impl App {
                         }
                     }
                 }
+                self.home_refresh();
+                None
+            }
+            AppEvent::HomeProbeFailed { root, message } => {
+                self.home_probes_inflight.retain(|p| p != root);
+                self.home.probe_failed(root.clone());
+                self.home.probe_errors.insert(root.clone(), message.clone());
                 self.home_refresh();
                 None
             }
@@ -9109,7 +9246,7 @@ impl App {
                 let url = url.clone();
                 let options = options.clone();
                 self.spawn_bg("Downloading...", move |task_gen, tx| {
-                    let (_, ext) = source::url_path_extension(url.as_str());
+                    let ext = source::download_suffix(url.as_str());
                     match Self::download_http_to_temp(
                         url.as_str(),
                         options.temp_dir.as_deref(),
@@ -9144,6 +9281,7 @@ impl App {
                 let rt = self.runtime.clone();
                 let status = match source::input_source(Path::new(&url)) {
                     source::InputSource::Gcs(_) => "Downloading from GCS...",
+                    source::InputSource::Azure(_) => "Downloading from Azure...",
                     _ => "Downloading from S3...",
                 };
                 self.spawn_bg(
@@ -9245,6 +9383,24 @@ impl App {
                         current_phase: "Scanning".to_string(),
                         progress_percent: 30,
                     };
+                }
+                // A compressed CSV has to be decompressed before it can be scanned, as it
+                // is when opened from disk; scanning the download directly read `.gz` as
+                // a format and refused it.
+                let compressed_csv = options
+                    .compression
+                    .or_else(|| CompressionFormat::from_extension(temp_path))
+                    .is_some()
+                    && (options.format == Some(FileFormat::Csv)
+                        || temp_path
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .is_some_and(|stem| stem.to_ascii_lowercase().ends_with(".csv")));
+                if compressed_csv {
+                    return Some(AppEvent::DoDecompress(
+                        vec![temp_path.clone()],
+                        options.clone(),
+                    ));
                 }
                 self.spawn_scan_as(
                     "Scanning...",
@@ -11059,7 +11215,15 @@ fn home_cloud_source(
 ) -> home::CloudSource {
     let mut details: Vec<(String, String)> = vec![
         ("source".to_string(), source.id.clone()),
-        ("api".to_string(), source.kind.scheme().to_string()),
+        (
+            "api".to_string(),
+            match source.kind {
+                crate::cloud_browse::ProviderKind::S3 => "s3",
+                crate::cloud_browse::ProviderKind::Gcs => "gcs",
+                crate::cloud_browse::ProviderKind::Azure => "azure",
+            }
+            .to_string(),
+        ),
     ];
     if let Some(endpoint) = &source.s3.endpoint {
         details.push(("endpoint".to_string(), endpoint.clone()));
@@ -11109,6 +11273,7 @@ fn home_cloud_source(
         api: match source.kind {
             crate::cloud_browse::ProviderKind::S3 => "s3",
             crate::cloud_browse::ProviderKind::Gcs => "gcs",
+            crate::cloud_browse::ProviderKind::Azure => "azure",
         }
         .to_string(),
         note,
@@ -11121,6 +11286,7 @@ fn home_cloud_source(
             .map(|c| std::time::UNIX_EPOCH + std::time::Duration::from_secs(c.listed_at)),
         status,
         details,
+        place_details: Default::default(),
     }
 }
 
@@ -11144,6 +11310,7 @@ fn summarize_cloud_failure(error: &str) -> (String, String) {
         || lower.contains("invalidaccesskeyid")
         || lower.contains("expired")
         || lower.contains("sso")
+        || lower.contains("az login")
     {
         "not logged in"
     } else if lower.contains("no gcp project") {

@@ -80,7 +80,9 @@ fn a_source_that_never_answers_does_not_hold_up_the_others() {
         source("b-answering", &answering_server("fast-bucket")),
     ];
     // Whatever this machine happens to be logged in to is not part of the test.
-    config.cloud.hide = vec!["s3-default".to_string(), "gcs-default".to_string()];
+    config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(

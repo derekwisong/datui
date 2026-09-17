@@ -1018,6 +1018,13 @@ fn test_hive_dir_loads_and_counts_via_footers() {
 /// Open a local folder of Parquet files and return the loaded app, or `None` if the
 /// open never finished.
 fn open_local_dataset(dir: &std::path::Path) -> App {
+    open_local_dataset_with_channel(dir).0
+}
+
+/// The same, keeping the app's own event channel so a test can drive background work.
+fn open_local_dataset_with_channel(
+    dir: &std::path::Path,
+) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), common::test_runtime());
     let opts = OpenOptions {
@@ -1025,7 +1032,7 @@ fn open_local_dataset(dir: &std::path::Path) -> App {
         ..OpenOptions::default()
     };
     pump_open_until_loaded(&mut app, &rx, vec![dir.to_path_buf()], opts);
-    app
+    (app, rx, tx)
 }
 
 /// Write one Parquet file at `sub/data.parquet` under `dir`.
@@ -1192,7 +1199,7 @@ fn test_the_hidden_drift_column_is_never_part_of_the_data() {
         df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
     );
 
-    let app = open_local_dataset(dir.path());
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.drifts(), "this dataset does drift");
 
@@ -1207,18 +1214,141 @@ fn test_the_hidden_drift_column_is_never_part_of_the_data() {
         "nor in the column order"
     );
 
-    let exported = polars::prelude::IntoLazy::lazy(state.visible_lf().collect().unwrap())
-        .collect()
-        .unwrap();
-    let exported_names: Vec<&str> = exported
-        .get_column_names()
-        .iter()
-        .map(|n| n.as_str())
-        .collect();
-    assert_eq!(
-        exported_names,
-        ["date", "id", "extra"],
-        "nor in what an export writes"
+    // What actually reaches a file is what matters, so drive the real export rather
+    // than the accessor the export is supposed to use.
+    let out = dir.path().join("out.csv");
+    let header = export_csv_header(&mut app, &rx, &tx, &out);
+    assert_eq!(header, "date,id,extra", "nor in what an export writes");
+}
+
+/// Run a CSV export through the app's own two-phase export events and return the
+/// header line of the file it wrote.
+fn export_csv_header(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    path: &std::path::Path,
+) -> String {
+    let options = datui::ExportOptions {
+        csv_delimiter: b',',
+        csv_include_header: true,
+        csv_compression: None,
+        json_compression: None,
+        ndjson_compression: None,
+        parquet_compression: None,
+    };
+    let start = AppEvent::DoExportCollect(
+        path.to_path_buf(),
+        datui::export_modal::ExportFormat::Csv,
+        options,
+    );
+    if let Some(next) = app.event(&start) {
+        let _ = tx.send(next);
+    }
+    for _ in 0..200 {
+        while let Ok(ev) = rx.try_recv() {
+            if let Some(next) = app.event(&ev) {
+                let _ = tx.send(next);
+            }
+        }
+        if path.exists() && !app.is_busy() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    std::fs::read_to_string(path)
+        .expect("the export wrote a file")
+        .lines()
+        .next()
+        .expect("with a header")
+        .to_string()
+}
+
+/// A query builds its own rows, and its schema becomes the column order — so a query
+/// root that still carried the hidden drift column turned it into one of the data's,
+/// visible in the table and the sidebar.
+#[test]
+fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64, 4]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64, 3], "extra" => &["x", "y"]).unwrap(),
+    );
+    let expected = ["date", "id", "extra"];
+
+    for (what, run) in [
+        ("a fuzzy search", 0),
+        ("a DSL query", 1),
+        ("a SQL query", 2),
+        ("a reset", 3),
+    ] {
+        let mut app = open_local_dataset(dir.path());
+        let state = app.data_table_state.as_mut().unwrap();
+        match run {
+            0 => state.fuzzy_search("x".to_string()),
+            1 => state.query("select where id > 0".to_string()),
+            2 => state.sql_query("select * from df".to_string()),
+            _ => state.reset(),
+        }
+        assert!(state.error.is_none(), "{what}: {:?}", state.error);
+        state.collect();
+        assert!(state.error.is_none(), "{what} collect: {:?}", state.error);
+
+        let order: Vec<&str> = state
+            .get_column_order()
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        assert_eq!(order, expected, "column order after {what}");
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(names, expected, "schema after {what}");
+    }
+}
+
+/// A reset returns to the data as opened, so the cells that stand for a file the
+/// column was never in read as absent again.
+#[test]
+fn test_a_reset_brings_back_the_absent_cells() {
+    let g = datui::glyphs::get();
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64, 4]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64, 3], "extra" => &["x", "y"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let area = Rect::new(0, 0, 100, 20);
+    assert!(painted(&mut app, area).contains(g.absent), "absent at open");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sql_query("select * from df".to_string());
+    state.collect();
+    assert!(state.error.is_none(), "the query: {:?}", state.error);
+    assert!(
+        !state.drifts(),
+        "a query's rows stand for no file, so nulls are plain nulls"
+    );
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.reset();
+    state.collect();
+    assert!(state.error.is_none(), "the reset: {:?}", state.error);
+    assert!(state.drifts(), "and the reset puts the files back");
+    assert!(
+        painted(&mut app, area).contains(g.absent),
+        "so the absent cells read as absent again"
     );
 }
 

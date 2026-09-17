@@ -1992,6 +1992,10 @@ struct TemplateApplicationState {
     sort_ascending: bool,
     column_order: Vec<String>,
     locked_columns_count: usize,
+    /// Whether `lf` carries the hidden drift column, and what its groups mean. Rolling
+    /// the frame back without these would leave the two disagreeing.
+    drift: bool,
+    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
 }
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
@@ -10650,7 +10654,7 @@ impl App {
             }
             AppEvent::DoExportCollect(path, format, options) => {
                 if let Some(state) = &self.data_table_state {
-                    let lf = state.lf.clone();
+                    let lf = state.visible_lf();
                     let streaming = state.polars_streaming;
                     let path = path.clone();
                     let format = *format;
@@ -11070,6 +11074,8 @@ impl App {
                 sort_ascending: state.view_sort_ascending(),
                 column_order: state.get_column_order().to_vec(),
                 locked_columns_count: state.locked_columns_count(),
+                drift: state.drifts(),
+                drift_groups: state.drift_groups(),
             })
     }
 
@@ -11430,6 +11436,7 @@ impl App {
             // Restore the exact saved lf and schema (in case filter/sort modified them)
             state.lf = saved_lf;
             state.schema = saved_schema;
+            state.restore_drift(saved.drift, saved.drift_groups);
             state.collect();
         }
     }

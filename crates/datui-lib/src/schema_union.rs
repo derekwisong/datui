@@ -461,6 +461,12 @@ pub fn with_partition_columns(
 /// `DataTableState` lifts it out of the buffer as soon as it is collected.
 pub const DRIFT_COLUMN: &str = "__datui_drift";
 
+/// A file that is missing nothing, for a group id with no entry of its own.
+const NOTHING_MISSING: DriftGroup = DriftGroup {
+    absent: Vec::new(),
+    unread: Vec::new(),
+};
+
 /// How a dataset's files differ, in the form the scan needs: each file's drift group by
 /// the path or URL the scan names it by, and the groups themselves.
 #[derive(Debug, Clone, Default)]
@@ -491,16 +497,6 @@ impl ScanDrift {
     /// The group of the file the scan names `path`. Group 0 is "nothing missing".
     pub fn group(&self, path: &str) -> u32 {
         self.group_of.get(path).copied().unwrap_or(0)
-    }
-
-    fn group_at(&self, path: &str) -> &DriftGroup {
-        const NOTHING: &DriftGroup = &DriftGroup {
-            absent: Vec::new(),
-            unread: Vec::new(),
-        };
-        self.groups
-            .get(self.group(path) as usize)
-            .unwrap_or(NOTHING)
     }
 }
 
@@ -536,7 +532,7 @@ pub fn lenient_scan(
             &paths[start..end],
             &schema,
             cloud_options.clone(),
-            drift.group_at(&paths[start]),
+            drift.groups.get(id as usize).unwrap_or(&NOTHING_MISSING),
             Some(id),
         )?);
         start = end;

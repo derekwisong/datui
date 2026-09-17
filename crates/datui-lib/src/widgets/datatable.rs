@@ -134,6 +134,9 @@ pub struct DataTableState {
     /// What each drift group is missing, shared with the renderer so a frame costs no
     /// allocation. Indexed by the drift column's values.
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    /// The two above as the dataset was opened, so a reset returns to them.
+    drift_at_open: bool,
+    groups_at_open: Arc<Vec<crate::schema_union::DriftGroup>>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -187,6 +190,10 @@ struct GroupedView {
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
+    /// Whether `lf` carries the hidden drift column, and what its groups mean. Saved
+    /// with the frame so drilling back up restores the cells it explains.
+    drift: bool,
+    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
 }
 
 /// The query bar a result came from, with its text. At most one is active at a time.
@@ -481,6 +488,8 @@ impl DataTableState {
             dataset_schema: None,
             drift_column_present: false,
             drift_groups: Arc::new(Vec::new()),
+            drift_at_open: false,
+            groups_at_open: Arc::new(Vec::new()),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -577,6 +586,8 @@ impl DataTableState {
             dataset_schema: None,
             drift_column_present: false,
             drift_groups: Arc::new(Vec::new()),
+            drift_at_open: false,
+            groups_at_open: Arc::new(Vec::new()),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -612,8 +623,10 @@ impl DataTableState {
     fn install_base(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
         self.invalidate_num_rows();
         // A new frame is the user's own projection of the data; its rows no longer
-        // stand for rows of a file, so nulls in it are just nulls.
+        // stand for rows of a file, so nulls in it are just nulls and no column is
+        // marked as missing from one.
         self.drift_column_present = false;
+        self.drift_groups = Arc::new(Vec::new());
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
         self.observed_bytes_per_row = None;
@@ -678,11 +691,13 @@ impl DataTableState {
     /// relies on event loop Collect).
     fn reset_lf_to_original(&mut self) {
         let schema = self
-            .original_lf
-            .clone()
+            .query_source()
             .collect_schema()
             .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
         self.install_base(self.original_lf.clone(), schema);
+        // A reset is a return to the data as opened, so the rows stand for files again.
+        self.drift_column_present = self.drift_at_open;
+        self.drift_groups = self.groups_at_open.clone();
         self.reshaped_lf = None;
         self.reset_view_state(0);
         self.restore_footer_count();
@@ -3739,6 +3754,8 @@ impl DataTableState {
         // The scan stamps the drift column exactly when the files differ.
         self.drift_column_present = schema.drifts();
         self.drift_groups = Arc::new(schema.groups.clone());
+        self.drift_at_open = self.drift_column_present;
+        self.groups_at_open = self.drift_groups.clone();
         self.dataset_schema = Some(schema);
     }
 
@@ -3746,13 +3763,20 @@ impl DataTableState {
     /// that exports, reshapes, groups or analyses the data reads this; only the display
     /// buffer reads `lf` itself, and it lifts the column back out after collecting.
     pub fn visible_lf(&self) -> LazyFrame {
-        if self.drift_column_present {
-            self.lf
-                .clone()
-                .drop(by_name([crate::schema_union::DRIFT_COLUMN], false, false))
-        } else {
-            self.lf.clone()
-        }
+        Self::without_drift(self.lf.clone())
+    }
+
+    /// `lf` without the hidden drift column. A non-strict drop, so it is a no-op on a
+    /// frame that never had one and no caller has to know which it holds.
+    fn without_drift(lf: LazyFrame) -> LazyFrame {
+        lf.drop(by_name([crate::schema_union::DRIFT_COLUMN], false, false))
+    }
+
+    /// The frame a query, a SQL statement or a fuzzy search builds on. Never carries
+    /// the drift column: a query's rows are its own, and its schema becomes the
+    /// column order, so the column would otherwise become one of the data's.
+    pub fn query_source(&self) -> LazyFrame {
+        Self::without_drift(self.original_lf.clone())
     }
 
     /// Whether rows still know which file they came from.
@@ -3763,6 +3787,17 @@ impl DataTableState {
     /// What each drift group is missing, for the renderer. Empty when nothing drifts.
     pub fn drift_groups(&self) -> Arc<Vec<crate::schema_union::DriftGroup>> {
         self.drift_groups.clone()
+    }
+
+    /// Put back what a frame was carrying, alongside the frame itself. Rolling one
+    /// back without this would leave the flag and the frame disagreeing.
+    pub fn restore_drift(
+        &mut self,
+        present: bool,
+        groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    ) {
+        self.drift_column_present = present;
+        self.drift_groups = groups;
     }
 
     /// What the footers said about the dataset's columns, when it is many files.
@@ -4673,6 +4708,8 @@ impl DataTableState {
             filters: std::mem::take(&mut self.filters),
             sort_columns: std::mem::take(&mut self.sort_columns),
             sort_ascending: self.sort_ascending,
+            drift: self.drift_column_present,
+            drift_groups: self.drift_groups.clone(),
         });
         self.sort_ascending = true;
         let lf = group_df.lazy();
@@ -4697,6 +4734,8 @@ impl DataTableState {
                 self.filters = view.filters;
                 self.sort_columns = view.sort_columns;
                 self.sort_ascending = view.sort_ascending;
+                self.drift_column_present = view.drift;
+                self.drift_groups = view.drift_groups;
                 self.schema = self.visible_lf().collect_schema()?;
                 self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
                 self.drilled_down_group_index = None;
@@ -4937,7 +4976,7 @@ impl DataTableState {
 
         match parse_query(&query) {
             Ok((cols, filter, group_by_cols, group_by_col_names)) => {
-                let mut lf = self.original_lf.clone();
+                let mut lf = self.query_source();
                 let mut schema_opt: Option<Arc<Schema>> = None;
 
                 // Apply filter first (where clause)
@@ -5034,9 +5073,11 @@ impl DataTableState {
             // While drilled, `base_lf` is the group (see `drill_down_into_group`).
             return self.base_lf.clone();
         }
-        self.reshaped_lf
-            .clone()
-            .unwrap_or_else(|| self.original_lf.clone())
+        Self::without_drift(
+            self.reshaped_lf
+                .clone()
+                .unwrap_or_else(|| self.original_lf.clone()),
+        )
     }
 
     /// Execute a SQL query against `query_root` (registered as table "df"): the drilled
@@ -5095,7 +5136,7 @@ impl DataTableState {
         }
         // The search runs over the data as loaded, so its columns come from there too,
         // not from a DSL query's possibly renamed schema.
-        let schema = match self.original_lf.clone().collect_schema() {
+        let schema = match self.query_source().collect_schema() {
             Ok(schema) => schema,
             Err(e) => {
                 self.error = Some(e);
@@ -5129,7 +5170,7 @@ impl DataTableState {
             })
             .collect();
         let combined = token_exprs.into_iter().reduce(|a, b| a.and(b)).unwrap();
-        let lf = self.original_lf.clone().filter(combined);
+        let lf = self.query_source().filter(combined);
         self.install_query_result(lf, schema, ActiveQuery::Fuzzy(query), 0);
         self.forget_reshape();
         self.collect();
@@ -5356,7 +5397,6 @@ impl DataTable {
         self
     }
 
-    /// The tint under the selected row, the rail colour, and the dim colour for nulls.
     /// Tell the table which rows came from files missing which columns, so a cell the
     /// file never had draws differently from a null the data holds.
     pub fn with_drift(
@@ -5407,6 +5447,7 @@ impl DataTable {
             .collect()
     }
 
+    /// The tint under the selected row, the rail colour, and the dim colour for nulls.
     pub fn with_selection_colors(
         mut self,
         selected_bg: Option<Color>,

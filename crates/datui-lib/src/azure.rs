@@ -577,10 +577,15 @@ fn managed_identity_token(scope: &str, env: &Environment<'_>) -> Result<String, 
             format!("{endpoint}?api-version=2019-08-01&resource={resource}{client}"),
             ("X-IDENTITY-HEADER", secret),
         )
-    } else if let (Some(endpoint), Some(secret)) = (set("MSI_ENDPOINT"), set("MSI_SECRET")) {
+    } else if let Some(endpoint) = set("MSI_ENDPOINT") {
+        // App Service's older endpoint takes a secret; Cloud Shell's takes none and
+        // wants the metadata header instead.
         (
             format!("{endpoint}?api-version=2017-09-01&resource={resource}{client}"),
-            ("secret", secret),
+            match set("MSI_SECRET") {
+                Some(secret) => ("secret", secret),
+                None => ("Metadata", "true".to_string()),
+            },
         )
     } else {
         (

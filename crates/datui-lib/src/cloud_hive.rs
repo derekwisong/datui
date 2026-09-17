@@ -5,9 +5,11 @@ use color_eyre::Result;
 use object_store::path::Path as OsPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 use polars::prelude::{ParquetReader, Schema, SchemaExt, SerReader};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::Arc;
+
+use crate::schema_union::{FileSchema, SchemaOrigin};
 
 const MAX_PARTITION_DEPTH: usize = 64;
 const PARQUET_FOOTER_TAIL_BYTES: usize = 256 * 1024;
@@ -255,16 +257,15 @@ pub async fn list_dataset_files(
 
 /// The schema to scan a dataset's files with, and its partition columns.
 ///
-/// Taken from the newest file (the last by key), since datasets grow: new columns, and
-/// new fields inside nested ones. The columns only the first file has are added after.
-/// The scan reads older files into it, filling what they lack with nulls (see
-/// [`lenient_scan`]). The first day of Bitcoin blocks has no `previousblockhash`, and
-/// the first days of its transactions no `inputs`; later `inputs` gain `address`, then
-/// `txinwitness`.
-pub async fn dataset_schema(
-    store: &Arc<dyn ObjectStore>,
+/// Every column any file has, from the footers the row count already reads, so a column
+/// a vendor added for a month is visible rather than hidden behind whichever file the
+/// schema was taken from. See [`crate::schema_union`] for the ordering and the type
+/// rules; [`lenient_scan`] does the reading.
+pub fn dataset_schema_from_footers(
     files: &[DatasetFile],
-) -> Result<(Arc<Schema>, Vec<String>)> {
+    footers: &[Option<FileFooter>],
+    origin: SchemaOrigin,
+) -> Result<(crate::schema_union::DatasetSchema, Vec<String>)> {
     let (first, newest) = match files {
         [] => {
             return Err(color_eyre::eyre::eyre!(
@@ -274,26 +275,22 @@ pub async fn dataset_schema(
         [only] => (only, only),
         [first, .., last] => (first, last),
     };
-    let newest_path = crate::cloud_browse::object_path(&newest.key);
-    let newest_footer = read_parquet_footer(store, &newest_path);
-    let first_footer = async {
-        if first.key == newest.key {
-            Ok(None)
-        } else {
-            read_parquet_footer(store, &crate::cloud_browse::object_path(&first.key))
-                .await
-                .map(Some)
-        }
-    };
-    let (newest_footer, first_footer) = futures::try_join!(newest_footer, first_footer)?;
-    let mut file_schema = (*newest_footer.schema).clone();
-    if let Some(first_footer) = first_footer {
-        for (name, dtype) in first_footer.schema.iter() {
-            if !file_schema.contains(name) {
-                file_schema.with_column(name.clone(), dtype.clone());
-            }
-        }
+    let per_file: Vec<Option<FileSchema>> = footers
+        .iter()
+        .map(|f| {
+            f.as_ref().map(|f| FileSchema {
+                schema: f.schema.clone(),
+                rows: f.row_group_rows.iter().sum(),
+            })
+        })
+        .collect();
+    let mut union = crate::schema_union::union_file_schemas(&per_file, origin);
+    if union.schema.is_empty() {
+        return Err(color_eyre::eyre::eyre!(
+            "No readable parquet footer in cloud prefix"
+        ));
     }
+
     let partition_columns = partition_columns_from_prefix(&newest.key);
     let values: Vec<(String, String)> = [&first.key, &newest.key]
         .iter()
@@ -301,12 +298,26 @@ pub async fn dataset_schema(
         .filter_map(|segment| segment.split_once('='))
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
+    union.schema = Arc::new(with_partition_columns(
+        &union.schema,
+        &partition_columns,
+        &values,
+    ));
+    Ok((union, partition_columns))
+}
+
+/// Put the partition columns, typed from their directory names, ahead of the file's own.
+fn with_partition_columns(
+    file_schema: &Schema,
+    partition_columns: &[String],
+    values: &[(String, String)],
+) -> Schema {
     let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
     let mut merged = Schema::with_capacity(partition_columns.len() + file_schema.len());
-    for name in &partition_columns {
+    for name in partition_columns {
         merged.with_column(
             name.clone().into(),
-            crate::widgets::datatable::partition_dtype(name, &file_schema, &values),
+            crate::widgets::datatable::partition_dtype(name, file_schema, values),
         );
     }
     for (name, dtype) in file_schema.iter() {
@@ -314,7 +325,7 @@ pub async fn dataset_schema(
             merged.with_column(name.clone(), dtype.clone());
         }
     }
-    Ok((Arc::new(merged), partition_columns))
+    merged
 }
 
 /// How many footers are read at once when counting.
@@ -322,33 +333,54 @@ const FOOTERS_AT_ONCE: usize = 64;
 /// The first read of a footer. Most footers fit; a larger one costs a second request.
 const COUNT_TAIL_BYTES: u64 = 16 * 1024;
 
-/// The rows in each row group of every file, in file order, from their footers: a small
-/// ranged read at the end of each file, many at once. No data is read.
-pub async fn row_groups_of_files(
+/// What one file's footer says: the columns it has, and the rows in each row group.
+/// Both come from the same tail read, so knowing every file's columns costs the dataset
+/// nothing beyond the count it already pays for.
+#[derive(Debug, Clone)]
+pub struct FileFooter {
+    pub schema: Arc<Schema>,
+    pub row_group_rows: Vec<usize>,
+}
+
+/// Every file's footer, in file order: a small ranged read at the end of each file,
+/// many at once. No data is read. A file whose footer cannot be read is `None` rather
+/// than an error, so one object mid-write does not stop the dataset from opening.
+pub async fn footers_of_files(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
-) -> Result<Vec<Vec<usize>>> {
+) -> Vec<Option<FileFooter>> {
     let permits = Arc::new(tokio::sync::Semaphore::new(FOOTERS_AT_ONCE));
     let mut reads = tokio::task::JoinSet::new();
     for (index, file) in files.iter().cloned().enumerate() {
         let (store, permits) = (store.clone(), permits.clone());
         reads.spawn(async move {
             let _permit = permits.acquire_owned().await;
-            (index, row_groups_of_file(&store, &file).await)
+            (index, footer_of_file(&store, &file).await.ok())
         });
     }
-    let mut out = vec![Vec::new(); files.len()];
+    let mut out = vec![None; files.len()];
     while let Some(joined) = reads.join_next().await {
-        let (index, groups) = joined.map_err(|e| color_eyre::eyre::eyre!("{e}"))?;
-        out[index] = groups?;
+        if let Ok((index, footer)) = joined {
+            out[index] = footer;
+        }
     }
-    Ok(out)
+    out
 }
 
-async fn row_groups_of_file(
+/// The rows in each row group of every file, in file order. Files whose footer cannot
+/// be read count as zero rows, as they always have.
+pub async fn row_groups_of_files(
     store: &Arc<dyn ObjectStore>,
-    file: &DatasetFile,
-) -> Result<Vec<usize>> {
+    files: &[DatasetFile],
+) -> Result<Vec<Vec<usize>>> {
+    Ok(footers_of_files(store, files)
+        .await
+        .into_iter()
+        .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
+        .collect())
+}
+
+async fn footer_of_file(store: &Arc<dyn ObjectStore>, file: &DatasetFile) -> Result<FileFooter> {
     let path = crate::cloud_browse::object_path(&file.key);
     let tail_start = file.size.saturating_sub(COUNT_TAIL_BYTES);
     let tail = store
@@ -367,11 +399,17 @@ async fn row_groups_of_file(
             .map_err(|e| color_eyre::eyre::eyre!("Cloud read failed: {}", e))?
     };
     let mut cursor = Cursor::new(tail.as_ref());
-    let metadata = ParquetReader::new(&mut cursor)
+    let mut reader = ParquetReader::new(&mut cursor);
+    let arrow_schema = reader
+        .schema()
+        .map_err(|e| color_eyre::eyre::eyre!("Parquet schema read failed: {}", e))?;
+    let metadata = reader
         .get_metadata()
-        .map_err(|e| color_eyre::eyre::eyre!("Parquet footer read failed: {}", e))?
-        .clone();
-    Ok(metadata.row_groups.iter().map(|rg| rg.num_rows()).collect())
+        .map_err(|e| color_eyre::eyre::eyre!("Parquet footer read failed: {}", e))?;
+    Ok(FileFooter {
+        schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
+        row_group_rows: metadata.row_groups.iter().map(|rg| rg.num_rows()).collect(),
+    })
 }
 
 /// The length of the footer metadata, from the last eight bytes of a Parquet file: a
@@ -385,27 +423,91 @@ fn footer_length(tail: &[u8]) -> Option<u64> {
     Some(u32::from_le_bytes(bytes) as u64)
 }
 
+/// Columns a file is not read for, because it stores them in a type the dataset's
+/// column cannot hold. Keyed by URL; a file that is not a key is read whole.
+pub type OmittedColumns = HashMap<String, Vec<polars::prelude::PlSmallStr>>;
+
 /// A scan of `urls` into `schema` that reads files written at different times:
 /// columns and nested fields a file lacks are filled with nulls, ones it has beyond the
-/// schema are ignored, and integers and floats widen. Polars' `scan_parquet` offers
-/// only the first of those, and a Bitcoin transactions file from 2015 fails against the
-/// 2026 schema without the rest.
+/// schema are ignored, and integers, floats and datetime units widen. Polars'
+/// `scan_parquet` offers only the first of those, and a Bitcoin transactions file from
+/// 2015 fails against the 2026 schema without the rest.
+///
+/// A column in `omit` is left out of the files that store it in another type and reads
+/// as null there. Consecutive files omitting the same columns are one scan; the scans
+/// are concatenated in file order, so the dataset still reads in key order.
 pub fn lenient_scan(
     urls: &[String],
     schema: Arc<Schema>,
     cloud_options: Option<polars::io::cloud::CloudOptions>,
+    omit: &OmittedColumns,
+) -> polars::prelude::PolarsResult<polars::prelude::LazyFrame> {
+    let omitted_here = |url: &String| omit.get(url).map(Vec::as_slice).unwrap_or(&[]);
+    if urls.iter().all(|url| omitted_here(url).is_empty()) {
+        return scan_run(urls, &schema, cloud_options, &[], false);
+    }
+    let mut runs: Vec<polars::prelude::LazyFrame> = Vec::new();
+    let mut start = 0;
+    while start < urls.len() {
+        let columns = omitted_here(&urls[start]);
+        let end = urls[start..]
+            .iter()
+            .position(|url| omitted_here(url) != columns)
+            .map_or(urls.len(), |offset| start + offset);
+        runs.push(scan_run(
+            &urls[start..end],
+            &schema,
+            cloud_options.clone(),
+            columns,
+            true,
+        )?);
+        start = end;
+    }
+    match runs.len() {
+        1 => Ok(runs.remove(0)),
+        _ => polars::prelude::concat(
+            runs,
+            polars::prelude::UnionArgs {
+                rechunk: false,
+                parallel: true,
+                ..Default::default()
+            },
+        ),
+    }
+}
+
+/// One run of files read with the same columns omitted. `align` selects the dataset's
+/// column order, so runs concatenate.
+fn scan_run(
+    urls: &[String],
+    schema: &Arc<Schema>,
+    cloud_options: Option<polars::io::cloud::CloudOptions>,
+    omit: &[polars::prelude::PlSmallStr],
+    align: bool,
 ) -> polars::prelude::PolarsResult<polars::prelude::LazyFrame> {
     use polars::lazy::dsl::{
         CastColumnsPolicy, DslBuilder, ExtraColumnsPolicy, MissingColumnsPolicy, ScanSources,
         UnifiedScanArgs,
     };
+    use polars::prelude::{Expr, NULL, col, lit};
     let sources = ScanSources::Paths(
         urls.iter()
             .map(|url| polars::prelude::PlRefPath::new(url.as_str()))
             .collect(),
     );
+    let target = if omit.is_empty() {
+        schema.clone()
+    } else {
+        let mut reduced = Schema::with_capacity(schema.len());
+        for (name, dtype) in schema.iter() {
+            if !omit.contains(name) {
+                reduced.with_column(name.clone(), dtype.clone());
+            }
+        }
+        Arc::new(reduced)
+    };
     let options = polars::io::parquet::read::ParquetOptions {
-        schema: Some(schema),
+        schema: Some(target),
         ..Default::default()
     };
     let args = UnifiedScanArgs {
@@ -414,9 +516,13 @@ pub fn lenient_scan(
         glob: false,
         cast_columns_policy: CastColumnsPolicy {
             integer_upcast: true,
+            integer_to_float_cast: true,
             float_upcast: true,
             datetime_nanoseconds_downcast: true,
             datetime_microseconds_downcast: true,
+            datetime_milliseconds_upcast: true,
+            datetime_microseconds_upcast: true,
+            null_upcast: true,
             missing_struct_fields: MissingColumnsPolicy::Insert,
             extra_struct_fields: ExtraColumnsPolicy::Ignore,
             ..CastColumnsPolicy::ERROR_ON_MISMATCH
@@ -425,9 +531,24 @@ pub fn lenient_scan(
         extra_columns_policy: ExtraColumnsPolicy::Ignore,
         ..Default::default()
     };
-    Ok(DslBuilder::scan_parquet(sources, options, args)?
+    let mut lf: polars::prelude::LazyFrame = DslBuilder::scan_parquet(sources, options, args)?
         .build()
-        .into())
+        .into();
+    if !omit.is_empty() {
+        let nulls: Vec<Expr> = omit
+            .iter()
+            .filter_map(|name| {
+                let dtype = schema.get(name)?;
+                Some(lit(NULL).cast(dtype.clone()).alias(name.clone()))
+            })
+            .collect();
+        lf = lf.with_columns(nulls);
+    }
+    if align {
+        let ordered: Vec<Expr> = schema.iter_names().map(|name| col(name.clone())).collect();
+        lf = lf.select(ordered);
+    }
+    Ok(lf)
 }
 
 /// The URL of `key` in the same bucket or container as `url`.
@@ -464,6 +585,15 @@ mod tests {
     fn partition_columns_from_prefix_empty() {
         let cols = partition_columns_from_prefix("");
         assert!(cols.is_empty());
+    }
+
+    /// The dataset's schema from every file's footer, as an open does.
+    async fn schema_of(
+        store: &Arc<dyn ObjectStore>,
+        files: &[DatasetFile],
+    ) -> (crate::schema_union::DatasetSchema, Vec<String>) {
+        let footers = footers_of_files(store, files).await;
+        dataset_schema_from_footers(files, &footers, SchemaOrigin::AllFooters(files.len())).unwrap()
     }
 
     /// Two days of a dataset whose files grew: the first has no `fee` and a struct
@@ -545,7 +675,8 @@ mod tests {
             let groups = row_groups_of_files(&store, &files).await.unwrap();
             assert_eq!(groups, [vec![2], vec![5]]);
 
-            let (schema, partitions) = dataset_schema(&store, &files).await.unwrap();
+            let (dataset, partitions) = schema_of(&store, &files).await;
+            let schema = dataset.schema;
             assert_eq!(partitions, ["date"]);
             let names: Vec<&str> = schema.iter_names().map(|n| n.as_str()).collect();
             assert_eq!(
@@ -573,22 +704,27 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
-        let (schema, _) = rt.block_on(async {
+        let schema = rt.block_on(async {
             let files = list_dataset_files(&store, "data").await.unwrap();
-            dataset_schema(&store, &files).await.unwrap()
+            schema_of(&store, &files).await.0.schema
         });
-        let df = lenient_scan(&urls, schema, None)
+        let df = lenient_scan(&urls, schema, None, &OmittedColumns::new())
             .unwrap()
             .collect()
             .unwrap();
         assert_eq!(df.height(), 7);
         let fees = df.column("fee").unwrap();
         assert_eq!(fees.null_count(), 2, "the old file has no fee");
-        let second_file = lenient_scan(&urls[1..], df.schema().clone(), None)
-            .unwrap()
-            .slice(3, 2)
-            .collect()
-            .unwrap();
+        let second_file = lenient_scan(
+            &urls[1..],
+            df.schema().clone(),
+            None,
+            &OmittedColumns::new(),
+        )
+        .unwrap()
+        .slice(3, 2)
+        .collect()
+        .unwrap();
         assert_eq!(
             second_file
                 .column("id")
@@ -599,6 +735,161 @@ mod tests {
                 .collect::<Vec<_>>(),
             [6, 7]
         );
+    }
+
+    /// Write `files` under a temp dir and read the dataset as an open would: every
+    /// footer, then a scan of the files by name. Returns the schema and the rows.
+    fn open_dataset(
+        files: Vec<(String, Vec<u8>)>,
+    ) -> (
+        crate::schema_union::DatasetSchema,
+        polars::prelude::DataFrame,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut urls = Vec::new();
+        for (key, bytes) in &files {
+            let path = dir.path().join(key);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+            urls.push(path.to_string_lossy().into_owned());
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> =
+            Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
+        let (dataset, listed) = rt.block_on(async {
+            let listed = list_dataset_files(&store, "data").await.unwrap();
+            (schema_of(&store, &listed).await.0, listed)
+        });
+        let urls: Vec<String> = listed
+            .iter()
+            .map(|f| dir.path().join(&f.key).to_string_lossy().into_owned())
+            .collect();
+        let omit: OmittedColumns = urls
+            .iter()
+            .zip(dataset.omitted.iter())
+            .filter(|(_, columns)| !columns.is_empty())
+            .map(|(url, columns)| (url.clone(), columns.clone()))
+            .collect();
+        let df = lenient_scan(&urls, dataset.schema.clone(), None, &omit)
+            .unwrap()
+            .collect()
+            .unwrap();
+        (dataset, df, dir)
+    }
+
+    fn parquet(df: polars::prelude::DataFrame) -> Vec<u8> {
+        use polars::prelude::ParquetWriter;
+        let mut df = df;
+        let mut bytes = Vec::new();
+        ParquetWriter::new(&mut bytes).finish(&mut df).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn a_column_only_a_middle_file_has_is_not_hidden() {
+        use polars::prelude::df;
+        let files = vec![
+            (
+                "data/a.parquet".to_string(),
+                parquet(df!("id" => &[1i64]).unwrap()),
+            ),
+            (
+                "data/b.parquet".to_string(),
+                parquet(df!("id" => &[2i64], "oops" => &["x"]).unwrap()),
+            ),
+            (
+                "data/c.parquet".to_string(),
+                parquet(df!("id" => &[3i64]).unwrap()),
+            ),
+        ];
+        let (dataset, df, _dir) = open_dataset(files);
+        let names: Vec<&str> = dataset.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(names, ["id", "oops"]);
+        assert_eq!(df.height(), 3);
+        assert_eq!(df.column("oops").unwrap().null_count(), 2);
+    }
+
+    #[test]
+    fn files_of_different_integer_widths_open_as_the_wider_one() {
+        use polars::prelude::{DataType, df};
+        let files = vec![
+            (
+                "data/a.parquet".to_string(),
+                parquet(df!("n" => &[1i32, 2]).unwrap()),
+            ),
+            (
+                "data/b.parquet".to_string(),
+                parquet(df!("n" => &[3i64]).unwrap()),
+            ),
+        ];
+        let (dataset, df, _dir) = open_dataset(files);
+        assert_eq!(dataset.schema.get("n"), Some(&DataType::Int64));
+        assert_eq!(df.height(), 3);
+        assert_eq!(df.column("n").unwrap().null_count(), 0);
+    }
+
+    #[test]
+    fn a_number_and_text_column_keeps_the_rows_of_both() {
+        use polars::prelude::{DataType, df};
+        let files = vec![
+            (
+                "data/a.parquet".to_string(),
+                parquet(df!("price" => &["1", "2"]).unwrap()),
+            ),
+            (
+                "data/b.parquet".to_string(),
+                parquet(df!("price" => &[3i64, 4, 5]).unwrap()),
+            ),
+        ];
+        let (dataset, df, _dir) = open_dataset(files);
+        assert_eq!(
+            dataset.schema.get("price"),
+            Some(&DataType::Int64),
+            "the type most rows have"
+        );
+        assert_eq!(df.height(), 5, "every row is still there");
+        assert_eq!(
+            df.column("price").unwrap().null_count(),
+            2,
+            "the text file is not read for the column"
+        );
+        let drifting: Vec<_> = dataset.drifting().map(|c| c.name.to_string()).collect();
+        assert_eq!(drifting, ["price"]);
+        assert_eq!(dataset.columns[0].conflicting_types, [DataType::String]);
+    }
+
+    #[test]
+    fn one_corrupt_file_does_not_stop_the_dataset_opening() {
+        use polars::prelude::df;
+        let files = vec![
+            (
+                "data/a.parquet".to_string(),
+                parquet(df!("id" => &[1i64]).unwrap()),
+            ),
+            ("data/b.parquet".to_string(), b"not a parquet file".to_vec()),
+            (
+                "data/c.parquet".to_string(),
+                parquet(df!("id" => &[3i64]).unwrap()),
+            ),
+        ];
+        let dir = tempfile::TempDir::new().unwrap();
+        for (key, bytes) in &files {
+            let path = dir.path().join(key);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, bytes).unwrap();
+        }
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> =
+            Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
+        let (dataset, listed) = rt.block_on(async {
+            let listed = list_dataset_files(&store, "data").await.unwrap();
+            (schema_of(&store, &listed).await.0, listed)
+        });
+        assert_eq!(dataset.unreadable, [1], "named, and left out of the scan");
+        let names: Vec<&str> = dataset.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(names, ["id"]);
+        assert_eq!(listed.len(), 3);
     }
 
     #[test]

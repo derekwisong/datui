@@ -375,7 +375,12 @@ impl<'a> DataTableInfo<'a> {
     }
 
     fn render_schema_table(&mut self, area: Rect, buf: &mut Buffer) {
-        let src = self.ctx.schema_source();
+        // A dataset of many files says which footers its columns came from; one file
+        // says only whether its format declared them.
+        let src = match self.state.dataset_schema() {
+            Some(dataset) => dataset.origin.to_string(),
+            None => self.ctx.schema_source().to_string(),
+        };
         let compression = self
             .ctx
             .parquet_metadata

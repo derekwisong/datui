@@ -52,7 +52,7 @@ infer_schema_length = 1000    # Rows used to infer column types
 ignore_errors = false         # Skip unparseable rows instead of failing
 decompress_in_memory = false  # Compressed CSV: decompress to a temp file (false) or into memory (true)
 temp_dir = "/tmp"             # Where that temp file goes. Omit for the system default
-single_spine_schema = true    # Hive: read the schema from one file rather than all
+single_spine_schema = true    # Partitioned Parquet: every column any file has, from the footers
 ```
 
 ### Display

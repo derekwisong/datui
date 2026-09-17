@@ -70,6 +70,7 @@ pub mod s3_tools;
 pub mod query;
 mod render;
 pub mod sanitize;
+pub mod schema_union;
 pub mod search;
 pub mod sort_filter_modal;
 pub mod sort_modal;
@@ -4718,12 +4719,15 @@ impl App {
             let store = store.clone();
             wait_on_runtime(runtime, async move {
                 let files = cloud_hive::list_dataset_files(&store, &key).await?;
-                let schema = cloud_hive::dataset_schema(&store, &files).await?;
-                color_eyre::Result::<_>::Ok((files, schema))
+                let footers = cloud_hive::footers_of_files(&store, &files).await;
+                color_eyre::Result::<_>::Ok((files, footers))
             })?
             .ok()?
         };
-        let (files, (schema, partition_columns)) = listed;
+        let (files, footers) = listed;
+        let origin = crate::schema_union::SchemaOrigin::AllFooters(files.len());
+        let (dataset, partition_columns) =
+            cloud_hive::dataset_schema_from_footers(&files, &footers, origin).ok()?;
         let urls: Vec<String> = files
             .iter()
             .filter_map(|f| cloud_hive::url_of_key(full, &f.key))
@@ -4731,10 +4735,20 @@ impl App {
         if urls.is_empty() || urls.len() != files.len() {
             return None;
         }
+        // A file that stores a column in a type the dataset's column cannot hold is not
+        // read for it; its rows are null there rather than failing the scan.
+        let omit: cloud_hive::OmittedColumns = urls
+            .iter()
+            .zip(dataset.omitted.iter())
+            .filter(|(_, columns)| !columns.is_empty())
+            .map(|(url, columns)| (url.clone(), columns.clone()))
+            .collect();
+        let schema = dataset.schema.clone();
         let scan: crate::widgets::datatable::FileScan = {
-            let (schema, partition_columns) = (schema.clone(), partition_columns.clone());
+            let (schema, partition_columns, omit) =
+                (schema.clone(), partition_columns.clone(), Arc::new(omit));
             Arc::new(move |urls: &[String]| {
-                cloud_hive::lenient_scan(urls, schema.clone(), Some(cloud_opts.clone()))
+                cloud_hive::lenient_scan(urls, schema.clone(), Some(cloud_opts.clone()), &omit)
                     .map(|lf| Self::hoist_partition_columns(lf, &schema, &partition_columns))
             })
         };
@@ -4759,6 +4773,17 @@ impl App {
             count,
             offsets: None,
         });
+        // The footers just read hold the count too, so the dataset opens counted.
+        let row_groups: Vec<Vec<usize>> = footers
+            .iter()
+            .map(|f| {
+                f.as_ref()
+                    .map(|f| f.row_group_rows.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        state.set_file_row_groups(&row_groups);
+        state.set_dataset_schema(dataset);
         Some(state)
     }
 

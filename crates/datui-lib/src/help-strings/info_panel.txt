@@ -22,7 +22,7 @@ Notes:
 
   Each note shows its scope beneath it, and the note the cursor is on shows its
   detail. When the list is taller than the panel, the corner says how many are
-  out of view.
+  out of view, unless the panel is a single row and the note needs it.
 
   When there is something to note, the i key in the control bar takes a quiet
   accent until this panel has been opened.

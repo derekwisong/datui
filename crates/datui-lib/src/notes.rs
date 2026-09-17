@@ -47,11 +47,21 @@ fn out_of(dataset: &DatasetSchema) -> String {
     }
 }
 
+/// What a count *within one column* is out of: the files that have it at all. A file
+/// written without the column is not one of the files that disagree about its type.
+fn out_of_those_with(dataset: &DatasetSchema, present_in: usize) -> String {
+    if matches!(dataset.origin, SchemaOrigin::FooterSample { .. }) {
+        format!("the {} footers that have it", group_chrome(present_in))
+    } else {
+        format!("the {} that have it", files(present_in))
+    }
+}
+
 /// What a count of *attempted* footers is out of. Unlike `out_of`, the unreadable ones
 /// are the subject rather than excluded from the denominator.
 fn out_of_all(dataset: &DatasetSchema) -> String {
     if matches!(dataset.origin, SchemaOrigin::FooterSample { .. }) {
-        format!("the {} footers read", group_chrome(dataset.files))
+        format!("the {} footers sampled", group_chrome(dataset.files))
     } else {
         files(dataset.files)
     }
@@ -66,11 +76,16 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     let mut notes = Vec::new();
 
     for column in dataset.drifting() {
-        if let Some(note) = conflict_note(column, &denominator, &scope) {
-            notes.push(note);
-        } else if let Some(note) = absence_note(column, readable, &denominator, &scope) {
-            notes.push(note);
-        } else if column.widened {
+        let conflict = conflict_note(
+            column,
+            &out_of_those_with(dataset, column.present_in),
+            &scope,
+        );
+        let absence = absence_note(column, readable, &denominator, &scope);
+        let said = conflict.is_some() || absence.is_some();
+        notes.extend(conflict);
+        notes.extend(absence);
+        if !said && column.widened {
             notes.push(Note {
                 summary: format!(
                     "{} is stored in more than one width; read as {}",
@@ -213,7 +228,7 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(
             notes[0].summary,
-            "price is str in 1 of 2 files, read as i64 from the rest"
+            "price is str in 1 of the 2 files that have it, read as i64 from the rest"
         );
     }
 
@@ -269,6 +284,56 @@ mod tests {
         assert_eq!(notes[0].scope, "in 2 of 200,000 footers (sample)");
     }
 
+    /// A column can be missing from one file and stored differently in another. The
+    /// conflict is only among the files that have it, and both facts are worth saying.
+    #[test]
+    fn a_column_both_missing_and_conflicting_says_each_over_the_right_total() {
+        let files = [
+            file(&[("price", DataType::String)], 10),
+            file(&[("price", DataType::Int64)], 90),
+            file(&[("id", DataType::Int64)], 5),
+        ];
+        let notes = notes_of(&files);
+        let conflict = notes
+            .iter()
+            .find(|n| n.summary.contains("read as"))
+            .expect("the type conflict is noted");
+        assert_eq!(
+            conflict.summary,
+            "price is str in 1 of the 2 files that have it, read as i64 from the rest",
+            "two files have `price`, not three"
+        );
+        let absence = notes
+            .iter()
+            .find(|n| n.summary.starts_with("price is in"))
+            .expect("and so is the file that has no price at all");
+        assert_eq!(
+            absence.summary, "price is in 2 of 3 files",
+            "the absence is over every file, the conflict over the two that have it"
+        );
+    }
+
+    /// The detail of the unreadable note claims only what the scan guarantees: the
+    /// columns are gone, but the rows may well still be read.
+    #[test]
+    fn the_unreadable_note_claims_nothing_about_the_rows() {
+        let files = [
+            file(&[("id", DataType::Int64)], 1),
+            None,
+            file(&[("id", DataType::Int64)], 1),
+        ];
+        let notes = notes_of(&files);
+        let detail = notes[0].detail.join(" ");
+        assert!(
+            detail.contains("columns are not in the schema"),
+            "got: {detail}"
+        );
+        assert!(
+            !detail.contains("rows are not counted"),
+            "the scan is handed those files too, so this was never true: {detail}"
+        );
+    }
+
     /// A sample that also hit an unreadable footer is neither "files" nor "the footers
     /// read": both would disagree with the scope line under them.
     #[test]
@@ -300,7 +365,7 @@ mod tests {
             .expect("and so is the footer that failed");
         assert_eq!(
             unreadable.summary,
-            "1 of the 3 footers read could not be read and was left out"
+            "1 of the 3 footers sampled could not be read and was left out"
         );
     }
 

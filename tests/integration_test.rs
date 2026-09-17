@@ -1631,6 +1631,21 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
             "a {height}-row panel has notes, it just has no room: {screen:?}"
         );
     }
+
+    // With room for exactly one note, the note gets the row rather than the count of
+    // the notes it is hiding.
+    let area = Rect::new(0, 0, 100, 4);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        screen.contains("is in 1 of 2 files"),
+        "the one note that fits is drawn whole, got:\n{screen}"
+    );
+    assert!(
+        !screen.contains("below"),
+        "and the count gives way rather than sitting on top of it, got:\n{screen}"
+    );
 }
 
 /// A folder whose files agree has nothing to say, and nothing to show for it.

@@ -641,6 +641,9 @@ pub async fn peek_kind(
         Err(refused) if resolved.signing == Signing::Try && is_refusal(&refused) => {
             peek_page(&resolved.unsigned()).await.map_err(|_| refused)
         }
+        Err(refused) if is_refusal(&refused) && resolved.login_error.is_some() => {
+            Err(resolved.login_error.clone().unwrap_or(refused))
+        }
         other => other,
     }
 }
@@ -857,6 +860,10 @@ pub async fn list_objects(
                 _ => {}
             }
             Ok(rows)
+        }
+        // Unsigned because the login failed, and refused: the login is what to fix.
+        Err(refused) if is_refusal(&refused) && resolved.login_error.is_some() => {
+            Err(resolved.login_error.clone().unwrap_or(refused))
         }
         Err(e) => Err(e),
     }
@@ -1651,6 +1658,7 @@ mod tests {
             place: crate::cloud_sources::access_key(url).unwrap(),
             gcloud: None,
             google_credentials: None,
+            login_error: None,
         }
     }
 

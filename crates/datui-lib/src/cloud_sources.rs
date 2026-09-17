@@ -975,6 +975,10 @@ pub struct Resolved {
     pub gcloud: Option<(String, String)>,
     /// For a Google URL signed with a credentials file.
     pub google_credentials: Option<std::path::PathBuf>,
+    /// Why the login that would have signed is not signing: an expired session, a
+    /// missing CLI. The place is read unsigned instead, in case it is public; when it
+    /// is refused, this is the error to report, since it is the one to fix.
+    pub login_error: Option<String>,
 }
 
 /// Whether requests to a place carry a signature.
@@ -1123,6 +1127,13 @@ pub fn resolve(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
 /// many requests and cannot retry them without a signature.
 pub fn resolve_for_open(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
     let resolved = settle_signing(resolve(url, config)?);
+    // Read unsigned only because the login failed: when that is refused too, the
+    // login is what to fix.
+    if let Some(error) = &resolved.login_error
+        && crate::cloud_browse::probe_unsigned(&resolved) == Some(false)
+    {
+        return Err(error.clone());
+    }
     Ok(with_azure_key_if_refused(resolved, config))
 }
 
@@ -1274,6 +1285,7 @@ pub fn resolve_with(
                 place,
                 gcloud: None,
                 google_credentials: None,
+                login_error: None,
             },
             None => {
                 let (kind, _, _) = crate::cloud_browse::split_bucket_url(url)
@@ -1288,6 +1300,7 @@ pub fn resolve_with(
                     place,
                     gcloud: None,
                     google_credentials: None,
+                    login_error: None,
                 }
             }
         };
@@ -1381,6 +1394,7 @@ pub fn resolve_with(
         place,
         gcloud: None,
         google_credentials: None,
+        login_error: None,
     };
     if signing == Signing::Unsigned {
         return Ok(resolved.unsigned());
@@ -1388,15 +1402,17 @@ pub fn resolve_with(
     let id = source.id.clone();
     let gcloud = match &source.gcloud {
         Some(configuration) if kind == ProviderKind::Gcs => {
-            let (token, _) = crate::gcloud::token(configuration, env)
-                .map_err(|e| format!("source \"{id}\": {e}"))?;
-            Some((configuration.clone(), token))
+            match crate::gcloud::token(configuration, env) {
+                Ok((token, _)) => Some((configuration.clone(), token)),
+                Err(e) => return login_failed(resolved, format!("source \"{id}\": {e}")),
+            }
         }
         _ => None,
     };
-    let source = source
-        .with_credentials(env)
-        .map_err(|e| format!("source \"{id}\": {e}"))?;
+    let source = match source.with_credentials(env) {
+        Ok(source) => source,
+        Err(e) => return login_failed(resolved, format!("source \"{id}\": {e}")),
+    };
     let google_credentials = match kind {
         ProviderKind::Gcs => source.google_credentials.clone(),
         _ => None,
@@ -1406,6 +1422,19 @@ pub fn resolve_with(
         gcloud,
         google_credentials,
         ..resolved
+    })
+}
+
+/// The login that would sign `resolved` failed. A login that owns the place reports it;
+/// one that only might (`Signing::Try`) is no reason not to try the place unsigned,
+/// since it may be public, keeping the error for when it is not.
+fn login_failed(resolved: Resolved, error: String) -> Result<Resolved, String> {
+    if resolved.signing != Signing::Try {
+        return Err(error);
+    }
+    Ok(Resolved {
+        login_error: Some(error),
+        ..resolved.unsigned()
     })
 }
 
@@ -1452,6 +1481,7 @@ fn resolve_azure(
         place,
         gcloud: None,
         google_credentials: None,
+        login_error: None,
     };
     match named.or(login) {
         Some(source) if signing != Signing::Unsigned => {
@@ -1479,8 +1509,7 @@ fn resolve_azure(
                 }),
                 // A sign-in that may have nothing to do with this account is no reason
                 // not to read it: public containers need none.
-                Err(_) if signing == Signing::Try => Ok(resolved.unsigned()),
-                Err(e) => Err(format!("source \"{}\": {e}", source.id)),
+                Err(e) => login_failed(resolved, format!("source \"{}\": {e}", source.id)),
             }
         }
         _ => Ok(resolved.unsigned()),
@@ -1817,8 +1846,12 @@ mod tests {
                     ("gcloud-personal", Some("Personal"), None),
                 ]
             );
-            let err = resolve_with("gs://some-bucket/key.parquet", &CloudConfig::default(), env)
-                .unwrap_err();
+            // Without gcloud the login cannot sign; the bucket is tried unsigned, and the
+            // reason is kept for when it turns out not to be public.
+            let resolved =
+                resolve_with("gs://some-bucket/key.parquet", &CloudConfig::default(), env).unwrap();
+            assert_eq!(resolved.signing, Signing::Unsigned);
+            let err = resolved.login_error.unwrap_or_default();
             assert!(err.contains("needs gcloud"), "{err}");
         });
     }
@@ -2210,6 +2243,57 @@ mod tests {
                 resolve_with("s3://instance-test/key", &CloudConfig::default(), env).unwrap();
             assert_eq!(resolved.signing, Signing::Unsigned);
         });
+    }
+
+    #[test]
+    fn a_failed_login_that_may_not_own_the_place_reads_it_unsigned() {
+        // A profile whose SSO session expired: `aws` fails.
+        let machine = Machine::new(
+            &[("AWS_PROFILE", "work")],
+            &[(
+                "/home/u/.aws/config",
+                "[profile work]\nsso_session = corp\nregion = us-east-1\n",
+            )],
+        );
+        let expired = |program: &str, _: &[&str]| -> Result<String, CommandError> {
+            match program {
+                "aws" => Err(CommandError::Failed(
+                    "Your session has expired. Please reauthenticate using 'aws login'."
+                        .to_string(),
+                )),
+                other => Err(CommandError::Missing(other.to_string())),
+            }
+        };
+        let var = |key: &str| machine.vars.get(key).cloned();
+        let exists = |path: &Path| machine.files.contains_key(path);
+        let read = |path: &Path| machine.files.get(path).cloned();
+        let all_vars = Vec::new;
+        let list = |_: &Path| Vec::new();
+        let env = Environment {
+            var: &var,
+            exists: &exists,
+            read: &read,
+            home: Some(PathBuf::from("/home/u")),
+            windows: false,
+            run: &expired,
+            all_vars: &all_vars,
+            list: &list,
+        };
+        let config = CloudConfig::from_env(env.var);
+        // A bucket the login may not own: unsigned, with the reason kept.
+        let public = resolve_with("s3://expired-login-public/x.parquet", &config, &env).unwrap();
+        assert_eq!(public.signing, Signing::Unsigned);
+        assert!(
+            public
+                .login_error
+                .as_deref()
+                .unwrap()
+                .contains("session has expired")
+        );
+        // One it owns (listed by it) still reports the login.
+        remember_access("s3://expired-login-owned", false);
+        let owned = resolve_with("s3://expired-login-owned/x.parquet", &config, &env).unwrap_err();
+        assert!(owned.contains("session has expired"), "{owned}");
     }
 
     #[test]

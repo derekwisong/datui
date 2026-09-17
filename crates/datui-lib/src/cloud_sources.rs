@@ -1312,7 +1312,20 @@ fn resolve_azure(
     let named = sources
         .iter()
         .find(|s| s.kind == ProviderKind::Azure && s.azure.account.as_deref() == Some(account));
-    let login = sources.iter().find(|s| s.id == DEFAULT_AZURE_LOGIN);
+    // A sign-in that reaches any account: `az` or PowerShell, else an identity from the
+    // environment that names no account. Never one known not to be signed in.
+    let login = sources
+        .iter()
+        .filter(|s| s.problem.is_none())
+        .find(|s| s.id == DEFAULT_AZURE_LOGIN)
+        .or_else(|| {
+            sources.iter().find(|s| {
+                s.id == DEFAULT_AZURE_ENV
+                    && s.problem.is_none()
+                    && s.azure.account.is_none()
+                    && s.azure.auth.is_identity()
+            })
+        });
     let signing = match (known, named, login) {
         (Some(true), _, _) | (None, None, None) => Signing::Unsigned,
         (Some(false), _, _) | (None, Some(_), _) => Signing::Signed,
@@ -1346,15 +1359,17 @@ fn resolve_azure(
                     ..resolved
                 });
             }
-            Ok(Resolved {
-                source_id: source.id.clone(),
-                azure: source
-                    .azure
-                    .clone()
-                    .with_token(env)
-                    .map_err(|e| format!("source \"{}\": {e}", source.id))?,
-                ..resolved
-            })
+            match source.azure.clone().with_token(env) {
+                Ok(azure) => Ok(Resolved {
+                    source_id: source.id.clone(),
+                    azure,
+                    ..resolved
+                }),
+                // A sign-in that may have nothing to do with this account is no reason
+                // not to read it: public containers need none.
+                Err(_) if signing == Signing::Try => Ok(resolved.unsigned()),
+                Err(e) => Err(format!("source \"{}\": {e}", source.id)),
+            }
         }
         _ => Ok(resolved.unsigned()),
     }
@@ -1834,6 +1849,40 @@ mod tests {
             assert_eq!(resolved.source_id, "signin");
             assert_eq!(resolved.azure.auth, AzureAuth::Key("a2V5Mg==".to_string()));
             assert_eq!(resolved.azure.identity, Some(AzureAuth::AzCli));
+        });
+    }
+
+    #[test]
+    fn azure_tools_not_signed_in_do_not_block_public_containers() {
+        let machine = Machine::new(&[("PATH", "/usr/bin")], &[("/usr/bin/az", "")]);
+        with_machine(&machine, |env| {
+            let config = CloudConfig::default();
+            let az = discover(&config, env)
+                .into_iter()
+                .find(|s| s.id == DEFAULT_AZURE_LOGIN)
+                .expect("a not signed in row");
+            assert!(az.problem.as_deref().unwrap().starts_with("not signed in"));
+            let resolved = resolve_with(
+                "abfss://nyctlc@azureopendatastorage.dfs.core.windows.net/yellow/",
+                &config,
+                env,
+            )
+            .unwrap();
+            assert_eq!(resolved.signing, Signing::Unsigned);
+        });
+        // Signed in by the look of it, but `az` cannot give a token: still readable.
+        let expired = Machine::new(&[], &[("/home/u/.azure", "")]);
+        with_machine(&expired, |env| {
+            let resolved = resolve_with(
+                "abfss://release@overturemapswestus2.dfs.core.windows.net/x/",
+                &CloudConfig {
+                    public_datasets: Some(false),
+                    ..Default::default()
+                },
+                env,
+            )
+            .unwrap();
+            assert_eq!(resolved.signing, Signing::Unsigned);
         });
     }
 

@@ -344,7 +344,7 @@ another tenant. A public bucket or container read this way is listed with the
 [public datasets](home-screen.md#public-datasets) from then on.
 
 A few well-known datasets are built in; see the
-[home screen](home-screen.md#public-datasets). To keep your own list, add a
+[home screen](home-screen.md#public-datasets). For a compact list of your own, add a
 source with `public = true` and its data as URLs of any cloud:
 
 ```toml
@@ -355,6 +355,10 @@ label = "GBIF"
 public = true
 buckets = ["s3://gbif-open-data-us-east-1/occurrence/"]
 ```
+
+Use structured `[[cloud.sources.datasets]]` tables to give entries names,
+descriptions, publishers, licenses and homepages; see
+[Configuration](configuration.md#cloud).
 
 A license is the publisher's, not datui's: check it before you use the data.
 

@@ -11,7 +11,7 @@
 //! touches the network: listing is `cloud_browse`'s job, and it runs on a worker.
 
 use crate::cloud_browse::{Environment, ProviderKind};
-use crate::config::{CloudConfig, CloudSourceConfig};
+use crate::config::{CloudConfig, CloudSourceConfig, PublicDatasetConfig};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -43,13 +43,24 @@ pub struct Dataset {
 
 /// The datasets of the built-in source, from `public_datasets.toml`.
 pub fn builtin_datasets() -> Vec<Dataset> {
-    #[derive(serde::Deserialize)]
-    struct File {
-        dataset: Vec<Dataset>,
+    crate::config::builtin_public_source()
+        .datasets
+        .iter()
+        .map(Dataset::from)
+        .collect()
+}
+
+impl From<&PublicDatasetConfig> for Dataset {
+    fn from(dataset: &PublicDatasetConfig) -> Self {
+        Self {
+            name: dataset.name.clone(),
+            url: dataset.url.clone(),
+            description: dataset.description.clone(),
+            publisher: dataset.publisher.clone(),
+            license: dataset.license.clone(),
+            homepage: dataset.homepage.clone(),
+        }
     }
-    toml::from_str::<File>(include_str!("public_datasets.toml"))
-        .map(|file| file.dataset)
-        .unwrap_or_default()
 }
 
 /// A dataset for a URL someone named or opened, with nothing known about it but where
@@ -74,15 +85,11 @@ pub fn dataset_for_url(url: &str) -> Dataset {
 /// Whether `url` is `root` or somewhere inside it. Azure URLs are compared in their
 /// canonical form, and a trailing slash does not matter.
 pub fn is_within(url: &str, root: &str) -> bool {
-    let canonical = |u: &str| match crate::source::azure_parts(u) {
-        Some((account, container, path)) => crate::source::azure_url(&account, &container, &path),
-        None => u.to_string(),
-    };
-    let (url, root) = (canonical(url), canonical(root));
-    let (url, root) = (url.trim_end_matches('/'), root.trim_end_matches('/'));
+    let url = crate::source::canonical_cloud_place(url);
+    let root = crate::source::canonical_cloud_place(root);
     url == root
         || url
-            .strip_prefix(root)
+            .strip_prefix(&root)
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
@@ -546,24 +553,10 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
     }
 
     if config.public_datasets != Some(false) {
-        sources.push(Source {
-            id: PUBLIC.to_string(),
-            label: "Public datasets".to_string(),
-            kind: ProviderKind::S3,
-            tier: Tier::BuiltIn,
-            origin: "built in".to_string(),
-            s3: S3Settings::default(),
-            azure: Default::default(),
-            project: None,
-            profile: None,
-            buckets: Vec::new(),
-            problem: None,
-            public: true,
-            datasets: builtin_datasets(),
-            gcloud: None,
-            secret_command: None,
-            google_credentials: None,
-        });
+        let mut source = configured_source(&crate::config::builtin_public_source(), env);
+        source.tier = Tier::BuiltIn;
+        source.origin = "built in".to_string();
+        sources.push(source);
     }
 
     for configured in &config.sources {
@@ -794,9 +787,10 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
             problem: None,
             public: true,
             datasets: configured
-                .buckets
+                .datasets
                 .iter()
-                .map(|url| dataset_for_url(url))
+                .map(Dataset::from)
+                .chain(configured.buckets.iter().map(|url| dataset_for_url(url)))
                 .collect(),
             gcloud: None,
             secret_command: None,
@@ -1804,6 +1798,82 @@ mod tests {
             .unwrap();
             assert_eq!(azure.source_id, "open-data");
             assert_eq!(azure.signing, Signing::Unsigned);
+        });
+    }
+
+    #[test]
+    fn a_structured_public_source_replaces_the_builtin_catalog() {
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let datasets = [
+                ("Weather", "s3://weather/parquet/", "Daily observations"),
+                ("Buildings", "gs://buildings/v1/", "Footprints"),
+                (
+                    "Maps",
+                    "abfss://release@maps.dfs.core.windows.net/",
+                    "Map data",
+                ),
+            ]
+            .map(|(name, url, description)| PublicDatasetConfig {
+                name: name.to_string(),
+                url: url.to_string(),
+                description: description.to_string(),
+                publisher: "Publisher".to_string(),
+                license: "CC0".to_string(),
+                homepage: "https://example.com".to_string(),
+                ..Default::default()
+            })
+            .to_vec();
+            let config = CloudConfig {
+                sources: vec![CloudSourceConfig {
+                    name: PUBLIC.to_string(),
+                    label: Some("Curated public data".to_string()),
+                    public: Some(true),
+                    datasets: datasets.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let sources = discover(&config, env);
+            let matching: Vec<&Source> = sources.iter().filter(|s| s.id == PUBLIC).collect();
+            assert_eq!(matching.len(), 1, "configured source replaces the fallback");
+            let source = matching[0];
+            assert_eq!(source.tier, Tier::Config);
+            assert_eq!(source.label, "Curated public data");
+            assert_eq!(source.datasets.len(), 3);
+            assert_eq!(source.datasets[0].description, "Daily observations");
+            assert!(source.datasets.iter().all(|d| d.name != "OpenAlex"));
+
+            for dataset in &datasets {
+                let resolved = resolve_with(&dataset.url, &config, env).unwrap();
+                assert_eq!(resolved.signing, Signing::Unsigned, "{}", dataset.url);
+                assert_eq!(resolved.source_id, PUBLIC);
+            }
+        });
+    }
+
+    #[test]
+    fn one_dataset_removed_from_the_generated_catalog_stays_removed() {
+        with_machine(&Machine::new(&[], &[]), |env| {
+            let mut configured = crate::config::builtin_public_source();
+            let removed = configured.datasets.remove(0);
+            let expected_len = configured.datasets.len();
+            let config = CloudConfig {
+                sources: vec![configured],
+                ..Default::default()
+            };
+
+            let public = discover(&config, env)
+                .into_iter()
+                .find(|source| source.id == PUBLIC)
+                .expect("configured public source");
+
+            assert_eq!(public.datasets.len(), expected_len);
+            assert!(
+                public
+                    .datasets
+                    .iter()
+                    .all(|dataset| dataset.name != removed.name)
+            );
         });
     }
 

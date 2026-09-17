@@ -99,7 +99,7 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
 ];
 ```
 
-**Note**: Comments are defined next to the struct definition. The config template is generated from Rust code defaults, with all fields commented out so users can uncomment to override.
+**Note**: Comments are defined next to the struct definition. The config template is generated from Rust code defaults, with ordinary fields commented out so users can uncomment to override. The active public-dataset catalog is the deliberate exception.
 
 ### 5. Use in Application Code
 
@@ -463,7 +463,7 @@ fn validate(&self) -> Result<()> {
 
 - See `crates/datui-lib/src/config.rs` for existing implementations and comment constants (e.g., `PERFORMANCE_COMMENTS`, `DISPLAY_COMMENTS`)
 - See `tests/config_test.rs` for test examples
-- Run `datui --generate-config` to see the generated config template (all fields commented out)
+- Run `datui --generate-config` to see the generated config template (ordinary settings are commented out; the editable public-dataset snapshot is active)
 
 ## Questions?
 

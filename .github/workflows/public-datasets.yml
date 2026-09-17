@@ -17,6 +17,7 @@ on:
     branches: [ main ]
     paths:
       - 'crates/datui-lib/src/public_datasets.toml'
+      - 'crates/datui-lib/src/config.rs'
       - 'crates/datui-lib/src/cloud_sources.rs'
       - 'crates/datui-lib/src/cloud_browse.rs'
       - 'crates/datui-lib/src/azure.rs'

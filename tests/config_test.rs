@@ -1688,17 +1688,20 @@ fn test_the_generated_default_config_is_valid_toml() {
     let manager = ConfigManager::new("datui").unwrap();
     let generated = manager.generate_default_config();
 
-    toml::from_str::<toml::Value>(&generated)
-        .expect("the generated default config must parse as TOML");
+    let parsed: AppConfig =
+        toml::from_str(&generated).expect("the generated default config must parse as TOML");
+    parsed
+        .validate()
+        .expect("the generated default config must validate");
 
-    // Uncommented content would be a bug; every line is either blank or a comment.
-    for (n, line) in generated.lines().enumerate() {
-        assert!(
-            line.trim().is_empty() || line.trim_start().starts_with('#'),
-            "line {} of the generated config is live rather than commented: {line:?}",
-            n + 1
-        );
-    }
+    assert!(generated.contains("# [display]"));
+    assert!(generated.contains("[[cloud.sources]]\nname = \"public\""));
+    assert_eq!(parsed.cloud.sources.len(), 1);
+    assert_eq!(parsed.cloud.sources[0].name, "public");
+    assert_eq!(
+        parsed.cloud.sources[0].datasets,
+        datui::config::builtin_public_source().datasets
+    );
 }
 
 #[test]
@@ -2003,7 +2006,7 @@ buckets = [
     );
 
     let empty = cloud_error("[[cloud.sources]]\nname = \"p\"\npublic = true\n");
-    assert!(empty.contains("as URLs"), "{empty}");
+    assert!(empty.contains("buckets or datasets"), "{empty}");
 
     let not_url = cloud_error(
         "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"noaa-ghcn-pds\"]\n",
@@ -2014,6 +2017,78 @@ buckets = [
         "[[cloud.sources]]\nname = \"p\"\nkind = \"s3\"\nbuckets = [\"s3://noaa-ghcn-pds/\"]\n",
     );
     assert!(forgot.contains("add public = true"), "{forgot}");
+}
+
+#[test]
+fn structured_public_datasets_parse_and_validate() {
+    let config = cloud_config(
+        r#"
+[[cloud.sources]]
+name = "public"
+label = "My public data"
+public = true
+buckets = ["gs://compact/example/"]
+
+[[cloud.sources.datasets]]
+name = "Weather"
+url = "s3://weather/parquet/"
+description = "Daily observations"
+publisher = "Example agency"
+license = "CC0"
+homepage = "https://example.com/weather"
+
+[[cloud.sources.datasets]]
+name = "Buildings"
+url = "abfss://release@buildings.dfs.core.windows.net/"
+"#,
+    );
+    config.validate().expect("structured public datasets");
+    let source = &config.cloud.sources[0];
+    assert_eq!(source.datasets.len(), 2);
+    assert_eq!(source.datasets[0].description, "Daily observations");
+    assert!(source.datasets[1].description.is_empty());
+
+    let no_name = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"\"\nurl = \"s3://b/\"\n",
+    );
+    assert!(no_name.contains("nonempty name"), "{no_name}");
+    let bad_url = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"https://example.com\"\n",
+    );
+    assert!(bad_url.contains("is not an s3://"), "{bad_url}");
+    let duplicate_name = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"gs://b/\"\n",
+    );
+    assert!(
+        duplicate_name.contains("name \"x\" is used twice"),
+        "{duplicate_name}"
+    );
+    let duplicate_url = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"s3://a/\"]\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n",
+    );
+    assert!(
+        duplicate_url.contains("URL \"s3://a/\" is used twice"),
+        "{duplicate_url}"
+    );
+    let duplicate_url_without_slash = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"s3://a\"]\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n",
+    );
+    assert!(
+        duplicate_url_without_slash.contains("URL \"s3://a/\" is used twice"),
+        "{duplicate_url_without_slash}"
+    );
+    let duplicate_azure_url = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"https://account.blob.core.windows.net/container/path/\"]\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"abfss://container@account.dfs.core.windows.net/path\"\n",
+    );
+    assert!(
+        duplicate_azure_url
+            .contains("URL \"abfss://container@account.dfs.core.windows.net/path\" is used twice"),
+        "{duplicate_azure_url}"
+    );
+    let private = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\nkind = \"s3\"\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n",
+    );
+    assert!(private.contains("only to a public source"), "{private}");
 }
 
 #[test]
@@ -2032,11 +2107,35 @@ fn a_later_layer_replaces_a_source_by_name() {
 }
 
 #[test]
-fn the_generated_config_does_not_invent_sources() {
+fn a_later_layer_replaces_a_structured_public_catalog() {
+    let mut base = cloud_config(
+        "[[cloud.sources]]\nname = \"public\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"Old\"\nurl = \"s3://old/\"\n",
+    );
+    let over = cloud_config(
+        "[[cloud.sources]]\nname = \"public\"\npublic = true\n[[cloud.sources.datasets]]\nname = \"New\"\nurl = \"gs://new/\"\ndescription = \"Replacement\"\n",
+    );
+
+    base.merge(over);
+
+    assert_eq!(base.cloud.sources.len(), 1);
+    assert_eq!(base.cloud.sources[0].datasets.len(), 1);
+    assert_eq!(base.cloud.sources[0].datasets[0].name, "New");
+    assert_eq!(base.cloud.sources[0].datasets[0].description, "Replacement");
+}
+
+#[test]
+fn the_generated_config_materializes_the_builtin_public_catalog() {
     let (_dir, manager) = setup_test_config_dir();
     let text = manager.generate_default_config();
-    assert!(!text.contains("sources"), "{text}");
-    assert!(!text.contains("hide ="), "{text}");
+    let config: AppConfig = toml::from_str(&text).expect("generated config parses");
+    config.validate().expect("generated config validates");
+    assert_eq!(
+        config.cloud.sources,
+        [datui::config::builtin_public_source()]
+    );
+    assert!(text.contains("snapshot"), "{text}");
+    assert!(text.contains("[[cloud.sources.datasets]]"), "{text}");
+    assert!(!text.contains("\nhide ="), "{text}");
 }
 
 #[test]

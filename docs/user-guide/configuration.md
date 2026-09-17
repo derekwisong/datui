@@ -159,7 +159,7 @@ s3_endpoint_url = "http://localhost:9000"   # MinIO, R2, Ceph and other S3-compa
 s3_access_key_id = "..."
 s3_secret_access_key = "..."
 s3_region = "us-east-1"
-public_datasets = true                      # the built-in Public datasets source; false hides it
+public_datasets = true                      # compatibility switch for the built-in catalog; false hides it
 azure_account_keys = true                   # read Azure with the account key after a sign-in is refused for want of a data role
 env_files = [".env"]                        # read cloud variables from these files; off unless listed
 instance_identity = false                   # use the EC2, GCE or Azure VM's own identity
@@ -188,8 +188,9 @@ buckets = ["sales", "logs"]
 | `name` | all | Required. Lowercase letters, digits and `-`, at most 40 characters. Used in `s3://<name>@bucket/key` |
 | `label` | all | Shown instead of the name |
 | `kind` | all | Required, except with `public`. `s3`, `gcs` or `azure` |
-| `public` | | `true` for data anyone can read. `buckets` are then URLs (`s3://`, `gs://`, `abfss://`) of buckets, containers or folders, and no other field but `label` applies |
+| `public` | | `true` for data anyone can read. `buckets` and `datasets` are then URLs from any supported cloud, read without credentials |
 | `buckets` | all | Buckets to show when the keys can read but not list |
+| `datasets` | public | Structured dataset tables with `name`, `url`, and optional metadata |
 | `endpoint_url` | s3 | An S3-compatible server. Without it, the source is AWS |
 | `region` | s3 | Region to sign for |
 | `addressing` | s3 | `path` or `virtual`. Default: `path` with an endpoint, `virtual` without |
@@ -214,6 +215,44 @@ buckets = [
   "abfss://release@overturemapswestus2.dfs.core.windows.net/",
 ]
 ```
+
+Use `[[cloud.sources.datasets]]` when the home screen should show a stable name and
+details. Each table belongs to the preceding source:
+
+```toml
+[[cloud.sources]]
+name = "public"
+label = "Public datasets"
+public = true
+
+[[cloud.sources.datasets]]
+name = "NOAA daily weather (GHCN-D)"
+url = "s3://noaa-ghcn-pds/parquet/"
+description = "Worldwide weather station observations, by year and by station"
+publisher = "NOAA"
+license = "CC0"
+homepage = "https://registry.opendata.aws/noaa-ghcn/"
+```
+
+| Dataset field | Meaning |
+|---|---|
+| `name` | Required, nonempty name shown on the home screen; unique in this source |
+| `url` | Required `s3://`, `gs://` or Azure URL; unique in this source |
+| `description` | Optional summary shown in the details pane |
+| `publisher` | Optional publisher |
+| `license` | Optional license name |
+| `homepage` | Optional publisher page |
+
+A configured source named `public` replaces the built-in catalog. Other public
+source names create separate collections. `hide = ["public"]` hides the catalog,
+and the older `public_datasets = false` switch remains supported.
+
+`datui --generate-config` writes the current built-in `public` source and dataset
+tables as active TOML. Delete a dataset table to exclude it, edit one to change its
+metadata, or add another table. The generated catalog is a snapshot: a retained
+config does not automatically receive datasets or metadata added by later datui
+releases. Run `datui --generate-config --force` to take a new snapshot, after saving
+any local changes you want to keep.
 
 #### Secrets that live elsewhere
 

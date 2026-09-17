@@ -284,7 +284,7 @@ one that can be read.
 | Azure from the environment | `azure-env` | `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_NAME` with a key or SAS token, or a service principal (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET` or `AZURE_FEDERATED_TOKEN_FILE`) |
 | Google Cloud | `gcs-default` | `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, the file written by `gcloud auth application-default login`, or else the active `gcloud` configuration's login. Its rows are projects |
 | Each other `gcloud` configuration with a different account | `gcloud-<configuration>` | An `account` in `configurations/config_<name>` under `~/.config/gcloud` (`%APPDATA%\gcloud` on Windows, or `CLOUDSDK_CONFIG`) |
-| Public datasets | `public` | Always, unless `public_datasets = false` under `[cloud]` |
+| Public datasets | `public` | The configured `public` source, or the built-in catalog unless `public_datasets = false` |
 | Each `[[cloud.sources]]` entry | its `name` | Always |
 
 A source in the config with the same name as one of these replaces it. The same
@@ -329,6 +329,13 @@ the publisher's: check it before you use the data. <kbd>Backspace</kbd> at a
 dataset's top returns to the list. A public bucket or container you have browsed or
 opened unsigned is added to the list. For a list of your own, see
 [Loading Data](loading-data.md#public-data).
+
+`datui --generate-config` writes this catalog as active
+`[[cloud.sources.datasets]]` tables. Remove a table to remove that dataset, add a
+table to add one, or change its metadata. A configured source named `public`
+replaces the built-in list; another source name creates a separate collection. The
+generated list is a snapshot and does not receive later catalog updates
+automatically. See [Configuration](configuration.md#cloud) for the fields.
 
 Listings leave out what is not data: `_SUCCESS` and other job files, and the empty
 objects some tools leave to stand for folders.

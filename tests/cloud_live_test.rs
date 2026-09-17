@@ -896,3 +896,113 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
     app.event(&key(crossterm::event::KeyCode::Esc));
     assert_eq!(app.home.browsing, None, "Esc from the source returns home");
 }
+
+/// Walk a cloud source down to `demo/penguins.parquet` through the home screen and open
+/// it: Enter on the source, then on each row named in `steps`.
+fn open_through_home(
+    app: &mut datui::App,
+    rx: &std::sync::mpsc::Receiver<datui::AppEvent>,
+    id: &str,
+    steps: &[&str],
+) -> Vec<String> {
+    assert!(
+        enter_source(app, rx, id),
+        "{id} should list: {:?}",
+        app.home.cloud.iter().find(|s| s.id == id)
+    );
+    println!("{}", screen_text(app, 120, 24));
+    for step in steps {
+        let shown = pump_until(app, rx, 60, |app| {
+            app.home.visible().iter().any(
+                |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == *step),
+            )
+        });
+        let why = app
+            .home
+            .sections
+            .first()
+            .map(|s| (s.title.clone(), s.unavailable_note.clone()));
+        assert!(shown, "{step} should be listed; section {why:?}");
+        assert!(select_row(app, step), "{step}");
+        println!("{}", screen_text(app, 120, 24));
+        if let Some(crash) = drive(app, key(crossterm::event::KeyCode::Enter)) {
+            panic!("Enter on {step} crashed: {crash}");
+        }
+    }
+    let loaded = pump_until(app, rx, 120, |app| {
+        app.data_table_state.is_some() && !app.is_busy()
+    });
+    assert!(
+        loaded,
+        "the dataset should load; status={:?}",
+        app.home.status
+    );
+    app.data_table_state.as_ref().expect("a table").headers()
+}
+
+fn live_app() -> (datui::App, std::sync::mpsc::Receiver<datui::AppEvent>) {
+    common::isolate_cache();
+    let mut config = datui::config::AppConfig::default();
+    config.data.use_desktop_recents = false;
+    config.cloud = datui::OpenOptions::default().effective_cloud(&config.cloud);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+    (app, rx)
+}
+
+/// A signed-in `az`, and a storage account holding the `datui-test` container described
+/// in #168: `demo/`, `sample-data/`, `edge/`.
+///
+/// ```bash
+/// az login
+/// DATUI_LIVE_AZURE=<account> cargo test --test cloud_live_test -- --ignored --nocapture azure
+/// ```
+#[test]
+#[ignore = "browses a real Azure storage account; set DATUI_LIVE_AZURE=<account>"]
+fn an_azure_container_browses_and_opens_through_az_login() {
+    let Ok(account) = std::env::var("DATUI_LIVE_AZURE") else {
+        eprintln!("skipped: set DATUI_LIVE_AZURE to a storage account to run");
+        return;
+    };
+    let (mut app, rx) = live_app();
+    let headers = open_through_home(
+        &mut app,
+        &rx,
+        "az",
+        &[&account, "datui-test", "demo", "penguins.parquet"],
+    );
+    println!("{headers:?}");
+    assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
+}
+
+/// The AWS CLI signed in (any method, `aws login` and SSO included), and a bucket
+/// holding the same `demo/`, `sample-data/` and `edge/` as the Azure container.
+///
+/// ```bash
+/// DATUI_LIVE_AWS=<bucket> cargo test --test cloud_live_test -- --ignored --nocapture aws_bucket
+/// ```
+#[test]
+#[ignore = "browses a real S3 bucket; set DATUI_LIVE_AWS=<bucket>"]
+fn an_aws_bucket_browses_and_opens_through_the_active_profile() {
+    let Ok(bucket) = std::env::var("DATUI_LIVE_AWS") else {
+        eprintln!("skipped: set DATUI_LIVE_AWS to a bucket to run");
+        return;
+    };
+    let (mut app, rx) = live_app();
+    let headers = open_through_home(
+        &mut app,
+        &rx,
+        "s3-default",
+        &[&bucket, "demo", "penguins.parquet"],
+    );
+    println!("{headers:?}");
+    assert!(headers.iter().any(|h| h == "species"), "{headers:?}");
+}

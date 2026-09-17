@@ -100,7 +100,9 @@ fn listing_and_opening_sign_with_the_active_profile() {
 
     let mut config = datui::config::AppConfig::default();
     config.data.use_desktop_recents = false;
-    config.cloud.hide = vec!["gcs-default".to_string()];
+    config.cloud.hide = ["gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
     let options = datui::OpenOptions::default();
     config.cloud = options.effective_cloud(&config.cloud);
 

@@ -1183,6 +1183,19 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
     }
     let g = glyphs::get();
     let mut lines = preview_head(&entry, width, ctx);
+    // What the source's listing said about this place: an Azure account's
+    // subscription, region and namespace.
+    if let Some(details) = app.home.place_details(&entry.path) {
+        let key_w = details.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        for (key, value) in details {
+            let style = if key == "network" || key == "shared keys" {
+                Style::default().fg(ctx.warning)
+            } else {
+                Style::default().fg(ctx.text_secondary)
+            };
+            lines.push(fact_line(key, value.clone(), key_w.max(8), style, ctx));
+        }
+    }
 
     // ---- Schema ------------------------------------------------------------------
     lines.push(Line::from(""));

@@ -452,7 +452,12 @@ fn test_open_s3_url_returns_crash_or_loads() {
 
     match await_scan_outcome(&rx) {
         AppEvent::BackgroundError { message, .. } => {
-            assert!(message.contains("S3"), "error should mention S3: {message}");
+            // "Could not read from S3" without credentials; with them, the store's own
+            // error naming the s3:// URL.
+            assert!(
+                message.to_lowercase().contains("s3"),
+                "error should mention S3: {message}"
+            );
         }
         AppEvent::BackgroundLazyFrameReady { .. } => {
             // With cloud feature and valid credentials/bucket, the scan can succeed.

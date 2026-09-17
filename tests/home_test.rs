@@ -1361,6 +1361,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
         browsing: None,
         probed: Default::default(),
         unreachable: Default::default(),
+        probe_errors: Default::default(),
         network_check: |_| false,
         cloud: Vec::new(),
         known: Default::default(),
@@ -1571,6 +1572,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
         browsing: None,
         probed: Default::default(),
         unreachable: Default::default(),
+        probe_errors: Default::default(),
         network_check: pretend_remote,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
@@ -1639,6 +1641,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
         browsing: Some(tmp.path().to_path_buf()),
         probed: Default::default(),
         unreachable: Default::default(),
+        probe_errors: Default::default(),
         network_check: |_| false,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
@@ -2567,6 +2570,7 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
         browsing: None,
         probed: Default::default(),
         unreachable: Default::default(),
+        probe_errors: Default::default(),
         network_check: |_| false,
         cloud: vec![CloudSource {
             id: "s3-default".to_string(),
@@ -2812,4 +2816,69 @@ fn test_typing_finds_bucket_names_from_every_source() {
         "the same bucket name from two sources stays two rows: {names:?}"
     );
     assert_eq!(found.subtitle.as_deref(), Some("cloud · 2 names"));
+}
+
+#[test]
+fn test_azure_steps_through_account_container_and_folder() {
+    use datui::home::{CloudSource, CloudStatus, object_place_label};
+    use std::path::{Path, PathBuf};
+    // The real test for "remote", which is what decides that an account is probed.
+    let mut home = HomeState {
+        cloud: vec![CloudSource {
+            id: "az".to_string(),
+            label: "Azure".to_string(),
+            api: "azure".to_string(),
+            buckets: vec![
+                PathBuf::from("cloud://az/datalake001"),
+                PathBuf::from("cloud://az/archive002"),
+            ],
+            status: CloudStatus::Listed,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert_eq!(home.cloud[0].count_text(), "2 accounts");
+
+    let account = Path::new("cloud://az/datalake001");
+    let container = Path::new("abfss://datui-test@datalake001.dfs.core.windows.net/");
+    let folder = Path::new("abfss://datui-test@datalake001.dfs.core.windows.net/demo/fred/");
+
+    assert_eq!(object_place_label(account), Some("account"));
+    assert_eq!(object_place_label(container), Some("container"));
+    assert_eq!(object_place_label(folder), Some("prefix"));
+
+    assert_eq!(
+        home.parent_of(folder),
+        Some(PathBuf::from(
+            "abfss://datui-test@datalake001.dfs.core.windows.net/demo/"
+        ))
+    );
+    assert_eq!(
+        home.parent_of(Path::new(
+            "abfss://datui-test@datalake001.dfs.core.windows.net/demo/"
+        )),
+        Some(container.to_path_buf())
+    );
+    assert_eq!(home.parent_of(container), Some(account.to_path_buf()));
+    assert_eq!(home.parent_of(account), Some(PathBuf::from("cloud://az")));
+
+    home.browsing = Some(folder.to_path_buf());
+    home.browse_start = Some(PathBuf::from("cloud://az"));
+    assert!(home.below_browse_start(), "a folder is below its source");
+
+    let sep = datui::glyphs::get().trail;
+    assert_eq!(
+        home.location_label(folder),
+        format!("cloud {sep} Azure {sep} datalake001 {sep} datui-test {sep} demo {sep} fred")
+    );
+    assert_eq!(
+        home.location_label(account),
+        format!("cloud {sep} Azure {sep} datalake001")
+    );
+
+    // An account is a place to step into, listed by a probe like a remote directory.
+    home.browsing = Some(account.to_path_buf());
+    home.rebuild(&[], &[]);
+    assert_eq!(home.pending_probes(), vec![account.to_path_buf()]);
+    assert_eq!(home.sections[0].title, "datalake001");
 }

@@ -20,6 +20,11 @@ use std::sync::{Mutex, OnceLock};
 pub const DEFAULT_S3: &str = "s3-default";
 /// The Google login found in the environment or the application-default file.
 pub const DEFAULT_GCS: &str = "gcs-default";
+/// A signed-in `az`.
+pub const DEFAULT_AZURE_LOGIN: &str = "az";
+/// An Azure account named in the environment: a connection string, or an account with a
+/// key or SAS token.
+pub const DEFAULT_AZURE_ENV: &str = "azure-env";
 
 /// Where a source came from. Lower wins when the same ID turns up twice, and sources
 /// are listed in this order.
@@ -85,6 +90,8 @@ pub struct Source {
     pub origin: String,
     /// Only meaningful for [`ProviderKind::S3`].
     pub s3: S3Settings,
+    /// Only meaningful for [`ProviderKind::Azure`].
+    pub azure: crate::azure::AzureSettings,
     /// The GCP project whose buckets are listed.
     pub project: Option<String>,
     /// The AWS profile in use, when one is named.
@@ -102,8 +109,12 @@ impl Source {
         self.kind == ProviderKind::S3 && self.id != DEFAULT_S3 && self.s3.endpoint.is_some()
     }
 
-    /// The URL of one of this source's buckets.
+    /// The URL of one of this source's buckets. For Azure, the first level is storage
+    /// accounts, and an account has no URL of its own, so it is a home-screen place.
     pub fn bucket_url(&self, bucket: &str) -> String {
+        if self.kind == ProviderKind::Azure {
+            return format!("cloud://{}/{bucket}", self.id);
+        }
         let scheme = self.kind.scheme();
         if self.named_in_urls() {
             format!("{scheme}://{}@{bucket}", self.id)
@@ -125,7 +136,7 @@ impl Source {
     pub fn can_list_buckets(&self) -> bool {
         match self.kind {
             ProviderKind::Gcs => self.project.is_some(),
-            ProviderKind::S3 => true,
+            ProviderKind::S3 | ProviderKind::Azure => true,
         }
     }
 
@@ -138,6 +149,7 @@ impl Source {
             self.s3.access_key_id.as_deref().unwrap_or(""),
             self.project.as_deref().unwrap_or(""),
             self.profile.as_deref().unwrap_or(""),
+            self.azure.account.as_deref().unwrap_or(""),
         ]
         .join("|")
     }
@@ -176,6 +188,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 id: match provider.kind {
                     ProviderKind::S3 => DEFAULT_S3,
                     ProviderKind::Gcs => DEFAULT_GCS,
+                    ProviderKind::Azure => DEFAULT_AZURE_LOGIN,
                 }
                 .to_string(),
                 label: String::new(),
@@ -184,12 +197,13 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 origin: provider.note.clone(),
                 s3: match provider.kind {
                     ProviderKind::S3 => S3Settings::from_config(config),
-                    ProviderKind::Gcs => S3Settings::default(),
+                    ProviderKind::Gcs | ProviderKind::Azure => S3Settings::default(),
                 },
                 project: provider.project,
                 profile: None,
                 buckets: Vec::new(),
                 problem: None,
+                azure: Default::default(),
             };
             // Found through a profile rather than keys: the active profile supplies the
             // keys, and its endpoint and region fill whatever the config and the
@@ -207,6 +221,7 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 ProviderKind::S3 if source.s3.endpoint.is_none() => "Amazon S3".to_string(),
                 ProviderKind::S3 => "S3-compatible".to_string(),
                 ProviderKind::Gcs => "Google Cloud".to_string(),
+                ProviderKind::Azure => "Azure".to_string(),
             };
             source
         })
@@ -231,6 +246,46 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
             profile: Some(profile.name.clone()),
             buckets: Vec::new(),
             problem: None,
+            azure: Default::default(),
+        });
+    }
+
+    // Azure: an account named in the environment, and a signed-in `az`, which reaches
+    // every account it can see.
+    if let Some((settings, origin)) = crate::azure::from_environment(env.var) {
+        sources.push(Source {
+            id: DEFAULT_AZURE_ENV.to_string(),
+            label: settings
+                .account
+                .clone()
+                .unwrap_or_else(|| "Azure".to_string()),
+            kind: ProviderKind::Azure,
+            tier: Tier::Environment,
+            origin,
+            s3: S3Settings::default(),
+            project: None,
+            profile: None,
+            buckets: Vec::new(),
+            problem: None,
+            azure: settings,
+        });
+    }
+    if crate::azure::az_login_evidence(env) {
+        sources.push(Source {
+            id: DEFAULT_AZURE_LOGIN.to_string(),
+            label: "Azure".to_string(),
+            kind: ProviderKind::Azure,
+            tier: Tier::Tools,
+            origin: "az login".to_string(),
+            s3: S3Settings::default(),
+            project: None,
+            profile: None,
+            buckets: Vec::new(),
+            problem: None,
+            azure: crate::azure::AzureSettings {
+                auth: crate::azure::AzureAuth::AzCli,
+                ..Default::default()
+            },
         });
     }
 
@@ -370,6 +425,7 @@ fn configured_source(configured: &CloudSourceConfig, env: &Environment<'_>) -> S
         profile: configured.profile.clone(),
         buckets: configured.buckets.clone(),
         problem,
+        azure: Default::default(),
     }
 }
 
@@ -382,6 +438,8 @@ pub struct Resolved {
     pub kind: ProviderKind,
     pub source_id: String,
     pub s3: S3Settings,
+    /// For an Azure URL, the settings with a token in place of `az`.
+    pub azure: crate::azure::AzureSettings,
 }
 
 /// Which source a plain `s3://bucket` belongs to, when a source other than the default
@@ -419,6 +477,9 @@ pub fn resolve_with(
     config: &CloudConfig,
     env: &Environment<'_>,
 ) -> Result<Resolved, String> {
+    if let Some((account, container, path)) = crate::source::azure_parts(url) {
+        return resolve_azure(&account, &container, &path, config, env);
+    }
     let (id, plain) = crate::source::split_source_id(url);
     let (kind, bucket, _) = crate::cloud_browse::split_bucket_url(&plain)
         .ok_or_else(|| format!("not an object-store URL: {url}"))?;
@@ -446,6 +507,7 @@ pub fn resolve_with(
                 let default_id = match kind {
                     ProviderKind::S3 => DEFAULT_S3,
                     ProviderKind::Gcs => DEFAULT_GCS,
+                    ProviderKind::Azure => DEFAULT_AZURE_LOGIN,
                 };
                 // The default source as discovered, when it was: that is what carries
                 // the active profile. Otherwise the settings as they have always been.
@@ -457,12 +519,13 @@ pub fn resolve_with(
                     origin: String::new(),
                     s3: match kind {
                         ProviderKind::S3 => S3Settings::from_config(config),
-                        ProviderKind::Gcs => S3Settings::default(),
+                        ProviderKind::Gcs | ProviderKind::Azure => S3Settings::default(),
                     },
                     project: None,
                     profile: None,
                     buckets: Vec::new(),
                     problem: None,
+                    azure: Default::default(),
                 })
             }
         },
@@ -477,6 +540,41 @@ pub fn resolve_with(
         kind,
         source_id: source.id,
         s3: source.s3,
+        azure: Default::default(),
+    })
+}
+
+/// An Azure URL: the account named in the environment when it is this one, else a
+/// signed-in `az`, else no signature at all, which is how public containers are read.
+fn resolve_azure(
+    account: &str,
+    container: &str,
+    path: &str,
+    config: &CloudConfig,
+    env: &Environment<'_>,
+) -> Result<Resolved, String> {
+    let sources = discover(config, env);
+    let named = sources
+        .iter()
+        .find(|s| s.kind == ProviderKind::Azure && s.azure.account.as_deref() == Some(account));
+    let login = sources.iter().find(|s| s.id == DEFAULT_AZURE_LOGIN);
+    let (source_id, settings) = match named.or(login) {
+        Some(source) => (
+            source.id.clone(),
+            source
+                .azure
+                .clone()
+                .with_token(env)
+                .map_err(|e| format!("source \"{}\": {e}", source.id))?,
+        ),
+        None => (String::new(), crate::azure::AzureSettings::default()),
+    };
+    Ok(Resolved {
+        url: crate::source::azure_url(account, container, path),
+        kind: ProviderKind::Azure,
+        source_id,
+        s3: S3Settings::default(),
+        azure: settings,
     })
 }
 

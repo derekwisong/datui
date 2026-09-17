@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 pub enum ProviderKind {
     Gcs,
     S3,
+    Azure,
 }
 
 impl ProviderKind {
@@ -39,6 +40,7 @@ impl ProviderKind {
         match self {
             ProviderKind::Gcs => "gs",
             ProviderKind::S3 => "s3",
+            ProviderKind::Azure => "abfss",
         }
     }
 }
@@ -81,7 +83,7 @@ impl Provider {
     pub fn can_list_buckets(&self) -> bool {
         match self.kind {
             ProviderKind::Gcs => self.project.is_some(),
-            ProviderKind::S3 => true,
+            ProviderKind::S3 | ProviderKind::Azure => true,
         }
     }
 }
@@ -438,7 +440,7 @@ fn path_tail(path: &[Vec<u8>]) -> (Option<&[u8]>, Option<&[u8]>) {
 /// bound that actually ends.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
-fn agent() -> ureq::Agent {
+pub(crate) fn http_agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(REQUEST_TIMEOUT))
         .build()
@@ -521,6 +523,7 @@ pub fn store_for_bucket(
                 .map_err(|e| format!("S3 is not configured: {e}"))?;
             Ok(std::sync::Arc::new(store))
         }
+        ProviderKind::Azure => Err("an Azure container needs its account".to_string()),
     }
 }
 
@@ -572,6 +575,9 @@ pub async fn list_objects(
             .await
             .map_err(|e| format!("{e}"))??
     };
+    if resolved.kind == ProviderKind::Azure {
+        return list_azure_objects(&resolved).await;
+    }
     let (kind, bucket, prefix) =
         split_bucket_url(&resolved.url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
     let store = store_for_bucket(kind, &bucket, &resolved.s3)?;
@@ -640,6 +646,175 @@ pub async fn list_objects(
     Ok(rows)
 }
 
+/// One level of an Azure container or folder. Accounts with hierarchical namespace list
+/// each folder as a prefix and as an empty blob of the same name; only the prefix is
+/// kept.
+async fn list_azure_objects(
+    resolved: &crate::cloud_sources::Resolved,
+) -> Result<Vec<crate::discover::Entry>, String> {
+    use object_store::path::Path as OsPath;
+
+    let (account, container, prefix) = crate::source::azure_parts(&resolved.url)
+        .ok_or_else(|| format!("not an Azure URL: {}", resolved.url))?;
+    let store = crate::azure::store(&account, &container, &resolved.azure)?;
+    let prefix = prefix.trim_matches('/').to_string();
+    let os_prefix = (!prefix.is_empty()).then(|| OsPath::from(prefix.as_str()));
+    let result = store
+        .list_with_delimiter(os_prefix.as_ref())
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    let prefixes: Vec<String> = result
+        .common_prefixes
+        .iter()
+        .map(|p| p.as_ref().to_string())
+        .collect();
+    let mut rows = Vec::new();
+    for common in &prefixes {
+        let name = common
+            .rsplit('/')
+            .find(|part| !part.is_empty())
+            .unwrap_or(common)
+            .to_string();
+        let mut row = crate::discover::Entry::directory(Path::new(&crate::source::azure_url(
+            &account,
+            &container,
+            &format!("{common}/"),
+        )));
+        row.name = name;
+        rows.push(row);
+    }
+    for object in result.objects {
+        let location = object.location.as_ref().to_string();
+        let name = location.rsplit('/').next().unwrap_or(&location).to_string();
+        if name.is_empty() || crate::azure::is_folder_marker(&location, object.size, &prefixes) {
+            continue;
+        }
+        rows.push(crate::discover::Entry {
+            path: PathBuf::from(crate::source::azure_url(&account, &container, &location)),
+            kind: crate::discover::EntryKind::File,
+            name,
+            size: Some(object.size),
+            modified: Some(object.last_modified.into()),
+            rows: None,
+            cols: None,
+            columns: Vec::new(),
+            cost: Default::default(),
+        });
+    }
+    Ok(rows)
+}
+
+/// A source's first level, as the home screen lists it: buckets for S3 and Google
+/// Cloud, storage accounts for Azure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub name: String,
+    /// Where Enter goes: a bucket URL, or `cloud://<id>/<account>`.
+    pub place: PathBuf,
+    /// Lines for the details pane.
+    pub details: Vec<(String, String)>,
+}
+
+/// Everything at the top of a source.
+pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
+    if source.kind != ProviderKind::Azure {
+        // The bucket listings send their request with a blocking client. On a thread
+        // of its own, a server that never answers holds up only its own source, not
+        // one of the runtime's few workers and everything queued behind it.
+        let blocking = source.clone();
+        let names = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(list_buckets(&blocking))
+        })
+        .await
+        .map_err(|e| format!("{e}"))??;
+        return Ok(names
+            .into_iter()
+            .map(|name| Listed {
+                place: PathBuf::from(source.bucket_url(&name)),
+                name,
+                details: Vec::new(),
+            })
+            .collect());
+    }
+    let source = source.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Some(problem) = &source.problem {
+            return Err(problem.clone());
+        }
+        // A key, SAS or connection string names its one account.
+        if let Some(account) = &source.azure.account {
+            return Ok(vec![Listed {
+                name: account.clone(),
+                place: PathBuf::from(source.bucket_url(account)),
+                details: Vec::new(),
+            }]);
+        }
+        let accounts = crate::azure::discover_accounts(&Environment::current())?;
+        Ok(accounts
+            .into_iter()
+            .map(|account| {
+                let mut details = Vec::new();
+                if let Some(subscription) = account.subscription {
+                    details.push(("subscription".to_string(), subscription));
+                }
+                if let Some(location) = account.location {
+                    details.push(("region".to_string(), location));
+                }
+                let namespace = if account.hierarchical_namespace {
+                    "hierarchical"
+                } else {
+                    "flat"
+                };
+                details.push(("namespace".to_string(), namespace.to_string()));
+                if account.private_network {
+                    details.push(("network".to_string(), "private".to_string()));
+                }
+                if !account.shared_key_access {
+                    details.push(("shared keys".to_string(), "disabled".to_string()));
+                }
+                Listed {
+                    place: PathBuf::from(source.bucket_url(&account.name)),
+                    name: account.name,
+                    details,
+                }
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("{e}"))?
+}
+
+/// The containers of one account in an Azure source, as rows to step into.
+pub async fn list_account(
+    source_id: &str,
+    account: &str,
+    config: &CloudConfig,
+) -> Result<Vec<crate::discover::Entry>, String> {
+    let (source_id, account, config) = (source_id.to_string(), account.to_string(), config.clone());
+    tokio::task::spawn_blocking(move || {
+        let env = Environment::current();
+        let source = crate::cloud_sources::discover(&config, &env)
+            .into_iter()
+            .find(|s| s.id == source_id && s.kind == ProviderKind::Azure)
+            .ok_or_else(|| format!("source not found: {source_id}"))?;
+        let settings = source.azure.with_token(&env)?;
+        let containers = crate::azure::list_containers(&account, &settings)?;
+        Ok(containers
+            .into_iter()
+            .map(|container| {
+                let mut entry = crate::discover::Entry::directory(Path::new(
+                    &crate::source::azure_url(&account, &container, ""),
+                ));
+                entry.name = container;
+                entry
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("{e}"))?
+}
+
 /// Every bucket the provider's credentials can see.
 ///
 /// Enumeration is per-provider because `object_store` is deliberately bucket-scoped:
@@ -662,6 +837,7 @@ pub async fn list_buckets(source: &Source) -> Result<Vec<String>, String> {
     match source.kind {
         ProviderKind::Gcs => list_gcs_buckets(source).await,
         ProviderKind::S3 => list_s3_buckets(&source.s3).await,
+        ProviderKind::Azure => Err("Azure lists storage accounts, not buckets".to_string()),
     }
 }
 
@@ -701,7 +877,7 @@ async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
         if let Some(token) = &page_token {
             url.push_str(&format!("&pageToken={}", urlencode(token)));
         }
-        let body = agent()
+        let body = http_agent()
             .get(&url)
             .header("Authorization", &format!("Bearer {}", credential.bearer))
             .call()
@@ -757,7 +933,7 @@ async fn list_s3_buckets(settings: &S3Settings) -> Result<Vec<String>, String> {
         .map_err(|e| format!("could not build the request: {e}"))?;
     AwsAuthorizer::new(&credential, "s3", &region).authorize(&mut signed, None);
 
-    let mut request = agent().get(&url);
+    let mut request = http_agent().get(&url);
     for (name, value) in signed.headers() {
         if let Ok(value) = value.to_str() {
             request = request.header(name.as_str(), value);
@@ -795,7 +971,7 @@ const MAX_BUCKET_PAGES: usize = 20;
 /// A project id or page token goes into a URL, and neither is guaranteed to be free of
 /// characters that mean something there. Small and local rather than a new dependency
 /// for two call sites.
-fn urlencode(value: &str) -> String {
+pub(crate) fn urlencode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.as_bytes() {
         match byte {

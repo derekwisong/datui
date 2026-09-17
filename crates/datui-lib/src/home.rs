@@ -140,7 +140,17 @@ pub fn object_place_label(path: &Path) -> Option<&'static str> {
     if cloud_source_id(path).is_some() {
         return Some("source");
     }
+    if cloud_account(path).is_some() {
+        return Some("account");
+    }
     let text = path.to_string_lossy();
+    if let Some((_, _, key)) = crate::source::azure_parts(&text) {
+        return Some(if key.trim_matches('/').is_empty() {
+            "container"
+        } else {
+            "prefix"
+        });
+    }
     let (scheme, rest) = text.split_once("://")?;
     if !matches!(scheme, "s3" | "s3a" | "gs" | "gcs") {
         return None;
@@ -172,10 +182,28 @@ pub fn cloud_source_id(path: &Path) -> Option<String> {
     (!id.is_empty() && !id.contains('/')).then(|| id.to_string())
 }
 
+/// The source ID and account of a `cloud://<id>/<account>` place: an Azure storage
+/// account, which has no URL of its own.
+pub fn cloud_account(path: &Path) -> Option<(String, String)> {
+    let text = path.to_string_lossy();
+    let rest = text.strip_prefix(CLOUD_PLACE)?.trim_end_matches('/');
+    let (id, account) = rest.split_once('/')?;
+    (!id.is_empty() && !account.is_empty() && !account.contains('/'))
+        .then(|| (id.to_string(), account.to_string()))
+}
+
+/// Whether `path` is one of datui's own `cloud://` places rather than a real location.
+pub fn is_cloud_place(path: &Path) -> bool {
+    path.to_string_lossy().starts_with(CLOUD_PLACE)
+}
+
 /// Whether `path` is the root of a bucket: `s3://bucket`, `s3://<id>@bucket`,
 /// `gs://bucket`, with no prefix.
 fn is_bucket_root(path: &Path) -> bool {
     let text = path.to_string_lossy();
+    if let Some((_, _, key)) = crate::source::azure_parts(&text) {
+        return key.trim_matches('/').is_empty();
+    }
     let Some((scheme, rest)) = text.split_once("://") else {
         return false;
     };
@@ -210,7 +238,7 @@ pub fn parent_location(path: &Path) -> Option<PathBuf> {
 /// interface thread. It answers from the string and the mount table alone, never by
 /// reaching for the thing itself.
 pub fn is_remote_path(path: &Path) -> bool {
-    cloud_source_id(path).is_some()
+    is_cloud_place(path)
         || !matches!(
             crate::source::input_source(path),
             crate::source::InputSource::Local(_)
@@ -315,6 +343,9 @@ pub struct CloudSource {
     pub refreshing: bool,
     /// `key  value` lines for the details pane: endpoint, region, login.
     pub details: Vec<(String, String)>,
+    /// Lines for the details pane of places inside the source: an Azure account's
+    /// subscription, region and namespace.
+    pub place_details: std::collections::HashMap<PathBuf, Vec<(String, String)>>,
 }
 
 impl CloudSource {
@@ -323,11 +354,18 @@ impl CloudSource {
         match &self.status {
             CloudStatus::Failed { short, .. } if self.buckets.is_empty() => short.clone(),
             CloudStatus::Listing if self.buckets.is_empty() => String::new(),
-            _ => match self.buckets.len() {
-                0 => "no buckets".to_string(),
-                1 => "1 bucket".to_string(),
-                n => format!("{n} buckets"),
-            },
+            _ => {
+                let (one, many) = if self.api == "azure" {
+                    ("account", "accounts")
+                } else {
+                    ("bucket", "buckets")
+                };
+                match self.buckets.len() {
+                    0 => format!("no {many}"),
+                    1 => format!("1 {one}"),
+                    n => format!("{n} {many}"),
+                }
+            }
         }
     }
 
@@ -454,6 +492,8 @@ pub struct HomeState {
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     /// Network roots that did not answer.
     pub unreachable: std::collections::HashSet<PathBuf>,
+    /// Why a cloud listing was refused, when the service said.
+    pub probe_errors: std::collections::HashMap<PathBuf, String>,
     /// How rows are ordered inside each section.
     pub sort: SortMode,
     /// True while a listing is being built on a worker. The previous listing stays on
@@ -532,6 +572,7 @@ impl Default for HomeState {
             measure_in_flight: false,
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
+            probe_errors: std::collections::HashMap::new(),
             pending_enrich: false,
             waiting_since: None,
             enriched: std::collections::HashMap::new(),
@@ -551,6 +592,8 @@ pub struct ListingRequest {
     pub browsing: Option<PathBuf>,
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     pub unreachable: std::collections::HashSet<PathBuf>,
+    /// Why a cloud listing was refused.
+    pub probe_errors: std::collections::HashMap<PathBuf, String>,
     pub network_check: fn(&Path) -> bool,
     /// Cloud sources and the buckets already enumerated for them.
     pub cloud: Vec<CloudSource>,
@@ -604,6 +647,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         browsing,
         probed,
         unreachable,
+        probe_errors,
         network_check,
         cloud,
         known,
@@ -660,19 +704,29 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         let unavailable = remote && unreachable.contains(&dir);
         sections.push(Section {
             // The URL without a source ID: the title bar's trail already says which
-            // source, and `s3://lab@data` is not a name anyone would write.
+            // source, and `s3://lab@data` is not a name anyone would write. An Azure
+            // account or container is titled by name, not by its long URL.
             title: {
                 let text = dir.to_string_lossy();
-                match crate::source::split_source_id(&text) {
-                    (Some(_), plain) => plain.into_owned(),
-                    (None, _) => display_path(&dir),
+                if let Some((_, account)) = cloud_account(&dir) {
+                    account
+                } else if let Some((_, container, key)) = crate::source::azure_parts(&text) {
+                    format!("{container}/{}", key.trim_matches('/'))
+                        .trim_end_matches('/')
+                        .to_string()
+                } else {
+                    match crate::source::split_source_id(&text) {
+                        (Some(_), plain) => plain.into_owned(),
+                        (None, _) => display_path(&dir),
+                    }
                 }
             },
             subtitle: None,
             rows,
             unavailable,
-            // A browsed remote place that did not answer: there is nothing to add.
-            unavailable_note: None,
+            // A browsed remote place that did not answer has nothing to add; one whose
+            // listing was refused says why.
+            unavailable_note: probe_errors.get(&dir).cloned(),
             folded_by_default: false,
             // Its wait is drawn in place of the whole list; see `awaiting_listing`.
             remote_root: None,
@@ -887,7 +941,7 @@ fn annotate(
 ) {
     for section in sections {
         for row in &mut section.rows {
-            if cloud_source_id(&row.path).is_some() {
+            if is_cloud_place(&row.path) {
                 row.cost.source = Some("cloud".to_string());
                 continue;
             }
@@ -1209,6 +1263,7 @@ impl HomeState {
             browsing: self.browsing.clone(),
             probed: self.probed.clone(),
             unreachable: self.unreachable.clone(),
+            probe_errors: self.probe_errors.clone(),
             network_check: self.network_check,
             cloud: self.cloud.clone(),
             // The synchronous path is for tests and library callers; it consults no
@@ -1329,7 +1384,15 @@ impl HomeState {
         if let Some(id) = cloud_source_id(path) {
             return self.cloud.iter().find(|s| s.id == id);
         }
+        if let Some((id, _)) = cloud_account(path) {
+            return self.cloud.iter().find(|s| s.id == id);
+        }
         let text = path.to_string_lossy();
+        if let Some((account, _, _)) = crate::source::azure_parts(&text) {
+            return self.azure_account_place(&account).and_then(|place| {
+                cloud_account(&place).and_then(|(id, _)| self.cloud.iter().find(|s| s.id == id))
+            });
+        }
         if let (Some(id), _) = crate::source::split_source_id(&text) {
             return self.cloud.iter().find(|s| s.id == id);
         }
@@ -1346,10 +1409,46 @@ impl HomeState {
         if cloud_source_id(path).is_some() {
             return None;
         }
+        if let Some((id, _)) = cloud_account(path) {
+            return Some(cloud_place(&id));
+        }
+        let text = path.to_string_lossy();
+        if let Some((account, container, key)) = crate::source::azure_parts(&text) {
+            let key = key.trim_matches('/');
+            if key.is_empty() {
+                return self.azure_account_place(&account);
+            }
+            let up = key.rsplit_once('/').map(|(up, _)| up).unwrap_or("");
+            let up = if up.is_empty() {
+                String::new()
+            } else {
+                format!("{up}/")
+            };
+            return Some(PathBuf::from(crate::source::azure_url(
+                &account, &container, &up,
+            )));
+        }
         if is_bucket_root(path) {
             return self.cloud_source_of(path).map(|s| cloud_place(&s.id));
         }
         parent_location(path)
+    }
+
+    /// The place of an Azure account, from whichever source lists it.
+    fn azure_account_place(&self, account: &str) -> Option<PathBuf> {
+        self.cloud
+            .iter()
+            .flat_map(|s| s.buckets.iter())
+            .find(|place| cloud_account(place).is_some_and(|(_, a)| a == account))
+            .cloned()
+    }
+
+    /// Details-pane lines for a place a cloud source listed, when it has any.
+    pub fn place_details(&self, path: &Path) -> Option<&[(String, String)]> {
+        self.cloud
+            .iter()
+            .find_map(|s| s.place_details.get(path))
+            .map(Vec::as_slice)
     }
 
     /// The location as the title bar names it. Cloud places read as a trail through
@@ -1359,8 +1458,14 @@ impl HomeState {
         let sep = crate::glyphs::get().trail;
         if let Some(source) = self.cloud_source_of(path) {
             let mut parts = vec!["cloud".to_string(), source.label.clone()];
-            if cloud_source_id(path).is_none() {
-                let text = path.to_string_lossy();
+            let text = path.to_string_lossy();
+            if let Some((_, account)) = cloud_account(path) {
+                parts.push(account);
+            } else if let Some((account, container, key)) = crate::source::azure_parts(&text) {
+                parts.push(account);
+                parts.push(container);
+                parts.extend(key.split('/').filter(|p| !p.is_empty()).map(str::to_string));
+            } else if cloud_source_id(path).is_none() {
                 let (_, plain) = crate::source::split_source_id(&text);
                 if let Some((_, rest)) = plain.split_once("://") {
                     parts.extend(
@@ -1667,6 +1772,7 @@ impl HomeState {
     /// Record what a probe found. An empty listing is still an answer.
     pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>) {
         self.unreachable.remove(&root);
+        self.probe_errors.remove(&root);
         self.probed.insert(root, rows);
     }
 

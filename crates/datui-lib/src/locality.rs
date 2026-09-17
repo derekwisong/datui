@@ -69,7 +69,7 @@ impl Locality {
     /// a classifier that only knew filesystems would call `s3` a local disk.
     pub fn of_fstype(fstype: &str) -> Locality {
         match fstype {
-            "s3" | "s3a" | "gs" | "gcs" | "http" | "https" => Locality::Object,
+            "s3" | "s3a" | "gs" | "gcs" | "az" | "cloud" | "http" | "https" => Locality::Object,
             "" | "unknown" => Locality::Unknown,
             other => classify(other),
         }
@@ -247,6 +247,7 @@ pub fn object_scheme(path: &Path) -> Option<String> {
         crate::source::InputSource::Local(_) => None,
         crate::source::InputSource::S3(_) => Some("s3".to_string()),
         crate::source::InputSource::Gcs(_) => Some("gs".to_string()),
+        crate::source::InputSource::Azure(_) => Some("az".to_string()),
         crate::source::InputSource::Http(_) => Some("http".to_string()),
     }
 }

@@ -7,6 +7,9 @@ pub enum InputSource {
     Local(PathBuf),
     S3(String),
     Gcs(String),
+    /// Azure Blob Storage, always as `abfss://container@account.dfs.core.windows.net/path`
+    /// whichever of its forms it was written in.
+    Azure(String),
     Http(String),
 }
 
@@ -21,6 +24,9 @@ pub fn input_source(path: &Path) -> InputSource {
         }
         if prefix == "gs" || prefix == "gcs" {
             return InputSource::Gcs(rest);
+        }
+        if let Some((account, container, key)) = azure_parts(&s) {
+            return InputSource::Azure(azure_url(&account, &container, &key));
         }
         if prefix == "http" || prefix == "https" {
             return InputSource::Http(s.to_string());
@@ -51,6 +57,53 @@ pub fn split_source_id(url: &str) -> (Option<&str>, std::borrow::Cow<'_, str>) {
     }
 }
 
+/// The account, container and path of an Azure Blob Storage URL.
+///
+/// Accepts the forms that name the account: `abfss://` and `abfs://`
+/// (`container@account.dfs.core.windows.net/path`), and `https://` on the blob or dfs
+/// endpoint (`account.blob.core.windows.net/container/path`). `az://container/path`
+/// does not name the account, so it is not one of them. The path comes back without a
+/// leading slash, and a trailing slash is kept, since it is what marks a folder.
+pub fn azure_parts(url: &str) -> Option<(String, String, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let (host_part, path) = match rest.split_once('/') {
+        Some((host, path)) => (host, path),
+        None => (rest, ""),
+    };
+    let account_of = |host: &str| {
+        let host = host.to_ascii_lowercase();
+        [".dfs.core.windows.net", ".blob.core.windows.net"]
+            .iter()
+            .find_map(|suffix| host.strip_suffix(suffix).map(str::to_string))
+            .filter(|account| !account.is_empty() && !account.contains('.'))
+    };
+    match scheme.as_str() {
+        "abfss" | "abfs" => {
+            let (container, host) = host_part.split_once('@')?;
+            let account = account_of(host)?;
+            (!container.is_empty()).then(|| (account, container.to_string(), path.to_string()))
+        }
+        "https" | "http" => {
+            let account = account_of(host_part)?;
+            let (container, path) = match path.split_once('/') {
+                Some((container, path)) => (container, path),
+                None => (path, ""),
+            };
+            (!container.is_empty()).then(|| (account, container.to_string(), path.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// The canonical URL for a place in Azure Blob Storage.
+pub fn azure_url(account: &str, container: &str, path: &str) -> String {
+    format!(
+        "abfss://{container}@{account}.dfs.core.windows.net/{}",
+        path.trim_start_matches('/')
+    )
+}
+
 /// A cloud location whose shape is a prefix or a glob rather than one object.
 pub(crate) fn is_prefix_or_glob(url: &str) -> bool {
     url.ends_with('/') || url.contains('*')
@@ -61,7 +114,10 @@ pub(crate) fn is_prefix_or_glob(url: &str) -> bool {
 /// glob of it. A downloaded object reaches the schema phase under its display URL, and
 /// this is what keeps it from being treated as a remote scan.
 pub(crate) fn scans_in_place(path: &Path) -> bool {
-    if !matches!(input_source(path), InputSource::S3(_) | InputSource::Gcs(_)) {
+    if !matches!(
+        input_source(path),
+        InputSource::S3(_) | InputSource::Gcs(_) | InputSource::Azure(_)
+    ) {
         return false;
     }
     let url = path.to_string_lossy();
@@ -159,6 +215,36 @@ mod tests {
             (None, "https://user@host/file.csv".into())
         );
         assert_eq!(split_source_id("s3://@sales"), (None, "s3://@sales".into()));
+    }
+
+    #[test]
+    fn azure_urls_in_every_form_that_names_the_account_become_one() {
+        let canonical = "abfss://datui-test@datalake001.dfs.core.windows.net/demo/fred/";
+        for url in [
+            canonical,
+            "abfs://datui-test@datalake001.dfs.core.windows.net/demo/fred/",
+            "https://datalake001.blob.core.windows.net/datui-test/demo/fred/",
+            "https://DataLake001.dfs.core.windows.net/datui-test/demo/fred/",
+        ] {
+            assert_eq!(
+                input_source(Path::new(url)),
+                InputSource::Azure(canonical.to_string()),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            azure_parts("abfss://c@acct.dfs.core.windows.net"),
+            Some(("acct".to_string(), "c".to_string(), String::new()))
+        );
+        // No account, or not Azure at all.
+        assert_eq!(azure_parts("az://container/path"), None);
+        assert!(matches!(
+            input_source(Path::new("https://example.com/c/x.csv")),
+            InputSource::Http(_)
+        ));
+        assert!(scans_in_place(Path::new(
+            "abfss://c@acct.dfs.core.windows.net/x.parquet"
+        )));
     }
 
     #[test]

@@ -110,6 +110,12 @@ pub struct InfoModal {
     pub schema_table_state: ratatui::widgets::TableState,
     /// Last visible height for schema table (data rows), set during render.
     pub schema_visible_height: usize,
+    /// The note the cursor is on, and the first note drawn. A note's detail is shown
+    /// only for the one the cursor is on, so the list stays one or two lines a note.
+    pub notes_selected_index: usize,
+    pub notes_scroll_offset: usize,
+    /// How many notes the last render fitted, so the cursor can page by what is shown.
+    pub notes_visible: usize,
 }
 
 impl InfoModal {
@@ -124,6 +130,8 @@ impl InfoModal {
         self.schema_selected_index = 0;
         self.schema_scroll_offset = 0;
         self.schema_table_state.select(Some(0));
+        self.notes_selected_index = 0;
+        self.notes_scroll_offset = 0;
     }
 
     pub fn close(&mut self) {
@@ -170,6 +178,26 @@ impl InfoModal {
 
     /// Scroll and selection for schema table. `total_rows` = schema len, `visible_height` = rows shown.
     /// Returns true if state changed.
+    /// Move the cursor through the notes, bringing the one it lands on into view.
+    /// Returns true when something changed.
+    pub fn notes_move(&mut self, delta: isize, total: usize, visible: usize) -> bool {
+        if total == 0 {
+            return false;
+        }
+        let last = total - 1;
+        let next = (self.notes_selected_index as isize + delta).clamp(0, last as isize) as usize;
+        if next == self.notes_selected_index {
+            return false;
+        }
+        self.notes_selected_index = next;
+        if next < self.notes_scroll_offset {
+            self.notes_scroll_offset = next;
+        } else if visible > 0 && next >= self.notes_scroll_offset + visible {
+            self.notes_scroll_offset = next + 1 - visible;
+        }
+        true
+    }
+
     pub fn schema_table_down(&mut self, total_rows: usize, visible_height: usize) -> bool {
         if total_rows == 0 {
             return false;
@@ -662,44 +690,86 @@ impl<'a> DataTableInfo<'a> {
         }
     }
 
-    /// What datui noticed, one line each with what it is based on under it.
+    /// What datui noticed: one line each, with its scope under it, and the detail of
+    /// the note the cursor is on.
     ///
     /// Deliberately plain: no error styling, no counts of problems, nothing that reads
-    /// as an alarm. These are observations about the data, not faults in it.
-    fn render_notes_tab(&self, area: Rect, buf: &mut Buffer) {
+    /// as an alarm. These are observations about the data, not faults in it. The last
+    /// line says how many notes are out of view rather than dropping them silently.
+    fn render_notes_tab(&mut self, area: Rect, buf: &mut Buffer) {
         let notes = self.state.notes();
-        if notes.is_empty() {
+        if notes.is_empty() || area.height == 0 {
             Paragraph::new("Nothing to note.").render(Rect { height: 1, ..area }, buf);
             return;
         }
         let dim = Style::default().fg(self.border_color);
-        let mut y = area.y;
-        for note in notes {
-            if y >= area.y + area.height {
+        let selected = self.modal.notes_selected_index.min(notes.len() - 1);
+        // The last row is kept for "more below" whenever the list does not fit.
+        let body = Rect {
+            height: area.height.saturating_sub(1).max(1),
+            ..area
+        };
+
+        let mut y = body.y;
+        let mut drawn = 0usize;
+        let first = self.modal.notes_scroll_offset.min(notes.len() - 1);
+        let bottom = body.y + body.height;
+        let mut line = |text: String, style: Option<Style>, y: &mut u16| {
+            if *y >= bottom {
+                return false;
+            }
+            let at = Rect {
+                y: *y,
+                height: 1,
+                ..body
+            };
+            match style {
+                Some(style) => {
+                    Paragraph::new(Line::from(Span::styled(text, style))).render(at, buf)
+                }
+                None => Paragraph::new(text).render(at, buf),
+            }
+            *y += 1;
+            true
+        };
+
+        for (index, note) in notes.iter().enumerate().skip(first) {
+            let marker = if index == selected { "› " } else { "  " };
+            if !line(format!("{marker}{}", note.summary), None, &mut y) {
                 break;
             }
-            let line = Rect {
-                y,
-                height: 1,
-                ..area
-            };
-            Paragraph::new(note.summary.as_str()).render(line, buf);
-            y += 1;
-            for detail in note.detail.iter().chain(std::iter::once(&note.scope)) {
-                if y >= area.y + area.height {
-                    break;
+            if index == selected {
+                for detail in &note.detail {
+                    line(format!("    {detail}"), Some(dim), &mut y);
                 }
-                Paragraph::new(Line::from(Span::styled(format!("  {detail}"), dim))).render(
+            }
+            line(format!("    {}", note.scope), Some(dim), &mut y);
+            drawn += 1;
+            if y < bottom {
+                y += 1;
+            }
+        }
+
+        self.modal.notes_visible = drawn.max(1);
+        let unseen = notes.len() - first - drawn;
+        if unseen > 0 || first > 0 {
+            let hidden = if first > 0 && unseen > 0 {
+                format!("{first} above, {unseen} below")
+            } else if first > 0 {
+                format!("{first} above")
+            } else {
+                format!("{unseen} below")
+            };
+            Paragraph::new(Line::from(Span::styled(hidden, dim)))
+                .right_aligned()
+                .render(
                     Rect {
-                        y,
+                        y: area.y + area.height - 1,
                         height: 1,
                         ..area
                     },
                     buf,
                 );
-                y += 1;
-            }
-            y += 1;
         }
     }
 
@@ -831,7 +901,8 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
                     self.render_schema_tab(chunks[1], buf)
                 }
             }
-            InfoTab::Notes => self.render_notes_tab(chunks[1], buf),
+            InfoTab::Notes if has_notes => self.render_notes_tab(chunks[1], buf),
+            InfoTab::Notes => self.render_schema_tab(chunks[1], buf),
         }
     }
 }
@@ -846,6 +917,82 @@ pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tabs_on_offer_depend_on_the_dataset() {
+        assert_eq!(
+            InfoTab::visible(false, false),
+            [InfoTab::Schema, InfoTab::Resources]
+        );
+        assert_eq!(
+            InfoTab::visible(true, true),
+            [
+                InfoTab::Schema,
+                InfoTab::Resources,
+                InfoTab::Partitions,
+                InfoTab::Notes
+            ]
+        );
+        assert_eq!(
+            InfoTab::visible(false, true),
+            [InfoTab::Schema, InfoTab::Resources, InfoTab::Notes],
+            "notes without partitions still sit last"
+        );
+    }
+
+    #[test]
+    fn tab_navigation_wraps_through_what_is_on_offer() {
+        // Nothing optional: two tabs, back and forth.
+        assert_eq!(InfoTab::Schema.next(false, false), InfoTab::Resources);
+        assert_eq!(InfoTab::Resources.next(false, false), InfoTab::Schema);
+        assert_eq!(InfoTab::Schema.prev(false, false), InfoTab::Resources);
+
+        // Both optional tabs present.
+        assert_eq!(InfoTab::Resources.next(true, true), InfoTab::Partitions);
+        assert_eq!(InfoTab::Partitions.next(true, true), InfoTab::Notes);
+        assert_eq!(InfoTab::Notes.next(true, true), InfoTab::Schema);
+        assert_eq!(InfoTab::Schema.prev(true, true), InfoTab::Notes);
+
+        // Notes only.
+        assert_eq!(InfoTab::Resources.next(false, true), InfoTab::Notes);
+        assert_eq!(InfoTab::Notes.prev(false, true), InfoTab::Resources);
+    }
+
+    /// A tab that is no longer on offer must not strand the cursor: it reads as the
+    /// first tab, so moving on from it goes somewhere real.
+    #[test]
+    fn a_tab_that_is_no_longer_offered_falls_back_to_the_first() {
+        assert_eq!(InfoTab::Notes.index(false, false), 0);
+        assert_eq!(InfoTab::Notes.next(false, false), InfoTab::Resources);
+        assert_eq!(InfoTab::Partitions.index(false, false), 0);
+        assert_eq!(InfoTab::Partitions.prev(false, false), InfoTab::Resources);
+    }
+
+    #[test]
+    fn the_notes_cursor_moves_and_brings_its_note_into_view() {
+        let mut modal = InfoModal::new();
+        assert!(!modal.notes_move(1, 0, 3), "nothing to move through");
+
+        assert!(modal.notes_move(1, 5, 2));
+        assert_eq!(modal.notes_selected_index, 1);
+        assert_eq!(modal.notes_scroll_offset, 0, "still on screen");
+
+        assert!(modal.notes_move(1, 5, 2));
+        assert_eq!(modal.notes_selected_index, 2);
+        assert_eq!(modal.notes_scroll_offset, 1, "scrolled to keep it visible");
+
+        assert!(modal.notes_move(-1, 5, 2));
+        assert_eq!(modal.notes_selected_index, 1);
+        assert_eq!(modal.notes_scroll_offset, 1);
+        assert!(modal.notes_move(-1, 5, 2));
+        assert_eq!(modal.notes_scroll_offset, 0, "and back up");
+
+        assert!(!modal.notes_move(-1, 5, 2), "already at the top");
+        for _ in 0..10 {
+            modal.notes_move(1, 5, 2);
+        }
+        assert_eq!(modal.notes_selected_index, 4, "and stops at the last");
+    }
 
     #[test]
     fn test_format_bytes() {

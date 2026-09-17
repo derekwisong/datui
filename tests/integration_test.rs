@@ -1523,6 +1523,96 @@ fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
     assert!(!state.notes_unseen(), "the accent has done its job");
 }
 
+/// A query builds its own rows, so notes about the files behind the dataset no longer
+/// describe what is on screen. They come back on a reset.
+#[test]
+fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_mut().unwrap();
+    assert_eq!(state.notes().len(), 1, "the dataset has something to say");
+
+    state.sql_query("select id from df".to_string());
+    state.collect();
+    assert!(state.error.is_none(), "the query: {:?}", state.error);
+    assert!(
+        state.notes().is_empty(),
+        "a note about `extra` would describe a column the frame no longer has"
+    );
+
+    state.reset();
+    state.collect();
+    assert!(state.error.is_none(), "the reset: {:?}", state.error);
+    assert_eq!(state.notes().len(), 1, "and the reset brings them back");
+}
+
+/// More notes than the panel is tall must not be dropped on the floor: the panel says
+/// how many are out of view, and the cursor reaches them.
+#[test]
+fn test_notes_past_the_fold_are_counted_and_reachable() {
+    let dir = tempfile::tempdir().unwrap();
+    // Six columns, each arriving one day later, is six notes.
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "a" => &["x"], "b" => &["x"], "c" => &["x"],
+            "d" => &["x"], "e" => &["x"], "f" => &["x"])
+        .unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    assert_eq!(app.data_table_state.as_ref().unwrap().notes().len(), 6);
+
+    // Open the panel, move focus to the tab bar, and walk to the Notes tab. The
+    // dataset is partitioned, so Notes is the fourth.
+    for key in [
+        KeyCode::Char('i'),
+        KeyCode::Tab,
+        KeyCode::Right,
+        KeyCode::Right,
+        KeyCode::Right,
+    ] {
+        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+    }
+    // A short panel cannot show six notes at two lines each plus a gap.
+    let area = Rect::new(0, 0, 100, 14);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+
+    assert!(
+        screen.contains("below"),
+        "the panel says how many notes are out of view, got:\n{screen}"
+    );
+    assert!(
+        screen.contains("a is in 1 of 2 files"),
+        "the first note is shown"
+    );
+
+    // The cursor reaches the last note, which scrolls it into view.
+    for _ in 0..6 {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+        )));
+    }
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        screen.contains("f is in 1 of 2 files"),
+        "the last note is reachable, got:\n{screen}"
+    );
+}
+
 /// A folder whose files agree has nothing to say, and nothing to show for it.
 #[test]
 fn test_a_uniform_dataset_has_no_notes() {

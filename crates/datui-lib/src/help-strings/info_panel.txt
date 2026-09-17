@@ -3,7 +3,7 @@ Dataset technical info.
   Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
                     On other tabs: focus stays on tab bar.
   Left / Right:     On tab bar: switch tabs
-  ↑ / ↓:            When schema table focused: scroll and move selection
+  ↑ / ↓:            Schema tab (when focused) or Notes tab: move the cursor
   ? / F1:           Show this help
   Esc / i:          Close info panel
 
@@ -19,6 +19,10 @@ Notes:
   files that disagree on a type, a file whose footer could not be read. Each
   one says what it is based on, so "in 1 of 3 files" never stands for files
   datui has not looked at. None of them costs a read of its own.
+
+  Each note shows its scope beneath it, and the note the cursor is on shows its
+  detail. When the list is taller than the panel, the corner says how many are
+  out of view.
 
   When there is something to note, the i key in the control bar takes a quiet
   accent until this panel has been opened.

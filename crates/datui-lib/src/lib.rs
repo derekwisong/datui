@@ -2067,6 +2067,7 @@ struct TemplateApplicationState {
     /// the frame back without these would leave the two disagreeing.
     drift: bool,
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    notes: Vec<crate::notes::Note>,
 }
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
@@ -6816,6 +6817,12 @@ impl App {
             let on_tab_bar = self.info_modal.focus == InfoFocus::TabBar;
             let on_body = self.info_modal.focus == InfoFocus::Body;
             let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
+            let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
+            let notes = self
+                .data_table_state
+                .as_ref()
+                .map(|s| s.notes().len())
+                .unwrap_or(0);
             let total_rows = self
                 .data_table_state
                 .as_ref()
@@ -6847,6 +6854,14 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') if event.is_press() && on_body && schema_tab => {
                     self.info_modal.schema_table_up(total_rows, visible);
+                }
+                KeyCode::Down | KeyCode::Char('j') if event.is_press() && notes_tab => {
+                    let shown = self.info_modal.notes_visible;
+                    self.info_modal.notes_move(1, notes, shown);
+                }
+                KeyCode::Up | KeyCode::Char('k') if event.is_press() && notes_tab => {
+                    let shown = self.info_modal.notes_visible;
+                    self.info_modal.notes_move(-1, notes, shown);
                 }
                 _ => {}
             }
@@ -11169,6 +11184,7 @@ impl App {
                 locked_columns_count: state.locked_columns_count(),
                 drift: state.drifts(),
                 drift_groups: state.drift_groups(),
+                notes: state.notes().to_vec(),
             })
     }
 
@@ -11529,7 +11545,7 @@ impl App {
             // Restore the exact saved lf and schema (in case filter/sort modified them)
             state.lf = saved_lf;
             state.schema = saved_schema;
-            state.restore_drift(saved.drift, saved.drift_groups);
+            state.restore_drift(saved.drift, saved.drift_groups, saved.notes);
             state.collect();
         }
     }

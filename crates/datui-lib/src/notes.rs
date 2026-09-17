@@ -6,7 +6,7 @@
 //! 3 files" is never mistaken for a claim about files datui has not looked at.
 
 use crate::numfmt::group_chrome;
-use crate::schema_union::{ColumnDrift, DatasetSchema};
+use crate::schema_union::{ColumnDrift, DatasetSchema, SchemaOrigin};
 use crate::widgets::datatable::dtype_label;
 
 /// One thing datui noticed.
@@ -29,17 +29,35 @@ fn files(n: usize) -> String {
     }
 }
 
+/// What a count is out of, in the words that are true of it.
+///
+/// A count is only ever over the footers datui read. Where that is every file and all
+/// of them parsed, they are simply "files"; where it is a sample, or where some footer
+/// could not be read, saying "files" would claim more than datui looked at.
+fn out_of(dataset: &DatasetSchema) -> String {
+    let readable = dataset.files.saturating_sub(dataset.unreadable.len());
+    let sampled = matches!(dataset.origin, SchemaOrigin::FooterSample { .. });
+    if sampled {
+        format!("the {} footers read", group_chrome(readable))
+    } else if dataset.unreadable.is_empty() {
+        files(readable)
+    } else {
+        format!("the {} that could be read", files(readable))
+    }
+}
+
 /// What the footers said, as notes. Empty when every file agrees, which is the common
 /// case and the one where there is nothing to say.
 pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     let scope = format!("in {}", dataset.origin);
     let readable = dataset.files.saturating_sub(dataset.unreadable.len());
+    let denominator = out_of(dataset);
     let mut notes = Vec::new();
 
     for column in dataset.drifting() {
         if let Some(note) = conflict_note(column, &scope) {
             notes.push(note);
-        } else if let Some(note) = absence_note(column, readable, &scope) {
+        } else if let Some(note) = absence_note(column, readable, &denominator, &scope) {
             notes.push(note);
         } else if column.widened {
             notes.push(Note {
@@ -104,7 +122,12 @@ fn conflict_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
 }
 
 /// A column that some files were written without.
-fn absence_note(column: &ColumnDrift, readable: usize, scope: &str) -> Option<Note> {
+fn absence_note(
+    column: &ColumnDrift,
+    readable: usize,
+    denominator: &str,
+    scope: &str,
+) -> Option<Note> {
     if column.present_in == 0 || column.present_in >= readable {
         return None;
     }
@@ -113,7 +136,7 @@ fn absence_note(column: &ColumnDrift, readable: usize, scope: &str) -> Option<No
             "{} is in {} of {}",
             column.name,
             group_chrome(column.present_in),
-            files(readable)
+            denominator
         ),
         scope: scope.to_string(),
         detail: vec!["Rows from the other files show the column as absent, not null.".to_string()],
@@ -123,7 +146,7 @@ fn absence_note(column: &ColumnDrift, readable: usize, scope: &str) -> Option<No
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema_union::{FileSchema, SchemaOrigin, union_file_schemas};
+    use crate::schema_union::{FileSchema, union_file_schemas};
     use polars::prelude::{DataType, Schema};
     use std::sync::Arc;
 
@@ -223,6 +246,32 @@ mod tests {
             },
         );
         let notes = from_dataset(&dataset);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].summary, "oops is in 1 of the 2 footers read",
+            "a sample counts footers, not the files it did not look at"
+        );
         assert_eq!(notes[0].scope, "in 2 of 200,000 footers (sample)");
+    }
+
+    /// The count and the scope line sit next to each other, so they must not state
+    /// different totals.
+    #[test]
+    fn a_count_never_contradicts_the_scope_beneath_it() {
+        let files = [
+            file(&[("id", DataType::Int64)], 1),
+            None,
+            file(&[("id", DataType::Int64), ("oops", DataType::String)], 1),
+        ];
+        let notes = notes_of(&files);
+        let absence = notes
+            .iter()
+            .find(|n| n.summary.starts_with("oops"))
+            .expect("the column is still noted");
+        assert_eq!(
+            absence.summary, "oops is in 1 of the 2 files that could be read",
+            "not `of 2 files` under a scope line that says three footers"
+        );
+        assert_eq!(absence.scope, "in all 3 footers");
     }
 }

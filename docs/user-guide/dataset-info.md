@@ -18,7 +18,7 @@ or <kbd>Esc</kbd> closes it.
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> | Switch tab |
 | <kbd>Tab</kbd> | On the Schema tab, move focus between the tab bar and the column table |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Scroll the column table |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Scroll the column table, or move through the notes |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> <kbd>i</kbd> | Close |
 
@@ -42,6 +42,13 @@ Every note says what it is based on — `in all 6,541 footers`, or
 `in 5,000 of 200,000 footers (sample)` — so a count never stands for files
 datui has not looked at. None of them costs a read of its own: they come from
 the footers the schema and the row count already needed.
+
+Each note shows its scope beneath it, and the one the cursor is on shows its
+detail; <kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller
+than the panel, the corner says how many notes are out of view.
+
+A note describes the dataset as opened. A query, a pivot or a drill-down builds
+rows of its own, so the notes step aside until you reset.
 
 When there is something to note, the <kbd>i</kbd> key in the control bar takes
 a quiet accent until you open the panel. A note is an observation about the

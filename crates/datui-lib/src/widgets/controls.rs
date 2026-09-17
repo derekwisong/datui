@@ -22,7 +22,7 @@ pub struct Controls {
     pub throbber_frame: u8,         // Spinner frame (0..3 or 0..7 for unicode)
     pub status_message: Option<String>,
     /// See `with_notes_pending`.
-    pub notes_pending: bool, // When Some, replaces keybindings with spinner + message
+    pub notes_pending: bool,
     pub row_count_pending: bool, // When true, the exact count is still being determined: show a spinner in place of the (provisional, possibly inaccurate) number
     pub row_count_unknown: bool, // When true, the count could not be determined: show "?" instead of a misleading provisional number (takes effect only when not pending)
     /// Replaces the row count entirely, for views that are not showing a table.

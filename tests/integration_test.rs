@@ -1036,6 +1036,40 @@ fn write_parquet(dir: &std::path::Path, sub: &str, mut df: polars::prelude::Data
     ParquetWriter::new(f).finish(&mut df).unwrap();
 }
 
+/// Counting a many-file scan's rows must not kill the app.
+///
+/// A dataset whose files disagree on a column's type is read as a union of scans, one
+/// per run of files. `len()` is `UInt32`, and summing it across a union widens to
+/// `UInt128`, which the streaming engine panics on rather than erroring — and datui
+/// runs streaming by default. Anything that invalidates the row count (a filter, a
+/// query, a reset) took the whole process down with it.
+#[test]
+fn test_counting_a_union_of_scans_does_not_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    // `n` is text in one file and a number in the other, so the two are scanned apart.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64, 4], "n" => &["a", "b"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64, 3], "n" => &[10i64, 20]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_mut().unwrap();
+    state.fuzzy_search("a".to_string());
+    assert!(state.error.is_none(), "fuzzy search: {:?}", state.error);
+    state.collect();
+    assert!(
+        state.error.is_none(),
+        "collect after the search: {:?}",
+        state.error
+    );
+}
+
 /// A column only a middle file has used to vanish: the schema was one file's, and that
 /// file did not have it.
 #[test]

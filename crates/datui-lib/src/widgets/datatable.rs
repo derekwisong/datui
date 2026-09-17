@@ -1574,9 +1574,12 @@ impl DataTableState {
                 .collect();
             handles
                 .into_iter()
-                .flat_map(|h| {
+                // A worker that panicked must still account for its files, or every
+                // footer after it would line up with the wrong file.
+                .zip(wanted.chunks(chunk_size))
+                .flat_map(|(h, chunk)| {
                     h.join()
-                        .unwrap_or_else(|_| Vec::<Option<FileSchema>>::new())
+                        .unwrap_or_else(|_| vec![None::<FileSchema>; chunk.len()])
                 })
                 .collect()
         });
@@ -3069,20 +3072,16 @@ impl DataTableState {
 
         // Run len() only when lf has changed (query, filter, sort, pivot, melt, reset, drill).
         if !self.num_rows_valid {
-            self.num_rows =
-                match collect_lazy(self.lf.clone().select([len()]), self.polars_streaming) {
-                    Ok(df) => match df.get(0) {
-                        Some(col) => {
-                            if let Some(AnyValue::UInt32(len)) = col.first() {
-                                *len as usize
-                            } else {
-                                0
-                            }
-                        }
+            self.num_rows = match collect_lazy(row_count_lf(&self.lf), self.polars_streaming) {
+                Ok(df) => match df.get(0) {
+                    Some(col) => match col.first() {
+                        Some(AnyValue::UInt64(len)) => *len as usize,
                         _ => 0,
                     },
-                    Err(_) => 0,
-                };
+                    _ => 0,
+                },
+                Err(_) => 0,
+            };
             self.num_rows_valid = true;
         }
 
@@ -5139,6 +5138,16 @@ impl Default for DataTable {
             dimmed: Color::DarkGray,
         }
     }
+}
+
+/// The frame that counts `lf`'s rows.
+///
+/// `len()` is `UInt32`, and summing it over the union a many-file scan builds widens to
+/// `UInt128`, which Polars 0.55 cannot reduce: the in-memory engine errors and the
+/// streaming one panics, taking the whole app with it. Counting in `UInt64` stays
+/// inside what both engines implement.
+pub(crate) fn row_count_lf(lf: &LazyFrame) -> LazyFrame {
+    lf.clone().select([len().cast(DataType::UInt64)])
 }
 
 /// The short name of a column's type, as the type row and the schema pane spell it.

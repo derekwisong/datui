@@ -2411,12 +2411,12 @@ impl LenCount {
                 .map_err(|_| ()),
             None => {
                 match crate::statistics::collect_lazy(
-                    self.lf.clone().select([len()]),
+                    crate::widgets::datatable::row_count_lf(&self.lf),
                     self.streaming,
                 ) {
                     Ok(df) => Ok(match df.get(0) {
                         Some(col) => match col.first() {
-                            Some(AnyValue::UInt32(n)) => *n as usize,
+                            Some(AnyValue::UInt64(n)) => *n as usize,
                             _ => 0,
                         },
                         None => 0,

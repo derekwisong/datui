@@ -2550,7 +2550,7 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
     // Recent, where you are, the cloud, what you configured, and only then the
     // directories derived from recents and the desktop's places -- folded, since they
     // repeat what Recent shows or are places rather than datasets.
-    use datui::home::{CloudSection, ListingRequest, build_listing};
+    use datui::home::{CloudSource, ListingRequest, build_listing};
 
     let tmp = TempDir::new().unwrap();
     let configured = tmp.path().join("configured");
@@ -2568,9 +2568,10 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
         probed: Default::default(),
         unreachable: Default::default(),
         network_check: |_| false,
-        cloud: vec![CloudSection {
-            title: "Cloud".to_string(),
-            subtitle: None,
+        cloud: vec![CloudSource {
+            id: "s3-default".to_string(),
+            label: "Amazon S3".to_string(),
+            api: "s3".to_string(),
             buckets: vec![std::path::PathBuf::from("s3://bucket")],
             ..Default::default()
         }],
@@ -2649,4 +2650,166 @@ fn test_parent_location_stops_at_a_bucket() {
         Some(PathBuf::from("/data"))
     );
     assert_eq!(parent_location(Path::new("/")), None);
+}
+
+/// Two S3-compatible sources and the default one, as the home screen holds them.
+fn cloud_home() -> HomeState {
+    use datui::home::{CloudSource, CloudStatus};
+    use std::path::PathBuf;
+    let mut home = HomeState {
+        network_check: |_| false,
+        ..Default::default()
+    };
+    home.cloud = vec![
+        CloudSource {
+            id: "lab".to_string(),
+            label: "Lab MinIO".to_string(),
+            api: "s3".to_string(),
+            note: "127.0.0.1:9000 · datui config".to_string(),
+            buckets: vec![
+                PathBuf::from("s3://lab@data"),
+                PathBuf::from("s3://lab@sales-archive"),
+            ],
+            status: CloudStatus::Listed,
+            ..Default::default()
+        },
+        CloudSource {
+            id: "onprem".to_string(),
+            label: "onprem".to_string(),
+            api: "s3".to_string(),
+            buckets: vec![PathBuf::from("s3://onprem@data")],
+            status: CloudStatus::Failed {
+                short: "403".to_string(),
+                detail: "Access Denied".to_string(),
+            },
+            ..Default::default()
+        },
+        CloudSource {
+            id: "s3-default".to_string(),
+            label: "Amazon S3".to_string(),
+            api: "s3".to_string(),
+            status: CloudStatus::Listing,
+            ..Default::default()
+        },
+    ];
+    home
+}
+
+#[test]
+fn test_cloud_sources_are_one_section_of_rows() {
+    let mut home = cloud_home();
+    home.rebuild(&[], &[]);
+    let cloud: Vec<&datui::home::Section> = home
+        .sections
+        .iter()
+        .filter(|s| s.title == HomeState::CLOUD_SECTION)
+        .collect();
+    assert_eq!(cloud.len(), 1, "one section, however many sources");
+    let names: Vec<&str> = cloud[0].rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["Lab MinIO", "onprem", "Amazon S3"]);
+    assert_eq!(
+        cloud[0].rows[0].path,
+        std::path::PathBuf::from("cloud://lab")
+    );
+
+    assert_eq!(home.cloud[0].count_text(), "2 buckets");
+    // Buckets from before stay counted when a refresh fails.
+    assert_eq!(home.cloud[1].count_text(), "1 bucket");
+    assert!(home.cloud[1].failed());
+    // Nothing to count yet, and a spinner rather than a zero.
+    assert_eq!(home.cloud[2].count_text(), "");
+    assert!(home.cloud[2].busy());
+}
+
+#[test]
+fn test_entering_a_source_lists_its_buckets_and_backspace_returns() {
+    use std::path::{Path, PathBuf};
+    let mut home = cloud_home();
+    home.browsing = Some(PathBuf::from("cloud://lab"));
+    home.browse_start = home.browsing.clone();
+    home.rebuild(&[], &[]);
+
+    assert_eq!(home.sections.len(), 1);
+    assert_eq!(home.sections[0].title, "Lab MinIO");
+    let names: Vec<&str> = home.sections[0]
+        .rows
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["data", "sales-archive"],
+        "bucket names, not source IDs"
+    );
+    assert!(home.pending_probes().is_empty(), "a source is not probed");
+    assert!(home.awaiting_listing().is_none());
+
+    // A bucket's parent is its source, and a prefix's parent is its bucket.
+    assert_eq!(
+        home.parent_of(Path::new("s3://lab@data")),
+        Some(PathBuf::from("cloud://lab"))
+    );
+    assert_eq!(
+        home.parent_of(Path::new("s3://lab@data/2024/")),
+        Some(PathBuf::from("s3://lab@data"))
+    );
+    assert_eq!(home.parent_of(Path::new("cloud://lab")), None);
+
+    // Esc from inside a bucket climbs to the source the browse started from.
+    home.browsing = Some(PathBuf::from("s3://lab@data/2024/"));
+    assert!(home.below_browse_start());
+    home.browsing = Some(PathBuf::from("s3://onprem@data"));
+    assert!(
+        !home.below_browse_start(),
+        "another source is not below this one"
+    );
+
+    let sep = datui::glyphs::get().trail;
+    assert_eq!(
+        home.location_label(Path::new("s3://lab@data/2024/")),
+        format!("cloud {sep} Lab MinIO {sep} data {sep} 2024")
+    );
+    assert_eq!(
+        home.location_label(Path::new("cloud://lab")),
+        format!("cloud {sep} Lab MinIO")
+    );
+}
+
+#[test]
+fn test_a_source_still_listing_waits_and_an_unknown_one_says_so() {
+    use std::path::PathBuf;
+    let mut home = cloud_home();
+    home.browsing = Some(PathBuf::from("cloud://s3-default"));
+    home.rebuild(&[], &[]);
+    assert!(home.sections[0].waiting);
+    assert!(home.awaiting_listing().is_some());
+
+    home.browsing = Some(PathBuf::from("cloud://gone"));
+    home.rebuild(&[], &[]);
+    assert!(home.sections[0].unavailable);
+    assert_eq!(
+        home.sections[0].unavailable_note.as_deref(),
+        Some("source not found")
+    );
+}
+
+#[test]
+fn test_typing_finds_bucket_names_from_every_source() {
+    let mut home = cloud_home();
+    home.rebuild(&[], &[]);
+    home.filter = "data".to_string();
+    home.sync_search_section();
+    let found = home
+        .sections
+        .iter()
+        .find(|s| s.title == HomeState::SEARCH_SECTION)
+        .expect("a Found section");
+    let sep = datui::glyphs::get().trail;
+    let names: Vec<&str> = found.rows.iter().map(|r| r.name.as_str()).collect();
+    assert!(
+        names.contains(&format!("Lab MinIO {sep} data").as_str())
+            && names.contains(&format!("onprem {sep} data").as_str()),
+        "the same bucket name from two sources stays two rows: {names:?}"
+    );
+    assert_eq!(found.subtitle.as_deref(), Some("cloud · 2 names"));
 }

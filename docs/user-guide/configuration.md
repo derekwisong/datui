@@ -164,6 +164,37 @@ s3_region = "us-east-1"
 Environment variables override these, and command-line flags override both.
 See [Loading Data](loading-data.md#remote-data).
 
+More stores go in `[[cloud.sources]]`, one table each:
+
+```toml
+[[cloud.sources]]
+name = "onprem"
+label = "On-prem MinIO"
+kind = "s3"
+endpoint_url = "https://minio.corp.example:9000"
+region = "us-east-1"
+addressing = "path"
+access_key_id_env = "ONPREM_KEY"
+secret_access_key_env = "ONPREM_SECRET"
+buckets = ["sales", "logs"]
+```
+
+| Field | Kinds | Meaning |
+|---|---|---|
+| `name` | all | Required. Lowercase letters, digits and `-`, at most 40 characters. Used in `s3://<name>@bucket/key` |
+| `label` | all | Shown instead of the name |
+| `kind` | all | Required. `s3` or `gcs` |
+| `buckets` | all | Buckets to show when the keys can read but not list |
+| `endpoint_url` | s3 | An S3-compatible server. Without it, the source is AWS |
+| `region` | s3 | Region to sign for |
+| `addressing` | s3 | `path` or `virtual`. Default: `path` with an endpoint, `virtual` without |
+| `access_key_id_env`, `secret_access_key_env`, `session_token_env` | s3 | Names of the environment variables holding the keys |
+
+A secret written directly into a source (`secret_access_key = "..."`) is refused,
+and so is any key datui does not recognize, with the key named. A variable that is
+named but not set is reported when the source is used; the source never falls back
+to other keys in the environment.
+
 ### Query, templates, debug
 
 ```toml

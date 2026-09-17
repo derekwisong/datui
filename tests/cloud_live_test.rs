@@ -45,6 +45,7 @@
 mod common;
 
 use datui::cloud_browse::{self, Environment, ProviderKind};
+use datui::cloud_sources;
 use datui::config::CloudConfig;
 
 /// The MinIO credentials the documented container runs with. Not a secret in any sense:
@@ -59,6 +60,7 @@ fn minio_config(endpoint: &str) -> CloudConfig {
         s3_access_key_id: Some(MINIO_KEY.to_string()),
         s3_secret_access_key: Some(MINIO_SECRET.to_string()),
         s3_region: Some("us-east-1".to_string()),
+        ..CloudConfig::default()
     }
 }
 
@@ -72,13 +74,13 @@ fn gcs_is_discovered_and_its_buckets_listed() {
 
     let config = CloudConfig::default();
     let env = Environment::current();
-    let providers = cloud_browse::detect(&config, &env);
-    let gcs = providers
+    let sources = cloud_sources::discover(&config, &env);
+    let gcs = sources
         .iter()
         .find(|p| p.kind == ProviderKind::Gcs)
         .expect("GCS should be discovered after `gcloud auth application-default login`");
 
-    println!("provider: {} ({})", gcs.label, gcs.note);
+    println!("source: {} ({})", gcs.label, gcs.origin);
     println!("project: {:?}", gcs.project);
     assert!(
         gcs.can_list_buckets(),
@@ -87,7 +89,7 @@ fn gcs_is_discovered_and_its_buckets_listed() {
 
     let runtime = common::test_runtime();
     let buckets = runtime
-        .block_on(cloud_browse::list_buckets(gcs, &config))
+        .block_on(cloud_browse::list_buckets(gcs))
         .expect("listing buckets");
     println!("buckets: {buckets:?}");
     assert!(
@@ -124,13 +126,13 @@ fn minio_is_discovered_and_its_buckets_listed() {
 
     let config = minio_config(&endpoint);
     let env = Environment::current();
-    let providers = cloud_browse::detect(&config, &env);
-    let s3 = providers
+    let sources = cloud_sources::discover(&config, &env);
+    let s3 = sources
         .iter()
         .find(|p| p.kind == ProviderKind::S3)
         .expect("configured keys should be enough to discover S3");
 
-    println!("provider: {} ({})", s3.label, s3.note);
+    println!("source: {} ({})", s3.label, s3.origin);
     assert!(
         s3.label.contains("S3-compatible"),
         "a custom endpoint should not be labelled Amazon: {}",
@@ -139,7 +141,7 @@ fn minio_is_discovered_and_its_buckets_listed() {
 
     let runtime = common::test_runtime();
     let buckets = runtime
-        .block_on(cloud_browse::list_buckets(s3, &config))
+        .block_on(cloud_browse::list_buckets(s3))
         .expect("listing buckets");
     println!("buckets: {buckets:?}");
     assert!(
@@ -289,6 +291,47 @@ fn section_named<'a>(app: &'a datui::App, title: &str) -> Option<&'a datui::home
     app.home.sections.iter().find(|s| s.title == title)
 }
 
+/// Wait for a source's buckets, then step into it from the `CLOUD` section the way a
+/// user does: cursor on its row, Enter.
+fn enter_source(
+    app: &mut datui::App,
+    rx: &std::sync::mpsc::Receiver<datui::AppEvent>,
+    id: &str,
+) -> bool {
+    let listed = pump_until(app, rx, 30, |app| {
+        app.home
+            .cloud
+            .iter()
+            .any(|s| s.id == id && !s.buckets.is_empty())
+    });
+    if !listed {
+        return false;
+    }
+    let Some(label) = app
+        .home
+        .cloud
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| s.label.clone())
+    else {
+        return false;
+    };
+    // The listing is rebuilt on a worker, so the row can lag the source by a frame.
+    let shown = pump_until(app, rx, 10, |app| {
+        app.home
+            .visible()
+            .iter()
+            .any(|row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == label))
+    });
+    if !shown || !select_row(app, &label) {
+        return false;
+    }
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    pump_until(app, rx, 10, |app| {
+        section_named(app, &label).is_some_and(|s| !s.rows.is_empty())
+    })
+}
+
 /// Put the cursor on the visible row with this name, and say whether it was found.
 fn select_row(app: &mut datui::App, name: &str) -> bool {
     for (index, row) in app.home.visible().iter().enumerate() {
@@ -311,23 +354,14 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
     };
     let (mut app, rx) = minio_app(&endpoint);
 
-    // Wait for rows, not for the section. The section appears first, empty and still
-    // listing, so a wait on the heading alone is satisfied before a single bucket is
-    // known.
-    let listed = pump_until(&mut app, &rx, 30, |app| {
-        section_named(app, "S3-compatible (127.0.0.1:9000)").is_some_and(|s| !s.rows.is_empty())
-    });
+    // The source is a row under CLOUD; its buckets are one Enter down.
     assert!(
-        listed,
-        "the provider should appear as a section on the home screen"
+        enter_source(&mut app, &rx, "s3-default"),
+        "the default S3 source should list and open: {:?}",
+        app.home.cloud
     );
 
-    let section = app
-        .home
-        .sections
-        .iter()
-        .find(|s| s.title.contains("S3-compatible"))
-        .expect("the cloud section");
+    let section = section_named(&app, "S3-compatible").expect("the source's buckets");
     let names: Vec<&str> = section.rows.iter().map(|r| r.name.as_str()).collect();
     println!(
         "section {:?} subtitle {:?}",
@@ -339,9 +373,16 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
         names.contains(&"datui-empty"),
         "an empty bucket is still a bucket"
     );
-    assert_eq!(
-        section.subtitle, None,
-        "keys from datui config name no project or profile"
+    let host = endpoint
+        .split_once("://")
+        .map_or(endpoint.as_str(), |(_, h)| h);
+    assert!(
+        section
+            .subtitle
+            .as_deref()
+            .is_some_and(|s| s.contains(host)),
+        "the note names the endpoint: {:?}",
+        section.subtitle
     );
 
     // Every bucket is a row to step into, never expanded in place, and never measured.
@@ -456,13 +497,10 @@ fn an_s3_object_opens_and_lands_in_recents() {
     // Driven the way a user drives it: find the bucket, step in, press Enter on an
     // object. Sending `Open` directly skips what the home screen does around it, and a
     // test that skips that is testing a path nobody takes.
-    let listed = pump_until(&mut app, &rx, 30, |app| {
-        app.home
-            .sections
-            .iter()
-            .any(|s| s.rows.iter().any(|r| r.name == "datui-sales"))
-    });
-    assert!(listed, "the bucket should be listed");
+    assert!(
+        enter_source(&mut app, &rx, "s3-default"),
+        "the bucket should be listed"
+    );
     assert!(select_row(&mut app, "datui-sales"), "the bucket row");
     app.event(&key(crossterm::event::KeyCode::Enter));
 
@@ -541,84 +579,24 @@ fn the_cloud_section_renders_legibly() {
     };
     let (mut app, rx) = minio_app(&endpoint);
     pump_until(&mut app, &rx, 30, |app| {
-        section_named(app, "S3-compatible (127.0.0.1:9000)").is_some_and(|s| !s.rows.is_empty())
+        ["s3-default", "gcs-default"].iter().all(|id| {
+            app.home
+                .cloud
+                .iter()
+                .any(|s| s.id == *id && !s.buckets.is_empty())
+        })
     });
 
-    // Rendered rather than inspected. A section can hold the right rows and still read
-    // badly: a note that crowds out the title, a name truncated to nothing, a count in
-    // the wrong place. Printing the buffer is the only way to see that from a test.
-    // Tall enough that section order cannot decide the outcome. Once any test in this
-    // file has opened an object, Recent exists too, and on a short screen the cloud
-    // section's rows fall off the bottom — which is a fact about the viewport, not about
-    // the rendering being asserted here.
-    let area = ratatui::layout::Rect::new(0, 0, 100, 60);
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    ratatui::widgets::Widget::render(&mut app, area, &mut buf);
-
-    let mut screen = String::new();
-    for y in 0..area.height {
-        let mut row = String::new();
-        for x in 0..area.width {
-            row.push_str(buf[(x, y)].symbol());
-        }
-        screen.push_str(row.trim_end());
-        screen.push('\n');
-    }
+    // Rendered rather than inspected. A row can hold the right facts and still read
+    // badly: a note that crowds out the name, a count in the wrong place. Printing the
+    // buffer is the only way to see that from a test. Tall enough that section order
+    // cannot decide the outcome once Recent exists.
+    let screen = screen_text(&mut app, 100, 60);
     println!("{screen}");
-
-    // And the screen that matters more: inside a bucket, where objects carry sizes and
-    // prefixes are somewhere to go next.
-    assert!(select_row(&mut app, "datui-sales"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
-    pump_until(&mut app, &rx, 30, |app| {
-        section_named(app, "s3://datui-sales")
-            .is_some_and(|s| s.rows.iter().any(|r| r.name == "orders.parquet"))
-    });
-    let mut inside = ratatui::buffer::Buffer::empty(area);
-    ratatui::widgets::Widget::render(&mut app, area, &mut inside);
-    let mut inside_screen = String::new();
-    for y in 0..area.height {
-        let mut row = String::new();
-        for x in 0..area.width {
-            row.push_str(inside[(x, y)].symbol());
-        }
-        inside_screen.push_str(row.trim_end());
-        inside_screen.push('\n');
-    }
-    println!("{inside_screen}");
+    assert!(screen.contains("CLOUD"), "one heading for every source");
     assert!(
-        inside_screen.contains("2024/ prefix"),
-        "a prefix inside a bucket should say so"
-    );
-    assert!(
-        inside_screen.contains("orders.parquet"),
-        "objects should be listed"
-    );
-
-    // The provider and its buckets both have to survive to the screen.
-    assert!(
-        screen.contains("S3-COMPATIBLE (127.0.0.1:9000)") || screen.contains("S3-compatible"),
-        "the provider should be a visible heading"
-    );
-    for bucket in ["datui-sales", "datui-logs", "datui-events", "datui-empty"] {
-        assert!(screen.contains(bucket), "{bucket} should be on screen");
-    }
-    // The marker that says where a row's data lives, beside the name rather than in
-    // the detail pane a foot away on a full-screen ultrawide.
-    assert!(
-        screen.contains("☁ datui-sales/"),
-        "a bucket should be marked as living in an object store"
-    );
-    let gcs_bucket = app
-        .home
-        .sections
-        .iter()
-        .find(|s| s.title.to_lowercase().contains("google"))
-        .and_then(|s| s.rows.first())
-        .expect("a Google Cloud Storage bucket");
-    assert!(
-        screen.contains(&format!("☁ {}/", gcs_bucket.name)),
-        "and so should a bucket from the other provider"
+        screen.contains("☁ S3-compatible") && screen.contains("☁ Google Cloud"),
+        "each source is a row marked as living in an object store"
     );
     assert!(
         !screen.contains("☁ crates/"),
@@ -629,9 +607,292 @@ fn the_cloud_section_renders_legibly() {
         "a local directory should carry the local marker"
     );
 
-    // Buckets are places, and a place is written with a trailing slash here.
+    // Inside a source: its buckets, each a place to step into.
     assert!(
-        screen.contains("datui-sales/"),
-        "a bucket should read as somewhere to step into"
+        enter_source(&mut app, &rx, "s3-default"),
+        "into the S3 source"
     );
+    let buckets = screen_text(&mut app, 100, 30);
+    println!("{buckets}");
+    for bucket in ["datui-sales", "datui-logs", "datui-events", "datui-empty"] {
+        assert!(
+            buckets.contains(&format!("☁ {bucket}/")),
+            "{bucket} should be on screen"
+        );
+    }
+
+    // And inside a bucket, where objects carry sizes and prefixes are somewhere to go.
+    assert!(select_row(&mut app, "datui-sales"), "the bucket row");
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    pump_until(&mut app, &rx, 30, |app| {
+        section_named(app, "s3://datui-sales")
+            .is_some_and(|s| s.rows.iter().any(|r| r.name == "orders.parquet"))
+    });
+    let inside_screen = screen_text(&mut app, 100, 30);
+    println!("{inside_screen}");
+    assert!(
+        inside_screen.contains("2024/ prefix"),
+        "a prefix inside a bucket should say so"
+    );
+    assert!(
+        inside_screen.contains("orders.parquet"),
+        "objects should be listed"
+    );
+
+    // The other provider looks the same.
+    app.event(&key(crossterm::event::KeyCode::Esc));
+    app.event(&key(crossterm::event::KeyCode::Esc));
+    assert_eq!(app.home.browsing, None, "back at the home listing");
+    assert!(
+        enter_source(&mut app, &rx, "gcs-default"),
+        "into the GCS source"
+    );
+    let gcs = screen_text(&mut app, 100, 30);
+    println!("{gcs}");
+    let first = app
+        .home
+        .sections
+        .first()
+        .and_then(|s| s.rows.first())
+        .expect("a Google Cloud Storage bucket")
+        .name
+        .clone();
+    assert!(
+        gcs.contains(&format!("☁ {first}/")),
+        "a GCS bucket reads as a place too"
+    );
+}
+
+/// Two S3-compatible servers, each with a bucket called `data` holding a different
+/// `table.parquet`, named in `[[cloud.sources]]` as `lab` and `corp`.
+///
+/// ```bash
+/// DATUI_LIVE_S3_PAIR=http://127.0.0.1:9101,http://127.0.0.1:9102 \
+///   cargo test --test cloud_live_test -- --ignored --nocapture two_servers
+/// ```
+///
+/// The servers need `data/table.parquet`: `people.parquet` on the first and
+/// `sales.parquet` on the second, from `tests/sample-data`. Any keys work against a
+/// local MinIO or moto; this test sets `LAB_KEY`, `LAB_SECRET`, `CORP_KEY` and
+/// `CORP_SECRET` to match what it expects the servers to accept.
+#[test]
+#[ignore = "talks to two local S3-compatible servers; set DATUI_LIVE_S3_PAIR"]
+fn two_servers_with_the_same_bucket_open_their_own_objects() {
+    let Ok(pair) = std::env::var("DATUI_LIVE_S3_PAIR") else {
+        eprintln!("skipped: set DATUI_LIVE_S3_PAIR=<endpoint>,<endpoint> to run");
+        return;
+    };
+    common::isolate_cache();
+    let cloud = pair_config(&pair);
+
+    // Each source lists its own server's buckets, and the rows it returns stay tied to it.
+    let runtime = common::test_runtime();
+    let env = Environment::current();
+    for found in cloud_sources::discover(&cloud, &env)
+        .iter()
+        .filter(|s| s.id == "lab" || s.id == "corp")
+    {
+        let buckets = runtime
+            .block_on(cloud_browse::list_buckets(found))
+            .expect("listing buckets");
+        assert!(
+            buckets.contains(&"data".to_string()),
+            "{}: {buckets:?}",
+            found.id
+        );
+        let url = found.bucket_url("data");
+        let rows = runtime
+            .block_on(cloud_browse::list_objects(&url, &cloud))
+            .expect("listing objects");
+        let paths: Vec<String> = rows
+            .iter()
+            .map(|r| r.path.to_string_lossy().into_owned())
+            .collect();
+        println!("{url}: {paths:?}");
+        assert!(
+            paths.contains(&format!("s3://{}@data/table.parquet", found.id)),
+            "rows should keep their source: {paths:?}"
+        );
+    }
+
+    let headers_of = |url: &str| -> Vec<String> {
+        let mut config = datui::config::AppConfig {
+            cloud: cloud.clone(),
+            ..Default::default()
+        };
+        config.data.use_desktop_recents = false;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = datui::App::new_with_config(
+            tx,
+            common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        let open = datui::AppEvent::Open(
+            vec![std::path::PathBuf::from(url)],
+            datui::OpenOptions::default(),
+        );
+        if let Some(crash) = drive(&mut app, open) {
+            panic!("opening {url} crashed: {crash}");
+        }
+        let loaded = pump_until(&mut app, &rx, 60, |app| {
+            app.data_table_state.is_some() && !app.is_busy()
+        });
+        assert!(loaded, "{url} should load");
+        app.data_table_state.as_ref().expect("a table").headers()
+    };
+    let local_headers = |file: &str| -> Vec<String> {
+        let path = format!("{}/tests/sample-data/{file}", env!("CARGO_MANIFEST_DIR"));
+        polars::prelude::LazyFrame::scan_parquet(
+            polars::prelude::PlRefPath::new(path.as_str()),
+            Default::default(),
+        )
+        .and_then(|mut lf| lf.collect_schema())
+        .expect("local schema")
+        .iter_names()
+        .map(|n| n.to_string())
+        .collect()
+    };
+
+    let lab = headers_of("s3://lab@data/table.parquet");
+    let corp = headers_of("s3://corp@data/table.parquet");
+    println!("lab: {lab:?}\ncorp: {corp:?}");
+    assert_eq!(lab, local_headers("people.parquet"));
+    assert_eq!(corp, local_headers("sales.parquet"));
+}
+
+/// `[[cloud.sources]]` for the two servers in `DATUI_LIVE_S3_PAIR`, `lab` and `corp`.
+fn pair_config(pair: &str) -> CloudConfig {
+    let (lab_endpoint, corp_endpoint) = pair.split_once(',').expect("two endpoints");
+    // SAFETY: set before the runtime or any worker starts reading the environment, and
+    // these tests are run on their own.
+    unsafe {
+        std::env::set_var("LAB_KEY", "key9101");
+        std::env::set_var("LAB_SECRET", "secret9101");
+        std::env::set_var("CORP_KEY", "key9102");
+        std::env::set_var("CORP_SECRET", "secret9102");
+    }
+    let source =
+        |name: &str, label: Option<&str>, endpoint: &str| datui::config::CloudSourceConfig {
+            name: name.to_string(),
+            label: label.map(str::to_string),
+            kind: Some("s3".to_string()),
+            endpoint_url: Some(endpoint.to_string()),
+            region: Some("us-east-1".to_string()),
+            access_key_id_env: Some(format!("{}_KEY", name.to_uppercase())),
+            secret_access_key_env: Some(format!("{}_SECRET", name.to_uppercase())),
+            ..Default::default()
+        };
+    let cloud = CloudConfig {
+        sources: vec![
+            source("lab", Some("Lab MinIO"), lab_endpoint),
+            source("corp", None, corp_endpoint),
+        ],
+        ..CloudConfig::default()
+    };
+    cloud.validate().expect("valid sources");
+    cloud
+}
+
+fn screen_text(app: &mut datui::App, width: u16, height: u16) -> String {
+    let area = ratatui::layout::Rect::new(0, 0, width, height);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(app, area, &mut buf);
+    let mut screen = String::new();
+    for y in 0..area.height {
+        let mut row = String::new();
+        for x in 0..area.width {
+            row.push_str(buf[(x, y)].symbol());
+        }
+        screen.push_str(row.trim_end());
+        screen.push('\n');
+    }
+    screen
+}
+
+#[test]
+#[ignore = "renders the CLOUD section against two local S3-compatible servers; set DATUI_LIVE_S3_PAIR"]
+fn the_cloud_section_lists_sources_and_steps_through_them() {
+    let Ok(pair) = std::env::var("DATUI_LIVE_S3_PAIR") else {
+        eprintln!("skipped: set DATUI_LIVE_S3_PAIR=<endpoint>,<endpoint> to run");
+        return;
+    };
+    common::isolate_cache();
+    let mut config = datui::config::AppConfig {
+        cloud: pair_config(&pair),
+        ..Default::default()
+    };
+    config.data.use_desktop_recents = false;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.enter_home();
+
+    let listed = pump_until(&mut app, &rx, 30, |app| {
+        ["lab", "corp"].iter().all(|id| {
+            app.home
+                .cloud
+                .iter()
+                .any(|s| s.id == *id && s.status == datui::home::CloudStatus::Listed)
+        })
+    });
+    assert!(listed, "both sources should list: {:?}", app.home.cloud);
+    let home = screen_text(&mut app, 110, 30);
+    println!("{home}");
+    assert!(home.contains("CLOUD"), "one CLOUD section");
+    assert!(
+        home.contains("Lab MinIO") && home.contains("1 bucket"),
+        "{home}"
+    );
+
+    assert!(select_row(&mut app, "Lab MinIO"), "the source row");
+    let source_pane = screen_text(&mut app, 110, 30);
+    println!("{source_pane}");
+    assert!(
+        source_pane.contains("endpoint"),
+        "the details pane names the endpoint"
+    );
+
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    let inside = pump_until(&mut app, &rx, 10, |app| {
+        section_named(app, "Lab MinIO").is_some_and(|s| s.rows.iter().any(|r| r.name == "data"))
+    });
+    assert!(inside, "entering a source lists its buckets");
+    let buckets = screen_text(&mut app, 110, 20);
+    println!("{buckets}");
+    let sep = datui::glyphs::get().trail;
+    assert!(
+        buckets.contains(&format!("cloud {sep} Lab MinIO")),
+        "the trail"
+    );
+
+    assert!(select_row(&mut app, "data"), "the bucket row");
+    app.event(&key(crossterm::event::KeyCode::Enter));
+    let objects = pump_until(&mut app, &rx, 30, |app| {
+        app.home
+            .sections
+            .first()
+            .is_some_and(|s| s.rows.iter().any(|r| r.name == "table.parquet"))
+    });
+    assert!(objects, "entering a bucket lists its objects");
+    let bucket = screen_text(&mut app, 110, 20);
+    println!("{bucket}");
+    assert!(bucket.contains(&format!("cloud {sep} Lab MinIO {sep} data")));
+
+    // Backspace climbs back out through the source to the home listing.
+    app.event(&key(crossterm::event::KeyCode::Backspace));
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(std::path::Path::new("cloud://lab"))
+    );
+    app.event(&key(crossterm::event::KeyCode::Esc));
+    assert_eq!(app.home.browsing, None, "Esc from the source returns home");
 }

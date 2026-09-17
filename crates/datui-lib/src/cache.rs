@@ -394,6 +394,63 @@ pub struct DatasetFacts {
 /// file stays trivial to read and rewrite.
 pub const MAX_DATASET_FACTS: usize = 4096;
 
+/// The buckets a cloud source listed on an earlier run, shown straight away on the next
+/// one while a fresh listing is out.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CloudListing {
+    /// What the source pointed at when it was listed. A listing whose fingerprint no
+    /// longer matches describes another server and is ignored.
+    pub fingerprint: String,
+    pub buckets: Vec<String>,
+    /// Seconds since the Unix epoch.
+    pub listed_at: u64,
+}
+
+impl CacheManager {
+    fn cloud_listing_path(&self) -> PathBuf {
+        self.cache_file("cloud_sources.json")
+    }
+
+    /// Every source's last listing, by source ID. Unreadable means empty.
+    pub fn load_cloud_listings(&self) -> std::collections::HashMap<String, CloudListing> {
+        let Ok(text) = fs::read_to_string(self.cloud_listing_path()) else {
+            return Default::default();
+        };
+        serde_json::from_str(&text).unwrap_or_default()
+    }
+
+    /// Record one source's listing, keeping the others.
+    pub fn save_cloud_listing(&self, id: &str, listing: CloudListing) {
+        let _ = self.with_cache_lock("cloud_sources", || {
+            self.ensure_cache_dir()?;
+            let mut all = self.load_cloud_listings();
+            all.insert(id.to_string(), listing);
+            let json = serde_json::to_string(&all)?;
+            let temp = self.cache_file(&format!("cloud_sources.{}.tmp", std::process::id()));
+            fs::write(&temp, json)?;
+            fs::rename(&temp, self.cloud_listing_path()).inspect_err(|_| {
+                let _ = fs::remove_file(&temp);
+            })?;
+            Ok(())
+        });
+    }
+
+    /// Source IDs hidden from the home screen with Delete.
+    pub fn load_hidden_cloud_sources(&self) -> Vec<String> {
+        self.load_history_file("cloud_hidden").unwrap_or_default()
+    }
+
+    /// Hide a source from the home screen until the cache is cleared.
+    pub fn hide_cloud_source(&self, id: &str) {
+        let id = id.to_string();
+        let _ = self.update_history_file("cloud_hidden", |hidden| {
+            if !hidden.contains(&id) {
+                hidden.push(id.clone());
+            }
+        });
+    }
+}
+
 impl CacheManager {
     fn dataset_index_path(&self) -> PathBuf {
         self.cache_file("datasets.json")

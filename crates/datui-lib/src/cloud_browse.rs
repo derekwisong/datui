@@ -21,6 +21,7 @@
 //! filesystem roots use. A bucket list is a network round trip, and a round trip on the
 //! event thread is a frozen interface.
 
+use crate::cloud_sources::{S3Settings, Source};
 use crate::config::CloudConfig;
 use std::path::{Path, PathBuf};
 
@@ -103,6 +104,8 @@ pub struct Environment<'a> {
     pub read: &'a dyn Fn(&Path) -> Option<String>,
     /// The user's home directory, if there is one.
     pub home: Option<PathBuf>,
+    /// Tools keep their files in different places on Windows, so lookups need to know.
+    pub windows: bool,
 }
 
 impl Environment<'_> {
@@ -113,17 +116,10 @@ impl Environment<'_> {
             exists: &|path| path.exists(),
             read: &|path| std::fs::read_to_string(path).ok(),
             home: dirs::home_dir(),
+            windows: cfg!(windows),
         }
     }
 }
-
-/// Where `object_store` looks for Google's application default credentials, relative to
-/// the home directory. Kept in step with `object_store::gcp` deliberately: discovery
-/// must agree with the code that will later do the opening.
-const ADC_RELATIVE_PATHS: [&str; 2] = [
-    ".config/gcloud/application_default_credentials.json",
-    "gcloud/application_default_credentials.json",
-];
 
 /// Object stores this machine can read, in the order they should appear.
 ///
@@ -171,14 +167,20 @@ fn detect_gcs(env: &Environment<'_>) -> Option<Provider> {
     })
 }
 
-/// The application default credentials file, if one of the places `object_store` looks
-/// has it.
+/// The application default credentials file, where `object_store` reads it:
+/// `%APPDATA%\gcloud\` on Windows, `$HOME/.config/gcloud/` elsewhere. Kept in step with
+/// `object_store::gcp` deliberately: discovery must agree with the code that will later
+/// do the opening, and looking under the home directory on Windows found nothing.
 pub fn adc_path(env: &Environment<'_>) -> Option<PathBuf> {
-    let home = env.home.as_ref()?;
-    ADC_RELATIVE_PATHS
-        .iter()
-        .map(|relative| home.join(relative))
-        .find(|path| (env.exists)(path))
+    const FILE: &str = "application_default_credentials.json";
+    let path = if env.windows {
+        PathBuf::from((env.var)("APPDATA")?)
+            .join("gcloud")
+            .join(FILE)
+    } else {
+        env.home.as_ref()?.join(".config").join("gcloud").join(FILE)
+    };
+    (env.exists)(&path).then_some(path)
 }
 
 /// The project whose buckets to list.
@@ -447,35 +449,45 @@ fn agent() -> ureq::Agent {
 /// environment instead. Against MinIO that fails every time, and against AWS it would
 /// silently use whichever account the environment happened to name.
 ///
-/// `config` is the effective one, with the CLI and environment overrides already laid
-/// over the config file (`OpenOptions::effective_cloud`); nothing here reads them again.
-/// The builder is addressed by bucket name, so only `s3://bucket/key` URLs are served;
-/// a virtual-hosted URL would need `with_url`, which nothing in datui produces.
-pub fn s3_builder(bucket: &str, config: &CloudConfig) -> object_store::aws::AmazonS3Builder {
-    let mut builder = object_store::aws::AmazonS3Builder::from_env().with_bucket_name(bucket);
-    if let Some(endpoint) = &config.s3_endpoint_url {
-        // A custom endpoint is almost always path-style: a MinIO container on localhost
-        // has no wildcard DNS to give each bucket a subdomain of its own. And
+/// `settings` are one source's (`cloud_sources::resolve`); nothing here reads the
+/// config or the command line again. The builder is addressed by bucket name, so only
+/// `s3://bucket/key` URLs are served; a virtual-hosted URL would need `with_url`, which
+/// nothing in datui produces.
+pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::AmazonS3Builder {
+    // Only the default source borrows the shell's AWS variables. A source from the
+    // config names its own keys, and filling its gaps from the environment would sign
+    // its requests as whoever the shell happens to be.
+    let builder = if settings.from_env {
+        object_store::aws::AmazonS3Builder::from_env()
+    } else {
+        object_store::aws::AmazonS3Builder::new()
+    };
+    let mut builder = builder.with_bucket_name(bucket);
+    if let Some(endpoint) = &settings.endpoint {
         // `object_store` refuses plain `http` unless told otherwise, which is exactly
-        // what such a container speaks; `https` endpoints are left alone.
-        builder = builder
-            .with_endpoint(endpoint.clone())
-            .with_virtual_hosted_style_request(false);
+        // what a MinIO container speaks; `https` endpoints are left alone.
+        builder = builder.with_endpoint(endpoint.clone());
         if endpoint.starts_with("http://") {
             builder = builder.with_allow_http(true);
         }
     }
-    if let Some(region) = &config.s3_region {
+    if settings.endpoint.is_some() || settings.virtual_hosted.is_some() {
+        builder = builder.with_virtual_hosted_style_request(settings.virtual_hosted_style());
+    }
+    if let Some(region) = &settings.region {
         builder = builder.with_region(region.clone());
     }
     // Each on its own, as the Polars scan applies them: the generated config suggests
     // the key in the file and the secret from AWS_SECRET_ACCESS_KEY, and requiring the
     // pair here left every store but Polars' own authenticating from the environment.
-    if let Some(key) = &config.s3_access_key_id {
+    if let Some(key) = &settings.access_key_id {
         builder = builder.with_access_key_id(key.clone());
     }
-    if let Some(secret) = &config.s3_secret_access_key {
+    if let Some(secret) = &settings.secret_access_key {
         builder = builder.with_secret_access_key(secret.clone());
+    }
+    if let Some(token) = &settings.session_token {
+        builder = builder.with_token(token.clone());
     }
     builder
 }
@@ -488,7 +500,7 @@ pub fn s3_builder(bucket: &str, config: &CloudConfig) -> object_store::aws::Amaz
 pub fn store_for_bucket(
     kind: ProviderKind,
     bucket: &str,
-    config: &CloudConfig,
+    settings: &S3Settings,
 ) -> Result<std::sync::Arc<dyn object_store::ObjectStore>, String> {
     match kind {
         ProviderKind::Gcs => {
@@ -499,7 +511,7 @@ pub fn store_for_bucket(
             Ok(std::sync::Arc::new(store))
         }
         ProviderKind::S3 => {
-            let store = s3_builder(bucket, config)
+            let store = s3_builder(bucket, settings)
                 .build()
                 .map_err(|e| format!("S3 is not configured: {e}"))?;
             Ok(std::sync::Arc::new(store))
@@ -510,9 +522,11 @@ pub fn store_for_bucket(
 /// Split a `gs://` or `s3://` URL into its bucket and the prefix inside it.
 ///
 /// The prefix comes back without a leading or trailing slash, and empty for the bucket
-/// root, which is the shape `object_store` wants.
+/// root, which is the shape `object_store` wants. A source ID (`s3://<id>@bucket`) is
+/// not part of the bucket and is dropped.
 pub fn split_bucket_url(url: &str) -> Option<(ProviderKind, String, String)> {
-    let (scheme, rest) = url.split_once("://")?;
+    let (_, plain) = crate::source::split_source_id(url);
+    let (scheme, rest) = plain.split_once("://")?;
     let kind = match scheme {
         "gs" | "gcs" => ProviderKind::Gcs,
         "s3" | "s3a" => ProviderKind::S3,
@@ -545,9 +559,10 @@ pub async fn list_objects(
 ) -> Result<Vec<crate::discover::Entry>, String> {
     use object_store::path::Path as OsPath;
 
+    let resolved = crate::cloud_sources::resolve(url, config)?;
     let (kind, bucket, prefix) =
-        split_bucket_url(url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
-    let store = store_for_bucket(kind, &bucket, config)?;
+        split_bucket_url(&resolved.url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
+    let store = store_for_bucket(kind, &bucket, &resolved.s3)?;
 
     let os_prefix = if prefix.is_empty() {
         None
@@ -559,7 +574,12 @@ pub async fn list_objects(
         .await
         .map_err(|e| format!("{e}"))?;
 
-    let base = format!("{}://{}", kind.scheme(), bucket);
+    // Rows keep the source the listing was asked for, so opening one reaches the same
+    // server.
+    let base = match crate::source::split_source_id(url).0 {
+        Some(id) => format!("{}://{id}@{bucket}", kind.scheme()),
+        None => format!("{}://{bucket}", kind.scheme()),
+    };
     let mut rows = Vec::new();
 
     // Prefixes first. They are the directories of an object store, and putting them
@@ -616,13 +636,13 @@ pub async fn list_objects(
 /// reimplementing a token exchange or a SigV4 signer, so there is no new cryptography
 /// here and, more importantly, the credentials used to list are the same ones used to
 /// open.
-pub async fn list_buckets(
-    provider: &Provider,
-    config: &CloudConfig,
-) -> Result<Vec<String>, String> {
-    match provider.kind {
-        ProviderKind::Gcs => list_gcs_buckets(provider, config).await,
-        ProviderKind::S3 => list_s3_buckets(config).await,
+pub async fn list_buckets(source: &Source) -> Result<Vec<String>, String> {
+    if let Some(problem) = &source.problem {
+        return Err(problem.clone());
+    }
+    match source.kind {
+        ProviderKind::Gcs => list_gcs_buckets(source).await,
+        ProviderKind::S3 => list_s3_buckets(&source.s3).await,
     }
 }
 
@@ -633,11 +653,8 @@ pub async fn list_buckets(
 /// so a placeholder is used. Nothing is addressed with it: the store is built only to
 /// be asked for a credential, and the request below goes to the project-scoped bucket
 /// listing endpoint.
-async fn list_gcs_buckets(
-    provider: &Provider,
-    config: &CloudConfig,
-) -> Result<Vec<String>, String> {
-    let project = provider.project.as_deref().ok_or_else(|| {
+async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
+    let project = source.project.as_deref().ok_or_else(|| {
         "no GCP project is set, so there is nothing to list buckets for. Set \
          GOOGLE_CLOUD_PROJECT or DATUI_GCP_PROJECT."
             .to_string()
@@ -653,7 +670,6 @@ async fn list_gcs_buckets(
         .await
         .map_err(|e| format!("could not obtain Google credentials: {e}"))?;
 
-    let _ = config;
     let mut buckets = Vec::new();
     let mut page_token: Option<String> = None;
     // Bounded rather than "while there is a token". A paginating API that keeps
@@ -691,12 +707,12 @@ async fn list_gcs_buckets(
 /// Signed with `object_store`'s own `AwsAuthorizer`, which is the SigV4 implementation
 /// the rest of datui's S3 access already relies on. Hand-rolling a signer for this one
 /// request would be both more code and a worse idea.
-async fn list_s3_buckets(config: &CloudConfig) -> Result<Vec<String>, String> {
+async fn list_s3_buckets(settings: &S3Settings) -> Result<Vec<String>, String> {
     use object_store::aws::AwsAuthorizer;
 
     // Same placeholder-bucket reasoning as the GCS path: the store exists to hold
     // credentials and a region, and `ListBuckets` is not addressed to a bucket.
-    let s3 = s3_builder("datui-credential-probe", config)
+    let s3 = s3_builder("datui-credential-probe", settings)
         .build()
         .map_err(|e| format!("S3 is not configured: {e}"))?;
     let credential = s3
@@ -705,12 +721,12 @@ async fn list_s3_buckets(config: &CloudConfig) -> Result<Vec<String>, String> {
         .await
         .map_err(|e| format!("could not obtain AWS credentials: {e}"))?;
 
-    // The effective config already carries AWS_REGION / AWS_DEFAULT_REGION.
-    let region = config
-        .s3_region
+    // The default source's settings already carry AWS_REGION / AWS_DEFAULT_REGION.
+    let region = settings
+        .region
         .clone()
         .unwrap_or_else(|| "us-east-1".to_string());
-    let url = s3_list_buckets_url(config);
+    let url = s3_list_buckets_url(settings);
 
     // Signed as an `http::Request`, which is what the authorizer understands, and then
     // replayed onto the agent datui already uses. The alternative is a second HTTP
@@ -743,9 +759,9 @@ async fn list_s3_buckets(config: &CloudConfig) -> Result<Vec<String>, String> {
 /// Where `ListBuckets` is sent: the root of the effective endpoint, AWS when there is
 /// none. The same endpoint `s3_builder` opens objects against, so the section title,
 /// the listing and the open all name one host.
-fn s3_list_buckets_url(config: &CloudConfig) -> String {
-    let endpoint = config
-        .s3_endpoint_url
+fn s3_list_buckets_url(settings: &S3Settings) -> String {
+    let endpoint = settings
+        .endpoint
         .as_deref()
         .unwrap_or("https://s3.amazonaws.com");
     format!("{}/", endpoint.trim_end_matches('/'))
@@ -801,6 +817,7 @@ mod tests {
                 exists: &|path| $files.iter().any(|f: &PathBuf| f == path),
                 read: &|_| None,
                 home: $home.clone(),
+                windows: false,
             }
         };
         ($vars:expr_2021, $files:expr_2021, $home:expr_2021, $contents:expr_2021) => {
@@ -809,6 +826,7 @@ mod tests {
                 exists: &|path| $files.iter().any(|f: &PathBuf| f == path),
                 read: &|_| Some($contents.to_string()),
                 home: $home.clone(),
+                windows: false,
             }
         };
     }
@@ -926,7 +944,10 @@ mod tests {
         assert_eq!(found[0].label, "S3-compatible (minio.internal:9000)");
         // The bug this guards against: the title named the environment's host while
         // the listing, reading the config alone, went to AWS.
-        assert_eq!(s3_list_buckets_url(&config), "https://minio.internal:9000/");
+        assert_eq!(
+            s3_list_buckets_url(&S3Settings::from_config(&config)),
+            "https://minio.internal:9000/"
+        );
     }
 
     #[test]
@@ -943,7 +964,10 @@ mod tests {
         );
         let env = environment!(vars, files, home);
         let config = effective(&CloudConfig::default(), &env);
-        assert_eq!(s3_list_buckets_url(&config), "http://first:3/");
+        assert_eq!(
+            s3_list_buckets_url(&S3Settings::from_config(&config)),
+            "http://first:3/"
+        );
         assert_eq!(detect(&config, &env)[0].label, "S3-compatible (first:3)");
     }
 
@@ -960,7 +984,10 @@ mod tests {
             ..CloudConfig::default()
         };
         let config = effective(&file, &env);
-        assert_eq!(s3_list_buckets_url(&config), "http://localhost:9000/");
+        assert_eq!(
+            s3_list_buckets_url(&S3Settings::from_config(&config)),
+            "http://localhost:9000/"
+        );
         assert_eq!(
             detect(&config, &env)[0].label,
             "S3-compatible (localhost:9000)"
@@ -985,7 +1012,7 @@ mod tests {
             s3_access_key_id: Some("from-config".to_string()),
             ..CloudConfig::default()
         };
-        let builder = s3_builder("bucket", &config);
+        let builder = s3_builder("bucket", &S3Settings::from_config(&config));
         assert_eq!(
             builder.get_config_value(&AmazonS3ConfigKey::AccessKeyId),
             Some("from-config".to_string())
@@ -994,7 +1021,7 @@ mod tests {
             s3_secret_access_key: Some("from-env".to_string()),
             ..CloudConfig::default()
         };
-        let builder = s3_builder("bucket", &config);
+        let builder = s3_builder("bucket", &S3Settings::from_config(&config));
         assert_eq!(
             builder.get_config_value(&AmazonS3ConfigKey::SecretAccessKey),
             Some("from-env".to_string())
@@ -1133,7 +1160,7 @@ mod tests {
     #[test]
     fn the_listing_goes_to_amazon_when_no_endpoint_is_set() {
         assert_eq!(
-            s3_list_buckets_url(&CloudConfig::default()),
+            s3_list_buckets_url(&S3Settings::from_config(&CloudConfig::default())),
             "https://s3.amazonaws.com/"
         );
     }
@@ -1152,7 +1179,10 @@ mod tests {
             ..crate::OpenOptions::default()
         };
         let effective = options.effective_cloud(&config);
-        assert_eq!(s3_list_buckets_url(&effective), "http://127.0.0.1:9101/");
+        assert_eq!(
+            s3_list_buckets_url(&S3Settings::from_config(&effective)),
+            "http://127.0.0.1:9101/"
+        );
         // The title names the same host the listing goes to.
         let (vars, files, home) = env_of(&[("AWS_ACCESS_KEY_ID", "testing")], &[], None);
         let env = environment!(vars, files, home);
@@ -1161,7 +1191,10 @@ mod tests {
 
         // Without an override the config file's endpoint stands.
         let effective = crate::OpenOptions::default().effective_cloud(&config);
-        assert_eq!(s3_list_buckets_url(&effective), "http://localhost:9000/");
+        assert_eq!(
+            s3_list_buckets_url(&S3Settings::from_config(&effective)),
+            "http://localhost:9000/"
+        );
     }
 
     #[test]
@@ -1262,8 +1295,40 @@ mod aws_role_tests {
             exists: &|_| false,
             read: &|_| None,
             home: Some(PathBuf::from("/home/u")),
+            windows: false,
         };
         detect(&CloudConfig::default(), &env)
+    }
+
+    #[test]
+    fn a_gcloud_login_on_windows_is_found_under_appdata() {
+        let vars: HashMap<String, String> = [("APPDATA", r"C:\Users\u\AppData\Roaming")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let adc = PathBuf::from(r"C:\Users\u\AppData\Roaming")
+            .join("gcloud")
+            .join("application_default_credentials.json");
+        let under_home = PathBuf::from(r"C:\Users\u")
+            .join(".config")
+            .join("gcloud")
+            .join("application_default_credentials.json");
+        let windows = |exists: PathBuf, windows: bool| {
+            let env = Environment {
+                var: &|key| vars.get(key).cloned(),
+                exists: &|path| path == exists,
+                read: &|_| None,
+                home: Some(PathBuf::from(r"C:\Users\u")),
+                windows,
+            };
+            detect(&CloudConfig::default(), &env)
+                .iter()
+                .any(|p| p.kind == ProviderKind::Gcs)
+        };
+        assert!(windows(adc.clone(), true));
+        // The Unix location means nothing on Windows, and the reverse.
+        assert!(!windows(under_home, true));
+        assert!(!windows(adc, false));
     }
 
     #[test]

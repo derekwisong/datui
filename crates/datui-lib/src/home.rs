@@ -137,6 +137,9 @@ const MAX_RECENT_ROOTS: usize = 8;
 /// the distinction between a bucket and a prefix is exactly the one that decides whether
 /// stepping out of it leaves the store.
 pub fn object_place_label(path: &Path) -> Option<&'static str> {
+    if cloud_source_id(path).is_some() {
+        return Some("source");
+    }
     let text = path.to_string_lossy();
     let (scheme, rest) = text.split_once("://")?;
     if !matches!(scheme, "s3" | "s3a" | "gs" | "gcs") {
@@ -151,6 +154,35 @@ pub fn object_place_label(path: &Path) -> Option<&'static str> {
     } else {
         "bucket"
     })
+}
+
+/// How a cloud source is addressed on the home screen: `cloud://<id>`. Not a URL any
+/// library reads; it names the level above a source's buckets, which no real URL can.
+pub const CLOUD_PLACE: &str = "cloud://";
+
+/// The place for one cloud source.
+pub fn cloud_place(id: &str) -> PathBuf {
+    PathBuf::from(format!("{CLOUD_PLACE}{id}"))
+}
+
+/// The source ID of a `cloud://<id>` place.
+pub fn cloud_source_id(path: &Path) -> Option<String> {
+    let text = path.to_string_lossy();
+    let id = text.strip_prefix(CLOUD_PLACE)?.trim_end_matches('/');
+    (!id.is_empty() && !id.contains('/')).then(|| id.to_string())
+}
+
+/// Whether `path` is the root of a bucket: `s3://bucket`, `s3://<id>@bucket`,
+/// `gs://bucket`, with no prefix.
+fn is_bucket_root(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    let Some((scheme, rest)) = text.split_once("://") else {
+        return false;
+    };
+    matches!(scheme, "s3" | "s3a" | "gs" | "gcs") && {
+        let rest = rest.trim_end_matches('/');
+        !rest.is_empty() && !rest.contains('/')
+    }
 }
 
 /// The location one level up from `path`, or `None` at the top.
@@ -178,10 +210,12 @@ pub fn parent_location(path: &Path) -> Option<PathBuf> {
 /// interface thread. It answers from the string and the mount table alone, never by
 /// reaching for the thing itself.
 pub fn is_remote_path(path: &Path) -> bool {
-    !matches!(
-        crate::source::input_source(path),
-        crate::source::InputSource::Local(_)
-    ) || is_network_path(path)
+    cloud_source_id(path).is_some()
+        || !matches!(
+            crate::source::input_source(path),
+            crate::source::InputSource::Local(_)
+        )
+        || is_network_path(path)
 }
 
 /// Whether `path` sits on a network filesystem, according to the mount table.
@@ -243,25 +277,69 @@ pub struct Section {
     pub waiting: bool,
 }
 
-/// One provider's buckets, ready to become a section.
+/// Where a cloud source's listing stands.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CloudStatus {
+    /// Asked, and no answer yet.
+    #[default]
+    Listing,
+    /// Listed, now or on an earlier run.
+    Listed,
+    /// The listing was refused or never answered. `short` goes on the row; `detail`
+    /// says what happened and how to fix it, in the details pane.
+    Failed { short: String, detail: String },
+}
+
+/// One cloud source as the home screen shows it: a row under `CLOUD`, and the list of
+/// buckets inside it.
 ///
 /// Held apart from [`Section`] because it survives a rebuild. A listing is rebuilt
 /// whenever a probe answers or a measurement lands, and re-enumerating buckets each time
 /// would be a billed network round trip per keystroke.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CloudSection {
-    /// The provider's name, e.g. "Google Cloud Storage".
-    pub title: String,
-    /// Which credentials were found, and the project when there is one.
-    pub subtitle: Option<String>,
-    /// Bucket URLs, e.g. `gs://my-bucket`, most useful first.
+pub struct CloudSource {
+    /// The source ID, as in `[[cloud.sources]]` and `s3://<id>@bucket`.
+    pub id: String,
+    /// The row's name.
+    pub label: String,
+    /// The API spoken: `s3`, `gcs`.
+    pub api: String,
+    /// The account, endpoint or project, and where the login came from.
+    pub note: String,
+    /// Bucket URLs, most useful first: `s3://bucket`, `s3://<id>@bucket`, `gs://bucket`.
     pub buckets: Vec<PathBuf>,
-    /// Why there are no buckets, when that is the reason rather than there being none.
-    /// Shown in place of the list: "403, no storage.buckets.list access" is worth
-    /// reading, and an empty section that does not say why is not.
-    pub error: Option<String>,
-    /// The buckets are still being enumerated.
-    pub listing: bool,
+    pub status: CloudStatus,
+    /// When the buckets were listed, when they were.
+    pub listed_at: Option<std::time::SystemTime>,
+    /// A listing is out for buckets already on screen from an earlier run.
+    pub refreshing: bool,
+    /// `key  value` lines for the details pane: endpoint, region, login.
+    pub details: Vec<(String, String)>,
+}
+
+impl CloudSource {
+    /// What the row says instead of a size: the bucket count, or why there is none.
+    pub fn count_text(&self) -> String {
+        match &self.status {
+            CloudStatus::Failed { short, .. } if self.buckets.is_empty() => short.clone(),
+            CloudStatus::Listing if self.buckets.is_empty() => String::new(),
+            _ => match self.buckets.len() {
+                0 => "no buckets".to_string(),
+                1 => "1 bucket".to_string(),
+                n => format!("{n} buckets"),
+            },
+        }
+    }
+
+    /// Whether the row should show a spinner.
+    pub fn busy(&self) -> bool {
+        self.refreshing || (self.status == CloudStatus::Listing && self.buckets.is_empty())
+    }
+
+    /// Whether the row reports a failure.
+    pub fn failed(&self) -> bool {
+        matches!(self.status, CloudStatus::Failed { .. })
+    }
 }
 
 /// What measuring a dataset yielded: rows, columns, and total size, each absent when
@@ -399,9 +477,10 @@ pub struct HomeState {
     pub folds: std::collections::HashMap<String, bool>,
     /// Datasets found by walking below the working directory.
     pub search: SearchState,
-    /// Object stores discovered on this machine, with their buckets. Empty on a machine
-    /// with no cloud credentials, which is the common case and not a failure.
-    pub cloud: Vec<CloudSection>,
+    /// Cloud sources discovered on this machine or named in the config, with their
+    /// buckets. Empty on a machine with no cloud credentials, which is the common case
+    /// and not a failure.
+    pub cloud: Vec<CloudSource>,
     /// When the current wait for a remote listing began, for the elapsed time on screen.
     pub waiting_since: Option<std::time::Instant>,
 }
@@ -473,8 +552,8 @@ pub struct ListingRequest {
     pub probed: std::collections::HashMap<PathBuf, Vec<Entry>>,
     pub unreachable: std::collections::HashSet<PathBuf>,
     pub network_check: fn(&Path) -> bool,
-    /// Buckets already enumerated, one entry per provider.
-    pub cloud: Vec<CloudSection>,
+    /// Cloud sources and the buckets already enumerated for them.
+    pub cloud: Vec<CloudSource>,
     /// What datui measured on a previous run. A row whose size and modification time
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
@@ -536,6 +615,34 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     let mounts = crate::locality::Mounts::current();
     let mut sections: Vec<Section> = Vec::new();
 
+    // Inside a cloud source: its buckets, and nothing else.
+    if let Some(id) = browsing.as_deref().and_then(cloud_source_id) {
+        let source = cloud.iter().find(|s| s.id == id);
+        let rows = source
+            .map(|s| s.buckets.iter().map(|b| bucket_entry(b)).collect())
+            .unwrap_or_default();
+        let failure = source.and_then(|s| match &s.status {
+            CloudStatus::Failed { short, .. } => Some(short.clone()),
+            _ => None,
+        });
+        sections.push(Section {
+            title: source.map(|s| s.label.clone()).unwrap_or(id),
+            subtitle: source.map(|s| s.note.clone()).filter(|n| !n.is_empty()),
+            rows,
+            unavailable: source.is_none() || failure.is_some(),
+            unavailable_note: if source.is_none() {
+                Some("source not found".to_string())
+            } else {
+                failure
+            },
+            folded_by_default: false,
+            remote_root: None,
+            waiting: source.is_some_and(|s| s.busy()),
+        });
+        annotate(&mut sections, known, network_check, &mounts);
+        return Listing { sections };
+    }
+
     // Descended into a directory: show only that.
     if let Some(dir) = browsing.clone() {
         // A remote directory is never read here. Listing an object store or a share
@@ -552,7 +659,15 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         };
         let unavailable = remote && unreachable.contains(&dir);
         sections.push(Section {
-            title: display_path(&dir),
+            // The URL without a source ID: the title bar's trail already says which
+            // source, and `s3://lab@data` is not a name anyone would write.
+            title: {
+                let text = dir.to_string_lossy();
+                match crate::source::split_source_id(&text) {
+                    (Some(_), plain) => plain.into_owned(),
+                    (None, _) => display_path(&dir),
+                }
+            },
             subtitle: None,
             rows,
             unavailable,
@@ -699,37 +814,20 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         .partition(|(origin, _)| *origin == RootOrigin::Cwd);
     sections.extend(cwd_sections.into_iter().map(|(_, s)| s));
 
-    // Each bucket is a row to descend into rather than a listing. Expanding every
-    // bucket on the home screen would mean one billed request per bucket on every
-    // start, to show a level nobody had asked to see.
-    for provider in cloud {
-        let rows: Vec<Entry> = provider
-            .buckets
-            .iter()
-            .map(|bucket| {
-                let mut entry = Entry::directory(bucket);
-                // The bucket name, not the last path segment of a URL, which for
-                // `gs://name` is the whole thing anyway but reads as an accident.
-                entry.name = bucket
-                    .to_string_lossy()
-                    .rsplit('/')
-                    .find(|part| !part.is_empty())
-                    .unwrap_or("")
-                    .to_string();
-                entry
-            })
-            .collect();
+    // One section for every cloud source, each a row to step into. A section per
+    // source stopped scaling at a handful: ten sources were ten headings, and the
+    // configured directories below them went off the screen. Buckets are one level
+    // down, listed once per session, never expanded here.
+    if !cloud.is_empty() {
         sections.push(Section {
-            title: provider.title.clone(),
-            subtitle: provider.subtitle.clone(),
-            rows,
-            // An enumeration that failed is reported the same way an unreachable share
-            // is: the section is there, empty, and says why.
-            unavailable: provider.error.is_some(),
-            unavailable_note: provider.error.clone(),
+            title: HomeState::CLOUD_SECTION.to_string(),
+            subtitle: None,
+            rows: cloud.iter().map(source_entry).collect(),
+            unavailable: false,
+            unavailable_note: None,
             folded_by_default: false,
             remote_root: None,
-            waiting: provider.listing,
+            waiting: false,
         });
     }
 
@@ -789,6 +887,10 @@ fn annotate(
 ) {
     for section in sections {
         for row in &mut section.rows {
+            if cloud_source_id(&row.path).is_some() {
+                row.cost.source = Some("cloud".to_string());
+                continue;
+            }
             apply_known_facts(row, known, network_check(&row.path));
             row.cost.source = Some(mounts.describe(&row.path).fstype);
         }
@@ -1218,6 +1320,61 @@ impl HomeState {
     /// and the tests both need to name it.
     pub const SEARCH_SECTION: &'static str = "Found";
 
+    /// Title of the section listing cloud sources.
+    pub const CLOUD_SECTION: &'static str = "Cloud";
+
+    /// The source a place belongs to: `cloud://<id>` itself, a bucket named with a
+    /// source (`s3://<id>@bucket`), or a bucket some source listed.
+    pub fn cloud_source_of(&self, path: &Path) -> Option<&CloudSource> {
+        if let Some(id) = cloud_source_id(path) {
+            return self.cloud.iter().find(|s| s.id == id);
+        }
+        let text = path.to_string_lossy();
+        if let (Some(id), _) = crate::source::split_source_id(&text) {
+            return self.cloud.iter().find(|s| s.id == id);
+        }
+        let (_, plain) = crate::source::split_source_id(&text);
+        let (scheme, rest) = plain.split_once("://")?;
+        let bucket = rest.split('/').next()?;
+        let root = PathBuf::from(format!("{scheme}://{bucket}"));
+        self.cloud.iter().find(|s| s.buckets.contains(&root))
+    }
+
+    /// One level up from `path`. A bucket's parent is the source that lists it, so
+    /// Backspace from a bucket returns to its source rather than to the home listing.
+    pub fn parent_of(&self, path: &Path) -> Option<PathBuf> {
+        if cloud_source_id(path).is_some() {
+            return None;
+        }
+        if is_bucket_root(path) {
+            return self.cloud_source_of(path).map(|s| cloud_place(&s.id));
+        }
+        parent_location(path)
+    }
+
+    /// The location as the title bar names it. Cloud places read as a trail through
+    /// the source's label, since neither `cloud://<id>` nor `s3://<id>@bucket` is
+    /// something to show a person.
+    pub fn location_label(&self, path: &Path) -> String {
+        let sep = crate::glyphs::get().trail;
+        if let Some(source) = self.cloud_source_of(path) {
+            let mut parts = vec!["cloud".to_string(), source.label.clone()];
+            if cloud_source_id(path).is_none() {
+                let text = path.to_string_lossy();
+                let (_, plain) = crate::source::split_source_id(&text);
+                if let Some((_, rest)) = plain.split_once("://") {
+                    parts.extend(
+                        rest.split('/')
+                            .filter(|p| !p.is_empty())
+                            .map(str::to_string),
+                    );
+                }
+            }
+            return parts.join(&format!(" {sep} "));
+        }
+        display_path(path)
+    }
+
     /// Put the current search results into `sections`, or take them out.
     ///
     /// Called after every rebuild and every batch of results. The section only exists
@@ -1226,10 +1383,48 @@ impl HomeState {
     pub fn sync_search_section(&mut self) {
         self.sections.retain(|s| s.title != Self::SEARCH_SECTION);
 
-        if self.filter.is_empty() || self.search.root.is_none() {
+        if self.filter.is_empty() {
             return;
         }
-        if self.search.results.is_empty() && !self.search.running {
+        // Bucket names already listed, from every source. Nothing is fetched for this:
+        // a search that went to the network per keystroke would be a bill per keystroke.
+        let cloud_rows: Vec<Entry> = if self.browsing.is_none() {
+            self.cloud
+                .iter()
+                .flat_map(|source| {
+                    source.buckets.iter().map(move |bucket| {
+                        let mut entry = bucket_entry(bucket);
+                        entry.name = format!(
+                            "{} {} {}",
+                            source.label,
+                            crate::glyphs::get().trail,
+                            entry.name
+                        );
+                        entry.cost.source = Some(source.api.clone());
+                        entry
+                    })
+                })
+                .filter(|e| match_score(&self.filter, e).is_some())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let local =
+            self.search.root.is_some() && (!self.search.results.is_empty() || self.search.running);
+        if !local {
+            if !cloud_rows.is_empty() {
+                let subtitle = format!("cloud · {} names", cloud_rows.len());
+                self.sections.push(Section {
+                    title: Self::SEARCH_SECTION.to_string(),
+                    subtitle: Some(subtitle),
+                    rows: cloud_rows,
+                    unavailable: false,
+                    unavailable_note: None,
+                    folded_by_default: false,
+                    remote_root: None,
+                    waiting: false,
+                });
+            }
             return;
         }
 
@@ -1242,13 +1437,14 @@ impl HomeState {
             .flat_map(|s| s.rows.iter().map(|r| &r.path))
             .collect();
 
-        let rows: Vec<Entry> = self
+        let mut rows: Vec<Entry> = self
             .search
             .results
             .iter()
             .filter(|e| !listed.contains(&e.path))
             .cloned()
             .collect();
+        rows.extend(cloud_rows);
 
         if rows.is_empty() && !self.search.running {
             return;
@@ -1412,6 +1608,7 @@ impl HomeState {
         // is not covered by the section scan above, which only looks at roots.
         if let Some(dir) = &self.browsing
             && check(dir)
+            && cloud_source_id(dir).is_none()
             && !self.probed.contains_key(dir)
             && !self.unreachable.contains(dir)
             && !out.contains(dir)
@@ -1424,10 +1621,27 @@ impl HomeState {
     /// Whether the browsed directory is strictly below where the browse began, so Esc
     /// still has a level to climb before it returns to the listing.
     pub fn below_browse_start(&self) -> bool {
-        match (&self.browsing, &self.browse_start) {
-            (Some(dir), Some(start)) => dir != start && dir.starts_with(start),
-            _ => false,
+        let (Some(dir), Some(start)) = (&self.browsing, &self.browse_start) else {
+            return false;
+        };
+        if dir == start {
+            return false;
         }
+        // Up through parents rather than a path prefix: a bucket sits below its cloud
+        // source, and `s3://bucket` does not start with `cloud://<id>`.
+        let mut current = self.parent_of(dir);
+        let mut steps = 0;
+        while let Some(place) = current {
+            if &place == start {
+                return true;
+            }
+            steps += 1;
+            if steps > 64 {
+                break;
+            }
+            current = self.parent_of(&place);
+        }
+        false
     }
 
     /// Whether any section on screen is still waiting for its rows.
@@ -1438,6 +1652,12 @@ impl HomeState {
     /// The remote location being browsed, while its listing has not come back.
     pub fn awaiting_listing(&self) -> Option<&Path> {
         let dir = self.browsing.as_deref()?;
+        if cloud_source_id(dir).is_some() {
+            return self
+                .cloud_source_of(dir)
+                .is_some_and(|s| s.status == CloudStatus::Listing && s.buckets.is_empty())
+                .then_some(dir);
+        }
         ((self.network_check)(dir)
             && !self.probed.contains_key(dir)
             && !self.unreachable.contains(dir))
@@ -1556,6 +1776,36 @@ impl HomeState {
         let next = (cur + delta).rem_euclid(n as isize);
         self.selected = next as usize;
     }
+}
+
+/// The row for a cloud source under `CLOUD`.
+fn source_entry(source: &CloudSource) -> Entry {
+    Entry {
+        path: cloud_place(&source.id),
+        kind: EntryKind::Directory,
+        name: source.label.clone(),
+        size: None,
+        modified: source.listed_at,
+        rows: None,
+        cols: None,
+        columns: Vec::new(),
+        cost: Default::default(),
+    }
+}
+
+/// The row for one bucket.
+fn bucket_entry(url: &Path) -> Entry {
+    let mut entry = Entry::directory(url);
+    // The bucket name, not the last path segment of a URL, which for `gs://name` is the
+    // whole thing anyway but reads as an accident. A source ID is not part of the name.
+    let text = url.to_string_lossy();
+    let (_, plain) = crate::source::split_source_id(&text);
+    entry.name = plain
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or("")
+        .to_string();
+    entry
 }
 
 /// Build an entry for a path that is already known (a recent), classifying it.

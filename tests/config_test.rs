@@ -1825,3 +1825,146 @@ fn cloud_secret_comment_points_at_the_environment() {
         "template should name the environment variable as the better home for a secret"
     );
 }
+
+fn cloud_config(toml_text: &str) -> AppConfig {
+    let mut config: AppConfig =
+        toml::from_str(&format!("version = \"0.2\"\n{toml_text}")).expect("Failed to parse config");
+    config.version = AppConfig::default().version;
+    config
+}
+
+fn cloud_error(toml_text: &str) -> String {
+    cloud_config(toml_text)
+        .validate()
+        .expect_err("config should be rejected")
+        .to_string()
+}
+
+#[test]
+fn cloud_sources_parse_and_validate() {
+    let config = cloud_config(
+        r#"
+[[cloud.sources]]
+name = "onprem"
+label = "On-prem MinIO"
+kind = "s3"
+endpoint_url = "https://minio.corp.example:9000"
+region = "us-east-1"
+addressing = "path"
+access_key_id_env = "ONPREM_KEY"
+secret_access_key_env = "ONPREM_SECRET"
+buckets = ["sales", "logs"]
+
+[[cloud.sources]]
+name = "analytics"
+kind = "gcs"
+"#,
+    );
+    config.validate().expect("valid sources");
+    assert_eq!(config.cloud.sources.len(), 2);
+    assert_eq!(
+        config.cloud.sources[0].label.as_deref(),
+        Some("On-prem MinIO")
+    );
+    assert_eq!(config.cloud.sources[0].buckets, ["sales", "logs"]);
+}
+
+#[test]
+fn cloud_sources_name_the_problem() {
+    let unknown = cloud_error(
+        "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nendpont_url = \"http://x\"\n",
+    );
+    assert!(
+        unknown.contains("'endpont_url'") && unknown.contains("endpoint_url"),
+        "{unknown}"
+    );
+
+    let secret = cloud_error(
+        "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nsecret_access_key = \"hunter2\"\n",
+    );
+    assert!(secret.contains("secret_access_key_env"), "{secret}");
+    assert!(
+        !secret.contains("hunter2"),
+        "the secret must not be echoed: {secret}"
+    );
+
+    let name = cloud_error("[[cloud.sources]]\nname = \"On Prem\"\nkind = \"s3\"\n");
+    assert!(name.contains("not a valid name"), "{name}");
+
+    let twice = cloud_error(
+        "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\n[[cloud.sources]]\nname = \"lab\"\nkind = \"gcs\"\n",
+    );
+    assert!(twice.contains("used twice"), "{twice}");
+
+    let wrong_kind = cloud_error(
+        "[[cloud.sources]]\nname = \"g\"\nkind = \"gcs\"\nendpoint_url = \"http://x\"\n",
+    );
+    assert!(wrong_kind.contains("only to kind = \"s3\""), "{wrong_kind}");
+
+    let no_kind = cloud_error("[[cloud.sources]]\nname = \"lab\"\n");
+    assert!(no_kind.contains("kind is required"), "{no_kind}");
+
+    let addressing = cloud_error(
+        "[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\naddressing = \"sideways\"\n",
+    );
+    assert!(addressing.contains("path or virtual"), "{addressing}");
+}
+
+#[test]
+fn a_later_layer_replaces_a_source_by_name() {
+    let mut base = cloud_config(
+        "[cloud]\nhide = [\"a\"]\n[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"one\"\n",
+    );
+    let over = cloud_config(
+        "[cloud]\nhide = [\"a\", \"b\"]\n[[cloud.sources]]\nname = \"lab\"\nkind = \"s3\"\nregion = \"two\"\n[[cloud.sources]]\nname = \"new\"\nkind = \"gcs\"\n",
+    );
+    base.merge(over);
+    let names: Vec<&str> = base.cloud.sources.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["lab", "new"]);
+    assert_eq!(base.cloud.sources[0].region.as_deref(), Some("two"));
+    assert_eq!(base.cloud.hide, ["a", "b"]);
+}
+
+#[test]
+fn the_generated_config_does_not_invent_sources() {
+    let (_dir, manager) = setup_test_config_dir();
+    let text = manager.generate_default_config();
+    assert!(!text.contains("sources"), "{text}");
+    assert!(!text.contains("hide ="), "{text}");
+}
+
+#[test]
+fn cloud_listings_and_hidden_sources_survive_a_restart() {
+    use datui::CacheManager;
+    use datui::cache::CloudListing;
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let cache = CacheManager::with_dir(temp_dir.path().to_path_buf());
+    assert!(cache.load_cloud_listings().is_empty());
+
+    let lab = CloudListing {
+        fingerprint: "s3|http://127.0.0.1:9000|key||".to_string(),
+        buckets: vec!["data".to_string(), "logs".to_string()],
+        listed_at: 1_789_000_000,
+    };
+    cache.save_cloud_listing("lab", lab.clone());
+    cache.save_cloud_listing(
+        "corp",
+        CloudListing {
+            buckets: vec!["data".to_string()],
+            ..lab.clone()
+        },
+    );
+    let again = CacheManager::with_dir(temp_dir.path().to_path_buf());
+    let listings = again.load_cloud_listings();
+    assert_eq!(
+        listings.get("lab"),
+        Some(&lab),
+        "one source's save keeps the others"
+    );
+    assert_eq!(listings["corp"].buckets, ["data"]);
+
+    again.hide_cloud_source("corp");
+    again.hide_cloud_source("corp");
+    assert_eq!(again.load_hidden_cloud_sources(), ["corp"]);
+}

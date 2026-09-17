@@ -11,27 +11,32 @@ NAVIGATION
   Tab               Cycle the sort. The control bar names the order in effect
                     where the cursor is: "recent" under Recent, "name" under a
                     directory, or size / modified / rows once chosen.
-  Enter             Open the dataset, enter the directory, or fold the section
-  Backspace         Leave a directory you descended into
+  Enter             Open the dataset, enter the directory, source or bucket, or
+                    fold the section
+  Backspace         Leave a directory you descended into; from a bucket, back
+                    to its cloud source
+  Ctrl+R            List again what is on screen: every cloud source, the one
+                    you are in, or the bucket or directory
   Esc               Back out one layer: the filter, the directory, then the data
   Ctrl+C            Quit
 
 FINDING
   (type)            Filter by name or column; matching is fuzzy, so "sal" finds
                     "sales", and "customer_id" finds every dataset with that column
-                    Typing also searches below the working directory; what it
-                    finds appears under "Found"
+                    Typing also searches below the working directory, and the
+                    bucket names already listed; matches appear under "Found"
   Backspace         Delete a filter character
   ~                 Type a path directly, for somewhere datui has not seen yet
   Tab               (while typing a path) complete it
-  Delete            Forget the highlighted entry (under Recent only)
+  Delete            Forget the highlighted entry under Recent, or hide a cloud
+                    source (--clear-cache shows it again)
   Shift+Delete      Forget every recent entry, after confirming
   Ctrl+U            Clear the filter or path input
 
 WHERE THESE COME FROM, IN ORDER
   Recent            Datasets you have opened before, most recent first
   Current directory Where you launched datui
-  Cloud             Buckets your credentials can reach, one section per provider
+  Cloud             One row per cloud source. Enter lists its buckets
   Configured        Directories from [data] directories, in the order listed
   Recent dirs       Directories of datasets you have opened, 8 most recent.
                     Start folded.

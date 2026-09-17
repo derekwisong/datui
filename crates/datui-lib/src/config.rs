@@ -464,6 +464,142 @@ pub struct CloudConfig {
     pub s3_secret_access_key: Option<String>,
     /// Region (e.g. us-east-1). Often required when using a custom endpoint (MinIO uses us-east-1).
     pub s3_region: Option<String>,
+    /// Stores named in `[[cloud.sources]]`, beside the ones found on the machine.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<CloudSourceConfig>,
+    /// Source IDs never shown on the home screen.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
+}
+
+/// One store in `[[cloud.sources]]`. Names and pointers only: a secret comes from the
+/// environment variable named here, never from the config file itself.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct CloudSourceConfig {
+    /// The source's ID: used in `s3://<name>@bucket/key`, `hide` and cache keys.
+    pub name: String,
+    /// Shown instead of the name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// `s3` or `gcs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Buckets to show when the credentials can read but not list.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub buckets: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// `path` or `virtual`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addressing: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_key_id_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_access_key_env: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token_env: Option<String>,
+    /// Keys that are not recognised, kept so validation can name them.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// Field names accepted in `[[cloud.sources]]`, for error messages.
+const CLOUD_SOURCE_KEYS: &str = "name, label, kind, buckets, endpoint_url, region, addressing, \
+     access_key_id_env, secret_access_key_env, session_token_env";
+
+/// Whether `id` can name a source: lowercase letters, digits and `-`, starting with a
+/// letter or digit, at most 40 characters. It goes into URLs and cache keys, so
+/// nothing that needs escaping is allowed in.
+pub fn is_valid_source_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 40
+        && bytes[0] != b'-'
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
+impl CloudSourceConfig {
+    fn validate(&self) -> Result<()> {
+        let name = &self.name;
+        if name.is_empty() {
+            return Err(eyre!("cloud.sources: every source needs a name"));
+        }
+        if !is_valid_source_id(name) {
+            return Err(eyre!(
+                "cloud.sources: \"{name}\" is not a valid name. Use lowercase letters, digits \
+                 and '-', up to 40 characters"
+            ));
+        }
+        // A secret written into the file is refused with the way out, rather than as
+        // one more unknown key.
+        for secret in ["access_key_id", "secret_access_key", "session_token"] {
+            if self.unknown.contains_key(secret) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": {secret} cannot be written in the config. Put it \
+                     in an environment variable and name that with {secret}_env"
+                ));
+            }
+        }
+        if !self.unknown.is_empty() {
+            let keys: Vec<String> = self.unknown.keys().map(|k| format!("'{k}'")).collect();
+            return Err(eyre!(
+                "cloud.sources \"{name}\": unknown key{} {}. Expected one of: {}",
+                if keys.len() > 1 { "s" } else { "" },
+                keys.join(", "),
+                CLOUD_SOURCE_KEYS
+            ));
+        }
+        let kind = match self.kind.as_deref() {
+            Some(kind @ ("s3" | "gcs")) => kind,
+            Some(other) => {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": kind \"{other}\" is not supported. Expected s3 or gcs"
+                ));
+            }
+            None => {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": kind is required (s3 or gcs)"
+                ));
+            }
+        };
+        if kind != "s3" {
+            let s3_only = [
+                ("endpoint_url", self.endpoint_url.is_some()),
+                ("region", self.region.is_some()),
+                ("addressing", self.addressing.is_some()),
+                ("access_key_id_env", self.access_key_id_env.is_some()),
+                (
+                    "secret_access_key_env",
+                    self.secret_access_key_env.is_some(),
+                ),
+                ("session_token_env", self.session_token_env.is_some()),
+            ];
+            if let Some((field, _)) = s3_only.iter().find(|(_, set)| *set) {
+                return Err(eyre!(
+                    "cloud.sources \"{name}\": {field} applies only to kind = \"s3\""
+                ));
+            }
+        }
+        if let Some(addressing) = self.addressing.as_deref()
+            && !matches!(addressing, "path" | "virtual")
+        {
+            return Err(eyre!(
+                "cloud.sources \"{name}\": addressing \"{addressing}\" is not valid. Expected path \
+                 or virtual"
+            ));
+        }
+        if let Some(bucket) = self.buckets.iter().find(|b| b.contains(['/', '@'])) {
+            return Err(eyre!(
+                "cloud.sources \"{name}\": \"{bucket}\" is not a bucket name"
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Write `contents` to `path`, readable only by the owner.
@@ -547,10 +683,12 @@ impl CloudConfig {
             s3_access_key_id: first(&["AWS_ACCESS_KEY_ID"]),
             s3_secret_access_key: first(&["AWS_SECRET_ACCESS_KEY"]),
             s3_region: first(&["AWS_REGION", "AWS_DEFAULT_REGION"]),
+            ..Default::default()
         }
     }
 
-    /// `other` wins wherever it says something; a blank value says nothing.
+    /// `other` wins wherever it says something; a blank value says nothing. A source
+    /// with a name already present replaces that source, and hidden IDs accumulate.
     pub fn merge(&mut self, other: Self) {
         for (slot, value) in [
             (&mut self.s3_endpoint_url, other.s3_endpoint_url),
@@ -562,6 +700,31 @@ impl CloudConfig {
                 *slot = Some(value);
             }
         }
+        for source in other.sources {
+            match self.sources.iter_mut().find(|s| s.name == source.name) {
+                Some(existing) => *existing = source,
+                None => self.sources.push(source),
+            }
+        }
+        for id in other.hide {
+            if !self.hide.contains(&id) {
+                self.hide.push(id);
+            }
+        }
+    }
+
+    /// Reject `[[cloud.sources]]` entries that would be silently wrong.
+    pub fn validate(&self) -> Result<()> {
+        for (i, source) in self.sources.iter().enumerate() {
+            source.validate()?;
+            if self.sources[..i].iter().any(|s| s.name == source.name) {
+                return Err(eyre!(
+                    "cloud.sources: the name \"{}\" is used twice",
+                    source.name
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2061,6 +2224,8 @@ impl AppConfig {
         self.display
             .number_format
             .resolve(self.display.align_numeric_right)?;
+
+        self.cloud.validate()?;
 
         // Validate all colors can be parsed
         let parser = ColorParser::new();

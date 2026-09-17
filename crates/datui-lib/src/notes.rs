@@ -196,6 +196,142 @@ mod tests {
         from_dataset(&dataset)
     }
 
+    /// One dataset shape, and the notes it should produce.
+    struct Shape {
+        what: &'static str,
+        files: Vec<Option<FileSchema>>,
+        /// `Some(total)` when the footers stand in for a larger dataset.
+        sampled: Option<usize>,
+        expected: Vec<&'static str>,
+    }
+
+    /// Every shape of dataset, and every line each one produces.
+    ///
+    /// Three rounds of review found wrong denominators here, each time in a case the
+    /// last fix had not considered: a count is over the files read, or the ones that
+    /// could be read, or the ones that have the column, or the footers sampled. Listing
+    /// every combination in one place is what makes the next wrong one obvious, so this
+    /// test is deliberately a transcript rather than a set of properties.
+    #[test]
+    fn every_shape_of_disagreement_reads_the_way_it_should() {
+        let int = DataType::Int64;
+        let text = DataType::String;
+
+        let cases: Vec<Shape> = vec![
+            Shape {
+                what: "a column that arrives partway through",
+                files: vec![
+                    file(&[("id", int.clone())], 1),
+                    file(&[("id", int.clone()), ("x", text.clone())], 1),
+                ],
+                sampled: None,
+                expected: vec!["x is in 1 of 2 files"],
+            },
+            Shape {
+                what: "the same, sampled",
+                files: vec![
+                    file(&[("id", int.clone())], 1),
+                    file(&[("id", int.clone()), ("x", text.clone())], 1),
+                ],
+                sampled: Some(200_000),
+                expected: vec!["x is in 1 of the 2 footers read"],
+            },
+            Shape {
+                what: "a column two files disagree about",
+                files: vec![
+                    file(&[("x", text.clone())], 10),
+                    file(&[("x", int.clone())], 90),
+                ],
+                sampled: None,
+                expected: vec![
+                    "x is str in 1 of the 2 files that have it, read as i64 from the rest",
+                ],
+            },
+            Shape {
+                what: "the same, sampled",
+                files: vec![
+                    file(&[("x", text.clone())], 10),
+                    file(&[("x", int.clone())], 90),
+                ],
+                sampled: Some(200_000),
+                expected: vec![
+                    "x is str in 1 of the 2 footers that have it, read as i64 from the rest",
+                ],
+            },
+            Shape {
+                what: "a column both missing and disagreed about",
+                files: vec![
+                    file(&[("x", text.clone())], 10),
+                    file(&[("x", int.clone())], 90),
+                    file(&[("id", int.clone())], 5),
+                ],
+                sampled: None,
+                expected: vec![
+                    "id is in 1 of 3 files",
+                    "x is str in 1 of the 2 files that have it, read as i64 from the rest",
+                    "x is in 2 of 3 files",
+                ],
+            },
+            Shape {
+                what: "one footer that would not parse",
+                files: vec![
+                    file(&[("id", int.clone())], 1),
+                    None,
+                    file(&[("id", int.clone()), ("x", text.clone())], 1),
+                ],
+                sampled: None,
+                expected: vec![
+                    "x is in 1 of the 2 files that could be read",
+                    "1 of 3 files could not be read and was left out",
+                ],
+            },
+            Shape {
+                what: "a sample that also hit one",
+                files: vec![
+                    file(&[("id", int.clone())], 1),
+                    None,
+                    file(&[("id", int.clone()), ("x", text.clone())], 1),
+                ],
+                sampled: Some(200_000),
+                expected: vec![
+                    "x is in 1 of the 2 footers that could be read",
+                    "1 of the 3 footers sampled could not be read and was left out",
+                ],
+            },
+            Shape {
+                what: "a column stored in two widths",
+                files: vec![
+                    file(&[("n", DataType::Int32)], 1),
+                    file(&[("n", int.clone())], 1),
+                ],
+                sampled: None,
+                expected: vec!["n is stored in more than one width; read as i64"],
+            },
+        ];
+
+        for Shape {
+            what,
+            files,
+            sampled,
+            expected,
+        } in cases
+        {
+            let origin = match sampled {
+                Some(total) => SchemaOrigin::FooterSample {
+                    read: files.len(),
+                    total,
+                },
+                None => SchemaOrigin::AllFooters(files.len()),
+            };
+            let dataset = union_file_schemas(&files, origin);
+            let got: Vec<String> = from_dataset(&dataset)
+                .into_iter()
+                .map(|n| n.summary)
+                .collect();
+            assert_eq!(got, expected, "{what}");
+        }
+    }
+
     #[test]
     fn a_uniform_dataset_has_nothing_to_say() {
         let files = [

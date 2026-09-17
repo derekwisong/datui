@@ -26,4 +26,5 @@ Notes:
   without the line saying what it is based on.
 
   When there is something to note, the i key in the control bar takes a quiet
-  accent until this panel has been opened.
+  accent until this panel has been opened. display.notes_accent = false turns
+  that off; the notes are still collected and this tab still appears.

@@ -367,6 +367,27 @@ fn test_merge_option_fields() {
 }
 
 #[test]
+fn test_turning_the_notes_accent_off_survives_a_merge() {
+    use datui::config::DisplayConfig;
+
+    // The accent is on by default, so a file that turns it off must win.
+    let mut base = DisplayConfig::default();
+    assert!(base.notes_accent, "on unless asked otherwise");
+    base.merge(DisplayConfig {
+        notes_accent: false,
+        ..DisplayConfig::default()
+    });
+    assert!(!base.notes_accent, "a config that says false is honored");
+
+    // And a later file that says nothing does not turn it back on.
+    base.merge(DisplayConfig::default());
+    assert!(
+        !base.notes_accent,
+        "silence is not a request to re-enable it"
+    );
+}
+
+#[test]
 fn test_merge_does_not_override_with_defaults() {
     use datui::config::DisplayConfig;
 
@@ -381,6 +402,7 @@ fn test_merge_does_not_override_with_defaults() {
         table_cell_padding: 1,
         column_colors: true,
         dtype_row: true,
+        notes_accent: false,
         sidebar_width: None,
         align_numeric_right: false,
         number_format: NumberFormatConfig::Preset("thousands".to_string()),
@@ -391,6 +413,10 @@ fn test_merge_does_not_override_with_defaults() {
     base.merge(override_config);
 
     // Base values should remain unchanged because override had defaults
+    assert!(
+        !base.notes_accent,
+        "turning the notes accent off is not undone by a config that says nothing"
+    );
     assert_eq!(base.pages_lookahead, 5);
     assert_eq!(base.pages_lookback, 5);
     assert!(base.row_numbers);

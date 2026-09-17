@@ -54,5 +54,7 @@ rows of its own, so the notes step aside; resetting or drilling back up brings
 them back.
 
 When there is something to note, the <kbd>i</kbd> key in the control bar takes
-a quiet accent until you open the panel. A note is an observation about the
+a quiet accent until you open the panel. `notes_accent = false` in the
+`[display]` section of the [config](configuration.md) turns that off; the Notes
+tab is still there either way. A note is an observation about the
 data, not a fault in it, so there is no pop-up and no error styling.

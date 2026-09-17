@@ -11740,9 +11740,11 @@ impl Widget for &mut App {
         });
         controls = controls.with_status_message(status_msg);
         controls = controls.with_notes_pending(
-            self.data_table_state
-                .as_ref()
-                .is_some_and(|s| s.notes_unseen()),
+            self.app_config.display.notes_accent
+                && self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|s| s.notes_unseen()),
         );
 
         match crate::render::main_view::control_bar_spec(self, main_view_content) {

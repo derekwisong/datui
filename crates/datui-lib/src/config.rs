@@ -867,7 +867,7 @@ impl CloudSourceConfig {
                     "cloud.sources \"{name}\": \"{url}\" is not an s3://, gs:// or Azure URL"
                 ));
             }
-            if !urls.insert(url.as_str()) {
+            if !urls.insert(crate::source::canonical_cloud_place(url)) {
                 return Err(eyre!(
                     "cloud.sources \"{name}\": dataset URL \"{url}\" is used twice"
                 ));
@@ -912,7 +912,7 @@ impl CloudSourceConfig {
                     dataset.name
                 ));
             }
-            if !urls.insert(dataset.url.as_str()) {
+            if !urls.insert(crate::source::canonical_cloud_place(&dataset.url)) {
                 return Err(eyre!(
                     "cloud.sources \"{name}\": dataset URL \"{}\" is used twice",
                     dataset.url

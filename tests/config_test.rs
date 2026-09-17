@@ -2070,6 +2070,21 @@ url = "abfss://release@buildings.dfs.core.windows.net/"
         duplicate_url.contains("URL \"s3://a/\" is used twice"),
         "{duplicate_url}"
     );
+    let duplicate_url_without_slash = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"s3://a\"]\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n",
+    );
+    assert!(
+        duplicate_url_without_slash.contains("URL \"s3://a/\" is used twice"),
+        "{duplicate_url_without_slash}"
+    );
+    let duplicate_azure_url = cloud_error(
+        "[[cloud.sources]]\nname = \"p\"\npublic = true\nbuckets = [\"https://account.blob.core.windows.net/container/path/\"]\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"abfss://container@account.dfs.core.windows.net/path\"\n",
+    );
+    assert!(
+        duplicate_azure_url
+            .contains("URL \"abfss://container@account.dfs.core.windows.net/path\" is used twice"),
+        "{duplicate_azure_url}"
+    );
     let private = cloud_error(
         "[[cloud.sources]]\nname = \"p\"\nkind = \"s3\"\n[[cloud.sources.datasets]]\nname = \"x\"\nurl = \"s3://a/\"\n",
     );

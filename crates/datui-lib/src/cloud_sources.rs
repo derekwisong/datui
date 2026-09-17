@@ -85,15 +85,11 @@ pub fn dataset_for_url(url: &str) -> Dataset {
 /// Whether `url` is `root` or somewhere inside it. Azure URLs are compared in their
 /// canonical form, and a trailing slash does not matter.
 pub fn is_within(url: &str, root: &str) -> bool {
-    let canonical = |u: &str| match crate::source::azure_parts(u) {
-        Some((account, container, path)) => crate::source::azure_url(&account, &container, &path),
-        None => u.to_string(),
-    };
-    let (url, root) = (canonical(url), canonical(root));
-    let (url, root) = (url.trim_end_matches('/'), root.trim_end_matches('/'));
+    let url = crate::source::canonical_cloud_place(url);
+    let root = crate::source::canonical_cloud_place(root);
     url == root
         || url
-            .strip_prefix(root)
+            .strip_prefix(&root)
             .is_some_and(|rest| rest.starts_with('/'))
 }
 

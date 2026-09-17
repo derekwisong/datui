@@ -104,6 +104,16 @@ pub fn azure_url(account: &str, container: &str, path: &str) -> String {
     )
 }
 
+/// A cloud place in the form used for equality comparisons. Equivalent Azure URL
+/// forms become `abfss://`, and a trailing slash does not distinguish a place.
+pub(crate) fn canonical_cloud_place(url: &str) -> String {
+    let canonical = match azure_parts(url) {
+        Some((account, container, path)) => azure_url(&account, &container, &path),
+        None => url.to_string(),
+    };
+    canonical.trim_end_matches('/').to_string()
+}
+
 /// A cloud location whose shape is a prefix or a glob rather than one object.
 pub(crate) fn is_prefix_or_glob(url: &str) -> bool {
     url.ends_with('/') || url.contains('*')

@@ -150,6 +150,24 @@ pub(crate) fn url_path_extension(url: &str) -> (String, Option<String>) {
     (path_part, ext)
 }
 
+/// The extension a downloaded copy of `url` should keep, so it opens as what it is:
+/// `csv.gz` rather than `gz` for a compressed file, since a temporary `.gz` does not
+/// say what is inside it.
+pub(crate) fn download_suffix(url: &str) -> Option<String> {
+    let (path_part, ext) = url_path_extension(url);
+    let ext = ext?;
+    const COMPRESSION: [&str; 6] = ["gz", "zst", "bz2", "xz", "lz4", "zip"];
+    if !COMPRESSION.iter().any(|c| ext.eq_ignore_ascii_case(c)) {
+        return Some(ext);
+    }
+    let name = path_part.rsplit('/').next().unwrap_or(&path_part);
+    let stem = &name[..name.len() - ext.len() - 1];
+    match Path::new(stem).extension().and_then(|e| e.to_str()) {
+        Some(inner) => Some(format!("{inner}.{ext}")),
+        None => Some(ext),
+    }
+}
+
 /// For S3/GCS: Polars can only scan Parquet directly. So we pass through only when the path is
 /// Parquet or looks like a directory/glob (no extension, trailing slash, or *). All other paths
 /// (e.g. .csv, .json, .gz, .csv.gz) must be downloaded first.
@@ -289,6 +307,21 @@ mod tests {
         let (path, ext) = url_path_extension("s3://b/path/to/file.csv");
         assert_eq!(path, "b/path/to/file.csv");
         assert_eq!(ext.as_deref(), Some("csv"));
+    }
+
+    #[test]
+    fn a_download_keeps_what_the_compressed_file_holds() {
+        assert_eq!(
+            download_suffix("s3://b/edge/100%.csv.gz").as_deref(),
+            Some("csv.gz")
+        );
+        assert_eq!(
+            download_suffix("https://x.com/a/log.json.zst").as_deref(),
+            Some("json.zst")
+        );
+        assert_eq!(download_suffix("gs://b/data.csv").as_deref(), Some("csv"));
+        assert_eq!(download_suffix("s3://b/archive.gz").as_deref(), Some("gz"));
+        assert_eq!(download_suffix("s3://b/no-extension"), None);
     }
 
     #[test]

@@ -499,6 +499,17 @@ pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::Ama
     builder
 }
 
+/// The object_store path for a key as the service stores it.
+///
+/// `Path::from` percent-encodes characters it considers unsafe, `%` among them, which
+/// is right for a name being made up and wrong for one that already exists: a key
+/// `100%.csv.gz` became `100%25.csv.gz` and was then encoded again on the way out, so
+/// the request asked for an object that is not there. A key from a listing or a URL is
+/// taken as it is, unless it cannot be a path at all.
+pub fn object_path(key: &str) -> object_store::path::Path {
+    object_store::path::Path::parse(key).unwrap_or_else(|_| object_store::path::Path::from(key))
+}
+
 /// An object store for a bucket, with no key.
 ///
 /// The store builders already in `lib.rs` require a `bucket/key` URL, because every
@@ -565,8 +576,6 @@ pub async fn list_objects(
     url: &str,
     config: &CloudConfig,
 ) -> Result<Vec<crate::discover::Entry>, String> {
-    use object_store::path::Path as OsPath;
-
     // Resolving can run a credential command, which blocks; keep it off the runtime's
     // own threads.
     let resolved = {
@@ -585,7 +594,7 @@ pub async fn list_objects(
     let os_prefix = if prefix.is_empty() {
         None
     } else {
-        Some(OsPath::from(prefix.as_str()))
+        Some(object_path(&prefix))
     };
     let result = store
         .list_with_delimiter(os_prefix.as_ref())
@@ -652,13 +661,11 @@ pub async fn list_objects(
 async fn list_azure_objects(
     resolved: &crate::cloud_sources::Resolved,
 ) -> Result<Vec<crate::discover::Entry>, String> {
-    use object_store::path::Path as OsPath;
-
     let (account, container, prefix) = crate::source::azure_parts(&resolved.url)
         .ok_or_else(|| format!("not an Azure URL: {}", resolved.url))?;
     let store = crate::azure::store(&account, &container, &resolved.azure)?;
     let prefix = prefix.trim_matches('/').to_string();
-    let os_prefix = (!prefix.is_empty()).then(|| OsPath::from(prefix.as_str()));
+    let os_prefix = (!prefix.is_empty()).then(|| object_path(&prefix));
     let result = store
         .list_with_delimiter(os_prefix.as_ref())
         .await
@@ -987,6 +994,24 @@ pub(crate) fn urlencode(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_is_taken_as_the_service_stores_it() {
+        assert_eq!(object_path("edge/100%.csv.gz").as_ref(), "edge/100%.csv.gz");
+        assert_eq!(
+            object_path("edge/a+b=c&d#e.parquet").as_ref(),
+            "edge/a+b=c&d#e.parquet"
+        );
+        assert_eq!(
+            object_path("edge/name with spaces").as_ref(),
+            "edge/name with spaces"
+        );
+        // Not a path as it stands: made into one the way object_store does.
+        assert_eq!(
+            object_path("a/../b").as_ref(),
+            object_store::path::Path::from("a/../b").as_ref()
+        );
+    }
     use std::collections::HashMap;
 
     /// An environment built from literals, so a test says exactly what the machine

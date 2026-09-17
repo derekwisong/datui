@@ -112,7 +112,7 @@ pub async fn footer_of_cloud_parquet(
     store: Arc<dyn ObjectStore>,
     key: &str,
 ) -> Result<ParquetFooter> {
-    read_parquet_footer(&store, &OsPath::from(key)).await
+    read_parquet_footer(&store, &crate::cloud_browse::object_path(key)).await
 }
 
 /// Fetch the tail of one object and read its footer. Does not fetch the full file.
@@ -145,7 +145,7 @@ pub async fn schema_from_one_cloud_hive(
     let prefix_path = if prefix_trimmed.is_empty() {
         OsPath::default()
     } else {
-        OsPath::from(prefix_trimmed)
+        crate::cloud_browse::object_path(prefix_trimmed)
     };
     let mut values = Vec::new();
     let one_key = first_parquet_key_spine(&store, &prefix_path, 0, &mut values)

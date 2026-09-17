@@ -4093,14 +4093,13 @@ impl App {
         runtime: &tokio::runtime::Handle,
     ) -> Result<Option<u64>> {
         use object_store::ObjectStoreExt;
-        use object_store::path::Path as OsPath;
 
         let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
         if key.is_empty() {
             return Ok(None);
         }
         let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
-        let path = OsPath::from(key);
+        let path = crate::cloud_browse::object_path(&key);
         let head = wait_on_runtime(runtime, async move { store.head(&path).await });
         Ok(head.and_then(|r| r.ok()).map(|meta| meta.size))
     }
@@ -4151,7 +4150,6 @@ impl App {
         runtime: &tokio::runtime::Handle,
     ) -> Result<PathBuf> {
         use object_store::ObjectStoreExt;
-        use object_store::path::Path as OsPath;
 
         let (label, example) = match source::input_source(Path::new(url)) {
             source::InputSource::Gcs(_) => ("GCS", "gs://bucket/path/file.csv"),
@@ -4161,7 +4159,7 @@ impl App {
             ),
             _ => ("S3", "s3://bucket/path/file.csv"),
         };
-        let (_path_part, ext) = source::url_path_extension(url);
+        let ext = source::download_suffix(url);
         let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!(
@@ -4170,7 +4168,7 @@ impl App {
         }
         let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
 
-        let path = OsPath::from(key);
+        let path = crate::cloud_browse::object_path(&key);
         let bytes = wait_on_runtime(runtime, async move {
             let get_result = store.get(&path).await.map_err(|e| {
                 color_eyre::eyre::eyre!(
@@ -9248,7 +9246,7 @@ impl App {
                 let url = url.clone();
                 let options = options.clone();
                 self.spawn_bg("Downloading...", move |task_gen, tx| {
-                    let (_, ext) = source::url_path_extension(url.as_str());
+                    let ext = source::download_suffix(url.as_str());
                     match Self::download_http_to_temp(
                         url.as_str(),
                         options.temp_dir.as_deref(),
@@ -9385,6 +9383,24 @@ impl App {
                         current_phase: "Scanning".to_string(),
                         progress_percent: 30,
                     };
+                }
+                // A compressed CSV has to be decompressed before it can be scanned, as it
+                // is when opened from disk; scanning the download directly read `.gz` as
+                // a format and refused it.
+                let compressed_csv = options
+                    .compression
+                    .or_else(|| CompressionFormat::from_extension(temp_path))
+                    .is_some()
+                    && (options.format == Some(FileFormat::Csv)
+                        || temp_path
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .is_some_and(|stem| stem.to_ascii_lowercase().ends_with(".csv")));
+                if compressed_csv {
+                    return Some(AppEvent::DoDecompress(
+                        vec![temp_path.clone()],
+                        options.clone(),
+                    ));
                 }
                 self.spawn_scan_as(
                     "Scanning...",

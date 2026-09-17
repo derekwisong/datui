@@ -20,6 +20,7 @@ pub struct Controls {
     pub use_unicode_throbber: bool, // When true, use 8-dot braille spinner (4 rows tall); else |/-\
     pub busy: bool,                 // When true, show throbber at far right
     pub throbber_frame: u8,         // Spinner frame (0..3 or 0..7 for unicode)
+    /// When Some, replaces keybindings with spinner + message.
     pub status_message: Option<String>,
     /// See `with_notes_pending`.
     pub notes_pending: bool,

@@ -1589,12 +1589,16 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
 
     assert!(
-        screen.contains("below"),
-        "the panel says how many notes are out of view, got:\n{screen}"
+        screen.contains("3 below"),
+        "three of the six notes fit, so three are out of view, got:\n{screen}"
     );
     assert!(
         screen.contains("a is in 1 of 2 files"),
         "the first note is shown"
+    );
+    assert!(
+        screen.contains("in all 2 footers"),
+        "and the scope of the note the cursor is on, got:\n{screen}"
     );
 
     // The cursor reaches the last note, which scrolls it into view.
@@ -1611,6 +1615,22 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
         screen.contains("f is in 1 of 2 files"),
         "the last note is reachable, got:\n{screen}"
     );
+    assert!(
+        screen.contains("above"),
+        "and the panel says what scrolled off the top, got:\n{screen}"
+    );
+
+    // Too short to hold a note is not the same as having none to hold.
+    for height in [1u16, 2, 3] {
+        let area = Rect::new(0, 0, 100, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            !screen.contains("Nothing to note"),
+            "a {height}-row panel has notes, it just has no room: {screen:?}"
+        );
+    }
 }
 
 /// A folder whose files agree has nothing to say, and nothing to show for it.

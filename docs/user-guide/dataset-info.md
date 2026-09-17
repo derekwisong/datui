@@ -48,7 +48,8 @@ detail; <kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is ta
 than the panel, the corner says how many notes are out of view.
 
 A note describes the dataset as opened. A query, a pivot or a drill-down builds
-rows of its own, so the notes step aside until you reset.
+rows of its own, so the notes step aside; resetting or drilling back up brings
+them back.
 
 When there is something to note, the <kbd>i</kbd> key in the control bar takes
 a quiet accent until you open the panel. A note is an observation about the

@@ -176,8 +176,6 @@ impl InfoModal {
         }
     }
 
-    /// Scroll and selection for schema table. `total_rows` = schema len, `visible_height` = rows shown.
-    /// Returns true if state changed.
     /// Move the cursor through the notes, bringing the one it lands on into view.
     /// Returns true when something changed.
     pub fn notes_move(&mut self, delta: isize, total: usize, visible: usize) -> bool {
@@ -198,6 +196,8 @@ impl InfoModal {
         true
     }
 
+    /// Scroll and selection for schema table. `total_rows` = schema len,
+    /// `visible_height` = rows shown. Returns true if state changed.
     pub fn schema_table_down(&mut self, total_rows: usize, visible_height: usize) -> bool {
         if total_rows == 0 {
             return false;
@@ -698,15 +698,28 @@ impl<'a> DataTableInfo<'a> {
     /// line says how many notes are out of view rather than dropping them silently.
     fn render_notes_tab(&mut self, area: Rect, buf: &mut Buffer) {
         let notes = self.state.notes();
-        if notes.is_empty() || area.height == 0 {
+        if area.height == 0 {
+            // No room is not the same as nothing to say, and there is nowhere to say
+            // either without drawing over the panel's border.
+            self.modal.notes_visible = 0;
+            return;
+        }
+        if notes.is_empty() {
             Paragraph::new("Nothing to note.").render(Rect { height: 1, ..area }, buf);
+            self.modal.notes_visible = 0;
             return;
         }
         let dim = Style::default().fg(self.border_color);
         let selected = self.modal.notes_selected_index.min(notes.len() - 1);
-        // The last row is kept for "more below" whenever the list does not fit.
+        // The last row carries the count of what is out of view, so the notes get the
+        // rest. With a single row there is nothing to spare and the count gives way.
+        let reserve_indicator = area.height > 1;
         let body = Rect {
-            height: area.height.saturating_sub(1).max(1),
+            height: if reserve_indicator {
+                area.height - 1
+            } else {
+                area.height
+            },
             ..area
         };
 
@@ -752,7 +765,7 @@ impl<'a> DataTableInfo<'a> {
 
         self.modal.notes_visible = drawn.max(1);
         let unseen = notes.len() - first - drawn;
-        if unseen > 0 || first > 0 {
+        if reserve_indicator && (unseen > 0 || first > 0) {
             let hidden = if first > 0 && unseen > 0 {
                 format!("{first} above, {unseen} below")
             } else if first > 0 {

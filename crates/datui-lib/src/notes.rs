@@ -37,12 +37,23 @@ fn files(n: usize) -> String {
 fn out_of(dataset: &DatasetSchema) -> String {
     let readable = dataset.files.saturating_sub(dataset.unreadable.len());
     let sampled = matches!(dataset.origin, SchemaOrigin::FooterSample { .. });
-    if sampled {
-        format!("the {} footers read", group_chrome(readable))
-    } else if dataset.unreadable.is_empty() {
-        files(readable)
+    match (sampled, dataset.unreadable.is_empty()) {
+        (false, true) => files(readable),
+        (false, false) => format!("the {} that could be read", files(readable)),
+        (true, true) => format!("the {} footers read", group_chrome(readable)),
+        // Both: the denominator is neither the files nor the footers asked for, and
+        // saying either would disagree with the scope line under it.
+        (true, false) => format!("the {} footers that could be read", group_chrome(readable)),
+    }
+}
+
+/// What a count of *attempted* footers is out of. Unlike `out_of`, the unreadable ones
+/// are the subject rather than excluded from the denominator.
+fn out_of_all(dataset: &DatasetSchema) -> String {
+    if matches!(dataset.origin, SchemaOrigin::FooterSample { .. }) {
+        format!("the {} footers read", group_chrome(dataset.files))
     } else {
-        format!("the {} that could be read", files(readable))
+        files(dataset.files)
     }
 }
 
@@ -55,7 +66,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     let mut notes = Vec::new();
 
     for column in dataset.drifting() {
-        if let Some(note) = conflict_note(column, &scope) {
+        if let Some(note) = conflict_note(column, &denominator, &scope) {
             notes.push(note);
         } else if let Some(note) = absence_note(column, readable, &denominator, &scope) {
             notes.push(note);
@@ -75,8 +86,9 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
             summary: format!(
-                "{} could not be read and {} left out",
-                files(dataset.unreadable.len()),
+                "{} of {} could not be read and {} left out",
+                group_chrome(dataset.unreadable.len()),
+                out_of_all(dataset),
                 if dataset.unreadable.len() == 1 {
                     "was"
                 } else {
@@ -86,7 +98,9 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
             scope: scope.clone(),
             detail: vec![
                 "The rest of the dataset opened without them.".to_string(),
-                "Their rows are not counted and their columns are not in the schema.".to_string(),
+                "Their columns are not in the schema; what the scan makes of their rows \
+                 is up to the reader."
+                    .to_string(),
             ],
         });
     }
@@ -95,17 +109,18 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
 }
 
 /// A column whose files disagree on its type beyond what widening can settle.
-fn conflict_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
+fn conflict_note(column: &ColumnDrift, denominator: &str, scope: &str) -> Option<Note> {
     if column.conflicting_files == 0 {
         return None;
     }
     let others: Vec<String> = column.conflicting_types.iter().map(dtype_label).collect();
     Some(Note {
         summary: format!(
-            "{} is {} in {}, read as {} from the rest",
+            "{} is {} in {} of {}, read as {} from the rest",
             column.name,
             others.join(" or "),
-            files(column.conflicting_files),
+            group_chrome(column.conflicting_files),
+            denominator,
             dtype_label(&column.dtype)
         ),
         scope: scope.to_string(),
@@ -146,7 +161,7 @@ fn absence_note(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema_union::{FileSchema, union_file_schemas};
+    use crate::schema_union::{FileSchema, SchemaOrigin, union_file_schemas};
     use polars::prelude::{DataType, Schema};
     use std::sync::Arc;
 
@@ -198,7 +213,7 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(
             notes[0].summary,
-            "price is str in 1 file, read as i64 from the rest"
+            "price is str in 1 of 2 files, read as i64 from the rest"
         );
     }
 
@@ -228,7 +243,7 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(
             notes[0].summary,
-            "1 file could not be read and was left out"
+            "1 of 3 files could not be read and was left out"
         );
     }
 
@@ -252,6 +267,41 @@ mod tests {
             "a sample counts footers, not the files it did not look at"
         );
         assert_eq!(notes[0].scope, "in 2 of 200,000 footers (sample)");
+    }
+
+    /// A sample that also hit an unreadable footer is neither "files" nor "the footers
+    /// read": both would disagree with the scope line under them.
+    #[test]
+    fn a_sample_with_an_unreadable_footer_still_agrees_with_its_scope() {
+        let files = [
+            file(&[("id", DataType::Int64)], 1),
+            None,
+            file(&[("id", DataType::Int64), ("oops", DataType::String)], 1),
+        ];
+        let dataset = union_file_schemas(
+            &files,
+            SchemaOrigin::FooterSample {
+                read: 3,
+                total: 200_000,
+            },
+        );
+        let notes = from_dataset(&dataset);
+        let absence = notes
+            .iter()
+            .find(|n| n.summary.starts_with("oops"))
+            .expect("the column is noted");
+        assert_eq!(
+            absence.summary, "oops is in 1 of the 2 footers that could be read",
+            "neither `2 files` nor `2 footers read` is true here"
+        );
+        let unreadable = notes
+            .iter()
+            .find(|n| n.summary.contains("could not be read"))
+            .expect("and so is the footer that failed");
+        assert_eq!(
+            unreadable.summary,
+            "1 of the 3 footers read could not be read and was left out"
+        );
     }
 
     /// The count and the scope line sit next to each other, so they must not state

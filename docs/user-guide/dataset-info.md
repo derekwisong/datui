@@ -10,6 +10,7 @@ or <kbd>Esc</kbd> closes it.
 | **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type and, for Parquet, its codec and compression ratio |
 | **Resources** | File size, the memory used by the buffered rows, the format, and for Parquet the overall compression ratio, row groups, version and writer |
 | **Partitions** | For a hive-partitioned dataset, the partition columns and their values |
+| **Notes** | What datui noticed about the data while reading it. Only there when something is worth saying |
 
 ## Keys
 
@@ -24,3 +25,24 @@ or <kbd>Esc</kbd> closes it.
 The row count is for the whole dataset, not the rows on screen. The type of
 each column is also shown in the table's second header row, which <kbd>D</kbd>
 toggles.
+
+## Notes
+
+A folder of Parquet files rarely holds files that agree. Where they do not,
+datui says so:
+
+| Note | From |
+|---|---|
+| A column is not in every file | The footers |
+| Files disagree on a column's type, beyond what widening settles | The footers |
+| A column is stored in more than one width | The footers |
+| A file's footer could not be read, so it was left out | The footers |
+
+Every note says what it is based on — `in all 6,541 footers`, or
+`in 5,000 of 200,000 footers (sample)` — so a count never stands for files
+datui has not looked at. None of them costs a read of its own: they come from
+the footers the schema and the row count already needed.
+
+When there is something to note, the <kbd>i</kbd> key in the control bar takes
+a quiet accent until you open the panel. A note is an observation about the
+data, not a fault in it, so there is no pop-up and no error styling.

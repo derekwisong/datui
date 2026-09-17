@@ -1491,6 +1491,51 @@ fn test_analysing_a_union_of_scans_does_not_panic() {
     assert_eq!(results.total_rows, 4, "and counts every row");
 }
 
+/// Opening a folder whose files disagree leaves something to say, and the Info key
+/// carries a quiet accent until the panel has been opened.
+#[test]
+fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    assert_eq!(notes.len(), 1, "one column is not in every file");
+    assert_eq!(notes[0].summary, "extra is in 1 of 2 files");
+    assert_eq!(
+        notes[0].scope, "in all 2 footers",
+        "and says what it is based on"
+    );
+    assert!(state.notes_unseen(), "not offered yet");
+
+    // Pressing i opens the panel, which is the offer being taken up.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.notes_unseen(), "the accent has done its job");
+}
+
+/// A folder whose files agree has nothing to say, and nothing to show for it.
+#[test]
+fn test_a_uniform_dataset_has_no_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(dir.path(), "date=2024-01-02", df!("id" => &[2i64]).unwrap());
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.notes().is_empty());
+    assert!(!state.notes_unseen(), "so no accent either");
+}
+
 /// A column only a middle file has used to vanish: the schema was one file's, and that
 /// file did not have it.
 #[test]

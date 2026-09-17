@@ -141,6 +141,11 @@ pub struct DataTableState {
     /// Together they turn a row's place in the dataset into what its file was missing.
     drift_file_starts: Vec<usize>,
     drift_file_group: Vec<u32>,
+    /// What datui noticed about the dataset, from the footers it had to read anyway.
+    notes: Vec<crate::notes::Note>,
+    /// Whether the Info panel has been opened since the notes were gathered. Belongs to
+    /// the dataset, so opening another one offers its notes afresh.
+    notes_seen: bool,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -496,6 +501,8 @@ impl DataTableState {
             groups_at_open: Arc::new(Vec::new()),
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
+            notes: Vec::new(),
+            notes_seen: false,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -596,6 +603,8 @@ impl DataTableState {
             groups_at_open: Arc::new(Vec::new()),
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
+            notes: Vec::new(),
+            notes_seen: false,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -3777,6 +3786,8 @@ impl DataTableState {
         }
         self.drift_at_open = self.drift_column_present;
         self.groups_at_open = self.drift_groups.clone();
+        self.notes = crate::notes::from_dataset(&schema);
+        self.notes_seen = false;
         self.dataset_schema = Some(schema);
     }
 
@@ -3822,6 +3833,21 @@ impl DataTableState {
     ) {
         self.drift_column_present = present;
         self.drift_groups = groups;
+    }
+
+    /// What datui noticed about the dataset. Empty when there is nothing to say.
+    pub fn notes(&self) -> &[crate::notes::Note] {
+        &self.notes
+    }
+
+    /// Whether there is something to say that has not been offered yet.
+    pub fn notes_unseen(&self) -> bool {
+        !self.notes.is_empty() && !self.notes_seen
+    }
+
+    /// The Info panel has been opened; the quiet accent has done its job.
+    pub fn mark_notes_seen(&mut self) {
+        self.notes_seen = true;
     }
 
     /// What the footers said about the dataset's columns, when it is many files.

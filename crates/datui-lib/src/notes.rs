@@ -1,0 +1,228 @@
+//! What datui noticed about a dataset while doing what it was already doing.
+//!
+//! A note never costs a request or a scan of its own: every one here is read off the
+//! footers the schema and the row count already needed. Notes are never alarming — no
+//! pop-up, no error styling — and every one says what it is based on, so "only in 1 of
+//! 3 files" is never mistaken for a claim about files datui has not looked at.
+
+use crate::numfmt::group_chrome;
+use crate::schema_union::{ColumnDrift, DatasetSchema};
+use crate::widgets::datatable::dtype_label;
+
+/// One thing datui noticed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Note {
+    /// The one line shown in the panel.
+    pub summary: String,
+    /// What the note is based on, so its reach is never overstated.
+    pub scope: String,
+    /// The particulars, shown when the note is opened.
+    pub detail: Vec<String>,
+}
+
+/// How many files, spelled for a sentence: "1 file", "3 files".
+fn files(n: usize) -> String {
+    if n == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{} files", group_chrome(n))
+    }
+}
+
+/// What the footers said, as notes. Empty when every file agrees, which is the common
+/// case and the one where there is nothing to say.
+pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
+    let scope = format!("in {}", dataset.origin);
+    let readable = dataset.files.saturating_sub(dataset.unreadable.len());
+    let mut notes = Vec::new();
+
+    for column in dataset.drifting() {
+        if let Some(note) = conflict_note(column, &scope) {
+            notes.push(note);
+        } else if let Some(note) = absence_note(column, readable, &scope) {
+            notes.push(note);
+        } else if column.widened {
+            notes.push(Note {
+                summary: format!(
+                    "{} is stored in more than one width; read as {}",
+                    column.name,
+                    dtype_label(&column.dtype)
+                ),
+                scope: scope.clone(),
+                detail: vec!["Widening it loses nothing.".to_string()],
+            });
+        }
+    }
+
+    if !dataset.unreadable.is_empty() {
+        notes.push(Note {
+            summary: format!(
+                "{} could not be read and {} left out",
+                files(dataset.unreadable.len()),
+                if dataset.unreadable.len() == 1 {
+                    "was"
+                } else {
+                    "were"
+                }
+            ),
+            scope: scope.clone(),
+            detail: vec![
+                "The rest of the dataset opened without them.".to_string(),
+                "Their rows are not counted and their columns are not in the schema.".to_string(),
+            ],
+        });
+    }
+
+    notes
+}
+
+/// A column whose files disagree on its type beyond what widening can settle.
+fn conflict_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
+    if column.conflicting_files == 0 {
+        return None;
+    }
+    let others: Vec<String> = column.conflicting_types.iter().map(dtype_label).collect();
+    Some(Note {
+        summary: format!(
+            "{} is {} in {}, read as {} from the rest",
+            column.name,
+            others.join(" or "),
+            files(column.conflicting_files),
+            dtype_label(&column.dtype)
+        ),
+        scope: scope.to_string(),
+        detail: vec![
+            format!(
+                "{} is the type most of its rows have.",
+                dtype_label(&column.dtype)
+            ),
+            "The column is not read from the other files, so its cells there are a \
+             conflict rather than a null."
+                .to_string(),
+        ],
+    })
+}
+
+/// A column that some files were written without.
+fn absence_note(column: &ColumnDrift, readable: usize, scope: &str) -> Option<Note> {
+    if column.present_in == 0 || column.present_in >= readable {
+        return None;
+    }
+    Some(Note {
+        summary: format!(
+            "{} is in {} of {}",
+            column.name,
+            group_chrome(column.present_in),
+            files(readable)
+        ),
+        scope: scope.to_string(),
+        detail: vec!["Rows from the other files show the column as absent, not null.".to_string()],
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema_union::{FileSchema, SchemaOrigin, union_file_schemas};
+    use polars::prelude::{DataType, Schema};
+    use std::sync::Arc;
+
+    fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileSchema> {
+        let mut schema = Schema::with_capacity(columns.len());
+        for (name, dtype) in columns {
+            schema.with_column((*name).into(), dtype.clone());
+        }
+        Some(FileSchema {
+            schema: Arc::new(schema),
+            rows,
+        })
+    }
+
+    fn notes_of(files: &[Option<FileSchema>]) -> Vec<Note> {
+        let dataset = union_file_schemas(files, SchemaOrigin::AllFooters(files.len()));
+        from_dataset(&dataset)
+    }
+
+    #[test]
+    fn a_uniform_dataset_has_nothing_to_say() {
+        let files = [
+            file(&[("id", DataType::Int64)], 1),
+            file(&[("id", DataType::Int64)], 1),
+        ];
+        assert!(notes_of(&files).is_empty());
+    }
+
+    #[test]
+    fn a_column_only_some_files_have_is_noted_with_its_reach() {
+        let files = [
+            file(&[("id", DataType::Int64)], 1),
+            file(&[("id", DataType::Int64), ("oops", DataType::String)], 1),
+            file(&[("id", DataType::Int64)], 1),
+        ];
+        let notes = notes_of(&files);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].summary, "oops is in 1 of 3 files");
+        assert_eq!(notes[0].scope, "in all 3 footers");
+    }
+
+    #[test]
+    fn a_type_conflict_names_both_types_and_says_which_won() {
+        let files = [
+            file(&[("price", DataType::String)], 10),
+            file(&[("price", DataType::Int64)], 90),
+        ];
+        let notes = notes_of(&files);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].summary,
+            "price is str in 1 file, read as i64 from the rest"
+        );
+    }
+
+    #[test]
+    fn widening_is_noted_as_losing_nothing() {
+        let files = [
+            file(&[("n", DataType::Int32)], 1),
+            file(&[("n", DataType::Int64)], 1),
+        ];
+        let notes = notes_of(&files);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0]
+                .summary
+                .starts_with("n is stored in more than one width")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_footer_is_noted_and_the_rest_still_opens() {
+        let files = [
+            file(&[("id", DataType::Int64)], 1),
+            None,
+            file(&[("id", DataType::Int64)], 1),
+        ];
+        let notes = notes_of(&files);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].summary,
+            "1 file could not be read and was left out"
+        );
+    }
+
+    #[test]
+    fn a_sampled_schema_says_so_in_every_note_it_makes() {
+        let files = [
+            file(&[("id", DataType::Int64)], 1),
+            file(&[("id", DataType::Int64), ("oops", DataType::String)], 1),
+        ];
+        let dataset = crate::schema_union::union_file_schemas(
+            &files,
+            SchemaOrigin::FooterSample {
+                read: 2,
+                total: 200_000,
+            },
+        );
+        let notes = from_dataset(&dataset);
+        assert_eq!(notes[0].scope, "in 2 of 200,000 footers (sample)");
+    }
+}

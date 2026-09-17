@@ -44,49 +44,51 @@ pub enum InfoTab {
     Schema,
     Resources,
     Partitions,
+    Notes,
 }
 
 impl InfoTab {
-    /// Next tab; when `has_partitions` is false, Partitions is skipped.
-    pub fn next(self, has_partitions: bool) -> Self {
+    /// The tabs on offer, in order: Partitions only for a partitioned dataset, Notes
+    /// only when datui has something to say about the data.
+    pub fn visible(has_partitions: bool, has_notes: bool) -> Vec<InfoTab> {
+        let mut tabs = vec![InfoTab::Schema, InfoTab::Resources];
+        if has_partitions {
+            tabs.push(InfoTab::Partitions);
+        }
+        if has_notes {
+            tabs.push(InfoTab::Notes);
+        }
+        tabs
+    }
+
+    pub fn title(self) -> &'static str {
         match self {
-            InfoTab::Schema => InfoTab::Resources,
-            InfoTab::Resources => {
-                if has_partitions {
-                    InfoTab::Partitions
-                } else {
-                    InfoTab::Schema
-                }
-            }
-            InfoTab::Partitions => InfoTab::Schema,
+            InfoTab::Schema => "Schema",
+            InfoTab::Resources => "Resources",
+            InfoTab::Partitions => "Partitions",
+            InfoTab::Notes => "Notes",
         }
     }
-    pub fn prev(self, has_partitions: bool) -> Self {
-        match self {
-            InfoTab::Schema => {
-                if has_partitions {
-                    InfoTab::Partitions
-                } else {
-                    InfoTab::Resources
-                }
-            }
-            InfoTab::Resources => InfoTab::Schema,
-            InfoTab::Partitions => InfoTab::Resources,
-        }
+
+    /// Next tab, wrapping. A tab that is not on offer starts from the first.
+    pub fn next(self, has_partitions: bool, has_notes: bool) -> Self {
+        let tabs = Self::visible(has_partitions, has_notes);
+        let at = self.index(has_partitions, has_notes);
+        tabs[(at + 1) % tabs.len()]
     }
-    /// Tab index for display (0 = Schema, 1 = Resources, 2 = Partitions when has_partitions).
-    pub fn index(self, has_partitions: bool) -> usize {
-        match self {
-            InfoTab::Schema => 0,
-            InfoTab::Resources => 1,
-            InfoTab::Partitions => {
-                if has_partitions {
-                    2
-                } else {
-                    0
-                }
-            }
-        }
+
+    pub fn prev(self, has_partitions: bool, has_notes: bool) -> Self {
+        let tabs = Self::visible(has_partitions, has_notes);
+        let at = self.index(has_partitions, has_notes);
+        tabs[(at + tabs.len() - 1) % tabs.len()]
+    }
+
+    /// Where this tab sits among the ones on offer; 0 when it is not among them.
+    pub fn index(self, has_partitions: bool, has_notes: bool) -> usize {
+        Self::visible(has_partitions, has_notes)
+            .iter()
+            .position(|tab| *tab == self)
+            .unwrap_or(0)
     }
 }
 
@@ -143,8 +145,8 @@ impl InfoModal {
     }
 
     /// Switch to next tab; `has_partitions` determines whether Partitions tab is available.
-    pub fn switch_tab(&mut self, has_partitions: bool) {
-        self.active_tab = self.active_tab.next(has_partitions);
+    pub fn switch_tab(&mut self, has_partitions: bool, has_notes: bool) {
+        self.active_tab = self.active_tab.next(has_partitions, has_notes);
         if self.active_tab == InfoTab::Schema {
             self.schema_selected_index = 0;
             self.schema_scroll_offset = 0;
@@ -155,8 +157,8 @@ impl InfoModal {
     }
 
     /// Switch to previous tab; `has_partitions` determines whether Partitions tab is available.
-    pub fn switch_tab_prev(&mut self, has_partitions: bool) {
-        self.active_tab = self.active_tab.prev(has_partitions);
+    pub fn switch_tab_prev(&mut self, has_partitions: bool, has_notes: bool) {
+        self.active_tab = self.active_tab.prev(has_partitions, has_notes);
         if self.active_tab == InfoTab::Schema {
             self.schema_selected_index = 0;
             self.schema_scroll_offset = 0;
@@ -660,6 +662,47 @@ impl<'a> DataTableInfo<'a> {
         }
     }
 
+    /// What datui noticed, one line each with what it is based on under it.
+    ///
+    /// Deliberately plain: no error styling, no counts of problems, nothing that reads
+    /// as an alarm. These are observations about the data, not faults in it.
+    fn render_notes_tab(&self, area: Rect, buf: &mut Buffer) {
+        let notes = self.state.notes();
+        if notes.is_empty() {
+            Paragraph::new("Nothing to note.").render(Rect { height: 1, ..area }, buf);
+            return;
+        }
+        let dim = Style::default().fg(self.border_color);
+        let mut y = area.y;
+        for note in notes {
+            if y >= area.y + area.height {
+                break;
+            }
+            let line = Rect {
+                y,
+                height: 1,
+                ..area
+            };
+            Paragraph::new(note.summary.as_str()).render(line, buf);
+            y += 1;
+            for detail in note.detail.iter().chain(std::iter::once(&note.scope)) {
+                if y >= area.y + area.height {
+                    break;
+                }
+                Paragraph::new(Line::from(Span::styled(format!("  {detail}"), dim))).render(
+                    Rect {
+                        y,
+                        height: 1,
+                        ..area
+                    },
+                    buf,
+                );
+                y += 1;
+            }
+            y += 1;
+        }
+    }
+
     fn render_partitioned_data_tab(&self, area: Rect, buf: &mut Buffer) {
         let y = area.y;
         let w = area.width;
@@ -752,12 +795,12 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             .as_ref()
             .map(|v| !v.is_empty())
             .unwrap_or(false);
-        let tab_titles: Vec<&str> = if has_partitions {
-            vec!["Schema", "Resources", "Partitions"]
-        } else {
-            vec!["Schema", "Resources"]
-        };
-        let sel = self.modal.active_tab.index(has_partitions);
+        let has_notes = !self.state.notes().is_empty();
+        let tab_titles: Vec<&str> = InfoTab::visible(has_partitions, has_notes)
+            .into_iter()
+            .map(InfoTab::title)
+            .collect();
+        let sel = self.modal.active_tab.index(has_partitions, has_notes);
         let tabs = Tabs::new(tab_titles)
             .style(Style::default().fg(self.border_color))
             .highlight_style(
@@ -788,6 +831,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
                     self.render_schema_tab(chunks[1], buf)
                 }
             }
+            InfoTab::Notes => self.render_notes_tab(chunks[1], buf),
         }
     }
 }

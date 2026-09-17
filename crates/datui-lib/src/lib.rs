@@ -61,6 +61,7 @@ pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
 pub mod locality;
+pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
 #[cfg(feature = "cloud")]
@@ -6834,22 +6835,12 @@ impl App {
                     self.info_modal.prev_focus();
                 }
                 KeyCode::Left | KeyCode::Char('h') if event.is_press() && on_tab_bar => {
-                    let has_partitions = self
-                        .data_table_state
-                        .as_ref()
-                        .and_then(|s| s.partition_columns.as_ref())
-                        .map(|v| !v.is_empty())
-                        .unwrap_or(false);
-                    self.info_modal.switch_tab_prev(has_partitions);
+                    let (has_partitions, has_notes) = self.info_tabs_on_offer();
+                    self.info_modal.switch_tab_prev(has_partitions, has_notes);
                 }
                 KeyCode::Right | KeyCode::Char('l') if event.is_press() && on_tab_bar => {
-                    let has_partitions = self
-                        .data_table_state
-                        .as_ref()
-                        .and_then(|s| s.partition_columns.as_ref())
-                        .map(|v| !v.is_empty())
-                        .unwrap_or(false);
-                    self.info_modal.switch_tab(has_partitions);
+                    let (has_partitions, has_notes) = self.info_tabs_on_offer();
+                    self.info_modal.switch_tab(has_partitions, has_notes);
                 }
                 KeyCode::Down | KeyCode::Char('j') if event.is_press() && on_body && schema_tab => {
                     self.info_modal.schema_table_down(total_rows, visible);
@@ -9002,7 +8993,8 @@ impl App {
                 None
             }
             KeyCode::Char('i') if event.is_press() => {
-                if self.data_table_state.is_some() {
+                if let Some(state) = self.data_table_state.as_mut() {
+                    state.mark_notes_seen();
                     self.info_modal.open();
                     self.input_mode = InputMode::Info;
                     // Defer Parquet metadata load so UI can show throbber; avoid blocking in render
@@ -11143,6 +11135,17 @@ impl App {
         modal.sort.ascending = ascending;
     }
 
+    /// Which of the Info panel's optional tabs the current dataset offers.
+    fn info_tabs_on_offer(&self) -> (bool, bool) {
+        let state = self.data_table_state.as_ref();
+        let has_partitions = state
+            .and_then(|s| s.partition_columns.as_ref())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let has_notes = state.map(|s| !s.notes().is_empty()).unwrap_or(false);
+        (has_partitions, has_notes)
+    }
+
     /// The pipeline state a failed template application is rolled back to.
     fn snapshot_state(&self) -> Option<TemplateApplicationState> {
         self.data_table_state
@@ -11720,6 +11723,11 @@ impl Widget for &mut App {
             }
         });
         controls = controls.with_status_message(status_msg);
+        controls = controls.with_notes_pending(
+            self.data_table_state
+                .as_ref()
+                .is_some_and(|s| s.notes_unseen()),
+        );
 
         match crate::render::main_view::control_bar_spec(self, main_view_content) {
             crate::render::main_view::ControlBarSpec::Datatable {

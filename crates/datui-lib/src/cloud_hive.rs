@@ -5,11 +5,13 @@ use color_eyre::Result;
 use object_store::path::Path as OsPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 use polars::prelude::{ParquetReader, Schema, SchemaExt, SerReader};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::schema_union::{FileSchema, SchemaOrigin};
+use crate::schema_union::FileSchema;
+use crate::schema_union::with_partition_columns;
+pub use crate::schema_union::{OmittedColumns, lenient_scan};
 
 const MAX_PARTITION_DEPTH: usize = 64;
 const PARQUET_FOOTER_TAIL_BYTES: usize = 256 * 1024;
@@ -284,32 +286,12 @@ pub fn dataset_schema_from_footers(
             })
         })
         .collect();
-    let origin = if read.len() == files.len() {
-        SchemaOrigin::AllFooters(files.len())
-    } else {
-        SchemaOrigin::FooterSample {
-            read: read.len(),
-            total: files.len(),
-        }
-    };
-    let mut union = crate::schema_union::union_file_schemas(&per_file, origin);
+    let mut union = crate::schema_union::union_sampled(files.len(), read, &per_file);
     if union.schema.is_empty() {
         return Err(color_eyre::eyre::eyre!(
             "No readable parquet footer in cloud prefix"
         ));
     }
-    // The union is over the footers read; the scan is over every file, so spread the
-    // per-file findings back across the full list. A file not read omits nothing.
-    let mut omitted = vec![Vec::new(); files.len()];
-    for (columns, &index) in union.omitted.iter().zip(read) {
-        omitted[index] = columns.clone();
-    }
-    union.omitted = omitted;
-    union.unreadable = union
-        .unreadable
-        .iter()
-        .filter_map(|i| read.get(*i).copied())
-        .collect();
 
     let partition_columns = partition_columns_from_prefix(&newest.key);
     let values: Vec<(String, String)> = [&first.key, &newest.key]
@@ -324,28 +306,6 @@ pub fn dataset_schema_from_footers(
         &values,
     ));
     Ok((union, partition_columns))
-}
-
-/// Put the partition columns, typed from their directory names, ahead of the file's own.
-fn with_partition_columns(
-    file_schema: &Schema,
-    partition_columns: &[String],
-    values: &[(String, String)],
-) -> Schema {
-    let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
-    let mut merged = Schema::with_capacity(partition_columns.len() + file_schema.len());
-    for name in partition_columns {
-        merged.with_column(
-            name.clone().into(),
-            crate::widgets::datatable::partition_dtype(name, file_schema, values),
-        );
-    }
-    for (name, dtype) in file_schema.iter() {
-        if !part_set.contains(name.as_str()) {
-            merged.with_column(name.clone(), dtype.clone());
-        }
-    }
-    merged
 }
 
 /// How many footers are read at once when counting.
@@ -449,134 +409,6 @@ fn footer_length(tail: &[u8]) -> Option<u64> {
     }
     let bytes: [u8; 4] = tail[end..end + 4].try_into().ok()?;
     Some(u32::from_le_bytes(bytes) as u64)
-}
-
-/// Columns a file is not read for, because it stores them in a type the dataset's
-/// column cannot hold. Keyed by URL; a file that is not a key is read whole.
-pub type OmittedColumns = HashMap<String, Vec<polars::prelude::PlSmallStr>>;
-
-/// A scan of `urls` into `schema` that reads files written at different times:
-/// columns and nested fields a file lacks are filled with nulls, ones it has beyond the
-/// schema are ignored, and integers, floats and datetime units widen. Polars'
-/// `scan_parquet` offers only the first of those, and a Bitcoin transactions file from
-/// 2015 fails against the 2026 schema without the rest.
-///
-/// A column in `omit` is left out of the files that store it in another type and reads
-/// as null there. Consecutive files omitting the same columns are one scan; the scans
-/// are concatenated in file order, so the dataset still reads in key order.
-pub fn lenient_scan(
-    urls: &[String],
-    schema: Arc<Schema>,
-    cloud_options: Option<polars::io::cloud::CloudOptions>,
-    omit: &OmittedColumns,
-) -> polars::prelude::PolarsResult<polars::prelude::LazyFrame> {
-    let omitted_here = |url: &String| omit.get(url).map(Vec::as_slice).unwrap_or(&[]);
-    if urls.iter().all(|url| omitted_here(url).is_empty()) {
-        return scan_run(urls, &schema, cloud_options, &[], false);
-    }
-    let mut runs: Vec<polars::prelude::LazyFrame> = Vec::new();
-    let mut start = 0;
-    while start < urls.len() {
-        let columns = omitted_here(&urls[start]);
-        let end = urls[start..]
-            .iter()
-            .position(|url| omitted_here(url) != columns)
-            .map_or(urls.len(), |offset| start + offset);
-        runs.push(scan_run(
-            &urls[start..end],
-            &schema,
-            cloud_options.clone(),
-            columns,
-            true,
-        )?);
-        start = end;
-    }
-    match runs.len() {
-        1 => Ok(runs.remove(0)),
-        _ => polars::prelude::concat(
-            runs,
-            polars::prelude::UnionArgs {
-                rechunk: false,
-                parallel: true,
-                ..Default::default()
-            },
-        ),
-    }
-}
-
-/// One run of files read with the same columns omitted. `align` selects the dataset's
-/// column order, so runs concatenate.
-fn scan_run(
-    urls: &[String],
-    schema: &Arc<Schema>,
-    cloud_options: Option<polars::io::cloud::CloudOptions>,
-    omit: &[polars::prelude::PlSmallStr],
-    align: bool,
-) -> polars::prelude::PolarsResult<polars::prelude::LazyFrame> {
-    use polars::lazy::dsl::{
-        CastColumnsPolicy, DslBuilder, ExtraColumnsPolicy, MissingColumnsPolicy, ScanSources,
-        UnifiedScanArgs,
-    };
-    use polars::prelude::{Expr, NULL, col, lit};
-    let sources = ScanSources::Paths(
-        urls.iter()
-            .map(|url| polars::prelude::PlRefPath::new(url.as_str()))
-            .collect(),
-    );
-    let target = if omit.is_empty() {
-        schema.clone()
-    } else {
-        let mut reduced = Schema::with_capacity(schema.len());
-        for (name, dtype) in schema.iter() {
-            if !omit.contains(name) {
-                reduced.with_column(name.clone(), dtype.clone());
-            }
-        }
-        Arc::new(reduced)
-    };
-    let options = polars::io::parquet::read::ParquetOptions {
-        schema: Some(target),
-        ..Default::default()
-    };
-    let args = UnifiedScanArgs {
-        cloud_options,
-        hive_options: polars::io::HiveOptions::new_enabled(),
-        glob: false,
-        cast_columns_policy: CastColumnsPolicy {
-            integer_upcast: true,
-            integer_to_float_cast: true,
-            float_upcast: true,
-            datetime_nanoseconds_downcast: true,
-            datetime_microseconds_downcast: true,
-            datetime_milliseconds_upcast: true,
-            datetime_microseconds_upcast: true,
-            null_upcast: true,
-            missing_struct_fields: MissingColumnsPolicy::Insert,
-            extra_struct_fields: ExtraColumnsPolicy::Ignore,
-            ..CastColumnsPolicy::ERROR_ON_MISMATCH
-        },
-        missing_columns_policy: MissingColumnsPolicy::Insert,
-        extra_columns_policy: ExtraColumnsPolicy::Ignore,
-        ..Default::default()
-    };
-    let mut lf: polars::prelude::LazyFrame = DslBuilder::scan_parquet(sources, options, args)?
-        .build()
-        .into();
-    if !omit.is_empty() {
-        let nulls: Vec<Expr> = omit
-            .iter()
-            .filter_map(|name| {
-                let dtype = schema.get(name)?;
-                Some(lit(NULL).cast(dtype.clone()).alias(name.clone()))
-            })
-            .collect();
-        lf = lf.with_columns(nulls);
-    }
-    if align {
-        let ordered: Vec<Expr> = schema.iter_names().map(|name| col(name.clone())).collect();
-        lf = lf.select(ordered);
-    }
-    Ok(lf)
 }
 
 /// The URL of `key` in the same bucket or container as `url`.

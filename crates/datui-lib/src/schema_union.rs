@@ -14,10 +14,13 @@
 //! Column order is the newest file's columns in its own order, then columns only older
 //! files have, in the order they first appear.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use polars::prelude::{DataType, Field, PlSmallStr, Schema, TimeUnit};
+use polars::prelude::{
+    DataType, Field, LazyFrame, PlRefPath, PlSmallStr, PolarsResult, Schema, TimeUnit, UnionArgs,
+    concat,
+};
 
 /// What one file's footer said, short of the data.
 #[derive(Debug, Clone)]
@@ -117,6 +120,38 @@ pub fn footers_to_read(files: usize) -> Vec<usize> {
         .collect();
     sample.dedup();
     sample
+}
+
+/// The schema of a dataset of `files` files whose footers at the indices `read` were
+/// fetched, in that order.
+///
+/// The union is over the footers read; the scan is over every file, so the per-file
+/// findings are spread back across the full list. A file not read omits nothing.
+pub fn union_sampled(
+    files: usize,
+    read: &[usize],
+    footers: &[Option<FileSchema>],
+) -> DatasetSchema {
+    let origin = if read.len() == files {
+        SchemaOrigin::AllFooters(files)
+    } else {
+        SchemaOrigin::FooterSample {
+            read: read.len(),
+            total: files,
+        }
+    };
+    let mut union = union_file_schemas(footers, origin);
+    let mut omitted = vec![Vec::new(); files];
+    for (columns, &index) in union.omitted.iter().zip(read) {
+        omitted[index] = columns.clone();
+    }
+    union.omitted = omitted;
+    union.unreadable = union
+        .unreadable
+        .iter()
+        .filter_map(|i| read.get(*i).copied())
+        .collect();
+    union
 }
 
 /// Fold every file's footer into one schema. `files` is in scan order, so the last
@@ -346,6 +381,156 @@ fn finer_unit(a: TimeUnit, b: TimeUnit) -> TimeUnit {
     if rank(a) >= rank(b) { a } else { b }
 }
 
+/// Put the partition columns, typed from their directory names, ahead of the file's own.
+pub fn with_partition_columns(
+    file_schema: &Schema,
+    partition_columns: &[String],
+    values: &[(String, String)],
+) -> Schema {
+    let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
+    let mut merged = Schema::with_capacity(partition_columns.len() + file_schema.len());
+    for name in partition_columns {
+        merged.with_column(
+            name.clone().into(),
+            crate::widgets::datatable::partition_dtype(name, file_schema, values),
+        );
+    }
+    for (name, dtype) in file_schema.iter() {
+        if !part_set.contains(name.as_str()) {
+            merged.with_column(name.clone(), dtype.clone());
+        }
+    }
+    merged
+}
+
+/// Columns a file is not read for, because it stores them in a type the dataset's
+/// column cannot hold. Keyed by the path or URL the scan names the file by; a file
+/// that is not a key is read whole.
+pub type OmittedColumns = HashMap<String, Vec<PlSmallStr>>;
+
+/// A scan of `paths` into `schema` that reads files written at different times:
+/// columns and nested fields a file lacks are filled with nulls, ones it has beyond the
+/// schema are ignored, and integers, floats and datetime units widen. Polars'
+/// `scan_parquet` offers only the first of those, and a Bitcoin transactions file from
+/// 2015 fails against the 2026 schema without the rest.
+///
+/// A column in `omit` is left out of the files that store it in another type and reads
+/// as null there. Consecutive files omitting the same columns are one scan; the scans
+/// are concatenated in file order, so the dataset still reads in key order.
+pub fn lenient_scan(
+    urls: &[String],
+    schema: Arc<Schema>,
+    cloud_options: Option<polars::io::cloud::CloudOptions>,
+    omit: &OmittedColumns,
+) -> PolarsResult<LazyFrame> {
+    let omitted_here = |url: &String| omit.get(url).map(Vec::as_slice).unwrap_or(&[]);
+    if urls.iter().all(|url| omitted_here(url).is_empty()) {
+        return scan_run(urls, &schema, cloud_options, &[], false);
+    }
+    let mut runs: Vec<LazyFrame> = Vec::new();
+    let mut start = 0;
+    while start < urls.len() {
+        let columns = omitted_here(&urls[start]);
+        let end = urls[start..]
+            .iter()
+            .position(|url| omitted_here(url) != columns)
+            .map_or(urls.len(), |offset| start + offset);
+        runs.push(scan_run(
+            &urls[start..end],
+            &schema,
+            cloud_options.clone(),
+            columns,
+            true,
+        )?);
+        start = end;
+    }
+    match runs.len() {
+        1 => Ok(runs.remove(0)),
+        _ => concat(
+            runs,
+            UnionArgs {
+                rechunk: false,
+                parallel: true,
+                ..Default::default()
+            },
+        ),
+    }
+}
+
+/// One run of files read with the same columns omitted. `align` selects the dataset's
+/// column order, so runs concatenate.
+fn scan_run(
+    urls: &[String],
+    schema: &Arc<Schema>,
+    cloud_options: Option<polars::io::cloud::CloudOptions>,
+    omit: &[PlSmallStr],
+    align: bool,
+) -> PolarsResult<LazyFrame> {
+    use polars::lazy::dsl::{
+        CastColumnsPolicy, DslBuilder, ExtraColumnsPolicy, MissingColumnsPolicy, ScanSources,
+        UnifiedScanArgs,
+    };
+    use polars::prelude::{Expr, NULL, col, lit};
+    let sources = ScanSources::Paths(
+        urls.iter()
+            .map(|url| PlRefPath::new(url.as_str()))
+            .collect(),
+    );
+    let target = if omit.is_empty() {
+        schema.clone()
+    } else {
+        let mut reduced = Schema::with_capacity(schema.len());
+        for (name, dtype) in schema.iter() {
+            if !omit.contains(name) {
+                reduced.with_column(name.clone(), dtype.clone());
+            }
+        }
+        Arc::new(reduced)
+    };
+    let options = polars::io::parquet::read::ParquetOptions {
+        schema: Some(target),
+        ..Default::default()
+    };
+    let args = UnifiedScanArgs {
+        cloud_options,
+        hive_options: polars::io::HiveOptions::new_enabled(),
+        glob: false,
+        cast_columns_policy: CastColumnsPolicy {
+            integer_upcast: true,
+            integer_to_float_cast: true,
+            float_upcast: true,
+            datetime_nanoseconds_downcast: true,
+            datetime_microseconds_downcast: true,
+            datetime_milliseconds_upcast: true,
+            datetime_microseconds_upcast: true,
+            null_upcast: true,
+            missing_struct_fields: MissingColumnsPolicy::Insert,
+            extra_struct_fields: ExtraColumnsPolicy::Ignore,
+            ..CastColumnsPolicy::ERROR_ON_MISMATCH
+        },
+        missing_columns_policy: MissingColumnsPolicy::Insert,
+        extra_columns_policy: ExtraColumnsPolicy::Ignore,
+        ..Default::default()
+    };
+    let mut lf: LazyFrame = DslBuilder::scan_parquet(sources, options, args)?
+        .build()
+        .into();
+    if !omit.is_empty() {
+        let nulls: Vec<Expr> = omit
+            .iter()
+            .filter_map(|name| {
+                let dtype = schema.get(name)?;
+                Some(lit(NULL).cast(dtype.clone()).alias(name.clone()))
+            })
+            .collect();
+        lf = lf.with_columns(nulls);
+    }
+    if align {
+        let ordered: Vec<Expr> = schema.iter_names().map(|name| col(name.clone())).collect();
+        lf = lf.select(ordered);
+    }
+    Ok(lf)
+}
 #[cfg(test)]
 mod tests {
     use super::*;

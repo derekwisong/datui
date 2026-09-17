@@ -22,6 +22,7 @@ use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 use crate::query::parse_query;
+use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 use polars::io::csv::read::NullValues;
@@ -1537,6 +1538,63 @@ impl DataTableState {
         }
     }
 
+    /// Every Parquet file under `dir`, and what the footers of the ones worth reading
+    /// say.
+    ///
+    /// The paths are sorted, so the dataset reads in the same order Polars would list
+    /// it and the newest file is last. Returns the files, the indices whose footers
+    /// were read — all of them, or a spread sample past
+    /// [`crate::schema_union::MAX_FOOTER_READS`] — and those footers. A footer that
+    /// cannot be read is `None`: one file mid-write must not stop the dataset from
+    /// opening. Metadata only — no data is read.
+    pub fn footers_of_parquet_dir(
+        dir: &Path,
+    ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileSchema>>) {
+        const MAX_DEPTH: usize = 64;
+        let mut files = Vec::new();
+        Self::collect_parquet_files(dir, &mut files, 0, MAX_DEPTH);
+        files.sort();
+        let read = crate::schema_union::footers_to_read(files.len());
+        let wanted: Vec<&Path> = read
+            .iter()
+            .filter_map(|i| files.get(*i).map(PathBuf::as_path))
+            .collect();
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(wanted.len().max(1))
+            .max(1);
+        let chunk_size = wanted.len().div_ceil(workers).max(1);
+        let footers: Vec<Option<FileSchema>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = wanted
+                .chunks(chunk_size)
+                .map(|chunk| {
+                    scope.spawn(move || chunk.iter().map(|p| Self::footer_of(p)).collect())
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Vec::<Option<FileSchema>>::new())
+                })
+                .collect()
+        });
+        (files, read, footers)
+    }
+
+    /// One local Parquet file's columns and row count, from its footer.
+    fn footer_of(path: &Path) -> Option<FileSchema> {
+        let file = File::open(path).ok()?;
+        let mut reader = ParquetReader::new(file);
+        let arrow_schema = reader.schema().ok()?;
+        let rows = reader.num_rows().ok()?;
+        Some(FileSchema {
+            schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
+            rows,
+        })
+    }
+
     /// Exact row count for a local Parquet hive directory, computed by summing per-file
     /// footer row counts (metadata only — no data is read). This is the cheap alternative
     /// to a `len()` data scan: footers are tiny, so the cost is one metadata read per file,
@@ -1630,7 +1688,7 @@ impl DataTableState {
     }
 
     /// `key=value` names of the partition directories beside each one on the path to `file`.
-    fn hive_partition_values(root: &Path, file: &Path) -> Vec<(String, String)> {
+    pub(crate) fn hive_partition_values(root: &Path, file: &Path) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let Some(rel) = file.strip_prefix(root).ok().and_then(Path::parent) else {
             return out;

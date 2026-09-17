@@ -1015,6 +1015,99 @@ fn test_hive_dir_loads_and_counts_via_footers() {
     );
 }
 
+/// Open a local folder of Parquet files and return the loaded app, or `None` if the
+/// open never finished.
+fn open_local_dataset(dir: &std::path::Path) -> App {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let opts = OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![dir.to_path_buf()], opts);
+    app
+}
+
+/// Write one Parquet file at `sub/data.parquet` under `dir`.
+fn write_parquet(dir: &std::path::Path, sub: &str, mut df: polars::prelude::DataFrame) {
+    let d = dir.join(sub);
+    std::fs::create_dir_all(&d).unwrap();
+    let f = File::create(d.join("data.parquet")).unwrap();
+    ParquetWriter::new(f).finish(&mut df).unwrap();
+}
+
+/// A column only a middle file has used to vanish: the schema was one file's, and that
+/// file did not have it.
+#[test]
+fn test_a_column_only_one_local_file_has_is_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-03-01",
+        df!("id" => &[1i64, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-03-02",
+        df!("id" => &[3i64], "oops" => &["x"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-03-03",
+        df!("id" => &[4i64, 5]).unwrap(),
+    );
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["date", "id", "oops"],
+        "the partition key, then every column any file has"
+    );
+    let dataset = state.dataset_schema().expect("read from the footers");
+    assert_eq!(dataset.origin.to_string(), "all 3 footers");
+    let drifting: Vec<String> = dataset.drifting().map(|c| c.name.to_string()).collect();
+    assert_eq!(drifting, ["oops"]);
+}
+
+/// Files written with different integer widths used to fail the strict local scan.
+#[test]
+fn test_local_files_of_different_integer_widths_open_as_the_wider_one() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("n" => &[1i32, 2]).unwrap(),
+    );
+    write_parquet(dir.path(), "date=2024-01-02", df!("n" => &[3i64]).unwrap());
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.schema.get("n"),
+        Some(&polars::prelude::DataType::Int64)
+    );
+}
+
+/// One unreadable file must not stop the rest of the folder from opening.
+#[test]
+fn test_one_unreadable_local_file_does_not_stop_the_open() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    let bad = dir.path().join("date=2024-01-02");
+    std::fs::create_dir_all(&bad).unwrap();
+    std::fs::write(bad.join("data.parquet"), b"not a parquet file").unwrap();
+    write_parquet(dir.path(), "date=2024-01-03", df!("id" => &[3i64]).unwrap());
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+    assert_eq!(names, ["date", "id"]);
+    let dataset = state.dataset_schema().expect("read from the footers");
+    assert_eq!(dataset.unreadable, [1], "named, and left out of the scan");
+}
+
 // ---------------------------------------------------------------------------
 // Abandoning an in-flight load (Ctrl+O to the home screen)
 // ---------------------------------------------------------------------------

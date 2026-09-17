@@ -4622,12 +4622,15 @@ impl App {
         lf.select(exprs)
     }
 
-    /// Schema for a local hive dataset read from one file's footer, instead of
-    /// `collect_schema()` over every file in the set.
+    /// Schema for a local folder of Parquet files: every column any of them has, from
+    /// their footers, instead of `collect_schema()` over the whole set or one file's
+    /// columns standing in for all.
     ///
-    /// `None` when the path is not that shape, or when the read fails — either way
-    /// the caller falls back to the general scan, which will report the error properly
-    /// if there is one.
+    /// Reading a local footer is a seek and a small read, so this is cheap even for
+    /// thousands of files, and it is what makes a column a vendor added for a month
+    /// visible. `None` when the path is not that shape, or when nothing could be read —
+    /// either way the caller falls back to the general scan, which reports the error
+    /// properly if there is one.
     fn schema_state_from_local_hive(
         path: Option<&Path>,
         options: &OpenOptions,
@@ -4636,16 +4639,37 @@ impl App {
             return None;
         }
         let p = path.filter(|p| p.is_dir() && options.hive)?;
-        let (merged_schema, partition_columns) =
-            DataTableState::schema_from_one_hive_parquet(p).ok()?;
-        let lf = DataTableState::scan_parquet_hive_with_schema(p, merged_schema.clone()).ok()?;
-        DataTableState::from_schema_and_lazyframe(
-            merged_schema,
-            lf,
-            options,
-            Some(partition_columns),
-        )
-        .ok()
+        let (files, read, footers) = DataTableState::footers_of_parquet_dir(p);
+        let first = files.first()?;
+        let partition_columns = DataTableState::discover_hive_partition_columns(p);
+        let values = DataTableState::hive_partition_values(p, first);
+        let mut dataset = crate::schema_union::union_sampled(files.len(), &read, &footers);
+        if dataset.schema.is_empty() {
+            return None;
+        }
+        dataset.schema = Arc::new(crate::schema_union::with_partition_columns(
+            &dataset.schema,
+            &partition_columns,
+            &values,
+        ));
+        let paths: Vec<String> = files
+            .iter()
+            .map(|f| f.to_string_lossy().into_owned())
+            .collect();
+        let omit: crate::schema_union::OmittedColumns = paths
+            .iter()
+            .zip(dataset.omitted.iter())
+            .filter(|(_, columns)| !columns.is_empty())
+            .map(|(path, columns)| (path.clone(), columns.clone()))
+            .collect();
+        let schema = dataset.schema.clone();
+        let lf = crate::schema_union::lenient_scan(&paths, schema.clone(), None, &omit).ok()?;
+        let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns);
+        let mut state =
+            DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
+                .ok()?;
+        state.set_dataset_schema(dataset);
+        Some(state)
     }
 
     /// The same one-file trick against an object store. This is the route that used to

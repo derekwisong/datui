@@ -575,33 +575,12 @@ pub fn store_for_bucket(
     google_credentials: Option<&Path>,
 ) -> Result<std::sync::Arc<dyn object_store::ObjectStore>, String> {
     match kind {
-        ProviderKind::Gcs => {
-            // Unsigned means no credential lookup at all, so a machine with no Google
-            // login never waits on a metadata service that is not there.
-            let builder = match (unsigned, google_token) {
-                (true, _) => {
-                    object_store::gcp::GoogleCloudStorageBuilder::new().with_skip_signature(true)
-                }
-                (false, Some(token)) => object_store::gcp::GoogleCloudStorageBuilder::new()
-                    .with_credentials(std::sync::Arc::new(
-                        object_store::StaticCredentialProvider::new(
-                            object_store::gcp::GcpCredential {
-                                bearer: token.to_string(),
-                            },
-                        ),
-                    )),
-                (false, None) => match google_credentials {
-                    Some(file) => object_store::gcp::GoogleCloudStorageBuilder::new()
-                        .with_application_credentials(file.to_string_lossy()),
-                    None => object_store::gcp::GoogleCloudStorageBuilder::from_env(),
-                },
-            };
-            let store = builder
-                .with_bucket_name(bucket)
-                .build()
-                .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))?;
-            Ok(std::sync::Arc::new(store))
-        }
+        ProviderKind::Gcs => Ok(std::sync::Arc::new(gcs_store(
+            bucket,
+            unsigned,
+            google_token,
+            google_credentials,
+        )?)),
         ProviderKind::S3 => {
             let store = s3_builder(bucket, settings)
                 .build()
@@ -609,6 +588,164 @@ pub fn store_for_bucket(
             Ok(std::sync::Arc::new(store))
         }
         ProviderKind::Azure => Err("an Azure container needs its account".to_string()),
+    }
+}
+
+/// A Google Cloud Storage store for one bucket, signed as the resolver decided.
+fn gcs_store(
+    bucket: &str,
+    unsigned: bool,
+    google_token: Option<&str>,
+    google_credentials: Option<&Path>,
+) -> Result<object_store::gcp::GoogleCloudStorage, String> {
+    // Unsigned means no credential lookup at all, so a machine with no Google login
+    // never waits on a metadata service that is not there.
+    let builder = match (unsigned, google_token) {
+        (true, _) => object_store::gcp::GoogleCloudStorageBuilder::new().with_skip_signature(true),
+        (false, Some(token)) => object_store::gcp::GoogleCloudStorageBuilder::new()
+            .with_credentials(std::sync::Arc::new(
+                object_store::StaticCredentialProvider::new(object_store::gcp::GcpCredential {
+                    bearer: token.to_string(),
+                }),
+            )),
+        (false, None) => match google_credentials {
+            Some(file) => object_store::gcp::GoogleCloudStorageBuilder::new()
+                .with_application_credentials(file.to_string_lossy()),
+            None => object_store::gcp::GoogleCloudStorageBuilder::from_env(),
+        },
+    };
+    builder
+        .with_bucket_name(bucket)
+        .build()
+        .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))
+}
+
+/// How many entries one peek inside a folder reads: enough to tell partitions from
+/// files, and a single request however large the folder is.
+const PEEK_KEYS: usize = 100;
+
+/// What a cloud folder holds, from the first page of a delimited listing of it:
+/// `Hive` when its children are `key=value` partitions, `MultiFile` when they are
+/// Parquet files, else `Directory`. One request; nothing is read from any object.
+pub async fn peek_kind(
+    url: &str,
+    config: &CloudConfig,
+) -> Result<crate::discover::EntryKind, String> {
+    let resolved = {
+        let (url, config) = (url.to_string(), config.clone());
+        tokio::task::spawn_blocking(move || crate::cloud_sources::resolve(&url, &config))
+            .await
+            .map_err(|e| format!("{e}"))??
+    };
+    match peek_page(&resolved).await {
+        Err(refused) if resolved.signing == Signing::Try && is_refusal(&refused) => {
+            peek_page(&resolved.unsigned()).await.map_err(|_| refused)
+        }
+        other => other,
+    }
+}
+
+async fn peek_page(
+    resolved: &crate::cloud_sources::Resolved,
+) -> Result<crate::discover::EntryKind, String> {
+    use object_store::list::{PaginatedListOptions, PaginatedListStore};
+    let (store, prefix): (std::sync::Arc<dyn PaginatedListStore>, String) =
+        if let Some((account, container, key)) = crate::source::azure_parts(&resolved.url) {
+            (
+                crate::azure::paginated_store(&account, &container, &resolved.azure)?,
+                key,
+            )
+        } else {
+            let (kind, bucket, key) = split_bucket_url(&resolved.url)
+                .ok_or_else(|| format!("not an object-store URL: {}", resolved.url))?;
+            let unsigned = resolved.signing == Signing::Unsigned;
+            let store: std::sync::Arc<dyn PaginatedListStore> = match kind {
+                ProviderKind::Gcs => std::sync::Arc::new(gcs_store(
+                    &bucket,
+                    unsigned,
+                    resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
+                    resolved.google_credentials.as_deref(),
+                )?),
+                ProviderKind::S3 => std::sync::Arc::new(
+                    s3_builder(&bucket, &resolved.s3)
+                        .build()
+                        .map_err(|e| format!("S3 is not configured: {e}"))?,
+                ),
+                ProviderKind::Azure => return Err("an Azure URL names its account".to_string()),
+            };
+            (store, key)
+        };
+    let prefix = format!("{}/", prefix.trim_matches('/'));
+    let page = store
+        .list_paginated(
+            Some(&prefix),
+            PaginatedListOptions {
+                delimiter: Some("/".into()),
+                max_keys: Some(PEEK_KEYS),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let folders: Vec<String> = page
+        .result
+        .common_prefixes
+        .iter()
+        .map(|p| p.as_ref().to_string())
+        .collect();
+    let objects: Vec<(String, u64)> = page
+        .result
+        .objects
+        .iter()
+        .map(|o| (o.location.as_ref().to_string(), o.size))
+        .collect();
+    Ok(classify_listing(&folders, &objects))
+}
+
+/// A folder's kind from what one listing of it shows, by the rules a local folder is
+/// classified by, except that only Parquet counts as data: it is the one format a
+/// prefix of files is read in place as.
+pub fn classify_listing(
+    folders: &[String],
+    objects: &[(String, u64)],
+) -> crate::discover::EntryKind {
+    use crate::discover::EntryKind;
+    let last = |key: &str| {
+        key.trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_string()
+    };
+    let partitions = folders
+        .iter()
+        .filter(|f| matches!(last(f).find('='), Some(i) if i > 0))
+        .count();
+    // Data, not the markers and job files tools leave beside it.
+    let files: Vec<&String> = objects
+        .iter()
+        .filter(|(key, size)| {
+            let name = last(key);
+            !name.is_empty()
+                && !name.starts_with('.')
+                && !is_job_file(&name)
+                && !is_empty_marker(&name, *size)
+                && !(*size == 0 && folders.iter().any(|f| last(f) == name))
+        })
+        .map(|(key, _)| key)
+        .collect();
+    let parquet = files
+        .iter()
+        .filter(|key| crate::discover::is_parquet_key(key))
+        .count();
+    if partitions > 0 && partitions >= files.len() {
+        return EntryKind::Hive;
+    }
+    let seen = folders.len() + files.len();
+    if parquet > 1 && parquet == files.len() && parquet * 2 >= seen {
+        EntryKind::MultiFile
+    } else {
+        EntryKind::Directory
     }
 }
 
@@ -1546,6 +1683,53 @@ mod tests {
         let mut minio = resolved("s3://data/x.parquet", ProviderKind::S3);
         minio.s3.endpoint = Some("http://127.0.0.1:9000".to_string());
         assert_eq!(probe_url(&minio), None, "a custom endpoint is not probed");
+    }
+
+    #[test]
+    fn a_folder_is_classified_by_one_page_of_its_listing() {
+        use crate::discover::EntryKind;
+        let folders = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let files = |names: &[(&str, u64)]| {
+            names
+                .iter()
+                .map(|(n, s)| (n.to_string(), *s))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            classify_listing(
+                &folders(&[
+                    "v1.0/btc/blocks/date=2009-01-03/",
+                    "v1.0/btc/blocks/date=2009-01-09/"
+                ]),
+                &files(&[("v1.0/btc/blocks/_SUCCESS", 0)]),
+            ),
+            EntryKind::Hive
+        );
+        assert_eq!(
+            classify_listing(
+                &folders(&[]),
+                &files(&[
+                    ("gbif/occurrence.parquet/000001", 10),
+                    ("gbif/occurrence.parquet/000002", 10)
+                ]),
+            ),
+            EntryKind::MultiFile,
+            "part files with no extension"
+        );
+        assert_eq!(
+            classify_listing(&folders(&[]), &files(&[("a/x.csv", 5), ("a/y.csv", 5)])),
+            EntryKind::Directory,
+            "CSV cannot be read in place as one table"
+        );
+        assert_eq!(
+            classify_listing(&folders(&["a/by_year/", "a/by_station/"]), &files(&[])),
+            EntryKind::Directory
+        );
+        assert_eq!(
+            classify_listing(&folders(&["a/b/"]), &files(&[("a/one.parquet", 5)])),
+            EntryKind::Directory,
+            "one file is a file to open, not a dataset"
+        );
     }
 
     #[test]

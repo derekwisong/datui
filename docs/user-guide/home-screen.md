@@ -35,7 +35,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a cloud folder labelled `hive` or `multi`, <kbd>→</kbd> goes inside it instead of opening it |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
@@ -338,6 +338,17 @@ objects some tools leave to stand for folders.
 Inside a bucket: name, size and modification time, which is what a listing
 returns. Row counts and columns would need a read per object, which someone is
 billed for, so they are not fetched until you open one.
+
+Folders are looked inside, a few at a time, once each listing lands: one small
+listing request per folder, for at most 48 of them, and never a read of an object.
+A folder of `key=value` partitions is then labelled `hive`, and a folder of Parquet
+files `multi`, like a local one. <kbd>Enter</kbd> opens it as one dataset, with the
+partitions as columns; <kbd>→</kbd> goes inside instead, where the first row,
+`<folder> (all partitions)`, opens the whole folder again.
+
+A partitioned dataset whose files gained columns over time, such as a blockchain's
+first day, which has no previous block, opens with every column: its schema comes
+from the first and the last file, and older files read the newer columns as empty.
 
 ## Network locations
 

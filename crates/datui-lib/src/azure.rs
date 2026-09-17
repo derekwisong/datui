@@ -1076,6 +1076,23 @@ pub fn store(
     container: &str,
     settings: &AzureSettings,
 ) -> Result<std::sync::Arc<dyn object_store::ObjectStore>, String> {
+    Ok(std::sync::Arc::new(build(account, container, settings)?))
+}
+
+/// The same store, for one page of a listing at a time.
+pub fn paginated_store(
+    account: &str,
+    container: &str,
+    settings: &AzureSettings,
+) -> Result<std::sync::Arc<dyn object_store::list::PaginatedListStore>, String> {
+    Ok(std::sync::Arc::new(build(account, container, settings)?))
+}
+
+fn build(
+    account: &str,
+    container: &str,
+    settings: &AzureSettings,
+) -> Result<object_store::azure::MicrosoftAzure, String> {
     let mut builder = object_store::azure::MicrosoftAzureBuilder::new()
         .with_account(account)
         .with_container_name(container);
@@ -1100,10 +1117,9 @@ pub fn store(
         | AzureAuth::ManagedIdentity
         | AzureAuth::KeyCommand(_) => builder.with_skip_signature(true),
     };
-    let store = builder
+    builder
         .build()
-        .map_err(|e| format!("Azure is not configured: {e}"))?;
-    Ok(std::sync::Arc::new(store))
+        .map_err(|e| format!("Azure is not configured: {e}"))
 }
 
 /// Polars' view of the same settings, for `scan_parquet` on an `abfss://` URL.

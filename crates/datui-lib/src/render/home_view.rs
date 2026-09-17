@@ -1258,6 +1258,7 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 // Nothing to add: "kind directory" is directly above.
                 EntryKind::Directory => "",
                 EntryKind::Unknown => "Not read yet.",
+                _ if crate::home::is_object_store_url(&entry.path) => "Read when opened.",
                 _ if reading => "Reading…",
                 _ => "Schema needs a full read.",
             };

@@ -1809,3 +1809,86 @@ fn secret_commands_env_files_and_credentials_files() {
     }
     datui::cloud_env::load(&CloudConfig::default(), dir.path());
 }
+
+/// Partitioned folders in a public dataset are labelled `hive` once peeked into, open
+/// as one dataset with their partition column, and can still be browsed with →, where
+/// a row opens the whole folder.
+#[test]
+#[ignore = "reads public datasets over the network; set DATUI_LIVE_PUBLIC=1"]
+fn partitioned_cloud_folders_are_hive_datasets() {
+    if std::env::var("DATUI_LIVE_PUBLIC").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
+        return;
+    }
+    let (mut app, rx) = live_app();
+    assert!(enter_source(&mut app, &rx, "public"));
+    let row_kind = |app: &datui::App, name: &str| {
+        app.home.visible().iter().find_map(|row| match row {
+            datui::home::Row::Entry { entry, .. } if entry.name == name => Some(entry.kind),
+            _ => None,
+        })
+    };
+    let step = |app: &mut datui::App, name: &str| {
+        assert!(
+            pump_until(app, &rx, 60, |app| row_kind(app, name).is_some()),
+            "{name} should be listed"
+        );
+        assert!(select_row(app, name), "{name}");
+        if let Some(crash) = drive(app, key(crossterm::event::KeyCode::Enter)) {
+            panic!("Enter on {name}: {crash}");
+        }
+    };
+    step(&mut app, "Bitcoin and Ethereum");
+    step(&mut app, "btc");
+    let labelled = pump_until(&mut app, &rx, 60, |app| {
+        row_kind(app, "blocks") == Some(datui::discover::EntryKind::Hive)
+            && row_kind(app, "transactions") == Some(datui::discover::EntryKind::Hive)
+    });
+    println!("{}", screen_text(&mut app, 120, 20));
+    assert!(labelled, "blocks and transactions are partitioned by date");
+
+    // → goes inside, where one row stands for the whole folder.
+    assert!(select_row(&mut app, "blocks"));
+    app.event(&key(crossterm::event::KeyCode::Right));
+    assert!(
+        pump_until(&mut app, &rx, 60, |app| row_kind(
+            app,
+            "blocks (all partitions)"
+        )
+        .is_some()),
+        "a row for every partition"
+    );
+    println!("{}", screen_text(&mut app, 120, 20));
+    app.event(&key(crossterm::event::KeyCode::Backspace));
+
+    // Enter opens the folder as one dataset, with the partition as a column.
+    step(&mut app, "blocks");
+    let loaded = pump_until(&mut app, &rx, 120, |app| {
+        app.data_table_state.is_some() && !app.is_busy()
+    });
+    assert!(loaded, "blocks should open: {:?}", app.home.status);
+    let headers = app.data_table_state.as_ref().unwrap().headers();
+    println!("{headers:?}");
+    assert!(headers.iter().any(|h| h == "date"), "{headers:?}");
+
+    // A folder of Parquet part files with no extension is one dataset too.
+    let config = datui::OpenOptions::default().effective_cloud(&CloudConfig::default());
+    let runtime = common::test_runtime();
+    let snapshot = runtime
+        .block_on(cloud_browse::list_objects(
+            "s3://gbif-open-data-us-east-1/occurrence/",
+            &config,
+        ))
+        .expect("GBIF lists")
+        .into_iter()
+        .map(|r| r.path.to_string_lossy().into_owned())
+        .max()
+        .expect("a snapshot");
+    let parts = format!("{snapshot}/occurrence.parquet");
+    assert_eq!(
+        runtime.block_on(cloud_browse::peek_kind(&parts, &config)),
+        Ok(datui::discover::EntryKind::MultiFile)
+    );
+    let headers = open_url(&format!("{parts}/"), &config).expect("the part files open as one");
+    assert!(headers.iter().any(|h| h == "gbifid"), "{headers:?}");
+}

@@ -2819,6 +2819,92 @@ fn test_typing_finds_bucket_names_from_every_source() {
 }
 
 #[test]
+fn test_partitioned_cloud_folders_are_labelled_and_open_whole() {
+    use datui::discover::{Entry, EntryKind};
+    use std::path::{Path, PathBuf};
+    let btc = PathBuf::from("s3://aws-public-blockchain/v1.0/btc");
+    let blocks = PathBuf::from("s3://aws-public-blockchain/v1.0/btc/blocks");
+    let mut home = HomeState {
+        network_check: |_| true,
+        ..Default::default()
+    };
+    let folder = |path: &Path, name: &str| {
+        let mut entry = Entry::directory(path);
+        entry.name = name.to_string();
+        entry
+    };
+    home.probe_ready(
+        btc.clone(),
+        vec![
+            folder(&blocks, "blocks"),
+            folder(
+                Path::new("s3://aws-public-blockchain/v1.0/btc/transactions"),
+                "transactions",
+            ),
+        ],
+    );
+    // Every folder is to be peeked at, once.
+    assert_eq!(home.cloud_folders_to_peek(&btc, 48).len(), 2);
+    home.cloud_kinds.insert(blocks.clone(), EntryKind::Hive);
+    home.apply_cloud_kinds(&btc);
+    assert_eq!(home.probed[&btc][0].kind, EntryKind::Hive);
+    assert_eq!(home.probed[&btc][1].kind, EntryKind::Directory);
+    assert_eq!(home.cloud_folders_to_peek(&btc, 48).len(), 1);
+    // A later listing of the same place keeps what was found.
+    home.probe_ready(btc.clone(), vec![folder(&blocks, "blocks")]);
+    assert_eq!(home.probed[&btc][0].kind, EntryKind::Hive);
+    assert!(
+        home.cloud_folders_to_peek(Path::new("/local/dir"), 48)
+            .is_empty()
+    );
+
+    // Inside it, one row stands for every partition.
+    home.probe_ready(
+        blocks.clone(),
+        vec![
+            folder(
+                Path::new("s3://aws-public-blockchain/v1.0/btc/blocks/date=2009-01-03"),
+                "date=2009-01-03",
+            ),
+            folder(
+                Path::new("s3://aws-public-blockchain/v1.0/btc/blocks/date=2009-01-09"),
+                "date=2009-01-09",
+            ),
+        ],
+    );
+    home.browsing = Some(blocks.clone());
+    home.rebuild(&[], &[]);
+    let first = &home.sections[0].rows[0];
+    assert_eq!(first.name, "blocks (all partitions)");
+    assert_eq!(first.kind, EntryKind::Hive);
+    assert_eq!(
+        first.path,
+        PathBuf::from("s3://aws-public-blockchain/v1.0/btc/blocks/")
+    );
+    assert_eq!(home.sections[0].rows.len(), 3);
+
+    // A folder of plain subfolders gets no such row.
+    let parquet = PathBuf::from("s3://noaa-ghcn-pds/parquet");
+    home.probe_ready(
+        parquet.clone(),
+        vec![
+            folder(Path::new("s3://noaa-ghcn-pds/parquet/by_year"), "by_year"),
+            folder(
+                Path::new("s3://noaa-ghcn-pds/parquet/by_station"),
+                "by_station",
+            ),
+        ],
+    );
+    home.browsing = Some(parquet);
+    home.rebuild(&[], &[]);
+    assert_eq!(home.sections[0].rows.len(), 2);
+    assert_eq!(
+        datui::home::folder_dataset_url(Path::new("gs://b/x")),
+        PathBuf::from("gs://b/x/")
+    );
+}
+
+#[test]
 fn test_google_steps_through_project_bucket_and_prefix() {
     use datui::home::{CloudSource, CloudStatus};
     use std::path::{Path, PathBuf};

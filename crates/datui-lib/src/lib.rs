@@ -1476,6 +1476,11 @@ pub enum AppEvent {
         root: PathBuf,
         rows: Option<Vec<crate::discover::Entry>>,
     },
+    /// What peeking inside some folders of a cloud listing found: the ones that are
+    /// partitioned or Parquet datasets.
+    HomeCloudKinds {
+        kinds: Vec<(PathBuf, crate::discover::EntryKind)>,
+    },
     /// A cloud listing was refused, with the service's reason.
     HomeProbeFailed {
         root: PathBuf,
@@ -3104,7 +3109,9 @@ impl App {
     /// the session. `None` means "not knowable without a scan", which the UI reports
     /// rather than papering over.
     pub fn home_schema(&mut self, entry: &discover::Entry) -> Option<discover::SchemaPreview> {
-        if home::cloud_source_id(&entry.path).is_some() {
+        // A schema preview reads a local file. Nothing in an object store is read before
+        // it is opened: asking would only come back empty, again on every rebuild.
+        if home::is_cloud_place(&entry.path) || home::is_object_store_url(&entry.path) {
             return None;
         }
         if let Some(cached) = self.home_schema_cache.get(&entry.path) {
@@ -3794,6 +3801,94 @@ impl App {
         self.home_refresh();
     }
 
+    /// Look inside the folders a cloud listing returned, a few at a time, so the ones
+    /// that are datasets say `hive` or `multi` and open as one. One small listing
+    /// request per folder, never an object read, and at most `PEEKS_PER_LISTING` of
+    /// them per listing; each folder is peeked at once per session.
+    #[cfg(feature = "cloud")]
+    fn peek_cloud_folders(&mut self, root: &Path) {
+        const PEEKS_PER_LISTING: usize = 48;
+        const PEEKS_AT_ONCE: usize = 4;
+        let folders = self.home.cloud_folders_to_peek(root, PEEKS_PER_LISTING);
+        if folders.is_empty() {
+            return;
+        }
+        // Claimed now, so a rebuild before the answers arrive does not ask again.
+        for folder in &folders {
+            self.home
+                .cloud_kinds
+                .insert(folder.clone(), discover::EntryKind::Directory);
+        }
+        let tx = self.events.clone();
+        let cloud = self.app_config.cloud.clone();
+        self.runtime.spawn(async move {
+            let permits = Arc::new(tokio::sync::Semaphore::new(PEEKS_AT_ONCE));
+            let mut peeks = tokio::task::JoinSet::new();
+            for folder in folders {
+                let (permits, cloud) = (permits.clone(), cloud.clone());
+                peeks.spawn(async move {
+                    let _permit = permits.acquire_owned().await;
+                    let kind =
+                        crate::cloud_browse::peek_kind(&folder.to_string_lossy(), &cloud).await;
+                    (folder, kind)
+                });
+            }
+            // Sent a few at a time: the labels fill in as they are found, without a
+            // rebuild per folder.
+            let mut found = Vec::new();
+            while let Some(joined) = peeks.join_next().await {
+                if let Ok((folder, Ok(kind))) = joined
+                    && kind != discover::EntryKind::Directory
+                {
+                    found.push((folder, kind));
+                }
+                if found.len() >= PEEKS_AT_ONCE {
+                    let _ = tx.send(AppEvent::HomeCloudKinds {
+                        kinds: std::mem::take(&mut found),
+                    });
+                }
+            }
+            if !found.is_empty() {
+                let _ = tx.send(AppEvent::HomeCloudKinds { kinds: found });
+            }
+        });
+    }
+
+    /// Browse into a directory, bucket or cloud folder.
+    fn home_browse_into(&mut self, path: PathBuf) {
+        if self.home.browsing.is_none() {
+            self.home.browse_start = Some(path.clone());
+        } else if self.home.browse_start.is_none() {
+            self.home.browse_start = self.home.browsing.clone();
+        }
+        self.home.browsing = Some(path);
+        // "Below here" now means somewhere else. Whatever the last walk found
+        // describes a different place, and a fresh one starts on the next
+        // keystroke.
+        self.home.search.reset();
+        self.home.filter.clear();
+        self.home.sync_search_section();
+        self.home.selected = 0;
+        self.home_refresh();
+    }
+
+    /// The highlighted row, when it is a cloud folder that opens as one dataset and so
+    /// can be browsed into only with →.
+    fn selected_cloud_dataset_folder(&self) -> Option<PathBuf> {
+        let entry = self.home.selected_entry()?;
+        let whole_of_here = self
+            .home
+            .browsing
+            .as_deref()
+            .is_some_and(|dir| home::folder_dataset_url(dir) == entry.path);
+        (matches!(
+            entry.kind,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile
+        ) && home::is_object_store_url(&entry.path)
+            && !whole_of_here)
+            .then_some(entry.path)
+    }
+
     /// Open the highlighted entry: toggle a section, descend into a directory, or
     /// load a dataset.
     fn home_open_selected(&mut self) -> Option<AppEvent> {
@@ -3807,21 +3902,17 @@ impl App {
         }
         let entry = self.home.selected_entry()?;
         if entry.kind == discover::EntryKind::Directory {
-            if self.home.browsing.is_none() {
-                self.home.browse_start = Some(entry.path.clone());
-            } else if self.home.browse_start.is_none() {
-                self.home.browse_start = self.home.browsing.clone();
-            }
-            self.home.browsing = Some(entry.path.clone());
-            // "Below here" now means somewhere else. Whatever the last walk found
-            // describes a different place, and a fresh one starts on the next
-            // keystroke.
-            self.home.search.reset();
-            self.home.filter.clear();
-            self.home.sync_search_section();
-            self.home.selected = 0;
-            self.home_refresh();
+            self.home_browse_into(entry.path);
             return None;
+        }
+        // A cloud folder that is a dataset opens as one: its URL as a prefix, which is
+        // what makes the open a scan of every file under it.
+        if matches!(
+            entry.kind,
+            discover::EntryKind::Hive | discover::EntryKind::MultiFile
+        ) && home::is_object_store_url(&entry.path)
+        {
+            return Some(self.home_open_path(home::folder_dataset_url(&entry.path)));
         }
         Some(self.home_open_path(entry.path))
     }
@@ -3933,7 +4024,12 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Left => self.home_collapse(true),
-            KeyCode::Right => self.home_collapse(false),
+            KeyCode::Right => match self.selected_cloud_dataset_folder() {
+                // Into a partitioned cloud folder rather than opening it, to reach one
+                // partition.
+                Some(folder) => self.home_browse_into(folder),
+                None => self.home_collapse(false),
+            },
             KeyCode::PageUp => self.home.move_selection(-10),
             KeyCode::PageDown => self.home.move_selection(10),
             KeyCode::Char('u') if ctrl => {
@@ -4443,6 +4539,8 @@ impl App {
             cloud_options: Some(cloud_opts),
             hive_options: polars::io::HiveOptions::new_enabled(),
             glob: true,
+            // Older files lack the columns only the newest has; they read as null.
+            allow_missing_columns: true,
             ..Default::default()
         };
         let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args).ok()?;
@@ -9289,7 +9387,11 @@ impl App {
                 // root is ever probed for the rest of the session.
                 self.home_probes_inflight.retain(|p| p != root);
                 match rows {
-                    Some(rows) => self.home.probe_ready(root.clone(), rows.clone()),
+                    Some(rows) => {
+                        self.home.probe_ready(root.clone(), rows.clone());
+                        #[cfg(feature = "cloud")]
+                        self.peek_cloud_folders(root);
+                    }
                     None => self.home.probe_failed(root.clone()),
                 }
                 // An account read with its keys because the sign-in has no data role
@@ -9314,6 +9416,17 @@ impl App {
                 }
                 // Rebuild so the listing picks the result up; the probe is the only
                 // thing that ever reads a remote root.
+                self.home_refresh();
+                None
+            }
+            AppEvent::HomeCloudKinds { kinds } => {
+                let roots: Vec<PathBuf> = self.home.probed.keys().cloned().collect();
+                for (folder, kind) in kinds {
+                    self.home.cloud_kinds.insert(folder.clone(), *kind);
+                }
+                for root in roots {
+                    self.home.apply_cloud_kinds(&root);
+                }
                 self.home_refresh();
                 None
             }

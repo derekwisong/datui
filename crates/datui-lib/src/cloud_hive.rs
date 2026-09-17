@@ -19,6 +19,7 @@ async fn first_parquet_key_spine(
     prefix: &OsPath,
     depth: usize,
     values: &mut Vec<(String, String)>,
+    newest: bool,
 ) -> Result<Option<OsPath>> {
     if depth >= MAX_PARTITION_DEPTH {
         return Ok(None);
@@ -28,24 +29,50 @@ async fn first_parquet_key_spine(
         .await
         .map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))?;
 
-    for obj in &result.objects {
-        let loc = obj.location.as_ref();
-        if crate::discover::is_parquet_key(loc) {
-            return Ok(Some(obj.location.clone()));
-        }
+    let mut objects: Vec<&OsPath> = result
+        .objects
+        .iter()
+        .map(|o| &o.location)
+        .filter(|l| crate::discover::is_parquet_key(l.as_ref()))
+        .collect();
+    objects.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+    let object = if newest {
+        objects.last()
+    } else {
+        objects.first()
+    };
+    if let Some(object) = object {
+        return Ok(Some((*object).clone()));
     }
     for common in &result.common_prefixes {
         if let Some((k, v)) = common.filename().and_then(|n| n.split_once('=')) {
             values.push((k.to_string(), v.to_string()));
         }
     }
-    for common in &result.common_prefixes {
-        let s = common.as_ref();
-        if s.contains('=') {
-            return Box::pin(first_parquet_key_spine(store, common, depth + 1, values)).await;
+    let mut partitions: Vec<&OsPath> = result
+        .common_prefixes
+        .iter()
+        .filter(|c| c.as_ref().contains('='))
+        .collect();
+    partitions.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+    let partition = if newest {
+        partitions.last()
+    } else {
+        partitions.first()
+    };
+    match partition {
+        Some(partition) => {
+            Box::pin(first_parquet_key_spine(
+                store,
+                partition,
+                depth + 1,
+                values,
+                newest,
+            ))
+            .await
         }
+        None => Ok(None),
     }
-    Ok(None)
 }
 
 /// Discover partition column names from the first common prefix at each level (single spine).
@@ -135,8 +162,12 @@ async fn read_parquet_footer(store: &Arc<dyn ObjectStore>, path: &OsPath) -> Res
     footer_from_parquet_tail(&tail)
 }
 
-/// Infer (merged_schema, partition_columns) from one parquet file in a cloud hive prefix.
-/// Uses single-spine listing and reads only parquet footer. Returns error on failure so caller can fall back to collect_schema().
+/// Infer (merged_schema, partition_columns) from the first and the last parquet file in
+/// a cloud hive prefix, by name. Uses single-spine listings and reads only footers.
+/// Datasets gain columns over time (the first day of a blockchain has no previous
+/// block), so the last file's new columns are added after the first file's; the scan
+/// fills them with nulls where older files lack them. Returns error on failure so
+/// caller can fall back to collect_schema().
 pub async fn schema_from_one_cloud_hive(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
@@ -148,10 +179,23 @@ pub async fn schema_from_one_cloud_hive(
         crate::cloud_browse::object_path(prefix_trimmed)
     };
     let mut values = Vec::new();
-    let one_key = first_parquet_key_spine(&store, &prefix_path, 0, &mut values)
+    let one_key = first_parquet_key_spine(&store, &prefix_path, 0, &mut values, false)
         .await?
         .ok_or_else(|| color_eyre::eyre::eyre!("No parquet file found in cloud hive prefix"))?;
-    let file_schema = read_parquet_footer(&store, &one_key).await?.schema;
+    let mut file_schema = (*read_parquet_footer(&store, &one_key).await?.schema).clone();
+    let mut newest_values = Vec::new();
+    if let Some(newest) =
+        first_parquet_key_spine(&store, &prefix_path, 0, &mut newest_values, true).await?
+        && newest != one_key
+    {
+        let newest_schema = read_parquet_footer(&store, &newest).await?.schema;
+        for (name, dtype) in newest_schema.iter() {
+            if !file_schema.contains(name) {
+                file_schema.with_column(name.clone(), dtype.clone());
+            }
+        }
+    }
+    values.extend(newest_values);
     let key_str = one_key.as_ref();
     let partition_columns = partition_columns_from_prefix(key_str);
     let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();

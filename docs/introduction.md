@@ -3,7 +3,7 @@
 Datui is a terminal UI for looking at tabular data: Parquet, CSV, JSON, Arrow
 and more, on disk or in S3, GCS and HTTP, from a few rows to a few billion.
 
-![Overview Demo](demos/11-overview.gif)
+![Home and Cloud Demo](demos/14-cloud-home.gif)
 
 ```bash
 datui data.parquet                    # open a file

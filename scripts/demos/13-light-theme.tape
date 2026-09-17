@@ -8,11 +8,11 @@ Set TypingSpeed 25ms
 # Light set: Tokyo Night Day terminal, COLORFGBG marks the background light.
 Set Theme { "name": "Tokyo Night Day", "background": "#e1e2e7", "foreground": "#3760bf", "cursor": "#3760bf", "black": "#b4b5b9", "red": "#f52a65", "green": "#587539", "yellow": "#8c6c3e", "blue": "#2e7de9", "magenta": "#9854f1", "cyan": "#007197", "white": "#6172b0", "brightBlack": "#a1a6c5", "brightRed": "#f52a65", "brightGreen": "#587539", "brightYellow": "#8c6c3e", "brightBlue": "#2e7de9", "brightMagenta": "#9854f1", "brightCyan": "#007197", "brightWhite": "#3760bf" }
 
-# Same fixture as the home-screen demo.
+# Same isolated fixture and environment as the home-screen demo.
 Hide
-Type "export HOME=/tmp/datui-demo/home COLORFGBG='0;15' DATUI_CACHE_DIR=/tmp/datui-demo/cache XDG_CONFIG_HOME=/tmp/datui-demo/config"
+Type "export COLORFGBG='0;15'"
 Enter
-Type "cd /tmp/datui-demo/data/quant-research"
+Type "cd /tmp/datui-demo/data"
 Enter
 Type "clear"
 Enter

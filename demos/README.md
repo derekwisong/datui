@@ -7,10 +7,12 @@ python3 scripts/demos/generate_demos.py    # all demos (use --number N for one, 
 vhs scripts/demos/01-basic-navigation.tape  # single demo
 ```
 
-The tapes open the datasets under `demo/data`, built by `demo/build.py`.
-`12-home-screen.tape` and `13-light-theme.tape` copy that directory into a throwaway
-workspace under `/tmp/datui-demo`, with their own cache and config, so the home screen
-shows the demo data rather than whatever the machine running it happens to have open.
+Most tapes open datasets under `demo/data`, built by `demo/build.py`. The home-screen
+tapes (`12` through `16`) copy that directory into a throwaway workspace under
+`/tmp/datui-demo`, with their own home directory, cache and config. The generator also
+removes inherited cloud credentials, so those recordings show seeded local data and
+the built-in public catalog rather than anything belonging to the machine recording
+them. It also pins true-color output and ignores an inherited `NO_COLOR` setting.
 
 For prerequisites, options, and detailed instructions, see the [Demos documentation][demos-docs].
 

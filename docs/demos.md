@@ -1,24 +1,29 @@
 # Demos
 
-Every recording opens real data: the [demo datasets](https://github.com/derekwisong/datui/blob/main/demo/DATA-LICENSES.md)
-that ship with the repository.
+Every recording uses real data: the local
+[demo datasets](https://github.com/derekwisong/datui/blob/main/demo/DATA-LICENSES.md)
+and the publisher-hosted datasets in datui's public cloud catalog.
 
-## Overview
+## Home and cloud
 
-A tour of 157 years of Central Park weather: scrolling, a query down to the
-last decade, a chart of the daily high, and the analysis view on the result.
+Start with recent and local files, browse the built-in public cloud catalog,
+open Google's `us-states.parquet` without credentials, then return home and
+open the local Palmer penguins data.
 
-![Overview Demo](demos/11-overview.gif)
+![Home and Cloud Demo](demos/14-cloud-home.gif)
 
-## Home screen
+## Home screen variations
 
-Running `datui` with no arguments. Recents, the current directory and the
-configured data directory; the details pane with source filesystem, rows,
-columns, sizes on disk and in memory, row groups and partition layout; typing
-to filter, including on a column name (`tic` finds every dataset with a
-`ticker` column). See [The Home Screen](user-guide/home-screen.md).
+The browse-first cut spends more time on the six publisher-maintained public
+datasets and their details, then descends into BigQuery sample data.
 
-![Home Screen Demo](demos/12-home-screen.gif)
+![Cloud Browse Demo](demos/15-cloud-home-browse.gif)
+
+The local-first cut starts with populated recents and Central Park weather,
+then moves from the same home screen into NOAA's public Parquet folders. See
+[The Home Screen](user-guide/home-screen.md).
+
+![Local and Cloud Demo](demos/16-cloud-home-local.gif)
 
 ## Light terminals
 

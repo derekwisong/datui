@@ -4,7 +4,7 @@ Run `datui` with no arguments, or press <kbd>Ctrl</kbd>+<kbd>O</kbd> from
 anywhere, and you get a list of datasets with what each contains before you
 open it.
 
-![Home Screen Demo](../demos/12-home-screen.gif)
+![Home and Cloud Demo](../demos/14-cloud-home.gif)
 
 ```
  ╺┳┓┏━┓╺┳╸╻ ╻╻

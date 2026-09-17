@@ -84,16 +84,55 @@ def _build_home_fixture(repo_root: Path, _tape_number: int) -> None:
     subprocess.run([interpreter, str(script)], cwd=repo_root, check=True, capture_output=True)
 
 
-# Tape 12 (home screen): needs an isolated workspace, cache and config -- see the
-# function above for why. Left in place afterwards so the tape can be re-run by hand.
-TAPE_ACTIONS[12] = {
-    "pre": [_build_home_fixture],
-}
+HOME_DEMO_TAPES = {12, 13, 14, 15, 16}
 
-# Tape 13 (light theme) records against the same fixture, for the same reason.
-TAPE_ACTIONS[13] = {
-    "pre": [_build_home_fixture],
-}
+# Home-screen tapes need an isolated workspace, cache and config -- see the function
+# above for why. Left in place afterwards so a tape can be re-run by hand.
+for tape_number in HOME_DEMO_TAPES:
+    TAPE_ACTIONS[tape_number] = {"pre": [_build_home_fixture]}
+
+
+def _home_demo_env(env: dict[str, str], tape_number: int) -> dict[str, str]:
+    """Give home recordings private, deterministic credentials and color settings."""
+    if tape_number not in HOME_DEMO_TAPES:
+        return env
+
+    private_prefixes = (
+        "AWS_",
+        "AZURE_",
+        "ARM_",
+        "CLOUDSDK_",
+        "DATUI_GCP_",
+        "DATUI_S3_",
+        "GCP_",
+        "GOOGLE_",
+        "MC_HOST_",
+    )
+    excluded_names = {
+        "ECS_CONTAINER_CREDENTIALS_FULL_URI",
+        "ECS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "IDENTITY_ENDPOINT",
+        "IDENTITY_HEADER",
+        "K_SERVICE",
+        "MSI_ENDPOINT",
+        "MSI_SECRET",
+        "NO_COLOR",
+    }
+    sanitized = {
+        key: value
+        for key, value in env.items()
+        if key not in excluded_names and not key.startswith(private_prefixes)
+    }
+    root = Path("/tmp/datui-demo")
+    sanitized.update(
+        {
+            "HOME": str(root / "home"),
+            "COLORTERM": "truecolor",
+            "DATUI_CACHE_DIR": str(root / "cache"),
+            "XDG_CONFIG_HOME": str(root / "config"),
+        }
+    )
+    return sanitized
 
 
 class VHSTapeDemo:
@@ -355,7 +394,7 @@ def main() -> None:
             tape_number=tape_number,
             repo_root=str(repo_root),
             header_file=str(header_file),
-            env=env,
+            env=_home_demo_env(env, tape_number),
         )
         for tape_path, output_path, tape_number in demo_list
     ]

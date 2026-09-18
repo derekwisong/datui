@@ -2846,7 +2846,8 @@ impl LenCount {
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// How far the footer pass of an open has got. Written by the threads reading
-    /// them and read by the loading screen, which is the only place it is shown.
+    /// them; read by the loading screen and the control bar, both through
+    /// [`Self::loading_phase`] so they cannot describe one wait two ways.
     pub footer_progress: Arc<crate::schema_union::FooterProgress>,
     /// Network roots currently being listed off-thread, so a probe is not started
     /// twice. Entries are never removed for a root that never answers — that thread
@@ -5163,6 +5164,26 @@ impl App {
 
         let (full, cloud_opts, store) = Self::cloud_store_for(p, cloud, runtime).ok()?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full).ok()?;
+        Self::schema_state_from_cloud_hive_with(
+            full, key, store, cloud_opts, options, runtime, progress,
+        )
+    }
+
+    /// The same, against a store already built.
+    ///
+    /// Split out so a test can hand it an in-memory store and cover the choice between
+    /// the two routes below — including that each is given the counter it was called
+    /// with, rather than one of its own.
+    #[cfg(feature = "cloud")]
+    fn schema_state_from_cloud_hive_with(
+        full: String,
+        key: String,
+        store: Arc<dyn object_store::ObjectStore>,
+        cloud_opts: CloudOptions,
+        options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
+        progress: &Arc<crate::schema_union::FooterProgress>,
+    ) -> Option<DataTableState> {
         // A prefix: every file listed once, and the scan, the schema and the count all
         // work from that list. A glob keeps the older route, which Polars expands.
         if !full.contains('*') {
@@ -12163,7 +12184,11 @@ impl Widget for &mut App {
                 ..
             } => {
                 let current_phase = self.loading_phase(current_phase);
-                if *progress_percent > 0 {
+                // The percentage is a constant per phase, which was harmless beside a
+                // phase name and is not beside a real fraction: 1,203 of 6,541 is 18%,
+                // and "(40%)" next to it reads as that count's progress.
+                let counting = self.footer_progress.reading().is_some();
+                if *progress_percent > 0 && !counting {
                     Some(format!("{}... ({}%)", current_phase, progress_percent))
                 } else {
                     Some(format!("{}...", current_phase))

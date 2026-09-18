@@ -248,8 +248,16 @@ mod tests {
                 line.ends_with(ellipsis),
                 "at {width} the line ends with nothing to say it may be cut: {line:?}"
             );
-            // And where there is room for the whole count, it is not cut anyway.
-            if width >= 35 {
+            // And where there is room for the whole count, it is not cut anyway. The
+            // room needed is derived rather than counted out here because it is not a
+            // constant: the ASCII glyph set spells the mark "..." rather than "…",
+            // two columns more, so a number written in here would be right under one
+            // locale and wrong under the other.
+            let whole = format!("Reading footers: 1,203 of 6,541{ellipsis}")
+                .chars()
+                .count()
+                + 3; // the spinner and its two spaces
+            if width as usize >= whole {
                 assert!(
                     line.contains("1,203 of 6,541"),
                     "at {width} the whole count fits: {line:?}"

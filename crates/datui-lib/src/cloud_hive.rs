@@ -712,15 +712,13 @@ mod tests {
             }
         });
 
-        // Entered at `schema_state_from_cloud_files` rather than at the route above
-        // it, because that one builds its own store from the user's config and an
-        // in-memory one cannot be handed to it. So this covers the pass and the
-        // counter it is given, and not the single line above that hands it over —
-        // which is why that line passes the counter straight through rather than
-        // cloning a fresh one into place.
+        // Entered below the line that builds a store from the user's config, since an
+        // in-memory one cannot be handed to that, but above the choice of route — so
+        // a prefix reaching the globbing route, or either route being handed a fresh
+        // counter instead of this one, fails here.
         let progress = Arc::new(crate::schema_union::FooterProgress::default());
-        let _ = crate::App::schema_state_from_cloud_files(
-            "memory://data/",
+        let _ = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
             "data/".to_string(),
             store,
             polars::prelude::cloud::CloudOptions::default(),

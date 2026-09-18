@@ -2069,14 +2069,18 @@ fn test_each_open_counts_its_own_footers() {
     );
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
 
-    assert!(
-        !Arc::ptr_eq(&counter_of_the_first, &app.footer_progress),
-        "the second open has a counter of its own"
-    );
+    // What the user would see first, and the mechanism second: a shared counter shows
+    // the four footers of two datasets under the name of the one-file one, and a
+    // failure saying "4" names that directly where a pointer comparison only says the
+    // counters are the same object.
     assert_eq!(
         app.footer_progress.last_pass().read,
         1,
         "counting its one footer, not the three before it"
+    );
+    assert!(
+        !Arc::ptr_eq(&counter_of_the_first, &app.footer_progress),
+        "the second open has a counter of its own"
     );
 
     // And the behaviour, not just the mechanism: the first open's pass goes on running
@@ -2108,6 +2112,51 @@ fn test_each_open_counts_its_own_footers() {
         !frame.contains("6,541"),
         "and the abandoned folder's count does not appear under the file that \
          replaced it:\n{frame}"
+    );
+}
+
+/// The control bar shows the same count the loading body does.
+///
+/// Both derive it from `App::loading_phase`, and the point of that is that one wait
+/// cannot be described two ways. The truncation test in `controls.rs` builds the bar
+/// with a hand-written string, so it says the bar cuts a long message properly and
+/// nothing about whether the bar is ever given the count at all: deleting the line
+/// that hands it over leaves the body counting and the bar still saying "Caching
+/// schema", with the suite green.
+#[test]
+fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_loading_phase("Caching schema", 40);
+    app.footer_progress.begin(6541);
+    for _ in 0..1203 {
+        app.footer_progress.advance();
+    }
+
+    let area = Rect::new(0, 0, 100, 24);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect()
+        })
+        .collect();
+
+    let body = rows.iter().find(|r| r.contains("Reading footers"));
+    assert!(body.is_some(), "the body counts them:\n{}", rows.join("\n"));
+    let bar = rows.last().expect("a control bar");
+    assert!(
+        bar.contains("Reading footers: 1,203 of 6,541"),
+        "and so does the bar, rather than the phase the body has stopped showing: \
+         {bar:?}"
+    );
+    // Not beside the per-phase constant, which is 40 here and would read as this
+    // count's progress. 1,203 of 6,541 is 18%.
+    assert!(
+        !bar.contains('%'),
+        "a real fraction is not to be shown beside a made-up percentage: {bar:?}"
     );
 }
 

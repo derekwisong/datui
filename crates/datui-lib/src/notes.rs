@@ -135,6 +135,8 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
         notes.push(text_note(column, &scope));
     }
 
+    notes.extend(empty_files_note(dataset, &scope));
+
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
             summary: format!(
@@ -197,6 +199,34 @@ pub fn left_out_note(
         scope: format!("in {}", dataset.origin),
         read_as_text: None,
     }
+}
+
+/// Files that hold no rows at all.
+///
+/// A partition written for a day nothing happened, or a job that produced a header and
+/// no data. Worth saying because the dataset then has fewer days of data than it has
+/// folders, and a reader counting folders would get the wrong answer — but it is not a
+/// fault, and a pipeline that writes a file per day will have some.
+///
+/// Counts without dividing: how many of the files datui read hold nothing is a fact
+/// about those files, and the scope line says which files those were.
+fn empty_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
+    if dataset.empty_files == 0 {
+        return None;
+    }
+    Some(Note {
+        summary: format!(
+            "{} {} no rows",
+            how_many(dataset, dataset.empty_files),
+            if dataset.empty_files == 1 {
+                "holds"
+            } else {
+                "hold"
+            }
+        ),
+        scope: scope.to_string(),
+        read_as_text: None,
+    })
 }
 
 /// A column being read as text from every file, because it was asked for that way.
@@ -355,6 +385,49 @@ mod tests {
         };
 
         let cases = vec![
+            // --- files that hold nothing at all ---
+            Shape {
+                what: "one empty file",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64)], 5),
+                ],
+                sampled: None,
+                expected: vec!["1 file holds no rows"],
+            },
+            Shape {
+                what: "several empty files",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64)], 5),
+                ],
+                sampled: None,
+                expected: vec!["2 files hold no rows"],
+            },
+            Shape {
+                what: "an empty file among sampled footers",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64)], 5),
+                ],
+                sampled: Some(900),
+                // Footers, not files: datui looked at two of nine hundred, and one of
+                // the two was empty. It knows nothing about the other 898.
+                expected: vec!["1 footer holds no rows"],
+            },
+            Shape {
+                what: "an empty file and a column only the other has",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64), ("x", DataType::String)], 5),
+                ],
+                sampled: None,
+                expected: vec![
+                    "x is in 1 of 2 files; absent from the rest, not null",
+                    "1 file holds no rows",
+                ],
+            },
             // --- a column that only some files have: the one note with a ratio ---
             Shape {
                 what: "absent",

@@ -104,6 +104,8 @@ pub struct DatasetSchema {
     /// Columns being read as text from every file rather than as the type most rows
     /// have. Empty for a dataset as its footers found it.
     pub read_as_text: Vec<PlSmallStr>,
+    /// Files whose footer said they hold no rows, among those read.
+    pub empty_files: usize,
 }
 
 /// What a file is missing relative to the dataset's schema. Files that are missing the
@@ -338,6 +340,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         file_group,
         origin,
         read_as_text: Vec::new(),
+        empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
     }
 }
 

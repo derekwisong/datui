@@ -1798,6 +1798,73 @@ fn test_reading_as_text_keeps_the_note_about_a_widened_type() {
     );
 }
 
+/// A partition written for a day nothing happened holds no rows, and datui says so.
+///
+/// Worth saying because the dataset then has fewer days of data than it has folders,
+/// and the file is invisible in every other way: it adds no rows, changes no schema,
+/// and moves nothing on screen.
+#[test]
+fn test_a_partition_that_holds_no_rows_is_worth_a_note() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1], "n" => &[10i64, 20]).unwrap(),
+    );
+    // A day nothing happened: the folder is there, the file is there, the rows are not.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => Vec::<i64>::new(), "n" => Vec::<i64>::new()).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[2i64], "n" => &[30i64]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(current_rows(&app), 3, "the empty day adds nothing");
+    let notes = state.notes();
+    let empty = notes
+        .iter()
+        .find(|note| note.summary.contains("no rows"))
+        .unwrap_or_else(|| panic!("nothing said about the empty day: {notes:#?}"));
+    assert_eq!(empty.summary, "1 file holds no rows");
+    assert_eq!(empty.scope, "in all 3 footers");
+}
+
+/// The control: every file holding rows says nothing.
+#[test]
+fn test_a_dataset_whose_files_all_hold_rows_says_nothing_about_empty_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64], "n" => &[10i64]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[1i64], "n" => &[20i64]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        !state.notes().iter().any(|n| n.summary.contains("no rows")),
+        "{:#?}",
+        state.notes()
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

@@ -5112,7 +5112,11 @@ impl App {
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
-        state.set_dataset_schema(dataset, &file_rows, &paths);
+        state.set_dataset_schema(
+            dataset.with_partition_layouts(&p.to_string_lossy(), &paths),
+            &file_rows,
+            &paths,
+        );
         Some(state)
     }
 
@@ -5274,7 +5278,11 @@ impl App {
                 .collect();
             state.set_file_row_groups(&row_groups);
         }
-        state.set_dataset_schema(dataset, &file_rows, &urls);
+        state.set_dataset_schema(
+            dataset.with_partition_layouts(full, &urls),
+            &file_rows,
+            &urls,
+        );
         Some(state)
     }
 

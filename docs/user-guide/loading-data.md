@@ -148,6 +148,29 @@ footers before a row was. Fewer, larger files would do less of that work; the
 remedy is upstream in whatever writes them, but knowing where the wait went is
 worth something on its own.
 
+datui reads a partitioned folder's columns off one branch of the tree, which is
+right for nearly every dataset. Where a pipeline changed its partition key partway
+through — `date=` becoming `dt=` — the Notes tab says so, counted from every
+file's name:
+
+    the folders do not all partition by the same keys: 3 files by date, 1 file by dt
+
+What that costs varies, which is why the note does not say. Usually every file
+under the other key fails the scan and the dataset does not open at all. But the
+partition columns are read from the **first file name in the dataset**, so one
+unpartitioned file that sorts above the partition folders — `data.parquet` sorts
+above `date=`, `loose.parquet` does not — means no file's key is checked and the
+same folders read perfectly well with the partition column null. Renaming that
+file changes which of the two you get. Either way the note tells you which keys to
+look at.
+
+Two folders that use the same keys in a different order — `y=/m=` and `m=/y=` —
+are not a disagreement: hive columns are matched by name, and such a dataset reads
+fine. Nothing is said about a `key=value` folder *above* the one you opened
+either, since that is not in dispute. The note is silent when
+`--single-spine-schema false` is set and for a glob, because neither route looks
+at the file names this way.
+
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file, as it does for a glob.
 

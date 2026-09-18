@@ -1674,6 +1674,16 @@ impl DataTableState {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
         Self::collect_parquet_files(dir, &mut files, 0, MAX_DEPTH);
+        // Load-bearing beyond reading in a predictable order. The scan hands these to
+        // Polars as they are, and Polars takes the hive schema from the first of them,
+        // so this decides whether a folder whose partition keys disagree opens with its
+        // partition column null or fails to open at all — see the two `folders_that`
+        // integration tests, which are the same folder differing by one file name.
+        //
+        // No test here guards it: a listing a filesystem already returns in order is
+        // indistinguishable from one this sorted, so any such test passes with the sort
+        // deleted. What the sort protects is those two tests being stable rather than
+        // being a coin toss, which is not something a third test can assert.
         files.sort();
         let read = crate::schema_union::footers_to_read(files.len());
         let wanted: Vec<&Path> = read

@@ -134,6 +134,20 @@ pub struct DatasetSchema {
     pub median_row_group_bytes: Option<usize>,
     /// The middle file's size, over the footers read. `None` when none was read.
     pub median_file_bytes: Option<usize>,
+    /// The distinct ways the dataset's files are partitioned, and how many files are
+    /// laid out each way, commonest first. One entry, or none, for a dataset whose
+    /// folders agree — which is nearly all of them.
+    ///
+    /// From the names of every file, not from the footers: this is the one thing the
+    /// listing knows that reading a file cannot tell you.
+    pub partition_layouts: Vec<(Vec<String>, usize)>,
+    /// The layouts past the ones kept, and the files under them. A dataset with a key
+    /// per file is not worth remembering in full, but a note that counts what it does
+    /// not name has to count all of it.
+    pub partition_layouts_dropped: (usize, usize),
+    /// How many file names were read to find the layouts, including the ones with no
+    /// partition keys at all.
+    pub listed_files: usize,
 }
 
 /// What a file is missing relative to the dataset's schema. Files that are missing the
@@ -158,6 +172,55 @@ impl DatasetSchema {
     pub fn drifting(&self) -> impl Iterator<Item = &ColumnDrift> {
         let readable = self.files - self.unreadable.len();
         self.columns.iter().filter(move |c| !c.is_uniform(readable))
+    }
+
+    /// The dataset with the ways its files are partitioned counted from their names.
+    ///
+    /// `root` is the dataset as opened; the keys are taken from below it. A folder
+    /// above the root is not in dispute — opening `run=7/` for a dataset partitioned
+    /// by date does not make `run` one of the things its folders disagree about, and
+    /// counting it made every file look like it disagreed with every other.
+    ///
+    /// Keys are compared as a *set*: `y=1/m=1` and `m=2/y=2` partition by the same two
+    /// things and Polars matches hive columns by name, not position, so a dataset that
+    /// mixes the orders reads perfectly well and has nothing to disagree about.
+    pub fn with_partition_layouts(mut self, root: &str, paths: &[String]) -> DatasetSchema {
+        /// Layouts kept. The note names two and counts the rest, and a dataset with a
+        /// key per file would otherwise hold half a million of them for the life of
+        /// the frame to say "and 499,998 others".
+        const KEPT: usize = 64;
+        // Keyed by the spelling rather than scanned for: a dataset whose every file
+        // has its own layout is pathological, but it should be slow to read, not
+        // quadratic. At half a million files the scan took three minutes.
+        let mut counts: HashMap<Vec<String>, usize> = HashMap::new();
+        for path in paths {
+            // A path the root is not a prefix of is one this cannot place. Skipping it
+            // is the only safe answer: scanning the whole path instead would count the
+            // keys above the dataset, which both invents disagreements between files
+            // that agree and hides the real ones between files that do not.
+            let Some(below) = path.strip_prefix(root) else {
+                continue;
+            };
+            let keys = partition_keys_of(below);
+            if keys.is_empty() {
+                continue;
+            }
+            *counts.entry(keys).or_insert(0) += 1;
+        }
+        let mut counts: Vec<(Vec<String>, usize)> = counts.into_iter().collect();
+        // Commonest first, and by the keys themselves where two are equally common:
+        // a HashMap hands them back in no order at all, so without the tie-break the
+        // same dataset would name a different layout from one open to the next.
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        // Counted before they are dropped, or the note's "and N other ways" would be
+        // the ways it happens to still be holding rather than the ways there are.
+        let dropped = &counts[counts.len().min(KEPT)..];
+        self.partition_layouts_dropped =
+            (dropped.len(), dropped.iter().map(|(_, files)| files).sum());
+        counts.truncate(KEPT);
+        self.partition_layouts = counts;
+        self.listed_files = paths.len();
+        self
     }
 
     /// This dataset as it reads with `as_text` read as text from every file.
@@ -376,6 +439,9 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         read_as_text: Vec::new(),
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
         median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
+        partition_layouts: Vec::new(),
+        partition_layouts_dropped: (0, 0),
+        listed_files: 0,
         median_row_group_bytes: median(
             files
                 .iter()
@@ -383,6 +449,37 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
                 .flat_map(|f| f.row_group_bytes.iter().copied()),
         ),
     }
+}
+
+/// The hive partition keys in a path, in order: `a=1/b=2/f.parquet` is `[a, b]`.
+///
+/// A segment is a partition only if it has a key before the `=`. The file's own name
+/// is never one — `data/x=1/2024=05.parquet` partitions by `x`, not by `x` and `2024`.
+fn partition_keys_of(path: &str) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    // A backslash separates on Windows and is an ordinary character in a Linux file
+    // name, where splitting on it would both break a legitimate name and invent a
+    // layout difference out of one directory.
+    #[cfg(windows)]
+    let separators: &[char] = &['/', '\\'];
+    #[cfg(not(windows))]
+    let separators: &[char] = &['/'];
+    let mut segments: Vec<&str> = path.split(separators).collect();
+    segments.pop();
+    for segment in segments {
+        if let Some((key, _)) = segment.split_once('=')
+            && !key.is_empty()
+        {
+            keys.push(key.to_string());
+        }
+    }
+    // A set, not a sequence: hive columns are matched by name, so `y=1/m=1` and
+    // `m=2/y=2` are the same two partitions written in two orders and nothing about
+    // them is in dispute. Sorted so the two spell the same, and deduplicated so a tree
+    // that repeats a key is one thing rather than two.
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 /// The middle value of `sizes`, or the lower of the middle two. `None` when empty.
@@ -1635,6 +1732,267 @@ mod tests {
             note(50_000, 2, &[0, 0]),
             None,
             "and a size of nothing means the size is not known, not that it is small"
+        );
+    }
+
+    /// The keys a path partitions by: a set, sorted, with the file's own name never
+    /// among them.
+    ///
+    /// A set because hive columns are matched by name — `y=1/m=1` and `m=2/y=2`
+    /// partition by the same two things, and a dataset that mixes the two orders reads
+    /// perfectly well. Sorted so the two spell alike, and deduplicated so a tree that
+    /// repeats a key is one thing rather than two.
+    #[test]
+    fn partition_keys_are_the_key_equals_segments_above_the_file() {
+        let keys = |path: &str| partition_keys_of(path);
+        assert_eq!(keys("data/date=2024-01-01/a.parquet"), ["date"]);
+        assert_eq!(keys("data/y=2024/m=05/a.parquet"), ["m", "y"]);
+        assert_eq!(
+            keys("data/m=05/y=2024/a.parquet"),
+            keys("data/y=2024/m=05/a.parquet"),
+            "the same two partitions, written in two orders"
+        );
+        assert_eq!(
+            keys("data/x=1/x=2/a.parquet"),
+            ["x"],
+            "and a key repeated down the tree is one key"
+        );
+        assert_eq!(keys("data/a.parquet"), Vec::<String>::new());
+        assert_eq!(
+            keys("data/x=1/2024=05.parquet"),
+            ["x"],
+            "the file's own name is not a partition, whatever it looks like"
+        );
+        assert_eq!(
+            keys("data/=2024/a.parquet"),
+            Vec::<String>::new(),
+            "nor is a segment with nothing before the equals"
+        );
+        // A backslash separates on Windows and is an ordinary character in a Linux
+        // file name. Splitting on it everywhere would break a legitimate name and
+        // invent a layout difference out of one directory, which would fire this note
+        // on a dataset whose folders agree perfectly.
+        #[cfg(windows)]
+        assert_eq!(
+            keys(r"data\date=2024-01-01\a.parquet"),
+            ["date"],
+            "a path written the other way round is the same path"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            keys(r"data/we\ird=1/f.parquet"),
+            ["we\\ird"],
+            "a backslash here is part of the name, not a separator"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            keys(r"data/x=1\y=2/f.parquet"),
+            ["x"],
+            "so one directory is one partition, however it is spelled"
+        );
+    }
+
+    /// A dataset whose folders do not all partition by the same keys.
+    ///
+    /// The note says the shape and claims nothing about what it costs: a rename that
+    /// stops the dataset opening, and one stray unpartitioned file that turns hive
+    /// reading off and leaves the same folders readable, look identical from here.
+    #[test]
+    fn folders_that_partition_differently_are_counted_each_way() {
+        let note = |root: &str, paths: &[&str]| -> Option<crate::notes::Note> {
+            let footers = vec![
+                Some(FileSchema {
+                    schema: Arc::new(Schema::with_capacity(0)),
+                    rows: 1,
+                    file_bytes: 1,
+                    row_group_bytes: Vec::new(),
+                });
+                paths.len()
+            ];
+            let owned: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+            let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(paths.len()))
+                .with_partition_layouts(root, &owned);
+            crate::notes::from_dataset(&dataset)
+                .into_iter()
+                .find(|note| note.summary.contains("partition by the same keys"))
+        };
+
+        assert_eq!(
+            note("d", &["d/date=1/a.parquet", "d/date=2/b.parquet"]),
+            None,
+            "folders that agree have nothing to say"
+        );
+        assert_eq!(
+            note("d", &["d/a.parquet", "d/b.parquet"]),
+            None,
+            "nor has a dataset with no partitions at all"
+        );
+        assert_eq!(
+            note("d", &["d/y=1/m=1/a.parquet", "d/m=2/y=2/b.parquet"]),
+            None,
+            "nor two orders of the same two keys: hive matches columns by name, so \
+             that dataset reads perfectly well and has nothing in dispute"
+        );
+        assert_eq!(
+            note(
+                "d/run=7",
+                &["d/run=7/loose.parquet", "d/run=7/date=1/a.parquet"]
+            ),
+            None,
+            "a key=value folder above the dataset as it was opened is not one of the \
+             things its folders disagree about — and these two files are where that \
+             matters, since counting `run` would make the one without a key of its \
+             own a second layout"
+        );
+        assert_eq!(
+            note(
+                "s3://b//data/",
+                &["s3://b/data/date=1/a.parquet", "s3://b/data/dt=2/b.parquet"]
+            ),
+            None,
+            "and a path the root is not a prefix of — a typed URL with a doubled \
+             slash rebuilds without it — is one this cannot place, so it is left out \
+             rather than read from the top"
+        );
+
+        let renamed = note(
+            "d",
+            &[
+                "d/date=1/a.parquet",
+                "d/date=2/b.parquet",
+                "d/date=3/c.parquet",
+                "d/dt=4/e.parquet",
+            ],
+        )
+        .expect("the folders disagree");
+        assert_eq!(
+            renamed.summary,
+            "the folders do not all partition by the same keys: 3 files by date, \
+             1 file by dt"
+        );
+        assert_eq!(
+            renamed.scope, "in the names of 4 files",
+            "read off every name, not off the footers datui opened"
+        );
+
+        // A file with no partition at all has no keys to disagree about, so it is no
+        // layout — but it is still a name that was read, and the scope counts it.
+        let loose = note(
+            "d",
+            &[
+                "d/y=1/m=1/a.parquet",
+                "d/y=1/m=2/b.parquet",
+                "d/date=3/c.parquet",
+                "d/loose.parquet",
+            ],
+        )
+        .expect("the folders disagree");
+        assert_eq!(
+            loose.summary,
+            "the folders do not all partition by the same keys: 2 files by m/y, \
+             1 file by date"
+        );
+        assert_eq!(
+            loose.scope, "in the names of 4 files",
+            "the unpartitioned file is one of the names read"
+        );
+    }
+
+    /// The commonest layout is named first, and past two the rest are counted.
+    #[test]
+    fn the_layouts_a_note_names_are_the_commonest_of_them() {
+        let layouts = |paths: &[&str]| -> Vec<(Vec<String>, usize)> {
+            let owned: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+            union_file_schemas(&[], SchemaOrigin::AllFooters(0))
+                .with_partition_layouts("d", &owned)
+                .partition_layouts
+        };
+        let note = |paths: &[&str]| -> String {
+            let footers = vec![
+                Some(FileSchema {
+                    schema: Arc::new(Schema::with_capacity(0)),
+                    rows: 1,
+                    file_bytes: 1,
+                    row_group_bytes: Vec::new(),
+                });
+                paths.len()
+            ];
+            let owned: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+            let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(paths.len()))
+                .with_partition_layouts("d", &owned);
+            crate::notes::from_dataset(&dataset)
+                .into_iter()
+                .find(|note| note.summary.contains("partition by the same keys"))
+                .expect("the folders disagree")
+                .summary
+        };
+
+        // Asserted on the layouts themselves, not on the note: a HashMap hands them
+        // back in no order at all, so a note that happened to read correctly would
+        // leave the ordering untested nine runs in ten.
+        assert_eq!(
+            layouts(&[
+                "d/zzz=1/b.parquet",
+                "d/aaa=1/a.parquet",
+                "d/zzz=2/c.parquet",
+                "d/zzz=3/e.parquet",
+            ]),
+            vec![(vec!["zzz".to_string()], 3), (vec!["aaa".to_string()], 1)],
+            "commonest first, though the rare one sorts first and arrived first"
+        );
+        assert_eq!(
+            layouts(&[
+                "d/zz=1/a.parquet",
+                "d/aa=1/b.parquet",
+                "d/mm=1/c.parquet",
+                "d/qq=1/e.parquet"
+            ]),
+            vec![
+                (vec!["aa".to_string()], 1),
+                (vec!["mm".to_string()], 1),
+                (vec!["qq".to_string()], 1),
+                (vec!["zz".to_string()], 1)
+            ],
+            "and equally common ones by their keys, so the same dataset reads the \
+             same way every time it is opened"
+        );
+
+        assert_eq!(
+            note(&[
+                "d/aa=1/a.parquet",
+                "d/bb=1/b.parquet",
+                "d/cc=1/c.parquet",
+                "d/dd=1/e.parquet",
+            ]),
+            "the folders do not all partition by the same keys: 1 file by aa, \
+             1 file by bb, 2 files by 2 other ways"
+        );
+        assert_eq!(
+            note(&["d/aa=1/a.parquet", "d/bb=1/b.parquet", "d/cc=1/c.parquet"]),
+            "the folders do not all partition by the same keys: 1 file by aa, \
+             1 file by bb, 1 file by 1 other way",
+            "and one of them is one way, not one ways"
+        );
+
+        // Past the layouts worth remembering, the tail is still counted in full: a
+        // note that says "and 62 other ways" of a hundred would not add up against
+        // its own scope line.
+        let many: Vec<String> = (0..100)
+            .map(|i| format!("d/k{i:0>3}=1/f.parquet"))
+            .collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(
+            note(&many),
+            "the folders do not all partition by the same keys: 1 file by k000, \
+             1 file by k001, 98 files by 98 other ways"
+        );
+        let owned: Vec<String> = many.iter().map(|p| p.to_string()).collect();
+        let dataset = union_file_schemas(&[], SchemaOrigin::AllFooters(0))
+            .with_partition_layouts("d", &owned);
+        assert!(
+            dataset.partition_layouts.len() <= 64,
+            "and it is not holding a hundred of them to say so: {}",
+            dataset.partition_layouts.len()
         );
     }
 

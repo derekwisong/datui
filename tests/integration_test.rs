@@ -1266,6 +1266,17 @@ fn test_each_row_takes_its_glyph_from_the_file_it_came_from() {
         ],
         "three rows from the first file, five from the second, two from the third"
     );
+
+    // Scrolled, and to a row inside the middle file rather than onto a boundary: the
+    // window starts where the view does, so the groups have to shift with it.
+    let state = app.data_table_state.as_mut().unwrap();
+    state.start_row = 4;
+    state.collect();
+    assert_eq!(
+        state.display_drift(6),
+        vec![middle, middle, middle, middle, last, last],
+        "from row 4: four more rows of the second file, then the third"
+    );
 }
 
 /// The control for the test above: a folder whose files agree shows neither glyph, so

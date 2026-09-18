@@ -4704,8 +4704,8 @@ impl DataTableState {
         }
     }
 
-    /// The drift group of each of the `rows` rows this frame has room for, starting at
-    /// the top of the view, when the dataset's files differ.
+    /// The drift group of each row from the top of the view down, for a frame
+    /// `frame_rows` tall, when the dataset's files differ.
     ///
     /// Sized by the frame about to be drawn rather than by `visible_rows`, which is
     /// what the *last* frame drew and is 0 before there has been one. Taking it from
@@ -4713,10 +4713,14 @@ impl DataTableState {
     /// user is looking at when nothing has been pressed yet — with no groups at all,
     /// so every absent cell fell back to the plain null glyph.
     ///
+    /// Callers pass the whole frame's height, a header more than the rows it draws.
+    /// Deliberately: the table reads this by row index and ignores what it does not
+    /// reach, so a group too many costs a `u32` and a group too few costs a mark.
+    ///
     /// Empty once a query or reshape has replaced the frame: those rows stand for no
     /// file, so their nulls are ordinary nulls. A frame is a screen tall, so this is
     /// a few dozen values.
-    pub fn display_drift(&self, rows: usize) -> Vec<u32> {
+    pub fn display_drift(&self, frame_rows: usize) -> Vec<u32> {
         if !self.drift_column_present {
             return Vec::new();
         }
@@ -4727,7 +4731,7 @@ impl DataTableState {
             return Vec::new();
         };
         let offset = self.start_row.saturating_sub(self.buffered_start_row);
-        let len = rows.min(column.len().saturating_sub(offset));
+        let len = frame_rows.min(column.len().saturating_sub(offset));
         if len == 0 {
             return Vec::new();
         }

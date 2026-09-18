@@ -141,6 +141,10 @@ pub struct DatasetSchema {
     /// From the names of every file, not from the footers: this is the one thing the
     /// listing knows that reading a file cannot tell you.
     pub partition_layouts: Vec<(Vec<String>, usize)>,
+    /// The layouts past the ones kept, and the files under them. A dataset with a key
+    /// per file is not worth remembering in full, but a note that counts what it does
+    /// not name has to count all of it.
+    pub partition_layouts_dropped: (usize, usize),
     /// How many file names were read to find the layouts, including the ones with no
     /// partition keys at all.
     pub listed_files: usize,
@@ -190,7 +194,14 @@ impl DatasetSchema {
         // quadratic. At half a million files the scan took three minutes.
         let mut counts: HashMap<Vec<String>, usize> = HashMap::new();
         for path in paths {
-            let keys = partition_keys_of(path.strip_prefix(root).unwrap_or(path));
+            // A path the root is not a prefix of is one this cannot place. Skipping it
+            // is the only safe answer: scanning the whole path instead would count the
+            // keys above the dataset, which both invents disagreements between files
+            // that agree and hides the real ones between files that do not.
+            let Some(below) = path.strip_prefix(root) else {
+                continue;
+            };
+            let keys = partition_keys_of(below);
             if keys.is_empty() {
                 continue;
             }
@@ -201,6 +212,11 @@ impl DatasetSchema {
         // a HashMap hands them back in no order at all, so without the tie-break the
         // same dataset would name a different layout from one open to the next.
         counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        // Counted before they are dropped, or the note's "and N other ways" would be
+        // the ways it happens to still be holding rather than the ways there are.
+        let dropped = &counts[counts.len().min(KEPT)..];
+        self.partition_layouts_dropped =
+            (dropped.len(), dropped.iter().map(|(_, files)| files).sum());
         counts.truncate(KEPT);
         self.partition_layouts = counts;
         self.listed_files = paths.len();
@@ -424,6 +440,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
         median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
         partition_layouts: Vec::new(),
+        partition_layouts_dropped: (0, 0),
         listed_files: 0,
         median_row_group_bytes: median(
             files
@@ -1934,9 +1951,29 @@ mod tests {
              1 file by bb, 1 file by 1 other way",
             "and one of them is one way, not one ways"
         );
+
+        // Past the layouts worth remembering, the tail is still counted in full: a
+        // note that says "and 62 other ways" of a hundred would not add up against
+        // its own scope line.
+        let many: Vec<String> = (0..100)
+            .map(|i| format!("d/k{i:0>3}=1/f.parquet"))
+            .collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(
+            note(&many),
+            "the folders do not all partition by the same keys: 1 file by k000, \
+             1 file by k001, 98 files by 98 other ways"
+        );
+        let owned: Vec<String> = many.iter().map(|p| p.to_string()).collect();
+        let dataset = union_file_schemas(&[], SchemaOrigin::AllFooters(0))
+            .with_partition_layouts("d", &owned);
+        assert!(
+            dataset.partition_layouts.len() <= 64,
+            "and it is not holding a hundred of them to say so: {}",
+            dataset.partition_layouts.len()
+        );
     }
 
-    /// Files merely missing a column must not split the scan.
     /// Files merely missing a column must not split the scan.
     ///
     /// Splitting is only needed to leave a column out of a file that holds it in

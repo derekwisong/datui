@@ -344,10 +344,13 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
 ///
 /// Says the shape and stops there. What it *costs* is not something this note can see.
 /// The scan reads its partition columns off one branch of the tree, and which branch
-/// that is comes back from the filesystem in whatever order it likes: usually every
-/// file under the other key then fails and the dataset does not open at all, but the
-/// same folders with one unpartitioned file among them can read perfectly well with the
-/// partition column null. Review built both from the same shape.
+/// that is comes back from the filesystem in whatever order it likes. Usually every
+/// file under the other key then fails and the dataset does not open at all. Review
+/// reported the opposite outcome from the same shape — one unpartitioned file among
+/// the folders, and everything readable with the partition column null — which two
+/// attempts here could not reproduce: the spine took the lone key both times and the
+/// read failed. Neither of us could make the *cost* predictable, which is the whole
+/// argument for not stating one.
 ///
 /// Two rounds were spent on sentences that picked one of those and stated it as the
 /// consequence. The user guide has room to set them out; a note has one sentence, and
@@ -370,13 +373,15 @@ fn partition_layout_note(dataset: &DatasetSchema) -> Option<Note> {
         .iter()
         .map(|(keys, files)| format!("{} by {}", how_many_files(*files), keys.join("/")))
         .collect();
-    if !rest.is_empty() {
-        let files: usize = rest.iter().map(|(_, files)| files).sum();
+    let (dropped_ways, dropped_files) = dataset.partition_layouts_dropped;
+    let ways = rest.len() + dropped_ways;
+    let files: usize = rest.iter().map(|(_, files)| files).sum::<usize>() + dropped_files;
+    if ways > 0 {
         clauses.push(format!(
             "{} by {} other {}",
             how_many_files(files),
-            group_chrome(rest.len()),
-            if rest.len() == 1 { "way" } else { "ways" }
+            group_chrome(ways),
+            if ways == 1 { "way" } else { "ways" }
         ));
     }
     Some(Note {

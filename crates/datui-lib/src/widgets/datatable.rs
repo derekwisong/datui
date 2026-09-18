@@ -141,6 +141,13 @@ pub struct DataTableState {
     /// Together they turn a row's place in the dataset into what its file was missing.
     drift_file_starts: Vec<usize>,
     drift_file_group: Vec<u32>,
+    /// What datui noticed about the dataset, from the footers it had to read anyway.
+    notes: Vec<crate::notes::Note>,
+    /// Whether the Info panel has been opened since the notes were gathered. Belongs to
+    /// the dataset, so opening another one offers its notes afresh.
+    notes_seen: bool,
+    /// The notes as the dataset was opened, so a reset and a drill up restore them.
+    notes_at_open: Vec<crate::notes::Note>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -195,9 +202,11 @@ struct GroupedView {
     sort_columns: Vec<String>,
     sort_ascending: bool,
     /// Whether `lf` carries the hidden drift column, and what its groups mean. Saved
-    /// with the frame so drilling back up restores the cells it explains.
+    /// with the frame so drilling back up restores the cells it explains, along with
+    /// the notes that explain them.
     drift: bool,
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    notes: Vec<crate::notes::Note>,
 }
 
 /// The query bar a result came from, with its text. At most one is active at a time.
@@ -496,6 +505,9 @@ impl DataTableState {
             groups_at_open: Arc::new(Vec::new()),
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
+            notes: Vec::new(),
+            notes_seen: false,
+            notes_at_open: Vec::new(),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -596,6 +608,9 @@ impl DataTableState {
             groups_at_open: Arc::new(Vec::new()),
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
+            notes: Vec::new(),
+            notes_seen: false,
+            notes_at_open: Vec::new(),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -631,10 +646,12 @@ impl DataTableState {
     fn install_base(&mut self, lf: LazyFrame, schema: Arc<Schema>) {
         self.invalidate_num_rows();
         // A new frame is the user's own projection of the data; its rows no longer
-        // stand for rows of a file, so nulls in it are just nulls and no column is
-        // marked as missing from one.
+        // stand for rows of a file, so nulls in it are just nulls, no column is marked
+        // as missing from one, and notes about the files behind it no longer describe
+        // what is on screen.
         self.drift_column_present = false;
         self.drift_groups = Arc::new(Vec::new());
+        self.notes = Vec::new();
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
         self.observed_bytes_per_row = None;
@@ -703,9 +720,11 @@ impl DataTableState {
             .collect_schema()
             .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
         self.install_base(self.original_lf.clone(), schema);
-        // A reset is a return to the data as opened, so the rows stand for files again.
+        // A reset is a return to the data as opened, so the rows stand for files again
+        // and what datui noticed about them applies once more.
         self.drift_column_present = self.drift_at_open;
         self.drift_groups = self.groups_at_open.clone();
+        self.notes = self.notes_at_open.clone();
         self.reshaped_lf = None;
         self.reset_view_state(0);
         self.restore_footer_count();
@@ -3777,6 +3796,9 @@ impl DataTableState {
         }
         self.drift_at_open = self.drift_column_present;
         self.groups_at_open = self.drift_groups.clone();
+        self.notes = crate::notes::from_dataset(&schema);
+        self.notes_at_open = self.notes.clone();
+        self.notes_seen = false;
         self.dataset_schema = Some(schema);
     }
 
@@ -3819,9 +3841,26 @@ impl DataTableState {
         &mut self,
         present: bool,
         groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+        notes: Vec<crate::notes::Note>,
     ) {
         self.drift_column_present = present;
         self.drift_groups = groups;
+        self.notes = notes;
+    }
+
+    /// What datui noticed about the dataset. Empty when there is nothing to say.
+    pub fn notes(&self) -> &[crate::notes::Note] {
+        &self.notes
+    }
+
+    /// Whether there is something to say that has not been offered yet.
+    pub fn notes_unseen(&self) -> bool {
+        !self.notes.is_empty() && !self.notes_seen
+    }
+
+    /// The Info panel has been opened; the quiet accent has done its job.
+    pub fn mark_notes_seen(&mut self) {
+        self.notes_seen = true;
     }
 
     /// What the footers said about the dataset's columns, when it is many files.
@@ -4746,6 +4785,7 @@ impl DataTableState {
             sort_ascending: self.sort_ascending,
             drift: self.drift_column_present,
             drift_groups: self.drift_groups.clone(),
+            notes: self.notes.clone(),
         });
         self.sort_ascending = true;
         let lf = group_df.lazy();
@@ -4772,6 +4812,7 @@ impl DataTableState {
                 self.sort_ascending = view.sort_ascending;
                 self.drift_column_present = view.drift;
                 self.drift_groups = view.drift_groups;
+                self.notes = view.notes;
                 self.schema = self.visible_lf().collect_schema()?;
                 self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
                 self.drilled_down_group_index = None;

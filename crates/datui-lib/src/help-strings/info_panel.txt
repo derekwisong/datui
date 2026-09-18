@@ -1,8 +1,32 @@
-Dataset technical info (Schema and Resources tabs).
+Dataset technical info.
 
   Tab / Shift+Tab:  On Schema tab: move focus (tab bar ↔ schema table).
-                    On Resources: focus stays on tab bar.
-  Left / Right:     On tab bar: switch Schema | Resources tabs
-  ↑ / ↓:            When schema table focused: scroll and move selection
+                    On other tabs: focus stays on tab bar.
+  Left / Right:     On tab bar: switch tabs
+  ↑ / ↓:            Schema tab (when focused) or Notes tab: move the cursor
   ? / F1:           Show this help
   Esc / i:          Close info panel
+
+Tabs:
+  Schema:     Every column, its type, and which footers the schema came from
+  Resources:  What the data costs to hold and to read
+  Partitions: The layout of a partitioned dataset. Only when it has one
+  Notes:      What datui noticed about the data while reading it. Only when
+              there is something to say
+
+Notes:
+  A note is an observation, not a fault: a column that is not in every file,
+  files that disagree on a type, a file whose footer could not be read. Each
+  one says what it is based on, so "in 1 of 3 files" never stands for files
+  datui has not looked at. None of them costs a read of its own.
+
+  A note is one sentence and the line beneath it saying what it is based on.
+  When the list is taller than the panel, the corner says how many are out of
+  view, unless the note the cursor is on fills the panel and needs that row
+  itself. Whole notes only, so a claim never appears without its basis, nor a
+  basis without its claim. Where the note the cursor is on will not fit at all,
+  the panel says so; a shorter one may still fit.
+
+  When there is something to note, the i key in the control bar takes a quiet
+  accent until this panel has been opened. display.notes_accent = false turns
+  that off; the notes are still collected and this tab still appears.

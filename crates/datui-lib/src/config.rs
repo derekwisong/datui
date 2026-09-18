@@ -1236,6 +1236,11 @@ pub struct DisplayConfig {
     /// Show a second header row naming each column's type. `D` toggles it for the session.
     #[serde(default = "default_true")]
     pub dtype_row: bool,
+    /// Give the `i` key a quiet accent when datui has noticed something about the data
+    /// and the Info panel has not been opened since. The notes are collected either
+    /// way; this only decides whether the control bar points at them.
+    #[serde(default = "default_true")]
+    pub notes_accent: bool,
     /// Optional fixed width for all sidebars (Info, Sort & Filter, Template, Pivot & Melt). When None, use built-in defaults per sidebar.
     #[serde(default)]
     pub sidebar_width: Option<u16>,
@@ -1470,6 +1475,11 @@ const DISPLAY_COMMENTS: &[(&str, &str)] = &[
         "dtype_row",
         "Show a second header row naming each column's type (str, i64, f64, bool, datetime ...)
 D toggles it for the session",
+    ),
+    (
+        "notes_accent",
+        "Accent the i key when datui has noticed something about the data and the Info
+panel has not been opened since. The Notes tab is there either way",
     ),
     (
         "sidebar_width",
@@ -2158,6 +2168,7 @@ impl Default for DisplayConfig {
             table_cell_padding: 2,
             column_colors: true,
             dtype_row: true,
+            notes_accent: true,
             sidebar_width: None,
             align_numeric_right: true,
             number_format: NumberFormatConfig::default(),
@@ -2717,6 +2728,9 @@ impl DisplayConfig {
         }
         if other.dtype_row != default.dtype_row {
             self.dtype_row = other.dtype_row;
+        }
+        if other.notes_accent != default.notes_accent {
+            self.notes_accent = other.notes_accent;
         }
         if other.sidebar_width != default.sidebar_width {
             self.sidebar_width = other.sidebar_width;

@@ -65,6 +65,7 @@ number_format = "none"      # Digit grouping, see below (F toggles)
 align_numeric_right = true  # Right-align numbers and their headers
 column_colors = true        # Color cells and headers by type
 dtype_row = true            # Second header row naming each type (D toggles)
+notes_accent = true         # Accent the i key when there is something to note
 table_cell_padding = 1      # Spaces between columns
 # sidebar_width = 70        # Fixed width for every sidebar. Omit for each sidebar's own default
 pages_lookahead = 3         # Pages buffered ahead of the screen

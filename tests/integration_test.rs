@@ -1491,6 +1491,248 @@ fn test_analysing_a_union_of_scans_does_not_panic() {
     assert_eq!(results.total_rows, 4, "and counts every row");
 }
 
+/// Opening a folder whose files disagree leaves something to say, and the Info key
+/// carries a quiet accent until the panel has been opened.
+#[test]
+fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    assert_eq!(notes.len(), 1, "one column is not in every file");
+    assert_eq!(
+        notes[0].summary,
+        "extra is in 1 of 2 files; absent from the rest, not null"
+    );
+    assert_eq!(
+        notes[0].scope, "in all 2 footers",
+        "and says what it is based on"
+    );
+    assert!(state.notes_unseen(), "not offered yet");
+
+    // Pressing i opens the panel, which is the offer being taken up.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(!state.notes_unseen(), "the accent has done its job");
+}
+
+/// A query builds its own rows, so notes about the files behind the dataset no longer
+/// describe what is on screen. They come back on a reset.
+#[test]
+fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_mut().unwrap();
+    assert_eq!(state.notes().len(), 1, "the dataset has something to say");
+
+    state.sql_query("select id from df".to_string());
+    state.collect();
+    assert!(state.error.is_none(), "the query: {:?}", state.error);
+    assert!(
+        state.notes().is_empty(),
+        "a note about `extra` would describe a column the frame no longer has"
+    );
+
+    state.reset();
+    state.collect();
+    assert!(state.error.is_none(), "the reset: {:?}", state.error);
+    assert_eq!(state.notes().len(), 1, "and the reset brings them back");
+}
+
+/// More notes than the panel is tall must not be dropped on the floor: the panel says
+/// how many are out of view, and the cursor reaches them.
+#[test]
+fn test_notes_past_the_fold_are_counted_and_reachable() {
+    let dir = tempfile::tempdir().unwrap();
+    // Six columns, each arriving one day later, is six notes.
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "a" => &["x"], "b" => &["x"], "c" => &["x"],
+            "d" => &["x"], "e" => &["x"], "f" => &["x"])
+        .unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    assert_eq!(app.data_table_state.as_ref().unwrap().notes().len(), 6);
+
+    // Open the panel, move focus to the tab bar, and walk to the Notes tab. The
+    // dataset is partitioned, so Notes is the fourth.
+    for key in [
+        KeyCode::Char('i'),
+        KeyCode::Tab,
+        KeyCode::Right,
+        KeyCode::Right,
+        KeyCode::Right,
+    ] {
+        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+    }
+    // A short panel cannot show six notes at two lines each plus a gap.
+    let area = Rect::new(0, 0, 100, 14);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+
+    assert!(
+        screen.contains("3 below"),
+        "three of the six notes fit whole, so three are out of view, got:\n{screen}"
+    );
+    assert!(
+        screen.contains("a is in 1 of 2 files"),
+        "the first note is shown"
+    );
+    assert!(
+        screen.contains("in all 2 footers"),
+        "and the scope of the note the cursor is on, got:\n{screen}"
+    );
+
+    // The cursor reaches the last note, which scrolls it into view.
+    for _ in 0..6 {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+        )));
+    }
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        screen.contains("f is in 1 of 2 files"),
+        "the last note is reachable, got:\n{screen}"
+    );
+    assert!(
+        screen.contains("above"),
+        "and the panel says what scrolled off the top, got:\n{screen}"
+    );
+
+    // Too short to hold a note is not the same as having none to hold: the panel
+    // says which it is, and never claims there is nothing to say.
+    for height in 4u16..26 {
+        let area = Rect::new(0, 0, 100, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+        let drew_a_note = screen.contains("is in 1 of");
+        let said_no_room = screen.contains("no room");
+        assert!(
+            drew_a_note ^ said_no_room,
+            "a {height}-row panel draws a note or says it has no room for one, \
+             exactly one of the two: {screen:?}"
+        );
+    }
+
+    // A summary without its scope line under it is the misreading the scope line
+    // exists to prevent, so no height may produce one.
+    for height in 4u16..26 {
+        let area = Rect::new(0, 0, 100, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<String> = (0..height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        for (i, row) in rows.iter().enumerate() {
+            if !row.contains("is in 1 of 2 files") {
+                continue;
+            }
+            // The line a note rests on follows its summary, and always before the
+            // next note begins.
+            let found = rows[i + 1..]
+                .iter()
+                .take_while(|later| !later.contains("is in 1 of 2 files"))
+                .any(|later| later.contains("in all 2 footers"));
+            assert!(
+                found,
+                "at height {height}, a note is drawn with no basis under it:\n{}",
+                row.trim_end()
+            );
+        }
+    }
+
+    // A note needs its summary and its basis, so one row cannot hold one. Say that
+    // rather than draw half a note.
+    let area = Rect::new(0, 0, 100, 4);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+    assert!(
+        screen.contains("6 notes; no room for this one"),
+        "too short for a whole note says so, got:\n{screen}"
+    );
+}
+
+/// A panel exactly as tall as one note draws it, rather than reporting no room.
+#[test]
+fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "a" => &["x"], "b" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    for key in [
+        KeyCode::Char('i'),
+        KeyCode::Tab,
+        KeyCode::Right,
+        KeyCode::Right,
+        KeyCode::Right,
+    ] {
+        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+    }
+    // Walk every height that can hold at least one note and its basis line.
+    for height in 5u16..12 {
+        let area = Rect::new(0, 0, 100, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            screen.contains("is in 1 of 2 files"),
+            "a {height}-row panel has room for a note, so it draws one: {screen:?}"
+        );
+        assert!(
+            !screen.contains("no room"),
+            "and does not claim otherwise: {screen:?}"
+        );
+    }
+}
+
+/// A folder whose files agree has nothing to say, and nothing to show for it.
+#[test]
+fn test_a_uniform_dataset_has_no_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(dir.path(), "date=2024-01-02", df!("id" => &[2i64]).unwrap());
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.notes().is_empty());
+    assert!(!state.notes_unseen(), "so no accent either");
+}
+
 /// A column only a middle file has used to vanish: the schema was one file's, and that
 /// file did not have it.
 #[test]

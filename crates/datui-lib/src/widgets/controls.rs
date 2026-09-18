@@ -20,7 +20,10 @@ pub struct Controls {
     pub use_unicode_throbber: bool, // When true, use 8-dot braille spinner (4 rows tall); else |/-\
     pub busy: bool,                 // When true, show throbber at far right
     pub throbber_frame: u8,         // Spinner frame (0..3 or 0..7 for unicode)
-    pub status_message: Option<String>, // When Some, replaces keybindings with spinner + message
+    /// When Some, replaces keybindings with spinner + message.
+    pub status_message: Option<String>,
+    /// See `with_notes_pending`.
+    pub notes_pending: bool,
     pub row_count_pending: bool, // When true, the exact count is still being determined: show a spinner in place of the (provisional, possibly inaccurate) number
     pub row_count_unknown: bool, // When true, the count could not be determined: show "?" instead of a misleading provisional number (takes effect only when not pending)
     /// Replaces the row count entirely, for views that are not showing a table.
@@ -44,6 +47,7 @@ impl Default for Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
         }
@@ -71,6 +75,7 @@ impl Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
         }
@@ -116,6 +121,14 @@ impl Controls {
         self
     }
 
+    /// Give the Info key a quiet accent: datui has noticed something about the data
+    /// and the panel has not been opened since. Never a count, never a color that
+    /// reads as a warning — a note is an observation, not a fault.
+    pub fn with_notes_pending(mut self, pending: bool) -> Self {
+        self.notes_pending = pending;
+        self
+    }
+
     pub fn with_status_message(mut self, message: Option<String>) -> Self {
         self.status_message = message;
         self
@@ -158,6 +171,7 @@ impl Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
         }
@@ -185,6 +199,7 @@ impl Controls {
             busy: false,
             throbber_frame: 0,
             status_message: None,
+            notes_pending: false,
             row_count_pending: false,
             row_count_unknown: false,
         }
@@ -367,8 +382,13 @@ impl Widget for &Controls {
             Paragraph::new(format!(" {key} "))
                 .style(chip_style)
                 .render(layout[j], buf);
+            let style = if self.notes_pending && *key == "i" {
+                Style::default().fg(self.key_color)
+            } else {
+                label_style
+            };
             Paragraph::new(format!(" {action}"))
-                .style(label_style)
+                .style(style)
                 .render(layout[j + 1], buf);
         }
 
@@ -397,6 +417,50 @@ mod tests {
         (0..width)
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect::<String>()
+    }
+
+    #[test]
+    fn a_dataset_with_notes_gives_the_info_key_a_quiet_accent() {
+        let area = Rect::new(0, 0, 80, 1);
+        let paint = |pending: bool| {
+            let mut buf = Buffer::empty(area);
+            Controls::new()
+                .with_notes_pending(pending)
+                .render(area, &mut buf);
+            buf
+        };
+        let plain = paint(false);
+        let accented = paint(true);
+
+        let text = |buf: &Buffer| {
+            (0..area.width)
+                .map(|x| buf[(x, 0)].symbol().to_string())
+                .collect::<String>()
+        };
+        assert_eq!(
+            text(&plain),
+            text(&accented),
+            "the accent says nothing extra; it is only a color"
+        );
+        assert!(
+            text(&plain).contains("Info"),
+            "the Info key is in the bar to begin with"
+        );
+        let changed: Vec<u16> = (0..area.width)
+            .filter(|x| plain[(*x, 0)].fg != accented[(*x, 0)].fg)
+            .collect();
+        assert!(!changed.is_empty(), "the Info label takes the accent");
+
+        // And only that chip: every other one is left alone. A label chunk is a
+        // leading space, the word, then two cells of gap.
+        let info_at = text(&plain).find("Info").unwrap() as u16;
+        let chunk = (info_at - 1)..(info_at + "Info".len() as u16 + 2);
+        for x in &changed {
+            assert!(
+                chunk.contains(x),
+                "column {x} changed, which is outside the Info chip"
+            );
+        }
     }
 
     #[test]

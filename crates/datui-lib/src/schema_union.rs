@@ -569,12 +569,23 @@ impl ScanDrift {
 /// so the common case stays a single scan however many files disagree.
 ///
 /// `as_text` names columns to read as text from every file instead of leaving them out
-/// of the ones that disagree. Such a column is read at the type each file wrote and
-/// cast to text after, which is the only way to see the values a conflict hides:
+/// of the ones that disagree. Such a column is read at the type each file *disagrees*
+/// in and cast to text after, which is the only way to see the values a conflict hides:
 /// Polars' scan can widen an integer and change a datetime's unit, but it has no policy
 /// for reading a number as a string, and no way to hand back a column it was not told
 /// the type of. So the split is finer here — a run is a stretch of files that agree on
 /// the type of every `as_text` column as well as on what they are missing.
+///
+/// A file whose type merely *widens* into the column's is read at the column's type,
+/// not its own, because only conflicting types are recorded: an integer in a column
+/// read as a float reads as `7.0`. Nothing is hidden by that — a widened value was
+/// always on screen — but it is not the file's own spelling. The same goes for a file
+/// whose footer could not be read, and for one outside the sample on a dataset too
+/// large to read every footer: datui does not know what those hold, so it asks for the
+/// column's type and they are no better off than before.
+///
+/// A column [`can_read_as_text`] refuses, or that the schema does not have, is dropped
+/// from `as_text` and read as it was.
 pub fn lenient_scan(
     paths: &[String],
     schema: Arc<Schema>,
@@ -585,6 +596,21 @@ pub fn lenient_scan(
     let Some(drift) = drift else {
         return scan_run(paths, &schema, cloud_options, &[], None, &[]);
     };
+    // A column is read as text only where the schema has it and every type it is
+    // stored in can be shown as text. A caller that asks for more than that gets the
+    // column as it was rather than a scan that fails: the cast refusing would take
+    // the whole read with it, including the files that never disagreed.
+    let as_text: Vec<PlSmallStr> = as_text
+        .iter()
+        .filter(|name| {
+            schema.get(name).is_some_and(can_read_as_text)
+                && paths
+                    .iter()
+                    .all(|path| drift.stored_type(path, name).is_none_or(can_read_as_text))
+        })
+        .cloned()
+        .collect();
+    let as_text = as_text.as_slice();
     // What the frame ends up as: the dataset's schema with every `as_text` column
     // spelled as text, which is what the runs are selected into so they concatenate.
     let target = text_schema(&schema, as_text);
@@ -646,6 +672,43 @@ pub fn lenient_scan(
                 ..Default::default()
             },
         ),
+    }
+}
+
+/// Whether a column of this type can be shown as text.
+///
+/// Reading a conflicting column as text is a cast, and Polars cannot cast every type
+/// to a string: a duration and a list refuse outright, and binary refuses the moment
+/// its bytes are not UTF-8 — which is most of why a column is binary. A cast that
+/// refuses fails the whole scan, including the files that never disagreed, so this is
+/// asked before the offer is made rather than after it is taken.
+///
+/// Answered by type and not by value, so binary is refused whatever it holds: a
+/// column that renders for one page and fails on the next is worse than one that was
+/// never offered. `types_the_cast_agrees_with_are_exactly_the_ones_offered` keeps this
+/// honest against Polars itself.
+pub fn can_read_as_text(dtype: &DataType) -> bool {
+    match dtype {
+        // Not text at all, and not convertible: the cast errors rather than escaping.
+        DataType::Binary | DataType::BinaryOffset => false,
+        DataType::Duration(_) => false,
+        // Nested sequences have no string form in Polars 0.55.
+        DataType::List(_) | DataType::Array(_, _) => false,
+        // A struct prints as `{1,"a"}`, writing its fields itself rather than casting
+        // them, so it manages inner types a column of that type could not.
+        DataType::Struct(_) => true,
+        DataType::Unknown(_) => false,
+        _ => true,
+    }
+}
+
+impl ColumnDrift {
+    /// Whether this column can be read as text: every type any file holds it in has to
+    /// be one that can be shown as text, the one it is read as included. One file's
+    /// list column is enough to rule it out, because that file's cast is the one that
+    /// would fail.
+    pub fn can_read_as_text(&self) -> bool {
+        can_read_as_text(&self.dtype) && self.conflicting_types.iter().all(can_read_as_text)
     }
 }
 
@@ -875,7 +938,7 @@ mod tests {
         assert_eq!(
             n.iter().collect::<Vec<_>>(),
             [Some("10"), Some("20"), Some("30"), Some("x"), Some("true")],
-            "and holds what each file wrote"
+            "and holds what each file wrote, spelled as that file's own type prints"
         );
         let ids = text.column("id").unwrap().i64().unwrap();
         assert_eq!(
@@ -938,6 +1001,173 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some("10"), Some("20"), None, Some("x")],
             "the file with no `n` has none to show"
+        );
+    }
+
+    /// The types the predicate offers are exactly the types Polars will cast.
+    ///
+    /// Asked of Polars rather than remembered: the list of what casts to a string is
+    /// Polars' to change, and a predicate that drifts from it either hides a column
+    /// that would have read fine or offers one whose cast fails the whole scan. Each
+    /// case carries a real value, because an all-null column casts from anything.
+    #[test]
+    fn types_the_cast_agrees_with_are_exactly_the_ones_offered() {
+        use polars::prelude::*;
+
+        let mk = |dtype: DataType| -> Column {
+            Series::new("x".into(), [1i64, 2])
+                .cast(&dtype)
+                .unwrap_or_else(|e| panic!("cannot build a {dtype:?} column: {e}"))
+                .into()
+        };
+        let mut cases: Vec<(DataType, Column)> = vec![
+            DataType::Int64,
+            DataType::Float64,
+            DataType::Boolean,
+            DataType::Date,
+            DataType::Time,
+            DataType::Datetime(TimeUnit::Microseconds, None),
+            DataType::Duration(TimeUnit::Milliseconds),
+            DataType::Decimal(10, 2),
+            DataType::List(Box::new(DataType::Int64)),
+        ]
+        .into_iter()
+        .map(|dtype| (dtype.clone(), mk(dtype)))
+        .collect();
+        cases.push((DataType::String, Series::new("x".into(), ["a", "b"]).into()));
+        // Bytes that are not text, which is most of why a column is binary.
+        cases.push((
+            DataType::Binary,
+            Series::new("x".into(), [&[0xffu8, 0xfe][..], &[0x41][..]]).into(),
+        ));
+        let plain =
+            StructChunked::from_series("x".into(), 2, [Series::new("a".into(), [1i64, 2])].iter())
+                .unwrap()
+                .into_series();
+        cases.push((plain.dtype().clone(), plain.into()));
+        // A struct prints its fields itself rather than casting them, so it manages
+        // inner types that a column of that type could not.
+        for inner in [
+            DataType::Duration(TimeUnit::Milliseconds),
+            DataType::List(Box::new(DataType::Int64)),
+            DataType::Binary,
+        ] {
+            let nested = StructChunked::from_series(
+                "x".into(),
+                2,
+                [Series::new("a".into(), [1i64, 2]).cast(&inner).unwrap()].iter(),
+            )
+            .unwrap()
+            .into_series();
+            cases.push((nested.dtype().clone(), nested.into()));
+        }
+
+        for (dtype, column) in cases {
+            let cast_works = DataFrame::new(2, vec![column])
+                .unwrap()
+                .lazy()
+                .select([col("x").cast(DataType::String)])
+                .collect()
+                .is_ok();
+            assert_eq!(
+                can_read_as_text(&dtype),
+                cast_works,
+                "{dtype:?}: the predicate and the cast must agree"
+            );
+        }
+    }
+
+    /// Asking for a column the cast would refuse leaves it as it was, rather than
+    /// failing the read of every file including the ones that agreed.
+    #[test]
+    fn a_column_the_cast_refuses_is_read_as_it_was() {
+        use polars::prelude::{ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        let mut write = |name: &str, mut frame: polars::prelude::DataFrame| {
+            let path = dir.path().join(name);
+            let f = std::fs::File::create(&path).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        };
+        // Bytes that are not text in one file, text in the other.
+        write(
+            "a.parquet",
+            df!("id" => &[0i64, 1], "n" => &[&[0xffu8, 0xfe][..], &[0x41][..]]).unwrap(),
+        );
+        write("b.parquet", df!("id" => &[2i64], "n" => &["x"]).unwrap());
+
+        let footers: Vec<Option<FileSchema>> = vec![
+            file(&[("id", DataType::Int64), ("n", DataType::Binary)], 2),
+            file(&[("id", DataType::Int64), ("n", DataType::String)], 1),
+        ];
+        let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(2));
+        let drifting = dataset
+            .columns
+            .iter()
+            .find(|column| column.name == "n")
+            .unwrap();
+        assert!(
+            !drifting.can_read_as_text(),
+            "so the Notes tab never offers it"
+        );
+
+        let drift = ScanDrift::new(&paths, &dataset, &[2, 1]).expect("the files disagree");
+        let as_text = [PlSmallStr::from("n")];
+        let frame = lenient_scan(&paths, dataset.schema.clone(), None, Some(&drift), &as_text)
+            .unwrap()
+            .collect()
+            .expect("the read still succeeds, which is the point");
+        assert_eq!(
+            frame
+                .column("id")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            [0, 1, 2],
+            "every file is still read, the agreeing one included"
+        );
+        assert_ne!(
+            frame.column("n").unwrap().dtype(),
+            &DataType::String,
+            "and the column is as it was, not half-cast"
+        );
+    }
+
+    /// `text_schema` spells the named columns as text and moves nothing.
+    #[test]
+    fn text_schema_respells_without_reordering() {
+        let mut schema = Schema::with_capacity(3);
+        schema.with_column("a".into(), DataType::Int64);
+        schema.with_column("n".into(), DataType::Int64);
+        schema.with_column("z".into(), DataType::Float64);
+        let schema = Arc::new(schema);
+
+        let text = text_schema(&schema, &[PlSmallStr::from("n")]);
+        assert_eq!(
+            names(&text),
+            ["a", "n", "z"],
+            "a column read differently does not move"
+        );
+        assert_eq!(text.get("n"), Some(&DataType::String));
+        assert_eq!(
+            text.get("a"),
+            Some(&DataType::Int64),
+            "nor do its neighbours change"
+        );
+        assert_eq!(text.get("z"), Some(&DataType::Float64));
+
+        assert!(
+            Arc::ptr_eq(&schema, &text_schema(&schema, &[])),
+            "asking for nothing is the schema itself"
+        );
+        assert_eq!(
+            names(&text_schema(&schema, &[PlSmallStr::from("ghost")])),
+            ["a", "n", "z"],
+            "a name the schema does not have adds nothing"
         );
     }
 

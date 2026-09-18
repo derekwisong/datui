@@ -14,7 +14,7 @@
 
 use crate::numfmt::group_chrome;
 use crate::schema_union::{ColumnDrift, DatasetSchema, SchemaOrigin};
-use polars::prelude::DataType;
+use polars::prelude::{DataType, PlSmallStr};
 
 /// One thing datui noticed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,12 @@ pub struct Note {
     pub summary: String,
     /// What the note is based on, so its reach is never overstated.
     pub scope: String,
+    /// The column datui can offer to read as text, when this note is about one and
+    /// reading it that way would work. `None` for every other note.
+    ///
+    /// The name rather than the prose, because the panel has to act on it: matching a
+    /// column out of a sentence is the kind of thing this module exists to avoid.
+    pub read_as_text: Option<PlSmallStr>,
 }
 
 /// Whether a dataset's schema came from a sample of its files.
@@ -137,6 +143,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
                 }
             ),
             scope: scope.clone(),
+            read_as_text: None,
         });
     }
 
@@ -184,6 +191,7 @@ pub fn left_out_note(
             how_many(dataset, column.conflicting_files)
         ),
         scope: format!("in {}", dataset.origin),
+        read_as_text: None,
     }
 }
 
@@ -206,6 +214,7 @@ fn absence_note(
             denominator
         ),
         scope: scope.to_string(),
+        read_as_text: None,
     })
 }
 
@@ -232,6 +241,11 @@ fn conflict_note(
             chosen
         ),
         scope: scope.to_string(),
+        // The offer, and only where it would work: a column one file holds as a list
+        // cannot be shown as text at all, and an offer that did nothing would be worse
+        // than none. `lenient_scan` asks the same question again, so the two cannot
+        // disagree about which columns are on offer.
+        read_as_text: column.can_read_as_text().then(|| column.name.clone()),
     })
 }
 
@@ -252,6 +266,7 @@ fn widening_note(column: &ColumnDrift, chosen: &str, scope: &str) -> Option<Note
             column.name
         ),
         scope: scope.to_string(),
+        read_as_text: None,
     })
 }
 

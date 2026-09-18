@@ -127,6 +127,37 @@ impl DatasetSchema {
         self.columns.iter().filter(move |c| !c.is_uniform(readable))
     }
 
+    /// This dataset as it reads with `as_text` read as text from every file.
+    ///
+    /// What the panel shows and what the table draws from, not what the scan is built
+    /// from — the scan needs the types the footers found, which is why `omitted` is
+    /// carried through untouched and why the caller keeps the original alongside.
+    ///
+    /// Those columns stop conflicting: their cells hold a value from every file, so
+    /// nothing is unread, nothing is left out of a filter or sort, and the note that
+    /// said the column was not read there has nothing left to say. `absent` is left
+    /// alone — a file that never had the column still has none to show.
+    pub fn reading_as_text(&self, as_text: &[PlSmallStr]) -> DatasetSchema {
+        let mut out = self.clone();
+        if as_text.is_empty() {
+            return out;
+        }
+        out.schema = crate::schema_union::text_schema(&self.schema, as_text);
+        for column in &mut out.columns {
+            if as_text.contains(&column.name) {
+                column.dtype = DataType::String;
+                column.conflicting_files = 0;
+                column.conflicting_types.clear();
+                // Every file's value is shown as it was written, so no type gave way.
+                column.widened = false;
+            }
+        }
+        for group in &mut out.groups {
+            group.unread.retain(|name| !as_text.contains(name));
+        }
+        out
+    }
+
     /// Whether any file is missing anything. When nothing is, the scan is one plain
     /// read and rows need carry nothing.
     pub fn drifts(&self) -> bool {

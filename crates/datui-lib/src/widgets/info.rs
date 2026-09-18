@@ -827,7 +827,13 @@ impl<'a> DataTableInfo<'a> {
         // the note can spare it. A note that exactly fills the panel keeps its last
         // row: saying "no room to show one" about a note that fits is worse than not
         // saying how many are behind it.
-        let reserve = !all_shown && heights[selected] < full;
+        // A row is worth spending on the offer too: a note that says a column is not
+        // read from some files, with no way to see what is there, is half a note.
+        let offer = notes[selected]
+            .read_as_text
+            .as_ref()
+            .map(|column| format!("Enter  read {column} as text"));
+        let reserve = (!all_shown || offer.is_some()) && heights[selected] < full;
         let show = if reserve { full - 1 } else { full };
         if heights[selected] > show {
             // The note the cursor is on cannot show its summary and the line it rests
@@ -877,6 +883,16 @@ impl<'a> DataTableInfo<'a> {
             }
         }
 
+        if let (true, Some(offer)) = (reserve, offer.as_ref()) {
+            Paragraph::new(Line::from(Span::styled(offer.as_str(), dim))).render(
+                Rect {
+                    y: area.y + area.height - 1,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
+        }
         let (above, below) = (first, notes.len() - last);
         if reserve && (above > 0 || below > 0) {
             let hidden = match (above, below) {

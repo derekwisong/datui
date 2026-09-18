@@ -4,6 +4,7 @@ Dataset technical info.
                     On other tabs: focus stays on tab bar.
   Left / Right:     On tab bar: switch tabs
   ↑ / ↓:            Schema tab (when focused) or Notes tab: move the cursor
+  Enter:            Notes tab: take the offer on the note, where it has one
   ? / F1:           Show this help
   Esc / i:          Close info panel
 
@@ -26,6 +27,13 @@ Notes:
   itself. Whole notes only, so a claim never appears without its basis, nor a
   basis without its claim. Where the note the cursor is on will not fit at all,
   the panel says so; a shorter one may still fit.
+
+  A note about a column the files store in more than one type offers to read it
+  as text. Press Enter on it and the column is re-read from every file at the
+  type that file wrote, so the values the conflict hid can be seen; the marks
+  and the note go with the conflict. Nothing is listed or downloaded again. A
+  column one file holds as a list, or as bytes that are not text, has no text
+  form, and is not offered.
 
   When there is something to note, the i key in the control bar takes a quiet
   accent until this panel has been opened. display.notes_accent = false turns

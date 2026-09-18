@@ -1427,6 +1427,122 @@ fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
     );
 }
 
+/// The offer in the Notes tab, taken: the values a type conflict hid appear on screen.
+#[test]
+fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
+    let g = datui::glyphs::get();
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1], "n" => &[10i64, 20]).unwrap(),
+    );
+    // `n` as text here, so it is not read from this file at all.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "n" => &["sixty"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let before = painted(&mut app, &rx, &tx, area);
+    assert!(
+        before.contains(g.conflict),
+        "the row whose file stores `n` as text is a conflict to begin with"
+    );
+    assert!(
+        !before.contains("sixty"),
+        "and its value cannot be seen: {before}"
+    );
+
+    // Open the Info panel and walk to the Notes tab.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    // Walked by key rather than by setting the tab, so the keys the user presses are
+    // the ones under test. Tab first: the panel opens on the body, where the arrows
+    // move the schema table rather than the tab bar. The conflict note's own words say
+    // when we have arrived.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    let mut panel = painted(&mut app, &rx, &tx, area);
+    for _ in 0..6 {
+        if panel.contains("and not read there") {
+            break;
+        }
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        panel = painted(&mut app, &rx, &tx, area);
+    }
+    assert!(
+        panel.contains("and not read there"),
+        "the Notes tab, showing the conflict note: {panel}"
+    );
+
+    // Walk to the note that carries the offer, and take it.
+    let offered = |app: &App| -> Option<usize> {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .notes()
+            .iter()
+            .position(|note| note.read_as_text.is_some())
+    };
+    let at = offered(&app).expect("the conflict note offers to read the column as text");
+    for _ in 0..at {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+    }
+    let panel = painted(&mut app, &rx, &tx, area);
+    assert!(
+        panel.contains("Enter  read n as text"),
+        "the panel says the offer is there: {panel}"
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    let after = painted(&mut app, &rx, &tx, area);
+
+    assert!(
+        after.contains("sixty"),
+        "the value the conflict hid is on screen: {after}"
+    );
+    assert!(
+        after.contains("10") && after.contains("20"),
+        "and so are the ones that were always readable: {after}"
+    );
+    assert!(
+        !after.contains(g.conflict),
+        "nothing conflicts any more: {after}"
+    );
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.read_as_text(),
+        [polars::prelude::PlSmallStr::from("n")],
+        "and the state says which column it is reading that way"
+    );
+    assert!(
+        !state.notes().iter().any(|note| note.read_as_text.is_some()),
+        "the offer is gone, having been taken: {:#?}",
+        state.notes()
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

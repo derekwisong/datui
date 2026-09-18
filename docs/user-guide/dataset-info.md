@@ -53,6 +53,13 @@ claim above it, is the misreading the basis is there to prevent. Where the note
 the cursor is on will not fit at all, the panel says so rather than showing part
 of it; a shorter note may still fit.
 
+A note about a column the files store in more than one type offers to **read it
+as text**: press <kbd>Enter</kbd> on it and the column is re-read from every file
+at the type that file wrote, so the values the conflict hid appear. The note says
+so on the line under the panel while the cursor is on it. A column one file holds
+as a list, or as bytes that are not text, cannot be shown as text at all, and no
+offer is made for it.
+
 Every note but one kind describes the dataset as opened. The exception is the
 note about a filter or sort leaving rows out, which describes the view: one
 arrives for each column you sort or filter by that some file holds in another

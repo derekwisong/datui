@@ -1176,6 +1176,44 @@ fn test_absent_cells_still_read_as_absent_after_a_sort() {
     assert!(text.contains(g.null), "and the real nulls are still nulls");
 }
 
+/// The very first frame must mark the absent cells too.
+///
+/// Every other test here paints through `painted`, which renders up to sixty times, so
+/// a mark that only arrives on the second frame looks identical to one that was always
+/// there. In the app there is no second frame until something happens: datui draws the
+/// dataset and waits. So this renders exactly once, into a fresh buffer, and reads the
+/// glyph off it.
+#[test]
+fn test_the_first_frame_of_a_drifting_dataset_marks_its_absent_cells() {
+    let g = datui::glyphs::get();
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    let area = Rect::new(0, 0, 80, 12);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = (0..area.height)
+        .flat_map(|y| {
+            (0..area.width)
+                .map(move |x| (x, y))
+                .map(|(x, y)| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".to_string()))
+        })
+        .collect();
+
+    assert!(
+        screen.contains(g.absent),
+        "the row from the file without `extra` is absent, not null, on the first \
+         frame as much as the second:\n{screen}"
+    );
+}
+
 /// Pins the row arithmetic that everything else rests on.
 ///
 /// The scan numbers each run's rows from where that run's first file begins in the
@@ -1220,7 +1258,7 @@ fn test_each_row_takes_its_glyph_from_the_file_it_came_from() {
     assert_ne!(first, middle, "the first file has no `n`");
     assert_ne!(last, middle, "the last file holds `n` as text");
 
-    let groups = state.display_drift();
+    let groups = state.display_drift(area.height as usize);
     assert_eq!(
         groups,
         vec![

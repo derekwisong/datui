@@ -4704,12 +4704,19 @@ impl DataTableState {
         }
     }
 
-    /// The drift group of each row on screen, when the dataset's files differ.
+    /// The drift group of each of the `rows` rows this frame has room for, starting at
+    /// the top of the view, when the dataset's files differ.
+    ///
+    /// Sized by the frame about to be drawn rather than by `visible_rows`, which is
+    /// what the *last* frame drew and is 0 before there has been one. Taking it from
+    /// `visible_rows` left the opening frame of every drifting dataset — the one the
+    /// user is looking at when nothing has been pressed yet — with no groups at all,
+    /// so every absent cell fell back to the plain null glyph.
     ///
     /// Empty once a query or reshape has replaced the frame: those rows stand for no
-    /// file, so their nulls are ordinary nulls. The window is a screen tall, so this
-    /// is a few dozen values.
-    pub fn display_drift(&self) -> Vec<u32> {
+    /// file, so their nulls are ordinary nulls. A frame is a screen tall, so this is
+    /// a few dozen values.
+    pub fn display_drift(&self, rows: usize) -> Vec<u32> {
         if !self.drift_column_present {
             return Vec::new();
         }
@@ -4720,7 +4727,7 @@ impl DataTableState {
             return Vec::new();
         };
         let offset = self.start_row.saturating_sub(self.buffered_start_row);
-        let len = self.visible_rows.min(column.len().saturating_sub(offset));
+        let len = rows.min(column.len().saturating_sub(offset));
         if len == 0 {
             return Vec::new();
         }

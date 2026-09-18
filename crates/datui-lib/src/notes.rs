@@ -59,10 +59,10 @@ fn out_of(dataset: &DatasetSchema) -> String {
 
 /// Names for a set of types that tell them apart.
 ///
-/// `dtype_label` is the word the table header uses, and several types share one:
-/// `datetime` whatever the unit or zone, `struct` whatever the fields. A note reading
-/// "t is datetime in 1 file; read as datetime and not read there" says nothing, so where any two of the
-/// types in hand share a word, all of them are spelled out in full. Polars' `Display`
+/// Several types print alike at any given level of detail: every `Struct` is
+/// `struct[1]` however its fields differ, and every `Enum` is `Enum([...])` however its
+/// categories do. A note reading "s is struct[1] in 1 file; read as struct[1]" says
+/// nothing, so the names escalate until they tell the types apart. Polars' `Display`
 /// collapses too — a struct is `struct[1]` — so the full form is its `Debug`.
 fn distinct_names(types: &[&DataType]) -> Vec<String> {
     let collides = |names: &[String]| {
@@ -109,12 +109,20 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     let mut notes = Vec::new();
 
     for column in dataset.drifting() {
+        // The type the column is read as is named once, so two notes about the same
+        // column cannot name it two different ways: whatever it takes to tell the
+        // conflicting types apart is what the widening note calls it too.
+        let mut types: Vec<&DataType> = vec![&column.dtype];
+        types.extend(column.conflicting_types.iter());
+        let names = distinct_names(&types);
+        let (chosen, others) = names.split_first().expect("the chosen type is first");
+
         // A column can be missing from some files, stored differently in others, and
         // stored in a narrower type among the rest. Each is true on its own, so each
         // is said on its own: nothing here suppresses anything else.
         notes.extend(absence_note(column, readable, &denominator, &scope));
-        notes.extend(conflict_note(column, dataset, &scope));
-        notes.extend(widening_note(column, &scope));
+        notes.extend(conflict_note(column, dataset, chosen, others, &scope));
+        notes.extend(widening_note(column, chosen, &scope));
     }
 
     if !dataset.unreadable.is_empty() {
@@ -161,14 +169,16 @@ fn absence_note(
 ///
 /// Counts without dividing: how many files hold it in a type that lost is a fact about
 /// those files, and needs no total to be true.
-fn conflict_note(column: &ColumnDrift, dataset: &DatasetSchema, scope: &str) -> Option<Note> {
+fn conflict_note(
+    column: &ColumnDrift,
+    dataset: &DatasetSchema,
+    chosen: &str,
+    others: &[String],
+    scope: &str,
+) -> Option<Note> {
     if column.conflicting_files == 0 {
         return None;
     }
-    let mut types: Vec<&DataType> = vec![&column.dtype];
-    types.extend(column.conflicting_types.iter());
-    let names = distinct_names(&types);
-    let (chosen, others) = names.split_first()?;
     Some(Note {
         summary: format!(
             "{} is {} in {}; read as {} and not read there",
@@ -188,18 +198,14 @@ fn conflict_note(column: &ColumnDrift, dataset: &DatasetSchema, scope: &str) -> 
 /// a file that never typed the column all land here, and not "without loss", since a
 /// very large integer read as a float, or a millisecond datetime read as nanoseconds
 /// past the year 2262, is not exact.
-fn widening_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
+fn widening_note(column: &ColumnDrift, chosen: &str, scope: &str) -> Option<Note> {
     if !column.widened {
         return None;
     }
     Some(Note {
         summary: format!(
-            "{} is stored as more than one type; read as {}",
-            column.name,
-            // Which unit or precision won is the whole content of this note, and the
-            // table's word for the type does not carry it: every `Datetime` is
-            // `datetime` and every `Decimal` is `decimal`.
-            column.dtype
+            "{} is stored as more than one type; read as {chosen}",
+            column.name
         ),
         scope: scope.to_string(),
     })
@@ -527,6 +533,49 @@ mod tests {
                 // Which unit won is the whole content of the note, and `datetime`
                 // alone would not carry it.
                 expected: vec!["t is stored as more than one type; read as datetime[ns]"],
+            },
+            Shape {
+                what: "a struct that both widens and conflicts",
+                files: vec![
+                    file(
+                        &[(
+                            "s",
+                            DataType::Struct(vec![Field::new("a".into(), i32.clone())]),
+                        )],
+                        50,
+                    ),
+                    file(
+                        &[(
+                            "s",
+                            DataType::Struct(vec![Field::new("a".into(), i64.clone())]),
+                        )],
+                        50,
+                    ),
+                    file(
+                        &[(
+                            "s",
+                            DataType::Struct(vec![Field::new("a".into(), str.clone())]),
+                        )],
+                        5,
+                    ),
+                ],
+                sampled: None,
+                // Both notes name the winner the same way. Naming it separately let
+                // one say `Struct({'a': Int64})` and the other `struct[1]`.
+                expected: vec![
+                    "s is Struct({'a': String}) in 1 file; \
+                     read as Struct({'a': Int64}) and not read there",
+                    "s is stored as more than one type; read as Struct({'a': Int64})",
+                ],
+            },
+            Shape {
+                what: "a decimal, whose precision the header word drops",
+                files: vec![
+                    file(&[("d", DataType::Decimal(38, 2))], 90),
+                    file(&[("d", str.clone())], 10),
+                ],
+                sampled: None,
+                expected: vec!["d is str in 1 file; read as decimal[38,2] and not read there"],
             },
             Shape {
                 what: "absent, conflicting and widened",

@@ -45,7 +45,7 @@ struct NoteRow {
 /// - `last` is as large as it can be, so rows are never left blank while a whole note
 ///   is out of view.
 ///
-/// Four review rounds found defects in this arithmetic when it was inline in the
+/// Review after review found defects in this arithmetic when it was inline in the
 /// render, expressed in rows and mixed with drawing. It is a function so the rules
 /// above can be checked directly rather than through a terminal.
 fn notes_window(heights: &[usize], selected: usize, stored: usize, show: usize) -> (usize, usize) {
@@ -831,15 +831,14 @@ impl<'a> DataTableInfo<'a> {
         if heights[selected] > show {
             // The note the cursor is on cannot show its summary and the line it rests
             // on. Drawing the summary alone would be a claim from nowhere, so say what
-            // is there instead. `heights` is exact, so this cannot fire when the note
-            // would have fitted.
+            // is there instead. Says "this one", not "one": a shorter note elsewhere in
+            // the list may well fit, and the cursor can be moved to it.
             let count = notes.len();
             Paragraph::new(Line::from(Span::styled(
                 format!(
-                    "{} {}; no room to show {}",
+                    "{} {}; no room for this one",
                     group_chrome(count),
-                    if count == 1 { "note" } else { "notes" },
-                    if count == 1 { "it" } else { "one" }
+                    if count == 1 { "note" } else { "notes" }
                 ),
                 dim,
             )))
@@ -1110,7 +1109,7 @@ mod tests {
 
     /// The window's three promises, checked over every shape that fits in a terminal.
     ///
-    /// Four review rounds found defects in this arithmetic while it lived inside the
+    /// Review after review found defects in this arithmetic while it lived inside the
     /// render, and the test that was meant to guard it re-implemented the same
     /// arithmetic — so the two drifted and it could never fail. This calls the real
     /// function and asserts what the panel actually needs.

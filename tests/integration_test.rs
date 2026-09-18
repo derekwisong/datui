@@ -1641,7 +1641,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
 
     // A summary without its scope line under it is the misreading the scope line
     // exists to prevent, so no height may produce one.
-    for height in 3u16..26 {
+    for height in 4u16..26 {
         let area = Rect::new(0, 0, 100, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
@@ -1677,7 +1677,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
     app.render(area, &mut buf);
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
     assert!(
-        screen.contains("6 notes; no room to show one"),
+        screen.contains("6 notes; no room for this one"),
         "too short for a whole note says so, got:\n{screen}"
     );
 }

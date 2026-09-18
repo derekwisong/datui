@@ -2069,18 +2069,18 @@ fn test_each_open_counts_its_own_footers() {
     );
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
 
-    // What the user would see first, and the mechanism second: a shared counter shows
-    // the four footers of two datasets under the name of the one-file one, and a
-    // failure saying "4" names that directly where a pointer comparison only says the
-    // counters are the same object.
+    // The pointer comparison is the one that bites, and it is first because of that.
+    // `begin` stores zero, so a second pass resets a shared counter as surely as a
+    // fresh one and the count below reads 1 either way — it says what the counter
+    // should hold, and the line under it is what makes holding it mean anything.
+    assert!(
+        !Arc::ptr_eq(&counter_of_the_first, &app.footer_progress),
+        "the second open has a counter of its own"
+    );
     assert_eq!(
         app.footer_progress.last_pass().read,
         1,
         "counting its one footer, not the three before it"
-    );
-    assert!(
-        !Arc::ptr_eq(&counter_of_the_first, &app.footer_progress),
-        "the second open has a counter of its own"
     );
 
     // And the behaviour, not just the mechanism: the first open's pass goes on running
@@ -2158,6 +2158,72 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
         !bar.contains('%'),
         "a real fraction is not to be shown beside a made-up percentage: {bar:?}"
     );
+}
+
+/// One frame, one number — while the pass is still running.
+///
+/// The body and the bar are painted a millisecond apart, with the threads reading the
+/// footers moving the counter in between. Reading it once each let them print
+/// different numbers for the same wait: measured at four thousand frames out of four
+/// thousand. It also let the bar decide there was no count running just after the body
+/// had shown one, putting the phase's flat percentage back beside it.
+#[test]
+fn test_one_frame_says_one_number_while_the_footers_are_still_arriving() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_loading_phase("Caching schema", 40);
+    app.footer_progress.begin(200_000);
+
+    // A reader, going as fast as the real ones do between two paints.
+    let counter = app.footer_progress.clone();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopping = stop.clone();
+    let reading = std::thread::spawn(move || {
+        while !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+            counter.advance();
+        }
+    });
+
+    let area = Rect::new(0, 0, 100, 24);
+    // The count itself, not the line: the body is centred and the bar carries the rest
+    // of the status beside it, so the two lines differ everywhere except here.
+    let number = |row: &str| -> Option<String> {
+        row.split("Reading footers: ").nth(1).map(|rest| {
+            rest.chars()
+                .take_while(|c| c.is_ascii_digit() || *c == ',')
+                .collect()
+        })
+    };
+    for frame in 0..200 {
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let body = rows
+            .iter()
+            .find(|r| r.contains("Reading footers"))
+            .and_then(|r| number(r));
+        let bar = rows.last().and_then(|r| number(r));
+        assert_eq!(
+            body,
+            bar,
+            "frame {frame} said two things about one wait:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            body.is_some(),
+            "frame {frame} stopped counting mid-pass:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    reading.join().unwrap();
 }
 
 /// The accent is about the note being *new*: a sort that has something to say brings

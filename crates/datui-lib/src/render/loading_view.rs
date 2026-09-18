@@ -183,6 +183,11 @@ mod tests {
         for _ in 0..1203 {
             app.footer_progress.advance();
         }
+        // The count is taken once a frame rather than where it is shown; these tests
+        // paint the body alone, so they do for themselves what a whole frame does
+        // first. That the app does it is `test_the_control_bar_counts_the_footers_the
+        // _loading_screen_does`, which renders the App and not this function.
+        app.begin_frame();
         let text = painted(&app);
         assert!(
             text.contains("Reading footers: 1,203 of 6,541"),
@@ -193,7 +198,11 @@ mod tests {
             "and it replaces the phase rather than crowding in beside it: {text}"
         );
 
+        // A new frame, because the count a frame shows is the one it started with: a
+        // pass that lands halfway down the screen does not change what the bottom of
+        // it says.
         app.footer_progress.done();
+        app.begin_frame();
         assert!(
             painted(&app).contains("Caching schema"),
             "once they have landed there is no wait left to count"
@@ -220,6 +229,7 @@ mod tests {
         for _ in 0..1203 {
             app.footer_progress.advance();
         }
+        app.begin_frame();
 
         let ellipsis = crate::glyphs::get().ellipsis;
         // Every width the panel draws at, not a handful: the earlier list skipped the

@@ -2130,9 +2130,13 @@ mod tests {
 
     /// More advances than footers cannot make the count overtake the total.
     ///
-    /// The threads doing the reading and the render are not synchronised, so a stale
-    /// `begin` racing a late `advance` is possible; "reading 4 of 3 footers" would be
-    /// the sort of nonsense that makes a user distrust the rest of the screen.
+    /// No caller can reach it today: a pass is begun before its readers are spawned
+    /// and is over before the next one begins, and every open takes a counter of its
+    /// own. The clamp is for the wiring that comes after this one — "reading 4 of 3
+    /// footers" is the sort of nonsense that makes a user distrust the rest of the
+    /// screen. It does mean a future miswiring shows as a count stopped at N of N
+    /// rather than as an obvious absurdity, which is the price of not showing the
+    /// absurdity.
     #[test]
     fn the_footer_count_never_passes_its_total() {
         let progress = FooterProgress::default();

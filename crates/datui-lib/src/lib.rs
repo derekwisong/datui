@@ -2846,9 +2846,17 @@ impl LenCount {
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// How far the footer pass of an open has got. Written by the threads reading
-    /// them; read by the loading screen and the control bar, both through
-    /// [`Self::loading_phase`] so they cannot describe one wait two ways.
+    /// them; read once a frame into [`Self::footers_this_frame`], which is what the
+    /// loading screen and the control bar actually show.
     pub footer_progress: Arc<crate::schema_union::FooterProgress>,
+    /// The count as it stood when this frame began, or `None` if no pass was running.
+    ///
+    /// Taken once because the pass is running on other threads while the frame is
+    /// drawn. The loading body and the control bar are painted a millisecond apart,
+    /// and when each read the counter for itself they printed different numbers for
+    /// one wait — and the bar could print a phase's flat percentage beside a count
+    /// that had finished between the two reads.
+    footers_this_frame: Option<(usize, usize)>,
     /// Network roots currently being listed off-thread, so a probe is not started
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
@@ -3157,13 +3165,23 @@ impl App {
         Ok(())
     }
 
+    /// Take the numbers the whole frame will be drawn from.
+    ///
+    /// Only one so far: the footer count. It is read here rather than where it is
+    /// shown because two parts of the screen show it, they are painted at different
+    /// moments, and a background thread is moving it between them.
+    fn begin_frame(&mut self) {
+        self.footers_this_frame = self.footer_progress.reading();
+    }
+
     /// What the load is doing, for whichever part of the screen is saying so.
     ///
     /// The footer count stands in for the phase while a pass is running: it says the
-    /// same thing and says how far along it is. One place decides it so the loading
-    /// body and the control bar cannot say two different things about one wait.
+    /// same thing and says how far along it is. Both callers read it from
+    /// [`Self::footers_this_frame`], one number taken once a frame, so they cannot say
+    /// two different things about one wait.
     pub(crate) fn loading_phase<'a>(&self, phase: &'a str) -> std::borrow::Cow<'a, str> {
-        match self.footer_progress.reading() {
+        match self.footers_this_frame {
             Some((read, total)) => std::borrow::Cow::Owned(format!(
                 "Reading footers: {} of {}",
                 crate::numfmt::group_chrome(read),
@@ -3541,6 +3559,7 @@ impl App {
             path: None,
             data_table_state: None,
             footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
+            footers_this_frame: None,
             home: home::HomeState::default(),
             home_probes_inflight: Vec::new(),
             #[cfg(feature = "cloud")]
@@ -12096,6 +12115,7 @@ impl App {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.begin_frame();
         self.debug.num_frames += 1;
         if self.debug.enabled {
             self.debug.show_help_at_render = self.show_help;
@@ -12186,8 +12206,10 @@ impl Widget for &mut App {
                 let current_phase = self.loading_phase(current_phase);
                 // The percentage is a constant per phase, which was harmless beside a
                 // phase name and is not beside a real fraction: 1,203 of 6,541 is 18%,
-                // and "(40%)" next to it reads as that count's progress.
-                let counting = self.footer_progress.reading().is_some();
+                // and "(40%)" next to it reads as that count's progress. The same
+                // number the phase was built from, so a pass that ends mid-frame
+                // cannot leave the count showing with the percentage back beside it.
+                let counting = self.footers_this_frame.is_some();
                 if *progress_percent > 0 && !counting {
                     Some(format!("{}... ({}%)", current_phase, progress_percent))
                 } else {

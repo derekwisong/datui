@@ -1707,15 +1707,28 @@ impl DataTableState {
         (files, read, footers)
     }
 
-    /// One local Parquet file's columns and row count, from its footer.
+    /// `footer_of`, for tests in other modules of this crate.
+    #[cfg(test)]
+    pub(crate) fn footer_of_for_test(path: &Path) -> Option<FileSchema> {
+        Self::footer_of(path)
+    }
+
+    /// One local Parquet file's columns, row count and row-group sizes, from its
+    /// footer. The metadata is already read for the row count; the sizes come off the
+    /// same object.
     fn footer_of(path: &Path) -> Option<FileSchema> {
         let file = File::open(path).ok()?;
         let mut reader = ParquetReader::new(file);
         let arrow_schema = reader.schema().ok()?;
-        let rows = reader.num_rows().ok()?;
+        let metadata = reader.get_metadata().ok()?;
         Some(FileSchema {
             schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
-            rows,
+            rows: metadata.num_rows,
+            row_group_bytes: metadata
+                .row_groups
+                .iter()
+                .map(|group| group.compressed_size())
+                .collect(),
         })
     }
 
@@ -6864,6 +6877,7 @@ mod tests {
         Some(crate::schema_union::FileSchema {
             schema: Arc::new(schema),
             rows,
+            row_group_bytes: Vec::new(),
         })
     }
 

@@ -134,6 +134,12 @@ sort keeps its rows. A filter is a different matter: no comparison holds against
 an empty cell, so a `·` or `∅` row fails one as it would in any query, and datui
 says nothing about that because nothing unusual happened.
 
+A Parquet file is written in **row groups**, and a row group is what a reader
+fetches: a page of rows anywhere inside one costs the whole of it. Where the
+middle row group of a dataset is over 64 MiB, the Notes tab says so — over a
+network that is the difference between a page arriving and a page arriving after
+64 MiB do, and there is nothing to be done about it from datui except know why.
+
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file, as it does for a glob.
 

@@ -27,6 +27,13 @@ use polars::prelude::{
 pub struct FileSchema {
     pub schema: Arc<Schema>,
     pub rows: usize,
+    /// Compressed bytes of each row group, in file order. Empty where the footer was
+    /// read by a route that does not report them.
+    ///
+    /// A row group is the unit a reader fetches: a page of rows anywhere inside one
+    /// costs the whole of it. How big they are is therefore what a remote dataset
+    /// costs to scroll, and it is in the footer datui already reads.
+    pub row_group_bytes: Vec<usize>,
 }
 
 /// Where a dataset's schema came from. Shown in the Info panel's Schema tab, so a
@@ -106,6 +113,9 @@ pub struct DatasetSchema {
     pub read_as_text: Vec<PlSmallStr>,
     /// Files whose footer said they hold no rows, among those read.
     pub empty_files: usize,
+    /// The middle row group's compressed size, over every row group of every footer
+    /// read. `None` when no footer reported one.
+    pub median_row_group_bytes: Option<usize>,
 }
 
 /// What a file is missing relative to the dataset's schema. Files that are missing the
@@ -347,7 +357,27 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         origin,
         read_as_text: Vec::new(),
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
+        median_row_group_bytes: median(
+            files
+                .iter()
+                .flatten()
+                .flat_map(|f| f.row_group_bytes.iter().copied()),
+        ),
     }
+}
+
+/// The middle value of `sizes`, or the lower of the middle two. `None` when empty.
+///
+/// The middle rather than the mean: one file written by a different job, or one
+/// backfill that rewrote a year into a single row group, drags a mean somewhere no
+/// actual row group is, and the note would then describe a dataset that does not exist.
+fn median(sizes: impl Iterator<Item = usize>) -> Option<usize> {
+    let mut sizes: Vec<usize> = sizes.collect();
+    if sizes.is_empty() {
+        return None;
+    }
+    sizes.sort_unstable();
+    Some(sizes[(sizes.len() - 1) / 2])
 }
 
 /// The type to read a column as, given every `(type, rows)` a file reported for it.
@@ -895,6 +925,7 @@ mod tests {
         Some(FileSchema {
             schema: Arc::new(schema),
             rows,
+            row_group_bytes: Vec::new(),
         })
     }
 
@@ -1351,6 +1382,85 @@ mod tests {
         assert_eq!(union.omitted.len(), 500);
     }
 
+    /// The row-group note fires on the middle size, and only past the threshold.
+    ///
+    /// Sizes rather than schemas, so it does not go through `Shape`: what decides this
+    /// note is a list of numbers, and the interesting cases are all about which number
+    /// the middle is.
+    #[test]
+    fn row_groups_are_noted_by_their_middle_size_and_only_when_it_is_large() {
+        const MIB: usize = 1024 * 1024;
+        let note = |groups: &[&[usize]]| -> Option<String> {
+            let files: Vec<Option<FileSchema>> = groups
+                .iter()
+                .map(|sizes| {
+                    Some(FileSchema {
+                        schema: Arc::new(Schema::with_capacity(0)),
+                        rows: 1,
+                        row_group_bytes: sizes.to_vec(),
+                    })
+                })
+                .collect();
+            let dataset = union_file_schemas(&files, SchemaOrigin::AllFooters(files.len()));
+            crate::notes::from_dataset(&dataset)
+                .into_iter()
+                .find(|note| note.summary.starts_with("row groups"))
+                .map(|note| note.summary)
+        };
+
+        assert_eq!(note(&[&[MIB], &[2 * MIB]]), None, "ordinary row groups");
+        assert_eq!(
+            note(&[&[64 * MIB]]),
+            None,
+            "the threshold itself is not past it"
+        );
+        assert_eq!(
+            note(&[&[65 * MIB]]).as_deref(),
+            Some("row groups are 65.0 MiB apiece, and a page anywhere inside one reads all of it"),
+        );
+        assert_eq!(
+            note(&[&[MIB, MIB, 4096 * MIB]]),
+            None,
+            "one huge row group among small ones does not describe the dataset"
+        );
+        assert_eq!(
+            note(&[&[100 * MIB, 100 * MIB], &[MIB]]).as_deref(),
+            Some("row groups are 100.0 MiB apiece, and a page anywhere inside one reads all of it"),
+            "the middle of every row group of every file, not the middle of the files"
+        );
+        assert_eq!(note(&[&[]]), None, "a file with no row groups says nothing");
+    }
+
+    /// The sizes come off a real Parquet footer, not from a struct built by hand.
+    #[test]
+    fn a_real_footer_reports_the_size_of_each_row_group() {
+        use polars::prelude::{ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("many.parquet");
+        // Enough rows, and a small row-group size, to get more than one group.
+        let mut frame = df!("n" => (0..5_000i64).collect::<Vec<i64>>()).unwrap();
+        let file = std::fs::File::create(&path).unwrap();
+        ParquetWriter::new(file)
+            .with_row_group_size(Some(1_000))
+            .finish(&mut frame)
+            .unwrap();
+
+        let footer = crate::widgets::datatable::DataTableState::footer_of_for_test(&path)
+            .expect("the footer reads");
+        assert_eq!(footer.rows, 5_000);
+        assert!(
+            footer.row_group_bytes.len() > 1,
+            "more than one row group: {:?}",
+            footer.row_group_bytes
+        );
+        assert!(
+            footer.row_group_bytes.iter().all(|size| *size > 0),
+            "each reports a size: {:?}",
+            footer.row_group_bytes
+        );
+    }
+
     /// Files merely missing a column must not split the scan.
     ///
     /// Splitting is only needed to leave a column out of a file that holds it in
@@ -1370,6 +1480,7 @@ mod tests {
                 Some(FileSchema {
                     schema: Arc::new(s),
                     rows: 1,
+                    row_group_bytes: Vec::new(),
                 })
             })
             .collect();
@@ -1392,6 +1503,7 @@ mod tests {
         with_conflict[7] = Some(FileSchema {
             schema: Arc::new(odd),
             rows: 1,
+            row_group_bytes: Vec::new(),
         });
         let dataset = union_sampled(files, &read, &with_conflict);
         let drift = ScanDrift::new(&paths, &dataset, &rows).unwrap();

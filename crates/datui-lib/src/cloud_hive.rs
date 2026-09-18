@@ -283,6 +283,7 @@ pub fn dataset_schema_from_footers(
             f.as_ref().map(|f| FileSchema {
                 schema: f.schema.clone(),
                 rows: f.row_group_rows.iter().sum(),
+                row_group_bytes: f.row_group_bytes.clone(),
             })
         })
         .collect();
@@ -320,6 +321,8 @@ const COUNT_TAIL_BYTES: u64 = 16 * 1024;
 pub struct FileFooter {
     pub schema: Arc<Schema>,
     pub row_group_rows: Vec<usize>,
+    /// Compressed bytes of each row group, in the same order.
+    pub row_group_bytes: Vec<usize>,
 }
 
 /// Every file's footer, in file order: a small ranged read at the end of each file,
@@ -397,6 +400,11 @@ async fn footer_of_file(store: &Arc<dyn ObjectStore>, file: &DatasetFile) -> Res
     Ok(FileFooter {
         schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
         row_group_rows: metadata.row_groups.iter().map(|rg| rg.num_rows()).collect(),
+        row_group_bytes: metadata
+            .row_groups
+            .iter()
+            .map(|rg| rg.compressed_size())
+            .collect(),
     })
 }
 

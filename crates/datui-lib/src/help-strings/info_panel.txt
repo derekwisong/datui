@@ -17,7 +17,8 @@ Tabs:
 
 Notes:
   A note is an observation, not a fault: a column that is not in every file,
-  files that disagree on a type, a file whose footer could not be read. Each
+  files that disagree on a type, a file with no rows in it, row groups big
+  enough that a page costs much more than a page, a footer that would not read. Each
   one says what it is based on, so "in 1 of 3 files" never stands for files
   datui has not looked at. None of them costs a read of its own.
 

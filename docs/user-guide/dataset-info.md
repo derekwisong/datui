@@ -38,6 +38,7 @@ files with something in them. Where datui notices either, it says so:
 | A column is stored as more than one type the scan can read into one | The footers |
 | A column is read as text, so it compares as text | The footers |
 | A file holds no rows at all | The footers |
+| Row groups are large enough that a page costs much more than a page | The footers |
 | A file's footer could not be read, so it was left out | The footers |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
 

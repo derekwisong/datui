@@ -136,6 +136,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     }
 
     notes.extend(empty_files_note(dataset, &scope));
+    notes.extend(row_group_note(dataset, &scope));
 
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
@@ -230,6 +231,36 @@ fn empty_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     };
     Some(Note {
         summary: format!("{count} {verb} no rows"),
+        scope: scope.to_string(),
+        read_as_text: None,
+    })
+}
+
+/// Row groups big enough that reading a page means reading a lot more than the page.
+///
+/// A row group is what a reader fetches: a hundred rows anywhere inside one costs the
+/// whole of it. Over a network that is the difference between a page arriving and a
+/// page arriving after sixty-four megabytes do, and there is nothing the user can do
+/// about it from here — which is exactly why it is worth saying rather than leaving
+/// them to wonder why scrolling is slow.
+///
+/// The threshold is the size at which one row group is a noticeable download on an
+/// ordinary connection; below it, nobody needs telling. States the middle size rather
+/// than the largest: one row group of a gigabyte among thousands of small ones is a
+/// different dataset from one where every row group is a gigabyte, and only the second
+/// is worth a note.
+fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
+    /// Sixty-four mebibytes, the size a page in that range costs to reach.
+    const BIG: usize = 64 * 1024 * 1024;
+    let median = dataset.median_row_group_bytes?;
+    if median <= BIG {
+        return None;
+    }
+    Some(Note {
+        summary: format!(
+            "row groups are {} apiece, and a page anywhere inside one reads all of it",
+            crate::widgets::info::format_bytes(median as u64)
+        ),
         scope: scope.to_string(),
         read_as_text: None,
     })
@@ -340,6 +371,7 @@ mod tests {
         Some(FileSchema {
             schema: Arc::new(schema),
             rows,
+            row_group_bytes: Vec::new(),
         })
     }
 

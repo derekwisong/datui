@@ -1490,6 +1490,163 @@ pub mod tests {
             .join("tests/sample-data")
     }
 
+    /// A slower pass from an older dataset does not displace a newer one's answer.
+    ///
+    /// Opening a second large prefix does not stop the first one reading, so two passes
+    /// can be in flight and finish in either order. If the older one wrote last, the
+    /// generation in the slot would disagree with the generation on the event and both
+    /// would be thrown away — leaving the dataset on screen permanently short of the
+    /// columns its own pass had already found.
+    #[test]
+    fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
+        use crate::App;
+        use polars::prelude::*;
+        use std::sync::{Arc, Mutex};
+
+        let found = |name: &str| {
+            let mut lf = df!(name => &[1i64]).unwrap().lazy();
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            (
+                crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
+                lf,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+        let name_in = |slot: &Mutex<Option<(u64, crate::widgets::datatable::FootersFound)>>| {
+            slot.lock()
+                .unwrap()
+                .as_ref()
+                .map(|(g, f)| (*g, f.0.schema.iter_names().next().unwrap().to_string()))
+        };
+
+        let slot = Mutex::new(None);
+        assert!(
+            App::record_footers(&slot, 7, found("newer")),
+            "the newer pass answers first"
+        );
+        assert!(
+            !App::record_footers(&slot, 6, found("older")),
+            "and the older one, finishing after it, is turned away"
+        );
+        assert_eq!(
+            name_in(&slot),
+            Some((7, "newer".to_string())),
+            "so what is waiting is still the newer dataset's"
+        );
+
+        // The ordinary case is unaffected: a pass for the dataset now on screen goes in
+        // over whatever an abandoned one left behind.
+        assert!(
+            App::record_footers(&slot, 8, found("newest")),
+            "a later dataset's pass takes the slot"
+        );
+        assert_eq!(name_in(&slot), Some((8, "newest".to_string())));
+    }
+
+    /// Columns that arrive while the user is inside a query wait for them to leave it.
+    ///
+    /// The scan a query is built on is not the frame on screen: rebuilding it wider
+    /// underneath takes away the columns the query named, and the table goes to a
+    /// Polars "unable to find column" where a moment ago there were rows. So the
+    /// columns are held, and get in when the view comes back to the data.
+    #[test]
+    fn columns_arriving_under_a_query_wait_rather_than_break_it() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => &[1i64, 2], "v" => &[10i64, 20]).unwrap().lazy();
+        let wider = || {
+            df!("id" => &[1i64, 2], "v" => &[10i64, 20], "oops" => &["a", "b"])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 2,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(frame()).schema.clone(),
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // The user asks a question of the two columns that are there.
+        let table = app.data_table_state.as_mut().unwrap();
+        table.query("select doubled: v * 2".to_string());
+        assert!(table.error.is_none(), "the query runs: {:?}", table.error);
+        let asked = table.get_column_order().to_vec();
+
+        // And the rest of the footers land underneath it.
+        let generation = app.dataset_generation;
+        app.footers_held = Some((
+            generation,
+            (
+                dataset_of(wider()),
+                wider(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+        ));
+        let _ = app.handle(&AppEvent::Update);
+
+        let table = app.data_table_state.as_ref().unwrap();
+        assert_eq!(
+            table.get_column_order(),
+            asked.as_slice(),
+            "the query's own columns are still what is on screen"
+        );
+        assert!(
+            table.error.is_none(),
+            "and it has not been broken out from under: {:?}",
+            table.error
+        );
+        assert!(
+            app.footers_held.is_some(),
+            "the columns are kept, not thrown away"
+        );
+
+        // The user clears the query — an empty one is how that is said — and now they
+        // can get in.
+        app.data_table_state.as_mut().unwrap().query(String::new());
+        let _ = app.handle(&AppEvent::Update);
+        assert_eq!(
+            app.data_table_state
+                .as_ref()
+                .unwrap()
+                .get_column_order()
+                .last()
+                .map(String::as_str),
+            Some("oops"),
+            "the columns join once the view is back on the data"
+        );
+        assert!(app.footers_held.is_none(), "with nothing left waiting");
+    }
+
     /// A dataset that opened from two footers gets the rest, through the app.
     ///
     /// The cloud test covers the pass itself; this covers everything between it and the
@@ -1577,9 +1734,19 @@ pub mod tests {
             "a pass whose dataset is gone joins nothing to the one that replaced it"
         );
 
-        // And now as it really lands, against the dataset it belongs to.
+        // And now as it really lands, against the dataset it belongs to — after a
+        // glance at the home screen, which leaves the dataset up and clears
+        // `load_active`. One keystroke there and back must not strand it on two
+        // footers for the rest of the session.
         app.dataset_generation = generation;
-        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation });
+        app.abandon_load();
+        let follow_up = app
+            .handle(&AppEvent::BackgroundFootersJoined { generation })
+            .expect("the event is handled");
+        assert!(
+            matches!(follow_up, Some(AppEvent::DoLoadBuffer)),
+            "the rows on screen were read through the narrow frame and are read again"
+        );
         assert_eq!(
             app.data_table_state
                 .as_ref()
@@ -3092,11 +3259,18 @@ pub struct App {
     /// What the pass behind a staged open found, for the frame that applies it. Mirrors
     /// `pending_schema_result`: large enough to be worth keeping out of the event, and
     /// discarded if the dataset it belongs to has been replaced.
-    pending_footers_result: std::sync::Arc<std::sync::Mutex<Option<(u64, JoinedFooters)>>>,
-    /// Bumped once per dataset opened, which `task_generation` is not: a collect bumps
-    /// that, and the pass reading the rest of a dataset's footers outlives several. It
-    /// is what says whether the columns arriving belong to the dataset on screen.
+    pending_footers_result:
+        std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::FootersFound)>>>,
+    /// Bumped once per dataset put on screen, which `task_generation` is not: a collect
+    /// bumps that, and the pass reading the rest of a dataset's footers outlives
+    /// several. It is what says whether the columns arriving belong to the dataset the
+    /// user is looking at.
     dataset_generation: u64,
+    /// What a dataset's footers found while the user was looking at a query, a pivot or
+    /// a drill-down rather than at the data. Held rather than applied, because widening
+    /// the scan under a query takes the query's own columns away, and offered again the
+    /// moment the view comes back to the dataset itself.
+    footers_held: Option<(u64, crate::widgets::datatable::FootersFound)>,
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
@@ -3324,6 +3498,46 @@ impl App {
     }
 
     /// Apply a successfully loaded DataTableState to the app. Shared by all schema load paths.
+    /// Give the dataset what its footers found, if it can take it now.
+    ///
+    /// It cannot while the user is looking at a query, a pivot, a melt or a drill-down:
+    /// those make their own result the root, and widening the scan underneath one takes
+    /// away the columns it is built from. So the columns wait — held, not dropped — and
+    /// this is tried again after every event, which is the cheapest way to catch the
+    /// moment the view comes back to the data.
+    ///
+    /// Returns whether the dataset took them, so the caller can re-read the rows on
+    /// screen through the wider frame.
+    fn join_held_footers(&mut self) -> bool {
+        let Some((generation, _)) = self.footers_held.as_ref() else {
+            return false;
+        };
+        if *generation != self.dataset_generation {
+            // The dataset they belong to is gone; so are they.
+            self.footers_held = None;
+            return false;
+        }
+        if self.data_table_state.is_none() {
+            return false;
+        }
+        let Some((generation, found)) = self.footers_held.take() else {
+            return false;
+        };
+        let state = self
+            .data_table_state
+            .as_mut()
+            .expect("checked just above, and nothing since takes it");
+        // Whether this is the moment is the dataset's call, not this one's: it is the
+        // frame on screen that knows whether it still grows from the scan.
+        match state.join_dataset_schema(found) {
+            Ok(()) => true,
+            Err(found) => {
+                self.footers_held = Some((generation, *found));
+                false
+            }
+        }
+    }
+
     /// Start the pass that reads the rest of a staged open's footers.
     ///
     /// Not through `spawn_bg`, which marks the app busy: the whole point of opening
@@ -3346,16 +3560,33 @@ impl App {
             let Some(found) = join(&progress) else {
                 return;
             };
-            {
-                let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
-                // A later dataset's pass has already answered; this one is history.
-                if slot.as_ref().is_some_and(|(g, _)| *g > generation) {
-                    return;
-                }
-                *slot = Some((generation, found));
+            if !Self::record_footers(&slot, generation, found) {
+                return;
             }
             let _ = tx.send(AppEvent::BackgroundFootersJoined { generation });
         });
+    }
+
+    /// Put what a pass found in the slot, unless a later dataset's pass has answered
+    /// first. Returns whether it went in, so a pass that lost does not also announce
+    /// itself.
+    ///
+    /// Two passes can be in flight at once — opening a second large prefix does not
+    /// stop the first one reading — and they finish in whatever order the network
+    /// gives. Without this the slower, older one overwrites the newer entry, and the
+    /// generation the event carries then disagrees with the generation in the slot,
+    /// so both are discarded and the dataset on screen never gets its columns.
+    fn record_footers(
+        slot: &std::sync::Mutex<Option<(u64, crate::widgets::datatable::FootersFound)>>,
+        generation: u64,
+        found: crate::widgets::datatable::FootersFound,
+    ) -> bool {
+        let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.as_ref().is_some_and(|(held, _)| *held > generation) {
+            return false;
+        }
+        *slot = Some((generation, found));
+        true
     }
 
     fn apply_schema_ready(
@@ -3372,6 +3603,10 @@ impl App {
             self.load_active,
             "apply_schema_ready called for an abandoned load"
         );
+        // One per dataset that reaches the screen, rather than one per open started:
+        // an open that fails leaves the last dataset up, and the pass still reading its
+        // footers has to be able to finish into it.
+        self.dataset_generation = self.dataset_generation.wrapping_add(1);
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -3798,6 +4033,7 @@ impl App {
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
+            footers_held: None,
             len_count_inflight: None,
             collect_inflight: None,
             len_count_failed: None,
@@ -5251,16 +5487,6 @@ pub(crate) fn hoist_partition_columns(
     }
     lf.select(exprs)
 }
-
-/// What reading every footer of a staged open turned up: the dataset's full schema, the
-/// scan that reads it, each file's rows, the files, and their row groups.
-type JoinedFooters = (
-    crate::schema_union::DatasetSchema,
-    LazyFrame,
-    Vec<usize>,
-    Vec<String>,
-    Vec<Vec<usize>>,
-);
 
 /// A cloud dataset as some set of its footers describes it.
 ///
@@ -10025,6 +10251,13 @@ impl App {
             return Err(*key);
         }
         let out = self.dispatch_event(event);
+        // Columns a dataset's footers found while the user was inside a query are held
+        // rather than dropped; this is where they get in, on the first event after the
+        // view comes back to the data. Sent rather than returned because the event just
+        // dispatched may have a follow-up of its own.
+        if self.join_held_footers() {
+            let _ = self.events.send(AppEvent::DoLoadBuffer);
+        }
         self.ensure_chart_data();
         Ok(out)
     }
@@ -10174,7 +10407,11 @@ impl App {
                 // the footers keep being read — so a shared one would go on reporting
                 // the abandoned folder's progress under the next file's name.
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
-                self.dataset_generation = self.dataset_generation.wrapping_add(1);
+                // Whatever the last dataset was still reading is no longer wanted.
+                *self
+                    .pending_footers_result
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
                 self.load_active = true;
                 self.awaiting_dataset = true;
                 self.busy = true;
@@ -10226,7 +10463,11 @@ impl App {
                 // the footers keep being read — so a shared one would go on reporting
                 // the abandoned folder's progress under the next file's name.
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
-                self.dataset_generation = self.dataset_generation.wrapping_add(1);
+                // Whatever the last dataset was still reading is no longer wanted.
+                *self
+                    .pending_footers_result
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
                 self.load_active = true;
                 self.awaiting_dataset = true;
                 self.busy = true;
@@ -11136,8 +11377,11 @@ impl App {
                 None
             }
             AppEvent::BackgroundFootersJoined { generation } => {
-                if *generation != self.dataset_generation || !self.load_active {
-                    // The dataset these belong to is gone. Nothing to join them to.
+                // Only whether this is still the dataset on screen. Not `load_active`:
+                // going home leaves the dataset up and clears that flag, and coming
+                // straight back to it must not find it stranded on two footers for the
+                // rest of the session.
+                if *generation != self.dataset_generation {
                     return None;
                 }
                 let taken = self
@@ -11145,20 +11389,16 @@ impl App {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take();
-                if let Some((slot_generation, (dataset, lf, file_rows, files, row_groups))) = taken
+                if let Some((slot_generation, found)) = taken
                     && slot_generation == self.dataset_generation
-                    && let Some(state) = self.data_table_state.as_mut()
                 {
-                    state.join_dataset_schema(dataset, lf, &file_rows, &files);
-                    // Now every file's row groups are known, so the count is exact and
-                    // a page reads only the files holding its rows.
-                    if !row_groups.is_empty() {
-                        state.set_file_row_groups(&row_groups);
+                    self.footers_held = Some((slot_generation, found));
+                    if self.join_held_footers() {
+                        // The rows on screen were read through the narrower frame. This
+                        // reads them again through the wider one, at the row the user is
+                        // still sitting on.
+                        return Some(AppEvent::DoLoadBuffer);
                     }
-                    // The rows on screen were read through the narrower frame. This
-                    // reads them again through the wider one, at the row the user is
-                    // still sitting on.
-                    return Some(AppEvent::DoLoadBuffer);
                 }
                 None
             }
@@ -12575,6 +12815,15 @@ impl Widget for &mut App {
             LoadingState::Idle => {
                 if self.busy {
                     self.status_message.clone()
+                } else if let Some((read, total)) = self.footers_this_frame {
+                    // The dataset opened from two footers and is still learning the
+                    // rest. Said quietly, because nothing is wrong and nothing is
+                    // blocked: the columns it finds will join what is already here.
+                    Some(format!(
+                        "Reading footers: {} of {}...",
+                        crate::numfmt::group_chrome(read),
+                        crate::numfmt::group_chrome(total)
+                    ))
                 } else if self.chart_preparing() {
                     Some("Preparing chart...".to_string())
                 } else {

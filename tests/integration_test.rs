@@ -2160,6 +2160,45 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
     );
 }
 
+/// The bar says the footers are still arriving, after the dataset is on screen.
+///
+/// A cloud prefix of many files opens from two of them and reads the rest behind the
+/// data. Nothing is blocked and nothing is wrong, so it is said in the control bar
+/// rather than on a loading screen — but it is said, because otherwise columns appear
+/// minutes later with no explanation.
+#[test]
+fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.footer_progress.begin(6541);
+    for _ in 0..1203 {
+        app.footer_progress.advance();
+    }
+
+    let area = Rect::new(0, 0, 100, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("Reading footers: 1,203 of 6,541"),
+        "the bar says what is still arriving: {bar:?}"
+    );
+
+    // And stops saying it the moment they have.
+    app.footer_progress.done();
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        !bar.contains("Reading footers"),
+        "and nothing once they are all in: {bar:?}"
+    );
+}
+
 /// One frame, one number — while the pass is still running.
 ///
 /// The body and the bar are painted a millisecond apart, with the threads reading the

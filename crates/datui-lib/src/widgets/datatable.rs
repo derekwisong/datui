@@ -263,18 +263,17 @@ pub type FileCounter = Arc<dyn Fn() -> Result<Vec<Vec<usize>>, String> + Send + 
 /// they say: the dataset's full schema, the scan that reads it, each file's rows, and
 /// the files themselves. `None` when they could not be read, in which case the dataset
 /// stays as it opened. Blocks, and counts itself off against the progress it is given.
-pub type FootersJoin = Arc<
-    dyn Fn(
-            &Arc<crate::schema_union::FooterProgress>,
-        ) -> Option<(
-            crate::schema_union::DatasetSchema,
-            LazyFrame,
-            Vec<usize>,
-            Vec<String>,
-            Vec<Vec<usize>>,
-        )> + Send
-        + Sync,
->;
+pub type FootersJoin =
+    Arc<dyn Fn(&Arc<crate::schema_union::FooterProgress>) -> Option<FootersFound> + Send + Sync>;
+/// What reading every footer turned up: the dataset's full schema, the scan that reads
+/// it, each file's rows, the files, and each file's row groups.
+pub type FootersFound = (
+    crate::schema_union::DatasetSchema,
+    LazyFrame,
+    Vec<usize>,
+    Vec<String>,
+    Vec<Vec<usize>>,
+);
 
 /// A remote dataset of many files, and how to read only some of them.
 ///
@@ -3744,6 +3743,22 @@ impl DataTableState {
             && self.drilled_down_group_index.is_none()
     }
 
+    /// Whether the frame on screen still grows from the dataset's own scan.
+    ///
+    /// A filter and a sort do: `apply_transformations` rebuilds them over whatever the
+    /// root is, so widening the root under them is exactly what should happen. A query,
+    /// a SQL statement, a fuzzy search, a pivot, a melt and a drill-down do not — each
+    /// makes its own result the root, with its own columns, and replacing the root
+    /// underneath one leaves the view naming columns the frame no longer has.
+    pub fn scan_is_the_root(&self) -> bool {
+        self.active_query.is_empty()
+            && self.active_sql_query.is_empty()
+            && self.active_fuzzy_query.is_empty()
+            && self.reshaped_lf.is_none()
+            && self.grouped.is_none()
+            && self.drilled_down_group_index.is_none()
+    }
+
     /// A pristine scan's count is its footer's: take it back, without a `len()`, when
     /// the frame is the scan as loaded again.
     fn restore_footer_count(&mut self) {
@@ -3963,13 +3978,22 @@ impl DataTableState {
     /// differs: it now knows which files hold a column in a type the dataset cannot
     /// keep, and with every file's row count it can number the rows, which is what
     /// tells an absent cell from a null.
+    /// Gives them back as `Err` rather than taking them, while the user is looking at
+    /// something built on top of the scan instead of the scan itself — see
+    /// [`Self::scan_is_the_root`]. Rebuilding the root under a query takes away the
+    /// columns the query named; handing them back lets the caller keep them and offer
+    /// them again when the view comes back to the data.
     pub fn join_dataset_schema(
         &mut self,
-        schema: crate::schema_union::DatasetSchema,
-        lf: LazyFrame,
-        file_rows: &[usize],
-        files: &[String],
-    ) {
+        found: FootersFound,
+    ) -> std::result::Result<(), Box<FootersFound>> {
+        if !self.scan_is_the_root() {
+            // Boxed because what comes back is most of a dataset's worth of schema, and
+            // an `Err` that size would be carried by every call that succeeds too.
+            return Err(Box::new(found));
+        }
+        let (schema, lf, file_rows, files, row_groups) = found;
+        let (file_rows, files) = (file_rows.as_slice(), files.as_slice());
         let known: std::collections::HashSet<&str> =
             self.column_order.iter().map(String::as_str).collect();
         let joining: Vec<String> = schema
@@ -3998,6 +4022,12 @@ impl DataTableState {
         self.buffered_end_row = 0;
         self.buffered_df = None;
         self.apply_transformations();
+        // Now every file's row groups are known, so the count is exact and a page reads
+        // only the files holding its rows.
+        if !row_groups.is_empty() {
+            self.set_file_row_groups(&row_groups);
+        }
+        Ok(())
     }
 
     /// The frame as the user sees it: `lf` without the hidden row-index column.
@@ -4396,7 +4426,16 @@ impl DataTableState {
 
     /// The counter for a remote dataset's files, while its count would be the data's:
     /// the frame is the scan as loaded, and the files have not been counted yet.
+    ///
+    /// Not while a pass is already reading every footer of this dataset. That pass
+    /// brings the row groups back with it, and this counter reads the same footers a
+    /// second time — for a prefix of 6,541 files, 6,541 ranged reads to learn what is
+    /// already on its way. Staging the open to save round trips and then spending them
+    /// here would be worse than not staging it at all.
     pub fn remote_files_counter(&self) -> Option<FileCounter> {
+        if self.footers_pending.is_some() {
+            return None;
+        }
         self.remote_files
             .as_ref()
             .filter(|f| f.offsets.is_none() && self.is_pristine())

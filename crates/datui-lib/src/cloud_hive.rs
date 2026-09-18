@@ -804,6 +804,13 @@ mod tests {
             "the two ends cannot know about a column only the middle has: {:?}",
             state.get_column_order()
         );
+        // And nothing else is sent after the same footers. The counter this returns is
+        // a second pass over every footer of the dataset — the one cost staging the
+        // open was meant to avoid, and it would double it instead.
+        assert!(
+            state.remote_files_counter().is_none(),
+            "the pass already reading every footer is where the count comes from"
+        );
 
         // The user, meanwhile, has been reading it: scrolled a column across and moved
         // down the rows.
@@ -814,9 +821,11 @@ mod tests {
         let join = state
             .footers_pending()
             .expect("the rest are still to be read");
-        let (dataset, lf, file_rows, urls, _row_groups) =
-            join(&progress).expect("the pass reads them");
-        state.join_dataset_schema(dataset, lf, &file_rows, &urls);
+        let found = join(&progress).expect("the pass reads them");
+        assert!(
+            state.join_dataset_schema(found).is_ok(),
+            "nothing is built on top of the scan here, so they go straight in"
+        );
 
         assert_eq!(
             progress.last_pass().read,
@@ -837,6 +846,73 @@ mod tests {
         assert!(
             state.footers_pending().is_none(),
             "with nothing left to wait for"
+        );
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(files),
+            "and the count the pass brought back with it, one row a file — without a \
+             second pass over the same footers to learn it"
+        );
+    }
+
+    /// A dataset small enough to read in one wave opens whole, rather than twice.
+    ///
+    /// `footers_of_files_reporting` fetches `FOOTERS_AT_ONCE` at a time, so up to that
+    /// many the footers cost the same one round trip whether two are read or all of
+    /// them. Opening such a dataset from two would show it incomplete for a moment and
+    /// then rebuild it, for nothing — and it would lose the row numbering that tells an
+    /// absent cell from a null.
+    #[test]
+    fn a_dataset_of_one_wave_of_footers_opens_whole() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for i in 0..FOOTERS_AT_ONCE {
+                let key = format!("data/date=2024-01-{:03}/part.parquet", i + 1);
+                store
+                    .put(
+                        &OsPath::from(key.as_str()),
+                        PutPayload::from(body(i as i64)),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let state = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        )
+        .expect("the prefix opens");
+
+        assert_eq!(
+            progress.last_pass().read,
+            FOOTERS_AT_ONCE,
+            "a wave's worth is read at the open, not two of them"
+        );
+        assert!(
+            state.footers_pending().is_none(),
+            "with nothing left to read behind it"
+        );
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(FOOTERS_AT_ONCE),
+            "counted from those footers as it opens, rather than left to a later pass"
         );
     }
 

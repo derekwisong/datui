@@ -148,9 +148,11 @@ While those footers are being read they are counted, `Reading footers: 1,203 of
 it counts towards is the sample it reads, not the files there are.
 
 A folder in the cloud of more than 64 files does not wait for that count. It
-opens from its first file and its newest — two footers are one round trip, and so
-are sixty-four — and reads the rest behind the data, with the count in the
-control bar rather than on a loading screen. Columns those files turn out to have
+opens from the first file and the last, by name, and reads the rest behind the
+data, with the count in the control bar rather than on a loading screen. Sixty-
+four is how many footers datui fetches at once, so up to that many they arrive in
+the time one of them does; past it there is a second wait, and a third, and the
+dataset would be sitting behind them for no reason. Columns those files turn out to have
 join the table when they arrive, at the end of the column order, without moving
 anything already on screen. Until they do, the dataset is one built from two
 footers: its rows are not numbered, so every empty cell reads as `∅`, the row
@@ -160,8 +162,11 @@ you come back to the data, because widening the scan underneath one would take
 away the columns it was built from.
 
 Local folders do not do this. Reading every footer of 2,048 local files takes
-under 7 ms on a modern disk, three quarters of which is listing the directory, so
-there is nothing worth showing a half-built dataset for.
+under 7 ms once the directory is in the page cache, nine tenths of which is the
+directory walk rather than the footers, so there is nothing worth showing a
+half-built dataset for. A folder on a network share is a different matter, and
+one on a cold disk is slower than this figure suggests; neither is slow enough to
+be worth opening a dataset twice for.
 
 Where a dataset has more than ten thousand files and the middle one is under a
 mebibyte, the Notes tab says so, and says how many of them were opened for their

@@ -2168,8 +2168,21 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
 /// minutes later with no explanation.
 #[test]
 fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
-    let (tx, _rx) = std::sync::mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+    // Said only for a dataset that is itself waiting. The counter is shared with every
+    // open, and one abandoned half way through goes on counting: without the dataset's
+    // own say-so this bar would count a folder the user walked away from.
+    app.data_table_state
+        .as_mut()
+        .expect("a dataset")
+        .set_footers_pending(std::sync::Arc::new(|_| None));
     app.footer_progress.begin(6541);
     for _ in 0..1203 {
         app.footer_progress.advance();
@@ -2185,6 +2198,26 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
         bar.contains("Reading footers: 1,203 of 6,541"),
         "the bar says what is still arriving: {bar:?}"
     );
+
+    // And says nothing for a dataset that is not the one waiting: the folder this user
+    // gave up on goes on reading its footers, and this is not it.
+    app.data_table_state
+        .as_mut()
+        .expect("a dataset")
+        .give_up_on_pending_footers();
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let other: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        !other.contains("Reading footers"),
+        "a count belonging to a folder the user left is not this dataset's: {other:?}"
+    );
+    app.data_table_state
+        .as_mut()
+        .expect("a dataset")
+        .set_footers_pending(std::sync::Arc::new(|_| None));
 
     // And stops saying it the moment they have.
     app.footer_progress.done();

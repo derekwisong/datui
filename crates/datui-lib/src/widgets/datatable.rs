@@ -3960,6 +3960,17 @@ impl DataTableState {
         self.footers_pending.clone()
     }
 
+    /// Give up on the rest of the footers: the pass could not read them.
+    ///
+    /// The dataset stays as it opened — a working view of it, built from two footers —
+    /// and stops waiting. That matters beyond the columns: while a pass is pending the
+    /// dataset declines to count itself, because the pass was going to bring the count
+    /// with it. One failed pass would otherwise cost it an exact row count, and its
+    /// windowed reads, for the rest of the session.
+    pub fn give_up_on_pending_footers(&mut self) {
+        self.footers_pending = None;
+    }
+
     /// Record that the dataset opened from a sample of its footers and the rest are
     /// coming. See [`FootersJoin`].
     pub fn set_footers_pending(&mut self, join: FootersJoin) {
@@ -4021,12 +4032,19 @@ impl DataTableState {
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;
-        self.apply_transformations();
-        // Now every file's row groups are known, so the count is exact and a page reads
-        // only the files holding its rows.
+        // Before the frame is rebuilt, not after. Every file's row groups are known
+        // now, so this is the dataset's count — and `apply_transformations` below ends
+        // in a `collect`, which would otherwise find no count and go and get one with a
+        // `len()` over every one of the files. That is the whole cost this staging
+        // exists to avoid, and it would be paid here on the thread drawing the screen.
         if !row_groups.is_empty() {
             self.set_file_row_groups(&row_groups);
         }
+        // Rebuilt but not read: the buffer is gone and the caller reads it back off the
+        // event loop. Collecting here would block the frame on a remote read.
+        let deferred = std::mem::replace(&mut self.defer_collect, true);
+        self.apply_transformations();
+        self.defer_collect = deferred;
         Ok(())
     }
 

@@ -853,6 +853,13 @@ mod tests {
             "and the count the pass brought back with it, one row a file — without a \
              second pass over the same footers to learn it"
         );
+        // Nothing was read here. The join happens on the thread drawing the screen, so
+        // a collect inside it is a remote read the whole terminal waits on — and with
+        // no count yet it would be a `len()` over every file in the dataset.
+        assert!(
+            state.display_df().is_none(),
+            "the frame is rebuilt but not read; the caller reads it back off the loop"
+        );
     }
 
     /// A dataset small enough to read in one wave opens whole, rather than twice.

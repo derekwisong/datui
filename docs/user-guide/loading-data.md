@@ -148,6 +148,12 @@ footers before a row was. Fewer, larger files would do less of that work; the
 remedy is upstream in whatever writes them, but knowing where the wait went is
 worth something on its own.
 
+datui reads a partitioned folder's columns off one branch of the tree, which is
+right for nearly every dataset. Where a pipeline changed its partition key partway
+through — `date=` becoming `dt=` — the files under the key that lost read as though
+they had no partition at all: the column is there, full of nulls. The Notes tab
+says which files are partitioned which way, counted from every file's name.
+
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file, as it does for a glob.
 

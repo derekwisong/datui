@@ -138,6 +138,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     notes.extend(empty_files_note(dataset, &scope));
     notes.extend(row_group_note(dataset, &scope));
     notes.extend(small_files_note(dataset, &scope));
+    notes.extend(partition_layout_note(dataset));
 
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
@@ -337,6 +338,58 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
         scope: scope.to_string(),
         read_as_text: None,
     })
+}
+
+/// Files partitioned one way where the rest are partitioned another.
+///
+/// datui reads the partition columns off one branch of the tree, which is right for
+/// nearly every dataset and is what lets it open one at all. When a pipeline changes
+/// `date=` to `dt=` partway through, the files under the key that lost read as though
+/// they had no partition: the column is there, full of nulls, and nothing else on
+/// screen says why.
+///
+/// Names the commonest layout and the ones that differ from it, with the files behind
+/// each. Its own scope line, because this is the one note read off the names of every
+/// file rather than the footers of some of them — on a dataset too large to open every
+/// footer this note still saw all of it.
+fn partition_layout_note(dataset: &DatasetSchema) -> Option<Note> {
+    let (most, rest) = dataset.partition_layouts.split_first()?;
+    if rest.is_empty() {
+        return None;
+    }
+    let spell = |keys: &[String]| keys.join("/");
+    let others: Vec<String> = rest
+        .iter()
+        .map(|(keys, files)| format!("{} by {}", how_many_files(*files), spell(keys)))
+        .collect();
+    Some(Note {
+        summary: format!(
+            "{} are partitioned by {}, and {}",
+            how_many_files(most.1),
+            spell(&most.0),
+            others.join(", and ")
+        ),
+        scope: format!(
+            "in the names of all {} files",
+            group_chrome(
+                dataset
+                    .partition_layouts
+                    .iter()
+                    .map(|(_, n)| n)
+                    .sum::<usize>()
+            )
+        ),
+        read_as_text: None,
+    })
+}
+
+/// `n files`, or `1 file`. Plain files, because the caller counted every one of them.
+fn how_many_files(n: usize) -> String {
+    format!(
+        "{} {}",
+        group_chrome(n),
+        if n == 1 { "file" } else { "files" }
+    )
 }
 
 /// A column being read as text from every file, because it was asked for that way.

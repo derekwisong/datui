@@ -134,6 +134,13 @@ pub struct DatasetSchema {
     pub median_row_group_bytes: Option<usize>,
     /// The middle file's size, over the footers read. `None` when none was read.
     pub median_file_bytes: Option<usize>,
+    /// The distinct ways the dataset's files are partitioned, and how many files are
+    /// laid out each way, commonest first. One entry, or none, for a dataset whose
+    /// folders agree — which is nearly all of them.
+    ///
+    /// From the names of every file, not from the footers: this is the one thing the
+    /// listing knows that reading a file cannot tell you.
+    pub partition_layouts: Vec<(Vec<String>, usize)>,
 }
 
 /// What a file is missing relative to the dataset's schema. Files that are missing the
@@ -158,6 +165,32 @@ impl DatasetSchema {
     pub fn drifting(&self) -> impl Iterator<Item = &ColumnDrift> {
         let readable = self.files - self.unreadable.len();
         self.columns.iter().filter(move |c| !c.is_uniform(readable))
+    }
+
+    /// The dataset with the ways its files are partitioned counted from their names.
+    ///
+    /// Every path, not one spine. Deriving the partition columns from a single branch
+    /// of the tree is what datui does to read the dataset at all, and it is right for
+    /// nearly every dataset — but it is the very assumption that goes wrong when a
+    /// pipeline changes `date=` to `dt=` partway through, and the files under the old
+    /// key then read as though they had no partition at all.
+    pub fn with_partition_layouts(mut self, paths: &[String]) -> DatasetSchema {
+        let mut counts: Vec<(Vec<String>, usize)> = Vec::new();
+        for path in paths {
+            let keys = partition_keys_of(path);
+            if keys.is_empty() {
+                continue;
+            }
+            match counts.iter_mut().find(|(seen, _)| *seen == keys) {
+                Some((_, files)) => *files += 1,
+                None => counts.push((keys, 1)),
+            }
+        }
+        // Commonest first, and by the keys themselves where two are equally common, so
+        // the note names the same layout every time it is opened.
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        self.partition_layouts = counts;
+        self
     }
 
     /// This dataset as it reads with `as_text` read as text from every file.
@@ -376,6 +409,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         read_as_text: Vec::new(),
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
         median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
+        partition_layouts: Vec::new(),
         median_row_group_bytes: median(
             files
                 .iter()
@@ -383,6 +417,24 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
                 .flat_map(|f| f.row_group_bytes.iter().copied()),
         ),
     }
+}
+
+/// The hive partition keys in a path, in order: `a=1/b=2/f.parquet` is `[a, b]`.
+///
+/// A segment is a partition only if it has a key before the `=`. The file's own name
+/// is never one — `data/x=1/2024=05.parquet` partitions by `x`, not by `x` and `2024`.
+fn partition_keys_of(path: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut segments: Vec<&str> = path.split(['/', '\\']).collect();
+    segments.pop();
+    for segment in segments {
+        if let Some((key, _)) = segment.split_once('=')
+            && !key.is_empty()
+        {
+            keys.push(key.to_string());
+        }
+    }
+    keys
 }
 
 /// The middle value of `sizes`, or the lower of the middle two. `None` when empty.
@@ -1636,6 +1688,95 @@ mod tests {
             None,
             "and a size of nothing means the size is not known, not that it is small"
         );
+    }
+
+    /// The keys a path partitions by, and the file's own name never being one of them.
+    #[test]
+    fn partition_keys_are_the_key_equals_segments_above_the_file() {
+        let keys = |path: &str| partition_keys_of(path);
+        assert_eq!(keys("data/date=2024-01-01/a.parquet"), ["date"]);
+        assert_eq!(keys("data/y=2024/m=05/a.parquet"), ["y", "m"]);
+        assert_eq!(keys("data/a.parquet"), Vec::<String>::new());
+        assert_eq!(
+            keys("data/x=1/2024=05.parquet"),
+            ["x"],
+            "the file's own name is not a partition, whatever it looks like"
+        );
+        assert_eq!(
+            keys("data/=2024/a.parquet"),
+            Vec::<String>::new(),
+            "nor is a segment with nothing before the equals"
+        );
+        assert_eq!(
+            keys(r"data\date=2024-01-01\a.parquet"),
+            ["date"],
+            "and a path written the other way round is the same path"
+        );
+    }
+
+    /// A dataset whose folders disagree about what they are partitioned by.
+    #[test]
+    fn files_partitioned_two_ways_are_counted_each_way() {
+        let note = |paths: &[&str]| -> Option<crate::notes::Note> {
+            let footers = vec![
+                Some(FileSchema {
+                    schema: Arc::new(Schema::with_capacity(0)),
+                    rows: 1,
+                    file_bytes: 1,
+                    row_group_bytes: Vec::new(),
+                });
+                paths.len()
+            ];
+            let owned: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+            let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(paths.len()))
+                .with_partition_layouts(&owned);
+            crate::notes::from_dataset(&dataset)
+                .into_iter()
+                .find(|note| note.summary.contains("partitioned by"))
+        };
+
+        assert_eq!(
+            note(&["d/date=1/a.parquet", "d/date=2/b.parquet"]),
+            None,
+            "folders that agree have nothing to say"
+        );
+        assert_eq!(
+            note(&["d/a.parquet", "d/b.parquet"]),
+            None,
+            "nor has a dataset with no partitions at all"
+        );
+
+        let changed = note(&[
+            "d/date=1/a.parquet",
+            "d/date=2/b.parquet",
+            "d/date=3/c.parquet",
+            "d/dt=4/e.parquet",
+        ])
+        .expect("the folders disagree");
+        assert_eq!(
+            changed.summary,
+            "3 files are partitioned by date, and 1 file by dt"
+        );
+        assert_eq!(
+            changed.scope, "in the names of all 4 files",
+            "read off every name, not off the footers datui opened"
+        );
+
+        // Three layouts, and a file with no partition at all, which is a fourth thing
+        // and is left out: it has no keys to disagree about.
+        let three = note(&[
+            "d/y=1/m=1/a.parquet",
+            "d/y=1/m=2/b.parquet",
+            "d/date=3/c.parquet",
+            "d/dt=4/e.parquet",
+            "d/loose.parquet",
+        ])
+        .expect("the folders disagree");
+        assert_eq!(
+            three.summary,
+            "2 files are partitioned by y/m, and 1 file by date, and 1 file by dt"
+        );
+        assert_eq!(three.scope, "in the names of all 4 files");
     }
 
     /// Files merely missing a column must not split the scan.

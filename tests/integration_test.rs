@@ -1865,6 +1865,72 @@ fn test_a_dataset_whose_files_all_hold_rows_says_nothing_about_empty_ones() {
     );
 }
 
+/// A pipeline that renamed its partition key partway through.
+///
+/// datui reads the partition columns off one branch of the tree, so the files under the
+/// key that lost read as though they had no partition at all — the column is there,
+/// full of nulls, and without the note nothing on screen says why.
+#[test]
+fn test_a_folder_whose_partition_key_changed_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
+        write_parquet(
+            dir.path(),
+            day,
+            df!("id" => &[0i64], "n" => &[1i64]).unwrap(),
+        );
+    }
+    // The day the pipeline changed.
+    write_parquet(
+        dir.path(),
+        "dt=2024-01-04",
+        df!("id" => &[1i64], "n" => &[2i64]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    let layout = notes
+        .iter()
+        .find(|note| note.summary.contains("partitioned by"))
+        .unwrap_or_else(|| panic!("nothing said about the changed key: {notes:#?}"));
+    assert_eq!(
+        layout.summary,
+        "3 files are partitioned by date, and 1 file by dt"
+    );
+    assert_eq!(layout.scope, "in the names of all 4 files");
+}
+
+/// The control: a folder partitioned the one way says nothing about it.
+#[test]
+fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in ["date=2024-01-01", "date=2024-01-02"] {
+        write_parquet(
+            dir.path(),
+            day,
+            df!("id" => &[0i64], "n" => &[1i64]).unwrap(),
+        );
+    }
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        !state
+            .notes()
+            .iter()
+            .any(|note| note.summary.contains("partitioned by")),
+        "{:#?}",
+        state.notes()
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

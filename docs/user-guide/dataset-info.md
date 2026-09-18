@@ -9,7 +9,7 @@ or <kbd>Esc</kbd> closes it.
 |---|---|
 | **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type and, for Parquet, its codec and compression ratio |
 | **Resources** | File size, the memory used by the buffered rows, the format, and for Parquet the overall compression ratio, row groups, version and writer |
-| **Partitions** | For a hive-partitioned dataset, the partition columns and their values |
+| **Partitions** | For a hive-partitioned dataset, its partition columns |
 | **Notes** | What datui noticed about the data while reading it. Only there when something is worth saying |
 
 ## Keys
@@ -39,7 +39,7 @@ datui says so:
 | A file's footer could not be read, so it was left out | The footers |
 
 Every note says what it is based on — `in all 6,541 footers`, or
-`in 5,000 of 200,000 footers (sample)` — so a count never stands for files
+`in 20,000 of 200,000 footers (sample)` — so a count never stands for files
 datui has not looked at. None of them costs a read of its own: they come from
 the footers the schema and the row count already needed.
 
@@ -50,7 +50,7 @@ cursor is on fills the panel, where it keeps that row. Whole notes only: half a
 note is worse than none, since a claim with no basis under it, or a basis with no
 claim above it, is the misreading the basis is there to prevent. Where the note
 the cursor is on will not fit at all, the panel says so rather than showing part
-of it; a shorter note may still fit, and <kbd>↑</kbd> reaches it.
+of it; a shorter note may still fit.
 
 A note describes the dataset as opened. A query, a pivot or a drill-down builds
 rows of its own, so the notes step aside; resetting or drilling back up brings

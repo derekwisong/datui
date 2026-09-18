@@ -5,7 +5,7 @@
 //! pop-up, no error styling — and every one says what it is based on, so "in 1 of 3
 //! files" is never mistaken for a claim about files datui has not looked at.
 //!
-//! A note is one sentence and the line it rests on. Six rounds of review found false
+//! A note is one sentence and the line it rests on. Review after review found false
 //! or empty statements here, and every one of them was in prose that went beyond the
 //! sentence: a denominator over the wrong population, an explanatory line that
 //! contradicted the note above it, a type named by a word two types share. What is
@@ -255,7 +255,7 @@ mod tests {
 
     /// Every shape of disagreement, and every line each one produces.
     ///
-    /// Four rounds of review found a wrong denominator in this module, each in a case
+    /// Round after round of review found a wrong denominator in this module, each in a case
     /// the previous fix had not considered. The wording layer now states one ratio and
     /// counts everything else without dividing, and this lists the shapes end to end so
     /// the next wrong one shows up as a diff. Deliberately a transcript rather than a
@@ -653,7 +653,9 @@ mod tests {
             ),
         ] {
             let dataset = union_file_schemas(&files, origin);
-            for note in from_dataset(&dataset) {
+            let notes = from_dataset(&dataset);
+            assert_eq!(notes.len(), 2, "an absence note and an unreadable one");
+            for note in notes {
                 assert_eq!(note.scope, expected_scope);
                 // The only ratio in the module is over what could be read, and it never
                 // claims the whole dataset.

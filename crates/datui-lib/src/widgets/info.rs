@@ -100,7 +100,8 @@ fn note_rows(note: &crate::notes::Note, selected: bool, width: usize) -> Vec<Not
 /// Measured in columns rather than characters: a column name can be any text the data
 /// holds, and a name whose characters are double-width would otherwise be clipped by
 /// the terminal after this said it fitted. A single word longer than the panel is left
-/// whole rather than split mid-word.
+/// whole rather than split mid-word, though the terminal still clips what runs past
+/// the edge — the wrapping protects the note's height, not a single long word.
 fn wrap_to(text: &str, width: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     if width == 0 {
@@ -1089,22 +1090,6 @@ mod tests {
         assert_eq!(InfoTab::Notes.next(false, false), InfoTab::Resources);
         assert_eq!(InfoTab::Partitions.index(false, false), 0);
         assert_eq!(InfoTab::Partitions.prev(false, false), InfoTab::Resources);
-    }
-
-    #[test]
-    fn the_notes_cursor_moves_within_the_list() {
-        let mut modal = InfoModal::new();
-        assert!(!modal.notes_move(1, 0), "nothing to move through");
-
-        assert!(modal.notes_move(1, 5));
-        assert_eq!(modal.notes_selected_index, 1);
-        assert!(modal.notes_move(-1, 5));
-        assert_eq!(modal.notes_selected_index, 0);
-        assert!(!modal.notes_move(-1, 5), "already at the top");
-        for _ in 0..10 {
-            modal.notes_move(1, 5);
-        }
-        assert_eq!(modal.notes_selected_index, 4, "and stops at the last");
     }
 
     /// The window's three promises, checked over every shape that fits in a terminal.

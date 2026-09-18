@@ -2198,12 +2198,14 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
         bar.contains("Reading footers: 1,203 of 6,541"),
         "the bar says what is still arriving: {bar:?}"
     );
-    // And does not print a number for rows it has not counted. Until the pass lands,
-    // what the dataset holds is as far as the buffer reached, not how many there are:
-    // printed plainly, a prefix of thousands of files reads `Rows: 3`.
+    // And it prints the count, because this dataset has one: every file of it was read
+    // at the open. A spinner here would be spinning over a number in hand. What is not
+    // shown is a count that has not been taken — see
+    // `a_count_that_has_arrived_is_not_held_back_with_the_columns`, where the dataset
+    // says a count is still coming exactly while it has none.
     assert!(
-        !bar.contains("Rows: 3"),
-        "a partial is not a count: {bar:?}"
+        bar.contains("Rows: 3"),
+        "the count it does have is shown: {bar:?}"
     );
 
     // And says nothing for a dataset that is not the one waiting: the folder this user

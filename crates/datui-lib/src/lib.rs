@@ -1876,7 +1876,8 @@ pub mod tests {
         );
     }
 
-    /// Columns arriving during an export wait for it, rather than cancelling it.
+    /// Columns arriving during work already asked for wait for it, rather than
+    /// cancelling it.
     ///
     /// The re-read after a join goes through the ordinary collect, which bumps
     /// `task_generation` — the token the export is waiting on. Bumped underneath one,
@@ -1885,7 +1886,7 @@ pub mod tests {
     /// for minutes on the prefixes this is for, so an export started at the open is
     /// certain to be inside that window.
     #[test]
-    fn columns_arriving_during_an_export_wait_for_it() {
+    fn columns_arriving_during_work_already_asked_for_wait_for_it() {
         use crate::widgets::datatable::{DataTableState, FootersFound};
         use crate::{App, AppEvent, LoadingState, OpenOptions};
         use polars::prelude::*;
@@ -1917,39 +1918,73 @@ pub mod tests {
         app.load_active = true;
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
 
-        // An export is under way, and the generation it is waiting on is this one.
-        app.loading_state = LoadingState::Exporting {
-            file_path: std::path::PathBuf::from("/tmp/out.csv"),
-            current_phase: "Collecting".to_string(),
-            progress_percent: 0,
+        // Each kind of work whose answer the join would throw away. The load is the one
+        // that costs most: a dataset the user asked for that never opens, and nothing
+        // said about it.
+        type Start = fn(&mut App);
+        let under_way: Vec<(&str, Start)> = vec![
+            ("a load", |app: &mut App| app.awaiting_dataset = true),
+            ("an export", |app: &mut App| {
+                app.loading_state = LoadingState::Exporting {
+                    file_path: std::path::PathBuf::from("/tmp/out.csv"),
+                    current_phase: "Collecting".to_string(),
+                    progress_percent: 0,
+                };
+            }),
+            ("an analysis", |app: &mut App| {
+                app.analysis_modal.computing = Some(crate::analysis_modal::AnalysisProgress {
+                    phase: "Counting".to_string(),
+                    current: 0,
+                    total: 1,
+                });
+            }),
+            ("a chart", |app: &mut App| {
+                app.chart_inflight = Some(crate::ChartInflight {
+                    dataset: None,
+                    request: crate::ChartRequest::XRange {
+                        x_column: "id".to_string(),
+                        row_limit: None,
+                    },
+                    stale: false,
+                });
+            }),
+        ];
+        let put_away = |app: &mut App| {
+            app.awaiting_dataset = false;
+            app.loading_state = LoadingState::Idle;
+            app.analysis_modal.computing = None;
+            app.chart_inflight = None;
         };
-        let waiting_on = app.task_generation();
 
-        app.footers_held = Some((
-            app.dataset_generation,
-            FootersFound {
-                dataset: dataset_of(wider()),
-                lf: wider(),
-                file_rows: Vec::new(),
-                files: Vec::new(),
-                row_groups: Vec::new(),
-                scan: None,
-            },
-        ));
-        let _ = app.handle(&AppEvent::Update);
+        for (what, start) in under_way {
+            start(&mut app);
+            let waiting_on = app.task_generation();
+            app.footers_held = Some((
+                app.dataset_generation,
+                FootersFound {
+                    dataset: dataset_of(wider()),
+                    lf: wider(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    scan: None,
+                },
+            ));
+            let _ = app.handle(&AppEvent::Update);
 
-        assert_eq!(
-            app.task_generation(),
-            waiting_on,
-            "the export's answer is still the one this app is waiting for"
-        );
-        assert!(
-            app.footers_held.is_some(),
-            "and the columns wait their turn rather than taking it"
-        );
+            assert_eq!(
+                app.task_generation(),
+                waiting_on,
+                "{what} is still waiting on the answer this app would have thrown away"
+            );
+            assert!(
+                app.footers_held.is_some(),
+                "and the columns wait their turn behind {what}"
+            );
+            put_away(&mut app);
+        }
 
-        // The export finishes, and then they go in.
-        app.loading_state = LoadingState::Idle;
+        // Nothing under way now, and they go in.
         let _ = app.handle(&AppEvent::Update);
         assert_eq!(
             app.data_table_state
@@ -4188,7 +4223,13 @@ impl App {
     /// on its spinner. So the columns wait, as they already do for a query, and go in
     /// when the work that was asked for first is done.
     fn work_the_join_would_cancel(&self) -> bool {
-        matches!(self.loading_state, LoadingState::Exporting { .. })
+        // A load above all: `dataset_generation` does not move until the new dataset is
+        // installed, so a pass belonging to the prefix the user walked away from still
+        // matches while the file they asked for is being opened. Cancelling that one
+        // means it never opens at all, silently, and leaves `awaiting_dataset` set for
+        // the rest of the session.
+        self.awaiting_dataset
+            || matches!(self.loading_state, LoadingState::Exporting { .. })
             || self.analysis_modal.computing.is_some()
             || self.chart_preparing()
     }
@@ -13655,7 +13696,10 @@ impl Widget for &mut App {
         // plainly, a prefix of six thousand files reads `Rows: 70`.
         let count_pending = self.len_count_inflight.is_some()
             || self.awaiting_dataset
-            || self.dataset_is_still_reading_its_footers();
+            || self
+                .data_table_state
+                .as_ref()
+                .is_some_and(|state| state.counts_itself_later());
         let count_unknown = !count_pending
             && self.data_table_state.as_ref().is_some_and(|s| {
                 !s.is_num_rows_valid() && self.len_count_failed == Some(s.len_generation())

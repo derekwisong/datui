@@ -446,6 +446,19 @@ pub struct DataTableInfo<'a> {
     pub highlight: Style,
 }
 
+/// The first line of the Schema tab: the dataset's size, or that it does not know yet.
+///
+/// Told `None` rather than a number, because what a state holds before it has been
+/// counted is how far its buffer reached — printed under a heading that says "total",
+/// that reads as the size of the dataset. On a folder of thousands of files still being
+/// counted it would say `Rows (total): 70` beside a control bar showing a spinner.
+fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
+    match rows {
+        Some(rows) => format!("Rows (total): {} · Columns: {}", format_int(rows), columns),
+        None => format!("Rows (total): counting… · Columns: {columns}"),
+    }
+}
+
 impl<'a> DataTableInfo<'a> {
     pub fn new(
         state: &'a DataTableState,
@@ -483,14 +496,8 @@ impl<'a> DataTableInfo<'a> {
     fn render_schema_summary(&self, area: Rect, buf: &mut Buffer) -> u16 {
         let ncols = self.state.schema.len();
         let mut lines = vec![];
-        // The total, or that there isn't one yet. What the state holds before it has
-        // been counted is how far the buffer reached, and printed under this heading
-        // that reads as the size of the dataset — on a folder of thousands of files
-        // still being counted, `Rows (total): 70`.
-        lines.push(match self.state.num_rows_if_valid() {
-            Some(nrows) => format!("Rows (total): {} · Columns: {}", format_int(nrows), ncols),
-            None => format!("Rows (total): counting… · Columns: {ncols}"),
-        });
+        // `num_rows_if_valid`, not `num_rows`: see `rows_and_columns`.
+        lines.push(rows_and_columns(self.state.num_rows_if_valid(), ncols));
         let by_type = columns_by_type(self.state.schema.as_ref());
         if !by_type.is_empty() {
             lines.push(by_type);
@@ -1097,6 +1104,20 @@ pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dataset that has not been counted says so rather than showing how far it got.
+    #[test]
+    fn the_schema_tab_does_not_call_a_partial_the_total() {
+        assert_eq!(
+            rows_and_columns(Some(6541), 12),
+            "Rows (total): 6,541 · Columns: 12"
+        );
+        assert_eq!(
+            rows_and_columns(None, 12),
+            "Rows (total): counting… · Columns: 12",
+            "not the 70 rows the buffer happens to hold"
+        );
+    }
 
     #[test]
     fn the_tabs_on_offer_depend_on_the_dataset() {

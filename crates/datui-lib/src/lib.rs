@@ -5000,9 +5000,15 @@ impl App {
         };
         match state.read_column_as_text(&column) {
             Ok(true) => {
-                // The note that offered this is gone, and the list is shorter: the
-                // cursor would otherwise sit past the end or on someone else's note.
-                self.info_modal.notes_selected_index = 0;
+                // The note that offered this is gone and the list is shorter, so the
+                // cursor would otherwise sit past the end. Kept as near to where the
+                // user left it as the shorter list allows, rather than thrown to the
+                // top: one or two notes went, not all of them.
+                let notes = state.notes().len();
+                self.info_modal.notes_selected_index = self
+                    .info_modal
+                    .notes_selected_index
+                    .min(notes.saturating_sub(1));
                 self.info_modal.notes_scroll_offset = 0;
             }
             Ok(false) => {}
@@ -5032,26 +5038,24 @@ pub(crate) fn hoist_partition_columns(
     partition_columns: &[String],
     drifts: bool,
 ) -> LazyFrame {
-    {
-        if partition_columns.is_empty() {
-            return lf;
-        }
-        let mut exprs: Vec<_> = partition_columns
-            .iter()
-            .map(|s| col(s.as_str()))
-            .chain(
-                schema
-                    .iter_names()
-                    .map(|s| s.to_string())
-                    .filter(|c| !partition_columns.contains(c))
-                    .map(|s| col(s.as_str())),
-            )
-            .collect();
-        if drifts {
-            exprs.push(col(crate::schema_union::DRIFT_COLUMN));
-        }
-        lf.select(exprs)
+    if partition_columns.is_empty() {
+        return lf;
     }
+    let mut exprs: Vec<_> = partition_columns
+        .iter()
+        .map(|s| col(s.as_str()))
+        .chain(
+            schema
+                .iter_names()
+                .map(|s| s.to_string())
+                .filter(|c| !partition_columns.contains(c))
+                .map(|s| col(s.as_str())),
+        )
+        .collect();
+    if drifts {
+        exprs.push(col(crate::schema_union::DRIFT_COLUMN));
+    }
+    lf.select(exprs)
 }
 
 impl App {

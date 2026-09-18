@@ -1543,6 +1543,142 @@ fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
     );
 }
 
+/// The offer is not made where datui could not honour it.
+///
+/// Reading a column as text needs to know where each file's rows begin, and datui does
+/// not for a dataset whose footers could not all be read — the same datasets that
+/// cannot draw the marks. The note is still worth saying; the offer on it is not.
+#[test]
+fn test_no_offer_to_read_as_text_where_the_files_were_not_all_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1], "n" => &[10i64, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "n" => &["sixty"]).unwrap(),
+    );
+    // A third file datui cannot read the footer of.
+    let broken = dir.path().join("date=2024-01-03");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("data.parquet"), b"not a parquet file at all").unwrap();
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.summary.contains("not read there")),
+        "the conflict is still worth saying: {notes:#?}"
+    );
+    assert!(
+        notes.iter().all(|note| note.read_as_text.is_none()),
+        "but datui cannot act on it, so it does not offer to: {notes:#?}"
+    );
+}
+
+/// The offer and the count of notes out of view share the last row without landing on
+/// top of each other.
+///
+/// Both are drawn into the panel's bottom row. A `Paragraph` leaves the cells its text
+/// does not reach alone, so two of them in one place is not a layout that loses — it is
+/// one string written over another.
+#[test]
+fn test_the_offer_and_the_hidden_count_do_not_overwrite_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+    // Several drifting columns, so there are more notes than a short panel can show.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!(
+            "id" => &[0i64, 1],
+            "measurement_value" => &[10i64, 20],
+            "b" => &[1i64, 2],
+            "c" => &[1i64, 2],
+            "d" => &[1i64, 2],
+        )
+        .unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!(
+            "id" => &[2i64],
+            "measurement_value" => &["sixty"],
+            "b" => &["x"],
+            "c" => &["x"],
+            "d" => &["x"],
+        )
+        .unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    // Narrow, and short enough that the notes do not all fit: both halves of the last
+    // row have something to say, and not enough room to say it in.
+    let area = Rect::new(0, 0, 44, 12);
+    let _ = painted(&mut app, &rx, &tx, area);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    let mut panel = painted(&mut app, &rx, &tx, area);
+    for _ in 0..6 {
+        if panel.contains("and not read there") {
+            break;
+        }
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        panel = painted(&mut app, &rx, &tx, area);
+    }
+
+    // Walk to a note carrying the offer, so the panel has both things to say.
+    let offered = |app: &App| -> Option<usize> {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .notes()
+            .iter()
+            .position(|note| note.read_as_text.is_some())
+    };
+    let at = offered(&app).expect("a conflict note offers to read its column as text");
+    for _ in 0..at {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+    }
+    let panel = painted(&mut app, &rx, &tx, area);
+
+    let count = (1..9)
+        .flat_map(|n| [format!("{n} below"), format!("{n} above")])
+        .find(|text| panel.contains(text.as_str()))
+        .unwrap_or_else(|| panic!("the panel is short enough to be hiding notes: {panel}"));
+    assert!(
+        panel.contains("Enter  read"),
+        "the offer shares the row with the count: {panel}"
+    );
+    // The blank column between them is the whole of it. Drawn into the same rect, the
+    // count lands on the offer's last characters and there is no gap — the offer's
+    // text runs straight into "2 below" with no way to tell where one ends.
+    assert!(
+        panel.contains(&format!(" {count}")),
+        "the two must not run together where they meet: {panel}"
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

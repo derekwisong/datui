@@ -100,12 +100,16 @@ pivot or SQL query builds new rows that stand for no one file, so their nulls ar
 plain nulls again, and an export writes every empty cell as null.
 
 A `≠` cell's value can still be seen. The **Notes** tab's note about the column
-offers **read this column as text**, and taking it re-reads the column from every
-file at the type that file wrote, spelled as text. Nothing is left out any more,
-so the marks and the note go with the conflict. It costs no re-listing and no
-footer read — datui already knows what each file holds. A column one file stores
-as a list or as bytes that are not text has no text form at all, and is not
-offered.
+offers **read this column as text**, and taking it reads the column from the files
+that disagree too, at the type each of them wrote, spelled as text. Nothing is
+left out any more, so the `≠` marks and the note go with the conflict. It costs no
+re-listing and no footer read — datui already knows what each file holds. A column
+one file stores as a list or as bytes that are not text has no text form at all,
+and is not offered.
+
+A file whose type merely *widens* into the column's is read at the column's type
+either way, so an integer in a column read as a float still reads as `7.0`, and
+the note saying the column is stored as more than one type stays.
 
 A `≠` cell has no value the column can be compared or ordered by, so where datui
 has every file's row count, filtering or sorting by a column the files disagree

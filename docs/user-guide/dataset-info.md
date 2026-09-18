@@ -54,9 +54,9 @@ the cursor is on will not fit at all, the panel says so rather than showing part
 of it; a shorter note may still fit.
 
 A note about a column the files store in more than one type offers to **read it
-as text**: press <kbd>Enter</kbd> on it and the column is re-read from every file
-at the type that file wrote, so the values the conflict hid appear. The note says
-so on the line under the panel while the cursor is on it. A column one file holds
+as text**: press <kbd>Enter</kbd> on it and the column is read from the files that
+disagree too, at the type each of them wrote, so the values the conflict hid
+appear. The note says so on the line under the panel while the cursor is on it. A column one file holds
 as a list, or as bytes that are not text, cannot be shown as text at all, and no
 offer is made for it.
 

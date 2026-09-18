@@ -3864,7 +3864,7 @@ impl DataTableState {
         self.drift_dataset_rows = row;
         self.drift_at_open = self.drift_column_present;
         self.groups_at_open = self.drift_groups.clone();
-        self.notes = crate::notes::from_dataset(&schema);
+        self.notes = Self::notes_datui_can_act_on(&schema, self.drift_column_present);
         self.notes_at_open = self.notes.clone();
         self.notes_seen = false;
         self.read_as_text = Vec::new();
@@ -4192,7 +4192,7 @@ impl DataTableState {
         // every one of them and still means what it did.
         self.drift_groups = Arc::new(view.groups.clone());
         self.groups_at_open = self.drift_groups.clone();
-        self.notes = crate::notes::from_dataset(&view);
+        self.notes = Self::notes_datui_can_act_on(&view, self.drift_column_present);
         self.notes_at_open = self.notes.clone();
         self.dataset_schema = Some(view);
         self.original_lf = lf.clone();
@@ -4205,6 +4205,29 @@ impl DataTableState {
         // about what they leave out — which is one note shorter now.
         self.apply_transformations();
         Ok(true)
+    }
+
+    /// The dataset's notes, with the offer to read a column as text left on only where
+    /// taking it would work.
+    ///
+    /// A note is written from the footers' schema, which says whether a column *could*
+    /// be shown as text. Whether it can be read that way is a second question: the scan
+    /// has to know where each file's rows begin, and it does not for a dataset too large
+    /// to read every footer, or one where a footer would not parse. Those are the same
+    /// datasets that cannot draw the marks. An offer the panel shows and the action
+    /// then declines is worse than no offer, so it is taken off here rather than
+    /// refused later.
+    fn notes_datui_can_act_on(
+        dataset: &crate::schema_union::DatasetSchema,
+        counted: bool,
+    ) -> Vec<crate::notes::Note> {
+        let mut notes = crate::notes::from_dataset(dataset);
+        if !counted {
+            for note in &mut notes {
+                note.read_as_text = None;
+            }
+        }
+        notes
     }
 
     /// Each file's row count, as the footers gave them. The starts are kept rather than

@@ -883,33 +883,52 @@ impl<'a> DataTableInfo<'a> {
             }
         }
 
-        if let (true, Some(offer)) = (reserve, offer.as_ref()) {
-            Paragraph::new(Line::from(Span::styled(offer.as_str(), dim))).render(
-                Rect {
-                    y: area.y + area.height - 1,
-                    height: 1,
-                    ..area
-                },
-                buf,
-            );
-        }
+        // The offer and the count of what is out of view share the last row, so the
+        // room goes to the count first and the offer takes what is left. The count is
+        // a handful of characters and the offer is as long as a column name; giving
+        // the offer its width first would push the count off the edge, and the two
+        // drawn over each other read as neither.
         let (above, below) = (first, notes.len() - last);
-        if reserve && (above > 0 || below > 0) {
-            let hidden = match (above, below) {
-                (0, n) => format!("{} below", group_chrome(n)),
-                (n, 0) => format!("{} above", group_chrome(n)),
-                (a, b) => format!("{} above, {} below", group_chrome(a), group_chrome(b)),
-            };
-            Paragraph::new(Line::from(Span::styled(hidden, dim)))
-                .right_aligned()
-                .render(
+        let hidden = match (reserve, above, below) {
+            (false, _, _) | (_, 0, 0) => None,
+            (_, 0, n) => Some(format!("{} below", group_chrome(n))),
+            (_, n, 0) => Some(format!("{} above", group_chrome(n))),
+            (_, a, b) => Some(format!(
+                "{} above, {} below",
+                group_chrome(a),
+                group_chrome(b)
+            )),
+        };
+        if !reserve || (hidden.is_none() && offer.is_none()) {
+            return;
+        }
+        let last_row = Rect {
+            y: area.y + area.height - 1,
+            height: 1,
+            ..area
+        };
+        // A space between them, so they never read as one phrase when both are there.
+        use unicode_width::UnicodeWidthStr;
+        let taken = hidden
+            .as_ref()
+            .map(|text| (text.width() as u16).saturating_add(1))
+            .unwrap_or(0);
+        if let Some(offer) = offer.as_ref() {
+            let room = last_row.width.saturating_sub(taken);
+            if room > 0 {
+                Paragraph::new(Line::from(Span::styled(offer.as_str(), dim))).render(
                     Rect {
-                        y: area.y + area.height - 1,
-                        height: 1,
-                        ..area
+                        width: room,
+                        ..last_row
                     },
                     buf,
                 );
+            }
+        }
+        if let Some(hidden) = hidden {
+            Paragraph::new(Line::from(Span::styled(hidden, dim)))
+                .right_aligned()
+                .render(last_row, buf);
         }
     }
 

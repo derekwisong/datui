@@ -148,8 +148,10 @@ impl DatasetSchema {
                 column.dtype = DataType::String;
                 column.conflicting_files = 0;
                 column.conflicting_types.clear();
-                // Every file's value is shown as it was written, so no type gave way.
-                column.widened = false;
+                // `widened` is left alone. A file whose type merely widens into the
+                // column's is still read at the column's type — an integer in a float
+                // column still reads as `7.0` — so the note saying a type gave way is
+                // still true, and removing it would leave the `7.0` unexplained.
             }
         }
         for group in &mut out.groups {

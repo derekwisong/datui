@@ -136,6 +136,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     }
 
     notes.extend(empty_files_note(dataset, &scope));
+    notes.extend(row_group_note(dataset, &scope));
 
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
@@ -230,6 +231,51 @@ fn empty_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     };
     Some(Note {
         summary: format!("{count} {verb} no rows"),
+        scope: scope.to_string(),
+        read_as_text: None,
+    })
+}
+
+/// Row groups big enough that reading a page means reading a lot more than the page.
+///
+/// A row group is what a reader fetches: a hundred rows anywhere inside one costs the
+/// whole of it. Over a network that is the difference between a page arriving and a
+/// page arriving after sixty-four megabytes do, and there is nothing the user can do
+/// about it from here — which is exactly why it is worth saying rather than leaving
+/// them to wonder why scrolling is slow.
+///
+/// The threshold is the size at which one row group is a noticeable download on an
+/// ordinary connection; below it, nobody needs telling. States the middle size rather
+/// than the largest: one row group of a gigabyte among thousands of small ones is a
+/// different dataset from one where every row group is a gigabyte, and only the second
+/// is worth a note.
+///
+/// Says "the middle row group is", not "row groups are, apiece" — the middle of
+/// `[1 MiB, 100 MiB, 100 MiB]` is 100 MiB and one of those row groups is not.
+///
+/// And says the size, not what a page costs to fetch. They are not the same number:
+/// a page projects away binary columns (see `binary_stub_exprs`), so their chunks are
+/// never downloaded, while this size counts every chunk in the group. The figure is
+/// the row group's; what follows it is why a row group's size is the one that matters.
+///
+/// The middle is over every row group of every footer read, each counting once. Not
+/// weighted by rows, though a page is likelier to land in a group that holds more of
+/// them: a dataset of one file of ten thousand small groups beside a hundred files of
+/// one huge group each is called small by this and would be called large by that.
+/// Counting groups is the statistic that matches the sentence — how big a row group
+/// is, of the row groups there are.
+fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
+    /// Sixty-four mebibytes, the size a page in that range costs to reach.
+    const BIG: usize = 64 * 1024 * 1024;
+    let median = dataset.median_row_group_bytes?;
+    if median <= BIG {
+        return None;
+    }
+    Some(Note {
+        summary: format!(
+            "the middle row group is {}, and rows are read a row group at a time",
+            crate::widgets::info::format_bytes(median as u64)
+        ),
         scope: scope.to_string(),
         read_as_text: None,
     })
@@ -340,6 +386,7 @@ mod tests {
         Some(FileSchema {
             schema: Arc::new(schema),
             rows,
+            row_group_bytes: Vec::new(),
         })
     }
 

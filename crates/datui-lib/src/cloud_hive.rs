@@ -283,6 +283,7 @@ pub fn dataset_schema_from_footers(
             f.as_ref().map(|f| FileSchema {
                 schema: f.schema.clone(),
                 rows: f.row_group_rows.iter().sum(),
+                row_group_bytes: f.row_group_bytes.clone(),
             })
         })
         .collect();
@@ -320,6 +321,8 @@ const COUNT_TAIL_BYTES: u64 = 16 * 1024;
 pub struct FileFooter {
     pub schema: Arc<Schema>,
     pub row_group_rows: Vec<usize>,
+    /// Compressed bytes of each row group, in the same order.
+    pub row_group_bytes: Vec<usize>,
 }
 
 /// Every file's footer, in file order: a small ranged read at the end of each file,
@@ -397,6 +400,11 @@ async fn footer_of_file(store: &Arc<dyn ObjectStore>, file: &DatasetFile) -> Res
     Ok(FileFooter {
         schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
         row_group_rows: metadata.row_groups.iter().map(|rg| rg.num_rows()).collect(),
+        row_group_bytes: metadata
+            .row_groups
+            .iter()
+            .map(|rg| rg.compressed_size())
+            .collect(),
     })
 }
 
@@ -502,6 +510,91 @@ mod tests {
                 b"crc".to_vec(),
             ),
         ]
+    }
+
+    /// A remote dataset carries its row-group sizes through to the schema too.
+    ///
+    /// The two routes read their footers differently — a ranged read of the tail here,
+    /// a whole local file there — and it is the `FileSchema` each builds that decides
+    /// whether datui can say anything about row groups at all. Dropping the sizes on
+    /// this side leaves the note working perfectly for local datasets and silent for
+    /// the ones it exists for.
+    #[test]
+    fn a_remote_dataset_carries_its_row_group_sizes_into_the_schema() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let write = |groups: i64| -> Vec<u8> {
+            let mut frame = df!("n" => (0..groups * 1_000).collect::<Vec<i64>>()).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes)
+                .with_row_group_size(Some(1_000))
+                .finish(&mut frame)
+                .unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for (key, bytes) in [
+                ("data/date=2024-01-01/a.parquet", write(3)),
+                ("data/date=2024-01-02/b.parquet", write(2)),
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(bytes))
+                    .await
+                    .unwrap();
+            }
+            let files = list_dataset_files(&store, "data/").await.unwrap();
+            let read: Vec<usize> = (0..files.len()).collect();
+            let footers = footers_of_files(&store, &files, &read).await;
+
+            let mut sizes: Vec<usize> = footers
+                .iter()
+                .flatten()
+                .flat_map(|footer| footer.row_group_bytes.iter().copied())
+                .collect();
+            assert_eq!(sizes.len(), 5, "three row groups and two: {sizes:?}");
+            assert!(sizes.iter().all(|size| *size > 0), "{sizes:?}");
+
+            let (dataset, _) = dataset_schema_from_footers(&files, &read, &footers).unwrap();
+            sizes.sort_unstable();
+            assert_eq!(
+                dataset.median_row_group_bytes,
+                Some(sizes[2]),
+                "the middle of the five reaches the schema: {sizes:?}"
+            );
+
+            // And they are the compressed sizes, as the local route's are. Twenty
+            // thousand distinct strings of two hundred characters are about 4 MiB once
+            // decoded and a small fraction of that on the wire; a column of one
+            // repeated value would not tell the two apart, since the dictionary makes
+            // the decoded figure the smaller of them.
+            let rows: Vec<String> = (0..20_000)
+                .map(|i| format!("{i:0>6}{}", "abcdefghij".repeat(19)))
+                .collect();
+            let mut wide = df!("s" => rows).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes)
+                .with_row_group_size(Some(20_000))
+                .finish(&mut wide)
+                .unwrap();
+            store
+                .put(
+                    &OsPath::from("wide/date=2024-01-01/w.parquet"),
+                    PutPayload::from(bytes),
+                )
+                .await
+                .unwrap();
+            let wide_files = list_dataset_files(&store, "wide/").await.unwrap();
+            assert_eq!(wide_files.len(), 1, "only the wide file: {wide_files:?}");
+            let wide_footers = footers_of_files(&store, &wide_files, &[0]).await;
+            let size = wide_footers[0].as_ref().unwrap().row_group_bytes[0];
+            assert!(
+                size < 1_000_000,
+                "the compressed size, not the decoded one: {size} bytes"
+            );
+        });
     }
 
     #[test]

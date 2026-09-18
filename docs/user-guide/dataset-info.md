@@ -41,8 +41,15 @@ files with something in them. Where datui notices either, it says so:
 | Row groups are large enough that a page of rows costs much more than a page | The footers |
 | There are very many files and the middle one holds very little | The listing and the footers |
 | The folders do not all partition by the same keys | The file names |
+| A column stops where a similarly named one starts, which may be a rename | The footers |
 | A file's footer could not be read, so it was left out | The footers |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
+
+One note is a guess and says so: where a column stops in the same footer that a
+similarly named one starts in, a pipeline may have renamed it. datui never acts on
+that — nothing is merged and both columns stay exactly as they are — because two
+columns that swap over may equally be two different things. What it states is the
+swap, which is a fact of the footers; the rename is offered as the guess it is.
 
 Every note says what it is based on — `in all 6,541 footers`, or
 `in 20,000 of 200,000 footers (sample)` — so a count never stands for files

@@ -139,6 +139,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     notes.extend(row_group_note(dataset, &scope));
     notes.extend(small_files_note(dataset, &scope));
     notes.extend(partition_layout_note(dataset));
+    notes.extend(rename_notes(dataset, &scope));
 
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
@@ -409,6 +410,77 @@ fn how_many_files(n: usize) -> String {
     )
 }
 
+/// A column that stops exactly where a similarly named one starts.
+///
+/// A renamed column does not look like a rename from here: it looks like two columns,
+/// each empty for half the dataset, and a reader who finds `amount` null for every
+/// recent row has no way to know `amt` is the same thing. Saying so costs nothing —
+/// the footers already know which of them had which column.
+///
+/// **Worded as a guess, and never acted on.** Nothing is merged, no schema changes,
+/// both columns stay exactly as they are. Two columns whose names look alike and whose
+/// footers do not overlap may be a rename, or may be two different things a pipeline
+/// happened to stop and start; datui cannot tell which and does not pretend to. What it
+/// states — that one stops where the other starts — is a fact of the footers. The rest
+/// is offered as the guess it is.
+fn rename_notes(dataset: &DatasetSchema, scope: &str) -> Vec<Note> {
+    let mut notes = Vec::new();
+    for before in &dataset.columns {
+        let Some((_, last)) = before.seen_between else {
+            continue;
+        };
+        for after in &dataset.columns {
+            let Some((first, _)) = after.seen_between else {
+                continue;
+            };
+            // Stops exactly where the other starts: no footer has both, and none
+            // between them has neither. A gap would be two unrelated columns.
+            if first != last + 1 || !alike(&before.name, &after.name) {
+                continue;
+            }
+            notes.push(Note {
+                summary: format!(
+                    "{} stops where {} starts; they may be one column renamed",
+                    before.name, after.name
+                ),
+                scope: scope.to_string(),
+                read_as_text: None,
+            });
+        }
+    }
+    notes
+}
+
+/// Whether two column names are alike enough that a rename is worth guessing at.
+///
+/// Deliberately loose, because the evidence that matters is the timing: two columns
+/// that swap over at one exact footer are already unusual, and a name that reads as an
+/// abbreviation of the other is the confirmation rather than the case. One being a
+/// subsequence of the other catches `amount`/`amt` and `date`/`dt`; a shared opening
+/// catches `fee`/`fees`. Single letters are left out — `n` is a subsequence of half the
+/// names there are.
+fn alike(a: &str, b: &str) -> bool {
+    let (a, b) = (a.to_lowercase(), b.to_lowercase());
+    if a.len() < 2 || b.len() < 2 || a == b {
+        return false;
+    }
+    let (short, long) = if a.len() <= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    let subsequence = {
+        let mut long = long.chars();
+        short.chars().all(|c| long.any(|l| l == c))
+    };
+    let shared = short
+        .chars()
+        .zip(long.chars())
+        .take_while(|(s, l)| s == l)
+        .count();
+    subsequence || shared >= 3
+}
+
 /// A column being read as text from every file, because it was asked for that way.
 ///
 /// Stands in for the conflict note it replaced, and says the one thing that changes
@@ -576,6 +648,22 @@ mod tests {
         };
 
         let cases = vec![
+            // --- a column that stops where a similar one starts ---
+            Shape {
+                what: "a possible rename",
+                files: vec![
+                    file(&[("id", i64.clone()), ("amount", i64.clone())], 1),
+                    file(&[("id", i64.clone()), ("amt", i64.clone())], 1),
+                ],
+                // The newest file's columns come first, so `amt` leads — and the
+                // guess still reads in the order the dataset was written.
+                expected: vec![
+                    "amt is in 1 of 2 files; absent from the rest, not null",
+                    "amount is in 1 of 2 files; absent from the rest, not null",
+                    "amount stops where amt starts; they may be one column renamed",
+                ],
+                ..Shape::default()
+            },
             // --- folders that disagree about what they are partitioned by ---
             Shape {
                 what: "one folder under another key",
@@ -1021,6 +1109,78 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Names alike enough to guess a rename at, and names that are not.
+    #[test]
+    fn names_alike_enough_to_guess_a_rename_at() {
+        assert!(alike("amount", "amt"), "an abbreviation");
+        assert!(alike("date", "dt"), "a shorter abbreviation");
+        assert!(alike("fee", "fees"), "a plural");
+        assert!(alike("customer_id", "customerId"), "a change of style");
+        assert!(!alike("amount", "amount"), "a column is not alike itself");
+        assert!(!alike("n", "name"), "a single letter is alike everything");
+        assert!(!alike("name", "n"), "whichever way round it is given");
+        assert!(!alike("price", "quantity"), "two different things");
+        assert!(
+            alike("AMT", "amount"),
+            "and case is a thing pipelines change on their own"
+        );
+    }
+
+    /// One column stopping exactly where another starts, and the cases that are not
+    /// that.
+    #[test]
+    fn a_column_that_stops_where_another_starts_is_a_guess_worth_offering() {
+        let with = |files: &[&[&str]]| -> Vec<String> {
+            let footers: Vec<Option<FileSchema>> = files
+                .iter()
+                .map(|columns| {
+                    let mut schema = Schema::with_capacity(columns.len());
+                    for name in *columns {
+                        schema.with_column((*name).into(), DataType::Int64);
+                    }
+                    Some(FileSchema {
+                        schema: Arc::new(schema),
+                        rows: 1,
+                        file_bytes: 1,
+                        row_group_bytes: Vec::new(),
+                    })
+                })
+                .collect();
+            let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(files.len()));
+            crate::notes::from_dataset(&dataset)
+                .into_iter()
+                .filter(|note| note.summary.contains("may be one column renamed"))
+                .map(|note| note.summary)
+                .collect()
+        };
+
+        assert_eq!(
+            with(&[&["id", "amount"], &["id", "amount"], &["id", "amt"]]),
+            ["amount stops where amt starts; they may be one column renamed"],
+            "the shape this is for"
+        );
+        assert_eq!(
+            with(&[&["id", "amount"], &["id", "amount", "amt"], &["id", "amt"]]),
+            Vec::<String>::new(),
+            "a footer with both is not a swap, whatever it looks like otherwise"
+        );
+        assert_eq!(
+            with(&[&["id", "amount"], &["id"], &["id", "amt"]]),
+            Vec::<String>::new(),
+            "nor is a gap between them: that is two columns, each stopping on its own"
+        );
+        assert_eq!(
+            with(&[&["id", "price"], &["id", "price"], &["id", "quantity"]]),
+            Vec::<String>::new(),
+            "and a swap between names that look nothing alike is not worth a guess"
+        );
+        assert_eq!(
+            with(&[&["id", "amount"], &["id", "amount"]]),
+            Vec::<String>::new(),
+            "a column that never stops says nothing"
+        );
     }
 
     /// The last resort, when a type's own `Debug` does not tell it from another's.

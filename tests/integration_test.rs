@@ -1998,6 +1998,52 @@ fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
     );
 }
 
+/// A pipeline that renamed a column partway through the history.
+///
+/// From the table it looks like two columns, each empty for half the dataset, and a
+/// reader who finds `amount` null for every recent row has nothing telling them `amt`
+/// is the same thing. The note is a guess and says so; neither column is touched.
+#[test]
+fn test_a_column_that_stops_where_a_similar_one_starts_is_guessed_at() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in ["date=2024-01-01", "date=2024-01-02"] {
+        write_parquet(
+            dir.path(),
+            day,
+            df!("id" => &[0i64], "amount" => &[10i64]).unwrap(),
+        );
+    }
+    // The day the pipeline renamed it.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[1i64], "amt" => &[20i64]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    let guess = notes
+        .iter()
+        .find(|note| note.summary.contains("may be one column renamed"))
+        .unwrap_or_else(|| panic!("nothing guessed about the rename: {notes:#?}"));
+    assert_eq!(
+        guess.summary,
+        "amount stops where amt starts; they may be one column renamed"
+    );
+    assert_eq!(guess.scope, "in all 3 footers");
+
+    // Guessed at, never acted on: both columns are still there, and still their own.
+    let headers = state.headers();
+    assert!(
+        headers.iter().any(|h| h == "amount") && headers.iter().any(|h| h == "amt"),
+        "both columns survive the guess: {headers:?}"
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

@@ -93,6 +93,14 @@ pub struct ColumnDrift {
     pub conflicting_types: Vec<DataType>,
     /// Some file stores the column in a narrower type than `dtype`.
     pub widened: bool,
+    /// The first and last footer that has the column, counted over the footers read
+    /// rather than over the dataset's files. `None` for a column no footer had, which
+    /// cannot happen for a column that is in the schema.
+    ///
+    /// Kept so a column that stops can be told from one that was never there: where
+    /// one column's last footer runs up against another's first, a pipeline may have
+    /// renamed it, and that is worth saying as a guess.
+    pub seen_between: Option<(usize, usize)>,
 }
 
 impl ColumnDrift {
@@ -356,18 +364,24 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
 
     // Per column, every type a file gives it and the rows behind each.
     let mut sightings: Vec<Vec<(DataType, usize)>> = vec![Vec::new(); order.len()];
-    for file in files.iter().flatten() {
+    // Where each column was first and last seen, in the order the footers were read.
+    let mut between: Vec<Option<(usize, usize)>> = vec![None; order.len()];
+    for (at, file) in files.iter().flatten().enumerate() {
         for (name, dtype) in file.schema.iter() {
             let Some(&index) = seen.get(name) else {
                 continue;
             };
             sightings[index].push((dtype.clone(), file.rows));
+            between[index] = Some(match between[index] {
+                Some((first, _)) => (first, at),
+                None => (at, at),
+            });
         }
     }
 
     let mut schema = Schema::with_capacity(order.len());
     let mut columns = Vec::with_capacity(order.len());
-    for (name, seen_types) in order.iter().zip(sightings.iter()) {
+    for ((name, seen_types), seen_between) in order.iter().zip(sightings.iter()).zip(&between) {
         let chosen = choose_dtype(seen_types);
         let conflicting_types = seen_types
             .iter()
@@ -388,6 +402,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
                 .any(|(d, _)| *d != chosen && fits(d, &chosen)),
             conflicting_types,
             dtype: chosen.clone(),
+            seen_between: *seen_between,
         });
         schema.with_column(name.clone(), chosen);
     }

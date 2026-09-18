@@ -141,6 +141,9 @@ pub struct DataTableState {
     /// Together they turn a row's place in the dataset into what its file was missing.
     drift_file_starts: Vec<usize>,
     drift_file_group: Vec<u32>,
+    /// Rows in the dataset as the footers counted them, so the last file's length is
+    /// known without asking what the view currently holds.
+    drift_dataset_rows: usize,
     /// Each file's path or URL, in scan order, so a row can be traced to the file it
     /// came from and an export can name it.
     drift_files: Vec<String>,
@@ -151,6 +154,10 @@ pub struct DataTableState {
     notes_seen: bool,
     /// The notes as the dataset was opened, so a reset and a drill up restore them.
     notes_at_open: Vec<crate::notes::Note>,
+    /// Notes about the view rather than the dataset: what the filter and sort on
+    /// screen are leaving out. Recomputed whenever either changes, so clearing them
+    /// takes the note away with them.
+    view_notes: Vec<crate::notes::Note>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -512,6 +519,8 @@ impl DataTableState {
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
+            view_notes: Vec::new(),
+            drift_dataset_rows: 0,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -616,6 +625,8 @@ impl DataTableState {
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
+            view_notes: Vec::new(),
+            drift_dataset_rows: 0,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -657,6 +668,7 @@ impl DataTableState {
         self.drift_column_present = false;
         self.drift_groups = Arc::new(Vec::new());
         self.notes = Vec::new();
+        self.view_notes = Vec::new();
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
         self.observed_bytes_per_row = None;
@@ -3801,6 +3813,7 @@ impl DataTableState {
             self.drift_file_starts.push(row);
             row += rows;
         }
+        self.drift_dataset_rows = row;
         self.drift_at_open = self.drift_column_present;
         self.groups_at_open = self.drift_groups.clone();
         self.notes = crate::notes::from_dataset(&schema);
@@ -3918,14 +3931,123 @@ impl DataTableState {
         df
     }
 
-    /// What datui noticed about the dataset. Empty when there is nothing to say.
-    pub fn notes(&self) -> &[crate::notes::Note] {
-        &self.notes
+    /// What datui noticed: about the dataset when it opened, then about the view the
+    /// filter and sort have made of it. Empty when there is nothing to say.
+    pub fn notes(&self) -> Vec<crate::notes::Note> {
+        self.notes
+            .iter()
+            .chain(self.view_notes.iter())
+            .cloned()
+            .collect()
     }
 
     /// Whether there is something to say that has not been offered yet.
     pub fn notes_unseen(&self) -> bool {
-        !self.notes.is_empty() && !self.notes_seen
+        !(self.notes.is_empty() && self.view_notes.is_empty()) && !self.notes_seen
+    }
+
+    /// The rows a filter or sort on `column` has to leave out: every row of every file
+    /// that holds the column in a type it is not read in, as `[start, end)` runs of
+    /// places in the dataset.
+    ///
+    /// Runs, not files. A vendor who changed a column's type for a month wrote a
+    /// contiguous stretch of files, so the predicate below is one term however many
+    /// files that stretch holds.
+    fn unread_row_runs(&self, column: &str) -> Vec<(usize, usize)> {
+        let Some(dataset) = self.dataset_schema.as_ref() else {
+            return Vec::new();
+        };
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for (file, start) in self.drift_file_starts.iter().copied().enumerate() {
+            let unread = dataset
+                .file_group
+                .get(file)
+                .and_then(|group| dataset.groups.get(*group as usize))
+                .is_some_and(|group| group.unread.iter().any(|name| name == column));
+            if !unread {
+                continue;
+            }
+            // The last file runs to the end of the dataset, which the footers counted.
+            let end = self
+                .drift_file_starts
+                .get(file + 1)
+                .copied()
+                .unwrap_or(self.drift_dataset_rows);
+            match runs.last_mut() {
+                Some(last) if last.1 == start => last.1 = end,
+                _ => runs.push((start, end)),
+            }
+        }
+        runs
+    }
+
+    /// Columns the filter or sort names that some file holds in another type, in the
+    /// dataset's own column order and each named once however many times the view
+    /// mentions it.
+    fn view_columns_with_conflicts(&self) -> Vec<crate::schema_union::ColumnDrift> {
+        let Some(dataset) = self.dataset_schema.as_ref() else {
+            return Vec::new();
+        };
+        let named: HashSet<&str> = self
+            .filters
+            .iter()
+            .map(|filter| filter.column.as_str())
+            .chain(self.sort_columns.iter().map(String::as_str))
+            .collect();
+        dataset
+            .columns
+            .iter()
+            .filter(|column| column.conflicting_files > 0 && named.contains(column.name.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Leave out the rows whose files do not hold a filtered or sorted column in the
+    /// type it is read as, and say how many.
+    ///
+    /// Those rows read as null in that column, and a null is not a value the column
+    /// can be compared or ordered by: a filter drops them already, and a sort would
+    /// otherwise gather them at one end as though they belonged there. They are left
+    /// out of both, and the note says how many so the smaller count is never a
+    /// surprise.
+    fn leave_out_unread_rows(&self, mut lf: LazyFrame) -> (LazyFrame, Vec<crate::notes::Note>) {
+        let mut notes = Vec::new();
+        if !self.drift_column_present {
+            return (lf, notes);
+        }
+        let Some(dataset) = self.dataset_schema.as_ref() else {
+            return (lf, notes);
+        };
+        for column in self.view_columns_with_conflicts() {
+            let runs = self.unread_row_runs(&column.name);
+            let rows: usize = runs.iter().map(|(start, end)| end - start).sum();
+            if rows == 0 {
+                continue;
+            }
+            let keep = runs
+                .iter()
+                .map(|(start, end)| {
+                    col(crate::schema_union::DRIFT_COLUMN)
+                        .lt(lit(*start as u32))
+                        .or(col(crate::schema_union::DRIFT_COLUMN).gt_eq(lit(*end as u32)))
+                })
+                .reduce(Expr::and);
+            if let Some(keep) = keep {
+                lf = lf.filter(keep);
+            }
+            let filtered = self
+                .filters
+                .iter()
+                .any(|filter| filter.column.as_str() == column.name.as_str());
+            let sorted = self
+                .sort_columns
+                .iter()
+                .any(|sorted| sorted.as_str() == column.name.as_str());
+            notes.push(crate::notes::left_out_note(
+                &column, dataset, rows, filtered, sorted,
+            ));
+        }
+        (lf, notes)
     }
 
     /// The Info panel has been opened; the quiet accent has done its job.
@@ -5065,6 +5187,16 @@ impl DataTableState {
         if let Some(e) = final_expr {
             lf = lf.filter(e);
         }
+
+        // Before the sort, so the rows it would have placed among the ordered ones are
+        // already gone rather than ordered and then dropped.
+        let (excluded, view_notes) = self.leave_out_unread_rows(lf);
+        lf = excluded;
+        // A new thing to say, so the quiet accent on `i` earns its place again.
+        if !view_notes.is_empty() && view_notes != self.view_notes {
+            self.notes_seen = false;
+        }
+        self.view_notes = view_notes;
 
         if !self.sort_columns.is_empty() {
             lf = lf.sort_by_exprs(

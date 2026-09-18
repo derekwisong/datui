@@ -143,6 +143,36 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     notes
 }
 
+/// Rows a filter or sort leaves out, because the column it names is not read from the
+/// files those rows came from.
+///
+/// The only note here about the view rather than the dataset, and the only one datui
+/// writes in answer to something the user just did. It states two counts and divides
+/// neither: how many rows went, and how many files they came from.
+pub fn left_out_note(
+    column: &ColumnDrift,
+    dataset: &DatasetSchema,
+    rows: usize,
+    filtered: bool,
+    sorted: bool,
+) -> Note {
+    let what = match (filtered, sorted) {
+        (true, true) => "filter and sort",
+        (true, false) => "filter",
+        // Called only for a column the view names, so it names it one way or the other.
+        _ => "sort",
+    };
+    Note {
+        summary: format!(
+            "{} rows are left out of the {what} on {}: it is not read from {}",
+            group_chrome(rows),
+            column.name,
+            how_many(dataset, column.conflicting_files)
+        ),
+        scope: format!("in {}", dataset.origin),
+    }
+}
+
 /// A column that some files were written without. The one note that states a ratio,
 /// because "some" is only meaningful against a total.
 fn absence_note(

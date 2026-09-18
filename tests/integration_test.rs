@@ -1279,6 +1279,131 @@ fn test_each_row_takes_its_glyph_from_the_file_it_came_from() {
     );
 }
 
+/// A conflicting column has no value to order by, so a sort on it leaves those rows
+/// out rather than gathering them at one end as though they belonged there — and says
+/// how many went.
+#[test]
+fn test_a_sort_leaves_out_the_rows_its_column_is_not_read_from() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4, 5, 6, 7], "n" => &[30i64, 40, 50, 60, 70]).unwrap(),
+    );
+    // `n` as text here, so it is not read from this file: two rows of conflict.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[8i64, 9], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+    assert_eq!(current_rows(&app), 10, "every row is there to begin with");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(vec!["n".to_string()], true);
+    assert!(state.error.is_none(), "the sort itself must succeed");
+
+    let ids: Vec<i64> = state
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(
+        ids.len(),
+        8,
+        "the two rows from the file that stores `n` as text are gone: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&8) && !ids.contains(&9),
+        "and it is those two, not two others: {ids:?}"
+    );
+    assert!(
+        ids.contains(&0) && ids.contains(&1) && ids.contains(&2),
+        "the file with no `n` at all keeps its rows: its cells are absent, not a \
+         value in another type: {ids:?}"
+    );
+
+    let notes = state.notes();
+    let left_out = notes
+        .iter()
+        .find(|note| note.summary.contains("left out"))
+        .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
+    assert_eq!(
+        left_out.summary,
+        "2 rows are left out of the sort on n: it is not read from 1 file"
+    );
+    assert_eq!(left_out.scope, "in all 3 footers");
+    assert!(
+        state.notes_unseen(),
+        "and the `i` accent comes back for a note the user has not been offered"
+    );
+}
+
+/// Clearing the sort brings the rows back and takes the note with it, and a sort on a
+/// column the files agree on never took any rows to begin with.
+#[test]
+fn test_only_the_conflicting_column_costs_rows_and_only_while_it_is_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(vec!["id".to_string()], true);
+    assert_eq!(
+        current_rows(&app),
+        5,
+        "`id` is the same type everywhere, so a sort on it leaves nothing out"
+    );
+    let state = app.data_table_state.as_mut().unwrap();
+    assert!(
+        !state.notes().iter().any(|n| n.summary.contains("left out")),
+        "and says nothing about rows going"
+    );
+
+    state.sort(vec!["n".to_string()], true);
+    assert_eq!(current_rows(&app), 3, "sorting by `n` leaves the two out");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(Vec::new(), true);
+    assert_eq!(
+        current_rows(&app),
+        5,
+        "and clearing the sort brings them back"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        !state.notes().iter().any(|n| n.summary.contains("left out")),
+        "with nothing left saying they went: {:#?}",
+        state.notes()
+    );
+}
+
 /// The control for the test above: a folder whose files agree shows neither glyph, so
 /// the assertions there are about the data and not about some other part of the screen.
 #[test]

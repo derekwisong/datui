@@ -92,7 +92,14 @@ confused with a gap in the files:
 | `≠` | The file holds the column in another type, so it was not read from that file |
 
 A mark after a column's name means it is not in every file, or the files
-disagree on its type. The distinction survives a filter and a sort. Telling the
+disagree on its type. The distinction survives a filter and a sort.
+
+A `≠` cell has no value the column can be compared or ordered by, so filtering
+or sorting by a column the files disagree on leaves those rows out rather than
+gathering them at one end. The **Notes** tab says how many went and which
+column cost them, and the `i` key takes its quiet accent again to say there is
+something new there. Clearing the filter or sort brings the rows back. A `·`
+cell costs nothing: its file never had the column at all. Telling the
 three apart needs every file's row count, so where datui does not have one —
 past 20,000 files, where the schema comes from a sample, or when a footer could
 not be read — the marks still appear but every empty cell reads as `∅`. A group-by,

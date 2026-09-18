@@ -37,6 +37,7 @@ datui says so:
 | Files disagree on a column's type, beyond what widening settles | The footers |
 | A column is stored as more than one type the scan can read into one | The footers |
 | A file's footer could not be read, so it was left out | The footers |
+| A filter or sort left rows out, because their files hold its column in another type | The footers, and the filter or sort on screen |
 
 Every note says what it is based on — `in all 6,541 footers`, or
 `in 20,000 of 200,000 footers (sample)` — so a count never stands for files
@@ -52,9 +53,13 @@ claim above it, is the misreading the basis is there to prevent. Where the note
 the cursor is on will not fit at all, the panel says so rather than showing part
 of it; a shorter note may still fit.
 
-A note describes the dataset as opened. A query, a pivot or a drill-down builds
-rows of its own, so the notes step aside; resetting or drilling back up brings
-them back.
+Every note but one describes the dataset as opened. The exception is the note
+about a filter or sort leaving rows out, which describes the view: it arrives
+when you sort or filter by a column the files disagree on, and goes when you
+clear it. See [datasets whose files differ](loading-data.md#files-that-disagree).
+
+A query, a pivot or a drill-down builds rows of its own, so the notes step
+aside; resetting or drilling back up brings them back.
 
 When there is something to note, the <kbd>i</kbd> key in the control bar takes
 a quiet accent until you open the panel. `notes_accent = false` in the

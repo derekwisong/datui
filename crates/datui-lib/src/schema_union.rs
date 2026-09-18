@@ -16,11 +16,120 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use polars::prelude::{
     DataType, Field, LazyFrame, PlRefPath, PlSmallStr, PolarsResult, Schema, TimeUnit, UnionArgs,
     concat,
 };
+
+/// A footer pass in progress. Says it has finished when dropped, panic or no panic.
+pub struct Pass<'a>(&'a FooterProgress);
+
+impl Pass<'_> {
+    /// One more footer read, or failed to read: both are footers no longer waited on.
+    pub fn advance(&self) {
+        self.0.advance();
+    }
+}
+
+impl Drop for Pass<'_> {
+    fn drop(&mut self) {
+        self.0.done();
+    }
+}
+
+/// What became of a footer pass, after it has finished saying so.
+///
+/// Hidden from the docs: nothing on screen reads it, and it is public only so the
+/// wiring between an open and its counter can be checked from a test.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassCount {
+    /// Passes begun against the counter.
+    pub begun: usize,
+    /// Footers the last pass has read.
+    pub read: usize,
+    /// Footers the last pass was over.
+    pub total: usize,
+}
+
+/// How far a dataset's footer pass has got, for the loading screen to read.
+///
+/// Opening a folder of many files reads a footer from each before a row is shown, and
+/// on a few thousand files that is seconds of a screen that says only "Caching schema".
+/// The count is what makes the wait legible: a number that climbs is a wait, and a
+/// number that stops is a problem.
+///
+/// Shared with the threads doing the reading, which is why it is atomic and why it is
+/// only ever written by them and read by the render.
+#[derive(Debug, Default)]
+pub struct FooterProgress {
+    read: AtomicUsize,
+    total: AtomicUsize,
+    /// Passes begun. The count itself is unobservable once a pass has finished —
+    /// read and total are both back to nothing — so without this there is no way to
+    /// tell a pass that reported from one that never started.
+    passes: AtomicUsize,
+    /// What the last pass was over, kept after `done` for the same reason.
+    last_total: AtomicUsize,
+}
+
+impl FooterProgress {
+    /// Begin a pass over `total` footers. Any earlier pass's count is forgotten.
+    pub fn begin(&self, total: usize) {
+        self.read.store(0, Ordering::Relaxed);
+        // Released after the reset, and acquired in `reading`, so a render cannot pair
+        // this pass's total with the last one's count and report a pass as finished at
+        // the instant it starts.
+        self.last_total.store(total, Ordering::Relaxed);
+        self.total.store(total, Ordering::Release);
+        self.passes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One more footer read, or failed to read: both are footers no longer waited on.
+    pub fn advance(&self) {
+        self.read.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Nothing is being waited on any more.
+    pub fn done(&self) {
+        self.total.store(0, Ordering::Relaxed);
+    }
+
+    /// A pass over `total` footers that says it has finished however it ends.
+    ///
+    /// A panic between `begin` and `done` would otherwise leave the count on screen
+    /// for as long as that counter is read — and the counter outlives the pass, since
+    /// the render holds it.
+    pub fn pass(&self, total: usize) -> Pass<'_> {
+        self.begin(total);
+        Pass(self)
+    }
+
+    /// What has become of the passes against this counter: how many have begun, how
+    /// many footers the last one has read, and how many it was over.
+    ///
+    /// All three outlive the pass, which is the point of them. A finished pass reports
+    /// nothing — read and total are both back to nothing — so from outside, a pass that
+    /// counted and a pass that never started look identical, and every line that does
+    /// the counting could be deleted with the tests green. Nothing on screen reads
+    /// this; it is here so the wiring can be checked.
+    #[doc(hidden)]
+    pub fn last_pass(&self) -> PassCount {
+        PassCount {
+            begun: self.passes.load(Ordering::Relaxed),
+            read: self.read.load(Ordering::Relaxed),
+            total: self.last_total.load(Ordering::Relaxed),
+        }
+    }
+
+    /// `(read, total)` while a pass is running, `None` when none is.
+    pub fn reading(&self) -> Option<(usize, usize)> {
+        let total = self.total.load(Ordering::Acquire);
+        (total > 0).then(|| (self.read.load(Ordering::Relaxed).min(total), total))
+    }
+}
 
 /// What one file's footer said, short of the data.
 #[derive(Debug, Clone)]
@@ -1993,6 +2102,74 @@ mod tests {
             dataset.partition_layouts.len() <= 64,
             "and it is not holding a hundred of them to say so: {}",
             dataset.partition_layouts.len()
+        );
+    }
+
+    /// The counter says nothing until a pass begins, and nothing again once it ends.
+    ///
+    /// Nothing-when-done is the half that matters: a count left on screen after the
+    /// footers have landed is a wait the user is not actually having.
+    #[test]
+    fn the_footer_count_speaks_only_while_a_pass_is_running() {
+        let progress = FooterProgress::default();
+        assert_eq!(progress.reading(), None, "nothing has begun");
+
+        progress.begin(3);
+        assert_eq!(progress.reading(), Some((0, 3)), "none read yet");
+        progress.advance();
+        progress.advance();
+        assert_eq!(progress.reading(), Some((2, 3)));
+
+        progress.done();
+        assert_eq!(progress.reading(), None, "and nothing once it has landed");
+
+        // A second pass starts from nothing rather than from the first one's count.
+        progress.begin(2);
+        assert_eq!(progress.reading(), Some((0, 2)));
+    }
+
+    /// More advances than footers cannot make the count overtake the total.
+    ///
+    /// No caller can reach it today: a pass is begun before its readers are spawned
+    /// and is over before the next one begins, and every open takes a counter of its
+    /// own. The clamp is for the wiring that comes after this one — "reading 4 of 3
+    /// footers" is the sort of nonsense that makes a user distrust the rest of the
+    /// screen. It does mean a future miswiring shows as a count stopped at N of N
+    /// rather than as an obvious absurdity, which is the price of not showing the
+    /// absurdity.
+    #[test]
+    fn the_footer_count_never_passes_its_total() {
+        let progress = FooterProgress::default();
+        progress.begin(2);
+        for _ in 0..5 {
+            progress.advance();
+        }
+        assert_eq!(progress.reading(), Some((2, 2)));
+    }
+
+    /// A pass that panics still says it has finished.
+    ///
+    /// The counter outlives the pass — the render holds it — so a pass that stopped
+    /// without saying so would leave a count on screen for as long as anyone looked,
+    /// which is the one state this feature exists to prevent.
+    #[test]
+    fn a_pass_that_panics_still_says_it_has_finished() {
+        let progress = FooterProgress::default();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let pass = progress.pass(3);
+            pass.advance();
+            panic!("a footer reader gave up");
+        }));
+        assert!(caught.is_err(), "the panic happened");
+        assert_eq!(
+            progress.reading(),
+            None,
+            "and the count went with it rather than sitting there"
+        );
+        assert_eq!(
+            progress.last_pass().read,
+            1,
+            "with what it managed still readable"
         );
     }
 

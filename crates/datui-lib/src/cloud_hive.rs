@@ -339,6 +339,27 @@ pub async fn footers_of_files(
     files: &[DatasetFile],
     read: &[usize],
 ) -> Vec<Option<FileFooter>> {
+    footers_of_files_reporting(
+        store,
+        files,
+        read,
+        &crate::schema_union::FooterProgress::default(),
+    )
+    .await
+}
+
+/// As [`footers_of_files`], counting each footer off against `progress` as it lands.
+///
+/// This is the pass the loading screen has most reason to narrate: every footer is a
+/// ranged read over the network, sixty-four at a time, and a prefix of a few thousand
+/// objects spends seconds here.
+pub async fn footers_of_files_reporting(
+    store: &Arc<dyn ObjectStore>,
+    files: &[DatasetFile],
+    read: &[usize],
+    progress: &crate::schema_union::FooterProgress,
+) -> Vec<Option<FileFooter>> {
+    let pass = progress.pass(read.len());
     let permits = Arc::new(tokio::sync::Semaphore::new(FOOTERS_AT_ONCE));
     let mut reads = tokio::task::JoinSet::new();
     for (slot, file) in read
@@ -355,10 +376,14 @@ pub async fn footers_of_files(
     }
     let mut out = vec![None; read.len()];
     while let Some(joined) = reads.join_next().await {
+        // Counted as it lands, whether or not it read: a footer that will not parse is
+        // one the open is no longer waiting on.
+        pass.advance();
         if let Ok((slot, footer)) = joined {
             out[slot] = footer;
         }
     }
+    drop(pass);
     out
 }
 
@@ -649,6 +674,67 @@ mod tests {
                 files.iter().map(|f| f.size).collect::<Vec<_>>()
             );
         });
+    }
+
+    /// The cloud open reports its footers to the counter it was handed.
+    ///
+    /// This is the pass with most reason to be narrated — every footer is a ranged read
+    /// over the network — and it is the one where nothing else would notice if the
+    /// counter came unwired. The local route has the same test; shipping one without
+    /// the other would leave the slower half unguarded.
+    ///
+    /// The scan past the footer pass cannot open a `memory://` URL and the route returns
+    /// `None`, which is fine: the footers have already been read by then, and they are
+    /// what this is about.
+    #[test]
+    fn a_cloud_open_counts_its_footers_against_the_counter_it_is_given() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let write = |rows: i64| -> Vec<u8> {
+            let mut frame = df!("n" => (0..rows).collect::<Vec<i64>>()).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for (key, rows) in [
+                ("data/date=2024-01-01/a.parquet", 1),
+                ("data/date=2024-01-02/b.parquet", 2),
+                ("data/date=2024-01-03/c.parquet", 3),
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(write(rows)))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        // Entered below the line that builds a store from the user's config, since an
+        // in-memory one cannot be handed to that, but above the choice of route — so
+        // a prefix reaching the globbing route, or either route being handed a fresh
+        // counter instead of this one, fails here.
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let _ = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        );
+
+        let pass = progress.last_pass();
+        assert_eq!(pass.begun, 1, "the open ran its footer pass against it");
+        assert_eq!(pass.read, 3, "counting each of the three objects off");
+        assert_eq!(
+            progress.reading(),
+            None,
+            "with nothing left to say once they landed"
+        );
     }
 
     #[test]

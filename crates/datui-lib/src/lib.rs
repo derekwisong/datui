@@ -2845,6 +2845,18 @@ impl LenCount {
 
 pub struct App {
     pub data_table_state: Option<DataTableState>,
+    /// How far the footer pass of an open has got. Written by the threads reading
+    /// them; read once a frame into [`Self::footers_this_frame`], which is what the
+    /// loading screen and the control bar actually show.
+    pub footer_progress: Arc<crate::schema_union::FooterProgress>,
+    /// The count as it stood when this frame began, or `None` if no pass was running.
+    ///
+    /// Taken once because the pass is running on other threads while the frame is
+    /// drawn. The loading body and the control bar are painted a millisecond apart,
+    /// and when each read the counter for itself they printed different numbers for
+    /// one wait — and the bar could print a phase's flat percentage beside a count
+    /// that had finished between the two reads.
+    footers_this_frame: Option<(usize, usize)>,
     /// Network roots currently being listed off-thread, so a probe is not started
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
@@ -3151,6 +3163,32 @@ impl App {
     pub fn send_event(&mut self, event: AppEvent) -> Result<()> {
         self.events.send(event)?;
         Ok(())
+    }
+
+    /// Take the numbers the whole frame will be drawn from.
+    ///
+    /// Only one so far: the footer count. It is read here rather than where it is
+    /// shown because two parts of the screen show it, they are painted at different
+    /// moments, and a background thread is moving it between them.
+    fn begin_frame(&mut self) {
+        self.footers_this_frame = self.footer_progress.reading();
+    }
+
+    /// What the load is doing, for whichever part of the screen is saying so.
+    ///
+    /// The footer count stands in for the phase while a pass is running: it says the
+    /// same thing and says how far along it is. Both callers read it from
+    /// [`Self::footers_this_frame`], one number taken once a frame, so they cannot say
+    /// two different things about one wait.
+    pub(crate) fn loading_phase<'a>(&self, phase: &'a str) -> std::borrow::Cow<'a, str> {
+        match self.footers_this_frame {
+            Some((read, total)) => std::borrow::Cow::Owned(format!(
+                "Reading footers: {} of {}",
+                crate::numfmt::group_chrome(read),
+                crate::numfmt::group_chrome(total)
+            )),
+            None => std::borrow::Cow::Borrowed(phase),
+        }
     }
 
     /// Set loading state and phase so the progress dialog is visible. Used by run() to show
@@ -3520,6 +3558,8 @@ impl App {
         App {
             path: None,
             data_table_state: None,
+            footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
+            footers_this_frame: None,
             home: home::HomeState::default(),
             home_probes_inflight: Vec::new(),
             #[cfg(feature = "cloud")]
@@ -5070,12 +5110,13 @@ impl App {
     fn schema_state_from_local_hive(
         path: Option<&Path>,
         options: &OpenOptions,
+        progress: &crate::schema_union::FooterProgress,
     ) -> Option<DataTableState> {
         if !options.single_spine_schema {
             return None;
         }
         let p = path.filter(|p| p.is_dir() && options.hive)?;
-        let (files, read, footers) = DataTableState::footers_of_parquet_dir(p);
+        let (files, read, footers) = DataTableState::footers_of_parquet_dir_reporting(p, progress);
         let first = files.first()?;
         let partition_columns = DataTableState::discover_hive_partition_columns(p);
         let values = DataTableState::hive_partition_values(p, first);
@@ -5128,6 +5169,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
+        progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Option<DataTableState> {
         if !options.single_spine_schema {
             return None;
@@ -5141,11 +5183,31 @@ impl App {
 
         let (full, cloud_opts, store) = Self::cloud_store_for(p, cloud, runtime).ok()?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full).ok()?;
+        Self::schema_state_from_cloud_hive_with(
+            full, key, store, cloud_opts, options, runtime, progress,
+        )
+    }
+
+    /// The same, against a store already built.
+    ///
+    /// Split out so a test can hand it an in-memory store and cover the choice between
+    /// the two routes below — including that each is given the counter it was called
+    /// with, rather than one of its own.
+    #[cfg(feature = "cloud")]
+    fn schema_state_from_cloud_hive_with(
+        full: String,
+        key: String,
+        store: Arc<dyn object_store::ObjectStore>,
+        cloud_opts: CloudOptions,
+        options: &OpenOptions,
+        runtime: &tokio::runtime::Handle,
+        progress: &Arc<crate::schema_union::FooterProgress>,
+    ) -> Option<DataTableState> {
         // A prefix: every file listed once, and the scan, the schema and the count all
         // work from that list. A glob keeps the older route, which Polars expands.
         if !full.contains('*') {
             return Self::schema_state_from_cloud_files(
-                &full, key, store, cloud_opts, options, runtime,
+                &full, key, store, cloud_opts, options, runtime, progress,
             );
         }
         let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
@@ -5186,13 +5248,18 @@ impl App {
         cloud_opts: CloudOptions,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
+        progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Option<DataTableState> {
         let listed = {
             let store = store.clone();
+            // Cloned into the future rather than borrowed: the future outlives this
+            // frame, and the counter is shared with whoever is rendering anyway.
+            let progress = progress.clone();
             wait_on_runtime(runtime, async move {
                 let files = cloud_hive::list_dataset_files(&store, &key).await?;
                 let read = crate::schema_union::footers_to_read(files.len());
-                let footers = cloud_hive::footers_of_files(&store, &files, &read).await;
+                let footers =
+                    cloud_hive::footers_of_files_reporting(&store, &files, &read, &progress).await;
                 color_eyre::Result::<_>::Ok((files, read, footers))
             })?
             .ok()?
@@ -5320,8 +5387,10 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
+        progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Result<(DataTableState, String)> {
-        let (mut state, label) = Self::schema_state_by_route(lf, path, options, cloud, runtime)?;
+        let (mut state, label) =
+            Self::schema_state_by_route(lf, path, options, cloud, runtime, progress)?;
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         if path.is_some_and(source::scans_in_place) {
@@ -5434,15 +5503,18 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
+        progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Result<(DataTableState, String)> {
         #[cfg(not(feature = "cloud"))]
         let _ = (cloud, runtime);
 
-        if let Some(state) = Self::schema_state_from_local_hive(path, options) {
+        if let Some(state) = Self::schema_state_from_local_hive(path, options, progress) {
             return Ok((state, "one-file (local)".to_string()));
         }
         #[cfg(feature = "cloud")]
-        if let Some(state) = Self::schema_state_from_cloud_hive(path, options, cloud, runtime) {
+        if let Some(state) =
+            Self::schema_state_from_cloud_hive(path, options, cloud, runtime, progress)
+        {
             return Ok((state, "one-file (cloud)".to_string()));
         }
         #[cfg(feature = "cloud")]
@@ -9786,6 +9858,10 @@ impl App {
                 }
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
+                // A new counter for a new load. Abandoning a load cancels nothing —
+                // the footers keep being read — so a shared one would go on reporting
+                // the abandoned folder's progress under the next file's name.
+                self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 self.load_active = true;
                 self.awaiting_dataset = true;
                 self.busy = true;
@@ -9833,6 +9909,10 @@ impl App {
             AppEvent::OpenLazyFrame(lf, options) => {
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
+                // A new counter for a new load. Abandoning a load cancels nothing —
+                // the footers keep being read — so a shared one would go on reporting
+                // the abandoned folder's progress under the next file's name.
+                self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 self.load_active = true;
                 self.awaiting_dataset = true;
                 self.busy = true;
@@ -10432,6 +10512,7 @@ impl App {
                 let schema_slot = self.pending_schema_result.clone();
                 let cloud = self.app_config.cloud.clone();
                 let runtime = self.runtime.clone();
+                let progress = self.footer_progress.clone();
                 self.spawn_bg("Caching schema...", move |task_gen, tx| {
                     match Self::build_schema_state(
                         lf_owned,
@@ -10439,6 +10520,7 @@ impl App {
                         &options_owned,
                         &cloud,
                         &runtime,
+                        &progress,
                     ) {
                         Ok((state, debug_label)) => {
                             let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());
@@ -12033,6 +12115,7 @@ impl App {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.begin_frame();
         self.debug.num_frames += 1;
         if self.debug.enabled {
             self.debug.show_help_at_render = self.show_help;
@@ -12120,7 +12203,14 @@ impl Widget for &mut App {
                 progress_percent,
                 ..
             } => {
-                if *progress_percent > 0 {
+                let current_phase = self.loading_phase(current_phase);
+                // The percentage is a constant per phase, which was harmless beside a
+                // phase name and is not beside a real fraction: 1,203 of 6,541 is 18%,
+                // and "(40%)" next to it reads as that count's progress. The same
+                // number the phase was built from, so a pass that ends mid-frame
+                // cannot leave the count showing with the percentage back beside it.
+                let counting = self.footers_this_frame.is_some();
+                if *progress_percent > 0 && !counting {
                     Some(format!("{}... ({}%)", current_phase, progress_percent))
                 } else {
                     Some(format!("{}...", current_phase))

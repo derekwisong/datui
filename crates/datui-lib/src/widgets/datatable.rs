@@ -1671,6 +1671,15 @@ impl DataTableState {
     pub fn footers_of_parquet_dir(
         dir: &Path,
     ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileSchema>>) {
+        Self::footers_of_parquet_dir_reporting(dir, &crate::schema_union::FooterProgress::default())
+    }
+
+    /// As [`Self::footers_of_parquet_dir`], counting each footer off against `progress`
+    /// as it is read, so the loading screen can say how far it has got.
+    pub fn footers_of_parquet_dir_reporting(
+        dir: &Path,
+        progress: &crate::schema_union::FooterProgress,
+    ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileSchema>>) {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
         Self::collect_parquet_files(dir, &mut files, 0, MAX_DEPTH);
@@ -1690,6 +1699,8 @@ impl DataTableState {
             .iter()
             .filter_map(|i| files.get(*i).map(PathBuf::as_path))
             .collect();
+        let pass = progress.pass(wanted.len());
+        let pass_ref = &pass;
         let workers = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -1700,7 +1711,21 @@ impl DataTableState {
             let handles: Vec<_> = wanted
                 .chunks(chunk_size)
                 .map(|chunk| {
-                    scope.spawn(move || chunk.iter().map(|p| Self::footer_of(p)).collect())
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|p| {
+                                let footer = Self::footer_of(p);
+                                // After the read, not before: the count is meant to be
+                                // footers done with, and a footer that will not parse
+                                // is done with too. No test holds this — both orders
+                                // reach the same final number, and the difference is
+                                // only visible mid-pass.
+                                pass_ref.advance();
+                                footer
+                            })
+                            .collect()
+                    })
                 })
                 .collect();
             handles
@@ -1714,6 +1739,7 @@ impl DataTableState {
                 })
                 .collect()
         });
+        drop(pass);
         (files, read, footers)
     }
 
@@ -8520,6 +8546,87 @@ mod tests {
             text(&state, 3, 2),
             ["sixty", "seventy"],
             "the page that needed the text read most"
+        );
+    }
+
+    /// The real footer pass counts real footers.
+    ///
+    /// The unit tests above drive the counter by hand; this is the one that says the
+    /// pass is wired to it at all, and that the total is the footers it will read
+    /// rather than the files there are — the two differ once a dataset is large enough
+    /// to be sampled.
+    #[test]
+    fn the_footer_pass_counts_the_footers_it_reads() {
+        use polars::prelude::{ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        for day in 1..=4 {
+            let d = dir.path().join(format!("date=2024-01-0{day}"));
+            std::fs::create_dir_all(&d).unwrap();
+            let mut frame = df!("n" => [day as i64]).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        }
+
+        let progress = crate::schema_union::FooterProgress::default();
+        let (files, read, footers) =
+            DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress);
+        assert_eq!((files.len(), read.len(), footers.len()), (4, 4, 4));
+        assert_eq!(
+            progress.reading(),
+            None,
+            "the pass says nothing once it has landed"
+        );
+        assert_eq!(
+            progress.last_pass().begun,
+            1,
+            "and it did report: the count is unobservable afterwards, so without this \
+             a pass that never told anyone would look the same as one that did"
+        );
+        assert_eq!(
+            progress.last_pass().read,
+            4,
+            "counting every footer it read, not just starting and stopping"
+        );
+    }
+
+    /// The denominator is the footers it will read, not the files there are.
+    ///
+    /// The two are the same number until a dataset is large enough to be sampled, which
+    /// is why this fixture is twenty thousand and one files — below that the confusion
+    /// is invisible, and a test that cannot see it is not a test of it. The files need
+    /// not be real Parquet: a footer that will not read is still a footer counted off,
+    /// which is the other half of what this asserts.
+    #[test]
+    fn the_footer_count_is_over_the_footers_read_not_the_files_there_are() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("date=2024-01-01");
+        std::fs::create_dir_all(&sub).unwrap();
+        let files = crate::schema_union::MAX_FOOTER_READS + 1;
+        for i in 0..files {
+            std::fs::write(sub.join(format!("f{i:0>6}.parquet")), b"not parquet").unwrap();
+        }
+
+        let progress = crate::schema_union::FooterProgress::default();
+        let (found, read, footers) =
+            DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress);
+        assert_eq!(found.len(), files, "every file is listed");
+        assert_eq!(
+            read.len(),
+            crate::schema_union::MAX_FOOTER_READS,
+            "and a sample of them is read"
+        );
+        assert!(footers.iter().all(Option::is_none), "none of them parses");
+
+        assert_eq!(
+            progress.last_pass().total,
+            read.len(),
+            "the screen's denominator is the sample, not the {files} files there are"
+        );
+        assert_eq!(
+            progress.last_pass().read,
+            read.len(),
+            "and every one of them was counted off, parse or no parse"
         );
     }
 

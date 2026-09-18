@@ -1998,6 +1998,234 @@ fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
     );
 }
 
+/// The counter the loading screen reads is the one the real open writes to.
+///
+/// Every other test here drives the counter from one side: the render tests set it by
+/// hand, the pass test calls the pass directly with a counter of its own. Neither says
+/// the two are connected — with only those, pointing the open at the non-reporting
+/// pass leaves the feature completely dead in the running app and the suite green.
+#[test]
+fn test_opening_a_folder_reports_its_footers_to_the_app() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
+        write_parquet(
+            dir.path(),
+            day,
+            df!("id" => &[0i64], "n" => &[1i64]).unwrap(),
+        );
+    }
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+
+    assert_eq!(
+        app.footer_progress.last_pass().begun,
+        1,
+        "the open ran its footer pass against the app's own counter"
+    );
+    assert_eq!(
+        app.footer_progress.last_pass().read,
+        3,
+        "and counted each of the three footers off it"
+    );
+    assert_eq!(
+        app.footer_progress.reading(),
+        None,
+        "with nothing left on screen once they landed"
+    );
+}
+
+/// A second open starts its own count rather than inheriting the first one's.
+///
+/// Abandoning a load cancels nothing — the footers keep being read — so a counter
+/// shared across loads reports the abandoned folder's progress under the next file's
+/// name, which is what a user opening a small CSV after a large folder would see.
+#[test]
+fn test_each_open_counts_its_own_footers() {
+    let first = tempfile::tempdir().unwrap();
+    for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
+        write_parquet(first.path(), day, df!("id" => &[0i64]).unwrap());
+    }
+    let second = tempfile::tempdir().unwrap();
+    write_parquet(
+        second.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(first.path());
+    let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+    let counter_of_the_first = app.footer_progress.clone();
+    assert_eq!(counter_of_the_first.last_pass().read, 3);
+
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![second.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+    let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+
+    // The pointer comparison is the one that bites, and it is first because of that.
+    // `begin` stores zero, so a second pass resets a shared counter as surely as a
+    // fresh one and the count below reads 1 either way — it says what the counter
+    // should hold, and the line under it is what makes holding it mean anything.
+    assert!(
+        !Arc::ptr_eq(&counter_of_the_first, &app.footer_progress),
+        "the second open has a counter of its own"
+    );
+    assert_eq!(
+        app.footer_progress.last_pass().read,
+        1,
+        "counting its one footer, not the three before it"
+    );
+
+    // And the behaviour, not just the mechanism: the first open's pass goes on running
+    // after it is abandoned, so a shared counter would paint its progress onto the
+    // screen of the file that replaced it. Driven by hand, since a real abandoned pass
+    // finishes too fast to catch — and rendered while the app is still *loading*,
+    // because an idle app never consults the counter at all and the assertion would
+    // hold however broken the wiring was.
+    counter_of_the_first.begin(6541);
+    for _ in 0..4102 {
+        counter_of_the_first.advance();
+    }
+    app.set_loading_phase("Caching schema", 40);
+    let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 100, 24));
+    app.render(Rect::new(0, 0, 100, 24), &mut buf);
+    let frame: String = (0..24)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| (x, y))
+                .map(|(x, y)| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".to_string()))
+        })
+        .collect();
+    assert!(
+        frame.contains("Caching schema"),
+        "the app is on its loading screen, where the counter is read:\n{frame}"
+    );
+    assert!(
+        !frame.contains("6,541"),
+        "and the abandoned folder's count does not appear under the file that \
+         replaced it:\n{frame}"
+    );
+}
+
+/// The control bar shows the same count the loading body does.
+///
+/// Both derive it from `App::loading_phase`, and the point of that is that one wait
+/// cannot be described two ways. The truncation test in `controls.rs` builds the bar
+/// with a hand-written string, so it says the bar cuts a long message properly and
+/// nothing about whether the bar is ever given the count at all: deleting the line
+/// that hands it over leaves the body counting and the bar still saying "Caching
+/// schema", with the suite green.
+#[test]
+fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_loading_phase("Caching schema", 40);
+    app.footer_progress.begin(6541);
+    for _ in 0..1203 {
+        app.footer_progress.advance();
+    }
+
+    let area = Rect::new(0, 0, 100, 24);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect()
+        })
+        .collect();
+
+    let body = rows.iter().find(|r| r.contains("Reading footers"));
+    assert!(body.is_some(), "the body counts them:\n{}", rows.join("\n"));
+    let bar = rows.last().expect("a control bar");
+    assert!(
+        bar.contains("Reading footers: 1,203 of 6,541"),
+        "and so does the bar, rather than the phase the body has stopped showing: \
+         {bar:?}"
+    );
+    // Not beside the per-phase constant, which is 40 here and would read as this
+    // count's progress. 1,203 of 6,541 is 18%.
+    assert!(
+        !bar.contains('%'),
+        "a real fraction is not to be shown beside a made-up percentage: {bar:?}"
+    );
+}
+
+/// One frame, one number — while the pass is still running.
+///
+/// The body and the bar are painted a millisecond apart, with the threads reading the
+/// footers moving the counter in between. Reading it once each let them print
+/// different numbers for the same wait: measured at four thousand frames out of four
+/// thousand. It also let the bar decide there was no count running just after the body
+/// had shown one, putting the phase's flat percentage back beside it.
+#[test]
+fn test_one_frame_says_one_number_while_the_footers_are_still_arriving() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_loading_phase("Caching schema", 40);
+    app.footer_progress.begin(200_000);
+
+    // A reader, going as fast as the real ones do between two paints.
+    let counter = app.footer_progress.clone();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopping = stop.clone();
+    let reading = std::thread::spawn(move || {
+        while !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+            counter.advance();
+        }
+    });
+
+    let area = Rect::new(0, 0, 100, 24);
+    // The count itself, not the line: the body is centred and the bar carries the rest
+    // of the status beside it, so the two lines differ everywhere except here.
+    let number = |row: &str| -> Option<String> {
+        row.split("Reading footers: ").nth(1).map(|rest| {
+            rest.chars()
+                .take_while(|c| c.is_ascii_digit() || *c == ',')
+                .collect()
+        })
+    };
+    for frame in 0..200 {
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        let body = rows
+            .iter()
+            .find(|r| r.contains("Reading footers"))
+            .and_then(|r| number(r));
+        let bar = rows.last().and_then(|r| number(r));
+        assert_eq!(
+            body,
+            bar,
+            "frame {frame} said two things about one wait:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            body.is_some(),
+            "frame {frame} stopped counting mid-pass:\n{}",
+            rows.join("\n")
+        );
+    }
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    reading.join().unwrap();
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

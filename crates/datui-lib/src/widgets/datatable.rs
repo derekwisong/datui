@@ -250,9 +250,9 @@ pub struct CollectRequest {
     pub count_known: bool,
 }
 
-/// Builds a scan of some of a dataset's files, as the full scan reads them.
-/// Reads the named files of a remote dataset, with the columns in the second argument
-/// read as text from every file rather than as the type most rows have.
+/// Builds a scan of some of a dataset's files, as the full scan reads them, with the
+/// columns named in the second argument read as text from every file rather than as
+/// the type most rows have.
 pub type FileScan = Arc<dyn Fn(&[String], &[PlSmallStr]) -> PolarsResult<LazyFrame> + Send + Sync>;
 /// Counts the rows in each row group of every file of a dataset. Blocks.
 pub type FileCounter = Arc<dyn Fn() -> Result<Vec<Vec<usize>>, String> + Send + Sync>;
@@ -4164,12 +4164,12 @@ impl DataTableState {
         as_text.push(name);
 
         // Built from the dataset as its footers found it, never from the view below.
-        // The view has the column as text and nothing conflicting, which is exactly
-        // the knowledge the scan needs and would then be reading from itself.
+        // The view has the column as text and nothing conflicting, so it no longer
+        // holds the one thing the scan needs: the type each file actually wrote.
         let drift =
             crate::schema_union::ScanDrift::new(&self.drift_files, &dataset, &self.file_rows());
         let lf = match self.remote_files.as_ref() {
-            Some(remote) => (remote.scan)(&remote.urls.clone(), &as_text)?,
+            Some(remote) => (remote.scan)(&remote.urls, &as_text)?,
             None => crate::schema_union::lenient_scan(
                 &self.drift_files,
                 dataset.schema.clone(),
@@ -4193,9 +4193,9 @@ impl DataTableState {
 
         let view = dataset.reading_as_text(&as_text);
         self.read_as_text = as_text;
+        // `text_schema` keeps the columns in their places, so the order the user
+        // arranged still names every one of them and still means what it did.
         self.schema = view.schema.clone();
-        // The columns keep their places, so the order the user arranged still names
-        // every one of them and still means what it did.
         self.drift_groups = Arc::new(view.groups.clone());
         self.groups_at_open = self.drift_groups.clone();
         self.notes = Self::notes_datui_can_act_on(&view, self.drift_column_present);
@@ -6853,6 +6853,20 @@ mod tests {
         );
     }
 
+    fn file_schema(
+        columns: &[(&str, polars::prelude::DataType)],
+        rows: usize,
+    ) -> Option<crate::schema_union::FileSchema> {
+        let mut schema = polars::prelude::Schema::with_capacity(columns.len());
+        for (name, dtype) in columns {
+            schema.with_column((*name).into(), dtype.clone());
+        }
+        Some(crate::schema_union::FileSchema {
+            schema: Arc::new(schema),
+            rows,
+        })
+    }
+
     fn create_test_lf() -> LazyFrame {
         df! (
             "a" => &[1, 2, 3],
@@ -8374,6 +8388,116 @@ mod tests {
         assert_eq!((start, end), (0, 400));
         // Few files: unchanged.
         assert_eq!(limit_files(&offsets, 0, 40, 0, 100, 16), (0, 100));
+    }
+
+    /// A remote dataset reads its column as text too, and its windowed reads with it.
+    ///
+    /// The remote branch takes a different route: the scan closure it was opened with
+    /// is asked again with the column named, and `buffer_lf` passes the same names on
+    /// every later window. Miss that second half and a cloud dataset would read the
+    /// first screen as text and the next one as it was, disagreeing with its own
+    /// schema.
+    #[test]
+    fn a_remote_dataset_reads_a_conflicting_column_as_text_on_every_window() {
+        use crate::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
+        use polars::prelude::{DataType, IntoLazy, df};
+
+        let urls: Vec<String> = vec!["a".to_string(), "b".to_string()];
+        // The scan the dataset was opened with, standing in for the cloud one: the
+        // first file holds `n` as an integer and the second as text.
+        let scan: FileScan = Arc::new(move |urls: &[String], as_text: &[PlSmallStr]| {
+            let frames: Vec<LazyFrame> = urls
+                .iter()
+                .map(|url| {
+                    // The hidden row index the real scan stamps, numbered from where
+                    // the file's rows begin in the dataset so a window keeps its place.
+                    let frame = if url == "a" {
+                        df!(
+                            "id" => &[0i64, 1, 2],
+                            "n" => &[10i64, 20, 30],
+                            crate::schema_union::DRIFT_COLUMN => &[0u32, 1, 2],
+                        )
+                        .unwrap()
+                    } else {
+                        df!(
+                            "id" => &[3i64, 4],
+                            "n" => &["sixty", "seventy"],
+                            crate::schema_union::DRIFT_COLUMN => &[3u32, 4],
+                        )
+                        .unwrap()
+                    };
+                    let lf = frame.lazy();
+                    if as_text.contains(&PlSmallStr::from("n")) {
+                        lf.with_column(col("n").cast(DataType::String))
+                    } else if url == "a" {
+                        lf
+                    } else {
+                        // Not read from this file at all, as the real scan leaves it.
+                        lf.with_column(lit(NULL).cast(DataType::Int64).alias("n"))
+                    }
+                })
+                .collect();
+            polars::prelude::concat(frames, Default::default())
+        });
+
+        let dataset: DatasetSchema = union_file_schemas(
+            &[
+                file_schema(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
+                file_schema(&[("id", DataType::Int64), ("n", DataType::String)], 2),
+            ],
+            SchemaOrigin::AllFooters(2),
+        );
+        // The dataset's schema, which does not name the hidden row index the frame
+        // carries — as the real open does it.
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset.schema.clone(),
+            scan(&urls, &[]).unwrap(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(urls.clone()),
+            scan,
+            count: Arc::new(|| Ok(vec![vec![3], vec![2]])),
+            offsets: None,
+        });
+        let groups = (state.remote_files_counter().unwrap())().unwrap();
+        state.set_file_row_groups(&groups);
+
+        state.set_dataset_schema(dataset, &[3, 2], &urls);
+        assert!(state.drifts(), "the two files disagree on `n`");
+
+        assert!(
+            state.read_column_as_text("n").unwrap(),
+            "the offer is taken"
+        );
+        assert_eq!(
+            state.schema.get("n"),
+            Some(&DataType::String),
+            "the column is text now"
+        );
+
+        // Every window, not only the first: the second file's rows are on their own
+        // page, and they are the ones the conflict was hiding.
+        let text = |state: &DataTableState, start: usize, rows: usize| -> Vec<String> {
+            collect_lazy(state.buffer_lf(start, rows).unwrap(), false)
+                .unwrap()
+                .column("n")
+                .unwrap()
+                .str()
+                .unwrap()
+                .iter()
+                .map(|value| value.unwrap_or("null").to_string())
+                .collect()
+        };
+        assert_eq!(text(&state, 0, 3), ["10", "20", "30"]);
+        assert_eq!(
+            text(&state, 3, 2),
+            ["sixty", "seventy"],
+            "the page that needed the text read most"
+        );
     }
 
     #[test]

@@ -198,6 +198,12 @@ pub fn footers_to_read(files: usize) -> Vec<usize> {
 ///
 /// The union is over the footers read; the scan is over every file, so the per-file
 /// findings are spread back across the full list. A file not read omits nothing.
+///
+/// [`DatasetSchema::files`] stays the number of footers *read*, not `files`, and every
+/// count taken against it — the notes' denominator, how many files hold no rows — is
+/// therefore over the sample. That is the honest population: datui knows nothing about
+/// a file it did not open. Only `omitted`, `file_group` and `unreadable`, which the
+/// scan indexes by file, are spread to the full length.
 pub fn union_sampled(
     files: usize,
     read: &[usize],
@@ -1301,6 +1307,48 @@ mod tests {
             ["a", "n", "z"],
             "a name the schema does not have adds nothing"
         );
+    }
+
+    /// A sampled dataset counts against the footers it read, not against every file.
+    ///
+    /// `union_sampled` spreads the per-file findings back across the whole list, and it
+    /// is tempting to spread the totals with them. It must not: datui opened a few
+    /// thousand footers out of a few hundred thousand files, and every count it states
+    /// — the denominator the notes divide by, how many files hold no rows — is a count
+    /// of what it opened. A total over the full list would be a claim about files it
+    /// never looked at.
+    #[test]
+    fn a_sampled_dataset_counts_what_it_read_and_not_what_it_did_not() {
+        let footers = vec![
+            file(&[("id", DataType::Int64)], 0),
+            file(&[("id", DataType::Int64), ("x", DataType::String)], 5),
+            None,
+        ];
+        // Three footers read, spread across five hundred files.
+        let read = [0usize, 250, 499];
+        let union = union_sampled(500, &read, &footers);
+
+        assert_eq!(
+            union.files, 3,
+            "the population is the footers read, not the files there are"
+        );
+        assert_eq!(union.empty_files, 1, "one of the three held nothing");
+        assert_eq!(
+            union.origin,
+            SchemaOrigin::FooterSample {
+                read: 3,
+                total: 500
+            }
+        );
+        assert_eq!(
+            union.unreadable,
+            [499],
+            "and the footer that would not parse is named by its place among the files"
+        );
+        // The per-file findings, though, are spread to the full length: the scan
+        // indexes them by file, and it reads all five hundred.
+        assert_eq!(union.file_group.len(), 500);
+        assert_eq!(union.omitted.len(), 500);
     }
 
     /// Files merely missing a column must not split the scan.

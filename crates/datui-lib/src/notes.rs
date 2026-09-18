@@ -210,20 +210,26 @@ pub fn left_out_note(
 ///
 /// Counts without dividing: how many of the files datui read hold nothing is a fact
 /// about those files, and the scope line says which files those were.
+///
+/// The one counting note that says "file" even where the schema came from a sample,
+/// rather than the "footer" [`how_many`] would give it. A footer does not hold rows —
+/// it records how many the file holds — so the substitution that keeps the other notes
+/// honest makes this one a category slip. It costs nothing here: there is no ratio to
+/// overstate, and the scope line already says only a sample was read, so "1 file holds
+/// no rows · in 20,000 of 500,000 footers (sample)" claims nothing about the other
+/// 480,000.
 fn empty_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
-    if dataset.empty_files == 0 {
+    let empty = dataset.empty_files;
+    if empty == 0 {
         return None;
     }
+    let (count, verb) = if empty == 1 {
+        ("1 file".to_string(), "holds")
+    } else {
+        (format!("{} files", group_chrome(empty)), "hold")
+    };
     Some(Note {
-        summary: format!(
-            "{} {} no rows",
-            how_many(dataset, dataset.empty_files),
-            if dataset.empty_files == 1 {
-                "holds"
-            } else {
-                "hold"
-            }
-        ),
+        summary: format!("{count} {verb} no rows"),
         scope: scope.to_string(),
         read_as_text: None,
     })
@@ -412,9 +418,10 @@ mod tests {
                     file(&[("id", DataType::Int64)], 5),
                 ],
                 sampled: Some(900),
-                // Footers, not files: datui looked at two of nine hundred, and one of
-                // the two was empty. It knows nothing about the other 898.
-                expected: vec!["1 footer holds no rows"],
+                // "file", not "footer": a footer does not hold rows. The scope line
+                // is what says datui looked at two of nine hundred, and the note
+                // claims nothing about the other 898.
+                expected: vec!["1 file holds no rows"],
             },
             Shape {
                 what: "an empty file and a column only the other has",

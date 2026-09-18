@@ -986,6 +986,115 @@ mod tests {
         let names: Vec<&str> = dataset.schema.iter_names().map(|n| n.as_str()).collect();
         assert_eq!(names, ["id"]);
         assert_eq!(listed.len(), 3);
+
+        // And the rows of the other two can be read, which is the whole of the claim.
+        // Naming the file in `unreadable` is not leaving it out: the scan is built from
+        // a list of paths, and one that will not parse fails the read for all of them.
+        let paths: Vec<String> = files
+            .iter()
+            .map(|(key, _)| dir.path().join(key).to_string_lossy().into_owned())
+            .collect();
+        let readable = crate::schema_union::readable_paths(&paths, &dataset.unreadable);
+        assert_eq!(
+            readable.len(),
+            2,
+            "the one that will not parse is not scanned"
+        );
+        let rows =
+            crate::schema_union::lenient_scan(&readable, dataset.schema.clone(), None, None, &[])
+                .and_then(|lf| lf.collect());
+        assert_eq!(
+            rows.map(|df| df.height()).ok(),
+            Some(2),
+            "the two readable files' rows"
+        );
+        // The same scan over every listed path is the failure this avoids.
+        let all =
+            crate::schema_union::lenient_scan(&paths, dataset.schema.clone(), None, None, &[])
+                .and_then(|lf| lf.collect());
+        assert!(
+            all.is_err(),
+            "left in, it takes the readable files down with it"
+        );
+    }
+
+    /// The dataset a corrupt object leaves behind still counts itself.
+    ///
+    /// Leaving the object out of the scan is only half of it. Everything downstream has
+    /// to describe the same list: the counter returns one entry per object it is given
+    /// and the offsets want one per url, so a counter still covering the whole listing
+    /// beside a shorter url list is not a wrong count but no count at all — dropped on
+    /// a length check, without a word, leaving the dataset re-counting itself forever
+    /// and never reaching an end to jump to.
+    #[test]
+    fn a_dataset_with_a_corrupt_object_still_counts_the_rest() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for (key, bytes) in [
+                ("data/date=2024-01-01/a.parquet", body(1)),
+                (
+                    "data/date=2024-01-02/b.parquet",
+                    b"not a parquet file".to_vec(),
+                ),
+                ("data/date=2024-01-03/c.parquet", body(3)),
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(bytes))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let mut state = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        )
+        .expect("the prefix opens despite the one that will not parse");
+
+        // The frame the first paint collects, before any offsets exist and so before the
+        // url list below is what is read. Its plan rather than its rows, because Polars
+        // cannot fetch from an in-memory store — but the plan is where the fault was:
+        // the object that will not parse named as a source is what takes the read down.
+        let plan = state
+            .visible_lf()
+            .explain(false)
+            .expect("the scan can be planned");
+        assert!(
+            !plan.contains("b.parquet"),
+            "the object that will not parse is not one of the sources: {plan}"
+        );
+        assert!(
+            plan.contains("a.parquet") && plan.contains("c.parquet"),
+            "and the two that will are: {plan}"
+        );
+
+        let counter = state
+            .remote_files_counter()
+            .expect("the dataset has not counted itself yet, so it offers to");
+        let groups = counter().expect("the readable objects are counted");
+        state.set_file_row_groups(&groups);
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(2),
+            "one row from each object that would open, and the count lands rather than \
+             being dropped on a length nobody mentions"
+        );
     }
 
     #[test]

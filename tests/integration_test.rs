@@ -3152,12 +3152,36 @@ fn test_one_unreadable_local_file_does_not_stop_the_open() {
     std::fs::write(bad.join("data.parquet"), b"not a parquet file").unwrap();
     write_parquet(dir.path(), "date=2024-01-03", df!("id" => &[3i64]).unwrap());
 
-    let app = open_local_dataset(dir.path());
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let screen = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
     let state = app.data_table_state.as_ref().unwrap();
     let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
     assert_eq!(names, ["date", "id"]);
     let dataset = state.dataset_schema().expect("read from the footers");
     assert_eq!(dataset.unreadable, [1], "named, and left out of the scan");
+    // The dataset opening is the claim, so the rows are what has to be there. A schema
+    // computed over a file that would not parse says nothing about whether the other
+    // two can be read through it.
+    assert!(
+        !screen.contains("Error"),
+        "and on screen, without an error: {screen}"
+    );
+    // The ids, not the partition names: `date=2024-01-01` and `date=2024-01-03` put a
+    // `1` and a `3` on screen whatever the rows say, so checking for those characters
+    // is a check on the folder's own names.
+    let state = app.data_table_state.as_ref().unwrap();
+    let ids = state
+        .lf
+        .clone()
+        .collect()
+        .expect("the two readable files are readable")
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect::<Vec<i64>>();
+    assert_eq!(ids, [1, 3], "the two readable files' rows are there");
 }
 
 // ---------------------------------------------------------------------------

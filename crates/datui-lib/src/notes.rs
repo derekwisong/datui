@@ -143,7 +143,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
             summary: format!(
-                "{} could not be read and {} left out of the schema",
+                "{} could not be read and {} left out; the rows are not shown",
                 how_many(dataset, dataset.unreadable.len()),
                 if dataset.unreadable.len() == 1 {
                     "was"
@@ -680,7 +680,7 @@ mod tests {
                 paths: Vec::new(),
                 expected: vec![
                     "x is in 1 of the 2 files that could be read; absent from the rest, not null",
-                    "1 file could not be read and was left out of the schema",
+                    "1 file could not be read and was left out; the rows are not shown",
                 ],
             },
             Shape {
@@ -694,7 +694,7 @@ mod tests {
                 paths: Vec::new(),
                 expected: vec![
                     "x is in 1 of the 2 footers that could be read; absent from the rest, not null",
-                    "1 footer could not be read and was left out of the schema",
+                    "1 footer could not be read and was left out; the rows are not shown",
                 ],
             },
             // --- a type the files disagree about: counted, never divided ---
@@ -729,7 +729,7 @@ mod tests {
                 paths: Vec::new(),
                 expected: vec![
                     "n is str in 1 file; read as i64 and not read there",
-                    "1 file could not be read and was left out of the schema",
+                    "1 file could not be read and was left out; the rows are not shown",
                 ],
             },
             Shape {
@@ -743,7 +743,7 @@ mod tests {
                 paths: Vec::new(),
                 expected: vec![
                     "n is str in 1 footer; read as i64 and not read there",
-                    "1 footer could not be read and was left out of the schema",
+                    "1 footer could not be read and was left out; the rows are not shown",
                 ],
             },
             // --- widening, which settles without loss ---

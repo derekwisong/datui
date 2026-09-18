@@ -5146,8 +5146,16 @@ impl App {
         };
         let drift = crate::schema_union::ScanDrift::new(&paths, &dataset, &file_rows);
         let schema = dataset.schema.clone();
+        // Over the files that will open. `drift` is keyed by path, so a scan of fewer
+        // of them still knows what each one holds.
+        let readable = crate::schema_union::readable_paths(&paths, &dataset.unreadable);
+        // Belt and braces: a dataset with nothing readable has an empty schema and has
+        // already been handed back above.
+        if readable.is_empty() {
+            return None;
+        }
         let lf =
-            crate::schema_union::lenient_scan(&paths, schema.clone(), None, drift.as_ref(), &[])
+            crate::schema_union::lenient_scan(&readable, schema.clone(), None, drift.as_ref(), &[])
                 .ok()?;
         let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, drift.is_some());
         let mut state =
@@ -5311,23 +5319,49 @@ impl App {
                 },
             )
         };
+        // The objects that will open. One whose footer would not read is one Polars
+        // cannot read either, and left in the scan it takes the whole prefix down with
+        // it on the first page.
+        let readable = crate::schema_union::readable_paths(&urls, &dataset.unreadable);
+        // Everything downstream describes the same list or none of it. The counter
+        // returns one entry per object it is given and `set_file_row_groups` wants one
+        // per url, so a counter over the full listing beside a shorter url list is not
+        // a wrong count, it is no count at all: the lengths disagree, the answer is
+        // dropped without a word, and the dataset spends the rest of the session
+        // re-counting itself and never reaching an end to jump to.
+        let counted: Vec<cloud_hive::DatasetFile> = files
+            .into_iter()
+            .enumerate()
+            // Searched rather than scanned, for the same reason `readable_paths` does:
+            // a prefix can be hundreds of thousands of objects.
+            .filter(|(index, _)| dataset.unreadable.binary_search(index).is_err())
+            .map(|(_, file)| file)
+            .collect();
+        // Belt and braces, both of them: a prefix with nothing readable has no schema
+        // and was handed back above, and the two lists are filtered from the same
+        // indices so they cannot come out different lengths. Kept because the cost of
+        // the invariant quietly breaking is a dataset that counts itself forever and
+        // never finds its end, which is not a thing to leave to a comment.
+        if readable.is_empty() || readable.len() != counted.len() {
+            return None;
+        }
         let count: crate::widgets::datatable::FileCounter = {
-            let (runtime, files) = (runtime.clone(), Arc::new(files));
+            let (runtime, counted) = (runtime.clone(), Arc::new(counted));
             Arc::new(move || {
-                let (store, files) = (store.clone(), files.clone());
+                let (store, counted) = (store.clone(), counted.clone());
                 wait_on_runtime(&runtime, async move {
-                    cloud_hive::row_groups_of_files(&store, &files).await
+                    cloud_hive::row_groups_of_files(&store, &counted).await
                 })
                 .ok_or_else(|| "cancelled".to_string())?
                 .map_err(|e| e.to_string())
             })
         };
-        let lf = scan(&urls, &[]).ok()?;
+        let lf = scan(&readable, &[]).ok()?;
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
         state.set_remote_files(crate::widgets::datatable::RemoteFiles {
-            urls: Arc::new(urls.clone()),
+            urls: Arc::new(readable.into_owned()),
             scan,
             count,
             offsets: None,

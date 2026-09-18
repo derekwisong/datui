@@ -155,11 +155,13 @@ file's name:
 
     the folders do not all partition by the same keys: 3 files by date, 1 file by dt
 
-What that costs varies, which is why the note does not say. The branch datui reads
-by is whichever the filesystem offers first, not the commonest; usually every file
-under the other key then fails the scan and the dataset does not open at all, but
-the same folders with one unpartitioned file among them can read perfectly well
-with the partition column null. Either way the note tells you which folders to
+What that costs varies, which is why the note does not say. Usually every file
+under the other key fails the scan and the dataset does not open at all. But the
+partition columns are read from the **first file name in the dataset**, so one
+unpartitioned file that sorts above the partition folders — `data.parquet` sorts
+above `date=`, `loose.parquet` does not — means no file's key is checked and the
+same folders read perfectly well with the partition column null. Renaming that
+file changes which of the two you get. Either way the note tells you which keys to
 look at.
 
 Two folders that use the same keys in a different order — `y=/m=` and `m=/y=` —

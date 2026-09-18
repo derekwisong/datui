@@ -1941,8 +1941,18 @@ mod tests {
             "commonest first, though the rare one sorts first and arrived first"
         );
         assert_eq!(
-            layouts(&["d/zz=1/a.parquet", "d/aa=1/b.parquet"]),
-            vec![(vec!["aa".to_string()], 1), (vec!["zz".to_string()], 1)],
+            layouts(&[
+                "d/zz=1/a.parquet",
+                "d/aa=1/b.parquet",
+                "d/mm=1/c.parquet",
+                "d/qq=1/e.parquet"
+            ]),
+            vec![
+                (vec!["aa".to_string()], 1),
+                (vec!["mm".to_string()], 1),
+                (vec!["qq".to_string()], 1),
+                (vec!["zz".to_string()], 1)
+            ],
             "and equally common ones by their keys, so the same dataset reads the \
              same way every time it is opened"
         );

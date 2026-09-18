@@ -1124,6 +1124,106 @@ mod template_rollback_tests {
             .sort(vec!["n".to_string()], true);
         assert_eq!(left_out(&app), 1, "sorting again says it once, not twice");
     }
+
+    /// A rollback that stops half way leaves a state that is neither the template's nor
+    /// the user's, and the note then describes the half that lost.
+    ///
+    /// The user has no sort at all; the template brings one, on a column the files
+    /// disagree on, and then fails on a column order that does not fit. Every step of
+    /// the rollback used to be guarded on the one before, and the first of them
+    /// collected against the template's column order and errored — so the template's
+    /// sort stayed in the sidebar, the notes were built from it, and the row counter
+    /// reported a frame three rows shorter than the one on screen.
+    #[test]
+    fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
+        use polars::prelude::{ParquetWriter, df};
+        let dir = tempfile::tempdir().unwrap();
+        let write = |sub: &str, mut frame: polars::prelude::DataFrame| {
+            let d = dir.path().join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        };
+        write(
+            "date=2024-01-01",
+            df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2]).unwrap(),
+        );
+        write(
+            "date=2024-01-02",
+            df!("id" => &[3i64, 4], "n" => &["x", "y"]).unwrap(),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        app.input_mode = InputMode::Normal;
+        let opts = OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        };
+        if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+            let _ = tx.send(next);
+        }
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
+            a.data_table_state.is_some() && !a.is_busy()
+        });
+        app.data_table_state.as_mut().unwrap().mark_notes_seen();
+        let order_before = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .get_column_order()
+            .to_vec();
+
+        let mut template = app
+            .create_template_from_current_state(
+                "sort then break".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        // A sort the user never asked for, and a column order that cannot be applied.
+        template.settings.sort_columns = vec!["n".to_string()];
+        template.settings.column_order = vec!["no_such_column".to_string()];
+        assert!(app.apply_template(&template).is_err());
+
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.view_sort_columns().is_empty(),
+            "the template's sort does not survive its own failure"
+        );
+        assert_eq!(
+            state.get_column_order(),
+            order_before,
+            "nor does the column order it failed on"
+        );
+        assert_eq!(
+            state.lf.clone().collect().unwrap().height(),
+            5,
+            "the user's frame is whole"
+        );
+        assert_eq!(
+            state
+                .notes()
+                .iter()
+                .filter(|note| note.summary.contains("left out"))
+                .count(),
+            0,
+            "so nothing says rows went: {:#?}",
+            state.notes()
+        );
+        assert!(
+            !state.notes_unseen(),
+            "and a rollback is not news, so the accent stays where the user left it"
+        );
+        assert!(state.error.is_none(), "with no error left over");
+    }
 }
 
 #[cfg(test)]
@@ -2178,6 +2278,9 @@ struct TemplateApplicationState {
     drift: bool,
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
     notes: Vec<crate::notes::Note>,
+    /// Whether the notes had already been offered. A rollback is not news, so the
+    /// quiet accent on `i` should be where the user left it afterwards.
+    notes_seen: bool,
 }
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
@@ -11326,6 +11429,7 @@ impl App {
                 drift: state.drifts(),
                 drift_groups: state.drift_groups(),
                 notes: state.dataset_notes().to_vec(),
+                notes_seen: !state.notes_unseen(),
             })
     }
 
@@ -11674,24 +11778,32 @@ impl App {
             state.active_query = saved.active_query;
             state.active_sql_query = saved.active_sql_query;
             state.active_fuzzy_query = saved.active_fuzzy_query;
-            // Clear error
             state.error = None;
-            // Restore private fields using public methods
-            // Note: These methods will modify lf by applying transformations, but since
-            // we've already restored lf to the saved state, we need to restore it again after
+            // The projection first: these two decide what the frame is read as, and a
+            // filter or sort applied while the template's column order is still in
+            // place collects against a column that may not be there. That used to
+            // error, and each step here was guarded on the one before, so the rest of
+            // the rollback was abandoned — leaving the template's sort in the sidebar
+            // over the user's own frame.
+            state.set_column_order(saved.column_order.clone());
+            state.set_locked_columns(saved.locked_columns_count);
+            // Unguarded, for the same reason: a rollback that stops half way leaves a
+            // state neither the template's nor the user's. Whatever these make of the
+            // frame is thrown away two lines below; what they are here for is the view
+            // state they set on the way, and every one of them has to be the user's.
             state.filter(saved.filters.clone());
-            if state.error.is_none() {
-                state.sort(saved.sort_columns.clone(), saved.sort_ascending);
-            }
-            if state.error.is_none() {
-                state.set_column_order(saved.column_order.clone());
-            }
-            if state.error.is_none() {
-                state.set_locked_columns(saved.locked_columns_count);
-            }
+            state.sort(saved.sort_columns.clone(), saved.sort_ascending);
             // Restore the exact saved lf and schema (in case filter/sort modified them)
             state.lf = saved_lf;
             state.schema = saved_schema;
+            // The count belongs to the frame, and the frame has just been swapped for
+            // one the rebuild above never measured.
+            state.invalidate_num_rows();
+            // Any error those steps raised was about a frame that is no longer here.
+            state.error = None;
+            if saved.notes_seen {
+                state.mark_notes_seen();
+            }
             state.collect();
         }
     }

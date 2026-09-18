@@ -55,8 +55,8 @@ of it; a shorter note may still fit.
 
 Every note but one kind describes the dataset as opened. The exception is the
 note about a filter or sort leaving rows out, which describes the view: one
-arrives for each column you sort or filter by that the files disagree on, and
-goes when you clear it. See [datasets whose files differ](loading-data.md#files-that-disagree).
+arrives for each column you sort or filter by that some file holds in another
+type, and goes when you clear it. See [datasets whose files differ](loading-data.md#files-that-disagree).
 
 A query, a pivot or a drill-down builds rows of its own, so the notes step
 aside; resetting or drilling back up brings them back.

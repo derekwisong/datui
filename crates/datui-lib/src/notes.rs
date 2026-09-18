@@ -282,7 +282,7 @@ mod tests {
         expected: Vec<&'static str>,
     }
 
-    fn notes_for(shape: &Shape) -> Vec<String> {
+    fn dataset_for(shape: &Shape) -> DatasetSchema {
         let origin = match shape.sampled {
             Some(total) => SchemaOrigin::FooterSample {
                 read: shape.files.len(),
@@ -290,8 +290,11 @@ mod tests {
             },
             None => SchemaOrigin::AllFooters(shape.files.len()),
         };
-        let dataset = union_file_schemas(&shape.files, origin);
-        from_dataset(&dataset)
+        union_file_schemas(&shape.files, origin)
+    }
+
+    fn notes_for(shape: &Shape) -> Vec<String> {
+        from_dataset(&dataset_for(shape))
             .into_iter()
             .map(|n| n.summary)
             .collect()
@@ -640,6 +643,31 @@ mod tests {
 
         for shape in &cases {
             assert_eq!(notes_for(shape), shape.expected, "{}", shape.what);
+        }
+
+        // A column some file holds in another type always draws a note of its own.
+        //
+        // The table's view notes lean on this: `DataTableState::has_notes` answers
+        // whether the Notes tab is on offer from the dataset's notes alone, which is
+        // only sound if a note about what a sort leaves out can never be the only one
+        // there. Every shape above that has a conflicting column is a case of it.
+        for shape in &cases {
+            let dataset = dataset_for(shape);
+            let conflicting: Vec<&str> = dataset
+                .columns
+                .iter()
+                .filter(|column| column.conflicting_files > 0)
+                .map(|column| column.name.as_str())
+                .collect();
+            for name in conflicting {
+                assert!(
+                    from_dataset(&dataset)
+                        .iter()
+                        .any(|note| note.summary.starts_with(&format!("{name} is "))),
+                    "{}: {name} conflicts, so it has a note of its own",
+                    shape.what
+                );
+            }
         }
     }
 

@@ -3643,7 +3643,7 @@ impl DataTableState {
     ///
     /// Draws from the shared counter rather than incrementing, so a mutation here can
     /// never land on the value a later dataset is about to be seeded with.
-    fn invalidate_num_rows(&mut self) {
+    pub(crate) fn invalidate_num_rows(&mut self) {
         self.num_rows_valid = false;
         self.len_generation = next_len_generation();
     }
@@ -4047,20 +4047,50 @@ impl DataTableState {
     /// otherwise gather them at one end as though they belonged there. They are left
     /// out of both, and the note says how many so the smaller count is never a
     /// surprise.
-    fn leave_out_unread_rows(&self, mut lf: LazyFrame) -> (LazyFrame, Vec<crate::notes::Note>) {
-        let mut notes = Vec::new();
+    fn view_exclusions(&self) -> Vec<(Vec<(usize, usize)>, crate::notes::Note)> {
         if !self.drift_column_present {
-            return (lf, notes);
+            return Vec::new();
         }
         let Some(dataset) = self.dataset_schema.as_ref() else {
-            return (lf, notes);
+            return Vec::new();
         };
+        let mut out = Vec::new();
         for column in self.view_columns_with_conflicts() {
             let runs = self.unread_row_runs(&column.name);
             let rows: usize = runs.iter().map(|(start, end)| end - start).sum();
             if rows == 0 {
                 continue;
             }
+            let filtered = self
+                .filters
+                .iter()
+                .any(|filter| filter.column.as_str() == column.name.as_str());
+            let sorted = self
+                .sort_columns
+                .iter()
+                .any(|sorted| sorted.as_str() == column.name.as_str());
+            out.push((
+                runs,
+                crate::notes::left_out_note(&column, dataset, rows, filtered, sorted),
+            ));
+        }
+        out
+    }
+
+    /// The notes for what the filter and sort on screen leave out, for a caller that
+    /// is putting a frame back that already leaves those rows out rather than building
+    /// one. Derived, never stored across a change of view: a note that outlives the
+    /// sort that earned it is the fault this is shaped to avoid.
+    fn view_notes_only(&self) -> Vec<crate::notes::Note> {
+        self.view_exclusions()
+            .into_iter()
+            .map(|(_, note)| note)
+            .collect()
+    }
+
+    fn leave_out_unread_rows(&self, mut lf: LazyFrame) -> (LazyFrame, Vec<crate::notes::Note>) {
+        let mut notes = Vec::new();
+        for (runs, note) in self.view_exclusions() {
             let keep = runs
                 .iter()
                 .map(|(start, end)| {
@@ -4072,17 +4102,7 @@ impl DataTableState {
             if let Some(keep) = keep {
                 lf = lf.filter(keep);
             }
-            let filtered = self
-                .filters
-                .iter()
-                .any(|filter| filter.column.as_str() == column.name.as_str());
-            let sorted = self
-                .sort_columns
-                .iter()
-                .any(|sorted| sorted.as_str() == column.name.as_str());
-            notes.push(crate::notes::left_out_note(
-                &column, dataset, rows, filtered, sorted,
-            ));
+            notes.push(note);
         }
         (lf, notes)
     }
@@ -5053,6 +5073,11 @@ impl DataTableState {
                 self.drift_column_present = view.drift;
                 self.drift_groups = view.drift_groups;
                 self.notes = view.notes;
+                // The frame put back here already leaves out whatever its filter and
+                // sort left out, so the notes saying so have to come back with it.
+                // They are derived rather than saved, so they cannot go stale against
+                // a frame that changed while it was drilled into.
+                self.view_notes = self.view_notes_only();
                 self.schema = self.visible_lf().collect_schema()?;
                 self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
                 self.drilled_down_group_index = None;

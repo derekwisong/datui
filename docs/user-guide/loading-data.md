@@ -105,12 +105,14 @@ on leaves those rows out rather than gathering them at one end. The **Notes** ta
 says how many rows are in the files that hold the column in another type, and the
 `i` key takes its quiet accent again to say there is something new there. Clearing
 the filter or sort brings the rows back. Where datui does not have those counts —
-the same cases that flatten the marks above — the rows stay, unordered and
-unremarked.
+the same cases that flatten the marks above — the rows stay, gathered at one end
+and unremarked.
 
-The rows go whatever else the filter says: a row from one of those files is left
-out of `id = 3 or n = 0` too, even though `id = 3` matches it. Its file's value
-for `n` was never read, so the view cannot stand behind either half.
+The rows go whatever else the filter says. A sidebar filter of **id** = 3 **or**
+**n** = 0 leaves out a row whose file stores `n` as text even where its `id` is
+3: that file's `n` was never read, so the view cannot stand behind either half.
+A query typed in the [query bar](querying-data.md) is a different thing — it
+builds rows of its own, and none of this applies to them.
 
 Only `≠` rows go that way. A `·` cell's file never had the column at all, so a
 sort keeps its rows. A filter is a different matter: no comparison holds against

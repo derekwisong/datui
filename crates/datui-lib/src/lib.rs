@@ -1490,6 +1490,100 @@ pub mod tests {
             .join("tests/sample-data")
     }
 
+    /// End pressed while the footers are still coming waits for them, then jumps.
+    ///
+    /// The pass is already reading every footer and those footers hold the count, so a
+    /// count started here would read all of them a second time. Worse, the join takes a
+    /// fresh `len_generation` on its way past, so the answer would come back to a
+    /// question nothing could match it to and the jump would never happen — the user
+    /// would be left with "Counting rows to find the end…" and no end.
+    #[test]
+    fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
+        use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 100,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(rows()).schema.clone(),
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        state.set_footers_pending(Arc::new(move |_| {
+            Some(FootersFound {
+                dataset: dataset_of(rows()),
+                lf: rows(),
+                file_rows: vec![100],
+                files: vec!["one".to_string()],
+                row_groups: vec![vec![100]],
+                scan: Some(Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows()))),
+            })
+        }));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // End, while the footers are still on their way.
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(
+            app.len_count_inflight.is_none(),
+            "no second pass over the footers already being read"
+        );
+
+        // They land.
+        let reported = loop {
+            let event = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the pass reports back");
+            if matches!(event, AppEvent::BackgroundFootersJoined { .. }) {
+                break event;
+            }
+        };
+        let _ = app.handle(&reported);
+        // The jump the key asked for is queued behind the join, as a jump always is.
+        while let Ok(event) = rx.try_recv() {
+            let _ = app.handle(&event);
+        }
+
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.num_rows_if_valid(), Some(100), "counted by the pass");
+        assert!(
+            state.start_row > 0,
+            "and the end is where the view went, rather than the key being swallowed"
+        );
+        assert!(
+            app.status_message.is_none(),
+            "with nothing left saying it is still counting: {:?}",
+            app.status_message
+        );
+    }
+
     /// Once the count is known, nothing is still counting.
     ///
     /// A staged open declines the standalone row count, because the pass reading the
@@ -1696,6 +1790,84 @@ pub mod tests {
         assert!(
             app.footers_held.is_none(),
             "and they are not kept waiting for a dataset that is gone"
+        );
+    }
+
+    /// Columns held while the user was in a query are not joined to the next dataset.
+    ///
+    /// Held columns outlive the dataset they belong to: the user is inside a query when
+    /// they arrive, so they wait — and the user may then open something else entirely
+    /// rather than clear the query. Opening clears the slot but not what is already
+    /// held, and the first keypress on the new folder is where the held columns would
+    /// go in: one folder's schema, scan and file list installed into another.
+    #[test]
+    fn columns_held_for_one_dataset_are_not_given_to_the_next() {
+        use crate::widgets::datatable::{DataTableState, FootersFound};
+        use crate::{App, AppEvent, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let first = || df!("id" => &[1i64]).unwrap().lazy();
+        let its_columns = || df!("id" => &[1i64], "oops" => &["a"]).unwrap().lazy();
+        let second = || df!("other" => &[2i64]).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+        let state_of = |lf: LazyFrame| {
+            DataTableState::from_schema_and_lazyframe(
+                dataset_of(lf.clone()).schema.clone(),
+                lf,
+                &OpenOptions::default(),
+                None,
+            )
+            .unwrap()
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state_of(first()), None, &OpenOptions::default(), None);
+
+        // The user is in a query when this dataset's columns arrive, so they wait.
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .query("select doubled: id * 2".to_string());
+        app.footers_held = Some((
+            app.dataset_generation,
+            FootersFound {
+                dataset: dataset_of(its_columns()),
+                lf: its_columns(),
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                scan: None,
+            },
+        ));
+        let _ = app.handle(&AppEvent::Update);
+        assert!(app.footers_held.is_some(), "waiting, as they should be");
+
+        // And instead of clearing the query, the user opens something else.
+        app.load_active = true;
+        app.apply_schema_ready(state_of(second()), None, &OpenOptions::default(), None);
+        let _ = app.handle(&AppEvent::Update);
+
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().get_column_order(),
+            ["other"],
+            "the folder now on screen is not given the last one's columns"
+        );
+        assert!(
+            app.footers_held.is_none(),
+            "and they are let go rather than waiting on for a third dataset"
         );
     }
 
@@ -2030,11 +2202,13 @@ pub mod tests {
         // clears `load_active`. One keystroke there and back must not strand the
         // dataset on two footers for the rest of the session.
         app.abandon_load();
-        let follow_up = app
-            .handle(&AppEvent::BackgroundFootersJoined { generation })
-            .expect("the event is handled");
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation });
+        // Read again, not asked to be read again. The join drops the buffer, so a
+        // request that goes on to be ignored — as a step of the open's chain is, once
+        // the load is over — leaves the table with nothing to show at the moment it was
+        // to show more.
         assert!(
-            matches!(follow_up, Some(AppEvent::DoLoadBuffer)),
+            app.collect_inflight.is_some(),
             "the rows on screen were read through the narrow frame and are read again"
         );
         assert_eq!(
@@ -3561,6 +3735,9 @@ pub struct App {
     /// several. It is what says whether the columns arriving belong to the dataset the
     /// user is looking at.
     dataset_generation: u64,
+    /// End was pressed while the dataset was still reading its footers, which is where
+    /// its end is coming from. Jump when they land.
+    end_when_the_footers_land: bool,
     /// What a dataset's footers found while the user was looking at a query, a pivot or
     /// a drill-down rather than at the data. Held rather than applied, because widening
     /// the scan under a query takes the query's own columns away, and offered again the
@@ -3806,6 +3983,26 @@ impl App {
     }
 
     /// Apply a successfully loaded DataTableState to the app. Shared by all schema load paths.
+    /// Read the rows on screen again, now that the frame they were read through has
+    /// been replaced.
+    ///
+    /// Not through `DoLoadBuffer`: that is a step of the open's chain and is ignored
+    /// unless a load is in progress, and this happens long after the load has finished
+    /// — and after a glance at the home screen, never again. The join has already
+    /// dropped the buffer, so nothing dropping this leaves the table with no rows to
+    /// show at the moment it was to show more of them.
+    fn reread_after_the_footers_joined(&mut self) {
+        self.spawn_async_collect("Loading buffer...");
+        // End was pressed while the footers were still coming, and they are what the
+        // end was waiting on.
+        if std::mem::take(&mut self.end_when_the_footers_land) {
+            self.status_message = None;
+            if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
+                let _ = self.events.send(next);
+            }
+        }
+    }
+
     /// Give the dataset what its footers found, if it can take it now.
     ///
     /// It cannot while the user is looking at a query, a pivot, a melt or a drill-down:
@@ -4114,6 +4311,19 @@ impl App {
         // The end of a remote dataset is not known until its rows are counted, and a
         // jump to a guess reads every file up to it. Wait for the count instead; keys
         // keep working meanwhile.
+        // A dataset still reading its own footers is already getting a count, and its
+        // end is known as soon as that lands. Starting one here would read every footer
+        // a second time — and the join takes a fresh `len_generation` on its way past,
+        // so the count that came back would be answering a question nobody could match
+        // it to and the jump would never happen. Wait for the pass instead.
+        if matches!(jump, AppEvent::DoScrollEnd)
+            && let Some(state) = self.data_table_state.as_ref()
+            && state.counts_itself_later()
+        {
+            self.end_when_the_footers_land = true;
+            self.status_message = Some("Counting rows to find the end…".to_string());
+            return None;
+        }
         if matches!(jump, AppEvent::DoScrollEnd)
             && let Some(state) = self.data_table_state.as_ref()
             && state.is_remote_source()
@@ -4354,6 +4564,7 @@ impl App {
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
             footers_held: None,
+            end_when_the_footers_land: false,
             len_count_inflight: None,
             collect_inflight: None,
             len_count_failed: None,
@@ -10584,7 +10795,7 @@ impl App {
         // view comes back to the data. Sent rather than returned because the event just
         // dispatched may have a follow-up of its own.
         if self.join_held_footers() {
-            let _ = self.events.send(AppEvent::DoLoadBuffer);
+            self.reread_after_the_footers_joined();
         }
         self.ensure_chart_data();
         Ok(out)
@@ -11727,20 +11938,20 @@ impl App {
                     let Some(found) = found else {
                         // The pass could not read them. The dataset stays as it opened
                         // and stops waiting, so it can go and count itself the ordinary
-                        // way rather than never at all — which is what the buffer load
+                        // way rather than never at all — which is what the collect
                         // below sets going, since it is the counting the dataset was
                         // declining while it waited.
                         if let Some(state) = self.data_table_state.as_mut() {
                             state.give_up_on_pending_footers();
                         }
-                        return Some(AppEvent::DoLoadBuffer);
+                        // The pass is not bringing a count after all, so the jump goes
+                        // back to waiting on the ordinary one the collect below starts.
+                        self.reread_after_the_footers_joined();
+                        return None;
                     };
                     self.footers_held = Some((slot_generation, found));
                     if self.join_held_footers() {
-                        // The rows on screen were read through the narrower frame. This
-                        // reads them again through the wider one, at the row the user is
-                        // still sitting on.
-                        return Some(AppEvent::DoLoadBuffer);
+                        self.reread_after_the_footers_joined();
                     }
                 }
                 None
@@ -13246,7 +13457,13 @@ impl Widget for &mut App {
         // A load in flight counts as pending: the number `data_table_state` still holds
         // belongs to the dataset being replaced, and printing it beside the incoming
         // file's name would read as the new one's.
-        let count_pending = self.len_count_inflight.is_some() || self.awaiting_dataset;
+        // A dataset still reading its own footers counts too: it declines the ordinary
+        // count because that pass is bringing one, so nothing is "in flight" — and the
+        // number it holds meanwhile is only as far as the buffer reaches. Printed
+        // plainly, a prefix of six thousand files reads `Rows: 70`.
+        let count_pending = self.len_count_inflight.is_some()
+            || self.awaiting_dataset
+            || self.dataset_is_still_reading_its_footers();
         let count_unknown = !count_pending
             && self.data_table_state.as_ref().is_some_and(|s| {
                 !s.is_num_rows_valid() && self.len_count_failed == Some(s.len_generation())

@@ -152,13 +152,15 @@ opens from the first file and the last, by name, and reads the rest behind the
 data, with the count in the control bar rather than on a loading screen. Sixty-
 four is how many footers datui fetches at once, so up to that many they arrive in
 the time one of them does; past it there is a second wait, and a third, and the
-dataset would be sitting behind them for no reason. Columns those files turn out to have
-join the table when they arrive, at the end of the column order, without moving
-anything already on screen. A column that only one file had, whose footer would
-not read the second time, goes instead: nothing can be shown for it. Until they do, the dataset is one built from two
+dataset would be sitting behind them for no reason.
+
+Columns those files turn out to have join the table when they arrive, at the end
+of the column order, without moving anything already on screen. A column that
+only one file had, whose footer would not read the second time, goes instead:
+nothing can be shown for it. Until they land, the dataset is one built from two
 footers: its rows are not numbered, so every empty cell reads as `∅`, the row
-count is unknown rather than wrong, and the Notes are scoped to `in 2 of 6,541
-footers (sample)`. A query, a pivot or a drill-down holds the columns off until
+count is not shown at all rather than shown wrong, and the Notes are scoped to
+`in 2 of 6,541 footers (sample)`. A query, a pivot or a drill-down holds the columns off until
 you come back to the data, because widening the scan underneath one would take
 away the columns it was built from.
 

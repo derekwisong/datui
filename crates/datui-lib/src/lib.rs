@@ -5078,9 +5078,6 @@ impl App {
         let (files, read, footers) = DataTableState::footers_of_parquet_dir(p);
         let first = files.first()?;
         let partition_columns = DataTableState::discover_hive_partition_columns(p);
-        // Kept before the state takes them: the note has to say which keys the scan is
-        // actually reading by, and that is a branch of the tree rather than a vote.
-        let spine = partition_columns.clone();
         let values = DataTableState::hive_partition_values(p, first);
         let mut dataset = crate::schema_union::union_sampled(files.len(), &read, &footers);
         if dataset.schema.is_empty() {
@@ -5116,7 +5113,7 @@ impl App {
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
         state.set_dataset_schema(
-            dataset.with_partition_layouts(&paths, &spine),
+            dataset.with_partition_layouts(&p.to_string_lossy(), &paths),
             &file_rows,
             &paths,
         );
@@ -5204,9 +5201,6 @@ impl App {
         let file_count = files.len();
         let (dataset, partition_columns) =
             cloud_hive::dataset_schema_from_footers(&files, &read, &footers).ok()?;
-        // Kept before the state takes them: the note has to say which keys the scan is
-        // actually reading by, and that is one branch of the tree rather than a vote.
-        let spine = partition_columns.clone();
         let urls: Vec<String> = files
             .iter()
             .filter_map(|f| cloud_hive::url_of_key(full, &f.key))
@@ -5285,7 +5279,7 @@ impl App {
             state.set_file_row_groups(&row_groups);
         }
         state.set_dataset_schema(
-            dataset.with_partition_layouts(&urls, &spine),
+            dataset.with_partition_layouts(full, &urls),
             &file_rows,
             &urls,
         );

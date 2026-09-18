@@ -150,12 +150,24 @@ worth something on its own.
 
 datui reads a partitioned folder's columns off one branch of the tree, which is
 right for nearly every dataset. Where a pipeline changed its partition key partway
-through — `date=` becoming `dt=` — that branch is whichever the filesystem hands
-back first, not the commonest, and **the dataset will not open**: every file under
-the other key fails the scan with a schema error. The Notes tab says which keys
-datui is reading by and how many files cannot be read with them, counted from
-every file's name. It has nothing to say when `--single-spine-schema false` is
-set, since that route does not look at the names at all.
+through — `date=` becoming `dt=` — the Notes tab says so, counted from every
+file's name:
+
+    the folders do not all partition by the same keys: 3 files by date, 1 file by dt
+
+What that costs varies, which is why the note does not say. The branch datui reads
+by is whichever the filesystem offers first, not the commonest; usually every file
+under the other key then fails the scan and the dataset does not open at all, but
+the same folders with one unpartitioned file among them can read perfectly well
+with the partition column null. Either way the note tells you which folders to
+look at.
+
+Two folders that use the same keys in a different order — `y=/m=` and `m=/y=` —
+are not a disagreement: hive columns are matched by name, and such a dataset reads
+fine. Nothing is said about a `key=value` folder *above* the one you opened
+either, since that is not in dispute. The note is silent when
+`--single-spine-schema false` is set and for a glob, because neither route looks
+at the file names this way.
 
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file, as it does for a glob.

@@ -1867,13 +1867,14 @@ fn test_a_dataset_whose_files_all_hold_rows_says_nothing_about_empty_ones() {
 
 /// A pipeline that renamed its partition key partway through.
 ///
-/// datui reads the partition columns off one branch of the tree, and that branch is
-/// whichever the filesystem hands back first — here the single `dt=` folder, not the
-/// three `date=` ones. Every file under the key that lost then fails the scan, and the
-/// dataset does not open: this asserts the screen the user is actually looking at, so
-/// the note can never drift back to describing a friendlier one.
+/// The note says the shape and claims nothing about what it costs. What it costs varies:
+/// this folder does not open at all, because the scan reads its partition columns off
+/// one branch of the tree and the files under the other key fail it — but which branch
+/// wins is whatever the filesystem hands back first, so this asserts that *something*
+/// went wrong rather than which key won. An earlier version asserted the key, passed
+/// here and failed on CI.
 #[test]
-fn test_a_folder_whose_partition_key_changed_says_which_key_it_is_reading_by() {
+fn test_a_folder_whose_partition_key_changed_says_the_folders_differ() {
     let dir = tempfile::tempdir().unwrap();
     for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
         write_parquet(
@@ -1894,27 +1895,19 @@ fn test_a_folder_whose_partition_key_changed_says_which_key_it_is_reading_by() {
     let frame = painted(&mut app, &rx, &tx, area);
     assert!(
         frame.contains("Schema field not found"),
-        "the dataset does not open at all — the note exists to explain this screen, \
-         and if this assertion ever fails the note needs rewriting, not deleting:\n\
-         {frame}"
+        "a renamed key stops this folder opening, whichever key the scan took — the \
+         note exists to explain a screen like this one:\n{frame}"
     );
 
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(
-        state.partition_columns.as_deref(),
-        Some(["dt".to_string()].as_slice()),
-        "and it is reading by the one folder, not the three"
-    );
-
     let notes = state.notes();
     let layout = notes
         .iter()
-        .find(|note| note.summary.contains("partition key"))
+        .find(|note| note.summary.contains("partition by the same keys"))
         .unwrap_or_else(|| panic!("nothing said about the changed key: {notes:#?}"));
     assert_eq!(
         layout.summary,
-        "the folders disagree about their partition key: this is read by dt, and \
-         3 files under date cannot be read with it"
+        "the folders do not all partition by the same keys: 3 files by date, 1 file by dt"
     );
     assert_eq!(layout.scope, "in the names of 4 files");
 }
@@ -1941,7 +1934,7 @@ fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
         !state
             .notes()
             .iter()
-            .any(|note| note.summary.contains("partition key")),
+            .any(|note| note.summary.contains("partition by the same keys")),
         "{:#?}",
         state.notes()
     );

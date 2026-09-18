@@ -340,18 +340,18 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     })
 }
 
-/// Folders that disagree about what they are partitioned by.
+/// Folders that do not all partition by the same keys.
 ///
-/// datui reads the partition columns off one branch of the tree, which is right for
-/// nearly every dataset and is what lets it open one at all. When a pipeline changes
-/// `date=` to `dt=` partway through, that branch is whichever the filesystem hands
-/// back first — not the commonest — and every file under the other key then fails the
-/// scan with a schema error. The dataset does not open.
+/// Says the shape and stops there. What it *costs* is not something this note can see.
+/// The scan reads its partition columns off one branch of the tree, and which branch
+/// that is comes back from the filesystem in whatever order it likes: usually every
+/// file under the other key then fails and the dataset does not open at all, but the
+/// same folders with one unpartitioned file among them can read perfectly well with the
+/// partition column null. Review built both from the same shape.
 ///
-/// So the note names the keys the scan *is* reading by, which is the only part of this
-/// a user can act on, and counts the files that cannot be read with them. An earlier
-/// draft said those files read as nulls; review opened such a folder and found an
-/// error modal and no rows at all.
+/// Two rounds were spent on sentences that picked one of those and stated it as the
+/// consequence. The user guide has room to set them out; a note has one sentence, and
+/// the sentence true of every such dataset is the shape itself.
 ///
 /// Read off the names of every file, which is the one thing the listing knows that
 /// reading a file cannot tell you — so it has a scope line of its own, and on a dataset
@@ -363,33 +363,25 @@ fn partition_layout_note(dataset: &DatasetSchema) -> Option<Note> {
     if dataset.partition_layouts.len() < 2 {
         return None;
     }
-    let spell = |keys: &[String]| keys.join("/");
-    let reading = spell(&dataset.reading_partitions);
-    let others: Vec<&(Vec<String>, usize)> = dataset
+    let (named, rest) = dataset
         .partition_layouts
-        .iter()
-        .filter(|(keys, _)| spell(keys) != reading)
-        .collect();
-    let (named, rest) = others.split_at(others.len().min(NAMED));
+        .split_at(dataset.partition_layouts.len().min(NAMED));
     let mut clauses: Vec<String> = named
         .iter()
-        .map(|(keys, files)| format!("{} under {}", how_many_files(*files), spell(keys)))
+        .map(|(keys, files)| format!("{} by {}", how_many_files(*files), keys.join("/")))
         .collect();
     if !rest.is_empty() {
         let files: usize = rest.iter().map(|(_, files)| files).sum();
         clauses.push(format!(
-            "{} under {} other layouts",
+            "{} by {} other {}",
             how_many_files(files),
-            group_chrome(rest.len())
+            group_chrome(rest.len()),
+            if rest.len() == 1 { "way" } else { "ways" }
         ));
-    }
-    if clauses.is_empty() {
-        return None;
     }
     Some(Note {
         summary: format!(
-            "the folders disagree about their partition key: this is read by {reading}, \
-             and {} cannot be read with it",
+            "the folders do not all partition by the same keys: {}",
             clauses.join(", ")
         ),
         scope: format!(
@@ -545,10 +537,7 @@ mod tests {
             return dataset;
         }
         let paths: Vec<String> = shape.paths.iter().map(|p| p.to_string()).collect();
-        // The first path's keys stand in for the branch the scan read, which is what
-        // the real open passes and is not a vote.
-        let spine = crate::schema_union::partition_keys_for_test(&paths[0]);
-        dataset.with_partition_layouts(&paths, &spine)
+        dataset.with_partition_layouts("d", &paths)
     }
 
     fn notes_for(shape: &Shape) -> Vec<String> {
@@ -588,8 +577,8 @@ mod tests {
                 ],
                 paths: vec!["d/date=1/a.parquet", "d/dt=2/b.parquet"],
                 expected: vec![
-                    "the folders disagree about their partition key: this is read by \
-                     date, and 1 file under dt cannot be read with it",
+                    "the folders do not all partition by the same keys: 1 file by \
+                     date, 1 file by dt",
                 ],
                 ..Shape::default()
             },

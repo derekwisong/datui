@@ -40,7 +40,7 @@ files with something in them. Where datui notices either, it says so:
 | A file holds no rows at all | The footers |
 | Row groups are large enough that a page of rows costs much more than a page | The footers |
 | There are very many files and the middle one holds very little | The listing and the footers |
-| The folders disagree about their partition key, so some files cannot be read | The file names |
+| The folders do not all partition by the same keys | The file names |
 | A file's footer could not be read, so it was left out | The footers |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
 

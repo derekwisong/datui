@@ -137,6 +137,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
 
     notes.extend(empty_files_note(dataset, &scope));
     notes.extend(row_group_note(dataset, &scope));
+    notes.extend(small_files_note(dataset, &scope));
 
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
@@ -281,6 +282,47 @@ fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     })
 }
 
+/// A dataset of many files, each holding very little.
+///
+/// Every file is a listing entry to fetch and a footer to read before a single row is,
+/// and past a certain number of them that work outweighs the data itself: a folder of
+/// fifty thousand files of forty kilobytes opens slowly not because there is much data
+/// but because there is so little of it in so many places. Nothing datui can do about
+/// it either — the fix is upstream, in whatever writes them — which is why it is worth
+/// saying rather than leaving someone to conclude datui is slow.
+///
+/// Both halves have to hold. A thousand small files is a normal day's partitions and
+/// nobody needs telling; a hundred large ones cost nothing to find. It is the two
+/// together that make the listing the expensive part.
+///
+/// The file count is every file the dataset has, which the listing knows even where
+/// only a sample of footers was read. The middle size is over the footers read, and
+/// says so through the scope line.
+fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
+    /// Past this many files, finding them is work of its own.
+    const MANY: usize = 1_000;
+    /// Below this, a file is small enough that finding it rivals reading it.
+    const SMALL: usize = 1024 * 1024;
+    let files = dataset.origin.files();
+    let median = dataset.median_file_bytes?;
+    // A file of no bytes is not a Parquet file, so a middle of zero means datui does
+    // not know the sizes rather than that they are small — and "the middle one is 0 B"
+    // would be a claim about a dataset that cannot exist.
+    if median == 0 || files <= MANY || median >= SMALL {
+        return None;
+    }
+    Some(Note {
+        summary: format!(
+            "there are {} files and the middle one is {}, so finding them costs more \
+             than reading them",
+            group_chrome(files),
+            crate::widgets::info::format_bytes(median as u64)
+        ),
+        scope: scope.to_string(),
+        read_as_text: None,
+    })
+}
+
 /// A column being read as text from every file, because it was asked for that way.
 ///
 /// Stands in for the conflict note it replaced, and says the one thing that changes
@@ -386,6 +428,7 @@ mod tests {
         Some(FileSchema {
             schema: Arc::new(schema),
             rows,
+            file_bytes: 0,
             row_group_bytes: Vec::new(),
         })
     }

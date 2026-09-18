@@ -141,6 +141,9 @@ pub struct DataTableState {
     /// Together they turn a row's place in the dataset into what its file was missing.
     drift_file_starts: Vec<usize>,
     drift_file_group: Vec<u32>,
+    /// Rows in the dataset as the footers counted them, so the last file's length is
+    /// known without asking what the view currently holds.
+    drift_dataset_rows: usize,
     /// Each file's path or URL, in scan order, so a row can be traced to the file it
     /// came from and an export can name it.
     drift_files: Vec<String>,
@@ -151,6 +154,10 @@ pub struct DataTableState {
     notes_seen: bool,
     /// The notes as the dataset was opened, so a reset and a drill up restore them.
     notes_at_open: Vec<crate::notes::Note>,
+    /// Notes about the view rather than the dataset: what the filter and sort on
+    /// screen are leaving out. Recomputed whenever either changes, so clearing them
+    /// takes the note away with them.
+    view_notes: Vec<crate::notes::Note>,
     /// Uncompressed bytes per row of each column, from the Parquet footer, for
     /// `bytes_per_row` before anything has been collected.
     column_widths: Vec<(String, usize)>,
@@ -276,6 +283,41 @@ static NEXT_LEN_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 
 fn next_len_generation() -> u64 {
     NEXT_LEN_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The `[start, end)` row ranges of the files flagged in `conflicts`, merged where
+/// they touch.
+///
+/// `starts[i]` is where file `i`'s rows begin in the dataset and `total` is how many
+/// rows the dataset has, so the last file's end is known without a start after it.
+///
+/// Runs, not files: a vendor who wrote a column as text for a month wrote a
+/// contiguous stretch of files, and the predicate built from this is one term per run
+/// however many files the stretch holds. Merging changes no row's fate — three
+/// touching ranges keep out exactly what one joined range does — which is why it is
+/// pinned here, where the runs themselves can be counted, rather than by a test of
+/// what ends up on screen.
+///
+/// Post-conditions, for any `starts` ascending and `conflicts` of the same length:
+/// - a row is in some run exactly when the file it belongs to is flagged;
+/// - the runs are ascending and no two of them touch or overlap;
+/// - a file of no rows produces no run of its own, and never splits one.
+fn conflicting_row_runs(starts: &[usize], total: usize, conflicts: &[bool]) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for (file, start) in starts.iter().copied().enumerate() {
+        if !conflicts.get(file).copied().unwrap_or(false) {
+            continue;
+        }
+        let end = starts.get(file + 1).copied().unwrap_or(total);
+        match runs.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => runs.push((start, end)),
+        }
+    }
+    // A file of no rows leaves an empty range, which keeps no row out and would make
+    // the "no two touch" post-condition depend on which files happen to be empty.
+    runs.retain(|(start, end)| start < end);
+    runs
 }
 
 /// Options for sorting by `n` columns. Nulls go last in both directions, as in pandas,
@@ -512,6 +554,8 @@ impl DataTableState {
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
+            view_notes: Vec::new(),
+            drift_dataset_rows: 0,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -616,6 +660,8 @@ impl DataTableState {
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
+            view_notes: Vec::new(),
+            drift_dataset_rows: 0,
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -657,6 +703,7 @@ impl DataTableState {
         self.drift_column_present = false;
         self.drift_groups = Arc::new(Vec::new());
         self.notes = Vec::new();
+        self.view_notes = Vec::new();
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
         self.observed_bytes_per_row = None;
@@ -3801,6 +3848,7 @@ impl DataTableState {
             self.drift_file_starts.push(row);
             row += rows;
         }
+        self.drift_dataset_rows = row;
         self.drift_at_open = self.drift_column_present;
         self.groups_at_open = self.drift_groups.clone();
         self.notes = crate::notes::from_dataset(&schema);
@@ -3918,14 +3966,151 @@ impl DataTableState {
         df
     }
 
-    /// What datui noticed about the dataset. Empty when there is nothing to say.
-    pub fn notes(&self) -> &[crate::notes::Note] {
+    /// What datui noticed about the dataset itself, as its footers were read.
+    ///
+    /// Separate from [`Self::notes`] because this is the half that belongs to the
+    /// data: a snapshot taken to roll a template back has to put back these and not
+    /// the view's, which describe a filter and sort that the rollback is undoing.
+    pub fn dataset_notes(&self) -> &[crate::notes::Note] {
         &self.notes
+    }
+
+    /// What datui noticed: about the dataset when it opened, then about the view the
+    /// filter and sort have made of it. Empty when there is nothing to say.
+    pub fn notes(&self) -> Vec<crate::notes::Note> {
+        self.notes
+            .iter()
+            .chain(self.view_notes.iter())
+            .cloned()
+            .collect()
+    }
+
+    /// Whether datui noticed anything at all. Answers what `notes()` is usually asked
+    /// — whether to offer the tab — without building the list to find out.
+    pub fn has_notes(&self) -> bool {
+        // A view note needs a column the files disagree on, and such a column always
+        // draws a note of its own when the dataset opens. So the view half can never
+        // be the only half, and the Notes tab does not appear and disappear as the
+        // user sorts.
+        !self.notes.is_empty()
     }
 
     /// Whether there is something to say that has not been offered yet.
     pub fn notes_unseen(&self) -> bool {
-        !self.notes.is_empty() && !self.notes_seen
+        self.has_notes() && !self.notes_seen
+    }
+
+    /// The rows a filter or sort on `column` has to leave out: every row of every file
+    /// that holds the column in a type it is not read in.
+    fn unread_row_runs(&self, column: &str) -> Vec<(usize, usize)> {
+        let Some(dataset) = self.dataset_schema.as_ref() else {
+            return Vec::new();
+        };
+        let conflicts: Vec<bool> = (0..self.drift_file_starts.len())
+            .map(|file| {
+                dataset
+                    .file_group
+                    .get(file)
+                    .and_then(|group| dataset.groups.get(*group as usize))
+                    .is_some_and(|group| group.unread.iter().any(|name| name == column))
+            })
+            .collect();
+        conflicting_row_runs(&self.drift_file_starts, self.drift_dataset_rows, &conflicts)
+    }
+
+    /// Columns the filter or sort names that some file holds in another type, in the
+    /// dataset's own column order and each named once however many times the view
+    /// mentions it.
+    fn view_columns_with_conflicts(&self) -> Vec<crate::schema_union::ColumnDrift> {
+        let Some(dataset) = self.dataset_schema.as_ref() else {
+            return Vec::new();
+        };
+        let named: HashSet<&str> = self
+            .filters
+            .iter()
+            .map(|filter| filter.column.as_str())
+            .chain(self.sort_columns.iter().map(String::as_str))
+            .collect();
+        dataset
+            .columns
+            .iter()
+            .filter(|column| column.conflicting_files > 0 && named.contains(column.name.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    /// Leave out the rows whose files do not hold a filtered or sorted column in the
+    /// type it is read as, and say how many.
+    ///
+    /// Those rows read as null in that column, and a null is not a value the column
+    /// can be compared or ordered by: a filter drops them already, and a sort would
+    /// otherwise gather them at one end as though they belonged there. They are left
+    /// out of both, and the note says how many so the smaller count is never a
+    /// surprise.
+    fn view_exclusions(&self) -> Vec<(Vec<(usize, usize)>, crate::notes::Note)> {
+        if !self.drift_column_present {
+            return Vec::new();
+        }
+        let Some(dataset) = self.dataset_schema.as_ref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for column in self.view_columns_with_conflicts() {
+            let runs = self.unread_row_runs(&column.name);
+            let rows: usize = runs.iter().map(|(start, end)| end - start).sum();
+            if rows == 0 {
+                continue;
+            }
+            let filtered = self
+                .filters
+                .iter()
+                .any(|filter| filter.column.as_str() == column.name.as_str());
+            let sorted = self
+                .sort_columns
+                .iter()
+                .any(|sorted| sorted.as_str() == column.name.as_str());
+            out.push((
+                runs,
+                crate::notes::left_out_note(&column, dataset, rows, filtered, sorted),
+            ));
+        }
+        out
+    }
+
+    /// The notes for what the filter and sort on screen leave out, for a caller that
+    /// is putting a frame back that already leaves those rows out rather than building
+    /// one. Derived, never stored across a change of view: a note that outlives the
+    /// sort that earned it is the fault this is shaped to avoid.
+    fn view_notes_only(&self) -> Vec<crate::notes::Note> {
+        self.view_exclusions()
+            .into_iter()
+            .map(|(_, note)| note)
+            .collect()
+    }
+
+    fn leave_out_unread_rows(&self, mut lf: LazyFrame) -> (LazyFrame, Vec<crate::notes::Note>) {
+        let mut notes = Vec::new();
+        for (runs, note) in self.view_exclusions() {
+            let keep = runs
+                .iter()
+                .map(|(start, end)| {
+                    col(crate::schema_union::DRIFT_COLUMN)
+                        .lt(lit(*start as u32))
+                        .or(col(crate::schema_union::DRIFT_COLUMN).gt_eq(lit(*end as u32)))
+                })
+                .reduce(Expr::and);
+            if let Some(keep) = keep {
+                lf = lf.filter(keep);
+            }
+            notes.push(note);
+        }
+        (lf, notes)
+    }
+
+    /// Whether the notes have been offered. Exact, where `!notes_unseen()` would also
+    /// be true of a dataset that has nothing to say.
+    pub fn notes_seen(&self) -> bool {
+        self.notes_seen
     }
 
     /// The Info panel has been opened; the quiet accent has done its job.
@@ -4894,6 +5079,11 @@ impl DataTableState {
                 self.drift_column_present = view.drift;
                 self.drift_groups = view.drift_groups;
                 self.notes = view.notes;
+                // The frame put back here already leaves out whatever its filter and
+                // sort left out, so the notes saying so have to come back with it.
+                // They are derived rather than saved, so they cannot go stale against
+                // a frame that changed while it was drilled into.
+                self.view_notes = self.view_notes_only();
                 self.schema = self.visible_lf().collect_schema()?;
                 self.column_order = self.schema.iter_names().map(|s| s.to_string()).collect();
                 self.drilled_down_group_index = None;
@@ -5065,6 +5255,16 @@ impl DataTableState {
         if let Some(e) = final_expr {
             lf = lf.filter(e);
         }
+
+        // Before the sort, so the rows it would have placed among the ordered ones are
+        // already gone rather than ordered and then dropped.
+        let (excluded, view_notes) = self.leave_out_unread_rows(lf);
+        lf = excluded;
+        // A new thing to say, so the quiet accent on `i` earns its place again.
+        if !view_notes.is_empty() && view_notes != self.view_notes {
+            self.notes_seen = false;
+        }
+        self.view_notes = view_notes;
 
         if !self.sort_columns.is_empty() {
             lf = lf.sort_by_exprs(
@@ -6445,6 +6645,70 @@ mod tests {
     use super::*;
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+
+    /// Three files of two rows each, and every way they can conflict.
+    ///
+    /// Each case names the files that hold the column in a type it is not read in, and
+    /// the rows those files own. The last file is the one that has no start after it,
+    /// so a run ending there is the case an implementation is most likely to get wrong
+    /// — and the one that two files of the same length hide, since dropping to the end
+    /// of the dataset and dropping to the next file's start agree there.
+    #[test]
+    fn conflicting_files_become_the_runs_of_rows_they_own() {
+        let starts = [0, 2, 4];
+        let runs = |conflicts: [bool; 3]| conflicting_row_runs(&starts, 6, &conflicts);
+
+        assert_eq!(runs([false, false, false]), vec![], "nothing conflicts");
+        assert_eq!(runs([true, false, false]), vec![(0, 2)], "the first file");
+        assert_eq!(
+            runs([false, true, false]),
+            vec![(2, 4)],
+            "a file in the middle ends where the next one begins, not at the end of \
+             the dataset"
+        );
+        assert_eq!(
+            runs([false, false, true]),
+            vec![(4, 6)],
+            "and the last one ends at the end of the dataset"
+        );
+        assert_eq!(
+            runs([true, true, false]),
+            vec![(0, 4)],
+            "files that touch are one run"
+        );
+        assert_eq!(runs([true, true, true]), vec![(0, 6)], "as are all of them");
+        assert_eq!(
+            runs([true, false, true]),
+            vec![(0, 2), (4, 6)],
+            "files that do not touch are not"
+        );
+    }
+
+    /// A file of no rows owns no rows, so it neither makes a run nor breaks one.
+    ///
+    /// Zero-row Parquet files are written by any pipeline that partitions on a key
+    /// with no data for some value, so this is a shape datui meets rather than one it
+    /// has to imagine.
+    #[test]
+    fn a_file_of_no_rows_neither_makes_a_run_nor_splits_one() {
+        // Files of 2, 0 and 2 rows: the middle one begins and ends at row 2.
+        let starts = [0, 2, 2];
+        assert_eq!(
+            conflicting_row_runs(&starts, 4, &[false, true, false]),
+            vec![],
+            "a conflicting file with no rows keeps no row out"
+        );
+        assert_eq!(
+            conflicting_row_runs(&starts, 4, &[true, false, true]),
+            vec![(0, 4)],
+            "and an empty file between two that conflict does not part them"
+        );
+        assert_eq!(
+            conflicting_row_runs(&starts, 4, &[true, true, true]),
+            vec![(0, 4)],
+            "however it is flagged itself"
+        );
+    }
 
     fn create_test_lf() -> LazyFrame {
         df! (

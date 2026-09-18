@@ -143,6 +143,50 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     notes
 }
 
+/// Rows a filter or sort leaves out, because the column it names is not read from the
+/// files those rows came from.
+///
+/// The only note here about the view rather than the dataset, and the only one datui
+/// writes in answer to something the user just did.
+///
+/// It is phrased about the files, not about the view, and that is the whole care of
+/// it. "2 rows are left out" reads as a claim that the view is two rows shorter, which
+/// is not true when a filter had already dropped one of them; how many rows are in the
+/// files that hold the column in another type is a fact of the footers, true whatever
+/// else the view is doing. Both counts here are of that kind.
+///
+/// The cost of saying it that way is that the note also appears where those rows had
+/// already gone — a filter that excluded them, then a sort on the column. It is still
+/// true there, and the alternative is a count of what the view actually lost, which
+/// cannot be had without collecting the frame twice.
+pub fn left_out_note(
+    column: &ColumnDrift,
+    dataset: &DatasetSchema,
+    rows: usize,
+    filtered: bool,
+    sorted: bool,
+) -> Note {
+    let what = match (filtered, sorted) {
+        (true, true) => "filter and sort",
+        (true, false) => "filter",
+        // Called only for a column the view names, so it names it one way or the other.
+        _ => "sort",
+    };
+    let (there, verb) = if rows == 1 {
+        ("1 row".to_string(), "is")
+    } else {
+        (format!("{} rows", group_chrome(rows)), "are")
+    };
+    Note {
+        summary: format!(
+            "{} is not read from {}, so the {there} there {verb} left out of the {what}",
+            column.name,
+            how_many(dataset, column.conflicting_files)
+        ),
+        scope: format!("in {}", dataset.origin),
+    }
+}
+
 /// A column that some files were written without. The one note that states a ratio,
 /// because "some" is only meaningful against a total.
 fn absence_note(
@@ -238,7 +282,7 @@ mod tests {
         expected: Vec<&'static str>,
     }
 
-    fn notes_for(shape: &Shape) -> Vec<String> {
+    fn dataset_for(shape: &Shape) -> DatasetSchema {
         let origin = match shape.sampled {
             Some(total) => SchemaOrigin::FooterSample {
                 read: shape.files.len(),
@@ -246,8 +290,11 @@ mod tests {
             },
             None => SchemaOrigin::AllFooters(shape.files.len()),
         };
-        let dataset = union_file_schemas(&shape.files, origin);
-        from_dataset(&dataset)
+        union_file_schemas(&shape.files, origin)
+    }
+
+    fn notes_for(shape: &Shape) -> Vec<String> {
+        from_dataset(&dataset_for(shape))
             .into_iter()
             .map(|n| n.summary)
             .collect()
@@ -596,6 +643,35 @@ mod tests {
 
         for shape in &cases {
             assert_eq!(notes_for(shape), shape.expected, "{}", shape.what);
+        }
+
+        // A column some file holds in another type always draws a note of its own.
+        //
+        // The table's view notes lean on this: `DataTableState::has_notes` answers
+        // whether the Notes tab is on offer from the dataset's notes alone, which is
+        // only sound if a note about what a sort leaves out can never be the only one
+        // there. Every shape above that has a conflicting column is a case of it.
+        for shape in &cases {
+            let dataset = dataset_for(shape);
+            let conflicting: Vec<&str> = dataset
+                .columns
+                .iter()
+                .filter(|column| column.conflicting_files > 0)
+                .map(|column| column.name.as_str())
+                .collect();
+            for name in conflicting {
+                // The conflict note itself, not merely some note naming the column:
+                // an absence or widening note about the same column would satisfy a
+                // looser test while the one that matters had been deleted.
+                assert!(
+                    from_dataset(&dataset).iter().any(|note| {
+                        note.summary.starts_with(&format!("{name} is "))
+                            && note.summary.ends_with("and not read there")
+                    }),
+                    "{}: {name} conflicts, so it says so on its own account",
+                    shape.what
+                );
+            }
         }
     }
 

@@ -1279,6 +1279,310 @@ fn test_each_row_takes_its_glyph_from_the_file_it_came_from() {
     );
 }
 
+/// A conflicting column has no value to order by, so a sort on it leaves those rows
+/// out rather than gathering them at one end as though they belonged there — and says
+/// how many went.
+#[test]
+fn test_a_sort_leaves_out_the_rows_its_column_is_not_read_from() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4, 5, 6, 7], "n" => &[30i64, 40, 50, 60, 70]).unwrap(),
+    );
+    // `n` as text here, so it is not read from this file: two rows of conflict.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[8i64, 9], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+    assert_eq!(current_rows(&app), 10, "every row is there to begin with");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(vec!["n".to_string()], true);
+    assert!(state.error.is_none(), "the sort itself must succeed");
+
+    let ids: Vec<i64> = state
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(
+        ids.len(),
+        8,
+        "the two rows from the file that stores `n` as text are gone: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&8) && !ids.contains(&9),
+        "and it is those two, not two others: {ids:?}"
+    );
+    assert!(
+        ids.contains(&0) && ids.contains(&1) && ids.contains(&2),
+        "the file with no `n` at all keeps its rows: its cells are absent, not a \
+         value in another type: {ids:?}"
+    );
+
+    let notes = state.notes();
+    let left_out = notes
+        .iter()
+        .find(|note| note.summary.contains("is not read from"))
+        .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
+    assert_eq!(
+        left_out.summary,
+        "n is not read from 1 file, so the 2 rows there are left out of the sort"
+    );
+    assert_eq!(left_out.scope, "in all 3 footers");
+    assert!(
+        state.notes_unseen(),
+        "and the `i` accent comes back for a note the user has not been offered"
+    );
+}
+
+/// The filter half: the other two wordings the note has, and the row a filter's own
+/// terms matched but its file cannot stand behind.
+///
+/// A sidebar filter of `id = 3 or n = 0` matches the row whose `id` is 3 — but that
+/// row's file stores `n` as text, so its `n` was never read and the view cannot
+/// answer either half of the question. It goes, and the note says why.
+#[test]
+fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
+    use datui::filter_modal::{FilterOperator, LogicalOperator};
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let mut or_id_3 = filter_stmt("id", FilterOperator::Eq, "3");
+    or_id_3.logical_op = LogicalOperator::Or;
+    let state = app.data_table_state.as_mut().unwrap();
+    state.filter(vec![filter_stmt("n", FilterOperator::Eq, "0"), or_id_3]);
+    assert!(state.error.is_none(), "the filter itself must succeed");
+
+    let ids: Vec<i64> = state
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(
+        ids,
+        vec![0],
+        "id 3 matched a term of its own, but its file's `n` was never read"
+    );
+
+    let notes = state.notes();
+    let left_out = notes
+        .iter()
+        .find(|note| note.summary.contains("is not read from"))
+        .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
+    assert_eq!(
+        left_out.summary,
+        "n is not read from 1 file, so the 2 rows there are left out of the filter"
+    );
+
+    // Sorting by the same column too: one note, naming both.
+    state.sort(vec!["n".to_string()], true);
+    let notes = state.notes();
+    let both: Vec<&str> = notes
+        .iter()
+        .filter(|note| note.summary.contains("is not read from"))
+        .map(|note| note.summary.as_str())
+        .collect();
+    assert_eq!(
+        both,
+        ["n is not read from 1 file, so the 2 rows there are left out of the filter and sort"],
+        "one note for the column, not one for each of the two things naming it"
+    );
+}
+
+/// The accent is about the note being *new*: a sort that has something to say brings
+/// it back after the panel has already been opened once.
+#[test]
+fn test_a_sort_that_leaves_rows_out_offers_its_note_afresh() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.mark_notes_seen();
+    assert!(
+        !state.notes_unseen(),
+        "the dataset's own notes have been offered"
+    );
+
+    state.sort(vec!["n".to_string()], true);
+    assert!(
+        state.notes_unseen(),
+        "the note about the rows the sort left out has not been"
+    );
+
+    state.mark_notes_seen();
+    state.sort(vec!["n".to_string()], false);
+    assert!(
+        !state.notes_unseen(),
+        "and sorting the same column the other way says nothing new, so the accent \
+         stays away"
+    );
+}
+
+/// A conflicting file that is not the last one, several of them, and two stretches
+/// that do not touch.
+///
+/// The last file is where a run's end and the end of the dataset are the same number,
+/// so a dataset whose only conflict is there cannot tell a right implementation from
+/// one that drops everything from the first conflict onwards.
+#[test]
+fn test_the_rows_left_out_are_the_conflicting_files_own_wherever_they_sit() {
+    let dir = tempfile::tempdir().unwrap();
+    // Read as an integer: six of the ten rows hold it that way.
+    let int = |ids: &[i64], ns: &[i64]| df!("id" => ids, "n" => ns).unwrap();
+    let text = |ids: &[i64], ns: &[&str]| df!("id" => ids, "n" => ns).unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", int(&[0, 1], &[0, 1]));
+    write_parquet(dir.path(), "date=2024-01-02", text(&[2, 3], &["a", "b"]));
+    write_parquet(dir.path(), "date=2024-01-03", text(&[4], &["c"]));
+    write_parquet(dir.path(), "date=2024-01-04", int(&[5, 6], &[5, 6]));
+    write_parquet(dir.path(), "date=2024-01-05", text(&[7], &["d"]));
+    write_parquet(dir.path(), "date=2024-01-06", int(&[8, 9], &[8, 9]));
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+    assert_eq!(current_rows(&app), 10, "every row is there to begin with");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(vec!["n".to_string()], true);
+    assert!(state.error.is_none(), "the sort itself must succeed");
+
+    let mut ids: Vec<i64> = state
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![0, 1, 5, 6, 8, 9],
+        "the two stretches that store `n` as text go, and nothing after them does"
+    );
+
+    let notes = state.notes();
+    let left_out = notes
+        .iter()
+        .find(|note| note.summary.contains("is not read from"))
+        .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
+    assert_eq!(
+        left_out.summary,
+        "n is not read from 3 files, so the 4 rows there are left out of the sort"
+    );
+}
+
+/// Clearing the sort brings the rows back and takes the note with it, and a sort on a
+/// column the files agree on never took any rows to begin with.
+#[test]
+fn test_only_the_conflicting_column_costs_rows_and_only_while_it_is_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(vec!["id".to_string()], true);
+    assert_eq!(
+        current_rows(&app),
+        5,
+        "`id` is the same type everywhere, so a sort on it leaves nothing out"
+    );
+    let state = app.data_table_state.as_mut().unwrap();
+    assert!(
+        !state
+            .notes()
+            .iter()
+            .any(|n| n.summary.contains("is not read from")),
+        "and says nothing about rows going"
+    );
+
+    state.sort(vec!["n".to_string()], true);
+    assert_eq!(current_rows(&app), 3, "sorting by `n` leaves the two out");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(Vec::new(), true);
+    assert_eq!(
+        current_rows(&app),
+        5,
+        "and clearing the sort brings them back"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        !state
+            .notes()
+            .iter()
+            .any(|n| n.summary.contains("is not read from")),
+        "with nothing left saying they went: {:#?}",
+        state.notes()
+    );
+}
+
 /// The control for the test above: a folder whose files agree shows neither glyph, so
 /// the assertions there are about the data and not about some other part of the screen.
 #[test]

@@ -989,7 +989,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             .as_ref()
             .map(|v| !v.is_empty())
             .unwrap_or(false);
-        let has_notes = !self.state.notes().is_empty();
+        let has_notes = self.state.has_notes();
         let tab_titles: Vec<&str> = InfoTab::visible(has_partitions, has_notes)
             .into_iter()
             .map(InfoTab::title)

@@ -1428,6 +1428,23 @@ mod tests {
             Some("the middle row group is 100.0 MiB, and rows are read a row group at a time"),
             "the middle of every row group of every file, not the middle of the files"
         );
+        assert_eq!(
+            note(&[&[MIB], &[100 * MIB, 100 * MIB]]).as_deref(),
+            Some("the middle row group is 100.0 MiB, and rows are read a row group at a time"),
+            "including when the large ones are not in the first file"
+        );
+        // Row groups arrive in file order, which is no order at all by size: a middle
+        // partition rewritten by another job puts a big one between two small ones.
+        assert_eq!(
+            note(&[&[100 * MIB], &[MIB], &[100 * MIB]]).as_deref(),
+            Some("the middle row group is 100.0 MiB, and rows are read a row group at a time"),
+            "and when they arrive out of order"
+        );
+        assert_eq!(
+            note(&[&[MIB], &[100 * MIB], &[MIB]]),
+            None,
+            "which cuts both ways: one big group between two small ones is not the middle"
+        );
         assert_eq!(note(&[&[]]), None, "a file with no row groups says nothing");
         // An even count takes the lower of the middle two, which is the reading that
         // errs towards saying nothing.

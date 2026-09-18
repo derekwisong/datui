@@ -587,6 +587,7 @@ mod tests {
                 .await
                 .unwrap();
             let wide_files = list_dataset_files(&store, "wide/").await.unwrap();
+            assert_eq!(wide_files.len(), 1, "only the wide file: {wide_files:?}");
             let wide_footers = footers_of_files(&store, &wide_files, &[0]).await;
             let size = wide_footers[0].as_ref().unwrap().row_group_bytes[0];
             assert!(

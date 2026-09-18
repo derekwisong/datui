@@ -394,6 +394,20 @@ pub fn footers_to_read(files: usize) -> Vec<usize> {
     sample
 }
 
+/// The first file and the newest, which is what a dataset opens from while the rest of
+/// its footers are still being read. Ascending, and one index when there is one file.
+///
+/// Between them these two hold most of what a dataset disagrees about — the columns it
+/// started with and the columns it has now — which is why they are the two the open
+/// waits for.
+pub fn ends_of(files: usize) -> Vec<usize> {
+    match files {
+        0 => Vec::new(),
+        1 => vec![0],
+        n => vec![0, n - 1],
+    }
+}
+
 /// The schema of a dataset of `files` files whose footers at the indices `read` were
 /// fetched, in that order.
 ///

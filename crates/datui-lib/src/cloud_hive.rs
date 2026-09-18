@@ -316,7 +316,7 @@ pub fn dataset_schema_from_footers(
 }
 
 /// How many footers are read at once when counting.
-const FOOTERS_AT_ONCE: usize = 64;
+pub const FOOTERS_AT_ONCE: usize = 64;
 /// The first read of a footer. Most footers fit; a larger one costs a second request.
 const COUNT_TAIL_BYTES: u64 = 16 * 1024;
 
@@ -734,6 +734,109 @@ mod tests {
             progress.reading(),
             None,
             "with nothing left to say once they landed"
+        );
+    }
+
+    /// A dataset too big to read whole opens from its two ends, and the rest joins.
+    ///
+    /// The column only a middle file has is the whole point: the two ends cannot know
+    /// about it, so it is missing from the dataset as it opens and arrives when the
+    /// pass behind the open lands. It joins at the end of the order, and everything
+    /// already there — including where the user has scrolled to — stays put.
+    #[test]
+    fn a_column_only_a_middle_file_has_joins_after_the_open() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let plain = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i], "v" => &[i * 2]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let with_oops = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i], "v" => &[i * 2], "oops" => &["vendor"]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        // One more than a wave of concurrent reads, which is where the open stops
+        // waiting for every footer.
+        let files = FOOTERS_AT_ONCE + 1;
+        let odd_one_out = files / 2;
+        rt.block_on(async {
+            for i in 0..files {
+                let key = format!("data/date=2024-01-{:03}/part.parquet", i + 1);
+                let body = if i == odd_one_out {
+                    with_oops(i as i64)
+                } else {
+                    plain(i as i64)
+                };
+                store
+                    .put(&OsPath::from(key.as_str()), PutPayload::from(body))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let mut state = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        )
+        .expect("the prefix opens");
+
+        assert_eq!(
+            progress.last_pass().read,
+            2,
+            "the open waited for two footers, not {files}"
+        );
+        assert!(
+            !state.get_column_order().iter().any(|c| c == "oops"),
+            "the two ends cannot know about a column only the middle has: {:?}",
+            state.get_column_order()
+        );
+
+        // The user, meanwhile, has been reading it: scrolled a column across and moved
+        // down the rows.
+        state.scroll_right();
+        let scrolled_to = state.termcol_index;
+        assert!(scrolled_to > 0, "the fixture can be scrolled");
+
+        let join = state
+            .footers_pending()
+            .expect("the rest are still to be read");
+        let (dataset, lf, file_rows, urls, _row_groups) =
+            join(&progress).expect("the pass reads them");
+        state.join_dataset_schema(dataset, lf, &file_rows, &urls);
+
+        assert_eq!(
+            progress.last_pass().read,
+            files,
+            "the pass behind the open read every footer"
+        );
+        assert_eq!(
+            state.get_column_order().last().map(String::as_str),
+            Some("oops"),
+            "the column joins, at the end, where nothing already shown has to move: \
+             {:?}",
+            state.get_column_order()
+        );
+        assert_eq!(
+            state.termcol_index, scrolled_to,
+            "and the view does not move under the user to make room"
+        );
+        assert!(
+            state.footers_pending().is_none(),
+            "with nothing left to wait for"
         );
     }
 

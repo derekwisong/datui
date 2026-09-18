@@ -154,6 +154,9 @@ pub struct DataTableState {
     /// Each file's path or URL, in scan order, so a row can be traced to the file it
     /// came from and an export can name it.
     drift_files: Vec<String>,
+    /// Set while the dataset is on screen from a footer or two and the rest are still
+    /// to be read. Cleared when their answer joins. See [`FootersJoin`].
+    footers_pending: Option<FootersJoin>,
     /// What datui noticed about the dataset, from the footers it had to read anyway.
     notes: Vec<crate::notes::Note>,
     /// Whether the Info panel has been opened since the notes were gathered. Belongs to
@@ -256,6 +259,22 @@ pub struct CollectRequest {
 pub type FileScan = Arc<dyn Fn(&[String], &[PlSmallStr]) -> PolarsResult<LazyFrame> + Send + Sync>;
 /// Counts the rows in each row group of every file of a dataset. Blocks.
 pub type FileCounter = Arc<dyn Fn() -> Result<Vec<Vec<usize>>, String> + Send + Sync>;
+/// Reads every footer of a dataset that opened from a couple of them, and returns what
+/// they say: the dataset's full schema, the scan that reads it, each file's rows, and
+/// the files themselves. `None` when they could not be read, in which case the dataset
+/// stays as it opened. Blocks, and counts itself off against the progress it is given.
+pub type FootersJoin = Arc<
+    dyn Fn(
+            &Arc<crate::schema_union::FooterProgress>,
+        ) -> Option<(
+            crate::schema_union::DatasetSchema,
+            LazyFrame,
+            Vec<usize>,
+            Vec<String>,
+            Vec<Vec<usize>>,
+        )> + Send
+        + Sync,
+>;
 
 /// A remote dataset of many files, and how to read only some of them.
 ///
@@ -560,6 +579,7 @@ impl DataTableState {
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
             drift_files: Vec::new(),
+            footers_pending: None,
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
@@ -668,6 +688,7 @@ impl DataTableState {
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
             drift_files: Vec::new(),
+            footers_pending: None,
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
@@ -3917,6 +3938,66 @@ impl DataTableState {
         self.read_as_text = Vec::new();
         self.dataset_at_open = Some(schema.clone());
         self.dataset_schema = Some(schema);
+    }
+
+    /// The pass that is still reading this dataset's footers, if one is.
+    pub fn footers_pending(&self) -> Option<FootersJoin> {
+        self.footers_pending.clone()
+    }
+
+    /// Record that the dataset opened from a sample of its footers and the rest are
+    /// coming. See [`FootersJoin`].
+    pub fn set_footers_pending(&mut self, join: FootersJoin) {
+        self.footers_pending = Some(join);
+    }
+
+    /// Every footer's answer, joined to the dataset already on screen.
+    ///
+    /// The open painted from the first file and the newest; this is what the rest of
+    /// them say. Columns only ever join: a name the opening schema did not have goes on
+    /// the end, and every name already there keeps its place — including the places a
+    /// user has since moved them to — so nothing moves under the cursor except to make
+    /// room for what arrived.
+    ///
+    /// The frame is rebuilt rather than widened in place, because the scan itself
+    /// differs: it now knows which files hold a column in a type the dataset cannot
+    /// keep, and with every file's row count it can number the rows, which is what
+    /// tells an absent cell from a null.
+    pub fn join_dataset_schema(
+        &mut self,
+        schema: crate::schema_union::DatasetSchema,
+        lf: LazyFrame,
+        file_rows: &[usize],
+        files: &[String],
+    ) {
+        let known: std::collections::HashSet<&str> =
+            self.column_order.iter().map(String::as_str).collect();
+        let joining: Vec<String> = schema
+            .schema
+            .iter_names()
+            .map(|name| name.to_string())
+            .filter(|name| {
+                name != crate::schema_union::DRIFT_COLUMN && !known.contains(name.as_str())
+            })
+            .collect();
+        drop(known);
+        self.column_order.extend(joining);
+        self.schema = schema.schema.clone();
+        // Takes the notes, the drift groups and the row starts with it, and clears
+        // `read_as_text` — sound only because the offer to read a column as text is
+        // not made until the footers are all in, so there is nothing to clear.
+        self.set_dataset_schema(schema, file_rows, files);
+        self.footers_pending = None;
+        self.original_lf = lf.clone();
+        self.base_lf = lf.clone();
+        self.lf = lf;
+        // The rows on screen were read through the old frame. Dropping the buffer has
+        // the next collect read them through the new one, at the row the user is still
+        // sitting on — `start_row` and the column scroll are left exactly as they are.
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
+        self.buffered_df = None;
+        self.apply_transformations();
     }
 
     /// The frame as the user sees it: `lf` without the hidden row-index column.

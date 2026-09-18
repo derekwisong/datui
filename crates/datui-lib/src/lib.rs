@@ -1490,6 +1490,108 @@ pub mod tests {
             .join("tests/sample-data")
     }
 
+    /// A dataset that opened from two footers gets the rest, through the app.
+    ///
+    /// The cloud test covers the pass itself; this covers everything between it and the
+    /// screen — that the app starts it without marking itself busy, that what it finds
+    /// reaches the dataset on screen, and that a pass belonging to a dataset the user
+    /// has since left cannot join its columns to the one that replaced it.
+    #[test]
+    fn a_staged_open_joins_what_its_footers_found() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => &[1i64, 2], "v" => &[10i64, 20]).unwrap().lazy();
+        let wider = || {
+            df!("id" => &[1i64, 2], "v" => &[10i64, 20], "oops" => &["a", "b"])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 2,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut app = App::new(tx, runtime.handle().clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(frame()).schema.clone(),
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        // What the pass behind the open will find: one column more.
+        state.set_footers_pending(Arc::new(move |_progress| {
+            Some((
+                dataset_of(wider()),
+                wider(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+        }));
+        app.load_active = true;
+        // Installed the way an open installs it, rather than dropped into the field:
+        // handing the pass over is one line of `apply_schema_ready`, and a test that
+        // starts the pass itself would not notice that line going missing.
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        assert!(
+            !app.is_busy(),
+            "the dataset is on screen and must keep working while the rest are read"
+        );
+        let joined = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the pass reports back");
+        let AppEvent::BackgroundFootersJoined { generation } = joined else {
+            panic!("expected the footers to be reported, got another event");
+        };
+
+        // The user has gone elsewhere and come back to something else since.
+        let of_a_dataset_now_gone = app.dataset_generation;
+        app.dataset_generation = app.dataset_generation.wrapping_add(1);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined {
+            generation: of_a_dataset_now_gone,
+        });
+        assert!(
+            !app.data_table_state
+                .as_ref()
+                .unwrap()
+                .get_column_order()
+                .iter()
+                .any(|c| c == "oops"),
+            "a pass whose dataset is gone joins nothing to the one that replaced it"
+        );
+
+        // And now as it really lands, against the dataset it belongs to.
+        app.dataset_generation = generation;
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation });
+        assert_eq!(
+            app.data_table_state
+                .as_ref()
+                .unwrap()
+                .get_column_order()
+                .last()
+                .map(String::as_str),
+            Some("oops"),
+            "the column the pass found joins the dataset on screen"
+        );
+    }
+
     /// Only one query type is returned; SQL overrides fuzzy over DSL. Used when saving templates.
     #[test]
     fn test_active_query_settings_only_one_set() {
@@ -2010,6 +2112,12 @@ pub enum AppEvent {
     /// on a later interaction; the total stays provisional in the meantime.
     BackgroundLenFailed {
         len_generation: u64,
+    },
+    /// Every footer of a dataset that opened from two of them has now been read. What
+    /// they say is in `App::pending_footers_result`; the columns they add join the
+    /// dataset already on screen.
+    BackgroundFootersJoined {
+        generation: u64,
     },
     /// Background task completed: schema loaded and DataTableState constructed.
     /// The actual state is stored in App::pending_schema_result (to avoid cloning DataTableState).
@@ -2981,6 +3089,14 @@ pub struct App {
     /// The buffer collect in flight, if any. See [`InflightCollect`].
     collect_inflight: Option<InflightCollect>,
     pending_schema_result: std::sync::Arc<std::sync::Mutex<Option<(u64, DataTableState)>>>, // (generation, result) from background schema load
+    /// What the pass behind a staged open found, for the frame that applies it. Mirrors
+    /// `pending_schema_result`: large enough to be worth keeping out of the event, and
+    /// discarded if the dataset it belongs to has been replaced.
+    pending_footers_result: std::sync::Arc<std::sync::Mutex<Option<(u64, JoinedFooters)>>>,
+    /// Bumped once per dataset opened, which `task_generation` is not: a collect bumps
+    /// that, and the pass reading the rest of a dataset's footers outlives several. It
+    /// is what says whether the columns arriving belong to the dataset on screen.
+    dataset_generation: u64,
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
@@ -3208,6 +3324,40 @@ impl App {
     }
 
     /// Apply a successfully loaded DataTableState to the app. Shared by all schema load paths.
+    /// Start the pass that reads the rest of a staged open's footers.
+    ///
+    /// Not through `spawn_bg`, which marks the app busy: the whole point of opening
+    /// before every footer is read is that the dataset works while they are read. The
+    /// generation is the dataset's rather than the task's, because a collect bumps the
+    /// task's and this pass outlives several of them.
+    fn start_pending_footers(&mut self) {
+        let Some(join) = self
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.footers_pending())
+        else {
+            return;
+        };
+        let generation = self.dataset_generation;
+        let slot = self.pending_footers_result.clone();
+        let tx = self.events.clone();
+        let progress = self.footer_progress.clone();
+        self.runtime.spawn_blocking(move || {
+            let Some(found) = join(&progress) else {
+                return;
+            };
+            {
+                let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+                // A later dataset's pass has already answered; this one is history.
+                if slot.as_ref().is_some_and(|(g, _)| *g > generation) {
+                    return;
+                }
+                *slot = Some((generation, found));
+            }
+            let _ = tx.send(AppEvent::BackgroundFootersJoined { generation });
+        });
+    }
+
     fn apply_schema_ready(
         &mut self,
         state: DataTableState,
@@ -3245,6 +3395,9 @@ impl App {
         {
             state.set_parquet_count_dir(p.clone());
         }
+        // The dataset is on screen now; whatever it still has to learn about itself is
+        // read behind it.
+        self.start_pending_footers();
         self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
         if let LoadingState::Loading {
@@ -3643,6 +3796,8 @@ impl App {
             awaiting_dataset: false,
             pending_lazyframe_result: Arc::new(Mutex::new(None)),
             pending_schema_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            dataset_generation: 0,
             len_count_inflight: None,
             collect_inflight: None,
             len_count_failed: None,
@@ -5097,6 +5252,32 @@ pub(crate) fn hoist_partition_columns(
     lf.select(exprs)
 }
 
+/// What reading every footer of a staged open turned up: the dataset's full schema, the
+/// scan that reads it, each file's rows, the files, and their row groups.
+type JoinedFooters = (
+    crate::schema_union::DatasetSchema,
+    LazyFrame,
+    Vec<usize>,
+    Vec<String>,
+    Vec<Vec<usize>>,
+);
+
+/// A cloud dataset as some set of its footers describes it.
+///
+/// The open builds one from the two ends of the listing and the pass behind it builds
+/// another from every footer; what tells them apart is only how much they know.
+#[cfg(feature = "cloud")]
+struct CloudDataset {
+    dataset: crate::schema_union::DatasetSchema,
+    /// Each file's rows, or empty when they are not all known — the same condition
+    /// under which the scan declines to number its rows.
+    file_rows: Vec<usize>,
+    urls: Vec<String>,
+    /// Each file's row groups, or empty unless every footer was read and parsed.
+    row_groups: Vec<Vec<usize>>,
+    scan: crate::widgets::datatable::FileScan,
+    partition_columns: Vec<String>,
+}
 impl App {
     /// Schema for a local folder of Parquet files: every column any of them has, from
     /// their footers, instead of `collect_schema()` over the whole set or one file's
@@ -5258,67 +5439,42 @@ impl App {
         runtime: &tokio::runtime::Handle,
         progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Option<DataTableState> {
-        let listed = {
+        let files = {
             let store = store.clone();
-            // Cloned into the future rather than borrowed: the future outlives this
-            // frame, and the counter is shared with whoever is rendering anyway.
-            let progress = progress.clone();
-            wait_on_runtime(runtime, async move {
-                let files = cloud_hive::list_dataset_files(&store, &key).await?;
-                let read = crate::schema_union::footers_to_read(files.len());
-                let footers =
-                    cloud_hive::footers_of_files_reporting(&store, &files, &read, &progress).await;
-                color_eyre::Result::<_>::Ok((files, read, footers))
-            })?
-            .ok()?
-        };
-        let (files, read, footers) = listed;
-        let file_count = files.len();
-        let (dataset, partition_columns) =
-            cloud_hive::dataset_schema_from_footers(&files, &read, &footers).ok()?;
-        let urls: Vec<String> = files
-            .iter()
-            .filter_map(|f| cloud_hive::url_of_key(full, &f.key))
-            .collect();
-        if urls.is_empty() || urls.len() != files.len() {
-            return None;
-        }
-        // A file that stores a column in a type the dataset's column cannot hold is not
-        // read for it; its rows are null there rather than failing the scan, and carry
-        // their file's drift group so the null can be told from a real one.
-        let file_rows: Vec<usize> = if read.len() == file_count {
-            footers
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.row_group_rows.iter().sum()))
-                .collect::<Option<Vec<_>>>()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
-        let schema = dataset.schema.clone();
-        let scan: crate::widgets::datatable::FileScan = {
-            let (schema, partition_columns, drift) = (
-                schema.clone(),
-                partition_columns.clone(),
-                drift.map(Arc::new),
-            );
             Arc::new(
-                move |urls: &[String], as_text: &[polars::prelude::PlSmallStr]| {
-                    let drifts = drift.is_some();
-                    cloud_hive::lenient_scan(
-                        urls,
-                        schema.clone(),
-                        Some(cloud_opts.clone()),
-                        drift.as_deref(),
-                        as_text,
-                    )
-                    .map(|lf| {
-                        Self::hoist_partition_columns(lf, &schema, &partition_columns, drifts)
-                    })
-                },
+                wait_on_runtime(runtime, async move {
+                    cloud_hive::list_dataset_files(&store, &key).await
+                })?
+                .ok()?,
             )
         };
+        // Past one wave of concurrent reads the footers stop being free: the two ends
+        // open the dataset and the rest are read behind it, joining when they land. Up
+        // to a wave they cost one round trip either way, so the dataset opens whole —
+        // rows numbered, absent cells marked, notes complete.
+        let staged = files.len() > cloud_hive::FOOTERS_AT_ONCE;
+        let read = if staged {
+            crate::schema_union::ends_of(files.len())
+        } else {
+            crate::schema_union::footers_to_read(files.len())
+        };
+        let footers = Self::cloud_footers(
+            store.clone(),
+            files.clone(),
+            read.clone(),
+            runtime,
+            progress.clone(),
+        )?;
+        let opened = Self::cloud_dataset_from_footers(full, &files, &read, &footers, &cloud_opts)?;
+        let CloudDataset {
+            dataset,
+            file_rows,
+            urls,
+            row_groups,
+            scan,
+            partition_columns,
+        } = opened;
+        let schema = dataset.schema.clone();
         // The objects that will open. One whose footer would not read is one Polars
         // cannot read either, and left in the scan it takes the whole prefix down with
         // it on the first page.
@@ -5330,12 +5486,12 @@ impl App {
         // dropped without a word, and the dataset spends the rest of the session
         // re-counting itself and never reaching an end to jump to.
         let counted: Vec<cloud_hive::DatasetFile> = files
-            .into_iter()
+            .iter()
             .enumerate()
             // Searched rather than scanned, for the same reason `readable_paths` does:
             // a prefix can be hundreds of thousands of objects.
             .filter(|(index, _)| dataset.unreadable.binary_search(index).is_err())
-            .map(|(_, file)| file)
+            .map(|(_, file)| file.clone())
             .collect();
         // Belt and braces, both of them: a prefix with nothing readable has no schema
         // and was handed back above, and the two lists are filtered from the same
@@ -5346,7 +5502,7 @@ impl App {
             return None;
         }
         let count: crate::widgets::datatable::FileCounter = {
-            let (runtime, counted) = (runtime.clone(), Arc::new(counted));
+            let (runtime, counted, store) = (runtime.clone(), Arc::new(counted), store.clone());
             Arc::new(move || {
                 let (store, counted) = (store.clone(), counted.clone());
                 wait_on_runtime(&runtime, async move {
@@ -5371,20 +5527,142 @@ impl App {
         // count as no rows, which both undercounts the dataset and puts that file's rows
         // out of reach of a windowed scan; leaving the count to `RemoteFiles::count`
         // means it is retried instead.
-        if read.len() == file_count && footers.iter().all(Option::is_some) {
-            let row_groups: Vec<Vec<usize>> = footers
-                .iter()
-                .flatten()
-                .map(|f| f.row_group_rows.clone())
-                .collect();
+        if !row_groups.is_empty() {
             state.set_file_row_groups(&row_groups);
         }
-        state.set_dataset_schema(
-            dataset.with_partition_layouts(full, &urls),
-            &file_rows,
-            &urls,
-        );
+        state.set_dataset_schema(dataset, &file_rows, &urls);
+        if staged {
+            // Everything the pass behind the open needs, held as one closure the way
+            // the scan and the counter are: the store and the listing it already has,
+            // so it neither lists the prefix again nor has to be told what it is
+            // reading.
+            let (store, cloud_opts, runtime) = (store.clone(), cloud_opts.clone(), runtime.clone());
+            let (files, full) = (files.clone(), full.to_string());
+            state.set_footers_pending(Arc::new(move |progress: &Arc<_>| {
+                let read = crate::schema_union::footers_to_read(files.len());
+                let footers = Self::cloud_footers(
+                    store.clone(),
+                    files.clone(),
+                    read.clone(),
+                    &runtime,
+                    progress.clone(),
+                )?;
+                let whole =
+                    Self::cloud_dataset_from_footers(&full, &files, &read, &footers, &cloud_opts)?;
+                // The same exclusion the open makes: a footer that would not read on
+                // this pass either is a file Polars cannot read, and scanning it takes
+                // the prefix down.
+                let readable =
+                    crate::schema_union::readable_paths(&whole.urls, &whole.dataset.unreadable)
+                        .into_owned();
+                let lf = (whole.scan)(&readable, &[]).ok()?;
+                Some((
+                    whole.dataset,
+                    lf,
+                    whole.file_rows,
+                    readable,
+                    whole.row_groups,
+                ))
+            }));
+        }
         Some(state)
+    }
+
+    /// The footers at `read`, fetched on the runtime. `None` if the open was abandoned.
+    ///
+    /// Everything is cloned into the future rather than borrowed: it outlives this
+    /// frame, and the counter is shared with whoever is rendering anyway.
+    #[cfg(feature = "cloud")]
+    fn cloud_footers(
+        store: Arc<dyn object_store::ObjectStore>,
+        files: Arc<Vec<cloud_hive::DatasetFile>>,
+        read: Vec<usize>,
+        runtime: &tokio::runtime::Handle,
+        progress: Arc<crate::schema_union::FooterProgress>,
+    ) -> Option<Vec<Option<cloud_hive::FileFooter>>> {
+        wait_on_runtime(runtime, async move {
+            cloud_hive::footers_of_files_reporting(&store, &files, &read, &progress).await
+        })
+    }
+
+    /// What a set of a cloud dataset's footers says, and the scan that reads it.
+    ///
+    /// Shared by the open, which has read the two ends, and the pass behind it, which
+    /// has read them all: the two differ only in how much they know, and a dataset
+    /// built from a sample already says so — it forgoes numbering its rows and scopes
+    /// its notes to the footers it saw.
+    #[cfg(feature = "cloud")]
+    fn cloud_dataset_from_footers(
+        full: &str,
+        files: &[cloud_hive::DatasetFile],
+        read: &[usize],
+        footers: &[Option<cloud_hive::FileFooter>],
+        cloud_opts: &CloudOptions,
+    ) -> Option<CloudDataset> {
+        let (dataset, partition_columns) =
+            cloud_hive::dataset_schema_from_footers(files, read, footers).ok()?;
+        let urls: Vec<String> = files
+            .iter()
+            .filter_map(|f| cloud_hive::url_of_key(full, &f.key))
+            .collect();
+        if urls.is_empty() || urls.len() != files.len() {
+            return None;
+        }
+        // A file that stores a column in a type the dataset's column cannot hold is not
+        // read for it; its rows are null there rather than failing the scan, and carry
+        // their file's drift group so the null can be told from a real one.
+        let file_rows: Vec<usize> = if read.len() == files.len() {
+            footers
+                .iter()
+                .map(|f| f.as_ref().map(|f| f.row_group_rows.iter().sum()))
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let row_groups: Vec<Vec<usize>> =
+            if read.len() == files.len() && footers.iter().all(Option::is_some) {
+                footers
+                    .iter()
+                    .flatten()
+                    .map(|f| f.row_group_rows.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
+        let schema = dataset.schema.clone();
+        let scan: crate::widgets::datatable::FileScan = {
+            let (schema, partition_columns, drift, cloud_opts) = (
+                schema.clone(),
+                partition_columns.clone(),
+                drift.map(Arc::new),
+                cloud_opts.clone(),
+            );
+            Arc::new(
+                move |urls: &[String], as_text: &[polars::prelude::PlSmallStr]| {
+                    let drifts = drift.is_some();
+                    cloud_hive::lenient_scan(
+                        urls,
+                        schema.clone(),
+                        Some(cloud_opts.clone()),
+                        drift.as_deref(),
+                        as_text,
+                    )
+                    .map(|lf| {
+                        Self::hoist_partition_columns(lf, &schema, &partition_columns, drifts)
+                    })
+                },
+            )
+        };
+        Some(CloudDataset {
+            dataset: dataset.with_partition_layouts(full, &urls),
+            file_rows,
+            urls,
+            row_groups,
+            scan,
+            partition_columns,
+        })
     }
 
     /// General schema route: ask the frame itself. Slow for a wide hive dataset, which
@@ -9896,6 +10174,7 @@ impl App {
                 // the footers keep being read — so a shared one would go on reporting
                 // the abandoned folder's progress under the next file's name.
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
+                self.dataset_generation = self.dataset_generation.wrapping_add(1);
                 self.load_active = true;
                 self.awaiting_dataset = true;
                 self.busy = true;
@@ -9947,6 +10226,7 @@ impl App {
                 // the footers keep being read — so a shared one would go on reporting
                 // the abandoned folder's progress under the next file's name.
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
+                self.dataset_generation = self.dataset_generation.wrapping_add(1);
                 self.load_active = true;
                 self.awaiting_dataset = true;
                 self.busy = true;
@@ -10853,6 +11133,33 @@ impl App {
                 }
                 // Stale results (generation mismatch) are silently ignored —
                 // busy stays true until the current generation's result arrives.
+                None
+            }
+            AppEvent::BackgroundFootersJoined { generation } => {
+                if *generation != self.dataset_generation || !self.load_active {
+                    // The dataset these belong to is gone. Nothing to join them to.
+                    return None;
+                }
+                let taken = self
+                    .pending_footers_result
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some((slot_generation, (dataset, lf, file_rows, files, row_groups))) = taken
+                    && slot_generation == self.dataset_generation
+                    && let Some(state) = self.data_table_state.as_mut()
+                {
+                    state.join_dataset_schema(dataset, lf, &file_rows, &files);
+                    // Now every file's row groups are known, so the count is exact and
+                    // a page reads only the files holding its rows.
+                    if !row_groups.is_empty() {
+                        state.set_file_row_groups(&row_groups);
+                    }
+                    // The rows on screen were read through the narrower frame. This
+                    // reads them again through the wider one, at the row the user is
+                    // still sitting on.
+                    return Some(AppEvent::DoLoadBuffer);
+                }
                 None
             }
             AppEvent::BackgroundSchemaReady {

@@ -174,6 +174,34 @@ fn render_format_options(
     let inner = block.inner(area);
     block.render(area, buf);
 
+    // The source-file option belongs to no format, so it sits under the ones that do.
+    let (inner, source_file_row) = if modal.offer_source_file {
+        // Directly under the format's own options, not at the foot of the box: a
+        // checkbox alone on the bottom line reads as belonging to nothing.
+        let used = match modal.selected_format {
+            // Rows each format's own options draw. Pinned by
+            // `test_the_export_options_panel_reads_as_one_for_every_format`, which
+            // renders every format and requires that format's own last row — the
+            // second compression row, or the "No options specific to" line — to be
+            // the row directly above the checkbox. Too low a count truncates that
+            // row away; too high a count opens a blank one.
+            ExportFormat::Csv => 5,
+            ExportFormat::Json | ExportFormat::Ndjson => 3,
+            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => 1,
+        };
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(used),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(inner);
+        (rows[0], Some(rows[1]))
+    } else {
+        (inner, None)
+    };
+
     match modal.selected_format {
         ExportFormat::Csv => render_csv_options(
             inner,
@@ -192,6 +220,42 @@ fn render_format_options(
             render_no_format_options(inner, buf, modal, border_color, active_color)
         }
     }
+
+    if let Some(row) = source_file_row {
+        render_source_file_option(row, buf, modal, border_color, active_color);
+    }
+}
+
+/// A checkbox for naming each row's file. Only drawn for a dataset whose files
+/// disagree, which is where a null and an absent cell differ and the file is what
+/// tells them apart once the data has left datui.
+fn render_source_file_option(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    modal: &ExportModal,
+    border_color: ratatui::style::Color,
+    active_color: ratatui::style::Color,
+) {
+    let focused = modal.focus == ExportFocus::SourceFile;
+    let style = if focused {
+        Style::default().fg(active_color)
+    } else {
+        Style::default().fg(border_color)
+    };
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(15),
+            Constraint::Length(2),
+            Constraint::Min(1),
+        ])
+        .split(area);
+    Paragraph::new("Source file:")
+        .style(style)
+        .render(columns[0], buf);
+    let marker = if modal.source_file { "☑" } else { "☐" };
+    // Column 2, so the box lines up with the one on the Include Header row above.
+    Paragraph::new(Line::from(vec![Span::styled(marker, style)])).render(columns[2], buf);
 }
 
 fn render_csv_options(
@@ -424,10 +488,20 @@ fn render_no_format_options(
     border_color: Color,
     _active_color: Color,
 ) {
-    let msg = format!(
-        "No additional options for {} format",
-        modal.selected_format.as_str()
-    );
+    // "No options" would be false with the source-file checkbox drawn below, and
+    // leaving the panel blank instead reads as a rendering fault. Neither: the format
+    // has none of its own, which is what this says.
+    let msg = if modal.offer_source_file {
+        format!(
+            "No options specific to {} format",
+            modal.selected_format.as_str()
+        )
+    } else {
+        format!(
+            "No additional options for {} format",
+            modal.selected_format.as_str()
+        )
+    };
     Paragraph::new(msg)
         .style(Style::default().fg(border_color))
         .centered()

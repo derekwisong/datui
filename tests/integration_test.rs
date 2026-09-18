@@ -1298,7 +1298,24 @@ fn export_csv_header(
     tx: &mpsc::Sender<AppEvent>,
     path: &std::path::Path,
 ) -> String {
+    export_csv(app, rx, tx, path, false)
+        .lines()
+        .next()
+        .expect("with a header")
+        .to_string()
+}
+
+/// Run a CSV export through the app's own two-phase export events and return the whole
+/// file. `source_file` asks it to name the file each row came from.
+fn export_csv(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    path: &std::path::Path,
+    source_file: bool,
+) -> String {
     let options = datui::ExportOptions {
+        source_file,
         csv_delimiter: b',',
         csv_include_header: true,
         csv_compression: None,
@@ -1325,12 +1342,7 @@ fn export_csv_header(
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    std::fs::read_to_string(path)
-        .expect("the export wrote a file")
-        .lines()
-        .next()
-        .expect("with a header")
-        .to_string()
+    std::fs::read_to_string(path).expect("the export wrote a file")
 }
 
 /// A query builds its own rows, and its schema becomes the column order — so a query
@@ -1731,6 +1743,197 @@ fn test_a_uniform_dataset_has_no_notes() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.notes().is_empty());
     assert!(!state.notes_unseen(), "so no accent either");
+}
+
+/// Asking an export to name each row's file keeps the absent-versus-null distinction
+/// once the data has left datui: `extra` is empty in both rows, but only one of them
+/// came from a file that had the column.
+#[test]
+fn test_an_export_can_name_the_file_each_row_came_from() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &[None::<&str>]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .can_name_source_files(),
+        "the files disagree, so there is something to name"
+    );
+
+    let out = dir.path().join("named.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, true);
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines[0], "date,id,extra,source_file");
+    assert!(
+        lines[1].ends_with("date=2024-01-01/data.parquet"),
+        "the first row came from the file without `extra`: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].ends_with("date=2024-01-02/data.parquet"),
+        "and the second from the one that has it, holding a real null: {}",
+        lines[2]
+    );
+
+    // Off by default, and then the hidden index must not leak in its place.
+    let plain = dir.path().join("plain.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &plain, false);
+    assert_eq!(csv.lines().next().unwrap(), "date,id,extra");
+}
+
+/// A dataset may already have a column called `source_file` — a folder of per-file
+/// extracts is exactly this feature's audience — and adding one by that name would
+/// replace it, silently, in the file the user takes away.
+#[test]
+fn test_naming_source_files_never_overwrites_a_column_of_that_name() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64], "source_file" => &["mine-A"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "source_file" => &["mine-B"], "extra" => &["x"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let out = dir.path().join("collide.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, true);
+    let lines: Vec<&str> = csv.lines().collect();
+
+    assert_eq!(
+        lines[0], "date,id,source_file,extra,source_file_1",
+        "the dataset keeps its own column and datui's goes on the end under another name"
+    );
+    assert!(
+        lines[1].contains("mine-A"),
+        "the dataset's own values survive: {}",
+        lines[1]
+    );
+    assert!(lines[2].contains("mine-B"), "both of them: {}", lines[2]);
+}
+
+/// Asking for source files on a frame that no longer has them must not leak datui's
+/// bookkeeping instead.
+///
+/// This exercises the path where the option is on but the dataset cannot honour it, so
+/// the export never collects the index at all. The other path — collected with the
+/// index, then unable to name it — is guarded by `drop_row_index`, which is unit
+/// tested; it needs the dataset to change between the collect being spawned and its
+/// result arriving, which keys held while busy make unreachable today.
+#[test]
+fn test_asking_to_name_files_on_a_query_result_leaks_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    // A query replaces the frame, so the rows no longer stand for rows of a file and
+    // naming them is refused — but the export still runs.
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sql_query("select * from df".to_string());
+    state.collect();
+    assert!(!state.can_name_source_files(), "nothing to name any more");
+
+    let out = dir.path().join("refused.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, true);
+    let header = csv.lines().next().unwrap();
+    assert!(
+        !header.contains("__datui_row"),
+        "datui's own bookkeeping must not reach the file: {header}"
+    );
+}
+
+/// The Options panel must read as a panel at every format: no empty box, and the
+/// source-file checkbox under the format's own options rather than adrift at the foot.
+#[test]
+fn test_the_export_options_panel_reads_as_one_for_every_format() {
+    use datui::export_modal::ExportFormat;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    // The modal opens with focus on the path, where Down does not change the format.
+    for key in [KeyCode::Char('e'), KeyCode::BackTab] {
+        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+    }
+    assert!(app.export_modal.offer_source_file, "the files disagree");
+    assert_eq!(
+        app.export_modal.focus,
+        datui::export_modal::ExportFocus::FormatSelector,
+        "so the walk below really does change format"
+    );
+
+    let area = Rect::new(0, 0, 120, 30);
+    let mut seen = Vec::new();
+    let mut wrong = Vec::new();
+    for _ in 0..ExportFormat::ALL.len() {
+        let format = app.export_modal.selected_format;
+        seen.push(format);
+        // The last row each format draws of its own. The checkbox goes directly under
+        // it, so asking for this row by name pins the row count in
+        // `render_format_options`: count too low and the format's last row is
+        // truncated away, too high and a blank row opens up. Either way this row is
+        // no longer the one above the checkbox.
+        let last_of_its_own = match format {
+            // Both end on the second compression row.
+            ExportFormat::Csv | ExportFormat::Json | ExportFormat::Ndjson => "XZ",
+            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
+                "No options specific to"
+            }
+        };
+
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        match rows.iter().position(|r| r.contains("Source file:")) {
+            None => wrong.push(format!("{format:?}: no Source file row at all")),
+            Some(checkbox) if !rows[checkbox - 1].contains(last_of_its_own) => wrong.push(format!(
+                "{format:?}: the row above the checkbox should be the one holding \
+                 {last_of_its_own:?}, and is {:?}",
+                rows[checkbox - 1].trim_end()
+            )),
+            Some(_) => {}
+        }
+        // Move to the next format.
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+    }
+    // Collected rather than asserted in the loop: the formats fail in families, and
+    // one report naming every bad format beats six runs that each name the first.
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert_eq!(
+        seen,
+        ExportFormat::ALL.to_vec(),
+        "the walk must visit every format once, in order"
+    );
 }
 
 /// A column only a middle file has used to vanish: the schema was one file's, and that

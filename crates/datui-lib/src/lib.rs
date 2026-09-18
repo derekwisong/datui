@@ -1784,6 +1784,9 @@ pub enum RunInput {
 pub struct ExportOptions {
     pub csv_delimiter: u8,
     pub csv_include_header: bool,
+    /// Add a column naming the file each row came from, so a cell that is absent
+    /// rather than null can still be told apart once the data has left datui.
+    pub source_file: bool,
     pub csv_compression: Option<CompressionFormat>,
     pub json_compression: Option<CompressionFormat>,
     pub ndjson_compression: Option<CompressionFormat>,
@@ -4756,7 +4759,7 @@ impl App {
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
-        state.set_dataset_schema(dataset, &file_rows);
+        state.set_dataset_schema(dataset, &file_rows, &paths);
         Some(state)
     }
 
@@ -4895,7 +4898,7 @@ impl App {
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
         state.set_remote_files(crate::widgets::datatable::RemoteFiles {
-            urls: Arc::new(urls),
+            urls: Arc::new(urls.clone()),
             scan,
             count,
             offsets: None,
@@ -4913,7 +4916,7 @@ impl App {
                 .collect();
             state.set_file_row_groups(&row_groups);
         }
-        state.set_dataset_schema(dataset, &file_rows);
+        state.set_dataset_schema(dataset, &file_rows, &urls);
         Some(state)
     }
 
@@ -6281,6 +6284,7 @@ impl App {
                                     json_compression: self.export_modal.json_compression,
                                     ndjson_compression: self.export_modal.ndjson_compression,
                                     parquet_compression: None,
+                                    source_file: self.export_modal.source_file,
                                 };
                                 // Check if file exists and show confirmation
                                 if path.exists() {
@@ -6338,6 +6342,7 @@ impl App {
                                 json_compression: self.export_modal.json_compression,
                                 ndjson_compression: self.export_modal.ndjson_compression,
                                 parquet_compression: None,
+                                source_file: self.export_modal.source_file,
                             };
                             // Check if file exists and show confirmation
                             if path.exists() {
@@ -6363,6 +6368,9 @@ impl App {
                         ExportFocus::CsvIncludeHeader => {
                             self.export_modal.csv_include_header =
                                 !self.export_modal.csv_include_header;
+                        }
+                        ExportFocus::SourceFile => {
+                            self.export_modal.source_file = !self.export_modal.source_file;
                         }
                         ExportFocus::CsvCompression
                         | ExportFocus::JsonCompression
@@ -6390,6 +6398,9 @@ impl App {
                             // Toggle checkbox
                             self.export_modal.csv_include_header =
                                 !self.export_modal.csv_include_header;
+                        }
+                        ExportFocus::SourceFile => {
+                            self.export_modal.source_file = !self.export_modal.source_file;
                         }
                         _ => {}
                     }
@@ -9237,6 +9248,10 @@ impl App {
                         self.original_file_delimiter,
                         config_delimiter,
                     );
+                    self.export_modal.offer_source_file = self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.can_name_source_files());
                     self.input_mode = InputMode::Export;
                 }
                 None
@@ -10429,7 +10444,21 @@ impl App {
                 options,
             } => {
                 if *generation == self.task_generation {
-                    self.export_df = Some(df.clone());
+                    // The frame was collected with the scan's row index still on it
+                    // when the export asked to name each row's file; swap it for the
+                    // names. Where that cannot be done the export goes ahead without
+                    // the column — but the index still has to come off, or datui's own
+                    // bookkeeping lands in the user's file.
+                    let df = match self
+                        .data_table_state
+                        .as_ref()
+                        .filter(|state| options.source_file && state.can_name_source_files())
+                        .map(|state| state.name_source_files(df.clone()))
+                    {
+                        Some(Ok(named)) => named,
+                        _ => DataTableState::drop_row_index(df.clone()),
+                    };
+                    self.export_df = Some(df);
                     let has_compression = match format {
                         ExportFormat::Csv => options.csv_compression.is_some(),
                         ExportFormat::Json => options.json_compression.is_some(),
@@ -10749,7 +10778,14 @@ impl App {
             }
             AppEvent::DoExportCollect(path, format, options) => {
                 if let Some(state) = &self.data_table_state {
-                    let lf = state.visible_lf();
+                    // Naming each row's file needs the scan's row index, which
+                    // `visible_lf` drops; the index is replaced by the name below.
+                    let name_files = options.source_file && state.can_name_source_files();
+                    let lf = if name_files {
+                        state.lf_clone()
+                    } else {
+                        state.visible_lf()
+                    };
                     let streaming = state.polars_streaming;
                     let path = path.clone();
                     let format = *format;

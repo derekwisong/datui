@@ -5,7 +5,7 @@ Export current data to a file.
                     In other fields: Move focus
   Left / Right:     Move cursor in text fields
   Enter:            Export (on Export button) or Cancel (on Cancel button)
-                    Toggle checkbox (on Include Header)
+                    Toggle checkbox (on Include Header or Source file)
   ? / F1:           Show this help (F1 works in text fields)
   Esc:              Close without exporting
 
@@ -16,6 +16,15 @@ Formats:
   NDJSON:  Newline-delimited JSON (one object per line)
   Arrow:   Arrow IPC / Feather v2
   Avro:    Avro row format
+
+Source file:
+  Only offered for a folder of Parquet files that disagree, local or in
+  the cloud. Adds a column
+  naming the file each row came from, so a cell that is absent rather than
+  null can still be told apart once the data has left datui. No format
+  writes "absent", so without it both are written as null. A dataset that
+  already has a source_file column keeps it; datui's is added at the end
+  under the next free number.
 
 CSV Options:
   Delimiter:        Character to separate columns (default: comma)

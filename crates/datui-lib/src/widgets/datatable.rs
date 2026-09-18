@@ -144,6 +144,13 @@ pub struct DataTableState {
     /// Rows in the dataset as the footers counted them, so the last file's length is
     /// known without asking what the view currently holds.
     drift_dataset_rows: usize,
+    /// The dataset as its footers found it, kept beside the view because reading a
+    /// column as text needs the types the files actually hold — which is the very
+    /// thing the view no longer says.
+    dataset_at_open: Option<crate::schema_union::DatasetSchema>,
+    /// Columns being read as text from every file rather than as the type most rows
+    /// have. Empty for a dataset as opened.
+    read_as_text: Vec<PlSmallStr>,
     /// Each file's path or URL, in scan order, so a row can be traced to the file it
     /// came from and an export can name it.
     drift_files: Vec<String>,
@@ -243,8 +250,10 @@ pub struct CollectRequest {
     pub count_known: bool,
 }
 
-/// Builds a scan of some of a dataset's files, as the full scan reads them.
-pub type FileScan = Arc<dyn Fn(&[String]) -> PolarsResult<LazyFrame> + Send + Sync>;
+/// Builds a scan of some of a dataset's files, as the full scan reads them, with the
+/// columns named in the second argument read as text from every file rather than as
+/// the type most rows have.
+pub type FileScan = Arc<dyn Fn(&[String], &[PlSmallStr]) -> PolarsResult<LazyFrame> + Send + Sync>;
 /// Counts the rows in each row group of every file of a dataset. Blocks.
 pub type FileCounter = Arc<dyn Fn() -> Result<Vec<Vec<usize>>, String> + Send + Sync>;
 
@@ -556,6 +565,8 @@ impl DataTableState {
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
             drift_dataset_rows: 0,
+            dataset_at_open: None,
+            read_as_text: Vec::new(),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -662,6 +673,8 @@ impl DataTableState {
             notes_at_open: Vec::new(),
             view_notes: Vec::new(),
             drift_dataset_rows: 0,
+            dataset_at_open: None,
+            read_as_text: Vec::new(),
             column_widths: Vec::new(),
             observed_bytes_per_row: None,
             buffered_start_row: 0,
@@ -3851,9 +3864,11 @@ impl DataTableState {
         self.drift_dataset_rows = row;
         self.drift_at_open = self.drift_column_present;
         self.groups_at_open = self.drift_groups.clone();
-        self.notes = crate::notes::from_dataset(&schema);
+        self.notes = Self::notes_datui_can_act_on(&schema, self.drift_column_present);
         self.notes_at_open = self.notes.clone();
         self.notes_seen = false;
+        self.read_as_text = Vec::new();
+        self.dataset_at_open = Some(schema.clone());
         self.dataset_schema = Some(schema);
     }
 
@@ -4118,6 +4133,134 @@ impl DataTableState {
         self.notes_seen = true;
     }
 
+    /// Read `column` as text from every file, so the values a type conflict hid can be
+    /// seen.
+    ///
+    /// Rebuilds the scan rather than re-opening the dataset: everything it needs is
+    /// already here. The file list, each file's row count and — since the footers were
+    /// read — the type each file holds each conflicting column in are all on hand, so
+    /// this costs no directory listing, no footer read and no request. The view goes
+    /// with it: a filter and sort in force are re-applied to the new frame.
+    ///
+    /// Returns whether anything happened. `false` for a column that is not on offer,
+    /// which is what the panel only ever asks about, and for one already read this way.
+    pub fn read_column_as_text(&mut self, column: &str) -> PolarsResult<bool> {
+        let name = PlSmallStr::from(column);
+        let Some(dataset) = self.dataset_at_open.clone() else {
+            return Ok(false);
+        };
+        if !self.drift_column_present || self.read_as_text.contains(&name) {
+            return Ok(false);
+        }
+        if !dataset
+            .columns
+            .iter()
+            .any(|drift| drift.name == name && drift.can_read_as_text())
+        {
+            return Ok(false);
+        }
+
+        let mut as_text = self.read_as_text.clone();
+        as_text.push(name);
+
+        // Built from the dataset as its footers found it, never from the view below.
+        // The view has the column as text and nothing conflicting, so it no longer
+        // holds the one thing the scan needs: the type each file actually wrote.
+        let drift =
+            crate::schema_union::ScanDrift::new(&self.drift_files, &dataset, &self.file_rows());
+        let lf = match self.remote_files.as_ref() {
+            Some(remote) => (remote.scan)(&remote.urls, &as_text)?,
+            None => crate::schema_union::lenient_scan(
+                &self.drift_files,
+                dataset.schema.clone(),
+                None,
+                drift.as_ref(),
+                &as_text,
+            )?,
+        };
+        // The remote scan hoists inside its own closure, as it does for the frame the
+        // dataset opened with; only the local branch has it left to do.
+        let lf = if self.remote_files.is_some() {
+            lf
+        } else {
+            crate::hoist_partition_columns(
+                lf,
+                &dataset.schema,
+                self.partition_columns.as_deref().unwrap_or(&[]),
+                drift.is_some(),
+            )
+        };
+
+        let view = dataset.reading_as_text(&as_text);
+        self.read_as_text = as_text;
+        // `text_schema` keeps the columns in their places, so the order the user
+        // arranged still names every one of them and still means what it did.
+        self.schema = view.schema.clone();
+        self.drift_groups = Arc::new(view.groups.clone());
+        self.groups_at_open = self.drift_groups.clone();
+        self.notes = Self::notes_datui_can_act_on(&view, self.drift_column_present);
+        self.notes_at_open = self.notes.clone();
+        // One note went and another arrived, and the new one is about how the column
+        // now compares — which matters most to a user who has a filter on it.
+        self.notes_seen = false;
+        self.dataset_schema = Some(view);
+        self.original_lf = lf.clone();
+        self.base_lf = lf.clone();
+        self.lf = lf;
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
+        self.buffered_df = None;
+        // Re-applies the filter and sort over the new frame, and with them the note
+        // about what they leave out — which is one note shorter now.
+        self.apply_transformations();
+        Ok(true)
+    }
+
+    /// The dataset's notes, with the offer to read a column as text left on only where
+    /// taking it would work.
+    ///
+    /// A note is written from the footers' schema, which says whether a column *could*
+    /// be shown as text. Whether it can be read that way is a second question: the scan
+    /// has to know where each file's rows begin, and it does not for a dataset too large
+    /// to read every footer, or one where a footer would not parse. Those are the same
+    /// datasets that cannot draw the marks. An offer the panel shows and the action
+    /// then declines is worse than no offer, so it is taken off here rather than
+    /// refused later.
+    fn notes_datui_can_act_on(
+        dataset: &crate::schema_union::DatasetSchema,
+        counted: bool,
+    ) -> Vec<crate::notes::Note> {
+        let mut notes = crate::notes::from_dataset(dataset);
+        if !counted {
+            for note in &mut notes {
+                note.read_as_text = None;
+            }
+        }
+        notes
+    }
+
+    /// Each file's row count, as the footers gave them. The starts are kept rather than
+    /// the counts, so this is their differences with the dataset's total closing the
+    /// last one.
+    fn file_rows(&self) -> Vec<usize> {
+        self.drift_file_starts
+            .iter()
+            .enumerate()
+            .map(|(file, start)| {
+                self.drift_file_starts
+                    .get(file + 1)
+                    .copied()
+                    .unwrap_or(self.drift_dataset_rows)
+                    .saturating_sub(*start)
+            })
+            .collect()
+    }
+
+    /// The columns being read as text rather than as the type most rows have.
+    pub fn read_as_text(&self) -> &[PlSmallStr] {
+        &self.read_as_text
+    }
+
     /// What the footers said about the dataset's columns, when it is many files.
     pub fn dataset_schema(&self) -> Option<&crate::schema_union::DatasetSchema> {
         self.dataset_schema.as_ref()
@@ -4175,7 +4318,7 @@ impl DataTableState {
             .and_then(|f| f.offsets.as_ref().map(|o| (f, o)))
             && let Some((first, last)) = files_holding(offsets, start, len)
         {
-            let lf = (files.scan)(&files.urls[first..=last])?;
+            let lf = (files.scan)(&files.urls[first..=last], &self.read_as_text)?;
             return Ok(lf
                 .select(all_columns)
                 .slice((start - offsets[first]) as i64, len as u32));
@@ -6710,6 +6853,20 @@ mod tests {
         );
     }
 
+    fn file_schema(
+        columns: &[(&str, polars::prelude::DataType)],
+        rows: usize,
+    ) -> Option<crate::schema_union::FileSchema> {
+        let mut schema = polars::prelude::Schema::with_capacity(columns.len());
+        for (name, dtype) in columns {
+            schema.with_column((*name).into(), dtype.clone());
+        }
+        Some(crate::schema_union::FileSchema {
+            schema: Arc::new(schema),
+            rows,
+        })
+    }
+
     fn create_test_lf() -> LazyFrame {
         df! (
             "a" => &[1, 2, 3],
@@ -8233,6 +8390,116 @@ mod tests {
         assert_eq!(limit_files(&offsets, 0, 40, 0, 100, 16), (0, 100));
     }
 
+    /// A remote dataset reads its column as text too, and its windowed reads with it.
+    ///
+    /// The remote branch takes a different route: the scan closure it was opened with
+    /// is asked again with the column named, and `buffer_lf` passes the same names on
+    /// every later window. Miss that second half and a cloud dataset would read the
+    /// first screen as text and the next one as it was, disagreeing with its own
+    /// schema.
+    #[test]
+    fn a_remote_dataset_reads_a_conflicting_column_as_text_on_every_window() {
+        use crate::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
+        use polars::prelude::{DataType, IntoLazy, df};
+
+        let urls: Vec<String> = vec!["a".to_string(), "b".to_string()];
+        // The scan the dataset was opened with, standing in for the cloud one: the
+        // first file holds `n` as an integer and the second as text.
+        let scan: FileScan = Arc::new(move |urls: &[String], as_text: &[PlSmallStr]| {
+            let frames: Vec<LazyFrame> = urls
+                .iter()
+                .map(|url| {
+                    // The hidden row index the real scan stamps, numbered from where
+                    // the file's rows begin in the dataset so a window keeps its place.
+                    let frame = if url == "a" {
+                        df!(
+                            "id" => &[0i64, 1, 2],
+                            "n" => &[10i64, 20, 30],
+                            crate::schema_union::DRIFT_COLUMN => &[0u32, 1, 2],
+                        )
+                        .unwrap()
+                    } else {
+                        df!(
+                            "id" => &[3i64, 4],
+                            "n" => &["sixty", "seventy"],
+                            crate::schema_union::DRIFT_COLUMN => &[3u32, 4],
+                        )
+                        .unwrap()
+                    };
+                    let lf = frame.lazy();
+                    if as_text.contains(&PlSmallStr::from("n")) {
+                        lf.with_column(col("n").cast(DataType::String))
+                    } else if url == "a" {
+                        lf
+                    } else {
+                        // Not read from this file at all, as the real scan leaves it.
+                        lf.with_column(lit(NULL).cast(DataType::Int64).alias("n"))
+                    }
+                })
+                .collect();
+            polars::prelude::concat(frames, Default::default())
+        });
+
+        let dataset: DatasetSchema = union_file_schemas(
+            &[
+                file_schema(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
+                file_schema(&[("id", DataType::Int64), ("n", DataType::String)], 2),
+            ],
+            SchemaOrigin::AllFooters(2),
+        );
+        // The dataset's schema, which does not name the hidden row index the frame
+        // carries — as the real open does it.
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset.schema.clone(),
+            scan(&urls, &[]).unwrap(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(urls.clone()),
+            scan,
+            count: Arc::new(|| Ok(vec![vec![3], vec![2]])),
+            offsets: None,
+        });
+        let groups = (state.remote_files_counter().unwrap())().unwrap();
+        state.set_file_row_groups(&groups);
+
+        state.set_dataset_schema(dataset, &[3, 2], &urls);
+        assert!(state.drifts(), "the two files disagree on `n`");
+
+        assert!(
+            state.read_column_as_text("n").unwrap(),
+            "the offer is taken"
+        );
+        assert_eq!(
+            state.schema.get("n"),
+            Some(&DataType::String),
+            "the column is text now"
+        );
+
+        // Every window, not only the first: the second file's rows are on their own
+        // page, and they are the ones the conflict was hiding.
+        let text = |state: &DataTableState, start: usize, rows: usize| -> Vec<String> {
+            collect_lazy(state.buffer_lf(start, rows).unwrap(), false)
+                .unwrap()
+                .column("n")
+                .unwrap()
+                .str()
+                .unwrap()
+                .iter()
+                .map(|value| value.unwrap_or("null").to_string())
+                .collect()
+        };
+        assert_eq!(text(&state, 0, 3), ["10", "20", "30"]);
+        assert_eq!(
+            text(&state, 3, 2),
+            ["sixty", "seventy"],
+            "the page that needed the text read most"
+        );
+    }
+
     #[test]
     fn a_counted_remote_dataset_reads_only_the_files_a_buffer_needs() {
         use polars::prelude::IntoLazy;
@@ -8245,7 +8512,7 @@ mod tests {
         let asked = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
         let scan: FileScan = {
             let asked = asked.clone();
-            Arc::new(move |urls: &[String]| {
+            Arc::new(move |urls: &[String], _as_text: &[PlSmallStr]| {
                 asked.lock().unwrap().push(urls.to_vec());
                 let frames: Vec<LazyFrame> = urls
                     .iter()
@@ -8254,7 +8521,7 @@ mod tests {
                 polars::prelude::concat(frames, Default::default())
             })
         };
-        let full = scan(&urls).unwrap();
+        let full = scan(&urls, &[]).unwrap();
         asked.lock().unwrap().clear();
         let mut state =
             DataTableState::from_lazyframe(full, &crate::OpenOptions::default()).unwrap();

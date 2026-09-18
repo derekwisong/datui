@@ -275,15 +275,17 @@ mod export_format_tests {
         state.set_remote_source();
         state.set_remote_files(crate::widgets::datatable::RemoteFiles {
             urls: Arc::new(vec!["one".to_string(), "two".to_string()]),
-            scan: Arc::new(move |urls: &[String]| {
-                Ok(if urls.len() == 2 {
-                    whole.clone()
-                } else if urls[0] == "one" {
-                    whole.clone().slice(0, 400)
-                } else {
-                    whole.clone().slice(400, 600)
-                })
-            }),
+            scan: Arc::new(
+                move |urls: &[String], _as_text: &[polars::prelude::PlSmallStr]| {
+                    Ok(if urls.len() == 2 {
+                        whole.clone()
+                    } else if urls[0] == "one" {
+                        whole.clone().slice(0, 400)
+                    } else {
+                        whole.clone().slice(400, 600)
+                    })
+                },
+            ),
             count: Arc::new(|| Ok(vec![vec![400], vec![300, 300]])),
             offsets: None,
         });
@@ -4978,34 +4980,84 @@ impl App {
         None
     }
 
-    /// Put hive partition columns first, ahead of the file's own columns. `drifts` keeps
-    /// the scan's hidden drift column, which the select would otherwise drop.
+    /// Take the offer on the note the cursor is on: read its column as text.
+    ///
+    /// Only a note that carries the offer has one, and the offer is taken off a note
+    /// datui could not act on, so the `Ok(false)` arms here are for a note that has
+    /// gone stale under the cursor rather than for anything to tell the user about. A
+    /// failure is the scan's, and is shown the way any other failed read is.
+    fn read_the_selected_note_s_column_as_text(&mut self) {
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        let notes = state.notes();
+        let Some(column) = notes
+            .get(self.info_modal.notes_selected_index)
+            .and_then(|note| note.read_as_text.clone())
+        else {
+            return;
+        };
+        match state.read_column_as_text(&column) {
+            Ok(true) => {
+                // The note that offered this is gone and the list is shorter, so the
+                // cursor would otherwise sit past the end. Kept as near to where the
+                // user left it as the shorter list allows, rather than thrown to the
+                // top: one or two notes went, not all of them.
+                let notes = state.notes().len();
+                self.info_modal.notes_selected_index = self
+                    .info_modal
+                    .notes_selected_index
+                    .min(notes.saturating_sub(1));
+                self.info_modal.notes_scroll_offset = 0;
+            }
+            Ok(false) => {}
+            Err(error) => state.error = Some(error),
+        }
+    }
+
     fn hoist_partition_columns(
         lf: LazyFrame,
         schema: &Schema,
         partition_columns: &[String],
         drifts: bool,
     ) -> LazyFrame {
-        if partition_columns.is_empty() {
-            return lf;
-        }
-        let mut exprs: Vec<_> = partition_columns
-            .iter()
-            .map(|s| col(s.as_str()))
-            .chain(
-                schema
-                    .iter_names()
-                    .map(|s| s.to_string())
-                    .filter(|c| !partition_columns.contains(c))
-                    .map(|s| col(s.as_str())),
-            )
-            .collect();
-        if drifts {
-            exprs.push(col(crate::schema_union::DRIFT_COLUMN));
-        }
-        lf.select(exprs)
+        hoist_partition_columns(lf, schema, partition_columns, drifts)
     }
+}
 
+/// Put hive partition columns first, ahead of the file's own columns. `drifts` keeps
+/// the scan's hidden drift column, which the select would otherwise drop.
+///
+/// A free function rather than a method: rebuilding the scan to read a column as text
+/// has to put the columns back the same way, and it happens on the table's state
+/// rather than on the app.
+pub(crate) fn hoist_partition_columns(
+    lf: LazyFrame,
+    schema: &Schema,
+    partition_columns: &[String],
+    drifts: bool,
+) -> LazyFrame {
+    if partition_columns.is_empty() {
+        return lf;
+    }
+    let mut exprs: Vec<_> = partition_columns
+        .iter()
+        .map(|s| col(s.as_str()))
+        .chain(
+            schema
+                .iter_names()
+                .map(|s| s.to_string())
+                .filter(|c| !partition_columns.contains(c))
+                .map(|s| col(s.as_str())),
+        )
+        .collect();
+    if drifts {
+        exprs.push(col(crate::schema_union::DRIFT_COLUMN));
+    }
+    lf.select(exprs)
+}
+
+impl App {
     /// Schema for a local folder of Parquet files: every column any of them has, from
     /// their footers, instead of `collect_schema()` over the whole set or one file's
     /// columns standing in for all.
@@ -5172,17 +5224,21 @@ impl App {
                 partition_columns.clone(),
                 drift.map(Arc::new),
             );
-            Arc::new(move |urls: &[String]| {
-                let drifts = drift.is_some();
-                cloud_hive::lenient_scan(
-                    urls,
-                    schema.clone(),
-                    Some(cloud_opts.clone()),
-                    drift.as_deref(),
-                    &[],
-                )
-                .map(|lf| Self::hoist_partition_columns(lf, &schema, &partition_columns, drifts))
-            })
+            Arc::new(
+                move |urls: &[String], as_text: &[polars::prelude::PlSmallStr]| {
+                    let drifts = drift.is_some();
+                    cloud_hive::lenient_scan(
+                        urls,
+                        schema.clone(),
+                        Some(cloud_opts.clone()),
+                        drift.as_deref(),
+                        as_text,
+                    )
+                    .map(|lf| {
+                        Self::hoist_partition_columns(lf, &schema, &partition_columns, drifts)
+                    })
+                },
+            )
         };
         let count: crate::widgets::datatable::FileCounter = {
             let (runtime, files) = (runtime.clone(), Arc::new(files));
@@ -5195,7 +5251,7 @@ impl App {
                 .map_err(|e| e.to_string())
             })
         };
-        let lf = scan(&urls).ok()?;
+        let lf = scan(&urls, &[]).ok()?;
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
@@ -7173,6 +7229,9 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('k') if event.is_press() && notes_tab => {
                     self.info_modal.notes_move(-1, notes);
+                }
+                KeyCode::Enter if event.is_press() && notes_tab => {
+                    self.read_the_selected_note_s_column_as_text();
                 }
                 _ => {}
             }

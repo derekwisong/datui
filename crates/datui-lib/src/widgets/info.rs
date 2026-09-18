@@ -827,7 +827,13 @@ impl<'a> DataTableInfo<'a> {
         // the note can spare it. A note that exactly fills the panel keeps its last
         // row: saying "no room to show one" about a note that fits is worse than not
         // saying how many are behind it.
-        let reserve = !all_shown && heights[selected] < full;
+        // A row is worth spending on the offer too: a note that says a column is not
+        // read from some files, with no way to see what is there, is half a note.
+        let offer = notes[selected]
+            .read_as_text
+            .as_ref()
+            .map(|column| format!("Enter  read {column} as text"));
+        let reserve = (!all_shown || offer.is_some()) && heights[selected] < full;
         let show = if reserve { full - 1 } else { full };
         if heights[selected] > show {
             // The note the cursor is on cannot show its summary and the line it rests
@@ -877,23 +883,71 @@ impl<'a> DataTableInfo<'a> {
             }
         }
 
+        // The offer and the count of what is out of view share the last row, so the
+        // room goes to the count first and the offer takes what is left. The count is
+        // a handful of characters and the offer is as long as a column name; giving
+        // the offer its width first would push the count off the edge, and the two
+        // drawn over each other read as neither.
         let (above, below) = (first, notes.len() - last);
-        if reserve && (above > 0 || below > 0) {
-            let hidden = match (above, below) {
-                (0, n) => format!("{} below", group_chrome(n)),
-                (n, 0) => format!("{} above", group_chrome(n)),
-                (a, b) => format!("{} above, {} below", group_chrome(a), group_chrome(b)),
+        let hidden = match (reserve, above, below) {
+            (false, _, _) | (_, 0, 0) => None,
+            (_, 0, n) => Some(format!("{} below", group_chrome(n))),
+            (_, n, 0) => Some(format!("{} above", group_chrome(n))),
+            (_, a, b) => Some(format!(
+                "{} above, {} below",
+                group_chrome(a),
+                group_chrome(b)
+            )),
+        };
+        if !reserve || (hidden.is_none() && offer.is_none()) {
+            return;
+        }
+        let last_row = Rect {
+            y: area.y + area.height - 1,
+            height: 1,
+            ..area
+        };
+        // A space between them, so they never read as one phrase when both are there.
+        use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+        let taken = hidden
+            .as_ref()
+            .map(|text| (text.width() as u16).saturating_add(1))
+            .unwrap_or(0);
+        if let Some(offer) = offer.as_ref() {
+            let room = last_row.width.saturating_sub(taken) as usize;
+            // Cut with a mark, never silently. `Enter  read measurement_value` is a
+            // whole sentence that has lost `as text`, and `Enter  read me` is an offer
+            // about a column called `me`; both read as something datui did not say.
+            let offer = if offer.width() > room {
+                // Cut by width rather than by word: the spacing after the key name is
+                // part of how the line reads, and wrapping would close it up.
+                let mark = crate::glyphs::get().ellipsis;
+                let mut kept = String::new();
+                for ch in offer.chars() {
+                    if kept.width() + ch.width().unwrap_or(0) + mark.width() > room {
+                        break;
+                    }
+                    kept.push(ch);
+                }
+                Some(format!("{kept}{mark}"))
+            } else {
+                Some(offer.clone())
             };
-            Paragraph::new(Line::from(Span::styled(hidden, dim)))
-                .right_aligned()
-                .render(
+            // Below about a word there is no offer left to make, only the mark.
+            if let Some(offer) = offer.filter(|_| room >= 8) {
+                Paragraph::new(Line::from(Span::styled(offer, dim))).render(
                     Rect {
-                        y: area.y + area.height - 1,
-                        height: 1,
-                        ..area
+                        width: room as u16,
+                        ..last_row
                     },
                     buf,
                 );
+            }
+        }
+        if let Some(hidden) = hidden {
+            Paragraph::new(Line::from(Span::styled(hidden, dim)))
+                .right_aligned()
+                .render(last_row, buf);
         }
     }
 

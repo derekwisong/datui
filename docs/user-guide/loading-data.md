@@ -99,6 +99,21 @@ not be read — the marks still appear but every empty cell reads as `∅`. A gr
 pivot or SQL query builds new rows that stand for no one file, so their nulls are
 plain nulls again, and an export writes every empty cell as null.
 
+A `≠` cell's value can still be seen. The **Notes** tab's note about the column
+offers **read this column as text**, and taking it reads the column from the files
+that disagree too, at the type each of them wrote, spelled as text. Nothing is
+read past any more, so the `≠` marks and the note go with the conflict. It costs
+no re-listing and no footer read — datui already knows what each file holds. A
+column any file stores as a list, a duration or binary has no text form datui can
+show, and is not offered.
+
+A filter or sort on a column read as text compares text: `n > 5` keeps `"sixty"`
+and drops `"10"`. A note says so for as long as the column is read that way.
+
+A file whose type merely *widens* into the column's is read at the column's type
+either way, so an integer in a column read as a float still reads as `7.0`, and
+the note saying the column is stored as more than one type stays.
+
 A `≠` cell has no value the column can be compared or ordered by, so where datui
 has every file's row count, filtering or sorting by a column the files disagree
 on leaves those rows out rather than gathering them at one end. The **Notes** tab

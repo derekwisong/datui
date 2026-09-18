@@ -101,6 +101,9 @@ pub struct DatasetSchema {
     /// Per file, in the order given, its group in `groups`.
     pub file_group: Vec<u32>,
     pub origin: SchemaOrigin,
+    /// Columns being read as text from every file rather than as the type most rows
+    /// have. Empty for a dataset as its footers found it.
+    pub read_as_text: Vec<PlSmallStr>,
 }
 
 /// What a file is missing relative to the dataset's schema. Files that are missing the
@@ -125,6 +128,40 @@ impl DatasetSchema {
     pub fn drifting(&self) -> impl Iterator<Item = &ColumnDrift> {
         let readable = self.files - self.unreadable.len();
         self.columns.iter().filter(move |c| !c.is_uniform(readable))
+    }
+
+    /// This dataset as it reads with `as_text` read as text from every file.
+    ///
+    /// What the panel shows and what the table draws from, not what the scan is built
+    /// from — the scan needs the types the footers found, which is why `omitted` is
+    /// carried through untouched and why the caller keeps the original alongside.
+    ///
+    /// Those columns stop conflicting: their cells hold a value from every file, so
+    /// nothing is unread, nothing is left out of a filter or sort, and the note that
+    /// said the column was not read there has nothing left to say. `absent` is left
+    /// alone — a file that never had the column still has none to show.
+    pub fn reading_as_text(&self, as_text: &[PlSmallStr]) -> DatasetSchema {
+        let mut out = self.clone();
+        if as_text.is_empty() {
+            return out;
+        }
+        out.schema = crate::schema_union::text_schema(&self.schema, as_text);
+        for column in &mut out.columns {
+            if as_text.contains(&column.name) {
+                column.dtype = DataType::String;
+                column.conflicting_files = 0;
+                column.conflicting_types.clear();
+                // `widened` is left alone. A file whose type merely widens into the
+                // column's is still read at the column's type — an integer in a float
+                // column still reads as `7.0` — so the note saying a type gave way is
+                // still true, and removing it would leave the `7.0` unexplained.
+            }
+        }
+        for group in &mut out.groups {
+            group.unread.retain(|name| !as_text.contains(name));
+        }
+        out.read_as_text = as_text.to_vec();
+        out
     }
 
     /// Whether any file is missing anything. When nothing is, the scan is one plain
@@ -300,6 +337,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         groups,
         file_group,
         origin,
+        read_as_text: Vec::new(),
     }
 }
 

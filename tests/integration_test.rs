@@ -1427,6 +1427,377 @@ fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
     );
 }
 
+/// The offer in the Notes tab, taken: the values a type conflict hid appear on screen.
+#[test]
+fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
+    let g = datui::glyphs::get();
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1], "n" => &[10i64, 20]).unwrap(),
+    );
+    // `n` as text here, so it is not read from this file at all.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "n" => &["sixty"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let before = painted(&mut app, &rx, &tx, area);
+    assert!(
+        before.contains(g.conflict),
+        "the row whose file stores `n` as text is a conflict to begin with"
+    );
+    assert!(
+        !before.contains("sixty"),
+        "and its value cannot be seen: {before}"
+    );
+
+    // Open the Info panel and walk to the Notes tab.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    // Walked by key rather than by setting the tab, so the keys the user presses are
+    // the ones under test. Tab first: the panel opens on the body, where the arrows
+    // move the schema table rather than the tab bar. The conflict note's own words say
+    // when we have arrived.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    let mut panel = painted(&mut app, &rx, &tx, area);
+    for _ in 0..6 {
+        if panel.contains("and not read there") {
+            break;
+        }
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        panel = painted(&mut app, &rx, &tx, area);
+    }
+    assert!(
+        panel.contains("and not read there"),
+        "the Notes tab, showing the conflict note: {panel}"
+    );
+
+    // Walk to the note that carries the offer, and take it.
+    let offered = |app: &App| -> Option<usize> {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .notes()
+            .iter()
+            .position(|note| note.read_as_text.is_some())
+    };
+    let at = offered(&app).expect("the conflict note offers to read the column as text");
+    for _ in 0..at {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+    }
+    let panel = painted(&mut app, &rx, &tx, area);
+    assert!(
+        panel.contains("Enter  read n as text"),
+        "the panel says the offer is there: {panel}"
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    let after = painted(&mut app, &rx, &tx, area);
+
+    assert!(
+        after.contains("sixty"),
+        "the value the conflict hid is on screen: {after}"
+    );
+    assert!(
+        after.contains("10") && after.contains("20"),
+        "and so are the ones that were always readable: {after}"
+    );
+    assert!(
+        !after.contains(g.conflict),
+        "nothing conflicts any more: {after}"
+    );
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.read_as_text(),
+        [polars::prelude::PlSmallStr::from("n")],
+        "and the state says which column it is reading that way"
+    );
+    assert!(
+        !state.notes().iter().any(|note| note.read_as_text.is_some()),
+        "the offer is gone, having been taken: {:#?}",
+        state.notes()
+    );
+}
+
+/// The offer is not made where datui could not honour it.
+///
+/// Reading a column as text needs to know where each file's rows begin, and datui does
+/// not for a dataset whose footers could not all be read — the same datasets that
+/// cannot draw the marks. The note is still worth saying; the offer on it is not.
+#[test]
+fn test_no_offer_to_read_as_text_where_the_files_were_not_all_counted() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1], "n" => &[10i64, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "n" => &["sixty"]).unwrap(),
+    );
+    // A third file datui cannot read the footer of.
+    let broken = dir.path().join("date=2024-01-03");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("data.parquet"), b"not a parquet file at all").unwrap();
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.summary.contains("not read there")),
+        "the conflict is still worth saying: {notes:#?}"
+    );
+    assert!(
+        notes.iter().all(|note| note.read_as_text.is_none()),
+        "but datui cannot act on it, so it does not offer to: {notes:#?}"
+    );
+}
+
+/// The offer and the count of notes out of view share the last row without landing on
+/// top of each other.
+///
+/// Both are drawn into the panel's bottom row. A `Paragraph` leaves the cells its text
+/// does not reach alone, so two of them in one place is not a layout that loses — it is
+/// one string written over another.
+#[test]
+fn test_the_offer_and_the_hidden_count_do_not_overwrite_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+    // Several drifting columns, so there are more notes than a short panel can show.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!(
+            "id" => &[0i64, 1],
+            "measurement_value" => &[10i64, 20],
+            "b" => &[1i64, 2],
+            "c" => &[1i64, 2],
+            "d" => &[1i64, 2],
+        )
+        .unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!(
+            "id" => &[2i64],
+            "measurement_value" => &["sixty"],
+            "b" => &["x"],
+            "c" => &["x"],
+            "d" => &["x"],
+        )
+        .unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    // Narrow, and short enough that the notes do not all fit: both halves of the last
+    // row have something to say, and not enough room to say it in.
+    let area = Rect::new(0, 0, 44, 12);
+    let _ = painted(&mut app, &rx, &tx, area);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    let mut panel = painted(&mut app, &rx, &tx, area);
+    for _ in 0..6 {
+        if panel.contains("and not read there") {
+            break;
+        }
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        panel = painted(&mut app, &rx, &tx, area);
+    }
+
+    // Walk to a note carrying the offer, so the panel has both things to say.
+    let offered = |app: &App| -> Option<usize> {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .notes()
+            .iter()
+            .position(|note| note.read_as_text.is_some())
+    };
+    let at = offered(&app).expect("a conflict note offers to read its column as text");
+    for _ in 0..at {
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+    }
+    let panel = painted(&mut app, &rx, &tx, area);
+
+    let count = (1..9)
+        .flat_map(|n| [format!("{n} below"), format!("{n} above")])
+        .find(|text| panel.contains(text.as_str()))
+        .unwrap_or_else(|| panic!("the panel is short enough to be hiding notes: {panel}"));
+    assert!(
+        panel.contains("Enter  read"),
+        "the offer shares the row with the count: {panel}"
+    );
+    // The blank column between them is the whole of it. Drawn into the same rect, the
+    // count lands on the offer's last characters and there is no gap — the offer's
+    // text runs straight into "2 below" with no way to tell where one ends.
+    assert!(
+        panel.contains(&format!(" {count}")),
+        "the two must not run together where they meet: {panel}"
+    );
+}
+
+/// A filter on a column read as text compares text, and the panel says so.
+///
+/// `n > 5` was written for a number. Read as text it keeps `"sixty"` and drops `"10"`,
+/// which is a different question with the same words — so the note that arrives in
+/// place of the conflict note is the one thing standing between the user and a view
+/// they would read wrongly.
+#[test]
+fn test_reading_a_filtered_column_as_text_says_the_comparison_changed() {
+    use datui::filter_modal::FilterOperator;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[1i64, 10, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64], "n" => &["sixty"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.filter(vec![filter_stmt("n", FilterOperator::Gt, "5")]);
+    assert_eq!(current_rows(&app), 2, "10 and 20 are greater than 5");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.mark_notes_seen();
+    assert!(
+        state.read_column_as_text("n").unwrap(),
+        "the offer is taken"
+    );
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    assert!(
+        notes.iter().any(
+            |note| note.summary == "n is read as text, so a filter or sort on it compares text"
+        ),
+        "the filter means something else now, and the panel says so: {notes:#?}"
+    );
+    assert!(
+        state.notes_unseen(),
+        "and the `i` accent comes back, since the user has not been told yet"
+    );
+}
+
+/// Reading a column as text does not undo the widening, so the note about it stays.
+///
+/// One file wrote `n` as an integer and another as a float, which widen together — so
+/// the column is read as a float and the integer file's `7` shows as `7.0`, text read
+/// or not. Only the types that *conflict* are read at their own type. The note that
+/// explains the `7.0` is the widening note, and an earlier version of this deleted it.
+#[test]
+fn test_reading_as_text_keeps_the_note_about_a_widened_type() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64], "n" => &[7i64]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[1i64, 2], "n" => &[1.5f64, 2.5]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[3i64], "n" => &["sixty"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    let widening = "n is stored as more than one type";
+    assert!(
+        state
+            .notes()
+            .iter()
+            .any(|n| n.summary.starts_with(widening)),
+        "the integer and the float widened together to begin with"
+    );
+    assert!(
+        state.read_column_as_text("n").unwrap(),
+        "the offer is taken"
+    );
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let text: Vec<String> = state
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("n")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|value| value.unwrap_or("null").to_string())
+        .collect();
+    assert_eq!(
+        text,
+        ["7.0", "1.5", "2.5", "sixty"],
+        "the file that wrote 7 still reads 7.0: widening is not what the text read undoes"
+    );
+    let notes = state.notes();
+    assert!(
+        notes.iter().any(|n| n.summary.starts_with(widening)),
+        "so the note explaining that 7.0 has to stay: {notes:#?}"
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

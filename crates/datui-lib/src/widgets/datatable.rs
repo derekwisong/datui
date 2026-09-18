@@ -1707,12 +1707,6 @@ impl DataTableState {
         (files, read, footers)
     }
 
-    /// `footer_of`, for tests in other modules of this crate.
-    #[cfg(test)]
-    pub(crate) fn footer_of_for_test(path: &Path) -> Option<FileSchema> {
-        Self::footer_of(path)
-    }
-
     /// One local Parquet file's columns, row count and row-group sizes, from its
     /// footer. The metadata is already read for the row count; the sizes come off the
     /// same object.

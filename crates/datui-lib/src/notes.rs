@@ -249,6 +249,21 @@ fn empty_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
 /// than the largest: one row group of a gigabyte among thousands of small ones is a
 /// different dataset from one where every row group is a gigabyte, and only the second
 /// is worth a note.
+///
+/// Says "the middle row group is", not "row groups are, apiece" — the middle of
+/// `[1 MiB, 100 MiB, 100 MiB]` is 100 MiB and one of those row groups is not.
+///
+/// And says the size, not what a page costs to fetch. They are not the same number:
+/// a page projects away binary columns (see `binary_stub_exprs`), so their chunks are
+/// never downloaded, while this size counts every chunk in the group. The figure is
+/// the row group's; what follows it is why a row group's size is the one that matters.
+///
+/// The middle is over every row group of every footer read, each counting once. Not
+/// weighted by rows, though a page is likelier to land in a group that holds more of
+/// them: a dataset of one file of ten thousand small groups beside a hundred files of
+/// one huge group each is called small by this and would be called large by that.
+/// Counting groups is the statistic that matches the sentence — how big a row group
+/// is, of the row groups there are.
 fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     /// Sixty-four mebibytes, the size a page in that range costs to reach.
     const BIG: usize = 64 * 1024 * 1024;
@@ -258,7 +273,7 @@ fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     }
     Some(Note {
         summary: format!(
-            "row groups are {} apiece, and a page anywhere inside one reads all of it",
+            "the middle row group is {}, and rows are read a row group at a time",
             crate::widgets::info::format_bytes(median as u64)
         ),
         scope: scope.to_string(),

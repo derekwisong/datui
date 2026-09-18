@@ -27,8 +27,8 @@ use polars::prelude::{
 pub struct FileSchema {
     pub schema: Arc<Schema>,
     pub rows: usize,
-    /// Compressed bytes of each row group, in file order. Empty where the footer was
-    /// read by a route that does not report them.
+    /// Compressed bytes of each row group, in file order: what crosses the wire for
+    /// that group, not what it occupies once decoded.
     ///
     /// A row group is the unit a reader fetches: a page of rows anywhere inside one
     /// costs the whole of it. How big they are is therefore what a remote dataset
@@ -1404,7 +1404,7 @@ mod tests {
             let dataset = union_file_schemas(&files, SchemaOrigin::AllFooters(files.len()));
             crate::notes::from_dataset(&dataset)
                 .into_iter()
-                .find(|note| note.summary.starts_with("row groups"))
+                .find(|note| note.summary.starts_with("the middle row group"))
                 .map(|note| note.summary)
         };
 
@@ -1416,7 +1416,7 @@ mod tests {
         );
         assert_eq!(
             note(&[&[65 * MIB]]).as_deref(),
-            Some("row groups are 65.0 MiB apiece, and a page anywhere inside one reads all of it"),
+            Some("the middle row group is 65.0 MiB, and rows are read a row group at a time"),
         );
         assert_eq!(
             note(&[&[MIB, MIB, 4096 * MIB]]),
@@ -1425,39 +1425,61 @@ mod tests {
         );
         assert_eq!(
             note(&[&[100 * MIB, 100 * MIB], &[MIB]]).as_deref(),
-            Some("row groups are 100.0 MiB apiece, and a page anywhere inside one reads all of it"),
+            Some("the middle row group is 100.0 MiB, and rows are read a row group at a time"),
             "the middle of every row group of every file, not the middle of the files"
         );
         assert_eq!(note(&[&[]]), None, "a file with no row groups says nothing");
+        // An even count takes the lower of the middle two, which is the reading that
+        // errs towards saying nothing.
+        assert_eq!(
+            note(&[&[64 * MIB, 65 * MIB]]),
+            None,
+            "two row groups either side of the line: the lower one decides"
+        );
+        assert_eq!(
+            note(&[&[65 * MIB, 66 * MIB]]).as_deref(),
+            Some("the middle row group is 65.0 MiB, and rows are read a row group at a time"),
+            "and when it decides the other way it is still the lower one"
+        );
     }
 
-    /// The sizes come off a real Parquet footer, not from a struct built by hand.
+    /// The sizes come off a real Parquet footer, and they are the compressed ones.
+    ///
+    /// Compressed, because that is what crosses the wire; the other number the footer
+    /// offers is the size once decoded. Telling them apart takes data that does not
+    /// compress to nothing: twenty thousand distinct strings compress to about 30 KiB
+    /// from about 4 MiB decoded, where a column of one repeated integer goes the other
+    /// way — the dictionary makes the decoded figure the *smaller* of the two, and a
+    /// test built on that pins nothing.
     #[test]
-    fn a_real_footer_reports_the_size_of_each_row_group() {
+    fn a_real_footer_reports_the_compressed_size_of_each_row_group() {
         use polars::prelude::{ParquetWriter, df};
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("many.parquet");
-        // Enough rows, and a small row-group size, to get more than one group.
-        let mut frame = df!("n" => (0..5_000i64).collect::<Vec<i64>>()).unwrap();
-        let file = std::fs::File::create(&path).unwrap();
+        let rows: Vec<String> = (0..20_000)
+            .map(|i| format!("{i:0>6}{}", "abcdefghij".repeat(19)))
+            .collect();
+        let mut frame = df!("s" => rows).unwrap();
+        let file = std::fs::File::create(dir.path().join("wide.parquet")).unwrap();
         ParquetWriter::new(file)
-            .with_row_group_size(Some(1_000))
+            .with_row_group_size(Some(20_000))
             .finish(&mut frame)
             .unwrap();
 
-        let footer = crate::widgets::datatable::DataTableState::footer_of_for_test(&path)
-            .expect("the footer reads");
-        assert_eq!(footer.rows, 5_000);
+        let (files, read, footers) =
+            crate::widgets::datatable::DataTableState::footers_of_parquet_dir(dir.path());
+        assert_eq!((files.len(), read.len()), (1, 1));
+        let footer = footers[0].as_ref().expect("the footer reads");
+        assert_eq!(footer.rows, 20_000);
+        assert_eq!(footer.row_group_bytes.len(), 1, "one row group");
+
+        let size = footer.row_group_bytes[0];
+        assert!(size > 0, "a size is reported");
         assert!(
-            footer.row_group_bytes.len() > 1,
-            "more than one row group: {:?}",
-            footer.row_group_bytes
-        );
-        assert!(
-            footer.row_group_bytes.iter().all(|size| *size > 0),
-            "each reports a size: {:?}",
-            footer.row_group_bytes
+            size < 1_000_000,
+            "and it is the compressed size: 20,000 distinct strings of 200 characters \
+             are about 4 MiB decoded and a small fraction of that on disk, so {size} \
+             bytes is the decoded figure"
         );
     }
 

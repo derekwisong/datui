@@ -1799,6 +1799,123 @@ pub mod tests {
         );
     }
 
+    /// A count not yet taken is not printed as the total.
+    ///
+    /// The control bar takes its number straight from the field, so the only thing
+    /// between a user and `Rows: 70` on a prefix of six thousand files is the pending
+    /// flag. The integration test beside this one has a dataset whose count is real and
+    /// asserts it is shown; this is the direction that goes wrong.
+    #[test]
+    fn a_count_not_yet_taken_is_not_printed_as_the_total() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, OpenOptions};
+        use polars::prelude::*;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..70i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        // As a staged open leaves it: the number it holds is as far as the buffer
+        // reached, a pass is still out, and no count has been taken.
+        // The field, not `set_num_rows`, which would mark it as a count that had been
+        // taken — the state this reproduces is a provisional left by a short read.
+        state.num_rows = 70;
+        state.set_footers_pending(Arc::new(|_| None));
+        assert!(
+            state.counts_itself_later(),
+            "the fixture is a dataset whose count is still coming"
+        );
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.busy = false;
+
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        (&mut app).render(area, &mut buf);
+        let bar: String = (0..area.width)
+            .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+            .collect();
+        assert!(
+            !bar.contains("Rows: 70"),
+            "a partial is not a total: {bar:?}"
+        );
+    }
+
+    /// A query over a dataset still reading its footers still gets counted.
+    ///
+    /// The pass is bringing the *dataset's* count, which is not the count of a query's
+    /// result — nobody else is going to take that one. Declining it because a pass is
+    /// out leaves the row count spinning for as long as the query is open, and `End`
+    /// saying it is counting rows while nothing is counting anything. It costs nothing
+    /// to take: a frame that is not the scan does not read footers for its count.
+    #[test]
+    fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        // Still reading, so as the scan it rightly declines to count itself.
+        state.set_footers_pending(Arc::new(|_| None));
+        assert!(
+            state.counts_itself_later(),
+            "the pass is bringing this dataset's count"
+        );
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // And then the user asks a question of it, whose answer has a count of its own.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query("select doubled: id * 2".to_string());
+        state.defer_collect = false;
+        assert!(
+            !state.counts_itself_later(),
+            "which is not the count the pass is bringing, and nothing else will take it"
+        );
+
+        app.spawn_async_collect("Loading buffer...");
+        assert!(
+            app.len_count_inflight.is_some(),
+            "so it is taken, rather than the row count spinning while the query is open"
+        );
+    }
+
     /// Columns found for the dataset before this one join nothing to this one.
     ///
     /// Abandoning a load cancels nothing: the footers of a prefix the user has moved on
@@ -4208,8 +4325,13 @@ impl App {
             self.status_message = None;
             if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
                 let _ = self.events.send(next);
+                // The jump reads the page it lands on, so reading this one first would
+                // be a page fetched to be thrown away.
+                return;
             }
-            return;
+            // Unless the view was already at the end, in which case the jump moves
+            // nothing and reads nothing — and the join has dropped the buffer, so
+            // leaving it there is a table with no rows in it.
         }
         self.spawn_async_collect("Loading buffer...");
     }

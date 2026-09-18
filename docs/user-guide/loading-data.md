@@ -149,10 +149,10 @@ it counts towards is the sample it reads, not the files there are.
 
 A folder in the cloud of more than 64 files does not wait for that count. It
 opens from the first file and the last, by name, and reads the rest behind the
-data, with the count in the control bar rather than on a loading screen. Sixty-
-four is how many footers datui fetches at once, so up to that many they arrive in
-the time one of them does; past it there is a second wait, and a third, and the
-dataset would be sitting behind them for no reason.
+data, with the count in the control bar rather than on a loading screen. Datui
+fetches sixty-four footers at once, so up to that many arrive in the time one of
+them does; past that there is a second wait, and a third, and the dataset would
+be sitting behind them for no reason.
 
 Columns those files turn out to have join the table when they arrive, at the end
 of the column order, without moving anything already on screen. A column that
@@ -160,9 +160,9 @@ only one file had, whose footer would not read the second time, goes instead:
 nothing can be shown for it. Until they land, the dataset is one built from two
 footers: its rows are not numbered, so every empty cell reads as `∅`, the row
 count is not shown at all rather than shown wrong, and the Notes are scoped to
-`in 2 of 6,541 footers (sample)`. A query, a pivot or a drill-down holds the columns off until
-you come back to the data, because widening the scan underneath one would take
-away the columns it was built from.
+`in 2 of 6,541 footers (sample)`. A query, a pivot or a drill-down holds the
+columns off until you come back to the data, because widening the scan underneath
+one would take away the columns it was built from.
 
 Local folders do not do this. Reading every footer of 2,048 local files takes
 under 7 ms once the directory is in the page cache, nine tenths of which is the

@@ -3981,10 +3981,13 @@ impl DataTableState {
     /// Asking for it separately would read all of them a second time, so the dataset
     /// says it will have one shortly and the caller does not start a count of its own.
     pub fn counts_itself_later(&self) -> bool {
-        // Only while it does not have one. A pass whose columns are waiting for the
-        // user to leave a query has already handed over its row groups, so the count is
-        // here and there is nothing to wait for.
-        self.footers_pending.is_some() && !self.num_rows_valid
+        // Only while it does not have one, and only while the frame is the scan. What
+        // the pass is bringing is the *dataset's* count; a query's result has a count
+        // of its own that nobody else is going to take. Declining it there means the
+        // row count spins for as long as the query is open and `End` says it is
+        // counting while nothing is — and it costs nothing to take, because a frame
+        // that is not the scan does not read footers for it either.
+        self.footers_pending.is_some() && !self.num_rows_valid && self.is_pristine()
     }
 
     /// Give up on the rest of the footers: the pass could not read them.

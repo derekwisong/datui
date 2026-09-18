@@ -203,7 +203,7 @@ mod tests {
     /// The count is cut with a mark at a width it does not fit, not by the terminal.
     ///
     /// "Caching schema" is fourteen characters and always fitted; "Reading footers:
-    /// 1,203 of 6,541" needs thirty-six. Cut by the terminal instead of by the panel it
+    /// 1,203 of 6,541" needs thirty-five. Cut by the terminal instead of by the panel it
     /// ends mid-number — "of 6" where it means "of 6,541", a smaller figure than the one
     /// it is counting towards, which is the one way this line could actively mislead.
     #[test]
@@ -222,7 +222,10 @@ mod tests {
         }
 
         let ellipsis = crate::glyphs::get().ellipsis;
-        for width in [12u16, 20, 24, 30, 36, 60] {
+        // Every width the panel draws at, not a handful: the earlier list skipped the
+        // band either side of where the count stops fitting, which is exactly where a
+        // truncation is wrong if it is wrong anywhere.
+        for width in 12u16..=60 {
             let area = Rect::new(0, 0, width, 20);
             let mut buf = Buffer::empty(area);
             render(area, &mut buf, &app, &RenderContext::for_test());
@@ -236,20 +239,20 @@ mod tests {
                 .find(|row| row.contains("Read"))
                 .map(|row| row.trim_end().to_string())
                 .unwrap_or_else(|| panic!("no phase line at {width}"));
+            // Every phase line ends with the mark by design, so a cut one and a whole
+            // one look alike — which is the point: what must never happen is a cut
+            // with *nothing* saying so, reading as a whole number smaller than the
+            // real one. A number cut at some width is unavoidable; "of 6,5" is all
+            // that fits in thirty-three columns.
             assert!(
-                !line.contains("of 6,5") || line.contains("of 6,541"),
-                "at {width} the count is cut mid-number, which reads as a smaller \
-                 figure than the one it counts towards: {line:?}"
+                line.ends_with(ellipsis),
+                "at {width} the line ends with nothing to say it may be cut: {line:?}"
             );
-            if width >= 36 {
+            // And where there is room for the whole count, it is not cut anyway.
+            if width >= 35 {
                 assert!(
-                    line.contains("6,541"),
+                    line.contains("1,203 of 6,541"),
                     "at {width} the whole count fits: {line:?}"
-                );
-            } else {
-                assert!(
-                    line.ends_with(ellipsis),
-                    "at {width} what is shown says it was cut: {line:?}"
                 );
             }
         }

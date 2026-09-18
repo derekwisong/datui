@@ -359,7 +359,7 @@ pub async fn footers_of_files_reporting(
     read: &[usize],
     progress: &crate::schema_union::FooterProgress,
 ) -> Vec<Option<FileFooter>> {
-    progress.begin(read.len());
+    let pass = progress.pass(read.len());
     let permits = Arc::new(tokio::sync::Semaphore::new(FOOTERS_AT_ONCE));
     let mut reads = tokio::task::JoinSet::new();
     for (slot, file) in read
@@ -378,12 +378,12 @@ pub async fn footers_of_files_reporting(
     while let Some(joined) = reads.join_next().await {
         // Counted as it lands, whether or not it read: a footer that will not parse is
         // one the open is no longer waiting on.
-        progress.advance();
+        pass.advance();
         if let Ok((slot, footer)) = joined {
             out[slot] = footer;
         }
     }
-    progress.done();
+    drop(pass);
     out
 }
 
@@ -712,6 +712,12 @@ mod tests {
             }
         });
 
+        // Entered at `schema_state_from_cloud_files` rather than at the route above
+        // it, because that one builds its own store from the user's config and an
+        // in-memory one cannot be handed to it. So this covers the pass and the
+        // counter it is given, and not the single line above that hands it over —
+        // which is why that line passes the counter straight through rather than
+        // cloning a fresh one into place.
         let progress = Arc::new(crate::schema_union::FooterProgress::default());
         let _ = crate::App::schema_state_from_cloud_files(
             "memory://data/",
@@ -720,7 +726,7 @@ mod tests {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            progress.clone(),
+            &progress,
         );
 
         let pass = progress.last_pass();

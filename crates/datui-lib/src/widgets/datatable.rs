@@ -1699,7 +1699,8 @@ impl DataTableState {
             .iter()
             .filter_map(|i| files.get(*i).map(PathBuf::as_path))
             .collect();
-        progress.begin(wanted.len());
+        let pass = progress.pass(wanted.len());
+        let pass_ref = &pass;
         let workers = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -1717,10 +1718,10 @@ impl DataTableState {
                                 let footer = Self::footer_of(p);
                                 // After the read, not before: the count is meant to be
                                 // footers done with, and a footer that will not parse
-                                // is done with too. Nothing here can hold that — from
-                                // outside, a count that runs ahead by one worker and
-                                // one that does not end at the same number.
-                                progress.advance();
+                                // is done with too. No test holds this — both orders
+                                // reach the same final number, and the difference is
+                                // only visible mid-pass.
+                                pass_ref.advance();
                                 footer
                             })
                             .collect()
@@ -1738,7 +1739,7 @@ impl DataTableState {
                 })
                 .collect()
         });
-        progress.done();
+        drop(pass);
         (files, read, footers)
     }
 

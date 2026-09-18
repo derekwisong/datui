@@ -2079,19 +2079,35 @@ fn test_each_open_counts_its_own_footers() {
         "counting its one footer, not the three before it"
     );
 
-    // And the behaviour that matters, not just the mechanism: the first open's pass
-    // goes on running after it is abandoned, so if the second open shared its counter
-    // the first's progress would paint onto the second's screen. Driven here, since
-    // a real abandoned pass finishes too fast to catch.
+    // And the behaviour, not just the mechanism: the first open's pass goes on running
+    // after it is abandoned, so a shared counter would paint its progress onto the
+    // screen of the file that replaced it. Driven by hand, since a real abandoned pass
+    // finishes too fast to catch — and rendered while the app is still *loading*,
+    // because an idle app never consults the counter at all and the assertion would
+    // hold however broken the wiring was.
     counter_of_the_first.begin(6541);
     for _ in 0..4102 {
         counter_of_the_first.advance();
     }
-    let frame = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+    app.set_loading_phase("Caching schema", 40);
+    let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 100, 24));
+    app.render(Rect::new(0, 0, 100, 24), &mut buf);
+    let frame: String = (0..24)
+        .flat_map(|y| {
+            (0..100)
+                .map(move |x| (x, y))
+                .map(|(x, y)| buf[(x, y)].symbol().to_string())
+                .chain(std::iter::once("\n".to_string()))
+        })
+        .collect();
+    assert!(
+        frame.contains("Caching schema"),
+        "the app is on its loading screen, where the counter is read:\n{frame}"
+    );
     assert!(
         !frame.contains("6,541"),
-        "the abandoned folder's count does not appear under the file that replaced \
-         it:\n{frame}"
+        "and the abandoned folder's count does not appear under the file that \
+         replaced it:\n{frame}"
     );
 }
 

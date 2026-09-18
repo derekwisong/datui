@@ -23,7 +23,27 @@ use polars::prelude::{
     concat,
 };
 
+/// A footer pass in progress. Says it has finished when dropped, panic or no panic.
+pub struct Pass<'a>(&'a FooterProgress);
+
+impl Pass<'_> {
+    /// One more footer read, or failed to read: both are footers no longer waited on.
+    pub fn advance(&self) {
+        self.0.advance();
+    }
+}
+
+impl Drop for Pass<'_> {
+    fn drop(&mut self) {
+        self.0.done();
+    }
+}
+
 /// What became of a footer pass, after it has finished saying so.
+///
+/// Hidden from the docs: nothing on screen reads it, and it is public only so the
+/// wiring between an open and its counter can be checked from a test.
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PassCount {
     /// Passes begun against the counter.
@@ -60,8 +80,8 @@ impl FooterProgress {
     pub fn begin(&self, total: usize) {
         self.read.store(0, Ordering::Relaxed);
         // Released after the reset, and acquired in `reading`, so a render cannot pair
-        // this pass's total with the last one's count and paint a full bar at the
-        // instant a pass starts.
+        // this pass's total with the last one's count and report a pass as finished at
+        // the instant it starts.
         self.last_total.store(total, Ordering::Relaxed);
         self.total.store(total, Ordering::Release);
         self.passes.fetch_add(1, Ordering::Relaxed);
@@ -77,6 +97,16 @@ impl FooterProgress {
         self.total.store(0, Ordering::Relaxed);
     }
 
+    /// A pass over `total` footers that says it has finished however it ends.
+    ///
+    /// A panic between `begin` and `done` would otherwise leave the count on screen
+    /// for as long as that counter is read — and the counter outlives the pass, since
+    /// the render holds it.
+    pub fn pass(&self, total: usize) -> Pass<'_> {
+        self.begin(total);
+        Pass(self)
+    }
+
     /// What has become of the passes against this counter: how many have begun, how
     /// many footers the last one has read, and how many it was over.
     ///
@@ -85,6 +115,7 @@ impl FooterProgress {
     /// counted and a pass that never started look identical, and every line that does
     /// the counting could be deleted with the tests green. Nothing on screen reads
     /// this; it is here so the wiring can be checked.
+    #[doc(hidden)]
     pub fn last_pass(&self) -> PassCount {
         PassCount {
             begun: self.passes.load(Ordering::Relaxed),
@@ -2110,6 +2141,32 @@ mod tests {
             progress.advance();
         }
         assert_eq!(progress.reading(), Some((2, 2)));
+    }
+
+    /// A pass that panics still says it has finished.
+    ///
+    /// The counter outlives the pass — the render holds it — so a pass that stopped
+    /// without saying so would leave a count on screen for as long as anyone looked,
+    /// which is the one state this feature exists to prevent.
+    #[test]
+    fn a_pass_that_panics_still_says_it_has_finished() {
+        let progress = FooterProgress::default();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let pass = progress.pass(3);
+            pass.advance();
+            panic!("a footer reader gave up");
+        }));
+        assert!(caught.is_err(), "the panic happened");
+        assert_eq!(
+            progress.reading(),
+            None,
+            "and the count went with it rather than sitting there"
+        );
+        assert_eq!(
+            progress.last_pass().read,
+            1,
+            "with what it managed still readable"
+        );
     }
 
     /// Files merely missing a column must not split the scan.

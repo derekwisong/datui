@@ -510,6 +510,29 @@ mod tests {
         );
     }
 
+    /// A status message too long for the bar is cut with a mark, not by the edge.
+    ///
+    /// The loading phase can be "Reading footers: 1,203 of 6,541... (40%)", and the bar
+    /// renders into a fixed region beside the row count. Clipped bare it read
+    /// "1,203 of 6" — a smaller number than the one it is counting towards, which is
+    /// the one way this line could actively mislead.
+    #[test]
+    fn a_status_message_too_long_for_the_bar_is_cut_with_a_mark() {
+        let ellipsis = crate::glyphs::get().ellipsis;
+        let long = "Reading footers: 1,203 of 6,541... (40%)";
+        for width in 40..=70u16 {
+            let controls = Controls::with_row_count(99).with_status_message(Some(long.to_string()));
+            let out = render_to_string(&controls, width);
+            if out.contains("(40%)") {
+                continue; // it fitted whole
+            }
+            assert!(
+                out.contains(ellipsis),
+                "at {width} the message is cut with nothing to say so: {out:?}"
+            );
+        }
+    }
+
     #[test]
     fn pending_spinner_shown_in_status_message_mode() {
         let controls = Controls::with_row_count(99)

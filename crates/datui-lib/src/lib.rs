@@ -5167,13 +5167,7 @@ impl App {
         // work from that list. A glob keeps the older route, which Polars expands.
         if !full.contains('*') {
             return Self::schema_state_from_cloud_files(
-                &full,
-                key,
-                store,
-                cloud_opts,
-                options,
-                runtime,
-                progress.clone(),
+                &full, key, store, cloud_opts, options, runtime, progress,
             );
         }
         let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
@@ -5214,10 +5208,13 @@ impl App {
         cloud_opts: CloudOptions,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
-        progress: Arc<crate::schema_union::FooterProgress>,
+        progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Option<DataTableState> {
         let listed = {
             let store = store.clone();
+            // Cloned into the future rather than borrowed: the future outlives this
+            // frame, and the counter is shared with whoever is rendering anyway.
+            let progress = progress.clone();
             wait_on_runtime(runtime, async move {
                 let files = cloud_hive::list_dataset_files(&store, &key).await?;
                 let read = crate::schema_union::footers_to_read(files.len());

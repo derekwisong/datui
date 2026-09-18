@@ -174,6 +174,17 @@ fn render_format_options(
     let inner = block.inner(area);
     block.render(area, buf);
 
+    // The source-file option belongs to no format, so it sits under the ones that do.
+    let (inner, source_file_row) = if modal.offer_source_file && inner.height >= 2 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        (rows[0], Some(rows[1]))
+    } else {
+        (inner, None)
+    };
+
     match modal.selected_format {
         ExportFormat::Csv => render_csv_options(
             inner,
@@ -192,6 +203,41 @@ fn render_format_options(
             render_no_format_options(inner, buf, modal, border_color, active_color)
         }
     }
+
+    if let Some(row) = source_file_row {
+        render_source_file_option(row, buf, modal, border_color, active_color);
+    }
+}
+
+/// A checkbox for naming each row's file. Only drawn for a dataset whose files
+/// disagree, which is where a null and an absent cell differ and the file is what
+/// tells them apart once the data has left datui.
+fn render_source_file_option(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    modal: &ExportModal,
+    border_color: ratatui::style::Color,
+    active_color: ratatui::style::Color,
+) {
+    let focused = modal.focus == ExportFocus::SourceFile;
+    let style = if focused {
+        Style::default().fg(active_color)
+    } else {
+        Style::default().fg(border_color)
+    };
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(15),
+            Constraint::Length(2),
+            Constraint::Min(1),
+        ])
+        .split(area);
+    Paragraph::new("Source file:")
+        .style(style)
+        .render(columns[0], buf);
+    let marker = if modal.source_file { "☑" } else { "☐" };
+    Paragraph::new(Line::from(vec![Span::styled(marker, style)])).render(columns[1], buf);
 }
 
 fn render_csv_options(

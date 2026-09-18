@@ -141,6 +141,9 @@ pub struct DataTableState {
     /// Together they turn a row's place in the dataset into what its file was missing.
     drift_file_starts: Vec<usize>,
     drift_file_group: Vec<u32>,
+    /// Each file's path or URL, in scan order, so a row can be traced to the file it
+    /// came from and an export can name it.
+    drift_files: Vec<String>,
     /// What datui noticed about the dataset, from the footers it had to read anyway.
     notes: Vec<crate::notes::Note>,
     /// Whether the Info panel has been opened since the notes were gathered. Belongs to
@@ -505,6 +508,7 @@ impl DataTableState {
             groups_at_open: Arc::new(Vec::new()),
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
+            drift_files: Vec::new(),
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
@@ -608,6 +612,7 @@ impl DataTableState {
             groups_at_open: Arc::new(Vec::new()),
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
+            drift_files: Vec::new(),
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
@@ -3783,7 +3788,9 @@ impl DataTableState {
         &mut self,
         schema: crate::schema_union::DatasetSchema,
         file_rows: &[usize],
+        files: &[String],
     ) {
+        self.drift_files = files.to_vec();
         // The scan numbers rows exactly when the files differ and every one is counted.
         self.drift_column_present = schema.drifts() && file_rows.len() == schema.file_group.len();
         self.drift_groups = Arc::new(schema.groups.clone());
@@ -3846,6 +3853,36 @@ impl DataTableState {
         self.drift_column_present = present;
         self.drift_groups = groups;
         self.notes = notes;
+    }
+
+    /// The name of the column an export adds when asked to say where each row is from.
+    pub const SOURCE_FILE_COLUMN: &'static str = "source_file";
+
+    /// Whether an export can name each row's file: the frame has to still carry the
+    /// scan's row index, and the dataset has to have files to name.
+    pub fn can_name_source_files(&self) -> bool {
+        self.drift_column_present && !self.drift_files.is_empty()
+    }
+
+    /// Replace the scan's hidden row index with the path of the file each row came
+    /// from. The frame must have been collected with the index still on it.
+    pub fn name_source_files(&self, mut df: DataFrame) -> PolarsResult<DataFrame> {
+        let rows = df.drop_in_place(crate::schema_union::DRIFT_COLUMN)?;
+        let rows = rows.u32()?;
+        let names: Vec<Option<&str>> = rows
+            .iter()
+            .map(|row| {
+                let row = row? as usize;
+                let file = self
+                    .drift_file_starts
+                    .partition_point(|&start| start <= row)
+                    .saturating_sub(1);
+                self.drift_files.get(file).map(String::as_str)
+            })
+            .collect();
+        let column = Column::new(Self::SOURCE_FILE_COLUMN.into(), names).cast(&DataType::String)?;
+        df.with_column(column)?;
+        Ok(df)
     }
 
     /// What datui noticed about the dataset. Empty when there is nothing to say.

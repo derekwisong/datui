@@ -77,6 +77,10 @@ pub enum ExportFocus {
     JsonCompression,
     // NDJSON options
     NdjsonCompression,
+    /// Add a column naming the file each row came from. Only offered for a dataset
+    /// whose files disagree, since that is where a null and an absent cell differ and
+    /// the source file is what tells them apart downstream.
+    SourceFile,
     // Footer buttons
     ExportButton,
     CancelButton,
@@ -90,6 +94,10 @@ pub struct ExportModal {
     // CSV options
     pub csv_delimiter_input: TextInput,
     pub csv_include_header: bool,
+    /// Add a column naming the file each row came from. See `ExportFocus::SourceFile`.
+    pub source_file: bool,
+    /// Whether this dataset has files to name. Set when the modal opens.
+    pub offer_source_file: bool,
     pub csv_compression: Option<CompressionFormat>,
     // JSON options
     pub json_compression: Option<CompressionFormat>,
@@ -131,6 +139,7 @@ impl ExportModal {
         self.csv_delimiter_input
             .set_value(format!("{}", delimiter_char as char));
         self.csv_include_header = true;
+        self.source_file = false;
         self.csv_compression = None;
         self.json_compression = None;
         self.ndjson_compression = None;
@@ -143,25 +152,41 @@ impl ExportModal {
         self.path_input.clear();
     }
 
+    /// The fields this modal offers, in the order Tab walks them.
+    ///
+    /// Built as a list rather than a match per field: the options differ by format and
+    /// one of them depends on the dataset, and a hand-written state machine over both
+    /// has an arm for every pair.
+    pub fn focus_order(&self) -> Vec<ExportFocus> {
+        let mut order = vec![ExportFocus::FormatSelector, ExportFocus::PathInput];
+        match self.selected_format {
+            ExportFormat::Csv => order.extend([
+                ExportFocus::CsvDelimiter,
+                ExportFocus::CsvIncludeHeader,
+                ExportFocus::CsvCompression,
+            ]),
+            ExportFormat::Json => order.push(ExportFocus::JsonCompression),
+            ExportFormat::Ndjson => order.push(ExportFocus::NdjsonCompression),
+            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {}
+        }
+        if self.offer_source_file {
+            order.push(ExportFocus::SourceFile);
+        }
+        order.extend([ExportFocus::ExportButton, ExportFocus::CancelButton]);
+        order
+    }
+
+    /// Where `focus` sits in that list; 0 for a field the current format does not offer.
+    fn focus_index(&self) -> usize {
+        self.focus_order()
+            .iter()
+            .position(|field| *field == self.focus)
+            .unwrap_or(0)
+    }
+
     pub fn next_focus(&mut self) {
-        let new_focus = match self.focus {
-            ExportFocus::FormatSelector => ExportFocus::PathInput,
-            ExportFocus::PathInput => match self.selected_format {
-                ExportFormat::Csv => ExportFocus::CsvDelimiter,
-                ExportFormat::Json => ExportFocus::JsonCompression,
-                ExportFormat::Ndjson => ExportFocus::NdjsonCompression,
-                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-                    ExportFocus::ExportButton
-                }
-            },
-            ExportFocus::CsvDelimiter => ExportFocus::CsvIncludeHeader,
-            ExportFocus::CsvIncludeHeader => ExportFocus::CsvCompression,
-            ExportFocus::CsvCompression => ExportFocus::ExportButton,
-            ExportFocus::JsonCompression => ExportFocus::ExportButton,
-            ExportFocus::NdjsonCompression => ExportFocus::ExportButton,
-            ExportFocus::ExportButton => ExportFocus::CancelButton,
-            ExportFocus::CancelButton => ExportFocus::FormatSelector,
-        };
+        let order = self.focus_order();
+        let new_focus = order[(self.focus_index() + 1) % order.len()];
         self.focus = new_focus;
         // Initialize compression selection index when focusing on compression
         if matches!(
@@ -175,24 +200,8 @@ impl ExportModal {
     }
 
     pub fn prev_focus(&mut self) {
-        let new_focus = match self.focus {
-            ExportFocus::FormatSelector => ExportFocus::CancelButton,
-            ExportFocus::PathInput => ExportFocus::FormatSelector,
-            ExportFocus::CsvDelimiter => ExportFocus::PathInput,
-            ExportFocus::CsvIncludeHeader => ExportFocus::CsvDelimiter,
-            ExportFocus::CsvCompression => ExportFocus::CsvIncludeHeader,
-            ExportFocus::JsonCompression => ExportFocus::PathInput,
-            ExportFocus::NdjsonCompression => ExportFocus::PathInput,
-            ExportFocus::ExportButton => match self.selected_format {
-                ExportFormat::Csv => ExportFocus::CsvCompression,
-                ExportFormat::Json => ExportFocus::JsonCompression,
-                ExportFormat::Ndjson => ExportFocus::NdjsonCompression,
-                ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-                    ExportFocus::PathInput
-                }
-            },
-            ExportFocus::CancelButton => ExportFocus::ExportButton,
-        };
+        let order = self.focus_order();
+        let new_focus = order[(self.focus_index() + order.len() - 1) % order.len()];
         self.focus = new_focus;
         // Initialize compression selection index when focusing on compression
         if matches!(
@@ -300,6 +309,8 @@ impl Default for ExportModal {
             path_input: TextInput::new(),
             csv_delimiter_input: TextInput::new(),
             csv_include_header: true,
+            source_file: false,
+            offer_source_file: false,
             csv_compression: None,
             json_compression: None,
             ndjson_compression: None,

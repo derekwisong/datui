@@ -1298,7 +1298,24 @@ fn export_csv_header(
     tx: &mpsc::Sender<AppEvent>,
     path: &std::path::Path,
 ) -> String {
+    export_csv(app, rx, tx, path, false)
+        .lines()
+        .next()
+        .expect("with a header")
+        .to_string()
+}
+
+/// Run a CSV export through the app's own two-phase export events and return the whole
+/// file. `source_file` asks it to name the file each row came from.
+fn export_csv(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    tx: &mpsc::Sender<AppEvent>,
+    path: &std::path::Path,
+    source_file: bool,
+) -> String {
     let options = datui::ExportOptions {
+        source_file,
         csv_delimiter: b',',
         csv_include_header: true,
         csv_compression: None,
@@ -1325,12 +1342,7 @@ fn export_csv_header(
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    std::fs::read_to_string(path)
-        .expect("the export wrote a file")
-        .lines()
-        .next()
-        .expect("with a header")
-        .to_string()
+    std::fs::read_to_string(path).expect("the export wrote a file")
 }
 
 /// A query builds its own rows, and its schema becomes the column order — so a query
@@ -1731,6 +1743,49 @@ fn test_a_uniform_dataset_has_no_notes() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.notes().is_empty());
     assert!(!state.notes_unseen(), "so no accent either");
+}
+
+/// Asking an export to name each row's file keeps the absent-versus-null distinction
+/// once the data has left datui: `extra` is empty in both rows, but only one of them
+/// came from a file that had the column.
+#[test]
+fn test_an_export_can_name_the_file_each_row_came_from() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &[None::<&str>]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .can_name_source_files(),
+        "the files disagree, so there is something to name"
+    );
+
+    let out = dir.path().join("named.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, true);
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines[0], "date,id,extra,source_file");
+    assert!(
+        lines[1].ends_with("date=2024-01-01/data.parquet"),
+        "the first row came from the file without `extra`: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].ends_with("date=2024-01-02/data.parquet"),
+        "and the second from the one that has it, holding a real null: {}",
+        lines[2]
+    );
+
+    // Off by default, and then the hidden index must not leak in its place.
+    let plain = dir.path().join("plain.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &plain, false);
+    assert_eq!(csv.lines().next().unwrap(), "date,id,extra");
 }
 
 /// A column only a middle file has used to vanish: the schema was one file's, and that

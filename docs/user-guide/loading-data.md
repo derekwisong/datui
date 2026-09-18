@@ -150,9 +150,12 @@ worth something on its own.
 
 datui reads a partitioned folder's columns off one branch of the tree, which is
 right for nearly every dataset. Where a pipeline changed its partition key partway
-through — `date=` becoming `dt=` — the files under the key that lost read as though
-they had no partition at all: the column is there, full of nulls. The Notes tab
-says which files are partitioned which way, counted from every file's name.
+through — `date=` becoming `dt=` — that branch is whichever the filesystem hands
+back first, not the commonest, and **the dataset will not open**: every file under
+the other key fails the scan with a schema error. The Notes tab says which keys
+datui is reading by and how many files cannot be read with them, counted from
+every file's name. It has nothing to say when `--single-spine-schema false` is
+set, since that route does not look at the names at all.
 
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file, as it does for a glob.

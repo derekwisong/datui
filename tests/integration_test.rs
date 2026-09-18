@@ -1867,11 +1867,13 @@ fn test_a_dataset_whose_files_all_hold_rows_says_nothing_about_empty_ones() {
 
 /// A pipeline that renamed its partition key partway through.
 ///
-/// datui reads the partition columns off one branch of the tree, so the files under the
-/// key that lost read as though they had no partition at all — the column is there,
-/// full of nulls, and without the note nothing on screen says why.
+/// datui reads the partition columns off one branch of the tree, and that branch is
+/// whichever the filesystem hands back first — here the single `dt=` folder, not the
+/// three `date=` ones. Every file under the key that lost then fails the scan, and the
+/// dataset does not open: this asserts the screen the user is actually looking at, so
+/// the note can never drift back to describing a friendlier one.
 #[test]
-fn test_a_folder_whose_partition_key_changed_says_so() {
+fn test_a_folder_whose_partition_key_changed_says_which_key_it_is_reading_by() {
     let dir = tempfile::tempdir().unwrap();
     for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
         write_parquet(
@@ -1889,22 +1891,35 @@ fn test_a_folder_whose_partition_key_changed_says_so() {
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let area = Rect::new(0, 0, 100, 24);
-    let _ = painted(&mut app, &rx, &tx, area);
+    let frame = painted(&mut app, &rx, &tx, area);
+    assert!(
+        frame.contains("Schema field not found"),
+        "the dataset does not open at all — the note exists to explain this screen, \
+         and if this assertion ever fails the note needs rewriting, not deleting:\n\
+         {frame}"
+    );
 
     let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.partition_columns.as_deref(),
+        Some(["dt".to_string()].as_slice()),
+        "and it is reading by the one folder, not the three"
+    );
+
     let notes = state.notes();
     let layout = notes
         .iter()
-        .find(|note| note.summary.contains("partitioned by"))
+        .find(|note| note.summary.contains("partition key"))
         .unwrap_or_else(|| panic!("nothing said about the changed key: {notes:#?}"));
     assert_eq!(
         layout.summary,
-        "3 files are partitioned by date, and 1 file by dt"
+        "the folders disagree about their partition key: this is read by dt, and \
+         3 files under date cannot be read with it"
     );
-    assert_eq!(layout.scope, "in the names of all 4 files");
+    assert_eq!(layout.scope, "in the names of 4 files");
 }
 
-/// The control: a folder partitioned the one way says nothing about it.
+/// The control: a folder partitioned the one way opens, and says nothing about keys.
 #[test]
 fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
     let dir = tempfile::tempdir().unwrap();
@@ -1918,14 +1933,15 @@ fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let area = Rect::new(0, 0, 100, 24);
-    let _ = painted(&mut app, &rx, &tx, area);
+    let frame = painted(&mut app, &rx, &tx, area);
+    assert!(!frame.contains("Error"), "it opens: {frame}");
 
     let state = app.data_table_state.as_ref().unwrap();
     assert!(
         !state
             .notes()
             .iter()
-            .any(|note| note.summary.contains("partitioned by")),
+            .any(|note| note.summary.contains("partition key")),
         "{:#?}",
         state.notes()
     );

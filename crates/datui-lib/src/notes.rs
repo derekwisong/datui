@@ -340,44 +340,61 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     })
 }
 
-/// Files partitioned one way where the rest are partitioned another.
+/// Folders that disagree about what they are partitioned by.
 ///
 /// datui reads the partition columns off one branch of the tree, which is right for
 /// nearly every dataset and is what lets it open one at all. When a pipeline changes
-/// `date=` to `dt=` partway through, the files under the key that lost read as though
-/// they had no partition: the column is there, full of nulls, and nothing else on
-/// screen says why.
+/// `date=` to `dt=` partway through, that branch is whichever the filesystem hands
+/// back first — not the commonest — and every file under the other key then fails the
+/// scan with a schema error. The dataset does not open.
 ///
-/// Names the commonest layout and the ones that differ from it, with the files behind
-/// each. Its own scope line, because this is the one note read off the names of every
-/// file rather than the footers of some of them — on a dataset too large to open every
-/// footer this note still saw all of it.
+/// So the note names the keys the scan *is* reading by, which is the only part of this
+/// a user can act on, and counts the files that cannot be read with them. An earlier
+/// draft said those files read as nulls; review opened such a folder and found an
+/// error modal and no rows at all.
+///
+/// Read off the names of every file, which is the one thing the listing knows that
+/// reading a file cannot tell you — so it has a scope line of its own, and on a dataset
+/// too large to open every footer this note still saw all of it.
 fn partition_layout_note(dataset: &DatasetSchema) -> Option<Note> {
-    let (most, rest) = dataset.partition_layouts.split_first()?;
-    if rest.is_empty() {
+    /// Layouts named before the rest are counted rather than spelled. A note is one
+    /// sentence, and a dataset with a hundred layouts would otherwise make it a page.
+    const NAMED: usize = 2;
+    if dataset.partition_layouts.len() < 2 {
         return None;
     }
     let spell = |keys: &[String]| keys.join("/");
-    let others: Vec<String> = rest
+    let reading = spell(&dataset.reading_partitions);
+    let others: Vec<&(Vec<String>, usize)> = dataset
+        .partition_layouts
         .iter()
-        .map(|(keys, files)| format!("{} by {}", how_many_files(*files), spell(keys)))
+        .filter(|(keys, _)| spell(keys) != reading)
         .collect();
+    let (named, rest) = others.split_at(others.len().min(NAMED));
+    let mut clauses: Vec<String> = named
+        .iter()
+        .map(|(keys, files)| format!("{} under {}", how_many_files(*files), spell(keys)))
+        .collect();
+    if !rest.is_empty() {
+        let files: usize = rest.iter().map(|(_, files)| files).sum();
+        clauses.push(format!(
+            "{} under {} other layouts",
+            how_many_files(files),
+            group_chrome(rest.len())
+        ));
+    }
+    if clauses.is_empty() {
+        return None;
+    }
     Some(Note {
         summary: format!(
-            "{} are partitioned by {}, and {}",
-            how_many_files(most.1),
-            spell(&most.0),
-            others.join(", and ")
+            "the folders disagree about their partition key: this is read by {reading}, \
+             and {} cannot be read with it",
+            clauses.join(", ")
         ),
         scope: format!(
-            "in the names of all {} files",
-            group_chrome(
-                dataset
-                    .partition_layouts
-                    .iter()
-                    .map(|(_, n)| n)
-                    .sum::<usize>()
-            )
+            "in the names of {} files",
+            group_chrome(dataset.listed_files)
         ),
         read_as_text: None,
     })
@@ -503,11 +520,15 @@ mod tests {
     }
 
     /// One dataset shape, and the notes it should produce.
+    #[derive(Default)]
     struct Shape {
         what: &'static str,
         files: Vec<Option<FileSchema>>,
         /// `Some(total)` when the footers stand in for a larger dataset.
         sampled: Option<usize>,
+        /// The file names, where the shape is about how they are laid out rather than
+        /// about what is in them. Empty for a shape that has nothing to say about it.
+        paths: Vec<&'static str>,
         expected: Vec<&'static str>,
     }
 
@@ -519,7 +540,15 @@ mod tests {
             },
             None => SchemaOrigin::AllFooters(shape.files.len()),
         };
-        union_file_schemas(&shape.files, origin)
+        let dataset = union_file_schemas(&shape.files, origin);
+        if shape.paths.is_empty() {
+            return dataset;
+        }
+        let paths: Vec<String> = shape.paths.iter().map(|p| p.to_string()).collect();
+        // The first path's keys stand in for the branch the scan read, which is what
+        // the real open passes and is not a vote.
+        let spine = crate::schema_union::partition_keys_for_test(&paths[0]);
+        dataset.with_partition_layouts(&paths, &spine)
     }
 
     fn notes_for(shape: &Shape) -> Vec<String> {
@@ -550,6 +579,30 @@ mod tests {
         };
 
         let cases = vec![
+            // --- folders that disagree about what they are partitioned by ---
+            Shape {
+                what: "one folder under another key",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64)], 1),
+                ],
+                paths: vec!["d/date=1/a.parquet", "d/dt=2/b.parquet"],
+                expected: vec![
+                    "the folders disagree about their partition key: this is read by \
+                     date, and 1 file under dt cannot be read with it",
+                ],
+                ..Shape::default()
+            },
+            Shape {
+                what: "folders that agree",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64)], 1),
+                ],
+                paths: vec!["d/date=1/a.parquet", "d/date=2/b.parquet"],
+                expected: vec![],
+                ..Shape::default()
+            },
             // --- files that hold nothing at all ---
             Shape {
                 what: "one empty file",
@@ -558,6 +611,7 @@ mod tests {
                     file(&[("id", DataType::Int64)], 5),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec!["1 file holds no rows"],
             },
             Shape {
@@ -568,6 +622,7 @@ mod tests {
                     file(&[("id", DataType::Int64)], 5),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec!["2 files hold no rows"],
             },
             Shape {
@@ -577,6 +632,7 @@ mod tests {
                     file(&[("id", DataType::Int64)], 5),
                 ],
                 sampled: Some(900),
+                paths: Vec::new(),
                 // "file", not "footer": a footer does not hold rows. The scope line
                 // is what says datui looked at two of nine hundred, and the note
                 // claims nothing about the other 898.
@@ -589,6 +645,7 @@ mod tests {
                     file(&[("id", DataType::Int64), ("x", DataType::String)], 5),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec![
                     "x is in 1 of 2 files; absent from the rest, not null",
                     "1 file holds no rows",
@@ -602,6 +659,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("x", str.clone())], 1),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec!["x is in 1 of 2 files; absent from the rest, not null"],
             },
             Shape {
@@ -611,6 +669,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("x", str.clone())], 1),
                 ],
                 sampled: Some(200_000),
+                paths: Vec::new(),
                 expected: vec!["x is in 1 of the 2 footers read; absent from the rest, not null"],
             },
             Shape {
@@ -621,6 +680,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("x", str.clone())], 1),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec![
                     "x is in 1 of the 2 files that could be read; absent from the rest, not null",
                     "1 file could not be read and was left out of the schema",
@@ -634,6 +694,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("x", str.clone())], 1),
                 ],
                 sampled: Some(200_000),
+                paths: Vec::new(),
                 expected: vec![
                     "x is in 1 of the 2 footers that could be read; absent from the rest, not null",
                     "1 footer could not be read and was left out of the schema",
@@ -647,6 +708,7 @@ mod tests {
                     file(&[("n", i64.clone())], 90),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec!["n is str in 1 file; read as i64 and not read there"],
             },
             Shape {
@@ -656,6 +718,7 @@ mod tests {
                     file(&[("n", i64.clone())], 90),
                 ],
                 sampled: Some(200_000),
+                paths: Vec::new(),
                 expected: vec!["n is str in 1 footer; read as i64 and not read there"],
             },
             Shape {
@@ -666,6 +729,7 @@ mod tests {
                     file(&[("n", i64.clone())], 90),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec![
                     "n is str in 1 file; read as i64 and not read there",
                     "1 file could not be read and was left out of the schema",
@@ -679,6 +743,7 @@ mod tests {
                     file(&[("n", i64.clone())], 90),
                 ],
                 sampled: Some(200_000),
+                paths: Vec::new(),
                 expected: vec![
                     "n is str in 1 footer; read as i64 and not read there",
                     "1 footer could not be read and was left out of the schema",
@@ -689,6 +754,7 @@ mod tests {
                 what: "widened",
                 files: with_n(i32.clone(), i64.clone()),
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec!["n is stored as more than one type; read as i64"],
             },
             // --- and the combinations, each saying all of what is true ---
@@ -700,6 +766,7 @@ mod tests {
                     file(&[("id", i64.clone())], 5),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 // Schema order: the newest file's columns lead, so `id` comes first.
                 expected: vec![
                     "id is in 1 of 3 files; absent from the rest, not null",
@@ -715,6 +782,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("n", i64.clone())], 50),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec![
                     "n is in 2 of 3 files; absent from the rest, not null",
                     "n is stored as more than one type; read as i64",
@@ -728,6 +796,7 @@ mod tests {
                     file(&[("n", str.clone())], 5),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec![
                     "n is str in 1 file; read as i64 and not read there",
                     "n is stored as more than one type; read as i64",
@@ -741,6 +810,7 @@ mod tests {
                     file(&[("n", str.clone())], 5),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec![
                     "n is str in 1 file; read as f64 and not read there",
                     "n is stored as more than one type; read as f64",
@@ -762,6 +832,7 @@ mod tests {
                     ),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 // `datetime in 1 file; read as datetime` would say nothing, so the
                 // note spells the types out where the short words collide.
                 expected: vec![
@@ -785,6 +856,7 @@ mod tests {
                     file(&[("t", str.clone())], 90),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 // The two that lost share a word as much as either shares one with the
                 // winner, so all three are spelled out.
                 expected: vec![
@@ -810,6 +882,7 @@ mod tests {
                     ),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 // `struct[1]` for both, so only the fields tell them apart.
                 expected: vec![
                     "s is Struct({'a': String}) in 1 file; \
@@ -830,6 +903,7 @@ mod tests {
                     file(&[("t", str.clone())], 5),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 // Both notes name the winner the same way, and the way the Schema tab
                 // does: "read as datetime" would drop the unit that is the point.
                 expected: vec![
@@ -850,6 +924,7 @@ mod tests {
                     ),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 // Which unit won is the whole content of the note, and `datetime`
                 // alone would not carry it.
                 expected: vec!["t is stored as more than one type; read as datetime[ns]"],
@@ -880,6 +955,7 @@ mod tests {
                     ),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 // Both notes name the winner the same way. Naming it separately let
                 // one say `Struct({'a': Int64})` and the other `struct[1]`.
                 expected: vec![
@@ -895,6 +971,7 @@ mod tests {
                     file(&[("d", str.clone())], 10),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec!["d is str in 1 file; read as decimal[38,2] and not read there"],
             },
             Shape {
@@ -906,6 +983,7 @@ mod tests {
                     file(&[("id", i64.clone()), ("n", str.clone())], 5),
                 ],
                 sampled: None,
+                paths: Vec::new(),
                 expected: vec![
                     "n is in 3 of 4 files; absent from the rest, not null",
                     "n is str in 1 file; read as i64 and not read there",
@@ -977,6 +1055,7 @@ mod tests {
                 file(&[("id", DataType::Int64)], 1),
             ],
             sampled: None,
+            paths: Vec::new(),
             expected: vec![],
         };
         assert!(notes_for(&shape).is_empty());

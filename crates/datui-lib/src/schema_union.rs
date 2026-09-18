@@ -141,6 +141,12 @@ pub struct DatasetSchema {
     /// From the names of every file, not from the footers: this is the one thing the
     /// listing knows that reading a file cannot tell you.
     pub partition_layouts: Vec<(Vec<String>, usize)>,
+    /// The partition keys the scan is actually reading by, which is one branch of the
+    /// tree and not a vote. Empty for a dataset with no partitions.
+    pub reading_partitions: Vec<String>,
+    /// How many file names were read to find the layouts, including the ones with no
+    /// partition keys at all.
+    pub listed_files: usize,
 }
 
 /// What a file is missing relative to the dataset's schema. Files that are missing the
@@ -174,22 +180,30 @@ impl DatasetSchema {
     /// nearly every dataset — but it is the very assumption that goes wrong when a
     /// pipeline changes `date=` to `dt=` partway through, and the files under the old
     /// key then read as though they had no partition at all.
-    pub fn with_partition_layouts(mut self, paths: &[String]) -> DatasetSchema {
-        let mut counts: Vec<(Vec<String>, usize)> = Vec::new();
+    pub fn with_partition_layouts(
+        mut self,
+        paths: &[String],
+        reading_partitions: &[String],
+    ) -> DatasetSchema {
+        // Keyed by the spelling rather than scanned for: a dataset whose every file
+        // has its own layout is pathological, but it should be slow to read, not
+        // quadratic. At half a million files the scan took three minutes.
+        let mut counts: HashMap<Vec<String>, usize> = HashMap::new();
         for path in paths {
             let keys = partition_keys_of(path);
             if keys.is_empty() {
                 continue;
             }
-            match counts.iter_mut().find(|(seen, _)| *seen == keys) {
-                Some((_, files)) => *files += 1,
-                None => counts.push((keys, 1)),
-            }
+            *counts.entry(keys).or_insert(0) += 1;
         }
-        // Commonest first, and by the keys themselves where two are equally common, so
-        // the note names the same layout every time it is opened.
+        let mut counts: Vec<(Vec<String>, usize)> = counts.into_iter().collect();
+        // Commonest first, and by the keys themselves where two are equally common:
+        // a HashMap hands them back in no order at all, so without the tie-break the
+        // same dataset would name a different layout from one open to the next.
         counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         self.partition_layouts = counts;
+        self.reading_partitions = reading_partitions.to_vec();
+        self.listed_files = paths.len();
         self
     }
 
@@ -410,6 +424,8 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
         median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
         partition_layouts: Vec::new(),
+        reading_partitions: Vec::new(),
+        listed_files: 0,
         median_row_group_bytes: median(
             files
                 .iter()
@@ -425,7 +441,14 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
 /// is never one — `data/x=1/2024=05.parquet` partitions by `x`, not by `x` and `2024`.
 fn partition_keys_of(path: &str) -> Vec<String> {
     let mut keys = Vec::new();
-    let mut segments: Vec<&str> = path.split(['/', '\\']).collect();
+    // A backslash separates on Windows and is an ordinary character in a Linux file
+    // name, where splitting on it would both break a legitimate name and invent a
+    // layout difference out of one directory.
+    #[cfg(windows)]
+    let separators: &[char] = &['/', '\\'];
+    #[cfg(not(windows))]
+    let separators: &[char] = &['/'];
+    let mut segments: Vec<&str> = path.split(separators).collect();
     segments.pop();
     for segment in segments {
         if let Some((key, _)) = segment.split_once('=')
@@ -435,6 +458,12 @@ fn partition_keys_of(path: &str) -> Vec<String> {
         }
     }
     keys
+}
+
+/// `partition_keys_of`, for the notes transcript in the sibling module.
+#[cfg(test)]
+pub(crate) fn partition_keys_for_test(path: &str) -> Vec<String> {
+    partition_keys_of(path)
 }
 
 /// The middle value of `sizes`, or the lower of the middle two. `None` when empty.
@@ -1707,17 +1736,137 @@ mod tests {
             Vec::<String>::new(),
             "nor is a segment with nothing before the equals"
         );
+        // A backslash separates on Windows and is an ordinary character in a Linux
+        // file name. Splitting on it everywhere would break a legitimate name and
+        // invent a layout difference out of one directory, which would fire this note
+        // on a dataset whose folders agree perfectly.
+        #[cfg(windows)]
         assert_eq!(
             keys(r"data\date=2024-01-01\a.parquet"),
             ["date"],
-            "and a path written the other way round is the same path"
+            "a path written the other way round is the same path"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            keys(r"data/we\ird=1/f.parquet"),
+            ["we\\ird"],
+            "a backslash here is part of the name, not a separator"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(
+            keys(r"data/x=1\y=2/f.parquet"),
+            ["x"],
+            "so one directory is one partition, however it is spelled"
         );
     }
 
     /// A dataset whose folders disagree about what they are partitioned by.
+    ///
+    /// The note names the keys the scan reads by, which is one branch of the tree and
+    /// not the commonest layout — so every case here says which branch it is, and the
+    /// "3 files by date, 1 by dt" reading that a majority vote would suggest is exactly
+    /// the reading to avoid.
     #[test]
-    fn files_partitioned_two_ways_are_counted_each_way() {
-        let note = |paths: &[&str]| -> Option<crate::notes::Note> {
+    fn folders_that_disagree_name_the_keys_the_scan_reads_by() {
+        let note = |paths: &[&str], reading: &[&str]| -> Option<crate::notes::Note> {
+            let footers = vec![
+                Some(FileSchema {
+                    schema: Arc::new(Schema::with_capacity(0)),
+                    rows: 1,
+                    file_bytes: 1,
+                    row_group_bytes: Vec::new(),
+                });
+                paths.len()
+            ];
+            let owned: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+            let reading: Vec<String> = reading.iter().map(|p| p.to_string()).collect();
+            let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(paths.len()))
+                .with_partition_layouts(&owned, &reading);
+            crate::notes::from_dataset(&dataset)
+                .into_iter()
+                .find(|note| note.summary.contains("partition key"))
+        };
+
+        assert_eq!(
+            note(&["d/date=1/a.parquet", "d/date=2/b.parquet"], &["date"]),
+            None,
+            "folders that agree have nothing to say"
+        );
+        assert_eq!(
+            note(&["d/a.parquet", "d/b.parquet"], &[]),
+            None,
+            "nor has a dataset with no partitions at all"
+        );
+
+        // The shape review measured: three folders under one key, one under another,
+        // and the scan reading by the *minority* key because that is the branch the
+        // filesystem handed back first.
+        let minority = note(
+            &[
+                "d/date=1/a.parquet",
+                "d/date=2/b.parquet",
+                "d/date=3/c.parquet",
+                "d/dt=4/e.parquet",
+            ],
+            &["dt"],
+        )
+        .expect("the folders disagree");
+        assert_eq!(
+            minority.summary,
+            "the folders disagree about their partition key: this is read by dt, and \
+             3 files under date cannot be read with it"
+        );
+        assert_eq!(
+            minority.scope, "in the names of 4 files",
+            "read off every name, not off the footers datui opened"
+        );
+
+        // And the same dataset read by the commonest key instead: the sentence has to
+        // name whichever one the scan took, not whichever one most files use.
+        assert_eq!(
+            note(
+                &[
+                    "d/date=1/a.parquet",
+                    "d/date=2/b.parquet",
+                    "d/date=3/c.parquet",
+                    "d/dt=4/e.parquet",
+                ],
+                &["date"],
+            )
+            .expect("the folders still disagree")
+            .summary,
+            "the folders disagree about their partition key: this is read by date, and \
+             1 file under dt cannot be read with it"
+        );
+
+        // A file with no partition at all has no keys to disagree about, so it is no
+        // layout — but it is still a name that was read, and the scope counts it.
+        let loose = note(
+            &[
+                "d/y=1/m=1/a.parquet",
+                "d/y=1/m=2/b.parquet",
+                "d/date=3/c.parquet",
+                "d/loose.parquet",
+            ],
+            &["y", "m"],
+        )
+        .expect("the folders disagree");
+        assert_eq!(
+            loose.summary,
+            "the folders disagree about their partition key: this is read by y/m, and \
+             1 file under date cannot be read with it"
+        );
+        assert_eq!(
+            loose.scope, "in the names of 4 files",
+            "the unpartitioned file is one of the names read"
+        );
+    }
+
+    /// The commonest layout is named first, whatever order the paths arrive in and
+    /// whatever a hash map makes of them.
+    #[test]
+    fn the_layouts_a_note_names_are_the_commonest_of_the_ones_that_differ() {
+        let note = |paths: &[&str]| -> String {
             let footers = vec![
                 Some(FileSchema {
                     schema: Arc::new(Schema::with_capacity(0)),
@@ -1729,54 +1878,40 @@ mod tests {
             ];
             let owned: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
             let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(paths.len()))
-                .with_partition_layouts(&owned);
+                .with_partition_layouts(&owned, &[String::from("spine")]);
             crate::notes::from_dataset(&dataset)
                 .into_iter()
-                .find(|note| note.summary.contains("partitioned by"))
+                .find(|note| note.summary.contains("partition key"))
+                .expect("the folders disagree")
+                .summary
         };
 
+        // `aaa` sorts first and `zzz` is commonest: without the sort the rare one
+        // would be named first, and "1 file" would lead a sentence about three.
         assert_eq!(
-            note(&["d/date=1/a.parquet", "d/date=2/b.parquet"]),
-            None,
-            "folders that agree have nothing to say"
+            note(&[
+                "d/spine=0/s.parquet",
+                "d/aaa=1/a.parquet",
+                "d/zzz=1/b.parquet",
+                "d/zzz=2/c.parquet",
+                "d/zzz=3/e.parquet",
+            ]),
+            "the folders disagree about their partition key: this is read by spine, \
+             and 3 files under zzz, 1 file under aaa cannot be read with it"
         );
+        // Past two, the rest are counted rather than spelled: a note is one sentence.
         assert_eq!(
-            note(&["d/a.parquet", "d/b.parquet"]),
-            None,
-            "nor has a dataset with no partitions at all"
+            note(&[
+                "d/spine=0/s.parquet",
+                "d/aa=1/a.parquet",
+                "d/bb=1/b.parquet",
+                "d/cc=1/c.parquet",
+                "d/dd=1/e.parquet",
+            ]),
+            "the folders disagree about their partition key: this is read by spine, \
+             and 1 file under aa, 1 file under bb, 2 files under 2 other layouts \
+             cannot be read with it"
         );
-
-        let changed = note(&[
-            "d/date=1/a.parquet",
-            "d/date=2/b.parquet",
-            "d/date=3/c.parquet",
-            "d/dt=4/e.parquet",
-        ])
-        .expect("the folders disagree");
-        assert_eq!(
-            changed.summary,
-            "3 files are partitioned by date, and 1 file by dt"
-        );
-        assert_eq!(
-            changed.scope, "in the names of all 4 files",
-            "read off every name, not off the footers datui opened"
-        );
-
-        // Three layouts, and a file with no partition at all, which is a fourth thing
-        // and is left out: it has no keys to disagree about.
-        let three = note(&[
-            "d/y=1/m=1/a.parquet",
-            "d/y=1/m=2/b.parquet",
-            "d/date=3/c.parquet",
-            "d/dt=4/e.parquet",
-            "d/loose.parquet",
-        ])
-        .expect("the folders disagree");
-        assert_eq!(
-            three.summary,
-            "2 files are partitioned by y/m, and 1 file by date, and 1 file by dt"
-        );
-        assert_eq!(three.scope, "in the names of all 4 files");
     }
 
     /// Files merely missing a column must not split the scan.

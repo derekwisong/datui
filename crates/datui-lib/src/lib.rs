@@ -3156,8 +3156,6 @@ impl App {
         Ok(())
     }
 
-    /// Set loading state and phase so the progress dialog is visible. Used by run() to show
-    /// loading UI immediately when launching from LazyFrame (e.g. Python) before sending the open event.
     /// What the load is doing, for whichever part of the screen is saying so.
     ///
     /// The footer count stands in for the phase while a pass is running: it says the
@@ -3174,6 +3172,8 @@ impl App {
         }
     }
 
+    /// Set loading state and phase so the progress dialog is visible. Used by run() to show
+    /// loading UI immediately when launching from LazyFrame (e.g. Python) before sending the open event.
     pub fn set_loading_phase(&mut self, phase: impl Into<String>, progress_percent: u16) {
         self.busy = true;
         // A frame is drawn between the keypress that starts a load and the `Open` that

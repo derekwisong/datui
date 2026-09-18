@@ -108,7 +108,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
 }
 
 /// Keep the head of a string, marking what was cut.
-fn truncate(text: &str, width: usize) -> String {
+pub(crate) fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();
     }
@@ -237,8 +237,9 @@ mod tests {
                 .map(|row| row.trim_end().to_string())
                 .unwrap_or_else(|| panic!("no phase line at {width}"));
             assert!(
-                line.chars().count() <= width as usize,
-                "at {width} the line runs past the edge: {line:?}"
+                !line.contains("of 6,5") || line.contains("of 6,541"),
+                "at {width} the count is cut mid-number, which reads as a smaller \
+                 figure than the one it counts towards: {line:?}"
             );
             if width >= 36 {
                 assert!(

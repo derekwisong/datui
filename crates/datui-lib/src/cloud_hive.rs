@@ -676,6 +676,63 @@ mod tests {
         });
     }
 
+    /// The cloud open reports its footers to the counter it was handed.
+    ///
+    /// This is the pass with most reason to be narrated — every footer is a ranged read
+    /// over the network — and it is the one where nothing else would notice if the
+    /// counter came unwired. The local route has the same test; shipping one without
+    /// the other would leave the slower half unguarded.
+    ///
+    /// The scan past the footer pass cannot open a `memory://` URL and the route returns
+    /// `None`, which is fine: the footers have already been read by then, and they are
+    /// what this is about.
+    #[test]
+    fn a_cloud_open_counts_its_footers_against_the_counter_it_is_given() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let write = |rows: i64| -> Vec<u8> {
+            let mut frame = df!("n" => (0..rows).collect::<Vec<i64>>()).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for (key, rows) in [
+                ("data/date=2024-01-01/a.parquet", 1),
+                ("data/date=2024-01-02/b.parquet", 2),
+                ("data/date=2024-01-03/c.parquet", 3),
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(write(rows)))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let _ = crate::App::schema_state_from_cloud_files(
+            "memory://data/",
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            progress.clone(),
+        );
+
+        let pass = progress.last_pass();
+        assert_eq!(pass.begun, 1, "the open ran its footer pass against it");
+        assert_eq!(pass.read, 3, "counting each of the three objects off");
+        assert_eq!(
+            progress.reading(),
+            None,
+            "with nothing left to say once they landed"
+        );
+    }
+
     #[test]
     fn a_dataset_is_listed_once_and_counted_from_its_footers() {
         use object_store::PutPayload;

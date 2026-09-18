@@ -2019,12 +2019,12 @@ fn test_opening_a_folder_reports_its_footers_to_the_app() {
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
 
     assert_eq!(
-        app.footer_progress.passes(),
+        app.footer_progress.last_pass().begun,
         1,
         "the open ran its footer pass against the app's own counter"
     );
     assert_eq!(
-        app.footer_progress.read_so_far(),
+        app.footer_progress.last_pass().read,
         3,
         "and counted each of the three footers off it"
     );
@@ -2056,7 +2056,7 @@ fn test_each_open_counts_its_own_footers() {
     let (mut app, rx, tx) = open_local_dataset_with_channel(first.path());
     let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
     let counter_of_the_first = app.footer_progress.clone();
-    assert_eq!(counter_of_the_first.read_so_far(), 3);
+    assert_eq!(counter_of_the_first.last_pass().read, 3);
 
     pump_open_until_loaded(
         &mut app,
@@ -2074,9 +2074,24 @@ fn test_each_open_counts_its_own_footers() {
         "the second open has a counter of its own"
     );
     assert_eq!(
-        app.footer_progress.read_so_far(),
+        app.footer_progress.last_pass().read,
         1,
         "counting its one footer, not the three before it"
+    );
+
+    // And the behaviour that matters, not just the mechanism: the first open's pass
+    // goes on running after it is abandoned, so if the second open shared its counter
+    // the first's progress would paint onto the second's screen. Driven here, since
+    // a real abandoned pass finishes too fast to catch.
+    counter_of_the_first.begin(6541);
+    for _ in 0..4102 {
+        counter_of_the_first.advance();
+    }
+    let frame = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+    assert!(
+        !frame.contains("6,541"),
+        "the abandoned folder's count does not appear under the file that replaced \
+         it:\n{frame}"
     );
 }
 

@@ -8577,13 +8577,13 @@ mod tests {
             "the pass says nothing once it has landed"
         );
         assert_eq!(
-            progress.passes(),
+            progress.last_pass().begun,
             1,
             "and it did report: the count is unobservable afterwards, so without this \
              a pass that never told anyone would look the same as one that did"
         );
         assert_eq!(
-            progress.read_so_far(),
+            progress.last_pass().read,
             4,
             "counting every footer it read, not just starting and stopping"
         );
@@ -8618,12 +8618,12 @@ mod tests {
         assert!(footers.iter().all(Option::is_none), "none of them parses");
 
         assert_eq!(
-            progress.last_total(),
+            progress.last_pass().total,
             read.len(),
             "the screen's denominator is the sample, not the {files} files there are"
         );
         assert_eq!(
-            progress.read_so_far(),
+            progress.last_pass().read,
             read.len(),
             "and every one of them was counted off, parse or no parse"
         );

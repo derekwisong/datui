@@ -23,6 +23,17 @@ use polars::prelude::{
     concat,
 };
 
+/// What became of a footer pass, after it has finished saying so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassCount {
+    /// Passes begun against the counter.
+    pub begun: usize,
+    /// Footers the last pass has read.
+    pub read: usize,
+    /// Footers the last pass was over.
+    pub total: usize,
+}
+
 /// How far a dataset's footer pass has got, for the loading screen to read.
 ///
 /// Opening a folder of many files reads a footer from each before a row is shown, and
@@ -66,23 +77,20 @@ impl FooterProgress {
         self.total.store(0, Ordering::Relaxed);
     }
 
-    /// How many passes have begun against this counter.
-    pub fn passes(&self) -> usize {
-        self.passes.load(Ordering::Relaxed)
-    }
-
-    /// Footers read since the last pass began, whether or not it has finished. Outlives
-    /// the pass, which is what makes "it read them" something anyone can check.
-    pub fn read_so_far(&self) -> usize {
-        self.read.load(Ordering::Relaxed)
-    }
-
-    /// What the last pass was over. Outlives it for the same reason as `read_so_far`:
-    /// the denominator on screen is the footers that will be *read*, which past
-    /// [`MAX_FOOTER_READS`] is not the files there are, and nothing else can say which
-    /// of the two it was given.
-    pub fn last_total(&self) -> usize {
-        self.last_total.load(Ordering::Relaxed)
+    /// What has become of the passes against this counter: how many have begun, how
+    /// many footers the last one has read, and how many it was over.
+    ///
+    /// All three outlive the pass, which is the point of them. A finished pass reports
+    /// nothing — read and total are both back to nothing — so from outside, a pass that
+    /// counted and a pass that never started look identical, and every line that does
+    /// the counting could be deleted with the tests green. Nothing on screen reads
+    /// this; it is here so the wiring can be checked.
+    pub fn last_pass(&self) -> PassCount {
+        PassCount {
+            begun: self.passes.load(Ordering::Relaxed),
+            read: self.read.load(Ordering::Relaxed),
+            total: self.last_total.load(Ordering::Relaxed),
+        }
     }
 
     /// `(read, total)` while a pass is running, `None` when none is.

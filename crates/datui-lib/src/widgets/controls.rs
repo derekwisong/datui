@@ -287,10 +287,16 @@ impl Widget for &Controls {
                 .style(throbber_style)
                 .render(layout[0], buf);
 
-            // Status message
-            Paragraph::new(msg.as_str())
-                .style(label_style)
-                .render(layout[1], buf);
+            // Status message, cut with a mark rather than by the edge. The loading
+            // phase can be "Reading footers: 1,203 of 6,541... (40%)", and a bare
+            // Paragraph clipped that to "1,203 of 6" — a smaller number than the one
+            // it is counting towards, which is worse than saying less.
+            Paragraph::new(crate::render::loading_view::truncate(
+                msg,
+                layout[1].width as usize,
+            ))
+            .style(label_style)
+            .render(layout[1], buf);
 
             // Row count (right-aligned, if available)
             if let Some(count) = self.row_count {

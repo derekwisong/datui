@@ -1067,6 +1067,23 @@ mod tests {
         )
         .expect("the prefix opens despite the one that will not parse");
 
+        // The frame the first paint collects, before any offsets exist and so before the
+        // url list below is what is read. Its plan rather than its rows, because Polars
+        // cannot fetch from an in-memory store — but the plan is where the fault was:
+        // the object that will not parse named as a source is what takes the read down.
+        let plan = state
+            .visible_lf()
+            .explain(false)
+            .expect("the scan can be planned");
+        assert!(
+            !plan.contains("b.parquet"),
+            "the object that will not parse is not one of the sources: {plan}"
+        );
+        assert!(
+            plan.contains("a.parquet") && plan.contains("c.parquet"),
+            "and the two that will are: {plan}"
+        );
+
         let counter = state
             .remote_files_counter()
             .expect("the dataset has not counted itself yet, so it offers to");

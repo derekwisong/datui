@@ -5330,14 +5330,18 @@ impl App {
         // dropped without a word, and the dataset spends the rest of the session
         // re-counting itself and never reaching an end to jump to.
         let counted: Vec<cloud_hive::DatasetFile> = files
-            .iter()
+            .into_iter()
             .enumerate()
-            .filter(|(index, _)| !dataset.unreadable.contains(index))
-            .map(|(_, file)| file.clone())
+            // Searched rather than scanned, for the same reason `readable_paths` does:
+            // a prefix can be hundreds of thousands of objects.
+            .filter(|(index, _)| dataset.unreadable.binary_search(index).is_err())
+            .map(|(_, file)| file)
             .collect();
-        // The empty case is belt and braces — a prefix with nothing readable has no
-        // schema and was handed back above — but the lengths agreeing is not: it is
-        // the invariant the paragraph above is about.
+        // Belt and braces, both of them: a prefix with nothing readable has no schema
+        // and was handed back above, and the two lists are filtered from the same
+        // indices so they cannot come out different lengths. Kept because the cost of
+        // the invariant quietly breaking is a dataset that counts itself forever and
+        // never finds its end, which is not a thing to leave to a comment.
         if readable.is_empty() || readable.len() != counted.len() {
             return None;
         }
@@ -5357,7 +5361,7 @@ impl App {
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
         state.set_remote_files(crate::widgets::datatable::RemoteFiles {
-            urls: Arc::new(readable.to_vec()),
+            urls: Arc::new(readable.into_owned()),
             scan,
             count,
             offsets: None,

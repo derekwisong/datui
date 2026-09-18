@@ -5054,7 +5054,8 @@ impl App {
         let drift = crate::schema_union::ScanDrift::new(&paths, &dataset, &file_rows);
         let schema = dataset.schema.clone();
         let lf =
-            crate::schema_union::lenient_scan(&paths, schema.clone(), None, drift.as_ref()).ok()?;
+            crate::schema_union::lenient_scan(&paths, schema.clone(), None, drift.as_ref(), &[])
+                .ok()?;
         let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, drift.is_some());
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
@@ -5178,6 +5179,7 @@ impl App {
                     schema.clone(),
                     Some(cloud_opts.clone()),
                     drift.as_deref(),
+                    &[],
                 )
                 .map(|lf| Self::hoist_partition_columns(lf, &schema, &partition_columns, drifts))
             })

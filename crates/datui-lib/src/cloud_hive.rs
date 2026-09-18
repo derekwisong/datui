@@ -569,14 +569,14 @@ mod tests {
             let files = list_dataset_files(&store, "data").await.unwrap();
             schema_of(&store, &files).await.0.schema
         });
-        let df = lenient_scan(&urls, schema, None, None)
+        let df = lenient_scan(&urls, schema, None, None, &[])
             .unwrap()
             .collect()
             .unwrap();
         assert_eq!(df.height(), 7);
         let fees = df.column("fee").unwrap();
         assert_eq!(fees.null_count(), 2, "the old file has no fee");
-        let second_file = lenient_scan(&urls[1..], df.schema().clone(), None, None)
+        let second_file = lenient_scan(&urls[1..], df.schema().clone(), None, None, &[])
             .unwrap()
             .slice(3, 2)
             .collect()
@@ -632,7 +632,7 @@ mod tests {
             .map(|f| dir.path().join(&f.key).to_string_lossy().into_owned())
             .collect();
         let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
-        let mut df = lenient_scan(&urls, dataset.schema.clone(), None, drift.as_ref())
+        let mut df = lenient_scan(&urls, dataset.schema.clone(), None, drift.as_ref(), &[])
             .unwrap()
             .collect()
             .unwrap();

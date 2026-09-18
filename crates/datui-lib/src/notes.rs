@@ -131,6 +131,10 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
         notes.extend(widening_note(column, chosen, &scope));
     }
 
+    for column in &dataset.read_as_text {
+        notes.push(text_note(column, &scope));
+    }
+
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
             summary: format!(
@@ -191,6 +195,21 @@ pub fn left_out_note(
             how_many(dataset, column.conflicting_files)
         ),
         scope: format!("in {}", dataset.origin),
+        read_as_text: None,
+    }
+}
+
+/// A column being read as text from every file, because it was asked for that way.
+///
+/// Stands in for the conflict note it replaced, and says the one thing that changes
+/// about the column beyond what is now visible in it: a filter or sort on it compares
+/// text. `n > 5` written for a number keeps `"sixty"` and drops `"10"`, and a view
+/// that quietly did that with nothing on screen to say so would be a view the user
+/// reads wrongly.
+fn text_note(column: &PlSmallStr, scope: &str) -> Note {
+    Note {
+        summary: format!("{column} is read as text, so a filter or sort on it compares text"),
+        scope: scope.to_string(),
         read_as_text: None,
     }
 }

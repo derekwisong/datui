@@ -4980,13 +4980,12 @@ impl App {
         None
     }
 
-    /// Put hive partition columns first, ahead of the file's own columns. `drifts` keeps
-    /// the scan's hidden drift column, which the select would otherwise drop.
     /// Take the offer on the note the cursor is on: read its column as text.
     ///
-    /// Only a note that carries the offer has one, and `Note::read_as_text` is set only
-    /// where the scan can honour it, so there is nothing here to refuse. A failure is
-    /// the scan's, and is shown the way any other failed read is.
+    /// Only a note that carries the offer has one, and the offer is taken off a note
+    /// datui could not act on, so the `Ok(false)` arms here are for a note that has
+    /// gone stale under the cursor rather than for anything to tell the user about. A
+    /// failure is the scan's, and is shown the way any other failed read is.
     fn read_the_selected_note_s_column_as_text(&mut self) {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
@@ -5026,8 +5025,8 @@ impl App {
     }
 }
 
-/// Partition columns first, then the rest of the schema in its own order, and the
-/// hidden row index last where the state expects it.
+/// Put hive partition columns first, ahead of the file's own columns. `drifts` keeps
+/// the scan's hidden drift column, which the select would otherwise drop.
 ///
 /// A free function rather than a method: rebuilding the scan to read a column as text
 /// has to put the columns back the same way, and it happens on the table's state

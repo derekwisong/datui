@@ -16,5 +16,7 @@ Files that disagree:
   Sorting or filtering by a column some files store in another type leaves those
   files' rows out: there is no value in that column to order or compare them by.
   The Notes tab in the Info panel says how many rows those files hold, and
-  offers to read the column as text instead, which leaves nothing out. Clearing
-  the filter or sort brings the rows back.
+  offers to read the column as text instead, which brings them back — but a
+  filter or sort on a column read as text compares text, so `n > 5` then keeps
+  "sixty" and drops "10". The Notes tab says so. Clearing the filter or sort
+  brings the rows back either way.

@@ -1679,6 +1679,125 @@ fn test_the_offer_and_the_hidden_count_do_not_overwrite_each_other() {
     );
 }
 
+/// A filter on a column read as text compares text, and the panel says so.
+///
+/// `n > 5` was written for a number. Read as text it keeps `"sixty"` and drops `"10"`,
+/// which is a different question with the same words — so the note that arrives in
+/// place of the conflict note is the one thing standing between the user and a view
+/// they would read wrongly.
+#[test]
+fn test_reading_a_filtered_column_as_text_says_the_comparison_changed() {
+    use datui::filter_modal::FilterOperator;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[1i64, 10, 20]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64], "n" => &["sixty"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.filter(vec![filter_stmt("n", FilterOperator::Gt, "5")]);
+    assert_eq!(current_rows(&app), 2, "10 and 20 are greater than 5");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.mark_notes_seen();
+    assert!(
+        state.read_column_as_text("n").unwrap(),
+        "the offer is taken"
+    );
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    assert!(
+        notes.iter().any(
+            |note| note.summary == "n is read as text, so a filter or sort on it compares text"
+        ),
+        "the filter means something else now, and the panel says so: {notes:#?}"
+    );
+    assert!(
+        state.notes_unseen(),
+        "and the `i` accent comes back, since the user has not been told yet"
+    );
+}
+
+/// Reading a column as text does not undo the widening, so the note about it stays.
+///
+/// One file wrote `n` as an integer and another as a float, which widen together — so
+/// the column is read as a float and the integer file's `7` shows as `7.0`, text read
+/// or not. Only the types that *conflict* are read at their own type. The note that
+/// explains the `7.0` is the widening note, and an earlier version of this deleted it.
+#[test]
+fn test_reading_as_text_keeps_the_note_about_a_widened_type() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64], "n" => &[7i64]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[1i64, 2], "n" => &[1.5f64, 2.5]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[3i64], "n" => &["sixty"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    let widening = "n is stored as more than one type";
+    assert!(
+        state
+            .notes()
+            .iter()
+            .any(|n| n.summary.starts_with(widening)),
+        "the integer and the float widened together to begin with"
+    );
+    assert!(
+        state.read_column_as_text("n").unwrap(),
+        "the offer is taken"
+    );
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let text: Vec<String> = state
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("n")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|value| value.unwrap_or("null").to_string())
+        .collect();
+    assert_eq!(
+        text,
+        ["7.0", "1.5", "2.5", "sixty"],
+        "the file that wrote 7 still reads 7.0: widening is not what the text read undoes"
+    );
+    let notes = state.notes();
+    assert!(
+        notes.iter().any(|n| n.summary.starts_with(widening)),
+        "so the note explaining that 7.0 has to stay: {notes:#?}"
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

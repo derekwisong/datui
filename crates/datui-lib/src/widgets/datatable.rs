@@ -4178,12 +4178,18 @@ impl DataTableState {
                 &as_text,
             )?,
         };
-        let lf = crate::hoist_partition_columns(
-            lf,
-            &dataset.schema,
-            self.partition_columns.as_deref().unwrap_or(&[]),
-            drift.is_some(),
-        );
+        // The remote scan hoists inside its own closure, as it does for the frame the
+        // dataset opened with; only the local branch has it left to do.
+        let lf = if self.remote_files.is_some() {
+            lf
+        } else {
+            crate::hoist_partition_columns(
+                lf,
+                &dataset.schema,
+                self.partition_columns.as_deref().unwrap_or(&[]),
+                drift.is_some(),
+            )
+        };
 
         let view = dataset.reading_as_text(&as_text);
         self.read_as_text = as_text;
@@ -4194,6 +4200,9 @@ impl DataTableState {
         self.groups_at_open = self.drift_groups.clone();
         self.notes = Self::notes_datui_can_act_on(&view, self.drift_column_present);
         self.notes_at_open = self.notes.clone();
+        // One note went and another arrived, and the new one is about how the column
+        // now compares — which matters most to a user who has a filter on it.
+        self.notes_seen = false;
         self.dataset_schema = Some(view);
         self.original_lf = lf.clone();
         self.base_lf = lf.clone();

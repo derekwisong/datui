@@ -102,10 +102,13 @@ plain nulls again, and an export writes every empty cell as null.
 A `≠` cell's value can still be seen. The **Notes** tab's note about the column
 offers **read this column as text**, and taking it reads the column from the files
 that disagree too, at the type each of them wrote, spelled as text. Nothing is
-left out any more, so the `≠` marks and the note go with the conflict. It costs no
-re-listing and no footer read — datui already knows what each file holds. A column
-one file stores as a list or as bytes that are not text has no text form at all,
-and is not offered.
+read past any more, so the `≠` marks and the note go with the conflict. It costs
+no re-listing and no footer read — datui already knows what each file holds. A
+column any file stores as a list, a duration or binary has no text form datui can
+show, and is not offered.
+
+A filter or sort on a column read as text compares text: `n > 5` keeps `"sixty"`
+and drops `"10"`. A note says so for as long as the column is read that way.
 
 A file whose type merely *widens* into the column's is read at the column's type
 either way, so an integer in a column read as a float still reads as `7.0`, and

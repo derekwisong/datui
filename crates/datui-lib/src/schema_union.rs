@@ -101,6 +101,9 @@ pub struct DatasetSchema {
     /// Per file, in the order given, its group in `groups`.
     pub file_group: Vec<u32>,
     pub origin: SchemaOrigin,
+    /// Columns being read as text from every file rather than as the type most rows
+    /// have. Empty for a dataset as its footers found it.
+    pub read_as_text: Vec<PlSmallStr>,
 }
 
 /// What a file is missing relative to the dataset's schema. Files that are missing the
@@ -157,6 +160,7 @@ impl DatasetSchema {
         for group in &mut out.groups {
             group.unread.retain(|name| !as_text.contains(name));
         }
+        out.read_as_text = as_text.to_vec();
         out
     }
 
@@ -333,6 +337,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         groups,
         file_group,
         origin,
+        read_as_text: Vec::new(),
     }
 }
 

@@ -32,8 +32,9 @@ Notes:
   as text. Press Enter on it and the column is read from the files that disagree
   too, at the type each of them wrote, so the values the conflict hid can be
   seen; the marks and the note go with the conflict. Nothing is listed again and
-  no footer is read again. A column one file holds as a list, or as bytes that
-  are not text, has no text form, and is not offered.
+  no footer is read again. A filter or sort on the column then compares text,
+  and a note says so. A column any file holds as a list, a duration or binary
+  has no text form datui can show, and is not offered.
 
   When there is something to note, the i key in the control bar takes a quiet
   accent until this panel has been opened. display.notes_accent = false turns

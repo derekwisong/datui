@@ -908,17 +908,36 @@ impl<'a> DataTableInfo<'a> {
             ..area
         };
         // A space between them, so they never read as one phrase when both are there.
-        use unicode_width::UnicodeWidthStr;
+        use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
         let taken = hidden
             .as_ref()
             .map(|text| (text.width() as u16).saturating_add(1))
             .unwrap_or(0);
         if let Some(offer) = offer.as_ref() {
-            let room = last_row.width.saturating_sub(taken);
-            if room > 0 {
-                Paragraph::new(Line::from(Span::styled(offer.as_str(), dim))).render(
+            let room = last_row.width.saturating_sub(taken) as usize;
+            // Cut with a mark, never silently. `Enter  read measurement_value` is a
+            // whole sentence that has lost `as text`, and `Enter  read me` is an offer
+            // about a column called `me`; both read as something datui did not say.
+            let offer = if offer.width() > room {
+                // Cut by width rather than by word: the spacing after the key name is
+                // part of how the line reads, and wrapping would close it up.
+                let mark = crate::glyphs::get().ellipsis;
+                let mut kept = String::new();
+                for ch in offer.chars() {
+                    if kept.width() + ch.width().unwrap_or(0) + mark.width() > room {
+                        break;
+                    }
+                    kept.push(ch);
+                }
+                Some(format!("{kept}{mark}"))
+            } else {
+                Some(offer.clone())
+            };
+            // Below about a word there is no offer left to make, only the mark.
+            if let Some(offer) = offer.filter(|_| room >= 8) {
+                Paragraph::new(Line::from(Span::styled(offer, dim))).render(
                     Rect {
-                        width: room,
+                        width: room as u16,
                         ..last_row
                     },
                     buf,

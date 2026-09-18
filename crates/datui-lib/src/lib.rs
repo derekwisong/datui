@@ -1577,10 +1577,93 @@ pub mod tests {
             state.start_row > 0,
             "and the end is where the view went, rather than the key being swallowed"
         );
+        assert_ne!(
+            app.status_message.as_deref(),
+            Some("Counting rows to find the end…"),
+            "with nothing left saying it is counting rows that have been counted"
+        );
         assert!(
-            app.status_message.is_none(),
-            "with nothing left saying it is still counting: {:?}",
-            app.status_message
+            app.end_when_the_footers_land.is_none(),
+            "and the key is spent, not left waiting on the next dataset"
+        );
+    }
+
+    /// End pressed at one dataset does not move the view of the next.
+    ///
+    /// Abandoning a load cancels nothing, so the prefix the user pressed End on goes on
+    /// reading its footers after they have left it. Without the dataset's name on it,
+    /// the key would be spent on whatever is on screen when they land — a folder the
+    /// user has only just opened jumping to its end on its own.
+    #[test]
+    fn end_pressed_at_one_dataset_does_not_move_the_next() {
+        use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+        use crate::{App, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 100,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+        let staged = move || {
+            let mut state = DataTableState::from_schema_and_lazyframe(
+                dataset_of(rows()).schema.clone(),
+                rows(),
+                &OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            state.set_remote_source();
+            state.set_remote_files(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(|| Ok(vec![vec![100]])),
+                offsets: None,
+            });
+            state.visible_rows = 10;
+            state.set_footers_pending(Arc::new(move |_| {
+                Some(FootersFound {
+                    dataset: dataset_of(rows()),
+                    lf: rows(),
+                    file_rows: vec![100],
+                    files: vec!["one".to_string()],
+                    row_groups: vec![vec![100]],
+                    scan: Some(Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows()))),
+                })
+            }));
+            state
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(staged(), None, &OpenOptions::default(), None);
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(
+            app.end_when_the_footers_land.is_some(),
+            "the key is waiting on this dataset's footers"
+        );
+
+        // The user goes elsewhere before they land.
+        app.load_active = true;
+        app.apply_schema_ready(staged(), None, &OpenOptions::default(), None);
+        assert!(
+            app.end_when_the_footers_land.is_none(),
+            "and does not take the key with them"
+        );
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().start_row,
+            0,
+            "the folder they opened is where they left it, at the top"
         );
     }
 
@@ -1790,6 +1873,93 @@ pub mod tests {
         assert!(
             app.footers_held.is_none(),
             "and they are not kept waiting for a dataset that is gone"
+        );
+    }
+
+    /// Columns arriving during an export wait for it, rather than cancelling it.
+    ///
+    /// The re-read after a join goes through the ordinary collect, which bumps
+    /// `task_generation` — the token the export is waiting on. Bumped underneath one,
+    /// the export's own answer is thrown away when it arrives: in its collect phase
+    /// that means the file is never written and nothing is said about it. The pass runs
+    /// for minutes on the prefixes this is for, so an export started at the open is
+    /// certain to be inside that window.
+    #[test]
+    fn columns_arriving_during_an_export_wait_for_it() {
+        use crate::widgets::datatable::{DataTableState, FootersFound};
+        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => &[1i64]).unwrap().lazy();
+        let wider = || df!("id" => &[1i64], "oops" => &["a"]).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(frame()).schema.clone(),
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // An export is under way, and the generation it is waiting on is this one.
+        app.loading_state = LoadingState::Exporting {
+            file_path: std::path::PathBuf::from("/tmp/out.csv"),
+            current_phase: "Collecting".to_string(),
+            progress_percent: 0,
+        };
+        let waiting_on = app.task_generation();
+
+        app.footers_held = Some((
+            app.dataset_generation,
+            FootersFound {
+                dataset: dataset_of(wider()),
+                lf: wider(),
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                scan: None,
+            },
+        ));
+        let _ = app.handle(&AppEvent::Update);
+
+        assert_eq!(
+            app.task_generation(),
+            waiting_on,
+            "the export's answer is still the one this app is waiting for"
+        );
+        assert!(
+            app.footers_held.is_some(),
+            "and the columns wait their turn rather than taking it"
+        );
+
+        // The export finishes, and then they go in.
+        app.loading_state = LoadingState::Idle;
+        let _ = app.handle(&AppEvent::Update);
+        assert_eq!(
+            app.data_table_state
+                .as_ref()
+                .unwrap()
+                .get_column_order()
+                .last()
+                .map(String::as_str),
+            Some("oops"),
+            "once nothing is waiting on an answer, the columns join"
         );
     }
 
@@ -3735,9 +3905,12 @@ pub struct App {
     /// several. It is what says whether the columns arriving belong to the dataset the
     /// user is looking at.
     dataset_generation: u64,
-    /// End was pressed while the dataset was still reading its footers, which is where
-    /// its end is coming from. Jump when they land.
-    end_when_the_footers_land: bool,
+    /// End was pressed while a dataset was still reading its footers, which is where
+    /// its end is coming from. Jump when they land — and only for that dataset, which
+    /// is what the generation is for: a folder the user pressed End on and then walked
+    /// away from must not move the view of the one they opened next. `end_after_count`
+    /// alongside keys itself the same way, to `len_generation`.
+    end_when_the_footers_land: Option<u64>,
     /// What a dataset's footers found while the user was looking at a query, a pivot or
     /// a drill-down rather than at the data. Held rather than applied, because widening
     /// the scan under a query takes the query's own columns away, and offered again the
@@ -3992,15 +4165,32 @@ impl App {
     /// dropped the buffer, so nothing dropping this leaves the table with no rows to
     /// show at the moment it was to show more of them.
     fn reread_after_the_footers_joined(&mut self) {
-        self.spawn_async_collect("Loading buffer...");
         // End was pressed while the footers were still coming, and they are what the
-        // end was waiting on.
-        if std::mem::take(&mut self.end_when_the_footers_land) {
+        // end was waiting on. Taken either way: a flag left from a dataset that is gone
+        // is not this one's to act on. The jump reads the page it lands on, so reading
+        // the page here first would be one fetched to be thrown away.
+        if self.end_when_the_footers_land.take() == Some(self.dataset_generation) {
             self.status_message = None;
             if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
                 let _ = self.events.send(next);
             }
+            return;
         }
+        self.spawn_async_collect("Loading buffer...");
+    }
+
+    /// Work already running that the re-read after a join would cancel.
+    ///
+    /// The re-read goes through the ordinary collect, which bumps `task_generation` —
+    /// the token an export, an analysis and a chart are all waiting on. Bumping it
+    /// underneath one throws its answer away when it arrives: an export in its collect
+    /// phase never writes the file and says nothing about it, and an analysis is left
+    /// on its spinner. So the columns wait, as they already do for a query, and go in
+    /// when the work that was asked for first is done.
+    fn work_the_join_would_cancel(&self) -> bool {
+        matches!(self.loading_state, LoadingState::Exporting { .. })
+            || self.analysis_modal.computing.is_some()
+            || self.chart_preparing()
     }
 
     /// Give the dataset what its footers found, if it can take it now.
@@ -4022,7 +4212,7 @@ impl App {
             self.footers_held = None;
             return false;
         }
-        if self.data_table_state.is_none() {
+        if self.data_table_state.is_none() || self.work_the_join_would_cancel() {
             return false;
         }
         let Some((generation, found)) = self.footers_held.take() else {
@@ -4110,6 +4300,8 @@ impl App {
             self.load_active,
             "apply_schema_ready called for an abandoned load"
         );
+        // A key pressed at the dataset being replaced belongs to it, not to this one.
+        self.end_when_the_footers_land = None;
         // One per dataset that reaches the screen, rather than one per open started:
         // an open that fails leaves the last dataset up, and the pass still reading its
         // footers has to be able to finish into it.
@@ -4320,7 +4512,7 @@ impl App {
             && let Some(state) = self.data_table_state.as_ref()
             && state.counts_itself_later()
         {
-            self.end_when_the_footers_land = true;
+            self.end_when_the_footers_land = Some(self.dataset_generation);
             self.status_message = Some("Counting rows to find the end…".to_string());
             return None;
         }
@@ -4564,7 +4756,7 @@ impl App {
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
             footers_held: None,
-            end_when_the_footers_land: false,
+            end_when_the_footers_land: None,
             len_count_inflight: None,
             collect_inflight: None,
             len_count_failed: None,

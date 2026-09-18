@@ -3761,6 +3761,10 @@ impl DataTableState {
     /// a SQL statement, a fuzzy search, a pivot, a melt and a drill-down do not — each
     /// makes its own result the root, with its own columns, and replacing the root
     /// underneath one leaves the view naming columns the frame no longer has.
+    ///
+    /// `grouped` and `drilled_down_group_index` are set together by a drill down and
+    /// cleared together by a drill up, so asking both is belt and braces — kept because
+    /// what they guard is the frame being rebuilt under a view of one group of it.
     pub fn scan_is_the_root(&self) -> bool {
         self.active_query.is_empty()
             && self.active_sql_query.is_empty()
@@ -4073,6 +4077,10 @@ impl DataTableState {
         self.buffered_start_row = 0;
         self.buffered_end_row = 0;
         self.buffered_df = None;
+        // Measured on the frame that just went. A dataset that opened two columns wide
+        // and gained thirty would plan its first page after the join from the two-column
+        // width, which against a bucket is a read many times the budget the user set.
+        self.observed_bytes_per_row = None;
         // Every file's row groups are known now, so this is the dataset's count. Set
         // before the rebuild so the count is in place the moment the frame is, rather
         // than for any ordering the lines below depend on.
@@ -7162,6 +7170,44 @@ mod tests {
         assert!(
             fuzzy.join_dataset_schema(found()).is_err(),
             "and what a fuzzy search matched is a result, not the dataset"
+        );
+
+        let mut melted = fresh();
+        melted
+            .melt(&MeltSpec {
+                index: vec!["id".to_string()],
+                value_columns: vec!["v".to_string()],
+                variable_name: "variable".to_string(),
+                value_name: "value".to_string(),
+            })
+            .expect("the melt runs");
+        assert!(
+            melted.join_dataset_schema(found()).is_err(),
+            "a melt's rows are not the dataset's rows"
+        );
+
+        let mut pivoted = fresh();
+        pivoted
+            .pivot(&PivotSpec {
+                index: vec!["id".to_string()],
+                pivot_column: "name".to_string(),
+                value_column: "v".to_string(),
+                aggregation: PivotAggregation::First,
+                sort_columns: None,
+            })
+            .expect("the pivot runs");
+        assert!(
+            pivoted.join_dataset_schema(found()).is_err(),
+            "and a pivot's columns are made from the data, not read from it"
+        );
+
+        let mut drilled = fresh();
+        // The field rather than the drill itself, which needs a grouped frame to drill
+        // into: what is being asked here is whether the clause is consulted.
+        drilled.drilled_down_group_index = Some(0);
+        assert!(
+            drilled.join_dataset_schema(found()).is_err(),
+            "and a drill-down is showing one group of it, not it"
         );
     }
 

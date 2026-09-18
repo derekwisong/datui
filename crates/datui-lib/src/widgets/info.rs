@@ -482,13 +482,15 @@ impl<'a> DataTableInfo<'a> {
 
     fn render_schema_summary(&self, area: Rect, buf: &mut Buffer) -> u16 {
         let ncols = self.state.schema.len();
-        let nrows = self.state.num_rows;
         let mut lines = vec![];
-        lines.push(format!(
-            "Rows (total): {} · Columns: {}",
-            format_int(nrows),
-            ncols
-        ));
+        // The total, or that there isn't one yet. What the state holds before it has
+        // been counted is how far the buffer reached, and printed under this heading
+        // that reads as the size of the dataset — on a folder of thousands of files
+        // still being counted, `Rows (total): 70`.
+        lines.push(match self.state.num_rows_if_valid() {
+            Some(nrows) => format!("Rows (total): {} · Columns: {}", format_int(nrows), ncols),
+            None => format!("Rows (total): counting… · Columns: {ncols}"),
+        });
         let by_type = columns_by_type(self.state.schema.as_ref());
         if !by_type.is_empty() {
             lines.push(by_type);

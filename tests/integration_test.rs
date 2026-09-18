@@ -1625,15 +1625,17 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
 
     // Too short to hold a note is not the same as having none to hold: the panel
     // says which it is, and never claims there is nothing to say.
-    for height in [1u16, 2, 3, 4] {
+    for height in 4u16..26 {
         let area = Rect::new(0, 0, 100, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
         let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+        let drew_a_note = screen.contains("is in 1 of");
+        let said_no_room = screen.contains("no room");
         assert!(
-            !screen.contains("6 notes; no room") || !screen.contains("is in 1 of"),
-            "a {height}-row panel says either a note or that it has no room for one, \
-             never both: {screen:?}"
+            drew_a_note ^ said_no_room,
+            "a {height}-row panel draws a note or says it has no room for one, \
+             exactly one of the two: {screen:?}"
         );
     }
 

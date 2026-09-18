@@ -45,10 +45,11 @@ the footers the schema and the row count already needed.
 
 A note is one sentence and the line beneath it saying what it is based on;
 <kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller than the
-panel, the corner says how many notes are out of view. Whole notes only: half a
-note is worse than none, since a claim with no basis under it, or a basis with no
-claim above it, is the misreading the basis is there to prevent. A panel too
-short for even one note says so rather than showing part of it.
+panel, the corner says how many notes are out of view — unless a single note
+fills the panel, where the note keeps that row. Whole notes only: half a note is
+worse than none, since a claim with no basis under it, or a basis with no claim
+above it, is the misreading the basis is there to prevent. A panel too short for
+even one note says so rather than showing part of it.
 
 A note describes the dataset as opened. A query, a pivot or a drill-down builds
 rows of its own, so the notes step aside; resetting or drilling back up brings

@@ -14,7 +14,6 @@
 
 use crate::numfmt::group_chrome;
 use crate::schema_union::{ColumnDrift, DatasetSchema, SchemaOrigin};
-use crate::widgets::datatable::dtype_label;
 use polars::prelude::DataType;
 
 /// One thing datui noticed.
@@ -72,12 +71,8 @@ fn distinct_names(types: &[&DataType]) -> Vec<String> {
             .enumerate()
             .any(|(i, name)| names[i + 1..].contains(name))
     };
-    let short: Vec<String> = types.iter().map(|t| dtype_label(t)).collect();
-    if !collides(&short) {
-        return short;
-    }
-    // `datetime[ns]` and `datetime[ns, UTC]` tell those two apart and still read like
-    // the rest of the UI.
+    // `Display` is how the Schema tab names a type, and it carries the unit, the
+    // precision and the time zone that the table header's one word drops.
     let shown: Vec<String> = types.iter().map(|t| format!("{t}")).collect();
     if !collides(&shown) {
         return shown;
@@ -87,8 +82,8 @@ fn distinct_names(types: &[&DataType]) -> Vec<String> {
     if !collides(&spelled) {
         return spelled;
     }
-    // Polars prints every `Enum` as `Enum([...])` whatever its categories, so even the
-    // full form can collide. Numbering them says less than naming them, but "the first
+    // Polars prints every `Enum` as `Enum([...])` and every global `Categorical` as
+    // `Categorical`, whatever their categories, so even the full form can collide. Numbering them says less than naming them, but "the first
     // and the second" is at least two things rather than one said twice. Only the ones
     // that actually collide are numbered; a name that was already unique keeps it.
     let mut seen: Vec<&String> = Vec::new();
@@ -496,6 +491,27 @@ mod tests {
                 ],
             },
             Shape {
+                what: "a chosen type whose word another type shares",
+                files: vec![
+                    file(
+                        &[("t", DataType::Datetime(TimeUnit::Milliseconds, None))],
+                        50,
+                    ),
+                    file(
+                        &[("t", DataType::Datetime(TimeUnit::Nanoseconds, None))],
+                        50,
+                    ),
+                    file(&[("t", str.clone())], 5),
+                ],
+                sampled: None,
+                // Both notes name the winner the same way, and the way the Schema tab
+                // does: "read as datetime" would drop the unit that is the point.
+                expected: vec![
+                    "t is str in 1 file; read as datetime[ns] and not read there",
+                    "t is stored as more than one type; read as datetime[ns]",
+                ],
+            },
+            Shape {
                 what: "widened between two datetime units",
                 files: vec![
                     file(
@@ -532,6 +548,26 @@ mod tests {
         for shape in &cases {
             assert_eq!(notes_for(shape), shape.expected, "{}", shape.what);
         }
+    }
+
+    /// The last resort, when a type's own `Debug` does not tell it from another's.
+    ///
+    /// Polars prints every `Enum` as `Enum([...])` and every global `Categorical` as
+    /// `Categorical`, whatever their categories, so two of either collide through the
+    /// short word, through `Display` and through `Debug` alike. Those are awkward to
+    /// build here, so this drives the same branch with names that collide outright.
+    /// Numbering says less than naming would, but it is two things rather than one
+    /// thing said twice.
+    #[test]
+    fn types_that_print_alike_all_the_way_down_are_numbered() {
+        let names = distinct_names(&[&DataType::Int64, &DataType::Int64]);
+        assert_eq!(names, ["Int64 #1", "Int64 #2"]);
+
+        // A name that never collided keeps it.
+        let mixed = distinct_names(&[&DataType::Int64, &DataType::Int64, &DataType::String]);
+        // Once any pair collides every name comes from `Debug`, so `str` is `String`
+        // here; only the colliding pair carries a number.
+        assert_eq!(mixed, ["Int64 #1", "Int64 #2", "String"]);
     }
 
     #[test]

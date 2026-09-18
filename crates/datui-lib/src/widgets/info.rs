@@ -1164,20 +1164,6 @@ mod tests {
         }
     }
 
-    /// A note that exactly fills the panel fits, and the panel must not spend the row
-    /// it needs on a count of what it is hiding.
-    ///
-    /// Deciding the count's row in advance is what made datui say "no room to show
-    /// one" about a note that fitted: the panel was six rows, the note was six rows,
-    /// and five of them were left blank under the claim.
-    #[test]
-    fn a_note_that_exactly_fills_the_panel_is_drawn() {
-        // The whole panel holds the first note and nothing else.
-        assert_eq!(notes_window(&[6, 2], 0, 0, 6), (0, 1));
-        // So the panel is not too short for it, and the count goes on its own row.
-        assert_eq!(notes_window(&[6, 2], 0, 0, 5), (0, 1));
-    }
-
     /// A note taller than the whole panel is still drawn, because leaving it out would
     /// put it out of reach.
     #[test]

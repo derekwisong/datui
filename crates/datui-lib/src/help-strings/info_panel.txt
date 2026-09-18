@@ -22,8 +22,9 @@ Notes:
 
   A note is one sentence and the line beneath it saying what it is based on.
   When the list is taller than the panel, the corner says how many are out of
-  view. Whole notes only, so a claim never appears without its basis, nor a
-  basis without its claim. A panel too short for one note says so.
+  view, unless one note fills the panel and needs that row itself. Whole notes
+  only, so a claim never appears without its basis, nor a basis without its
+  claim. A panel too short for one note says so.
 
   When there is something to note, the i key in the control bar takes a quiet
   accent until this panel has been opened. display.notes_accent = false turns

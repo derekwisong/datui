@@ -1490,6 +1490,88 @@ pub mod tests {
             .join("tests/sample-data")
     }
 
+    /// Once the count is known, nothing is still counting.
+    ///
+    /// A staged open declines the standalone row count, because the pass reading the
+    /// footers is bringing it. The marker that says a count is running must not be set
+    /// for a count that was never started: it is cleared only by a count coming back,
+    /// so it would stay set for the rest of the session — leaving a spinner where the
+    /// row count goes, the event loop redrawing for it, and `End` waiting on a count
+    /// that is not running.
+    #[test]
+    fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
+        use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+        use crate::{App, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let narrow = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let wide = || {
+            df!("id" => (0..100i64).collect::<Vec<_>>(), "oops" => vec!["a"; 100])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 100,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(narrow()).schema.clone(),
+            narrow(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(narrow())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        state.set_footers_pending(Arc::new(move |_| {
+            Some(FootersFound {
+                dataset: dataset_of(wide()),
+                lf: wide(),
+                file_rows: vec![100],
+                files: vec!["one".to_string()],
+                row_groups: vec![vec![100]],
+                scan: Some(Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide()))),
+            })
+        }));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.spawn_async_collect("Loading buffer...");
+
+        let joined = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the pass reports back");
+        let _ = app.handle(&joined);
+
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().num_rows_if_valid(),
+            Some(100),
+            "the pass brought the count with it"
+        );
+        assert!(
+            app.len_count_inflight.is_none(),
+            "so nothing is still counting, and the row count is a number rather than a \
+             spinner for the rest of the session"
+        );
+    }
+
     /// A pass that cannot read the footers leaves the dataset working, not waiting.
     ///
     /// While one is pending the dataset declines to count itself, because counting
@@ -1584,13 +1666,14 @@ pub mod tests {
         // The first dataset, staged.
         let mut state = state_of(first());
         state.set_footers_pending(Arc::new(move |_progress| {
-            Some((
-                dataset_of(its_columns()),
-                its_columns(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ))
+            Some(crate::widgets::datatable::FootersFound {
+                dataset: dataset_of(its_columns()),
+                lf: its_columns(),
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                scan: None,
+            })
         }));
         app.load_active = true;
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
@@ -1616,6 +1699,80 @@ pub mod tests {
         );
     }
 
+    /// The event that wakes the app does not decide whose answer is in the slot.
+    ///
+    /// Two passes run at once when a second large prefix is opened, and the newer one
+    /// can overwrite the slot before the older one's event is handled. Deciding by the
+    /// event would drain the newer answer and throw it away on the older event's
+    /// generation — and the newer event, arriving next, would find the slot empty. The
+    /// dataset on screen would wait for columns that had already been and gone, with
+    /// nothing to say so: the pass is over, so even the count in the bar is silent.
+    #[test]
+    fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
+        use crate::widgets::datatable::{DataTableState, FootersFound};
+        use crate::{App, AppEvent, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => &[1i64]).unwrap().lazy();
+        let wider = || df!("id" => &[1i64], "oops" => &["a"]).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(frame()).schema.clone(),
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // This dataset's own pass has finished and put its answer in the slot.
+        let live = app.dataset_generation;
+        App::record_footers(
+            &app.pending_footers_result,
+            live,
+            Some(FootersFound {
+                dataset: dataset_of(wider()),
+                lf: wider(),
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                scan: None,
+            }),
+        );
+
+        // And the event that reaches the loop first belongs to the prefix the user
+        // opened before this one, whose pass was slower.
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined {
+            generation: live.wrapping_sub(1),
+        });
+
+        assert_eq!(
+            app.data_table_state
+                .as_ref()
+                .unwrap()
+                .get_column_order()
+                .last()
+                .map(String::as_str),
+            Some("oops"),
+            "the answer in the slot is this dataset's, and it is the one that is used"
+        );
+    }
+
     /// A slower pass from an older dataset does not displace a newer one's answer.
     ///
     /// Opening a second large prefix does not stop the first one reading, so two passes
@@ -1638,19 +1795,23 @@ pub mod tests {
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
             };
-            (
-                crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
+            crate::widgets::datatable::FootersFound {
+                dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
                 lf,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            )
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                scan: None,
+            }
         };
         let name_in =
             |slot: &Mutex<Option<(u64, Option<crate::widgets::datatable::FootersFound>)>>| {
                 slot.lock().unwrap().as_ref().map(|(g, f)| {
                     let f = f.as_ref().expect("recorded with something in it");
-                    (*g, f.0.schema.iter_names().next().unwrap().to_string())
+                    (
+                        *g,
+                        f.dataset.schema.iter_names().next().unwrap().to_string(),
+                    )
                 })
             };
 
@@ -1731,13 +1892,14 @@ pub mod tests {
         let generation = app.dataset_generation;
         app.footers_held = Some((
             generation,
-            (
-                dataset_of(wider()),
-                wider(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ),
+            crate::widgets::datatable::FootersFound {
+                dataset: dataset_of(wider()),
+                lf: wider(),
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                scan: None,
+            },
         ));
         let _ = app.handle(&AppEvent::Update);
 
@@ -1839,13 +2001,14 @@ pub mod tests {
         .unwrap();
         // What the pass behind the open will find: one column more.
         state.set_footers_pending(Arc::new(move |_progress| {
-            Some((
-                dataset_of(counted()),
-                counted(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            ))
+            Some(crate::widgets::datatable::FootersFound {
+                dataset: dataset_of(counted()),
+                lf: counted(),
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                scan: None,
+            })
         }));
         app.load_active = true;
         // Installed the way an open installs it, rather than dropped into the field:
@@ -3825,12 +3988,22 @@ impl App {
         let mut count = None;
         if !state.is_num_rows_valid() && self.len_count_inflight != Some(state.len_generation()) {
             let job = LenCount::for_state(state);
-            self.len_count_inflight = Some(job.len_generation);
-            // A fresh attempt for this generation clears any prior failure marker.
-            if self.len_count_failed == Some(job.len_generation) {
-                self.len_count_failed = None;
+            // Marked as running only once it is going to run. A dataset still reading
+            // its own footers declines this count, because that pass is bringing it —
+            // and the marker is cleared by a count coming back, so setting it for one
+            // that was never started leaves it set for the rest of the session: a
+            // spinner where the row count goes, a redraw on its account every frame,
+            // and `End` waiting on nothing.
+            if state.counts_itself_later() {
+                count = None;
+            } else {
+                self.len_count_inflight = Some(job.len_generation);
+                // A fresh attempt for this generation clears any prior failure marker.
+                if self.len_count_failed == Some(job.len_generation) {
+                    self.len_count_failed = None;
+                }
+                count = Some(job);
             }
-            count = Some(job);
         }
         // A footer count runs now too, remote or not: it reads no data.
         if let Some(job) = count.take_if(|job| !state.is_remote_source() || job.reads_footers()) {
@@ -5934,13 +6107,16 @@ impl App {
                     crate::schema_union::readable_paths(&whole.urls, &whole.dataset.unreadable)
                         .into_owned();
                 let lf = (whole.scan)(&readable, &[]).ok()?;
-                Some((
-                    whole.dataset,
+                Some(crate::widgets::datatable::FootersFound {
+                    dataset: whole.dataset,
                     lf,
-                    whole.file_rows,
-                    readable,
-                    whole.row_groups,
-                ))
+                    file_rows: whole.file_rows,
+                    files: readable,
+                    row_groups: whole.row_groups,
+                    // Built at the schema every footer gave, which is the point: the
+                    // one the dataset is holding cannot read the columns below.
+                    scan: Some(whole.scan),
+                })
             }));
         }
         Some(state)
@@ -11528,33 +11704,36 @@ impl App {
                 // busy stays true until the current generation's result arrives.
                 None
             }
-            AppEvent::BackgroundFootersJoined { generation } => {
-                // Taken first, whoever it belongs to: an entry left in the slot is a
-                // dataset's worth of schema and every one of its file names, and for a
-                // dataset that is gone nothing would ever come back for it.
+            AppEvent::BackgroundFootersJoined { .. } => {
+                // Taken whoever the event belongs to, and judged by what is *in* the
+                // slot rather than by the event that woke us. Two passes can be running
+                // at once, and the newer one may have overwritten the slot before the
+                // older one's event is handled: judging by the event would throw the
+                // newer answer away and leave the dataset on screen waiting for one
+                // that has already been and gone. An entry is also worth draining
+                // either way — it is a dataset's worth of schema and every file name.
                 let taken = self
                     .pending_footers_result
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take();
-                // Only whether this is still the dataset on screen. Not `load_active`:
-                // going home leaves the dataset up and clears that flag, and coming
-                // straight back to it must not find it stranded on two footers for the
-                // rest of the session.
-                if *generation != self.dataset_generation {
-                    return None;
-                }
+                // Whether this is still the dataset on screen. Not `load_active`: going
+                // home leaves the dataset up and clears that flag, and coming straight
+                // back to it must not find it stranded on two footers for the rest of
+                // the session.
                 if let Some((slot_generation, found)) = taken
                     && slot_generation == self.dataset_generation
                 {
                     let Some(found) = found else {
                         // The pass could not read them. The dataset stays as it opened
                         // and stops waiting, so it can go and count itself the ordinary
-                        // way rather than never at all.
+                        // way rather than never at all — which is what the buffer load
+                        // below sets going, since it is the counting the dataset was
+                        // declining while it waited.
                         if let Some(state) = self.data_table_state.as_mut() {
                             state.give_up_on_pending_footers();
                         }
-                        return None;
+                        return Some(AppEvent::DoLoadBuffer);
                     };
                     self.footers_held = Some((slot_generation, found));
                     if self.join_held_footers() {

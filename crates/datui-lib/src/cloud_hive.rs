@@ -822,6 +822,10 @@ mod tests {
             .footers_pending()
             .expect("the rest are still to be read");
         let found = join(&progress).expect("the pass reads them");
+        // As `build_schema_state` marks a prefix that is scanned where it lies, and as
+        // a rendered table has a height.
+        state.set_remote_source();
+        state.visible_rows = 10;
         assert!(
             state.join_dataset_schema(found).is_ok(),
             "nothing is built on top of the scan here, so they go straight in"
@@ -846,6 +850,32 @@ mod tests {
         assert!(
             state.footers_pending().is_none(),
             "with nothing left to wait for"
+        );
+        // And the dataset can still be read. Knowing every file's row groups turns on
+        // the windowed read, which goes through the scan the dataset is holding rather
+        // than through `lf` — and the scan it opened with was built at the two-footer
+        // schema, which has never heard of the column that just joined. Left in place
+        // it makes every page after the join fail with `unable to find column "oops"`,
+        // which is the table going blank at the moment it was to show more.
+        let mut request = state
+            .prepare_async_collect(None)
+            .expect("a page is planned");
+        // Resolved rather than collected: Polars cannot fetch from the in-memory store,
+        // so the read itself fails here for a reason that has nothing to do with this.
+        // Resolving is where the fault showed anyway — the page asks the scan for the
+        // columns on screen, and a scan that has not heard of one of them cannot be
+        // planned at all.
+        let planned = request.lf.collect_schema();
+        assert!(
+            planned.is_ok(),
+            "the first page after the join could not even be planned: {:?}",
+            planned.err()
+        );
+        let planned = planned.unwrap();
+        assert!(
+            planned.iter_names().any(|name| name == "oops"),
+            "and it reads the column that just joined: {:?}",
+            planned.iter_names().collect::<Vec<_>>()
         );
         assert_eq!(
             state.num_rows_if_valid(),

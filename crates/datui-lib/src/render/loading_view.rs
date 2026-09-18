@@ -11,6 +11,7 @@
 
 use crate::LoadingState;
 use crate::glyphs;
+use crate::numfmt::group_chrome;
 use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -35,6 +36,19 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
         // the event that carries it out.
         _ => ("Loading", None, 0),
     };
+    // A folder of many files reads a footer from each before a row is shown, and on a
+    // few thousand that is seconds of a screen saying only "Caching schema". The count
+    // is what makes the wait legible: a number climbing is a wait, a number stopped is
+    // a problem. It replaces the phase rather than joining it, because it says the same
+    // thing and says it better.
+    let counted = app.footer_progress.reading().map(|(read, total)| {
+        format!(
+            "Reading footers: {} of {}",
+            group_chrome(read),
+            group_chrome(total)
+        )
+    });
+    let phase = counted.as_deref().unwrap_or(phase);
 
     let g = glyphs::get();
     let frame = app.throbber_frame as usize % g.spinner.len();
@@ -134,6 +148,55 @@ mod tests {
             let mut buf = Buffer::empty(area);
             render(area, &mut buf, &app, &RenderContext::for_test());
         }
+    }
+
+    /// While the footers are being read the screen counts them, and stops when they
+    /// land.
+    ///
+    /// "Caching schema" is true of that wait but says nothing about its length; a
+    /// folder of thousands of files spends seconds there. A number that climbs is a
+    /// wait, and a number that stops is a problem — neither is legible without it.
+    #[test]
+    fn the_footer_count_replaces_the_phase_while_it_is_running() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::App::new(tx, test_runtime());
+        app.loading_state = LoadingState::Loading {
+            file_path: Some(std::path::PathBuf::from("/tmp/blocks")),
+            file_size: 2048,
+            current_phase: "Caching schema".to_string(),
+            progress_percent: 40,
+        };
+        let area = Rect::new(0, 0, 60, 20);
+        let painted = |app: &crate::App| {
+            let mut buf = Buffer::empty(area);
+            render(area, &mut buf, app, &RenderContext::for_test());
+            cells(&buf)
+        };
+
+        assert!(
+            painted(&app).contains("Caching schema"),
+            "the phase, while nothing is being counted"
+        );
+
+        app.footer_progress.begin(6541);
+        for _ in 0..1203 {
+            app.footer_progress.advance();
+        }
+        let text = painted(&app);
+        assert!(
+            text.contains("Reading footers: 1,203 of 6,541"),
+            "the count, grouped so six thousand does not read as sixty: {text}"
+        );
+        assert!(
+            !text.contains("Caching schema"),
+            "and it replaces the phase rather than crowding in beside it: {text}"
+        );
+
+        app.footer_progress.done();
+        assert!(
+            painted(&app).contains("Caching schema"),
+            "once they have landed there is no wait left to count"
+        );
     }
 
     #[test]

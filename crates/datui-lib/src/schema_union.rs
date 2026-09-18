@@ -16,11 +16,67 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use polars::prelude::{
     DataType, Field, LazyFrame, PlRefPath, PlSmallStr, PolarsResult, Schema, TimeUnit, UnionArgs,
     concat,
 };
+
+/// How far a dataset's footer pass has got, for the loading screen to read.
+///
+/// Opening a folder of many files reads a footer from each before a row is shown, and
+/// on a few thousand files that is seconds of a screen that says only "Caching schema".
+/// The count is what makes the wait legible: a number that climbs is a wait, and a
+/// number that stops is a problem.
+///
+/// Shared with the threads doing the reading, which is why it is atomic and why it is
+/// only ever written by them and read by the render.
+#[derive(Debug, Default)]
+pub struct FooterProgress {
+    read: AtomicUsize,
+    total: AtomicUsize,
+    /// Passes begun. The count itself is unobservable once a pass has finished —
+    /// read and total are both back to nothing — so without this there is no way to
+    /// tell a pass that reported from one that never started.
+    passes: AtomicUsize,
+}
+
+impl FooterProgress {
+    /// Begin a pass over `total` footers. Any earlier pass's count is forgotten.
+    pub fn begin(&self, total: usize) {
+        self.read.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        self.passes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One more footer read, or failed to read: both are footers no longer waited on.
+    pub fn advance(&self) {
+        self.read.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Nothing is being waited on any more.
+    pub fn done(&self) {
+        self.total.store(0, Ordering::Relaxed);
+    }
+
+    /// How many passes have begun against this counter.
+    pub fn passes(&self) -> usize {
+        self.passes.load(Ordering::Relaxed)
+    }
+
+    /// Footers read since the last pass began, whether or not it has finished. Outlives
+    /// the pass, which is what makes "it read them" something anyone can check.
+    pub fn read_so_far(&self) -> usize {
+        self.read.load(Ordering::Relaxed)
+    }
+
+    /// `(read, total)` while a pass is running, `None` when none is.
+    pub fn reading(&self) -> Option<(usize, usize)> {
+        let total = self.total.load(Ordering::Relaxed);
+        (total > 0).then(|| (self.read.load(Ordering::Relaxed).min(total), total))
+    }
+}
 
 /// What one file's footer said, short of the data.
 #[derive(Debug, Clone)]
@@ -1994,6 +2050,44 @@ mod tests {
             "and it is not holding a hundred of them to say so: {}",
             dataset.partition_layouts.len()
         );
+    }
+
+    /// The counter says nothing until a pass begins, and nothing again once it ends.
+    ///
+    /// Nothing-when-done is the half that matters: a count left on screen after the
+    /// footers have landed is a wait the user is not actually having.
+    #[test]
+    fn the_footer_count_speaks_only_while_a_pass_is_running() {
+        let progress = FooterProgress::default();
+        assert_eq!(progress.reading(), None, "nothing has begun");
+
+        progress.begin(3);
+        assert_eq!(progress.reading(), Some((0, 3)), "none read yet");
+        progress.advance();
+        progress.advance();
+        assert_eq!(progress.reading(), Some((2, 3)));
+
+        progress.done();
+        assert_eq!(progress.reading(), None, "and nothing once it has landed");
+
+        // A second pass starts from nothing rather than from the first one's count.
+        progress.begin(2);
+        assert_eq!(progress.reading(), Some((0, 2)));
+    }
+
+    /// More advances than footers cannot make the count overtake the total.
+    ///
+    /// The threads doing the reading and the render are not synchronised, so a stale
+    /// `begin` racing a late `advance` is possible; "reading 4 of 3 footers" would be
+    /// the sort of nonsense that makes a user distrust the rest of the screen.
+    #[test]
+    fn the_footer_count_never_passes_its_total() {
+        let progress = FooterProgress::default();
+        progress.begin(2);
+        for _ in 0..5 {
+            progress.advance();
+        }
+        assert_eq!(progress.reading(), Some((2, 2)));
     }
 
     /// Files merely missing a column must not split the scan.

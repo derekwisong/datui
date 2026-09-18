@@ -2845,6 +2845,9 @@ impl LenCount {
 
 pub struct App {
     pub data_table_state: Option<DataTableState>,
+    /// How far the footer pass of an open has got. Written by the threads reading
+    /// them and read by the loading screen, which is the only place it is shown.
+    pub footer_progress: Arc<crate::schema_union::FooterProgress>,
     /// Network roots currently being listed off-thread, so a probe is not started
     /// twice. Entries are never removed for a root that never answers — that thread
     /// is unreclaimable, and retrying it would only block another one.
@@ -3520,6 +3523,7 @@ impl App {
         App {
             path: None,
             data_table_state: None,
+            footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
             home: home::HomeState::default(),
             home_probes_inflight: Vec::new(),
             #[cfg(feature = "cloud")]
@@ -5070,12 +5074,13 @@ impl App {
     fn schema_state_from_local_hive(
         path: Option<&Path>,
         options: &OpenOptions,
+        progress: &crate::schema_union::FooterProgress,
     ) -> Option<DataTableState> {
         if !options.single_spine_schema {
             return None;
         }
         let p = path.filter(|p| p.is_dir() && options.hive)?;
-        let (files, read, footers) = DataTableState::footers_of_parquet_dir(p);
+        let (files, read, footers) = DataTableState::footers_of_parquet_dir_reporting(p, progress);
         let first = files.first()?;
         let partition_columns = DataTableState::discover_hive_partition_columns(p);
         let values = DataTableState::hive_partition_values(p, first);
@@ -5320,8 +5325,10 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
+        progress: &crate::schema_union::FooterProgress,
     ) -> Result<(DataTableState, String)> {
-        let (mut state, label) = Self::schema_state_by_route(lf, path, options, cloud, runtime)?;
+        let (mut state, label) =
+            Self::schema_state_by_route(lf, path, options, cloud, runtime, progress)?;
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         if path.is_some_and(source::scans_in_place) {
@@ -5434,11 +5441,12 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
+        progress: &crate::schema_union::FooterProgress,
     ) -> Result<(DataTableState, String)> {
         #[cfg(not(feature = "cloud"))]
         let _ = (cloud, runtime);
 
-        if let Some(state) = Self::schema_state_from_local_hive(path, options) {
+        if let Some(state) = Self::schema_state_from_local_hive(path, options, progress) {
             return Ok((state, "one-file (local)".to_string()));
         }
         #[cfg(feature = "cloud")]
@@ -10432,6 +10440,7 @@ impl App {
                 let schema_slot = self.pending_schema_result.clone();
                 let cloud = self.app_config.cloud.clone();
                 let runtime = self.runtime.clone();
+                let progress = self.footer_progress.clone();
                 self.spawn_bg("Caching schema...", move |task_gen, tx| {
                     match Self::build_schema_state(
                         lf_owned,
@@ -10439,6 +10448,7 @@ impl App {
                         &options_owned,
                         &cloud,
                         &runtime,
+                        &progress,
                     ) {
                         Ok((state, debug_label)) => {
                             let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());

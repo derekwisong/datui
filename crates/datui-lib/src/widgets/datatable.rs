@@ -1671,6 +1671,15 @@ impl DataTableState {
     pub fn footers_of_parquet_dir(
         dir: &Path,
     ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileSchema>>) {
+        Self::footers_of_parquet_dir_reporting(dir, &crate::schema_union::FooterProgress::default())
+    }
+
+    /// As [`Self::footers_of_parquet_dir`], counting each footer off against `progress`
+    /// as it is read, so the loading screen can say how far it has got.
+    pub fn footers_of_parquet_dir_reporting(
+        dir: &Path,
+        progress: &crate::schema_union::FooterProgress,
+    ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileSchema>>) {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
         Self::collect_parquet_files(dir, &mut files, 0, MAX_DEPTH);
@@ -1690,6 +1699,7 @@ impl DataTableState {
             .iter()
             .filter_map(|i| files.get(*i).map(PathBuf::as_path))
             .collect();
+        progress.begin(wanted.len());
         let workers = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -1700,7 +1710,18 @@ impl DataTableState {
             let handles: Vec<_> = wanted
                 .chunks(chunk_size)
                 .map(|chunk| {
-                    scope.spawn(move || chunk.iter().map(|p| Self::footer_of(p)).collect())
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|p| {
+                                let footer = Self::footer_of(p);
+                                // Counted whether or not it read: a footer that will
+                                // not parse is one the open is no longer waiting on.
+                                progress.advance();
+                                footer
+                            })
+                            .collect()
+                    })
                 })
                 .collect();
             handles
@@ -1714,6 +1735,7 @@ impl DataTableState {
                 })
                 .collect()
         });
+        progress.done();
         (files, read, footers)
     }
 
@@ -8521,6 +8543,65 @@ mod tests {
             ["sixty", "seventy"],
             "the page that needed the text read most"
         );
+    }
+
+    /// The real footer pass counts real footers.
+    ///
+    /// The unit tests above drive the counter by hand; this is the one that says the
+    /// pass is wired to it at all, and that the total is the footers it will read
+    /// rather than the files there are — the two differ once a dataset is large enough
+    /// to be sampled.
+    #[test]
+    fn the_footer_pass_counts_the_footers_it_reads() {
+        use polars::prelude::{ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        for day in 1..=4 {
+            let d = dir.path().join(format!("date=2024-01-0{day}"));
+            std::fs::create_dir_all(&d).unwrap();
+            let mut frame = df!("n" => [day as i64]).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        }
+
+        let progress = crate::schema_union::FooterProgress::default();
+        let (files, read, footers) =
+            DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress);
+        assert_eq!((files.len(), read.len(), footers.len()), (4, 4, 4));
+        assert_eq!(
+            progress.reading(),
+            None,
+            "the pass says nothing once it has landed"
+        );
+        assert_eq!(
+            progress.passes(),
+            1,
+            "and it did report: the count is unobservable afterwards, so without this \
+             a pass that never told anyone would look the same as one that did"
+        );
+        assert_eq!(
+            progress.read_so_far(),
+            4,
+            "counting every footer it read, not just starting and stopping"
+        );
+
+        // Counted from inside: the pass is over before it returns, so the only way to
+        // see it climb is to watch it from another thread.
+        let progress = std::sync::Arc::new(crate::schema_union::FooterProgress::default());
+        let watcher = progress.clone();
+        let seen = std::thread::spawn(move || {
+            let mut highest = 0;
+            for _ in 0..2_000 {
+                if let Some((read, total)) = watcher.reading() {
+                    highest = highest.max(read);
+                    assert!(read <= total, "{read} of {total}");
+                }
+                std::thread::yield_now();
+            }
+            highest
+        });
+        let _ = DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress);
+        seen.join().unwrap();
     }
 
     #[test]

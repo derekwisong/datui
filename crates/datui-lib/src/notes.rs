@@ -317,14 +317,20 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
         return None;
     }
     let read = dataset.files;
+    // "opened for its footer", not "a footer was read": a footer that would not parse
+    // was still opened for, and the note beside this one says three of them were.
+    //
+    // And a semicolon, not "so": the footer pass is one per file whatever the files
+    // hold, so only the count leads to it. Joining the two with "so" would make the
+    // size look like half the reason.
     let footers = if read == files {
-        "a footer was read for each".to_string()
+        "each was opened for its footer".to_string()
     } else {
-        format!("{} footers were read", group_chrome(read))
+        format!("{} were opened for their footers", group_chrome(read))
     };
     Some(Note {
         summary: format!(
-            "there are {} files and the middle one is {}, so {footers} before a row was",
+            "there are {} files and the middle one is {}; {footers} before a row was",
             group_chrome(files),
             crate::widgets::info::format_bytes(median as u64)
         ),

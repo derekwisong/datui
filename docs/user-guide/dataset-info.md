@@ -39,7 +39,7 @@ files with something in them. Where datui notices either, it says so:
 | A column is read as text, so it compares as text | The footers |
 | A file holds no rows at all | The footers |
 | Row groups are large enough that a page of rows costs much more than a page | The footers |
-| There are very many files and each holds very little | The listing and the footers |
+| There are very many files and the middle one holds very little | The listing and the footers |
 | A file's footer could not be read, so it was left out | The footers |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
 

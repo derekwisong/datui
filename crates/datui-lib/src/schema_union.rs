@@ -1572,8 +1572,7 @@ mod tests {
         assert_eq!(
             note(10_001, 10_001, &[40 * KIB]).as_deref(),
             Some(
-                "there are 10,001 files and the middle one is 40.0 KiB, so a footer \
-                 was read for each before a row was"
+                "there are 10,001 files and the middle one is 40.0 KiB; each was opened for its footer before a row was"
             ),
             "one more is not"
         );
@@ -1589,10 +1588,9 @@ mod tests {
         assert_eq!(
             note(50_000, 50_000, &[40 * KIB, 40 * KIB, 900 * MIB]).as_deref(),
             Some(
-                "there are 50,000 files and the middle one is 40.0 KiB, so a footer \
-                 was read for each before a row was"
+                "there are 50,000 files and the middle one is 40.0 KiB; each was opened for its footer before a row was"
             ),
-            "one large file among small ones does not describe the dataset"
+            "a large minority does not move the middle"
         );
         // Sampled: the count is every file the listing found, the middle size is over
         // the footers datui opened, and the sentence names both rather than leaving
@@ -1600,8 +1598,7 @@ mod tests {
         assert_eq!(
             note(500_000, 2, &[40 * KIB, 40 * KIB]).as_deref(),
             Some(
-                "there are 500,000 files and the middle one is 40.0 KiB, so 2 footers \
-                 were read before a row was"
+                "there are 500,000 files and the middle one is 40.0 KiB; 2 were opened for their footers before a row was"
             ),
             "the count is the listing's; the footers read are their own number"
         );

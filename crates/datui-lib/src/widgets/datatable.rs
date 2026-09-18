@@ -285,8 +285,6 @@ fn next_len_generation() -> u64 {
     NEXT_LEN_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Options for sorting by `n` columns. Nulls go last in both directions, as in pandas,
-/// DuckDB and spreadsheets; Polars would otherwise put them first either way.
 /// The `[start, end)` row ranges of the files flagged in `conflicts`, merged where
 /// they touch.
 ///
@@ -322,6 +320,8 @@ fn conflicting_row_runs(starts: &[usize], total: usize, conflicts: &[bool]) -> V
     runs
 }
 
+/// Options for sorting by `n` columns. Nulls go last in both directions, as in pandas,
+/// DuckDB and spreadsheets; Polars would otherwise put them first either way.
 fn sort_options(n: usize, descending: bool) -> SortMultipleOptions {
     SortMultipleOptions::default()
         .with_order_descending_multi(vec![descending; n])

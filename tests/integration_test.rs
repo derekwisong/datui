@@ -1340,7 +1340,7 @@ fn test_a_sort_leaves_out_the_rows_its_column_is_not_read_from() {
     let notes = state.notes();
     let left_out = notes
         .iter()
-        .find(|note| note.summary.contains("left out"))
+        .find(|note| note.summary.contains("is not read from"))
         .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
     assert_eq!(
         left_out.summary,
@@ -1350,6 +1350,80 @@ fn test_a_sort_leaves_out_the_rows_its_column_is_not_read_from() {
     assert!(
         state.notes_unseen(),
         "and the `i` accent comes back for a note the user has not been offered"
+    );
+}
+
+/// The filter half: the other two wordings the note has, and the row a filter's own
+/// terms matched but its file cannot stand behind.
+///
+/// A sidebar filter of `id = 3 or n = 0` matches the row whose `id` is 3 — but that
+/// row's file stores `n` as text, so its `n` was never read and the view cannot
+/// answer either half of the question. It goes, and the note says why.
+#[test]
+fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
+    use datui::filter_modal::{FilterOperator, LogicalOperator};
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let mut or_id_3 = filter_stmt("id", FilterOperator::Eq, "3");
+    or_id_3.logical_op = LogicalOperator::Or;
+    let state = app.data_table_state.as_mut().unwrap();
+    state.filter(vec![filter_stmt("n", FilterOperator::Eq, "0"), or_id_3]);
+    assert!(state.error.is_none(), "the filter itself must succeed");
+
+    let ids: Vec<i64> = state
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(
+        ids,
+        vec![0],
+        "id 3 matched a term of its own, but its file's `n` was never read"
+    );
+
+    let notes = state.notes();
+    let left_out = notes
+        .iter()
+        .find(|note| note.summary.contains("is not read from"))
+        .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
+    assert_eq!(
+        left_out.summary,
+        "n is not read from 1 file, so the 2 rows there are left out of the filter"
+    );
+
+    // Sorting by the same column too: one note, naming both.
+    state.sort(vec!["n".to_string()], true);
+    let notes = state.notes();
+    let both: Vec<&str> = notes
+        .iter()
+        .filter(|note| note.summary.contains("is not read from"))
+        .map(|note| note.summary.as_str())
+        .collect();
+    assert_eq!(
+        both,
+        ["n is not read from 1 file, so the 2 rows there are left out of the filter and sort"],
+        "one note for the column, not one for each of the two things naming it"
     );
 }
 
@@ -1444,7 +1518,7 @@ fn test_the_rows_left_out_are_the_conflicting_files_own_wherever_they_sit() {
     let notes = state.notes();
     let left_out = notes
         .iter()
-        .find(|note| note.summary.contains("left out"))
+        .find(|note| note.summary.contains("is not read from"))
         .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
     assert_eq!(
         left_out.summary,
@@ -1481,7 +1555,10 @@ fn test_only_the_conflicting_column_costs_rows_and_only_while_it_is_sorted() {
     );
     let state = app.data_table_state.as_mut().unwrap();
     assert!(
-        !state.notes().iter().any(|n| n.summary.contains("left out")),
+        !state
+            .notes()
+            .iter()
+            .any(|n| n.summary.contains("is not read from")),
         "and says nothing about rows going"
     );
 
@@ -1497,7 +1574,10 @@ fn test_only_the_conflicting_column_costs_rows_and_only_while_it_is_sorted() {
     );
     let state = app.data_table_state.as_ref().unwrap();
     assert!(
-        !state.notes().iter().any(|n| n.summary.contains("left out")),
+        !state
+            .notes()
+            .iter()
+            .any(|n| n.summary.contains("is not read from")),
         "with nothing left saying they went: {:#?}",
         state.notes()
     );

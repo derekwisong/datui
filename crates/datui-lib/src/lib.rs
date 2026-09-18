@@ -1063,7 +1063,7 @@ mod template_rollback_tests {
                 .unwrap()
                 .notes()
                 .iter()
-                .filter(|note| note.summary.contains("left out"))
+                .filter(|note| note.summary.contains("is not read from"))
                 .count()
         };
 
@@ -1174,14 +1174,13 @@ mod template_rollback_tests {
         });
 
         let state = app.data_table_state.as_mut().unwrap();
-        state.visible_rows = 10;
         assert!(state.is_grouped(), "a native List column, with no group-by");
         assert!(state.drifts(), "and the files disagree on `n`");
 
         let left_out = |s: &crate::widgets::datatable::DataTableState| {
             s.notes()
                 .iter()
-                .filter(|note| note.summary.contains("left out"))
+                .filter(|note| note.summary.contains("is not read from"))
                 .count()
         };
 
@@ -1303,7 +1302,7 @@ mod template_rollback_tests {
             state
                 .notes()
                 .iter()
-                .filter(|note| note.summary.contains("left out"))
+                .filter(|note| note.summary.contains("is not read from"))
                 .count(),
             0,
             "so nothing says rows went: {:#?}",

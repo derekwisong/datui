@@ -345,12 +345,15 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
 /// Says the shape and stops there. What it *costs* is not something this note can see.
 /// The scan reads its partition columns off one branch of the tree, and which branch
 /// that is comes back from the filesystem in whatever order it likes. Usually every
-/// file under the other key then fails and the dataset does not open at all. Review
-/// reported the opposite outcome from the same shape — one unpartitioned file among
-/// the folders, and everything readable with the partition column null — which two
-/// attempts here could not reproduce: the spine took the lone key both times and the
-/// read failed. Neither of us could make the *cost* predictable, which is the whole
-/// argument for not stating one.
+/// file under the other key then fails and the dataset does not open at all.
+///
+/// But not always, and what decides it is not the branch — it is which file name sorts
+/// first. The scan hands Polars its paths sorted, and Polars takes the hive schema from
+/// the first of them: put one unpartitioned file at the root and whether it sorts above
+/// `date=` decides whether the dataset opens with the column null or fails to open. A
+/// file called `data.parquet` does; one called `loose.parquet` does not. Nothing a note
+/// can see, and about as good a reason as there could be for a note not to say what
+/// something costs.
 ///
 /// Two rounds were spent on sentences that picked one of those and stated it as the
 /// consequence. The user guide has room to set them out; a note has one sentence, and

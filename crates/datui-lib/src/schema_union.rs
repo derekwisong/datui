@@ -1836,11 +1836,23 @@ mod tests {
         assert_eq!(
             note(
                 "d/run=7",
-                &["d/run=7/date=1/a.parquet", "d/run=7/date=2/b.parquet"]
+                &["d/run=7/loose.parquet", "d/run=7/date=1/a.parquet"]
             ),
             None,
-            "nor a key=value folder above the dataset as it was opened, which is not \
-             one of the things its folders disagree about"
+            "a key=value folder above the dataset as it was opened is not one of the \
+             things its folders disagree about — and these two files are where that \
+             matters, since counting `run` would make the one without a key of its \
+             own a second layout"
+        );
+        assert_eq!(
+            note(
+                "s3://b//data/",
+                &["s3://b/data/date=1/a.parquet", "s3://b/data/dt=2/b.parquet"]
+            ),
+            None,
+            "and a path the root is not a prefix of — a typed URL with a doubled \
+             slash rebuilds without it — is one this cannot place, so it is left out \
+             rather than read from the top"
         );
 
         let renamed = note(

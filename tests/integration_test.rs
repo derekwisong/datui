@@ -1912,6 +1912,64 @@ fn test_a_folder_whose_partition_key_changed_says_the_folders_differ() {
     assert_eq!(layout.scope, "in the names of 4 files");
 }
 
+/// The very same disagreement, and this one opens.
+///
+/// What decides it is not which branch the scan reads by — it is which file name sorts
+/// first. The paths are handed to Polars sorted and it takes the hive schema from the
+/// first of them, so a `data.parquet` at the root (which sorts above both `date=` and
+/// `dt=`) means no file's key is ever checked and the column comes back null. Name it
+/// `loose.parquet` and the same folder will not open at all.
+///
+/// A byte sort of path strings, so this holds on any filesystem — and it is why the
+/// note says the shape and not the cost: it cannot see a filename's spelling.
+#[test]
+fn test_folders_that_differ_may_still_open_and_the_note_claims_only_the_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
+        write_parquet(
+            dir.path(),
+            day,
+            df!("id" => &[0i64], "n" => &[1i64]).unwrap(),
+        );
+    }
+    write_parquet(
+        dir.path(),
+        "dt=2024-01-04",
+        df!("id" => &[1i64], "n" => &[2i64]).unwrap(),
+    );
+    // At the root, and named so that it sorts before both partition folders.
+    write_parquet(
+        dir.path(),
+        "",
+        df!("id" => &[9i64], "n" => &[9i64]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let frame = painted(&mut app, &rx, &tx, area);
+    assert!(
+        !frame.contains("Error"),
+        "the same disagreement as the test above, and this one opens: {frame}"
+    );
+    assert_eq!(current_rows(&app), 5, "every file is read");
+
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    let layout = notes
+        .iter()
+        .find(|note| note.summary.contains("partition by the same keys"))
+        .unwrap_or_else(|| panic!("the folders still differ: {notes:#?}"));
+    assert_eq!(
+        layout.summary,
+        "the folders do not all partition by the same keys: 3 files by date, 1 file by dt",
+        "said of a dataset that opened, which is why it says nothing about cost"
+    );
+    assert_eq!(
+        layout.scope, "in the names of 5 files",
+        "the file at the root is one of the names read, though it is no layout"
+    );
+}
+
 /// The control: a folder partitioned the one way opens, and says nothing about keys.
 #[test]
 fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {

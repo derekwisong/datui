@@ -611,9 +611,6 @@ pub fn lenient_scan(
         .cloned()
         .collect();
     let as_text = as_text.as_slice();
-    // What the frame ends up as: the dataset's schema with every `as_text` column
-    // spelled as text, which is what the runs are selected into so they concatenate.
-    let target = text_schema(&schema, as_text);
     // A file's read of an `as_text` column is not its omission, whatever its type.
     let unread_of = |path: &str| -> Vec<PlSmallStr> {
         drift
@@ -654,7 +651,7 @@ pub fn lenient_scan(
             .collect();
         runs.push(scan_run(
             &paths[start..end],
-            &target,
+            &schema,
             cloud_options.clone(),
             &omit,
             Some(drift.first_row(&paths[start])),
@@ -712,9 +709,12 @@ impl ColumnDrift {
     }
 }
 
-/// `schema` with every column in `as_text` spelled as text. The columns keep their
-/// places: a column that moved when it was read differently would be a second change
-/// the user did not ask for.
+/// `schema` with every column in `as_text` spelled as text.
+///
+/// For a caller to say what it now holds — [`lenient_scan`] does not need it, since a
+/// run is read at its own files' types and the cast decides the result's. The columns
+/// keep their places: a column that moved when it was read differently would be a
+/// second change the user did not ask for.
 pub fn text_schema(schema: &Arc<Schema>, as_text: &[PlSmallStr]) -> Arc<Schema> {
     if as_text.is_empty() {
         return schema.clone();
@@ -1047,18 +1047,20 @@ mod tests {
         cases.push((plain.dtype().clone(), plain.into()));
         // A struct prints its fields itself rather than casting them, so it manages
         // inner types that a column of that type could not.
-        for inner in [
-            DataType::Duration(TimeUnit::Milliseconds),
-            DataType::List(Box::new(DataType::Int64)),
-            DataType::Binary,
-        ] {
-            let nested = StructChunked::from_series(
-                "x".into(),
-                2,
-                [Series::new("a".into(), [1i64, 2]).cast(&inner).unwrap()].iter(),
-            )
-            .unwrap()
-            .into_series();
+        let inners: [Series; 3] = [
+            Series::new("a".into(), [1i64, 2])
+                .cast(&DataType::Duration(TimeUnit::Milliseconds))
+                .unwrap(),
+            Series::new("a".into(), [1i64, 2])
+                .cast(&DataType::List(Box::new(DataType::Int64)))
+                .unwrap(),
+            // The same bytes the bare binary case is refused for.
+            Series::new("a".into(), [&[0xffu8, 0xfe][..], &[0x41][..]]),
+        ];
+        for inner in inners {
+            let nested = StructChunked::from_series("x".into(), 2, [inner].iter())
+                .unwrap()
+                .into_series();
             cases.push((nested.dtype().clone(), nested.into()));
         }
 
@@ -1134,6 +1136,95 @@ mod tests {
             frame.column("n").unwrap().dtype(),
             &DataType::String,
             "and the column is as it was, not half-cast"
+        );
+    }
+
+    /// The type that rules a column out can be one only a *conflicting* file holds.
+    ///
+    /// The column here is read as an integer, which casts to text perfectly well. It is
+    /// the one file storing it as a list that makes the offer impossible — and that
+    /// file's cast is the one that would fail, taking the read of the other three with
+    /// it. So the answer has to come from every type any file holds, not from the type
+    /// the column is read as.
+    #[test]
+    fn a_type_only_one_file_holds_can_rule_the_column_out() {
+        use polars::prelude::{IntoLazy, ParquetWriter, col, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        let mut write = |name: &str, mut frame: polars::prelude::DataFrame| {
+            let path = dir.path().join(name);
+            let f = std::fs::File::create(&path).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        };
+        write(
+            "a.parquet",
+            df!("id" => &[0i64, 1, 2], "n" => &[10i64, 20, 30]).unwrap(),
+        );
+        // `n` as a list here: grouped so the column really is List(Int64) on disk.
+        write(
+            "b.parquet",
+            df!("id" => &[3i64], "n" => &[9i64])
+                .unwrap()
+                .lazy()
+                .group_by([col("id")])
+                .agg([col("n")])
+                .collect()
+                .unwrap(),
+        );
+
+        let footers: Vec<Option<FileSchema>> = vec![
+            file(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
+            file(
+                &[
+                    ("id", DataType::Int64),
+                    ("n", DataType::List(Box::new(DataType::Int64))),
+                ],
+                1,
+            ),
+        ];
+        let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(2));
+        assert_eq!(
+            dataset.schema.get("n"),
+            Some(&DataType::Int64),
+            "read as the integer the three rows have"
+        );
+        let drifting = dataset
+            .columns
+            .iter()
+            .find(|column| column.name == "n")
+            .unwrap();
+        assert!(
+            can_read_as_text(&drifting.dtype),
+            "an integer column casts to text on its own account"
+        );
+        assert!(
+            !drifting.can_read_as_text(),
+            "but one file holds a list, and that file's cast is the one that fails"
+        );
+
+        let drift = ScanDrift::new(&paths, &dataset, &[3, 1]).expect("the files disagree");
+        let as_text = [PlSmallStr::from("n")];
+        let frame = lenient_scan(&paths, dataset.schema.clone(), None, Some(&drift), &as_text)
+            .unwrap()
+            .collect()
+            .expect("asking anyway must not cost the read");
+        assert_eq!(
+            frame
+                .column("id")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3],
+            "every file is read, the three that agreed included"
+        );
+        assert_eq!(
+            frame.column("n").unwrap().dtype(),
+            &DataType::Int64,
+            "and the column is as it was"
         );
     }
 

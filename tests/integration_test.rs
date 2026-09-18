@@ -1998,6 +1998,88 @@ fn test_a_folder_partitioned_the_one_way_says_nothing_about_its_keys() {
     );
 }
 
+/// The counter the loading screen reads is the one the real open writes to.
+///
+/// Every other test here drives the counter from one side: the render tests set it by
+/// hand, the pass test calls the pass directly with a counter of its own. Neither says
+/// the two are connected — with only those, pointing the open at the non-reporting
+/// pass leaves the feature completely dead in the running app and the suite green.
+#[test]
+fn test_opening_a_folder_reports_its_footers_to_the_app() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
+        write_parquet(
+            dir.path(),
+            day,
+            df!("id" => &[0i64], "n" => &[1i64]).unwrap(),
+        );
+    }
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+
+    assert_eq!(
+        app.footer_progress.passes(),
+        1,
+        "the open ran its footer pass against the app's own counter"
+    );
+    assert_eq!(
+        app.footer_progress.read_so_far(),
+        3,
+        "and counted each of the three footers off it"
+    );
+    assert_eq!(
+        app.footer_progress.reading(),
+        None,
+        "with nothing left on screen once they landed"
+    );
+}
+
+/// A second open starts its own count rather than inheriting the first one's.
+///
+/// Abandoning a load cancels nothing — the footers keep being read — so a counter
+/// shared across loads reports the abandoned folder's progress under the next file's
+/// name, which is what a user opening a small CSV after a large folder would see.
+#[test]
+fn test_each_open_counts_its_own_footers() {
+    let first = tempfile::tempdir().unwrap();
+    for day in ["date=2024-01-01", "date=2024-01-02", "date=2024-01-03"] {
+        write_parquet(first.path(), day, df!("id" => &[0i64]).unwrap());
+    }
+    let second = tempfile::tempdir().unwrap();
+    write_parquet(
+        second.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(first.path());
+    let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+    let counter_of_the_first = app.footer_progress.clone();
+    assert_eq!(counter_of_the_first.read_so_far(), 3);
+
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![second.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+    let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+
+    assert!(
+        !Arc::ptr_eq(&counter_of_the_first, &app.footer_progress),
+        "the second open has a counter of its own"
+    );
+    assert_eq!(
+        app.footer_progress.read_so_far(),
+        1,
+        "counting its one footer, not the three before it"
+    );
+}
+
 /// The accent is about the note being *new*: a sort that has something to say brings
 /// it back after the panel has already been opened once.
 #[test]

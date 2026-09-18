@@ -339,6 +339,27 @@ pub async fn footers_of_files(
     files: &[DatasetFile],
     read: &[usize],
 ) -> Vec<Option<FileFooter>> {
+    footers_of_files_reporting(
+        store,
+        files,
+        read,
+        &crate::schema_union::FooterProgress::default(),
+    )
+    .await
+}
+
+/// As [`footers_of_files`], counting each footer off against `progress` as it lands.
+///
+/// This is the pass the loading screen has most reason to narrate: every footer is a
+/// ranged read over the network, sixty-four at a time, and a prefix of a few thousand
+/// objects spends seconds here.
+pub async fn footers_of_files_reporting(
+    store: &Arc<dyn ObjectStore>,
+    files: &[DatasetFile],
+    read: &[usize],
+    progress: &crate::schema_union::FooterProgress,
+) -> Vec<Option<FileFooter>> {
+    progress.begin(read.len());
     let permits = Arc::new(tokio::sync::Semaphore::new(FOOTERS_AT_ONCE));
     let mut reads = tokio::task::JoinSet::new();
     for (slot, file) in read
@@ -355,10 +376,14 @@ pub async fn footers_of_files(
     }
     let mut out = vec![None; read.len()];
     while let Some(joined) = reads.join_next().await {
+        // Counted as it lands, whether or not it read: a footer that will not parse is
+        // one the open is no longer waiting on.
+        progress.advance();
         if let Ok((slot, footer)) = joined {
             out[slot] = footer;
         }
     }
+    progress.done();
     out
 }
 

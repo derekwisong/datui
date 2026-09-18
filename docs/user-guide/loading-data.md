@@ -142,6 +142,11 @@ tens of megabytes do, and there is nothing to be done about it from datui except
 know why. The figure the note shows is rounded, so a dataset just past the line
 reads as `64.0 MiB`.
 
+While those footers are being read the loading screen counts them —
+`Reading footers: 1,203 of 6,541` — and says nothing once they have landed. Past
+20,000 files the number it counts towards is the sample it reads, not the files
+there are.
+
 Where a dataset has more than ten thousand files and the middle one is under a
 mebibyte, the Notes tab says so, and says how many of them were opened for their
 footers before a row was. Fewer, larger files would do less of that work; the

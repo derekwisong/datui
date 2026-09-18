@@ -3158,6 +3158,22 @@ impl App {
 
     /// Set loading state and phase so the progress dialog is visible. Used by run() to show
     /// loading UI immediately when launching from LazyFrame (e.g. Python) before sending the open event.
+    /// What the load is doing, for whichever part of the screen is saying so.
+    ///
+    /// The footer count stands in for the phase while a pass is running: it says the
+    /// same thing and says how far along it is. One place decides it so the loading
+    /// body and the control bar cannot say two different things about one wait.
+    pub(crate) fn loading_phase<'a>(&self, phase: &'a str) -> std::borrow::Cow<'a, str> {
+        match self.footer_progress.reading() {
+            Some((read, total)) => std::borrow::Cow::Owned(format!(
+                "Reading footers: {} of {}",
+                crate::numfmt::group_chrome(read),
+                crate::numfmt::group_chrome(total)
+            )),
+            None => std::borrow::Cow::Borrowed(phase),
+        }
+    }
+
     pub fn set_loading_phase(&mut self, phase: impl Into<String>, progress_percent: u16) {
         self.busy = true;
         // A frame is drawn between the keypress that starts a load and the `Open` that
@@ -5133,6 +5149,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
+        progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Option<DataTableState> {
         if !options.single_spine_schema {
             return None;
@@ -5150,7 +5167,13 @@ impl App {
         // work from that list. A glob keeps the older route, which Polars expands.
         if !full.contains('*') {
             return Self::schema_state_from_cloud_files(
-                &full, key, store, cloud_opts, options, runtime,
+                &full,
+                key,
+                store,
+                cloud_opts,
+                options,
+                runtime,
+                progress.clone(),
             );
         }
         let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
@@ -5191,13 +5214,15 @@ impl App {
         cloud_opts: CloudOptions,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
+        progress: Arc<crate::schema_union::FooterProgress>,
     ) -> Option<DataTableState> {
         let listed = {
             let store = store.clone();
             wait_on_runtime(runtime, async move {
                 let files = cloud_hive::list_dataset_files(&store, &key).await?;
                 let read = crate::schema_union::footers_to_read(files.len());
-                let footers = cloud_hive::footers_of_files(&store, &files, &read).await;
+                let footers =
+                    cloud_hive::footers_of_files_reporting(&store, &files, &read, &progress).await;
                 color_eyre::Result::<_>::Ok((files, read, footers))
             })?
             .ok()?
@@ -5325,7 +5350,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        progress: &crate::schema_union::FooterProgress,
+        progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Result<(DataTableState, String)> {
         let (mut state, label) =
             Self::schema_state_by_route(lf, path, options, cloud, runtime, progress)?;
@@ -5441,7 +5466,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        progress: &crate::schema_union::FooterProgress,
+        progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Result<(DataTableState, String)> {
         #[cfg(not(feature = "cloud"))]
         let _ = (cloud, runtime);
@@ -5450,7 +5475,9 @@ impl App {
             return Ok((state, "one-file (local)".to_string()));
         }
         #[cfg(feature = "cloud")]
-        if let Some(state) = Self::schema_state_from_cloud_hive(path, options, cloud, runtime) {
+        if let Some(state) =
+            Self::schema_state_from_cloud_hive(path, options, cloud, runtime, progress)
+        {
             return Ok((state, "one-file (cloud)".to_string()));
         }
         #[cfg(feature = "cloud")]
@@ -9794,6 +9821,10 @@ impl App {
                 }
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
+                // A new counter for a new load. Abandoning a load cancels nothing —
+                // the footers keep being read — so a shared one would go on reporting
+                // the abandoned folder's progress under the next file's name.
+                self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 self.load_active = true;
                 self.awaiting_dataset = true;
                 self.busy = true;
@@ -9841,6 +9872,10 @@ impl App {
             AppEvent::OpenLazyFrame(lf, options) => {
                 self.reset_chart_state();
                 self.task_generation = self.task_generation.wrapping_add(1);
+                // A new counter for a new load. Abandoning a load cancels nothing —
+                // the footers keep being read — so a shared one would go on reporting
+                // the abandoned folder's progress under the next file's name.
+                self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 self.load_active = true;
                 self.awaiting_dataset = true;
                 self.busy = true;
@@ -12130,6 +12165,7 @@ impl Widget for &mut App {
                 progress_percent,
                 ..
             } => {
+                let current_phase = self.loading_phase(current_phase);
                 if *progress_percent > 0 {
                     Some(format!("{}... ({}%)", current_phase, progress_percent))
                 } else {

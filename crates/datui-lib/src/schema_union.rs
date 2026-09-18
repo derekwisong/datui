@@ -40,13 +40,19 @@ pub struct FooterProgress {
     /// read and total are both back to nothing — so without this there is no way to
     /// tell a pass that reported from one that never started.
     passes: AtomicUsize,
+    /// What the last pass was over, kept after `done` for the same reason.
+    last_total: AtomicUsize,
 }
 
 impl FooterProgress {
     /// Begin a pass over `total` footers. Any earlier pass's count is forgotten.
     pub fn begin(&self, total: usize) {
         self.read.store(0, Ordering::Relaxed);
-        self.total.store(total, Ordering::Relaxed);
+        // Released after the reset, and acquired in `reading`, so a render cannot pair
+        // this pass's total with the last one's count and paint a full bar at the
+        // instant a pass starts.
+        self.last_total.store(total, Ordering::Relaxed);
+        self.total.store(total, Ordering::Release);
         self.passes.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -71,9 +77,17 @@ impl FooterProgress {
         self.read.load(Ordering::Relaxed)
     }
 
+    /// What the last pass was over. Outlives it for the same reason as `read_so_far`:
+    /// the denominator on screen is the footers that will be *read*, which past
+    /// [`MAX_FOOTER_READS`] is not the files there are, and nothing else can say which
+    /// of the two it was given.
+    pub fn last_total(&self) -> usize {
+        self.last_total.load(Ordering::Relaxed)
+    }
+
     /// `(read, total)` while a pass is running, `None` when none is.
     pub fn reading(&self) -> Option<(usize, usize)> {
-        let total = self.total.load(Ordering::Relaxed);
+        let total = self.total.load(Ordering::Acquire);
         (total > 0).then(|| (self.read.load(Ordering::Relaxed).min(total), total))
     }
 }

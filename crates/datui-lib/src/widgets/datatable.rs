@@ -1712,12 +1712,16 @@ impl DataTableState {
     /// same object.
     fn footer_of(path: &Path) -> Option<FileSchema> {
         let file = File::open(path).ok()?;
+        // Asked of the open handle, so it is the file the footer was read from and not
+        // whatever is at that path by the time anyone looks again.
+        let file_bytes = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
         let mut reader = ParquetReader::new(file);
         let arrow_schema = reader.schema().ok()?;
         let metadata = reader.get_metadata().ok()?;
         Some(FileSchema {
             schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
             rows: metadata.num_rows,
+            file_bytes,
             row_group_bytes: metadata
                 .row_groups
                 .iter()
@@ -6871,6 +6875,7 @@ mod tests {
         Some(crate::schema_union::FileSchema {
             schema: Arc::new(schema),
             rows,
+            file_bytes: 0,
             row_group_bytes: Vec::new(),
         })
     }

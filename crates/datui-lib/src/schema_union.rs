@@ -27,6 +27,8 @@ use polars::prelude::{
 pub struct FileSchema {
     pub schema: Arc<Schema>,
     pub rows: usize,
+    /// The file's size on disk or in the store.
+    pub file_bytes: usize,
     /// Compressed bytes of each row group, in file order: what crosses the wire for
     /// that group, not what it occupies once decoded.
     ///
@@ -44,6 +46,20 @@ pub enum SchemaOrigin {
     AllFooters(usize),
     /// Too many files to read every footer: a sample spread evenly across them.
     FooterSample { read: usize, total: usize },
+}
+
+impl SchemaOrigin {
+    /// How many files the dataset has, whether or not every footer was read.
+    ///
+    /// Not [`DatasetSchema::files`], which is how many footers were *read* — the
+    /// population every other count in the notes is taken over. One note needs the
+    /// other number, and the two are a keystroke apart, so this one says which.
+    pub fn total_files(&self) -> usize {
+        match self {
+            SchemaOrigin::AllFooters(files) => *files,
+            SchemaOrigin::FooterSample { total, .. } => *total,
+        }
+    }
 }
 
 impl std::fmt::Display for SchemaOrigin {
@@ -116,6 +132,8 @@ pub struct DatasetSchema {
     /// The middle row group's compressed size, over every row group of every footer
     /// read. `None` when no footer reported one.
     pub median_row_group_bytes: Option<usize>,
+    /// The middle file's size, over the footers read. `None` when none was read.
+    pub median_file_bytes: Option<usize>,
 }
 
 /// What a file is missing relative to the dataset's schema. Files that are missing the
@@ -357,6 +375,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         origin,
         read_as_text: Vec::new(),
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
+        median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
         median_row_group_bytes: median(
             files
                 .iter()
@@ -925,6 +944,7 @@ mod tests {
         Some(FileSchema {
             schema: Arc::new(schema),
             rows,
+            file_bytes: 0,
             row_group_bytes: Vec::new(),
         })
     }
@@ -1397,6 +1417,7 @@ mod tests {
                     Some(FileSchema {
                         schema: Arc::new(Schema::with_capacity(0)),
                         rows: 1,
+                        file_bytes: 0,
                         row_group_bytes: sizes.to_vec(),
                     })
                 })
@@ -1490,6 +1511,17 @@ mod tests {
         assert_eq!(footer.rows, 20_000);
         assert_eq!(footer.row_group_bytes.len(), 1, "one row group");
 
+        // The file's own size comes from the same read, and is the size on disk: the
+        // compressed row group plus the footer and header around it, so larger than
+        // the group and far smaller than the decoded data.
+        let on_disk = std::fs::metadata(dir.path().join("wide.parquet"))
+            .unwrap()
+            .len();
+        assert_eq!(
+            footer.file_bytes as u64, on_disk,
+            "the file's size, as the filesystem reports it"
+        );
+
         let size = footer.row_group_bytes[0];
         assert!(size > 0, "a size is reported");
         assert!(
@@ -1497,6 +1529,112 @@ mod tests {
             "and it is the compressed size: 20,000 distinct strings of 200 characters \
              are about 4 MiB decoded and a small fraction of that on disk, so {size} \
              bytes is the decoded figure"
+        );
+    }
+
+    /// Many small files is two conditions, and both have to hold.
+    #[test]
+    fn many_files_are_noted_only_when_they_are_also_small() {
+        const KIB: usize = 1024;
+        const MIB: usize = 1024 * KIB;
+        // `sizes` is the shape of the footers read, repeated to fill `read` of them:
+        // the note says how many were read, so the fixture has to have that many.
+        let note = |files: usize, read: usize, sizes: &[usize]| -> Option<String> {
+            let footers: Vec<Option<FileSchema>> = sizes
+                .iter()
+                .cycle()
+                .take(if sizes.is_empty() { 0 } else { read })
+                .map(|bytes| {
+                    Some(FileSchema {
+                        schema: Arc::new(Schema::with_capacity(0)),
+                        rows: 1,
+                        file_bytes: *bytes,
+                        row_group_bytes: Vec::new(),
+                    })
+                })
+                .collect();
+            let origin = if read == files {
+                SchemaOrigin::AllFooters(files)
+            } else {
+                SchemaOrigin::FooterSample { read, total: files }
+            };
+            crate::notes::from_dataset(&union_file_schemas(&footers, origin))
+                .into_iter()
+                .find(|note| note.summary.starts_with("there are"))
+                .map(|note| note.summary)
+        };
+
+        assert_eq!(
+            note(10_000, 10_000, &[40 * KIB]),
+            None,
+            "a year of hourly partitions, and more, is an ordinary shape"
+        );
+        assert_eq!(
+            note(10_001, 10_001, &[40 * KIB]).as_deref(),
+            Some(
+                "there are 10,001 files and the middle one is 40.0 KiB; each was opened for its footer before a row was"
+            ),
+            "one more is not"
+        );
+        assert_eq!(
+            note(50_000, 50_000, &[MIB]),
+            None,
+            "a megabyte is not small by this measure"
+        );
+        assert!(
+            note(50_000, 50_000, &[MIB - 1]).is_some(),
+            "a byte under it is"
+        );
+        assert_eq!(
+            note(50_000, 50_000, &[40 * KIB, 40 * KIB, 900 * MIB]).as_deref(),
+            Some(
+                "there are 50,000 files and the middle one is 40.0 KiB; each was opened for its footer before a row was"
+            ),
+            "a large minority does not move the middle"
+        );
+        // Sampled: the count is every file the listing found, the middle size is over
+        // the footers datui opened, and the sentence names both rather than leaving
+        // the middle to read as a fact about all of them.
+        assert_eq!(
+            note(500_000, 2, &[40 * KIB, 40 * KIB]).as_deref(),
+            Some(
+                "there are 500,000 files and the middle one is 40.0 KiB; 2 were opened for their footers before a row was"
+            ),
+            "the count is the listing's; the footers read are their own number"
+        );
+        assert_eq!(note(50_000, 0, &[]), None, "no footer read, nothing to say");
+
+        // The scope line under a sampled dataset says what was looked at, which is what
+        // stops the middle size reading as a fact about half a million files.
+        let sampled = union_file_schemas(
+            &[
+                Some(FileSchema {
+                    schema: Arc::new(Schema::with_capacity(0)),
+                    rows: 1,
+                    file_bytes: 40 * KIB,
+                    row_group_bytes: Vec::new(),
+                }),
+                Some(FileSchema {
+                    schema: Arc::new(Schema::with_capacity(0)),
+                    rows: 1,
+                    file_bytes: 40 * KIB,
+                    row_group_bytes: Vec::new(),
+                }),
+            ],
+            SchemaOrigin::FooterSample {
+                read: 2,
+                total: 500_000,
+            },
+        );
+        let sampled_note = crate::notes::from_dataset(&sampled)
+            .into_iter()
+            .find(|note| note.summary.starts_with("there are"))
+            .expect("the note is made");
+        assert_eq!(sampled_note.scope, "in 2 of 500,000 footers (sample)");
+        assert_eq!(
+            note(50_000, 2, &[0, 0]),
+            None,
+            "and a size of nothing means the size is not known, not that it is small"
         );
     }
 
@@ -1519,6 +1657,7 @@ mod tests {
                 Some(FileSchema {
                     schema: Arc::new(s),
                     rows: 1,
+                    file_bytes: 0,
                     row_group_bytes: Vec::new(),
                 })
             })
@@ -1542,6 +1681,7 @@ mod tests {
         with_conflict[7] = Some(FileSchema {
             schema: Arc::new(odd),
             rows: 1,
+            file_bytes: 0,
             row_group_bytes: Vec::new(),
         });
         let dataset = union_sampled(files, &read, &with_conflict);

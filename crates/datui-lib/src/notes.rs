@@ -137,6 +137,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
 
     notes.extend(empty_files_note(dataset, &scope));
     notes.extend(row_group_note(dataset, &scope));
+    notes.extend(small_files_note(dataset, &scope));
 
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
@@ -281,6 +282,63 @@ fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     })
 }
 
+/// A dataset of very many files, each holding very little.
+///
+/// Says what happened, not what it cost. The first draft of this note said finding the
+/// files costs more than reading them, and review measured it: a thousand two hundred
+/// files took nine milliseconds to find and eight hundred to read. It cannot be true
+/// over a network either — a footer read is a *suffix* of the file, so it can never
+/// move more bytes than reading the file does. What is true, and is the thing the user
+/// waited for, is that a footer was read for every one of these files before a single
+/// row was.
+///
+/// Both halves have to hold. Small files on their own are a normal day's partitions,
+/// and a few large ones cost nothing to open. It is very many *and* very small that
+/// makes the opening a job of its own — and one nothing here can fix, since the remedy
+/// is upstream in whatever writes them.
+///
+/// The count is every file the listing found; the middle size is over the footers
+/// datui opened, which the sentence names. The two are different populations where the
+/// dataset was too large to open every footer, and saying both numbers is what keeps
+/// the middle from reading as a fact about all of them.
+fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
+    /// Past this many files the footer pass is a job of its own. Above a year of
+    /// hourly partitions, which is an ordinary shape and not a complaint.
+    const MANY: usize = 10_000;
+    /// Below this a file is small by any warehouse's standard, where the figure aimed
+    /// at is hundreds of megabytes.
+    const SMALL: usize = 1024 * 1024;
+    let files = dataset.origin.total_files();
+    let median = dataset.median_file_bytes?;
+    // A file of no bytes is not a Parquet file, so a middle of zero means datui does
+    // not know the sizes rather than that they are small — and "the middle one is 0 B"
+    // would be a claim about a dataset that cannot exist.
+    if median == 0 || files <= MANY || median >= SMALL {
+        return None;
+    }
+    let read = dataset.files;
+    // "opened for its footer", not "a footer was read": a footer that would not parse
+    // was still opened for, and the note beside this one says three of them were.
+    //
+    // And a semicolon, not "so": the footer pass is one per file whatever the files
+    // hold, so only the count leads to it. Joining the two with "so" would make the
+    // size look like half the reason.
+    let footers = if read == files {
+        "each was opened for its footer".to_string()
+    } else {
+        format!("{} were opened for their footers", group_chrome(read))
+    };
+    Some(Note {
+        summary: format!(
+            "there are {} files and the middle one is {}; {footers} before a row was",
+            group_chrome(files),
+            crate::widgets::info::format_bytes(median as u64)
+        ),
+        scope: scope.to_string(),
+        read_as_text: None,
+    })
+}
+
 /// A column being read as text from every file, because it was asked for that way.
 ///
 /// Stands in for the conflict note it replaced, and says the one thing that changes
@@ -386,6 +444,7 @@ mod tests {
         Some(FileSchema {
             schema: Arc::new(schema),
             rows,
+            file_bytes: 0,
             row_group_bytes: Vec::new(),
         })
     }

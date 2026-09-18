@@ -142,6 +142,12 @@ tens of megabytes do, and there is nothing to be done about it from datui except
 know why. The figure the note shows is rounded, so a dataset just past the line
 reads as `64.0 MiB`.
 
+Where a dataset has more than ten thousand files and the middle one is under a
+mebibyte, the Notes tab says so, and says how many of them were opened for their
+footers before a row was. Fewer, larger files would do less of that work; the
+remedy is upstream in whatever writes them, but knowing where the wait went is
+worth something on its own.
+
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file, as it does for a glob.
 

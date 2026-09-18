@@ -277,12 +277,18 @@ pub fn dataset_schema_from_footers(
         [only] => (only, only),
         [first, .., last] => (first, last),
     };
+    // The footers come back in the order of `read`, which indexes `files`: that is
+    // where an object's size is, since a footer is a read of the tail and says nothing
+    // about how long the object is. With a sampled read those two orders are not the
+    // same list, so the index has to come from `read` and not from the position.
     let per_file: Vec<Option<FileSchema>> = footers
         .iter()
-        .map(|f| {
+        .zip(read)
+        .map(|(f, index)| {
             f.as_ref().map(|f| FileSchema {
                 schema: f.schema.clone(),
                 rows: f.row_group_rows.iter().sum(),
+                file_bytes: files.get(*index).map(|f| f.size as usize).unwrap_or(0),
                 row_group_bytes: f.row_group_bytes.clone(),
             })
         })
@@ -593,6 +599,54 @@ mod tests {
             assert!(
                 size < 1_000_000,
                 "the compressed size, not the decoded one: {size} bytes"
+            );
+        });
+    }
+
+    /// An object's size is the listing's to know, and a sampled read has to look it up
+    /// by the index it read at rather than by where the footer came back in the list.
+    ///
+    /// With every footer read the two orders are the same list and any mistake here is
+    /// invisible. They part company exactly when the dataset is too large to open every
+    /// footer — the case this matters for.
+    #[test]
+    fn a_sampled_remote_read_takes_each_size_from_the_file_it_read() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let write = |rows: i64| -> Vec<u8> {
+            let mut frame = df!("n" => (0..rows).collect::<Vec<i64>>()).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            // Three objects of very different sizes, in ascending order of size.
+            for (key, rows) in [
+                ("s/date=2024-01-01/a.parquet", 1),
+                ("s/date=2024-01-02/b.parquet", 200),
+                ("s/date=2024-01-03/c.parquet", 40_000),
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(write(rows)))
+                    .await
+                    .unwrap();
+            }
+            let files = list_dataset_files(&store, "s/").await.unwrap();
+            assert_eq!(files.len(), 3);
+
+            // Only the last one's footer is read: its size is the one the schema must
+            // carry, and it is the one a "by position" lookup would never reach.
+            let read = [2usize];
+            let footers = footers_of_files(&store, &files, &read).await;
+            let (dataset, _) = dataset_schema_from_footers(&files, &read, &footers).unwrap();
+            assert_eq!(
+                dataset.median_file_bytes,
+                Some(files[2].size as usize),
+                "the file read, not the first in the list: {:?}",
+                files.iter().map(|f| f.size).collect::<Vec<_>>()
             );
         });
     }

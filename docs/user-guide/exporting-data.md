@@ -44,6 +44,8 @@ file** adds a column naming the file each row came from, which is enough to
 tell them apart downstream: a row whose file never had the column is a
 different thing from a row whose file had it and left it empty.
 
-The option is offered only for those datasets, and is off by default.
+The option is offered only for those datasets, and is off by default. If the
+data already has a column called `source_file`, datui's goes beside it as
+`source_file_1` rather than over it.
 
 Charts export separately, to PNG or EPS, from the [chart view](charting.md#export).

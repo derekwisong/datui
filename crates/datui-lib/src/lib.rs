@@ -10446,8 +10446,9 @@ impl App {
                 if *generation == self.task_generation {
                     // The frame was collected with the scan's row index still on it
                     // when the export asked to name each row's file; swap it for the
-                    // names. On failure the export goes ahead without the column
-                    // rather than not at all.
+                    // names. Where that cannot be done the export goes ahead without
+                    // the column — but the index still has to come off, or datui's own
+                    // bookkeeping lands in the user's file.
                     let df = match self
                         .data_table_state
                         .as_ref()
@@ -10455,7 +10456,7 @@ impl App {
                         .map(|state| state.name_source_files(df.clone()))
                     {
                         Some(Ok(named)) => named,
-                        _ => df.clone(),
+                        _ => DataTableState::drop_row_index(df.clone()),
                     };
                     self.export_df = Some(df);
                     let has_compression = match format {

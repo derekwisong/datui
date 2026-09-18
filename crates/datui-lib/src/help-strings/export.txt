@@ -21,7 +21,8 @@ Source file:
   Only offered for a folder of Parquet files that disagree. Adds a column
   naming the file each row came from, so a cell that is absent rather than
   null can still be told apart once the data has left datui. No format
-  writes "absent", so without it both are written as null.
+  writes "absent", so without it both are written as null. A dataset that
+  already has a source_file column keeps it; datui's goes beside it.
 
 CSV Options:
   Delimiter:        Character to separate columns (default: comma)

@@ -1788,6 +1788,75 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
     assert_eq!(csv.lines().next().unwrap(), "date,id,extra");
 }
 
+/// A dataset may already have a column called `source_file` — a folder of per-file
+/// extracts is exactly this feature's audience — and adding one by that name would
+/// replace it, silently, in the file the user takes away.
+#[test]
+fn test_naming_source_files_never_overwrites_a_column_of_that_name() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[1i64], "source_file" => &["mine-A"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "source_file" => &["mine-B"], "extra" => &["x"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let out = dir.path().join("collide.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, true);
+    let lines: Vec<&str> = csv.lines().collect();
+
+    assert_eq!(
+        lines[0], "date,id,source_file,extra,source_file_1",
+        "the dataset keeps its own column and datui's goes beside it"
+    );
+    assert!(
+        lines[1].contains("mine-A"),
+        "the dataset's own values survive: {}",
+        lines[1]
+    );
+    assert!(lines[2].contains("mine-B"), "both of them: {}", lines[2]);
+}
+
+/// Asking for source files on a frame that no longer has them must not leak datui's
+/// bookkeeping instead.
+///
+/// This exercises the path where the option is on but the dataset cannot honour it, so
+/// the export never collects the index at all. The other path — collected with the
+/// index, then unable to name it — is guarded by `drop_row_index`, which is unit
+/// tested; it needs the dataset to change between the collect being spawned and its
+/// result arriving, which keys held while busy make unreachable today.
+#[test]
+fn test_asking_to_name_files_on_a_query_result_leaks_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    // A query replaces the frame, so the rows no longer stand for rows of a file and
+    // naming them is refused — but the export still runs.
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sql_query("select * from df".to_string());
+    state.collect();
+    assert!(!state.can_name_source_files(), "nothing to name any more");
+
+    let out = dir.path().join("refused.csv");
+    let csv = export_csv(&mut app, &rx, &tx, &out, true);
+    let header = csv.lines().next().unwrap();
+    assert!(
+        !header.contains("__datui_row"),
+        "datui's own bookkeeping must not reach the file: {header}"
+    );
+}
+
 /// A column only a middle file has used to vanish: the schema was one file's, and that
 /// file did not have it.
 #[test]

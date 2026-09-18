@@ -175,7 +175,7 @@ fn render_format_options(
     block.render(area, buf);
 
     // The source-file option belongs to no format, so it sits under the ones that do.
-    let (inner, source_file_row) = if modal.offer_source_file && inner.height >= 2 {
+    let (inner, source_file_row) = if modal.offer_source_file {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -200,7 +200,10 @@ fn render_format_options(
             render_ndjson_options(inner, buf, modal, border_color, active_color)
         }
         ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-            render_no_format_options(inner, buf, modal, border_color, active_color)
+            // Saying there are none would be wrong with one drawn right below.
+            if !modal.offer_source_file {
+                render_no_format_options(inner, buf, modal, border_color, active_color)
+            }
         }
     }
 
@@ -237,7 +240,8 @@ fn render_source_file_option(
         .style(style)
         .render(columns[0], buf);
     let marker = if modal.source_file { "☑" } else { "☐" };
-    Paragraph::new(Line::from(vec![Span::styled(marker, style)])).render(columns[1], buf);
+    // Column 2, so the box lines up with the one on the Include Header row above.
+    Paragraph::new(Line::from(vec![Span::styled(marker, style)])).render(columns[2], buf);
 }
 
 fn render_csv_options(

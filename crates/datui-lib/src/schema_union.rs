@@ -84,9 +84,13 @@ impl ColumnDrift {
 pub struct DatasetSchema {
     pub schema: Arc<Schema>,
     pub columns: Vec<ColumnDrift>,
-    /// Per file, in the order given, the columns not read from it. Empty for a file
-    /// whose types all fit.
-    pub omitted: Vec<Vec<PlSmallStr>>,
+    /// Per file, in the order given, the columns not read from it and the type that
+    /// file holds each of them in. Empty for a file whose types all fit.
+    ///
+    /// The type is kept because it is the only way back to the values: reading such a
+    /// column as text means reading it from each file at the type that file wrote,
+    /// which the footers know and nothing else does.
+    pub omitted: Vec<Vec<(PlSmallStr, DataType)>>,
     /// Files whose footer could not be read, by index into the files given.
     pub unreadable: Vec<usize>,
     /// Files whose footer was read, readable or not.
@@ -265,18 +269,19 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
             omitted.push(Vec::new());
             continue;
         };
-        let unread: Vec<PlSmallStr> = file
+        let stored: Vec<(PlSmallStr, DataType)> = file
             .schema
             .iter()
             .filter(|(name, dtype)| schema.get(name).is_some_and(|target| !fits(dtype, target)))
-            .map(|(name, _)| name.clone())
+            .map(|(name, dtype)| (name.clone(), dtype.clone()))
             .collect();
+        let unread: Vec<PlSmallStr> = stored.iter().map(|(name, _)| name.clone()).collect();
         let absent: Vec<PlSmallStr> = schema
             .iter_names()
             .filter(|name| !file.schema.contains(name))
             .cloned()
             .collect();
-        omitted.push(unread.clone());
+        omitted.push(stored);
         let group = DriftGroup { absent, unread };
         let next = groups.len() as u32;
         let id = *group_of.entry(group.clone()).or_insert_with(|| {
@@ -476,6 +481,9 @@ pub struct ScanDrift {
     /// Where each file's rows start in the dataset. The scan numbers a run's rows from
     /// its first file's entry, so the numbering survives reading only a window of files.
     row_of: HashMap<String, usize>,
+    /// Per file, the type it holds each of its conflicting columns in. Only files that
+    /// conflict have an entry, which is the few.
+    stored_of: HashMap<String, Vec<(PlSmallStr, DataType)>>,
     pub groups: Vec<DriftGroup>,
 }
 
@@ -500,9 +508,16 @@ impl ScanDrift {
             row_of.insert(path.clone(), row);
             row += rows;
         }
+        let stored_of = paths
+            .iter()
+            .zip(dataset.omitted.iter())
+            .filter(|(_, stored)| !stored.is_empty())
+            .map(|(path, stored)| (path.clone(), stored.clone()))
+            .collect();
         Some(ScanDrift {
             group_of,
             row_of,
+            stored_of,
             groups: dataset.groups.clone(),
         })
     }
@@ -515,6 +530,16 @@ impl ScanDrift {
     /// Where the rows of the file the scan names `path` begin in the dataset.
     fn first_row(&self, path: &str) -> usize {
         self.row_of.get(path).copied().unwrap_or(0)
+    }
+
+    /// The type the file the scan names `path` holds `column` in, when that is not the
+    /// type the column is read as. `None` when the file agrees, or has no such column.
+    fn stored_type(&self, path: &str, column: &PlSmallStr) -> Option<&DataType> {
+        self.stored_of
+            .get(path)?
+            .iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, dtype)| dtype)
     }
 
     /// Which columns a file is not read for, which is the only reason to split the scan.
@@ -542,29 +567,95 @@ impl ScanDrift {
 /// one scan and the scans are concatenated in file order. A file merely missing a
 /// column needs no split — `MissingColumnsPolicy::Insert` already reads it as null —
 /// so the common case stays a single scan however many files disagree.
+///
+/// `as_text` names columns to read as text from every file instead of leaving them out
+/// of the ones that disagree. Such a column is read at the type each file *disagrees*
+/// in and cast to text after, which is the only way to see the values a conflict hides:
+/// Polars' scan can widen an integer and change a datetime's unit, but it has no policy
+/// for reading a number as a string, and no way to hand back a column it was not told
+/// the type of. So the split is finer here — a run is a stretch of files that agree on
+/// the type of every `as_text` column as well as on what they are missing.
+///
+/// A file whose type merely *widens* into the column's is read at the column's type,
+/// not its own, because only conflicting types are recorded: an integer in a column
+/// read as a float reads as `7.0`. Nothing is hidden by that — a widened value was
+/// always on screen — but it is not the file's own spelling. The same goes for a file
+/// whose footer could not be read, and for one outside the sample on a dataset too
+/// large to read every footer: datui does not know what those hold, so it asks for the
+/// column's type and they are no better off than before.
+///
+/// A column [`can_read_as_text`] refuses, or that the schema does not have, is dropped
+/// from `as_text` and read as it was.
 pub fn lenient_scan(
     paths: &[String],
     schema: Arc<Schema>,
     cloud_options: Option<polars::io::cloud::CloudOptions>,
     drift: Option<&ScanDrift>,
+    as_text: &[PlSmallStr],
 ) -> PolarsResult<LazyFrame> {
     let Some(drift) = drift else {
-        return scan_run(paths, &schema, cloud_options, &[], None);
+        return scan_run(paths, &schema, cloud_options, &[], None, &[]);
+    };
+    // A column is read as text only where the schema has it and every type it is
+    // stored in can be shown as text. A caller that asks for more than that gets the
+    // column as it was rather than a scan that fails: the cast refusing would take
+    // the whole read with it, including the files that never disagreed.
+    let as_text: Vec<PlSmallStr> = as_text
+        .iter()
+        .filter(|name| {
+            schema.get(name).is_some_and(can_read_as_text)
+                && paths
+                    .iter()
+                    .all(|path| drift.stored_type(path, name).is_none_or(can_read_as_text))
+        })
+        .cloned()
+        .collect();
+    let as_text = as_text.as_slice();
+    // A file's read of an `as_text` column is not its omission, whatever its type.
+    let unread_of = |path: &str| -> Vec<PlSmallStr> {
+        drift
+            .unread(path)
+            .iter()
+            .filter(|name| !as_text.contains(name))
+            .cloned()
+            .collect()
+    };
+    // What a run must agree on: what it leaves out, and the type of everything read as
+    // text, since that is what its own read schema is built from.
+    let key_of = |path: &str| -> (Vec<PlSmallStr>, Vec<Option<DataType>>) {
+        (
+            unread_of(path),
+            as_text
+                .iter()
+                .map(|name| drift.stored_type(path, name).cloned())
+                .collect(),
+        )
     };
     let mut runs: Vec<LazyFrame> = Vec::new();
     let mut start = 0;
     while start < paths.len() {
-        let unread = drift.unread(&paths[start]);
+        let key = key_of(&paths[start]);
         let end = paths[start..]
             .iter()
-            .position(|path| drift.unread(path) != unread)
+            .position(|path| key_of(path) != key)
             .map_or(paths.len(), |offset| start + offset);
+        let (omit, stored) = key;
+        // The run reads each `as_text` column at the type its files wrote, then casts.
+        let read_as: Vec<(PlSmallStr, DataType)> = as_text
+            .iter()
+            .zip(stored)
+            .map(|(name, stored)| {
+                let dtype = stored.or_else(|| schema.get(name).cloned());
+                (name.clone(), dtype.unwrap_or(DataType::String))
+            })
+            .collect();
         runs.push(scan_run(
             &paths[start..end],
             &schema,
             cloud_options.clone(),
-            unread,
+            &omit,
             Some(drift.first_row(&paths[start])),
+            &read_as,
         )?);
         start = end;
     }
@@ -581,6 +672,65 @@ pub fn lenient_scan(
     }
 }
 
+/// Whether a column of this type can be shown as text.
+///
+/// Reading a conflicting column as text is a cast, and Polars cannot cast every type
+/// to a string: a duration and a list refuse outright, and binary refuses the moment
+/// its bytes are not UTF-8 — which is most of why a column is binary. A cast that
+/// refuses fails the whole scan, including the files that never disagreed, so this is
+/// asked before the offer is made rather than after it is taken.
+///
+/// Answered by type and not by value, so binary is refused whatever it holds: a
+/// column that renders for one page and fails on the next is worse than one that was
+/// never offered. `types_the_cast_agrees_with_are_exactly_the_ones_offered` keeps this
+/// honest against Polars itself.
+pub fn can_read_as_text(dtype: &DataType) -> bool {
+    match dtype {
+        // Not text at all, and not convertible: the cast errors rather than escaping.
+        DataType::Binary | DataType::BinaryOffset => false,
+        DataType::Duration(_) => false,
+        // Nested sequences have no string form in Polars 0.55.
+        DataType::List(_) | DataType::Array(_, _) => false,
+        // A struct prints as `{1,"a"}`, writing its fields itself rather than casting
+        // them, so it manages inner types a column of that type could not.
+        DataType::Struct(_) => true,
+        DataType::Unknown(_) => false,
+        _ => true,
+    }
+}
+
+impl ColumnDrift {
+    /// Whether this column can be read as text: every type any file holds it in has to
+    /// be one that can be shown as text, the one it is read as included. One file's
+    /// list column is enough to rule it out, because that file's cast is the one that
+    /// would fail.
+    pub fn can_read_as_text(&self) -> bool {
+        can_read_as_text(&self.dtype) && self.conflicting_types.iter().all(can_read_as_text)
+    }
+}
+
+/// `schema` with every column in `as_text` spelled as text.
+///
+/// For a caller to say what it now holds — [`lenient_scan`] does not need it, since a
+/// run is read at its own files' types and the cast decides the result's. The columns
+/// keep their places: a column that moved when it was read differently would be a
+/// second change the user did not ask for.
+pub fn text_schema(schema: &Arc<Schema>, as_text: &[PlSmallStr]) -> Arc<Schema> {
+    if as_text.is_empty() {
+        return schema.clone();
+    }
+    let mut out = Schema::with_capacity(schema.len());
+    for (name, dtype) in schema.iter() {
+        let dtype = if as_text.contains(name) {
+            DataType::String
+        } else {
+            dtype.clone()
+        };
+        out.with_column(name.clone(), dtype);
+    }
+    Arc::new(out)
+}
+
 /// One run of files that are missing the same things. `stamp` is the group to write
 /// into [`DRIFT_COLUMN`], and its presence also means the run selects the dataset's
 /// column order so the runs concatenate.
@@ -590,6 +740,7 @@ fn scan_run(
     cloud_options: Option<polars::io::cloud::CloudOptions>,
     omit: &[PlSmallStr],
     first_row: Option<usize>,
+    read_as: &[(PlSmallStr, DataType)],
 ) -> PolarsResult<LazyFrame> {
     use polars::lazy::dsl::{
         CastColumnsPolicy, DslBuilder, ExtraColumnsPolicy, MissingColumnsPolicy, ScanSources,
@@ -601,14 +752,22 @@ fn scan_run(
             .map(|url| PlRefPath::new(url.as_str()))
             .collect(),
     );
-    let target = if omit.is_empty() {
+    let target = if omit.is_empty() && read_as.is_empty() {
         schema.clone()
     } else {
         let mut reduced = Schema::with_capacity(schema.len());
         for (name, dtype) in schema.iter() {
-            if !omit.contains(name) {
-                reduced.with_column(name.clone(), dtype.clone());
+            if omit.contains(name) {
+                continue;
             }
+            // Read at the type this run's files wrote, not the one it will be shown
+            // as: the reader has to be told what is actually in the file.
+            let dtype = read_as
+                .iter()
+                .find(|(column, _)| column == name)
+                .map(|(_, dtype)| dtype)
+                .unwrap_or(dtype);
+            reduced.with_column(name.clone(), dtype.clone());
         }
         Arc::new(reduced)
     };
@@ -657,6 +816,16 @@ fn scan_run(
             .collect();
         lf = lf.with_columns(nulls);
     }
+    if !read_as.is_empty() {
+        // Now the values are in hand, they become text. Every run casts, including one
+        // whose files already agree: they are all being shown as text, and a run that
+        // skipped the cast would not concatenate with the rest.
+        let texts: Vec<Expr> = read_as
+            .iter()
+            .map(|(name, _)| col(name.clone()).cast(DataType::String).alias(name.clone()))
+            .collect();
+        lf = lf.with_columns(texts);
+    }
     if first_row.is_some() {
         // Runs concatenate only if they agree on column order, and the row index
         // arrives first, so put it back at the end where the state expects it.
@@ -686,8 +855,411 @@ mod tests {
         union_file_schemas(files, SchemaOrigin::AllFooters(files.len()))
     }
 
+    /// The names alone of the columns not read from file `index`.
+    fn omitted_names(union: &DatasetSchema, index: usize) -> Vec<String> {
+        union.omitted[index]
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect()
+    }
+
     fn names(schema: &Schema) -> Vec<String> {
         schema.iter_names().map(|n| n.to_string()).collect()
+    }
+
+    /// Reading a conflicting column as text shows the values the conflict was hiding.
+    ///
+    /// Three files, all disagreeing on `n`: an integer, text, and a float. Whichever
+    /// type wins, the other two files' values are unreachable — the column is not read
+    /// from them at all, and their cells are `≠`. Read as text, every value is there,
+    /// in dataset order, spelled the way its own file stored it.
+    #[test]
+    fn a_conflicting_column_read_as_text_shows_every_file_s_values() {
+        use polars::prelude::{ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        let mut write = |name: &str, mut frame: polars::prelude::DataFrame| {
+            let path = dir.path().join(name);
+            let file = std::fs::File::create(&path).unwrap();
+            ParquetWriter::new(file).finish(&mut frame).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        };
+        // The integer file has the most rows, so `n` is read as an integer.
+        write(
+            "a.parquet",
+            df!("id" => &[0i64, 1, 2], "n" => &[10i64, 20, 30]).unwrap(),
+        );
+        write("b.parquet", df!("id" => &[3i64], "n" => &["x"]).unwrap());
+        // Boolean, not a float: a float would widen with the integer rather than
+        // conflict with it, and then there would be only one conflict to show.
+        write("c.parquet", df!("id" => &[4i64], "n" => &[true]).unwrap());
+
+        let footers: Vec<Option<FileSchema>> = vec![
+            file(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
+            file(&[("id", DataType::Int64), ("n", DataType::String)], 1),
+            file(&[("id", DataType::Int64), ("n", DataType::Boolean)], 1),
+        ];
+        let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(3));
+        assert_eq!(
+            dataset.schema.get("n"),
+            Some(&DataType::Int64),
+            "the integer file has the most rows"
+        );
+        let drift = ScanDrift::new(&paths, &dataset, &[3, 1, 1]).expect("the files disagree");
+
+        // As the dataset opens: the other two files' values are not read at all.
+        let plain = lenient_scan(&paths, dataset.schema.clone(), None, Some(&drift), &[])
+            .unwrap()
+            .collect()
+            .unwrap();
+        let n = plain.column("n").unwrap();
+        assert_eq!(
+            (0..n.len())
+                .map(|i| n.get(i).unwrap().to_string())
+                .collect::<Vec<_>>(),
+            ["10", "20", "30", "null", "null"],
+            "the text and boolean files hold a value, and it is not one this column \
+             can carry"
+        );
+
+        // Read as text: every file's value, spelled as that file stored it.
+        let as_text = [PlSmallStr::from("n")];
+        let text = lenient_scan(&paths, dataset.schema.clone(), None, Some(&drift), &as_text)
+            .unwrap()
+            .collect()
+            .unwrap();
+        assert_eq!(
+            text.column("n").unwrap().dtype(),
+            &DataType::String,
+            "the column is text now"
+        );
+        let n = text.column("n").unwrap().str().unwrap();
+        assert_eq!(
+            n.iter().collect::<Vec<_>>(),
+            [Some("10"), Some("20"), Some("30"), Some("x"), Some("true")],
+            "and holds what each file wrote, spelled as that file's own type prints"
+        );
+        let ids = text.column("id").unwrap().i64().unwrap();
+        assert_eq!(
+            ids.into_no_null_iter().collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4],
+            "in dataset order, with the rows still lined up against their ids"
+        );
+        assert_eq!(
+            text.column(DRIFT_COLUMN)
+                .unwrap()
+                .u32()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4],
+            "and each row still knows its place in the dataset"
+        );
+    }
+
+    /// A column a file simply does not have stays null when the column is read as text,
+    /// rather than becoming the word "null" or borrowing a neighbour's value.
+    #[test]
+    fn reading_as_text_leaves_a_file_without_the_column_alone() {
+        use polars::prelude::{ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        let mut write = |name: &str, mut frame: polars::prelude::DataFrame| {
+            let path = dir.path().join(name);
+            let f = std::fs::File::create(&path).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        };
+        write(
+            "a.parquet",
+            df!("id" => &[0i64, 1], "n" => &[10i64, 20]).unwrap(),
+        );
+        // No `n` at all.
+        write("b.parquet", df!("id" => &[2i64]).unwrap());
+        write("c.parquet", df!("id" => &[3i64], "n" => &["x"]).unwrap());
+
+        let footers: Vec<Option<FileSchema>> = vec![
+            file(&[("id", DataType::Int64), ("n", DataType::Int64)], 2),
+            file(&[("id", DataType::Int64)], 1),
+            file(&[("id", DataType::Int64), ("n", DataType::String)], 1),
+        ];
+        let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(3));
+        let drift = ScanDrift::new(&paths, &dataset, &[2, 1, 1]).expect("the files disagree");
+        let as_text = [PlSmallStr::from("n")];
+        let text = lenient_scan(&paths, dataset.schema.clone(), None, Some(&drift), &as_text)
+            .unwrap()
+            .collect()
+            .unwrap();
+        assert_eq!(
+            text.column("n")
+                .unwrap()
+                .str()
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>(),
+            [Some("10"), Some("20"), None, Some("x")],
+            "the file with no `n` has none to show"
+        );
+    }
+
+    /// The types the predicate offers are exactly the types Polars will cast.
+    ///
+    /// Asked of Polars rather than remembered: the list of what casts to a string is
+    /// Polars' to change, and a predicate that drifts from it either hides a column
+    /// that would have read fine or offers one whose cast fails the whole scan. Each
+    /// case carries a real value, because an all-null column casts from anything.
+    #[test]
+    fn types_the_cast_agrees_with_are_exactly_the_ones_offered() {
+        use polars::prelude::*;
+
+        let mk = |dtype: DataType| -> Column {
+            Series::new("x".into(), [1i64, 2])
+                .cast(&dtype)
+                .unwrap_or_else(|e| panic!("cannot build a {dtype:?} column: {e}"))
+                .into()
+        };
+        let mut cases: Vec<(DataType, Column)> = vec![
+            DataType::Int64,
+            DataType::Float64,
+            DataType::Boolean,
+            DataType::Date,
+            DataType::Time,
+            DataType::Datetime(TimeUnit::Microseconds, None),
+            DataType::Duration(TimeUnit::Milliseconds),
+            DataType::Decimal(10, 2),
+            DataType::List(Box::new(DataType::Int64)),
+        ]
+        .into_iter()
+        .map(|dtype| (dtype.clone(), mk(dtype)))
+        .collect();
+        cases.push((DataType::String, Series::new("x".into(), ["a", "b"]).into()));
+        // Bytes that are not text, which is most of why a column is binary.
+        cases.push((
+            DataType::Binary,
+            Series::new("x".into(), [&[0xffu8, 0xfe][..], &[0x41][..]]).into(),
+        ));
+        let plain =
+            StructChunked::from_series("x".into(), 2, [Series::new("a".into(), [1i64, 2])].iter())
+                .unwrap()
+                .into_series();
+        cases.push((plain.dtype().clone(), plain.into()));
+        // A struct prints its fields itself rather than casting them, so it manages
+        // inner types that a column of that type could not.
+        let inners: [Series; 3] = [
+            Series::new("a".into(), [1i64, 2])
+                .cast(&DataType::Duration(TimeUnit::Milliseconds))
+                .unwrap(),
+            Series::new("a".into(), [1i64, 2])
+                .cast(&DataType::List(Box::new(DataType::Int64)))
+                .unwrap(),
+            // The same bytes the bare binary case is refused for.
+            Series::new("a".into(), [&[0xffu8, 0xfe][..], &[0x41][..]]),
+        ];
+        for inner in inners {
+            let nested = StructChunked::from_series("x".into(), 2, [inner].iter())
+                .unwrap()
+                .into_series();
+            cases.push((nested.dtype().clone(), nested.into()));
+        }
+
+        for (dtype, column) in cases {
+            let cast_works = DataFrame::new(2, vec![column])
+                .unwrap()
+                .lazy()
+                .select([col("x").cast(DataType::String)])
+                .collect()
+                .is_ok();
+            assert_eq!(
+                can_read_as_text(&dtype),
+                cast_works,
+                "{dtype:?}: the predicate and the cast must agree"
+            );
+        }
+    }
+
+    /// Asking for a column the cast would refuse leaves it as it was, rather than
+    /// failing the read of every file including the ones that agreed.
+    #[test]
+    fn a_column_the_cast_refuses_is_read_as_it_was() {
+        use polars::prelude::{ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        let mut write = |name: &str, mut frame: polars::prelude::DataFrame| {
+            let path = dir.path().join(name);
+            let f = std::fs::File::create(&path).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        };
+        // Bytes that are not text in one file, text in the other.
+        write(
+            "a.parquet",
+            df!("id" => &[0i64, 1], "n" => &[&[0xffu8, 0xfe][..], &[0x41][..]]).unwrap(),
+        );
+        write("b.parquet", df!("id" => &[2i64], "n" => &["x"]).unwrap());
+
+        let footers: Vec<Option<FileSchema>> = vec![
+            file(&[("id", DataType::Int64), ("n", DataType::Binary)], 2),
+            file(&[("id", DataType::Int64), ("n", DataType::String)], 1),
+        ];
+        let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(2));
+        let drifting = dataset
+            .columns
+            .iter()
+            .find(|column| column.name == "n")
+            .unwrap();
+        assert!(
+            !drifting.can_read_as_text(),
+            "so the Notes tab never offers it"
+        );
+
+        let drift = ScanDrift::new(&paths, &dataset, &[2, 1]).expect("the files disagree");
+        let as_text = [PlSmallStr::from("n")];
+        let frame = lenient_scan(&paths, dataset.schema.clone(), None, Some(&drift), &as_text)
+            .unwrap()
+            .collect()
+            .expect("the read still succeeds, which is the point");
+        assert_eq!(
+            frame
+                .column("id")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            [0, 1, 2],
+            "every file is still read, the agreeing one included"
+        );
+        assert_ne!(
+            frame.column("n").unwrap().dtype(),
+            &DataType::String,
+            "and the column is as it was, not half-cast"
+        );
+    }
+
+    /// The type that rules a column out can be one only a *conflicting* file holds.
+    ///
+    /// The column here is read as an integer, which casts to text perfectly well. It is
+    /// the one file storing it as a list that makes the offer impossible — and that
+    /// file's cast is the one that would fail, taking the read of the other three with
+    /// it. So the answer has to come from every type any file holds, not from the type
+    /// the column is read as.
+    #[test]
+    fn a_type_only_one_file_holds_can_rule_the_column_out() {
+        use polars::prelude::{IntoLazy, ParquetWriter, col, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        let mut write = |name: &str, mut frame: polars::prelude::DataFrame| {
+            let path = dir.path().join(name);
+            let f = std::fs::File::create(&path).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+            paths.push(path.to_string_lossy().to_string());
+        };
+        write(
+            "a.parquet",
+            df!("id" => &[0i64, 1, 2], "n" => &[10i64, 20, 30]).unwrap(),
+        );
+        // `n` as a list here: grouped so the column really is List(Int64) on disk.
+        write(
+            "b.parquet",
+            df!("id" => &[3i64], "n" => &[9i64])
+                .unwrap()
+                .lazy()
+                .group_by([col("id")])
+                .agg([col("n")])
+                .collect()
+                .unwrap(),
+        );
+
+        let footers: Vec<Option<FileSchema>> = vec![
+            file(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
+            file(
+                &[
+                    ("id", DataType::Int64),
+                    ("n", DataType::List(Box::new(DataType::Int64))),
+                ],
+                1,
+            ),
+        ];
+        let dataset = union_file_schemas(&footers, SchemaOrigin::AllFooters(2));
+        assert_eq!(
+            dataset.schema.get("n"),
+            Some(&DataType::Int64),
+            "read as the integer the three rows have"
+        );
+        let drifting = dataset
+            .columns
+            .iter()
+            .find(|column| column.name == "n")
+            .unwrap();
+        assert!(
+            can_read_as_text(&drifting.dtype),
+            "an integer column casts to text on its own account"
+        );
+        assert!(
+            !drifting.can_read_as_text(),
+            "but one file holds a list, and that file's cast is the one that fails"
+        );
+
+        let drift = ScanDrift::new(&paths, &dataset, &[3, 1]).expect("the files disagree");
+        let as_text = [PlSmallStr::from("n")];
+        let frame = lenient_scan(&paths, dataset.schema.clone(), None, Some(&drift), &as_text)
+            .unwrap()
+            .collect()
+            .expect("asking anyway must not cost the read");
+        assert_eq!(
+            frame
+                .column("id")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3],
+            "every file is read, the three that agreed included"
+        );
+        assert_eq!(
+            frame.column("n").unwrap().dtype(),
+            &DataType::Int64,
+            "and the column is as it was"
+        );
+    }
+
+    /// `text_schema` spells the named columns as text and moves nothing.
+    #[test]
+    fn text_schema_respells_without_reordering() {
+        let mut schema = Schema::with_capacity(3);
+        schema.with_column("a".into(), DataType::Int64);
+        schema.with_column("n".into(), DataType::Int64);
+        schema.with_column("z".into(), DataType::Float64);
+        let schema = Arc::new(schema);
+
+        let text = text_schema(&schema, &[PlSmallStr::from("n")]);
+        assert_eq!(
+            names(&text),
+            ["a", "n", "z"],
+            "a column read differently does not move"
+        );
+        assert_eq!(text.get("n"), Some(&DataType::String));
+        assert_eq!(
+            text.get("a"),
+            Some(&DataType::Int64),
+            "nor do its neighbours change"
+        );
+        assert_eq!(text.get("z"), Some(&DataType::Float64));
+
+        assert!(
+            Arc::ptr_eq(&schema, &text_schema(&schema, &[])),
+            "asking for nothing is the schema itself"
+        );
+        assert_eq!(
+            names(&text_schema(&schema, &[PlSmallStr::from("ghost")])),
+            ["a", "n", "z"],
+            "a name the schema does not have adds nothing"
+        );
     }
 
     /// Files merely missing a column must not split the scan.
@@ -821,7 +1393,7 @@ mod tests {
         assert_eq!(union.schema.get("price"), Some(&DataType::Int64));
         assert_eq!(union.columns[0].conflicting_files, 1);
         assert_eq!(union.columns[0].conflicting_types, [DataType::String]);
-        assert_eq!(union.omitted[0], ["price"]);
+        assert_eq!(omitted_names(&union, 0), ["price"]);
         assert!(union.omitted[1].is_empty());
     }
 
@@ -833,7 +1405,7 @@ mod tests {
         ];
         let union = union(&files);
         assert_eq!(union.schema.get("price"), Some(&DataType::String));
-        assert_eq!(union.omitted[1], ["price"]);
+        assert_eq!(omitted_names(&union, 1), ["price"]);
     }
 
     #[test]
@@ -846,7 +1418,7 @@ mod tests {
         ];
         let union = union(&files);
         assert_eq!(union.schema.get("n"), Some(&DataType::Float64));
-        assert_eq!(union.omitted[2], ["n"]);
+        assert_eq!(omitted_names(&union, 2), ["n"]);
     }
 
     #[test]

@@ -3163,14 +3163,25 @@ fn test_one_unreadable_local_file_does_not_stop_the_open() {
     // computed over a file that would not parse says nothing about whether the other
     // two can be read through it.
     assert!(
-        !screen.contains("Error") && screen.contains('1') && screen.contains('3'),
+        !screen.contains("Error"),
         "and on screen, without an error: {screen}"
     );
-    assert_eq!(
-        current_rows(&app),
-        2,
-        "the two readable files' rows are there"
-    );
+    // The ids, not the partition names: `date=2024-01-01` and `date=2024-01-03` put a
+    // `1` and a `3` on screen whatever the rows say, so checking for those characters
+    // is a check on the folder's own names.
+    let state = app.data_table_state.as_ref().unwrap();
+    let ids = state
+        .lf
+        .clone()
+        .collect()
+        .expect("the two readable files are readable")
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect::<Vec<i64>>();
+    assert_eq!(ids, [1, 3], "the two readable files' rows are there");
 }
 
 // ---------------------------------------------------------------------------

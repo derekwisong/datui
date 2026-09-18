@@ -14,6 +14,7 @@
 //! Column order is the newest file's columns in its own order, then columns only older
 //! files have, in the order they first appear.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -441,16 +442,23 @@ pub fn union_sampled(
 /// it, so a folder with one file mid-write opens on an error rather than on the rows of
 /// its other files. The dataset still counts them — that is what the note is for — but
 /// the scan is over the ones that will open.
-pub fn readable_paths(paths: &[String], unreadable: &[usize]) -> Vec<String> {
+pub fn readable_paths<'a>(paths: &'a [String], unreadable: &[usize]) -> Cow<'a, [String]> {
     if unreadable.is_empty() {
-        return paths.to_vec();
+        // Which is nearly always, and a dataset can be millions of paths.
+        return Cow::Borrowed(paths);
     }
-    paths
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !unreadable.contains(index))
-        .map(|(_, path)| path.clone())
-        .collect()
+    // `unreadable` is ascending — `union_file_schemas` collects it in order and
+    // `union_sampled` remaps it through an ascending sample — so this is a search
+    // rather than a scan of it per path.
+    debug_assert!(unreadable.windows(2).all(|pair| pair[0] < pair[1]));
+    Cow::Owned(
+        paths
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| unreadable.binary_search(index).is_err())
+            .map(|(_, path)| path.clone())
+            .collect(),
+    )
 }
 
 /// Fold every file's footer into one schema. `files` is in scan order, so the last

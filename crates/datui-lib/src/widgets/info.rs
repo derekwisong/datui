@@ -27,7 +27,7 @@ use crate::export_modal::ExportFormat;
 /// One drawn line of the Notes tab.
 struct NoteRow {
     text: String,
-    /// Drawn in the panel's dim colour: the line a note rests on, not the note.
+    /// Drawn in the panel's dim color: the line a note rests on, not the note.
     dim: bool,
 }
 
@@ -816,13 +816,18 @@ impl<'a> DataTableInfo<'a> {
         let heights: Vec<usize> = blocks.iter().map(Vec::len).collect();
         let dim = Style::default().fg(self.border_color);
 
-        // The last line counts what is out of view, so the notes get the rest.
-        let total = heights.iter().sum::<usize>() + heights.len().saturating_sub(1);
-        let show = if total > area.height as usize {
-            area.height.saturating_sub(1).max(1) as usize
-        } else {
-            area.height as usize
-        };
+        // Try the whole panel first. Only when that leaves notes out is a row needed
+        // to count them, and only then do the notes have one row fewer — deciding it
+        // in advance spent a row that a note which exactly fitted could have used.
+        let full = area.height as usize;
+        let (first, last) = notes_window(&heights, selected, self.modal.notes_scroll_offset, full);
+        let all_shown = first == 0 && last == heights.len();
+        // A row for the count of what is hidden, but only when something is hidden and
+        // the note can spare it. A note that exactly fills the panel keeps its last
+        // row: saying "no room to show one" about a note that fits is worse than not
+        // saying how many are behind it.
+        let reserve = !all_shown && heights[selected] < full;
+        let show = if reserve { full - 1 } else { full };
         if heights[selected] > show {
             // The note the cursor is on cannot show its summary and the line it rests
             // on. Drawing the summary alone would be a claim from nowhere, so say what
@@ -841,7 +846,11 @@ impl<'a> DataTableInfo<'a> {
             .render(Rect { height: 1, ..area }, buf);
             return;
         }
-        let (first, last) = notes_window(&heights, selected, self.modal.notes_scroll_offset, show);
+        let (first, last) = if reserve {
+            notes_window(&heights, selected, self.modal.notes_scroll_offset, show)
+        } else {
+            (first, last)
+        };
         self.modal.notes_scroll_offset = first;
 
         let mut y = area.y;
@@ -869,7 +878,7 @@ impl<'a> DataTableInfo<'a> {
         }
 
         let (above, below) = (first, notes.len() - last);
-        if above > 0 || below > 0 {
+        if reserve && (above > 0 || below > 0) {
             let hidden = match (above, below) {
                 (0, n) => format!("{} below", group_chrome(n)),
                 (n, 0) => format!("{} above", group_chrome(n)),
@@ -1155,6 +1164,20 @@ mod tests {
         }
     }
 
+    /// A note that exactly fills the panel fits, and the panel must not spend the row
+    /// it needs on a count of what it is hiding.
+    ///
+    /// Deciding the count's row in advance is what made datui say "no room to show
+    /// one" about a note that fitted: the panel was six rows, the note was six rows,
+    /// and five of them were left blank under the claim.
+    #[test]
+    fn a_note_that_exactly_fills_the_panel_is_drawn() {
+        // The whole panel holds the first note and nothing else.
+        assert_eq!(notes_window(&[6, 2], 0, 0, 6), (0, 1));
+        // So the panel is not too short for it, and the count goes on its own row.
+        assert_eq!(notes_window(&[6, 2], 0, 0, 5), (0, 1));
+    }
+
     /// A note taller than the whole panel is still drawn, because leaving it out would
     /// put it out of reach.
     #[test]
@@ -1163,7 +1186,7 @@ mod tests {
         assert_eq!((first, last), (1, 2), "just the note that does not fit");
     }
 
-    /// The panel is the only thing that decides how many notes fit, and the cursor can    /// The panel is the only thing that decides how many notes fit, and the cursor can
+    /// The panel is the only thing that decides how many notes fit, and the cursor can
     /// always reach the last of them.
     #[test]
     fn the_notes_cursor_reaches_every_note() {

@@ -122,7 +122,7 @@ impl Controls {
     }
 
     /// Give the Info key a quiet accent: datui has noticed something about the data
-    /// and the panel has not been opened since. Never a count, never a colour that
+    /// and the panel has not been opened since. Never a count, never a color that
     /// reads as a warning — a note is an observation, not a fault.
     pub fn with_notes_pending(mut self, pending: bool) -> Self {
         self.notes_pending = pending;
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(
             text(&plain),
             text(&accented),
-            "the accent says nothing extra; it is only a colour"
+            "the accent says nothing extra; it is only a color"
         );
         assert!(
             text(&plain).contains("Info"),

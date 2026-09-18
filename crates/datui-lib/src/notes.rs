@@ -89,11 +89,19 @@ fn distinct_names(types: &[&DataType]) -> Vec<String> {
     }
     // Polars prints every `Enum` as `Enum([...])` whatever its categories, so even the
     // full form can collide. Numbering them says less than naming them, but "the first
-    // and the second" is at least two things rather than one said twice.
+    // and the second" is at least two things rather than one said twice. Only the ones
+    // that actually collide are numbered; a name that was already unique keeps it.
+    let mut seen: Vec<&String> = Vec::new();
     spelled
         .iter()
-        .enumerate()
-        .map(|(i, name)| format!("{name} #{}", i + 1))
+        .map(|name| {
+            if spelled.iter().filter(|other| *other == name).count() > 1 {
+                seen.push(name);
+                format!("{name} #{}", seen.iter().filter(|s| **s == name).count())
+            } else {
+                name.clone()
+            }
+        })
         .collect()
 }
 
@@ -189,11 +197,14 @@ fn widening_note(column: &ColumnDrift, scope: &str) -> Option<Note> {
     if !column.widened {
         return None;
     }
-    let names = distinct_names(&[&column.dtype]);
     Some(Note {
         summary: format!(
             "{} is stored as more than one type; read as {}",
-            column.name, names[0]
+            column.name,
+            // Which unit or precision won is the whole content of this note, and the
+            // table's word for the type does not carry it: every `Datetime` is
+            // `datetime` and every `Decimal` is `decimal`.
+            column.dtype
         ),
         scope: scope.to_string(),
     })
@@ -483,6 +494,23 @@ mod tests {
                     "s is Struct({'a': String}) in 1 file; \
                      read as Struct({'a': Int64}) and not read there",
                 ],
+            },
+            Shape {
+                what: "widened between two datetime units",
+                files: vec![
+                    file(
+                        &[("t", DataType::Datetime(TimeUnit::Milliseconds, None))],
+                        50,
+                    ),
+                    file(
+                        &[("t", DataType::Datetime(TimeUnit::Nanoseconds, None))],
+                        50,
+                    ),
+                ],
+                sampled: None,
+                // Which unit won is the whole content of the note, and `datetime`
+                // alone would not carry it.
+                expected: vec!["t is stored as more than one type; read as datetime[ns]"],
             },
             Shape {
                 what: "absent, conflicting and widened",

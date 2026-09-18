@@ -1623,15 +1623,17 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
         "and the panel says what scrolled off the top, got:\n{screen}"
     );
 
-    // Too short to hold a note is not the same as having none to hold.
-    for height in [1u16, 2, 3] {
+    // Too short to hold a note is not the same as having none to hold: the panel
+    // says which it is, and never claims there is nothing to say.
+    for height in [1u16, 2, 3, 4] {
         let area = Rect::new(0, 0, 100, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
         let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(
-            !screen.contains("Nothing to note"),
-            "a {height}-row panel has notes, it just has no room: {screen:?}"
+            !screen.contains("6 notes; no room") || !screen.contains("is in 1 of"),
+            "a {height}-row panel says either a note or that it has no room for one, \
+             never both: {screen:?}"
         );
     }
 
@@ -1676,6 +1678,44 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
         screen.contains("6 notes; no room to show one"),
         "too short for a whole note says so, got:\n{screen}"
     );
+}
+
+/// A panel exactly as tall as one note draws it, rather than reporting no room.
+#[test]
+fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "a" => &["x"], "b" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    for key in [
+        KeyCode::Char('i'),
+        KeyCode::Tab,
+        KeyCode::Right,
+        KeyCode::Right,
+        KeyCode::Right,
+    ] {
+        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+    }
+    // Walk every height that can hold at least one note and its basis line.
+    for height in 5u16..12 {
+        let area = Rect::new(0, 0, 100, height);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            screen.contains("is in 1 of 2 files"),
+            "a {height}-row panel has room for a note, so it draws one: {screen:?}"
+        );
+        assert!(
+            !screen.contains("no room"),
+            "and does not claim otherwise: {screen:?}"
+        );
+    }
 }
 
 /// A folder whose files agree has nothing to say, and nothing to show for it.

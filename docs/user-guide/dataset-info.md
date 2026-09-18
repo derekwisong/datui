@@ -28,14 +28,16 @@ toggles.
 
 ## Notes
 
-A folder of Parquet files rarely holds files that agree. Where they do not,
-datui says so:
+A folder of Parquet files rarely holds files that agree, and rarely holds only
+files with something in them. Where datui notices either, it says so:
 
 | Note | From |
 |---|---|
 | A column is not in every file | The footers |
 | Files disagree on a column's type, beyond what widening settles | The footers |
 | A column is stored as more than one type the scan can read into one | The footers |
+| A column is read as text, so it compares as text | The footers |
+| A file holds no rows at all | The footers |
 | A file's footer could not be read, so it was left out | The footers |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
 

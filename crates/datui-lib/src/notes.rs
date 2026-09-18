@@ -135,6 +135,8 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
         notes.push(text_note(column, &scope));
     }
 
+    notes.extend(empty_files_note(dataset, &scope));
+
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
             summary: format!(
@@ -197,6 +199,40 @@ pub fn left_out_note(
         scope: format!("in {}", dataset.origin),
         read_as_text: None,
     }
+}
+
+/// Files that hold no rows at all.
+///
+/// A partition written for a day nothing happened, or a job that produced a header and
+/// no data. Worth saying because the dataset then has fewer days of data than it has
+/// folders, and a reader counting folders would get the wrong answer — but it is not a
+/// fault, and a pipeline that writes a file per day will have some.
+///
+/// Counts without dividing: how many of the files datui read hold nothing is a fact
+/// about those files, and the scope line says which files those were.
+///
+/// The one counting note that says "file" even where the schema came from a sample,
+/// rather than the "footer" [`how_many`] would give it. A footer does not hold rows —
+/// it records how many the file holds — so the substitution that keeps the other notes
+/// honest makes this one a category slip. It costs nothing here: there is no ratio to
+/// overstate, and the scope line already says only a sample was read, so "1 file holds
+/// no rows · in 20,000 of 500,000 footers (sample)" claims nothing about the other
+/// 480,000.
+fn empty_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
+    let empty = dataset.empty_files;
+    if empty == 0 {
+        return None;
+    }
+    let (count, verb) = if empty == 1 {
+        ("1 file".to_string(), "holds")
+    } else {
+        (format!("{} files", group_chrome(empty)), "hold")
+    };
+    Some(Note {
+        summary: format!("{count} {verb} no rows"),
+        scope: scope.to_string(),
+        read_as_text: None,
+    })
 }
 
 /// A column being read as text from every file, because it was asked for that way.
@@ -355,6 +391,50 @@ mod tests {
         };
 
         let cases = vec![
+            // --- files that hold nothing at all ---
+            Shape {
+                what: "one empty file",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64)], 5),
+                ],
+                sampled: None,
+                expected: vec!["1 file holds no rows"],
+            },
+            Shape {
+                what: "several empty files",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64)], 5),
+                ],
+                sampled: None,
+                expected: vec!["2 files hold no rows"],
+            },
+            Shape {
+                what: "an empty file among sampled footers",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64)], 5),
+                ],
+                sampled: Some(900),
+                // "file", not "footer": a footer does not hold rows. The scope line
+                // is what says datui looked at two of nine hundred, and the note
+                // claims nothing about the other 898.
+                expected: vec!["1 file holds no rows"],
+            },
+            Shape {
+                what: "an empty file and a column only the other has",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 0),
+                    file(&[("id", DataType::Int64), ("x", DataType::String)], 5),
+                ],
+                sampled: None,
+                expected: vec![
+                    "x is in 1 of 2 files; absent from the rest, not null",
+                    "1 file holds no rows",
+                ],
+            },
             // --- a column that only some files have: the one note with a ratio ---
             Shape {
                 what: "absent",

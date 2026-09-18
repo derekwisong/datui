@@ -3643,7 +3643,7 @@ impl DataTableState {
     ///
     /// Draws from the shared counter rather than incrementing, so a mutation here can
     /// never land on the value a later dataset is about to be seeded with.
-    pub(crate) fn invalidate_num_rows(&mut self) {
+    fn invalidate_num_rows(&mut self) {
         self.num_rows_valid = false;
         self.len_generation = next_len_generation();
     }
@@ -4105,6 +4105,12 @@ impl DataTableState {
             notes.push(note);
         }
         (lf, notes)
+    }
+
+    /// Whether the notes have been offered. Exact, where `!notes_unseen()` would also
+    /// be true of a dataset that has nothing to say.
+    pub fn notes_seen(&self) -> bool {
+        self.notes_seen
     }
 
     /// The Info panel has been opened; the quiet accent has done its job.

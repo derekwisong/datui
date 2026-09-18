@@ -1125,6 +1125,97 @@ mod template_rollback_tests {
         assert_eq!(left_out(&app), 1, "sorting again says it once, not twice");
     }
 
+    /// Drilling into a group and back out puts the frame back; the note about what the
+    /// frame leaves out has to come back with it.
+    ///
+    /// Reachable without a group-by: `is_grouped` is a dtype question — does any column
+    /// hold a list — so a dataset written with a native List column is drillable as it
+    /// stands, drift and all.
+    #[test]
+    fn drilling_back_up_puts_the_views_note_back_with_its_frame() {
+        use polars::prelude::{IntoLazy, ParquetWriter, df};
+        let dir = tempfile::tempdir().unwrap();
+        let write = |sub: &str, frame: polars::prelude::DataFrame| {
+            // Grouped into a List column, which is what makes the dataset drillable.
+            let mut frame = frame
+                .lazy()
+                .group_by([col("id"), col("n")])
+                .agg([col("v")])
+                .sort(["id"], Default::default())
+                .collect()
+                .unwrap();
+            let d = dir.path().join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        };
+        write(
+            "date=2024-01-01",
+            df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2], "v" => &[10i64, 11, 12]).unwrap(),
+        );
+        // `n` as text here, so it is not read from this file.
+        write(
+            "date=2024-01-02",
+            df!("id" => &[3i64, 4], "n" => &["x", "y"], "v" => &[13i64, 14]).unwrap(),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        app.input_mode = InputMode::Normal;
+        let opts = OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        };
+        if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+            let _ = tx.send(next);
+        }
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
+            a.data_table_state.is_some() && !a.is_busy()
+        });
+
+        let state = app.data_table_state.as_mut().unwrap();
+        state.visible_rows = 10;
+        assert!(state.is_grouped(), "a native List column, with no group-by");
+        assert!(state.drifts(), "and the files disagree on `n`");
+
+        let left_out = |s: &crate::widgets::datatable::DataTableState| {
+            s.notes()
+                .iter()
+                .filter(|note| note.summary.contains("left out"))
+                .count()
+        };
+
+        state.sort(vec!["n".to_string()], true);
+        assert_eq!(
+            state.lf.clone().collect().unwrap().height(),
+            3,
+            "the sort leaves the two rows of the text file out"
+        );
+        assert_eq!(left_out(state), 1, "and says so");
+
+        state.table_state.select(Some(0));
+        state.drill_down_into_group(0).unwrap();
+        assert!(state.is_drilled_down());
+        assert_eq!(
+            left_out(state),
+            0,
+            "a group's rows stand for no one file, so nothing there is left out"
+        );
+
+        state.drill_up().unwrap();
+        assert_eq!(
+            state.lf.clone().collect().unwrap().height(),
+            3,
+            "the frame that comes back still leaves the two out"
+        );
+        assert_eq!(
+            left_out(state),
+            1,
+            "so the note is back with it: {:#?}",
+            state.notes()
+        );
+    }
+
     /// A rollback that stops half way leaves a state that is neither the template's nor
     /// the user's, and the note then describes the half that lost.
     ///
@@ -11429,7 +11520,7 @@ impl App {
                 drift: state.drifts(),
                 drift_groups: state.drift_groups(),
                 notes: state.dataset_notes().to_vec(),
-                notes_seen: !state.notes_unseen(),
+                notes_seen: state.notes_seen(),
             })
     }
 
@@ -11796,9 +11887,12 @@ impl App {
             // Restore the exact saved lf and schema (in case filter/sort modified them)
             state.lf = saved_lf;
             state.schema = saved_schema;
-            // The count belongs to the frame, and the frame has just been swapped for
-            // one the rebuild above never measured.
-            state.invalidate_num_rows();
+            // The count is left as the rebuild above measured it. `base_lf` follows
+            // every pipeline root, so what `sort` rebuilt from it is the same frame
+            // this one is, and invalidating here only threw the footer count away and
+            // made the next `collect` count a remote dataset over again, on this
+            // thread, for a number it already had.
+            //
             // Any error those steps raised was about a frame that is no longer here.
             state.error = None;
             if saved.notes_seen {

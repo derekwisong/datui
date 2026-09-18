@@ -660,11 +660,15 @@ mod tests {
                 .map(|column| column.name.as_str())
                 .collect();
             for name in conflicting {
+                // The conflict note itself, not merely some note naming the column:
+                // an absence or widening note about the same column would satisfy a
+                // looser test while the one that matters had been deleted.
                 assert!(
-                    from_dataset(&dataset)
-                        .iter()
-                        .any(|note| note.summary.starts_with(&format!("{name} is "))),
-                    "{}: {name} conflicts, so it has a note of its own",
+                    from_dataset(&dataset).iter().any(|note| {
+                        note.summary.starts_with(&format!("{name} is "))
+                            && note.summary.ends_with("and not read there")
+                    }),
+                    "{}: {name} conflicts, so it says so on its own account",
                     shape.what
                 );
             }

@@ -18,7 +18,8 @@ Formats:
   Avro:    Avro row format
 
 Source file:
-  Only offered for a folder of Parquet files that disagree. Adds a column
+  Only offered for a folder of Parquet files that disagree, local or in
+  the cloud. Adds a column
   naming the file each row came from, so a cell that is absent rather than
   null can still be told apart once the data has left datui. No format
   writes "absent", so without it both are written as null. A dataset that

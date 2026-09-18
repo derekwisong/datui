@@ -1812,7 +1812,7 @@ fn test_naming_source_files_never_overwrites_a_column_of_that_name() {
 
     assert_eq!(
         lines[0], "date,id,source_file,extra,source_file_1",
-        "the dataset keeps its own column and datui's goes beside it"
+        "the dataset keeps its own column and datui's goes on the end under another name"
     );
     assert!(
         lines[1].contains("mine-A"),
@@ -1861,6 +1861,8 @@ fn test_asking_to_name_files_on_a_query_result_leaks_nothing() {
 /// source-file checkbox under the format's own options rather than adrift at the foot.
 #[test]
 fn test_the_export_options_panel_reads_as_one_for_every_format() {
+    use datui::export_modal::ExportFormat;
+
     let dir = tempfile::tempdir().unwrap();
     write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
     write_parquet(
@@ -1883,8 +1885,23 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
 
     let area = Rect::new(0, 0, 120, 30);
     let mut seen = Vec::new();
-    for step in 0..6 {
-        seen.push(app.export_modal.selected_format);
+    let mut wrong = Vec::new();
+    for _ in 0..ExportFormat::ALL.len() {
+        let format = app.export_modal.selected_format;
+        seen.push(format);
+        // The last row each format draws of its own. The checkbox goes directly under
+        // it, so asking for this row by name pins the row count in
+        // `render_format_options`: count too low and the format's last row is
+        // truncated away, too high and a blank row opens up. Either way this row is
+        // no longer the one above the checkbox.
+        let last_of_its_own = match format {
+            // Both end on the second compression row.
+            ExportFormat::Csv | ExportFormat::Json | ExportFormat::Ndjson => "XZ",
+            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
+                "No options specific to"
+            }
+        };
+
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
         let rows: Vec<String> = (0..area.height)
@@ -1894,27 +1911,29 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
                     .collect::<String>()
             })
             .collect();
-        let checkbox = rows
-            .iter()
-            .position(|r| r.contains("Source file:"))
-            .unwrap_or_else(|| panic!("step {step}: no Source file row:\n{}", rows.join("\n")));
-        // Something of the format's own must be drawn above it, not blank space.
-        let above = &rows[checkbox - 1];
-        assert!(
-            !above
-                .trim_matches(|c: char| c == '│' || c.is_whitespace())
-                .is_empty(),
-            "step {step}: the checkbox is adrift below a blank row:\n{}",
-            rows.join("\n")
-        );
+        match rows.iter().position(|r| r.contains("Source file:")) {
+            None => wrong.push(format!("{format:?}: no Source file row at all")),
+            Some(checkbox) if !rows[checkbox - 1].contains(last_of_its_own) => wrong.push(format!(
+                "{format:?}: the row above the checkbox should be the one holding \
+                 {last_of_its_own:?}, and is {:?}",
+                rows[checkbox - 1].trim_end()
+            )),
+            Some(_) => {}
+        }
         // Move to the next format.
         app.event(&AppEvent::Key(KeyEvent::new(
             KeyCode::Down,
             KeyModifiers::NONE,
         )));
     }
-    seen.dedup();
-    assert_eq!(seen.len(), 6, "every format was actually visited: {seen:?}");
+    // Collected rather than asserted in the loop: the formats fail in families, and
+    // one report naming every bad format beats six runs that each name the first.
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    assert_eq!(
+        seen,
+        ExportFormat::ALL.to_vec(),
+        "the walk must visit every format once, in order"
+    );
 }
 
 /// A column only a middle file has used to vanish: the schema was one file's, and that

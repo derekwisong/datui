@@ -181,7 +181,10 @@ fn render_format_options(
         let used = match modal.selected_format {
             // Rows each format's own options draw. Pinned by
             // `test_the_export_options_panel_reads_as_one_for_every_format`, which
-            // fails if a format's options change height and this does not.
+            // renders every format and requires that format's own last row — the
+            // second compression row, or the "No options specific to" line — to be
+            // the row directly above the checkbox. Too low a count truncates that
+            // row away; too high a count opens a blank one.
             ExportFormat::Csv => 5,
             ExportFormat::Json | ExportFormat::Ndjson => 3,
             ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => 1,

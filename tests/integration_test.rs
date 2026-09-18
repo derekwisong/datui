@@ -1176,6 +1176,164 @@ fn test_absent_cells_still_read_as_absent_after_a_sort() {
     assert!(text.contains(g.null), "and the real nulls are still nulls");
 }
 
+/// The accent reaches the bar from the dataset, and the config can turn it off.
+///
+/// `controls.rs` proves the accent is only a colour on the Info chip, but it is handed
+/// a flag by hand; the app-side tests read `notes_unseen()`, an accessor. Nothing
+/// joined the two, so an accent that never reached the bar — or one that ignored the
+/// config — passed both.
+#[test]
+fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let area = Rect::new(0, 0, 120, 24);
+    let bar_colours = |app: &mut App| -> Vec<Option<ratatui::style::Color>> {
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..area.width)
+            .map(|x| buf[(x, area.height - 1)].fg)
+            .map(Some)
+            .collect()
+    };
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let _ = painted(&mut app, &rx, &tx, area);
+    assert!(
+        app.data_table_state.as_ref().unwrap().notes_unseen(),
+        "the folders disagree, so there is a note and it has not been read"
+    );
+    let accented = bar_colours(&mut app);
+
+    // Opening the panel clears it, and the bar goes back to its ordinary colours.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    let _ = painted(&mut app, &rx, &tx, area);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    let plain = bar_colours(&mut app);
+    let accented_cells: Vec<usize> = (0..plain.len())
+        .filter(|x| accented[*x] != plain[*x])
+        .collect();
+    assert!(
+        !accented_cells.is_empty(),
+        "the accent was on the bar, and reading the notes took it off"
+    );
+
+    // And a user who does not want it never sees it, however many notes there are.
+    let mut config = datui::config::AppConfig::default();
+    config.display.notes_accent = false;
+    let (tx2, rx2) = mpsc::channel();
+    let mut off = App::new_with_config(
+        tx2.clone(),
+        common::test_runtime(),
+        datui::config::Theme::from_config(&datui::config::AppConfig::default().theme)
+            .expect("the default theme"),
+        config,
+    );
+    pump_open_until_loaded(
+        &mut off,
+        &rx2,
+        vec![dir.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+    let _ = painted(&mut off, &rx2, &tx2, area);
+    assert!(
+        off.data_table_state.as_ref().unwrap().notes_unseen(),
+        "there is still a note to accent"
+    );
+    let unaccented = bar_colours(&mut off);
+    let still_accented: Vec<usize> = accented_cells
+        .iter()
+        .copied()
+        .filter(|x| unaccented[*x] != plain[*x])
+        .collect();
+    assert!(
+        still_accented.is_empty(),
+        "and the cells that carry the accent are the ordinary colour at {still_accented:?}"
+    );
+}
+
+/// All three kinds of empty still read right after a filter.
+///
+/// The sort case above is the other half of the same criterion. A filter is the one
+/// that rebuilds the frame rather than reordering it, and it is the one no test looked
+/// at on screen: the row → file mapping has to survive a predicate, not just a reorder.
+/// The conflicting column is here rather than in the sort fixture because a filter that
+/// does not name it must keep its rows — leaving them out is for a filter that does.
+#[test]
+fn test_absent_null_and_conflicting_cells_still_differ_after_a_filter() {
+    let g = datui::glyphs::get();
+    let dir = tempfile::tempdir().unwrap();
+    // Three rows against two, so the majority type for `price` is the number and the
+    // text file's rows are the ones left unread.
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!(
+            "id" => &[1i64, 4, 5],
+            "note" => &[None::<&str>, None, None],
+            "price" => &[10i64, 40, 50],
+        )
+        .unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!(
+            "id" => &[2i64, 3],
+            "note" => &["hi", "yo"],
+            "extra" => &["x", "y"],
+            "price" => &["cheap", "dear"],
+        )
+        .unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 120, 20);
+    let before = painted(&mut app, &rx, &tx, area);
+    assert!(
+        before.contains(g.absent) && before.contains(g.null) && before.contains(g.conflict),
+        "all three before the filter: {before}"
+    );
+
+    // On `id`, which both files hold as the same type — so nothing is left out for
+    // being unreadable, and rows from both files survive.
+    let state = app.data_table_state.as_mut().unwrap();
+    state.filter(vec![filter_stmt(
+        "id",
+        datui::filter_modal::FilterOperator::GtEq,
+        "2",
+    )]);
+    assert!(state.error.is_none(), "the filter itself must succeed");
+
+    let after = painted(&mut app, &rx, &tx, area);
+    assert!(
+        after.contains(g.absent),
+        "the rows of the file without `extra` still say absent: {after}"
+    );
+    assert!(
+        after.contains(g.null),
+        "and the real nulls are still nulls: {after}"
+    );
+    assert!(
+        after.contains(g.conflict),
+        "and the file that holds `price` as text still says so: {after}"
+    );
+}
+
 /// The very first frame must mark the absent cells too.
 ///
 /// Every other test here paints through `painted`, which renders up to sixty times, so
@@ -3014,11 +3172,31 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
         "and the second from the one that has it, holding a real null: {}",
         lines[2]
     );
+    // Both write null — an absent cell and a real null are the same thing to a CSV, and
+    // the source file is what tells them apart once the data has left. Asserting the
+    // whole line rather than its end, because `extra` being empty is the half of this
+    // the doc comment claims and nothing checked.
+    assert!(
+        lines[1].starts_with("2024-01-01,1,,"),
+        "the absent cell is written as null: {}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with("2024-01-02,2,,"),
+        "and so is the real one: {}",
+        lines[2]
+    );
 
     // Off by default, and then the hidden index must not leak in its place.
     let plain = dir.path().join("plain.csv");
     let csv = export_csv(&mut app, &rx, &tx, &plain, false);
-    assert_eq!(csv.lines().next().unwrap(), "date,id,extra");
+    let plain_lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(plain_lines[0], "date,id,extra");
+    assert_eq!(
+        &plain_lines[1..],
+        ["2024-01-01,1,", "2024-01-02,2,"],
+        "and without it both are still null, and nothing else has appeared"
+    );
 }
 
 /// A dataset may already have a column called `source_file` — a folder of per-file

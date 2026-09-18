@@ -986,6 +986,36 @@ mod tests {
         let names: Vec<&str> = dataset.schema.iter_names().map(|n| n.as_str()).collect();
         assert_eq!(names, ["id"]);
         assert_eq!(listed.len(), 3);
+
+        // And the rows of the other two can be read, which is the whole of the claim.
+        // Naming the file in `unreadable` is not leaving it out: the scan is built from
+        // a list of paths, and one that will not parse fails the read for all of them.
+        let paths: Vec<String> = files
+            .iter()
+            .map(|(key, _)| dir.path().join(key).to_string_lossy().into_owned())
+            .collect();
+        let readable = crate::schema_union::readable_paths(&paths, &dataset.unreadable);
+        assert_eq!(
+            readable.len(),
+            2,
+            "the one that will not parse is not scanned"
+        );
+        let rows =
+            crate::schema_union::lenient_scan(&readable, dataset.schema.clone(), None, None, &[])
+                .and_then(|lf| lf.collect());
+        assert_eq!(
+            rows.map(|df| df.height()).ok(),
+            Some(2),
+            "the two readable files' rows"
+        );
+        // The same scan over every listed path is the failure this avoids.
+        let all =
+            crate::schema_union::lenient_scan(&paths, dataset.schema.clone(), None, None, &[])
+                .and_then(|lf| lf.collect());
+        assert!(
+            all.is_err(),
+            "left in, it takes the readable files down with it"
+        );
     }
 
     #[test]

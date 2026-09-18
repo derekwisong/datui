@@ -434,6 +434,25 @@ pub fn union_sampled(
     union
 }
 
+/// The paths whose footers were read, out of the paths given.
+///
+/// A footer datui could not read is a file Polars cannot read either, and left in the
+/// scan it does not merely go unread: the first page takes the whole dataset down with
+/// it, so a folder with one file mid-write opens on an error rather than on the rows of
+/// its other files. The dataset still counts them — that is what the note is for — but
+/// the scan is over the ones that will open.
+pub fn readable_paths(paths: &[String], unreadable: &[usize]) -> Vec<String> {
+    if unreadable.is_empty() {
+        return paths.to_vec();
+    }
+    paths
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !unreadable.contains(index))
+        .map(|(_, path)| path.clone())
+        .collect()
+}
+
 /// Fold every file's footer into one schema. `files` is in scan order, so the last
 /// readable entry is the newest file; `None` is a file whose footer could not be read.
 pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) -> DatasetSchema {

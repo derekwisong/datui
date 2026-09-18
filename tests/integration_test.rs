@@ -3152,12 +3152,25 @@ fn test_one_unreadable_local_file_does_not_stop_the_open() {
     std::fs::write(bad.join("data.parquet"), b"not a parquet file").unwrap();
     write_parquet(dir.path(), "date=2024-01-03", df!("id" => &[3i64]).unwrap());
 
-    let app = open_local_dataset(dir.path());
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let screen = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
     let state = app.data_table_state.as_ref().unwrap();
     let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
     assert_eq!(names, ["date", "id"]);
     let dataset = state.dataset_schema().expect("read from the footers");
     assert_eq!(dataset.unreadable, [1], "named, and left out of the scan");
+    // The dataset opening is the claim, so the rows are what has to be there. A schema
+    // computed over a file that would not parse says nothing about whether the other
+    // two can be read through it.
+    assert!(
+        !screen.contains("Error") && screen.contains('1') && screen.contains('3'),
+        "and on screen, without an error: {screen}"
+    );
+    assert_eq!(
+        current_rows(&app),
+        2,
+        "the two readable files' rows are there"
+    );
 }
 
 // ---------------------------------------------------------------------------

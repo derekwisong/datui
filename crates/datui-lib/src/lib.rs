@@ -5146,8 +5146,14 @@ impl App {
         };
         let drift = crate::schema_union::ScanDrift::new(&paths, &dataset, &file_rows);
         let schema = dataset.schema.clone();
+        // Over the files that will open. `drift` is keyed by path, so a scan of fewer
+        // of them still knows what each one holds.
+        let readable = crate::schema_union::readable_paths(&paths, &dataset.unreadable);
+        if readable.is_empty() {
+            return None;
+        }
         let lf =
-            crate::schema_union::lenient_scan(&paths, schema.clone(), None, drift.as_ref(), &[])
+            crate::schema_union::lenient_scan(&readable, schema.clone(), None, drift.as_ref(), &[])
                 .ok()?;
         let lf = Self::hoist_partition_columns(lf, &schema, &partition_columns, drift.is_some());
         let mut state =
@@ -5322,12 +5328,21 @@ impl App {
                 .map_err(|e| e.to_string())
             })
         };
-        let lf = scan(&urls, &[]).ok()?;
+        // Over the objects that will open. One whose footer would not read is one
+        // Polars cannot read either, and left in the scan it takes the whole prefix
+        // down with it on the first page. Where any were left out the footers are not
+        // all in, so the row groups below are empty and no read is windowed — the list
+        // here and the offsets cannot disagree.
+        let readable = crate::schema_union::readable_paths(&urls, &dataset.unreadable);
+        if readable.is_empty() {
+            return None;
+        }
+        let lf = scan(&readable, &[]).ok()?;
         let mut state =
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
         state.set_remote_files(crate::widgets::datatable::RemoteFiles {
-            urls: Arc::new(urls.clone()),
+            urls: Arc::new(readable.clone()),
             scan,
             count,
             offsets: None,

@@ -287,6 +287,41 @@ fn next_len_generation() -> u64 {
 
 /// Options for sorting by `n` columns. Nulls go last in both directions, as in pandas,
 /// DuckDB and spreadsheets; Polars would otherwise put them first either way.
+/// The `[start, end)` row ranges of the files flagged in `conflicts`, merged where
+/// they touch.
+///
+/// `starts[i]` is where file `i`'s rows begin in the dataset and `total` is how many
+/// rows the dataset has, so the last file's end is known without a start after it.
+///
+/// Runs, not files: a vendor who wrote a column as text for a month wrote a
+/// contiguous stretch of files, and the predicate built from this is one term per run
+/// however many files the stretch holds. Merging changes no row's fate — three
+/// touching ranges keep out exactly what one joined range does — which is why it is
+/// pinned here, where the runs themselves can be counted, rather than by a test of
+/// what ends up on screen.
+///
+/// Post-conditions, for any `starts` ascending and `conflicts` of the same length:
+/// - a row is in some run exactly when the file it belongs to is flagged;
+/// - the runs are ascending and no two of them touch or overlap;
+/// - a file of no rows produces no run of its own, and never splits one.
+fn conflicting_row_runs(starts: &[usize], total: usize, conflicts: &[bool]) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for (file, start) in starts.iter().copied().enumerate() {
+        if !conflicts.get(file).copied().unwrap_or(false) {
+            continue;
+        }
+        let end = starts.get(file + 1).copied().unwrap_or(total);
+        match runs.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => runs.push((start, end)),
+        }
+    }
+    // A file of no rows leaves an empty range, which keeps no row out and would make
+    // the "no two touch" post-condition depend on which files happen to be empty.
+    runs.retain(|(start, end)| start < end);
+    runs
+}
+
 fn sort_options(n: usize, descending: bool) -> SortMultipleOptions {
     SortMultipleOptions::default()
         .with_order_descending_multi(vec![descending; n])
@@ -3931,6 +3966,15 @@ impl DataTableState {
         df
     }
 
+    /// What datui noticed about the dataset itself, as its footers were read.
+    ///
+    /// Separate from [`Self::notes`] because this is the half that belongs to the
+    /// data: a snapshot taken to roll a template back has to put back these and not
+    /// the view's, which describe a filter and sort that the rollback is undoing.
+    pub fn dataset_notes(&self) -> &[crate::notes::Note] {
+        &self.notes
+    }
+
     /// What datui noticed: about the dataset when it opened, then about the view the
     /// filter and sort have made of it. Empty when there is nothing to say.
     pub fn notes(&self) -> Vec<crate::notes::Note> {
@@ -3947,38 +3991,21 @@ impl DataTableState {
     }
 
     /// The rows a filter or sort on `column` has to leave out: every row of every file
-    /// that holds the column in a type it is not read in, as `[start, end)` runs of
-    /// places in the dataset.
-    ///
-    /// Runs, not files. A vendor who changed a column's type for a month wrote a
-    /// contiguous stretch of files, so the predicate below is one term however many
-    /// files that stretch holds.
+    /// that holds the column in a type it is not read in.
     fn unread_row_runs(&self, column: &str) -> Vec<(usize, usize)> {
         let Some(dataset) = self.dataset_schema.as_ref() else {
             return Vec::new();
         };
-        let mut runs: Vec<(usize, usize)> = Vec::new();
-        for (file, start) in self.drift_file_starts.iter().copied().enumerate() {
-            let unread = dataset
-                .file_group
-                .get(file)
-                .and_then(|group| dataset.groups.get(*group as usize))
-                .is_some_and(|group| group.unread.iter().any(|name| name == column));
-            if !unread {
-                continue;
-            }
-            // The last file runs to the end of the dataset, which the footers counted.
-            let end = self
-                .drift_file_starts
-                .get(file + 1)
-                .copied()
-                .unwrap_or(self.drift_dataset_rows);
-            match runs.last_mut() {
-                Some(last) if last.1 == start => last.1 = end,
-                _ => runs.push((start, end)),
-            }
-        }
-        runs
+        let conflicts: Vec<bool> = (0..self.drift_file_starts.len())
+            .map(|file| {
+                dataset
+                    .file_group
+                    .get(file)
+                    .and_then(|group| dataset.groups.get(*group as usize))
+                    .is_some_and(|group| group.unread.iter().any(|name| name == column))
+            })
+            .collect();
+        conflicting_row_runs(&self.drift_file_starts, self.drift_dataset_rows, &conflicts)
     }
 
     /// Columns the filter or sort names that some file holds in another type, in the
@@ -6577,6 +6604,70 @@ mod tests {
     use super::*;
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+
+    /// Three files of two rows each, and every way they can conflict.
+    ///
+    /// Each case names the files that hold the column in a type it is not read in, and
+    /// the rows those files own. The last file is the one that has no start after it,
+    /// so a run ending there is the case an implementation is most likely to get wrong
+    /// — and the one that two files of the same length hide, since dropping to the end
+    /// of the dataset and dropping to the next file's start agree there.
+    #[test]
+    fn conflicting_files_become_the_runs_of_rows_they_own() {
+        let starts = [0, 2, 4];
+        let runs = |conflicts: [bool; 3]| conflicting_row_runs(&starts, 6, &conflicts);
+
+        assert_eq!(runs([false, false, false]), vec![], "nothing conflicts");
+        assert_eq!(runs([true, false, false]), vec![(0, 2)], "the first file");
+        assert_eq!(
+            runs([false, true, false]),
+            vec![(2, 4)],
+            "a file in the middle ends where the next one begins, not at the end of \
+             the dataset"
+        );
+        assert_eq!(
+            runs([false, false, true]),
+            vec![(4, 6)],
+            "and the last one ends at the end of the dataset"
+        );
+        assert_eq!(
+            runs([true, true, false]),
+            vec![(0, 4)],
+            "files that touch are one run"
+        );
+        assert_eq!(runs([true, true, true]), vec![(0, 6)], "as are all of them");
+        assert_eq!(
+            runs([true, false, true]),
+            vec![(0, 2), (4, 6)],
+            "files that do not touch are not"
+        );
+    }
+
+    /// A file of no rows owns no rows, so it neither makes a run nor breaks one.
+    ///
+    /// Zero-row Parquet files are written by any pipeline that partitions on a key
+    /// with no data for some value, so this is a shape datui meets rather than one it
+    /// has to imagine.
+    #[test]
+    fn a_file_of_no_rows_neither_makes_a_run_nor_splits_one() {
+        // Files of 2, 0 and 2 rows: the middle one begins and ends at row 2.
+        let starts = [0, 2, 2];
+        assert_eq!(
+            conflicting_row_runs(&starts, 4, &[false, true, false]),
+            vec![],
+            "a conflicting file with no rows keeps no row out"
+        );
+        assert_eq!(
+            conflicting_row_runs(&starts, 4, &[true, false, true]),
+            vec![(0, 4)],
+            "and an empty file between two that conflict does not part them"
+        );
+        assert_eq!(
+            conflicting_row_runs(&starts, 4, &[true, true, true]),
+            vec![(0, 4)],
+            "however it is flagged itself"
+        );
+    }
 
     fn create_test_lf() -> LazyFrame {
         df! (

@@ -1017,6 +1017,96 @@ mod template_rollback_tests {
             "and no hidden column with it"
         );
     }
+
+    /// The rollback puts back what the dataset said, not what the view was saying.
+    ///
+    /// A note about rows a sort is leaving out belongs to the sort. Snapshotting it
+    /// with the dataset's own notes and handing it back on rollback made it permanent
+    /// — it outlived the sort that earned it, and sorting again added a second copy —
+    /// because the field it is handed back into is the one only a reset clears.
+    #[test]
+    fn a_failed_template_does_not_make_the_views_note_permanent() {
+        use polars::prelude::{ParquetWriter, df};
+        let dir = tempfile::tempdir().unwrap();
+        let write = |sub: &str, mut frame: polars::prelude::DataFrame| {
+            let d = dir.path().join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        };
+        write(
+            "date=2024-01-01",
+            df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2]).unwrap(),
+        );
+        write(
+            "date=2024-01-02",
+            df!("id" => &[3i64, 4], "n" => &["x", "y"]).unwrap(),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        app.input_mode = InputMode::Normal;
+        let opts = OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        };
+        if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+            let _ = tx.send(next);
+        }
+        super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
+            a.data_table_state.is_some() && !a.is_busy()
+        });
+
+        let left_out = |app: &App| -> usize {
+            app.data_table_state
+                .as_ref()
+                .unwrap()
+                .notes()
+                .iter()
+                .filter(|note| note.summary.contains("left out"))
+                .count()
+        };
+
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .sort(vec!["n".to_string()], true);
+        assert_eq!(left_out(&app), 1, "the sort has something to say");
+
+        let mut template = app
+            .create_template_from_current_state(
+                "query then break".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query = Some("select * from df".to_string());
+        template.settings.column_order = vec!["no_such_column".to_string()];
+        assert!(app.apply_template(&template).is_err());
+
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .sort(Vec::new(), true);
+        assert_eq!(
+            left_out(&app),
+            0,
+            "and clearing the sort takes it away, rollback or no rollback"
+        );
+
+        app.data_table_state
+            .as_mut()
+            .unwrap()
+            .sort(vec!["n".to_string()], true);
+        assert_eq!(left_out(&app), 1, "sorting again says it once, not twice");
+    }
 }
 
 #[cfg(test)]
@@ -11218,7 +11308,7 @@ impl App {
                 locked_columns_count: state.locked_columns_count(),
                 drift: state.drifts(),
                 drift_groups: state.drift_groups(),
-                notes: state.notes().to_vec(),
+                notes: state.dataset_notes().to_vec(),
             })
     }
 

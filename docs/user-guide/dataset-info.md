@@ -37,7 +37,7 @@ datui says so:
 | Files disagree on a column's type, beyond what widening settles | The footers |
 | A column is stored as more than one type the scan can read into one | The footers |
 | A file's footer could not be read, so it was left out | The footers |
-| A filter or sort left rows out, because their files hold its column in another type | The footers, and the filter or sort on screen |
+| A filter or sort leaves rows out, because their files hold its column in another type | The footers |
 
 Every note says what it is based on — `in all 6,541 footers`, or
 `in 20,000 of 200,000 footers (sample)` — so a count never stands for files

@@ -147,8 +147,13 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
 /// files those rows came from.
 ///
 /// The only note here about the view rather than the dataset, and the only one datui
-/// writes in answer to something the user just did. It states two counts and divides
-/// neither: how many rows went, and how many files they came from.
+/// writes in answer to something the user just did.
+///
+/// It is phrased about the files, not about the view, and that is the whole care of
+/// it. "2 rows are left out" reads as a claim that the view is two rows shorter, which
+/// is not true when a filter had already dropped one of them; how many rows are in the
+/// files that do not hold the column is a fact of the footers, true whatever else the
+/// view is doing. Both counts here are of that kind.
 pub fn left_out_note(
     column: &ColumnDrift,
     dataset: &DatasetSchema,
@@ -162,10 +167,14 @@ pub fn left_out_note(
         // Called only for a column the view names, so it names it one way or the other.
         _ => "sort",
     };
+    let (there, verb) = if rows == 1 {
+        ("1 row".to_string(), "is")
+    } else {
+        (format!("{} rows", group_chrome(rows)), "are")
+    };
     Note {
         summary: format!(
-            "{} rows are left out of the {what} on {}: it is not read from {}",
-            group_chrome(rows),
+            "{} is not read from {}, so the {there} there {verb} left out of the {what}",
             column.name,
             how_many(dataset, column.conflicting_files)
         ),

@@ -15,4 +15,5 @@ Filter tab:
 Files that disagree:
   Sorting or filtering by a column some files store in another type leaves those
   files' rows out: there is no value in that column to order or compare them by.
-  The Notes tab in the Info panel says how many. Clearing brings them back.
+  The Notes tab in the Info panel says how many rows those files hold. Clearing
+  brings them back.

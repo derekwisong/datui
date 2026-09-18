@@ -1344,12 +1344,111 @@ fn test_a_sort_leaves_out_the_rows_its_column_is_not_read_from() {
         .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
     assert_eq!(
         left_out.summary,
-        "2 rows are left out of the sort on n: it is not read from 1 file"
+        "n is not read from 1 file, so the 2 rows there are left out of the sort"
     );
     assert_eq!(left_out.scope, "in all 3 footers");
     assert!(
         state.notes_unseen(),
         "and the `i` accent comes back for a note the user has not been offered"
+    );
+}
+
+/// The accent is about the note being *new*: a sort that has something to say brings
+/// it back after the panel has already been opened once.
+#[test]
+fn test_a_sort_that_leaves_rows_out_offers_its_note_afresh() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2], "n" => &[0i64, 1, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[3i64, 4], "n" => &["x", "y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.mark_notes_seen();
+    assert!(
+        !state.notes_unseen(),
+        "the dataset's own notes have been offered"
+    );
+
+    state.sort(vec!["n".to_string()], true);
+    assert!(
+        state.notes_unseen(),
+        "the note about the rows the sort left out has not been"
+    );
+
+    state.mark_notes_seen();
+    state.sort(vec!["n".to_string()], false);
+    assert!(
+        !state.notes_unseen(),
+        "and sorting the same column the other way says nothing new, so the accent \
+         stays away"
+    );
+}
+
+/// A conflicting file that is not the last one, several of them, and two stretches
+/// that do not touch.
+///
+/// The last file is where a run's end and the end of the dataset are the same number,
+/// so a dataset whose only conflict is there cannot tell a right implementation from
+/// one that drops everything from the first conflict onwards.
+#[test]
+fn test_the_rows_left_out_are_the_conflicting_files_own_wherever_they_sit() {
+    let dir = tempfile::tempdir().unwrap();
+    // Read as an integer: six of the ten rows hold it that way.
+    let int = |ids: &[i64], ns: &[i64]| df!("id" => ids, "n" => ns).unwrap();
+    let text = |ids: &[i64], ns: &[&str]| df!("id" => ids, "n" => ns).unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", int(&[0, 1], &[0, 1]));
+    write_parquet(dir.path(), "date=2024-01-02", text(&[2, 3], &["a", "b"]));
+    write_parquet(dir.path(), "date=2024-01-03", text(&[4], &["c"]));
+    write_parquet(dir.path(), "date=2024-01-04", int(&[5, 6], &[5, 6]));
+    write_parquet(dir.path(), "date=2024-01-05", text(&[7], &["d"]));
+    write_parquet(dir.path(), "date=2024-01-06", int(&[8, 9], &[8, 9]));
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 24);
+    let _ = painted(&mut app, &rx, &tx, area);
+    assert_eq!(current_rows(&app), 10, "every row is there to begin with");
+
+    let state = app.data_table_state.as_mut().unwrap();
+    state.sort(vec!["n".to_string()], true);
+    assert!(state.error.is_none(), "the sort itself must succeed");
+
+    let mut ids: Vec<i64> = state
+        .lf
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec![0, 1, 5, 6, 8, 9],
+        "the two stretches that store `n` as text go, and nothing after them does"
+    );
+
+    let notes = state.notes();
+    let left_out = notes
+        .iter()
+        .find(|note| note.summary.contains("left out"))
+        .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
+    assert_eq!(
+        left_out.summary,
+        "n is not read from 3 files, so the 4 rows there are left out of the sort"
     );
 }
 

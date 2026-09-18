@@ -53,10 +53,10 @@ claim above it, is the misreading the basis is there to prevent. Where the note
 the cursor is on will not fit at all, the panel says so rather than showing part
 of it; a shorter note may still fit.
 
-Every note but one describes the dataset as opened. The exception is the note
-about a filter or sort leaving rows out, which describes the view: it arrives
-when you sort or filter by a column the files disagree on, and goes when you
-clear it. See [datasets whose files differ](loading-data.md#files-that-disagree).
+Every note but one kind describes the dataset as opened. The exception is the
+note about a filter or sort leaving rows out, which describes the view: one
+arrives for each column you sort or filter by that the files disagree on, and
+goes when you clear it. See [datasets whose files differ](loading-data.md#files-that-disagree).
 
 A query, a pivot or a drill-down builds rows of its own, so the notes step
 aside; resetting or drilling back up brings them back.

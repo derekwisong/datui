@@ -1091,6 +1091,23 @@ mod template_rollback_tests {
         template.settings.column_order = vec!["no_such_column".to_string()];
         assert!(app.apply_template(&template).is_err());
 
+        // The sort is back, so the rows it leaves out are back out — and the note has
+        // to be back with them. A frame three rows short of the dataset with nothing
+        // on screen saying why is the same fault as a note that outlives its sort,
+        // seen from the other side.
+        let state = app.data_table_state.as_ref().unwrap();
+        assert_eq!(
+            state.view_sort_columns(),
+            ["n"],
+            "the rollback puts the sort back"
+        );
+        assert_eq!(
+            state.lf.clone().collect().unwrap().height(),
+            3,
+            "and the frame still leaves the two rows out"
+        );
+        assert_eq!(left_out(&app), 1, "so the note is still there to say so");
+
         app.data_table_state
             .as_mut()
             .unwrap()
@@ -11281,7 +11298,7 @@ impl App {
             .and_then(|s| s.partition_columns.as_ref())
             .map(|v| !v.is_empty())
             .unwrap_or(false);
-        let has_notes = state.map(|s| !s.notes().is_empty()).unwrap_or(false);
+        let has_notes = state.is_some_and(|s| s.has_notes());
         (has_partitions, has_notes)
     }
 
@@ -11644,6 +11661,12 @@ impl App {
             // This preserves the exact LazyFrame state from before template application
             state.lf = saved.lf;
             state.set_base_lf(saved.base_lf);
+            // Before the filter and sort below, not after. They rebuild the notes about
+            // what the view leaves out, and they can only do that while the state still
+            // knows the rows stand for rows of a file — which the failed template's own
+            // query turned off. Put back afterwards instead and the restored frame goes
+            // on leaving rows out with nothing on screen saying why.
+            state.restore_drift(saved.drift, saved.drift_groups, saved.notes);
             // Without this a template that pivoted and then failed would leave the
             // pivot as the root SQL runs against while the view shows none.
             state.restore_reshape(saved.reshaped_lf, saved.pivot, saved.melt);
@@ -11669,7 +11692,6 @@ impl App {
             // Restore the exact saved lf and schema (in case filter/sort modified them)
             state.lf = saved_lf;
             state.schema = saved_schema;
-            state.restore_drift(saved.drift, saved.drift_groups, saved.notes);
             state.collect();
         }
     }

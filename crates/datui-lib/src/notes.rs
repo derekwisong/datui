@@ -152,8 +152,13 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
 /// It is phrased about the files, not about the view, and that is the whole care of
 /// it. "2 rows are left out" reads as a claim that the view is two rows shorter, which
 /// is not true when a filter had already dropped one of them; how many rows are in the
-/// files that do not hold the column is a fact of the footers, true whatever else the
-/// view is doing. Both counts here are of that kind.
+/// files that hold the column in another type is a fact of the footers, true whatever
+/// else the view is doing. Both counts here are of that kind.
+///
+/// The cost of saying it that way is that the note also appears where those rows had
+/// already gone — a filter that excluded them, then a sort on the column. It is still
+/// true there, and the alternative is a count of what the view actually lost, which
+/// cannot be had without collecting the frame twice.
 pub fn left_out_note(
     column: &ColumnDrift,
     dataset: &DatasetSchema,

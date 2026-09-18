@@ -99,11 +99,18 @@ not be read — the marks still appear but every empty cell reads as `∅`. A gr
 pivot or SQL query builds new rows that stand for no one file, so their nulls are
 plain nulls again, and an export writes every empty cell as null.
 
-A `≠` cell has no value the column can be compared or ordered by, so filtering
-or sorting by a column the files disagree on leaves those rows out rather than
-gathering them at one end. The **Notes** tab says how many rows are in the files
-that do not hold the column, and the `i` key takes its quiet accent again to say
-there is something new there. Clearing the filter or sort brings the rows back.
+A `≠` cell has no value the column can be compared or ordered by, so where datui
+has every file's row count, filtering or sorting by a column the files disagree
+on leaves those rows out rather than gathering them at one end. The **Notes** tab
+says how many rows are in the files that hold the column in another type, and the
+`i` key takes its quiet accent again to say there is something new there. Clearing
+the filter or sort brings the rows back. Where datui does not have those counts —
+the same cases that flatten the marks above — the rows stay, unordered and
+unremarked.
+
+The rows go whatever else the filter says: a row from one of those files is left
+out of `id = 3 or n = 0` too, even though `id = 3` matches it. Its file's value
+for `n` was never read, so the view cannot stand behind either half.
 
 Only `≠` rows go that way. A `·` cell's file never had the column at all, so a
 sort keeps its rows. A filter is a different matter: no comparison holds against

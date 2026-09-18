@@ -3985,9 +3985,19 @@ impl DataTableState {
             .collect()
     }
 
+    /// Whether datui noticed anything at all. Answers what `notes()` is usually asked
+    /// — whether to offer the tab — without building the list to find out.
+    pub fn has_notes(&self) -> bool {
+        // A view note needs a column the files disagree on, and such a column always
+        // draws a note of its own when the dataset opens. So the view half can never
+        // be the only half, and the Notes tab does not appear and disappear as the
+        // user sorts.
+        !self.notes.is_empty()
+    }
+
     /// Whether there is something to say that has not been offered yet.
     pub fn notes_unseen(&self) -> bool {
-        !(self.notes.is_empty() && self.view_notes.is_empty()) && !self.notes_seen
+        self.has_notes() && !self.notes_seen
     }
 
     /// The rows a filter or sort on `column` has to leave out: every row of every file

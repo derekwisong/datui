@@ -140,6 +140,7 @@ impl ExportModal {
             .set_value(format!("{}", delimiter_char as char));
         self.csv_include_header = true;
         self.source_file = false;
+        self.offer_source_file = false;
         self.csv_compression = None;
         self.json_compression = None;
         self.ndjson_compression = None;

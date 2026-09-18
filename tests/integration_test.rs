@@ -1857,6 +1857,66 @@ fn test_asking_to_name_files_on_a_query_result_leaks_nothing() {
     );
 }
 
+/// The Options panel must read as a panel at every format: no empty box, and the
+/// source-file checkbox under the format's own options rather than adrift at the foot.
+#[test]
+fn test_the_export_options_panel_reads_as_one_for_every_format() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+
+    let mut app = open_local_dataset(dir.path());
+    // The modal opens with focus on the path, where Down does not change the format.
+    for key in [KeyCode::Char('e'), KeyCode::BackTab] {
+        app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+    }
+    assert!(app.export_modal.offer_source_file, "the files disagree");
+    assert_eq!(
+        app.export_modal.focus,
+        datui::export_modal::ExportFocus::FormatSelector,
+        "so the walk below really does change format"
+    );
+
+    let area = Rect::new(0, 0, 120, 30);
+    let mut seen = Vec::new();
+    for step in 0..6 {
+        seen.push(app.export_modal.selected_format);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        let checkbox = rows
+            .iter()
+            .position(|r| r.contains("Source file:"))
+            .unwrap_or_else(|| panic!("step {step}: no Source file row:\n{}", rows.join("\n")));
+        // Something of the format's own must be drawn above it, not blank space.
+        let above = &rows[checkbox - 1];
+        assert!(
+            !above
+                .trim_matches(|c: char| c == '│' || c.is_whitespace())
+                .is_empty(),
+            "step {step}: the checkbox is adrift below a blank row:\n{}",
+            rows.join("\n")
+        );
+        // Move to the next format.
+        app.event(&AppEvent::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+    }
+    seen.dedup();
+    assert_eq!(seen.len(), 6, "every format was actually visited: {seen:?}");
+}
+
 /// A column only a middle file has used to vanish: the schema was one file's, and that
 /// file did not have it.
 #[test]

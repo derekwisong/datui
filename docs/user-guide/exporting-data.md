@@ -45,7 +45,7 @@ tell them apart downstream: a row whose file never had the column is a
 different thing from a row whose file had it and left it empty.
 
 The option is offered only for those datasets, and is off by default. If the
-data already has a column called `source_file`, datui's goes beside it as
-`source_file_1` rather than over it.
+data already has a column called `source_file`, that column is left alone and
+datui's is added at the end as `source_file_1`, or the next free number.
 
 Charts export separately, to PNG or EPS, from the [chart view](charting.md#export).

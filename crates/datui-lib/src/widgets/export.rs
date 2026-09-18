@@ -176,9 +176,23 @@ fn render_format_options(
 
     // The source-file option belongs to no format, so it sits under the ones that do.
     let (inner, source_file_row) = if modal.offer_source_file {
+        // Directly under the format's own options, not at the foot of the box: a
+        // checkbox alone on the bottom line reads as belonging to nothing.
+        let used = match modal.selected_format {
+            // Rows each format's own options draw. Pinned by
+            // `test_the_export_options_panel_reads_as_one_for_every_format`, which
+            // fails if a format's options change height and this does not.
+            ExportFormat::Csv => 5,
+            ExportFormat::Json | ExportFormat::Ndjson => 3,
+            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => 1,
+        };
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(used),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
             .split(inner);
         (rows[0], Some(rows[1]))
     } else {
@@ -200,10 +214,7 @@ fn render_format_options(
             render_ndjson_options(inner, buf, modal, border_color, active_color)
         }
         ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {
-            // Saying there are none would be wrong with one drawn right below.
-            if !modal.offer_source_file {
-                render_no_format_options(inner, buf, modal, border_color, active_color)
-            }
+            render_no_format_options(inner, buf, modal, border_color, active_color)
         }
     }
 
@@ -474,10 +485,20 @@ fn render_no_format_options(
     border_color: Color,
     _active_color: Color,
 ) {
-    let msg = format!(
-        "No additional options for {} format",
-        modal.selected_format.as_str()
-    );
+    // "No options" would be false with the source-file checkbox drawn below, and
+    // leaving the panel blank instead reads as a rendering fault. Neither: the format
+    // has none of its own, which is what this says.
+    let msg = if modal.offer_source_file {
+        format!(
+            "No options specific to {} format",
+            modal.selected_format.as_str()
+        )
+    } else {
+        format!(
+            "No additional options for {} format",
+            modal.selected_format.as_str()
+        )
+    };
     Paragraph::new(msg)
         .style(Style::default().fg(border_color))
         .centered()

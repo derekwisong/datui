@@ -282,28 +282,33 @@ fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     })
 }
 
-/// A dataset of many files, each holding very little.
+/// A dataset of very many files, each holding very little.
 ///
-/// Every file is a listing entry to fetch and a footer to read before a single row is,
-/// and past a certain number of them that work outweighs the data itself: a folder of
-/// fifty thousand files of forty kilobytes opens slowly not because there is much data
-/// but because there is so little of it in so many places. Nothing datui can do about
-/// it either — the fix is upstream, in whatever writes them — which is why it is worth
-/// saying rather than leaving someone to conclude datui is slow.
+/// Says what happened, not what it cost. The first draft of this note said finding the
+/// files costs more than reading them, and review measured it: a thousand two hundred
+/// files took nine milliseconds to find and eight hundred to read. It cannot be true
+/// over a network either — a footer read is a *suffix* of the file, so it can never
+/// move more bytes than reading the file does. What is true, and is the thing the user
+/// waited for, is that a footer was read for every one of these files before a single
+/// row was.
 ///
-/// Both halves have to hold. A thousand small files is a normal day's partitions and
-/// nobody needs telling; a hundred large ones cost nothing to find. It is the two
-/// together that make the listing the expensive part.
+/// Both halves have to hold. Small files on their own are a normal day's partitions,
+/// and a few large ones cost nothing to open. It is very many *and* very small that
+/// makes the opening a job of its own — and one nothing here can fix, since the remedy
+/// is upstream in whatever writes them.
 ///
-/// The file count is every file the dataset has, which the listing knows even where
-/// only a sample of footers was read. The middle size is over the footers read, and
-/// says so through the scope line.
+/// The count is every file the listing found; the middle size is over the footers
+/// datui opened, which the sentence names. The two are different populations where the
+/// dataset was too large to open every footer, and saying both numbers is what keeps
+/// the middle from reading as a fact about all of them.
 fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
-    /// Past this many files, finding them is work of its own.
-    const MANY: usize = 1_000;
-    /// Below this, a file is small enough that finding it rivals reading it.
+    /// Past this many files the footer pass is a job of its own. Above a year of
+    /// hourly partitions, which is an ordinary shape and not a complaint.
+    const MANY: usize = 10_000;
+    /// Below this a file is small by any warehouse's standard, where the figure aimed
+    /// at is hundreds of megabytes.
     const SMALL: usize = 1024 * 1024;
-    let files = dataset.origin.files();
+    let files = dataset.origin.total_files();
     let median = dataset.median_file_bytes?;
     // A file of no bytes is not a Parquet file, so a middle of zero means datui does
     // not know the sizes rather than that they are small — and "the middle one is 0 B"
@@ -311,10 +316,15 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     if median == 0 || files <= MANY || median >= SMALL {
         return None;
     }
+    let read = dataset.files;
+    let footers = if read == files {
+        "a footer was read for each".to_string()
+    } else {
+        format!("{} footers were read", group_chrome(read))
+    };
     Some(Note {
         summary: format!(
-            "there are {} files and the middle one is {}, so finding them costs more \
-             than reading them",
+            "there are {} files and the middle one is {}, so {footers} before a row was",
             group_chrome(files),
             crate::widgets::info::format_bytes(median as u64)
         ),

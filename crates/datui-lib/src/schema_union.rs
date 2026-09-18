@@ -50,7 +50,11 @@ pub enum SchemaOrigin {
 
 impl SchemaOrigin {
     /// How many files the dataset has, whether or not every footer was read.
-    pub fn files(&self) -> usize {
+    ///
+    /// Not [`DatasetSchema::files`], which is how many footers were *read* — the
+    /// population every other count in the notes is taken over. One note needs the
+    /// other number, and the two are a keystroke apart, so this one says which.
+    pub fn total_files(&self) -> usize {
         match self {
             SchemaOrigin::AllFooters(files) => *files,
             SchemaOrigin::FooterSample { total, .. } => *total,
@@ -1533,9 +1537,13 @@ mod tests {
     fn many_files_are_noted_only_when_they_are_also_small() {
         const KIB: usize = 1024;
         const MIB: usize = 1024 * KIB;
+        // `sizes` is the shape of the footers read, repeated to fill `read` of them:
+        // the note says how many were read, so the fixture has to have that many.
         let note = |files: usize, read: usize, sizes: &[usize]| -> Option<String> {
             let footers: Vec<Option<FileSchema>> = sizes
                 .iter()
+                .cycle()
+                .take(if sizes.is_empty() { 0 } else { read })
                 .map(|bytes| {
                     Some(FileSchema {
                         schema: Arc::new(Schema::with_capacity(0)),
@@ -1557,47 +1565,75 @@ mod tests {
         };
 
         assert_eq!(
-            note(1_000, 1_000, &[40 * KIB]),
+            note(10_000, 10_000, &[40 * KIB]),
             None,
-            "a thousand is not many"
+            "a year of hourly partitions, and more, is an ordinary shape"
         );
         assert_eq!(
-            note(1_001, 1_001, &[40 * KIB]).as_deref(),
+            note(10_001, 10_001, &[40 * KIB]).as_deref(),
             Some(
-                "there are 1,001 files and the middle one is 40.0 KiB, so finding them \
-                 costs more than reading them"
+                "there are 10,001 files and the middle one is 40.0 KiB, so a footer \
+                 was read for each before a row was"
             ),
-            "one more is"
+            "one more is not"
         );
         assert_eq!(
             note(50_000, 50_000, &[MIB]),
             None,
-            "a megabyte is not small enough to be worth finding twice"
+            "a megabyte is not small by this measure"
         );
         assert!(
             note(50_000, 50_000, &[MIB - 1]).is_some(),
             "a byte under it is"
         );
         assert_eq!(
-            note(50_000, 50_000, &[40 * KIB, 40 * KIB, 900 * MIB]),
+            note(50_000, 50_000, &[40 * KIB, 40 * KIB, 900 * MIB]).as_deref(),
             Some(
-                "there are 50,000 files and the middle one is 40.0 KiB, so finding them \
-                 costs more than reading them"
-                    .to_string()
+                "there are 50,000 files and the middle one is 40.0 KiB, so a footer \
+                 was read for each before a row was"
             ),
             "one large file among small ones does not describe the dataset"
         );
-        // Sampled: the count is every file the listing found, the size is the middle
-        // of the footers datui opened, and the scope line says which is which.
+        // Sampled: the count is every file the listing found, the middle size is over
+        // the footers datui opened, and the sentence names both rather than leaving
+        // the middle to read as a fact about all of them.
         assert_eq!(
             note(500_000, 2, &[40 * KIB, 40 * KIB]).as_deref(),
             Some(
-                "there are 500,000 files and the middle one is 40.0 KiB, so finding \
-                 them costs more than reading them"
+                "there are 500,000 files and the middle one is 40.0 KiB, so 2 footers \
+                 were read before a row was"
             ),
-            "the count is the listing's, not the sample's"
+            "the count is the listing's; the footers read are their own number"
         );
         assert_eq!(note(50_000, 0, &[]), None, "no footer read, nothing to say");
+
+        // The scope line under a sampled dataset says what was looked at, which is what
+        // stops the middle size reading as a fact about half a million files.
+        let sampled = union_file_schemas(
+            &[
+                Some(FileSchema {
+                    schema: Arc::new(Schema::with_capacity(0)),
+                    rows: 1,
+                    file_bytes: 40 * KIB,
+                    row_group_bytes: Vec::new(),
+                }),
+                Some(FileSchema {
+                    schema: Arc::new(Schema::with_capacity(0)),
+                    rows: 1,
+                    file_bytes: 40 * KIB,
+                    row_group_bytes: Vec::new(),
+                }),
+            ],
+            SchemaOrigin::FooterSample {
+                read: 2,
+                total: 500_000,
+            },
+        );
+        let sampled_note = crate::notes::from_dataset(&sampled)
+            .into_iter()
+            .find(|note| note.summary.starts_with("there are"))
+            .expect("the note is made");
+        assert_eq!(sampled_note.scope, "in 2 of 500,000 footers (sample)");
         assert_eq!(
             note(50_000, 2, &[0, 0]),
             None,

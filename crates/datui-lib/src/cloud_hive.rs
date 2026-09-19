@@ -123,6 +123,16 @@ async fn read_parquet_footer(
 pub struct DatasetFile {
     pub key: String,
     pub size: u64,
+    /// When the object was last written, in seconds since the epoch, where the store
+    /// said. Part of the fingerprint that decides whether what datui remembers about
+    /// this dataset still describes it.
+    pub stamp: u64,
+    /// The store's own tag for this version of the object, where it gave one.
+    ///
+    /// The strongest part of that fingerprint, and free — it comes back in the same
+    /// listing response as the size. A size and a whole-second timestamp cannot see a
+    /// file overwritten within the same second at the same length; an ETag can.
+    pub etag: Option<String>,
 }
 
 /// Every Parquet file under `prefix`, sorted by key, which is the order a scan of the
@@ -176,6 +186,8 @@ pub async fn list_dataset_files(
         .map(|o| DatasetFile {
             key: o.location.as_ref().to_string(),
             size: o.size,
+            stamp: o.last_modified.timestamp().try_into().unwrap_or_default(),
+            etag: o.e_tag.clone(),
         })
         .collect();
     // Every segment below the prefix, not just the name: a `.json` inside `_delta_log/`
@@ -330,6 +342,78 @@ pub struct FileFooter {
     pub row_group_rows: Vec<usize>,
     /// Compressed bytes of each row group, in the same order.
     pub row_group_bytes: Vec<usize>,
+}
+
+/// What a footer pass learned, in the form the cache keeps it.
+///
+/// The schemas are gathered into a table and referred to by index: a dataset of ten
+/// thousand files usually has one schema, and writing each file's columns out in full
+/// would make the cache larger than the footers it saves reading.
+pub fn footers_to_cache(
+    footers: &[Option<FileFooter>],
+) -> (
+    Vec<crate::cache::CachedFooter>,
+    Vec<Vec<(String, polars::prelude::DataType)>>,
+) {
+    let mut schemas: Vec<Vec<(String, polars::prelude::DataType)>> = Vec::new();
+    let cached = footers
+        .iter()
+        .map(|footer| match footer {
+            None => crate::cache::CachedFooter::default(),
+            Some(f) => {
+                let columns: Vec<(String, polars::prelude::DataType)> = f
+                    .schema
+                    .iter()
+                    .map(|(name, dtype)| (name.to_string(), dtype.clone()))
+                    .collect();
+                let at = schemas
+                    .iter()
+                    .position(|s| *s == columns)
+                    .unwrap_or_else(|| {
+                        schemas.push(columns);
+                        schemas.len() - 1
+                    });
+                crate::cache::CachedFooter {
+                    schema: Some(at),
+                    row_group_rows: f.row_group_rows.clone(),
+                    row_group_bytes: f.row_group_bytes.clone(),
+                }
+            }
+        })
+        .collect();
+    (cached, schemas)
+}
+
+/// The footers a cache kept, back in the form a fresh pass would have produced.
+///
+/// `None` for a file whose footer would not read, which is how the pass reports one and
+/// so how the cache has to give it back: a reopen that quietly read it again would be a
+/// different dataset from the one that was cached.
+///
+/// A schema index the table does not have means the cache is inconsistent with itself,
+/// and the whole entry is refused rather than half-used.
+pub fn footers_from_cache(
+    cached: &[crate::cache::CachedFooter],
+    schemas: &[Vec<(String, polars::prelude::DataType)>],
+) -> Option<Vec<Option<FileFooter>>> {
+    cached
+        .iter()
+        .map(|f| {
+            let Some(at) = f.schema else {
+                return Some(None);
+            };
+            let columns = schemas.get(at)?;
+            let mut schema = Schema::with_capacity(columns.len());
+            for (name, dtype) in columns {
+                schema.with_column(name.as_str().into(), dtype.clone());
+            }
+            Some(Some(FileFooter {
+                schema: Arc::new(schema),
+                row_group_rows: f.row_group_rows.clone(),
+                row_group_bytes: f.row_group_bytes.clone(),
+            }))
+        })
+        .collect()
 }
 
 /// Every file's footer, in file order: a small ranged read at the end of each file,
@@ -800,6 +884,7 @@ mod tests {
             &crate::measurements::OpenReport {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
+                remembered: None,
             },
         );
 
@@ -836,6 +921,8 @@ mod tests {
         let files = vec![DatasetFile {
             key: "data/date=2024-01-01/half-written.parquet".to_string(),
             size: 15,
+            stamp: 0,
+            etag: None,
         }];
 
         let meter = Arc::new(crate::measurements::Meter::default());
@@ -862,6 +949,8 @@ mod tests {
         let files = vec![DatasetFile {
             key: "data/date=2024-01-01/half-written.parquet".to_string(),
             size,
+            stamp: 0,
+            etag: None,
         }];
         let groups =
             rt.block_on(async { row_groups_of_files(&store, &files, &meter).await.unwrap() });
@@ -879,6 +968,322 @@ mod tests {
             "reporting the real read, not the fifteen bytes of the half-written one; \
              got {:?}",
             footers.over_the_wire
+        );
+    }
+
+    /// Footers survive the cache unchanged, unreadable ones included.
+    ///
+    /// Everything downstream — the union, the drift groups, the row numbering, the
+    /// notes — is computed from these shapes, so a reopen is only as right as this
+    /// round trip. A file whose footer would not read has to come back as one that
+    /// would not read: a reopen that quietly read it again would build a different
+    /// dataset from the one it was told to remember, and nothing would say so.
+    #[test]
+    fn a_footer_pass_survives_the_cache_and_comes_back_the_same() {
+        use polars::prelude::DataType;
+
+        let schema_of = |cols: &[(&str, DataType)]| {
+            let mut schema = Schema::with_capacity(cols.len());
+            for (name, dtype) in cols {
+                schema.with_column((*name).into(), dtype.clone());
+            }
+            Arc::new(schema)
+        };
+        let original = vec![
+            Some(FileFooter {
+                schema: schema_of(&[("id", DataType::Int64), ("note", DataType::String)]),
+                row_group_rows: vec![100, 50],
+                row_group_bytes: vec![4_096, 2_048],
+            }),
+            // A second file with the same shape: the schema table must hold it once.
+            Some(FileFooter {
+                schema: schema_of(&[("id", DataType::Int64), ("note", DataType::String)]),
+                row_group_rows: vec![7],
+                row_group_bytes: vec![512],
+            }),
+            // One that drifted, and one that would not read at all.
+            Some(FileFooter {
+                schema: schema_of(&[("id", DataType::Int64), ("extra", DataType::Boolean)]),
+                row_group_rows: vec![3],
+                row_group_bytes: vec![128],
+            }),
+            None,
+        ];
+
+        let (cached, schemas) = footers_to_cache(&original);
+        assert_eq!(
+            schemas.len(),
+            2,
+            "two distinct shapes among four files, not four copies of them"
+        );
+        assert_eq!(cached[3].schema, None, "and the unreadable one says so");
+
+        let back = footers_from_cache(&cached, &schemas).expect("the table is consistent");
+        assert_eq!(back.len(), original.len());
+        for (before, after) in original.iter().zip(&back) {
+            match (before, after) {
+                (None, None) => {}
+                (Some(a), Some(b)) => {
+                    assert_eq!(a.schema, b.schema, "same columns, same types");
+                    assert_eq!(a.row_group_rows, b.row_group_rows);
+                    assert_eq!(a.row_group_bytes, b.row_group_bytes);
+                }
+                _ => panic!("a footer changed whether it could be read"),
+            }
+        }
+
+        // An index the table does not have means the entry disagrees with itself, and
+        // half of it is worse than none.
+        let broken = vec![crate::cache::CachedFooter {
+            schema: Some(9),
+            row_group_rows: vec![1],
+            row_group_bytes: vec![1],
+        }];
+        assert!(
+            footers_from_cache(&broken, &schemas).is_none(),
+            "an entry that points at a schema it does not have is refused whole"
+        );
+    }
+
+    /// A dataset too large to open in one wave is remembered by the pass behind it.
+    ///
+    /// This is the case the cache exists for — a prefix whose footers cost seconds —
+    /// and it is the one that used to be missed. Such a dataset opens from two footers
+    /// and reads the rest behind the data, so the open itself has nothing worth
+    /// keeping; saving only there meant the cache held nothing but datasets small
+    /// enough to open in a single wave, which are the cheapest to read anyway.
+    ///
+    /// Also pins the guard that keeps the two-footer view out: caching it would hand
+    /// the next open a five-thousand-file dataset with two files' worth of schema, no
+    /// row numbering and sample-scoped notes, and nothing would say so.
+    #[test]
+    fn a_dataset_read_behind_the_open_is_remembered_by_the_pass_that_read_it() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        // One past the wave, so the open stages.
+        let count = FOOTERS_AT_ONCE + 1;
+        rt.block_on(async {
+            for i in 0..count {
+                store
+                    .put(
+                        &OsPath::from(format!("data/f{i:04}.parquet")),
+                        PutPayload::from(body()),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
+        let report = || crate::measurements::OpenReport {
+            progress: Arc::new(crate::schema_union::FooterProgress::default()),
+            meter: Arc::new(crate::measurements::Meter::default()),
+            remembered: Some(cache.clone()),
+        };
+        let open = || {
+            let r = report();
+            let state = crate::App::schema_state_from_cloud_hive_with(
+                "memory://data/".to_string(),
+                "data/".to_string(),
+                store.clone(),
+                polars::prelude::cloud::CloudOptions::default(),
+                &crate::OpenOptions::default(),
+                rt.handle(),
+                &r,
+            );
+            (state, r.meter.clone())
+        };
+
+        let (state, meter) = open();
+        assert_eq!(
+            meter.footers().and_then(|c| c.files),
+            Some(2),
+            "the open itself reads the two ends, which is what staging is"
+        );
+        assert!(
+            cache.load_dataset_shapes().is_empty(),
+            "and keeps nothing: a two-footer view of {count} files is not this dataset, \
+             and kept as one it would open next time with two files' worth of schema"
+        );
+
+        // The pass behind it reads every footer, and that is the one worth keeping.
+        let pending = state
+            .as_ref()
+            .and_then(|s| s.footers_pending())
+            .expect("a staged open leaves a pass behind it");
+        let _ = pending(&Arc::new(crate::schema_union::FooterProgress::default()));
+
+        let (_, second) = open();
+        assert_eq!(
+            second.footers(),
+            None,
+            "so the next open reads no footers at all, for a dataset of {count} files"
+        );
+    }
+
+    /// A footer that would not read this time is not remembered as unreadable forever.
+    ///
+    /// A read fails for a corrupt file and for a throttled request alike, and nothing
+    /// here can tell them apart. Keeping the failure would turn a moment's trouble into
+    /// a file missing from the dataset on every open from now until something else in
+    /// the prefix changes — and the note would go on saying one file could not be read,
+    /// about a file that reads perfectly well.
+    #[test]
+    fn a_footer_that_would_not_read_is_not_remembered_as_unreadable() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let good = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            store
+                .put(&OsPath::from("data/a.parquet"), PutPayload::from(good()))
+                .await
+                .unwrap();
+            // Mid-write, or throttled, or a token that expired: all the same from here.
+            store
+                .put(
+                    &OsPath::from("data/b.parquet"),
+                    PutPayload::from(b"not parquet yet".to_vec()),
+                )
+                .await
+                .unwrap();
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
+        let open = || {
+            let meter = Arc::new(crate::measurements::Meter::default());
+            let _ = crate::App::schema_state_from_cloud_hive_with(
+                "memory://data/".to_string(),
+                "data/".to_string(),
+                store.clone(),
+                polars::prelude::cloud::CloudOptions::default(),
+                &crate::OpenOptions::default(),
+                rt.handle(),
+                &crate::measurements::OpenReport {
+                    progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                    meter: meter.clone(),
+                    remembered: Some(cache.clone()),
+                },
+            );
+            meter
+        };
+
+        let first = open();
+        assert_eq!(
+            first.footers().and_then(|c| c.files),
+            Some(2),
+            "both were tried"
+        );
+        assert!(
+            cache.load_dataset_shapes().is_empty(),
+            "and nothing was kept, because one of them did not come back"
+        );
+
+        let second = open();
+        assert_eq!(
+            second.footers().and_then(|c| c.files),
+            Some(2),
+            "so the next open tries again rather than taking the failure as settled"
+        );
+    }
+
+    /// Opening a dataset a second time reads no footers, and a changed one does.
+    ///
+    /// This is what the cache is for. The listing happens either way — it is how datui
+    /// knows what the dataset is now — and it is what decides whether the footers can
+    /// be skipped. The Footers measurement is how the test can tell: a remembered open
+    /// records none, because none were read.
+    #[test]
+    fn a_dataset_opened_again_is_not_read_again() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = |rows: i64| {
+            let mut frame = df!("n" => (0..rows).collect::<Vec<i64>>()).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for (key, rows) in [("data/a.parquet", 3i64), ("data/b.parquet", 4)] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(body(rows)))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
+        let open = |store: Arc<dyn ObjectStore>| {
+            let meter = Arc::new(crate::measurements::Meter::default());
+            let _ = crate::App::schema_state_from_cloud_hive_with(
+                "memory://data/".to_string(),
+                "data/".to_string(),
+                store,
+                polars::prelude::cloud::CloudOptions::default(),
+                &crate::OpenOptions::default(),
+                rt.handle(),
+                &crate::measurements::OpenReport {
+                    progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                    meter: meter.clone(),
+                    remembered: Some(cache.clone()),
+                },
+            );
+            meter
+        };
+
+        let first = open(store.clone());
+        assert_eq!(
+            first.footers().and_then(|c| c.files),
+            Some(2),
+            "the first open reads both footers"
+        );
+
+        let second = open(store.clone());
+        assert_eq!(
+            second.listing().and_then(|c| c.files),
+            Some(2),
+            "the second lists the prefix, which is how it knows nothing has changed"
+        );
+        assert_eq!(
+            second.footers(),
+            None,
+            "and reads no footers at all, which is what remembering them is for"
+        );
+
+        // A file rewritten: the fingerprint moves and the cache is ignored.
+        rt.block_on(async {
+            store
+                .put(&OsPath::from("data/b.parquet"), PutPayload::from(body(9)))
+                .await
+                .unwrap();
+        });
+        let third = open(store);
+        assert_eq!(
+            third.footers().and_then(|c| c.files),
+            Some(2),
+            "a dataset that has changed is read again rather than remembered wrongly"
         );
     }
 
@@ -930,6 +1335,7 @@ mod tests {
             &crate::measurements::OpenReport {
                 progress: Arc::new(crate::schema_union::FooterProgress::default()),
                 meter: meter.clone(),
+                remembered: None,
             },
         );
 
@@ -1167,6 +1573,7 @@ mod tests {
             &crate::measurements::OpenReport {
                 progress: Arc::new(crate::schema_union::FooterProgress::default()),
                 meter: meter.clone(),
+                remembered: None,
             },
         );
 
@@ -1262,6 +1669,7 @@ mod tests {
             &crate::measurements::OpenReport {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
+                remembered: None,
             },
         )
         .expect("the prefix opens");
@@ -1417,6 +1825,7 @@ mod tests {
             &crate::measurements::OpenReport {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
+                remembered: None,
             },
         )
         .expect("the prefix opens");
@@ -1496,6 +1905,7 @@ mod tests {
             &crate::measurements::OpenReport {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
+                remembered: None,
             },
         )
         .expect("the prefix opens");
@@ -1857,6 +2267,7 @@ mod tests {
             &crate::measurements::OpenReport {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
+                remembered: None,
             },
         )
         .expect("the prefix opens despite the one that will not parse");
@@ -2020,6 +2431,7 @@ mod tests {
             &crate::measurements::OpenReport {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
+                remembered: None,
             },
         )
         .expect("the prefix opens");

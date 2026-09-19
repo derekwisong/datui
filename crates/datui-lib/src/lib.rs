@@ -6799,20 +6799,52 @@ impl App {
         // open the dataset and the rest are read behind it, joining when they land. Up
         // to a wave they cost one round trip either way, so the dataset opens whole —
         // rows numbered, absent cells marked, notes complete.
-        let staged = files.len() > cloud_hive::FOOTERS_AT_ONCE;
-        let read = if staged {
+        // What the listing says this dataset is now. Taking it costs nothing — the
+        // listing has already happened, and it is the only thing that has to — and it
+        // is what decides whether the footers can be skipped entirely.
+        let fingerprint = crate::cache::DatasetShape::fingerprint_of(
+            files
+                .iter()
+                .map(|f| (f.key.as_str(), f.size, f.stamp, f.etag.as_deref())),
+        );
+        let remembered = report
+            .remembered
+            .as_ref()
+            .and_then(|cache| cache.dataset_shape(full, &fingerprint))
+            // No length check: the fingerprint leads with the file count, so a listing
+            // of a different size cannot match one in the first place.
+            .and_then(|shape| cloud_hive::footers_from_cache(&shape.files, &shape.schemas));
+
+        let staged = remembered.is_none() && files.len() > cloud_hive::FOOTERS_AT_ONCE;
+        let read = if remembered.is_some() {
+            // Every file, because the cache holds every file: a remembered dataset
+            // opens whole, with its rows numbered and its notes complete, however large
+            // it is. That is the point of remembering it.
+            (0..files.len()).collect()
+        } else if staged {
             crate::schema_union::ends_of(files.len())
         } else {
             crate::schema_union::footers_to_read(files.len())
         };
-        let footers = Self::cloud_footers(
-            store.clone(),
-            files.clone(),
-            read.clone(),
-            runtime,
-            report.progress.clone(),
-            report.meter.clone(),
-        )?;
+        let footers = match remembered {
+            Some(cached) => cached,
+            None => Self::cloud_footers(
+                store.clone(),
+                files.clone(),
+                read.clone(),
+                runtime,
+                report.progress.clone(),
+                report.meter.clone(),
+            )?,
+        };
+        Self::remember_dataset_shape(
+            report.remembered.as_ref(),
+            full,
+            &fingerprint,
+            &read,
+            &files,
+            &footers,
+        );
         let opened =
             Self::cloud_dataset_from_footers(full, &root, &files, &read, &footers, &cloud_opts)?;
         let CloudDataset {
@@ -6906,6 +6938,13 @@ impl App {
             // in because it belongs to this dataset: the next open builds its own state
             // and its own meter, and this closure goes with the state it was built for.
             let meter = report.meter.clone();
+            // This is the pass that reads a large dataset's footers, so this is where a
+            // large dataset gets remembered. The open above it has read two and has
+            // nothing worth keeping; leaving the saving there meant the cache only ever
+            // held datasets small enough to open in one wave — the ones that cost least
+            // to read in the first place.
+            let remembered = report.remembered.clone();
+            let fingerprint = fingerprint.clone();
             state.set_footers_pending(Arc::new(move |progress: &Arc<_>| {
                 let read = crate::schema_union::footers_to_read(files.len());
                 let footers = Self::cloud_footers(
@@ -6916,6 +6955,14 @@ impl App {
                     progress.clone(),
                     meter.clone(),
                 )?;
+                Self::remember_dataset_shape(
+                    remembered.as_ref(),
+                    &full,
+                    &fingerprint,
+                    &read,
+                    &files,
+                    &footers,
+                );
                 let whole = Self::cloud_dataset_from_footers(
                     &full,
                     &root,
@@ -7005,6 +7052,51 @@ impl App {
     /// built from a sample already says so — it forgoes numbering its rows and scopes
     /// its notes to the footers it saw.
     #[cfg(feature = "cloud")]
+    /// Keep what this pass learned, if it learned the whole of it.
+    ///
+    /// Two conditions, and both matter.
+    ///
+    /// Every footer must have been read. A staged open has read two of them and a
+    /// sampled one a spread, and either kept as though it were the whole dataset would
+    /// hand the next open a smaller dataset than it asked for, with nothing to say that
+    /// is what happened.
+    ///
+    /// Every footer must have *parsed*. A footer read can fail because the file is
+    /// corrupt, and it can fail because the store throttled the request or a token
+    /// expired — and nothing here can tell those apart. Remembering the failure turns a
+    /// moment's trouble into a file that is missing from the dataset on every open from
+    /// now until something else in the prefix changes, which is not a trade a cache is
+    /// allowed to make. Read them again next time; the one that was really corrupt
+    /// costs a read and says the same thing.
+    fn remember_dataset_shape(
+        cache: Option<&crate::cache::CacheManager>,
+        full: &str,
+        fingerprint: &str,
+        read: &[usize],
+        files: &[cloud_hive::DatasetFile],
+        footers: &[Option<cloud_hive::FileFooter>],
+    ) {
+        if read.len() != files.len() || !footers.iter().all(Option::is_some) {
+            return;
+        }
+        let Some(cache) = cache else {
+            return;
+        };
+        let (cached, schemas) = cloud_hive::footers_to_cache(footers);
+        cache.save_dataset_shape(
+            full,
+            crate::cache::DatasetShape {
+                fingerprint: fingerprint.to_string(),
+                files: cached,
+                schemas,
+                taken_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default(),
+            },
+        );
+    }
+
     fn cloud_dataset_from_footers(
         full: &str,
         // The literal part of `full`, which for a glob is everything before its star.
@@ -7262,6 +7354,7 @@ impl App {
         let attempt = |report: &crate::measurements::OpenReport| crate::measurements::OpenReport {
             progress: report.progress.clone(),
             meter: Arc::new(crate::measurements::Meter::default()),
+            remembered: report.remembered.clone(),
         };
 
         let local = attempt(report);
@@ -12319,6 +12412,7 @@ impl App {
                 let report = crate::measurements::OpenReport {
                     progress: self.footer_progress.clone(),
                     meter: Arc::new(crate::measurements::Meter::default()),
+                    remembered: Some(self.cache.clone()),
                 };
                 self.spawn_bg("Caching schema...", move |task_gen, tx| {
                     match Self::build_schema_state(

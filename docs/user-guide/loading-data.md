@@ -207,6 +207,32 @@ names this way.
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
 schema from one file.
 
+### Opening it again
+
+What a remote dataset's footers said — each file's row groups and its columns —
+is kept in the cache directory, under the URL you opened. Opening the same
+dataset again shows its columns and its row count straight away, without reading
+a footer at all. A dataset read behind its own first page is remembered by that
+pass, so this covers the large datasets it is meant for and not only the small
+ones.
+
+The listing still happens, because it is how datui knows what the dataset is
+now, and it is what decides whether what was kept still describes it. A file
+added, removed, renamed, resized or rewritten all change what the listing
+reports — its name, its size, when it was written, and the store's own tag for
+it — and any of those means the footers are read again. Nothing is trusted that
+the listing cannot confirm.
+
+Two things are never kept. A pass that read only some of the footers, because
+the dataset was large enough to open early or large enough to be sampled: what
+is kept has to be the whole dataset or it is worse than nothing. And a pass in
+which any footer would not read — a file mid-write, a request the store refused
+— because there is no way to tell a file that is broken from one that was busy,
+and a moment's trouble should not become a file missing from the dataset on
+every open thereafter.
+
+`--clear-cache` forgets it. Deleting it costs speed and nothing else.
+
 ## Binary columns
 
 A binary column shows a dim `‹binary›` placeholder instead of its bytes, so

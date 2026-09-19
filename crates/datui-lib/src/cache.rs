@@ -4,10 +4,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// Registry of known cache files
-const CACHE_FILES: &[&str] = &["query_history.txt"];
+const CACHE_FILES: &[&str] = &["query_history.txt", "dataset_shapes.json"];
 
 /// Manages cache directory and cache file operations
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CacheManager {
     pub(crate) cache_dir: PathBuf,
 }
@@ -388,11 +388,110 @@ pub struct DatasetFacts {
     pub cost: crate::discover::Cost,
 }
 
+/// What an open learned about a dataset's files, kept so the next one can show its
+/// columns and its row count without reading a single footer.
+///
+/// Reading the footers is what opening a large dataset costs: one read per file, and a
+/// prefix of a few thousand objects spends seconds there every time it is opened. The
+/// listing is one request and has to happen anyway — it is how datui knows what the
+/// dataset is now — so it is the listing that decides whether this is still true, and
+/// the footers that it saves.
+///
+/// A **cache, not a catalogue**, in the same sense as [`DatasetFacts`]: every field is
+/// re-derivable by reading the dataset again, a fingerprint that no longer matches is
+/// ignored, and deleting the file costs speed and nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DatasetShape {
+    /// What the dataset's files looked like when this was taken. A listing that comes
+    /// back with a different one describes a dataset that has changed, and everything
+    /// below it is then about a dataset that no longer exists.
+    pub fingerprint: String,
+    /// One entry per file, in the order the listing returned them, which is the order a
+    /// scan reads them in.
+    pub files: Vec<CachedFooter>,
+    /// The distinct schemas the files have, as name and type in order.
+    ///
+    /// Held apart and referred to by index because a dataset of ten thousand files
+    /// usually has one schema, sometimes three, and never ten thousand. Writing each
+    /// file's columns out in full would make the cache larger than the footers it
+    /// saves reading.
+    ///
+    /// The types are Polars' own, serialised as Polars serialises them, rather than
+    /// their printed names parsed back. A name is not enough to rebuild a type — a
+    /// nested or parametrised one prints as something no parser here could take apart
+    /// again — and a type rebuilt slightly wrong would seat the wrong schema under a
+    /// dataset that reads fine. Should that representation change under a Polars
+    /// upgrade, the entries stop parsing and the cache is simply empty, which is the
+    /// failure this is allowed to have.
+    pub schemas: Vec<Vec<(String, polars::prelude::DataType)>>,
+    /// Seconds since the Unix epoch, for a human reading the file.
+    pub taken_at: u64,
+}
+
+/// What one file's footer said, as much of it as a reopen needs.
+///
+/// Everything here comes back out as a `FileFooter`, so a dataset rebuilt from the
+/// cache goes through exactly the same code as one read from the store — the union, the
+/// drift groups, the row numbering and the notes are all computed the same way from the
+/// same shapes. A cache that took a shortcut past that would be a second
+/// implementation of the dataset, and the two would drift.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachedFooter {
+    /// Which of [`DatasetShape::schemas`] this file has. `None` for a file whose footer
+    /// would not read, which a reopen must remember as unreadable rather than quietly
+    /// reading it again and getting a different dataset.
+    pub schema: Option<usize>,
+    /// The rows in each of its row groups, in order.
+    pub row_group_rows: Vec<usize>,
+    /// The compressed bytes of each, in the same order. Kept because a note is built
+    /// from it, and a note that appears on a first open and not on a reopen is a worse
+    /// bug than a slow open.
+    pub row_group_bytes: Vec<usize>,
+}
+
+impl DatasetShape {
+    /// The fingerprint of a listing: which files, how many, how much they weigh, when
+    /// each was last written, and the store's own tag for each where it gave one.
+    ///
+    /// Everything a listing can see without opening anything, which is the point — this
+    /// has to be cheap enough to be worth taking, and all of it arrives in the one
+    /// response that had to happen anyway. A file added, removed, renamed, resized or
+    /// rewritten changes it; a dataset that has not been touched does not.
+    ///
+    /// The names are in it because the cache is a positional join: the remembered
+    /// footers are lined up against a freshly listed dataset by position, so the
+    /// identity of what is being joined belongs in the thing that says the join is
+    /// still valid. The ETag is in it because size and a whole-second timestamp cannot
+    /// see a file overwritten within the same second at the same length.
+    pub fn fingerprint_of<'a>(
+        files: impl IntoIterator<Item = (&'a str, u64, u64, Option<&'a str>)>,
+    ) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut count = 0usize;
+        let mut bytes = 0u64;
+        for (key, size, stamp, etag) in files {
+            key.hash(&mut hasher);
+            size.hash(&mut hasher);
+            stamp.hash(&mut hasher);
+            etag.hash(&mut hasher);
+            count += 1;
+            bytes = bytes.saturating_add(size);
+        }
+        format!("{count}-{bytes}-{:016x}", hasher.finish())
+    }
+}
+
 /// Entries kept in the dataset index.
 ///
 /// Large enough to cover everywhere someone actually works, small enough that the
 /// file stays trivial to read and rewrite.
 pub const MAX_DATASET_FACTS: usize = 4096;
+
+/// Dataset shapes kept. Each one holds a row count per file, so a few hundred large
+/// datasets is already a sizeable file; this is the point where speed stops being worth
+/// the bytes.
+pub const MAX_DATASET_SHAPES: usize = 256;
 
 /// The buckets a cloud source listed on an earlier run, shown straight away on the next
 /// one while a fresh listing is out.
@@ -407,6 +506,93 @@ pub struct CloudListing {
 }
 
 impl CacheManager {
+    fn dataset_shape_path(&self) -> PathBuf {
+        self.cache_file("dataset_shapes.json")
+    }
+
+    /// Every dataset shape datui has kept, by the path or URL it was opened as.
+    /// Unreadable means empty — a cache that cannot be read is one that has nothing to
+    /// say, not an error worth stopping an open for.
+    pub fn load_dataset_shapes(&self) -> std::collections::HashMap<String, DatasetShape> {
+        let Ok(text) = fs::read_to_string(self.dataset_shape_path()) else {
+            return Default::default();
+        };
+        serde_json::from_str(&text).unwrap_or_default()
+    }
+
+    /// What datui remembers about one dataset, if the fingerprint still matches.
+    ///
+    /// Taking the fingerprint as an argument rather than returning the entry and
+    /// letting the caller check is deliberate: an entry whose fingerprint has moved on
+    /// describes a dataset that no longer exists, and there is no use for it that is
+    /// not a mistake.
+    ///
+    /// A hit is recorded as use, so what ages out is what has not been opened in
+    /// longest rather than what has not been rebuilt in longest.
+    pub fn dataset_shape(&self, path: &str, fingerprint: &str) -> Option<DatasetShape> {
+        let shape = self
+            .load_dataset_shapes()
+            .remove(path)
+            .filter(|shape| shape.fingerprint == fingerprint)?;
+        // A hit counts as use. Without this the clock only moves on a miss, so the
+        // entries that age out first are the datasets that never change — the ones with
+        // a perfect hit rate and the most to gain — while a dataset rewritten every day
+        // keeps resetting its own and stays forever.
+        self.touch_dataset_shape(path);
+        Some(shape)
+    }
+
+    /// Mark a shape as used just now, so eviction sees it as recent.
+    ///
+    /// Best effort: a shape that cannot be re-dated is still a shape that can be used,
+    /// and failing the open over it would be absurd.
+    fn touch_dataset_shape(&self, path: &str) {
+        let _ = self.with_cache_lock("dataset_shapes", || {
+            let mut all = self.load_dataset_shapes();
+            if let Some(shape) = all.get_mut(path) {
+                shape.taken_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+            }
+            let json = serde_json::to_string(&all)?;
+            let temp = self.cache_file(&format!("dataset_shapes.{}.tmp", std::process::id()));
+            fs::write(&temp, json)?;
+            fs::rename(&temp, self.dataset_shape_path()).inspect_err(|_| {
+                let _ = fs::remove_file(&temp);
+            })?;
+            Ok(())
+        });
+    }
+
+    /// Remember one dataset's shape, keeping the others.
+    ///
+    /// Bounded the same way the dataset index is: a cache that grows without limit
+    /// stops being one. The oldest entries go first, since what someone opened least
+    /// recently is what they are least likely to open next.
+    pub fn save_dataset_shape(&self, path: &str, shape: DatasetShape) {
+        let _ = self.with_cache_lock("dataset_shapes", || {
+            self.ensure_cache_dir()?;
+            let mut all = self.load_dataset_shapes();
+            all.insert(path.to_string(), shape);
+            if all.len() > MAX_DATASET_SHAPES {
+                let mut by_age: Vec<(String, u64)> =
+                    all.iter().map(|(k, v)| (k.clone(), v.taken_at)).collect();
+                by_age.sort_by_key(|(_, at)| *at);
+                for (old, _) in by_age.into_iter().take(all.len() - MAX_DATASET_SHAPES) {
+                    all.remove(&old);
+                }
+            }
+            let json = serde_json::to_string(&all)?;
+            let temp = self.cache_file(&format!("dataset_shapes.{}.tmp", std::process::id()));
+            fs::write(&temp, json)?;
+            fs::rename(&temp, self.dataset_shape_path()).inspect_err(|_| {
+                let _ = fs::remove_file(&temp);
+            })?;
+            Ok(())
+        });
+    }
+
     fn cloud_listing_path(&self) -> PathBuf {
         self.cache_file("cloud_sources.json")
     }
@@ -653,5 +839,159 @@ mod recents_pruning_tests {
                 "{url} should have survived; got {recents:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod dataset_shape_tests {
+    use super::*;
+
+    fn shape(fingerprint: &str, taken_at: u64) -> DatasetShape {
+        DatasetShape {
+            fingerprint: fingerprint.to_string(),
+            files: vec![
+                CachedFooter {
+                    schema: Some(0),
+                    row_group_rows: vec![10],
+                    row_group_bytes: vec![1_000],
+                },
+                CachedFooter {
+                    schema: Some(0),
+                    row_group_rows: vec![20],
+                    row_group_bytes: vec![2_000],
+                },
+            ],
+            schemas: vec![vec![("id".into(), polars::prelude::DataType::Int64)]],
+            taken_at,
+        }
+    }
+
+    /// A dataset that has not changed is remembered; one that has is not.
+    ///
+    /// The whole cache turns on this: the listing is cheap and happens anyway, and what
+    /// it fingerprints decides whether thousands of footer reads can be skipped. An
+    /// entry returned for a dataset that has moved on would seat the wrong row counts
+    /// under the right name, which is worse than reading the footers again.
+    #[test]
+    fn a_shape_comes_back_only_for_the_dataset_it_was_taken_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CacheManager::with_dir(dir.path().to_path_buf());
+        cache.save_dataset_shape("s3://b/events/", shape("2-30-abc", 100));
+
+        assert_eq!(
+            cache.dataset_shape("s3://b/events/", "2-30-abc"),
+            Some(shape("2-30-abc", 100)),
+            "the same dataset, unchanged"
+        );
+        assert_eq!(
+            cache.dataset_shape("s3://b/events/", "3-40-def"),
+            None,
+            "a file added, removed or rewritten since"
+        );
+        assert_eq!(
+            cache.dataset_shape("s3://b/other/", "2-30-abc"),
+            None,
+            "and a different dataset that happens to weigh the same"
+        );
+    }
+
+    /// The fingerprint sees everything a listing can see, and nothing it cannot.
+    #[test]
+    fn the_fingerprint_moves_when_the_files_do() {
+        let base = DatasetShape::fingerprint_of([
+            ("a.parquet", 100, 7, Some("e1")),
+            ("b.parquet", 200, 8, Some("e2")),
+        ]);
+        assert_eq!(
+            base,
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 200, 8, Some("e2")),
+            ]),
+            "the same listing twice is the same fingerprint"
+        );
+        assert_ne!(
+            base,
+            DatasetShape::fingerprint_of([("a.parquet", 100, 7, Some("e1"))]),
+            "a file removed"
+        );
+        assert_ne!(
+            base,
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 200, 8, Some("e2")),
+                ("c.parquet", 50, 9, Some("e3")),
+            ]),
+            "a file added"
+        );
+        assert_ne!(
+            base,
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 201, 8, Some("e2")),
+            ]),
+            "a file resized"
+        );
+        assert_ne!(
+            base,
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 200, 9, Some("e2")),
+            ]),
+            "a file rewritten, which the stamp catches"
+        );
+        assert_ne!(
+            base,
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 200, 8, Some("e9")),
+            ]),
+            "a file rewritten within the same second at the same length, which only \
+             the store's own tag catches"
+        );
+        assert_ne!(
+            base,
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("renamed.parquet", 200, 8, Some("e2")),
+            ]),
+            "and a file renamed, which reorders the positional join the cache is"
+        );
+    }
+
+    /// The cache is bounded, oldest first.
+    #[test]
+    fn the_oldest_shapes_are_the_ones_that_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CacheManager::with_dir(dir.path().to_path_buf());
+        for i in 0..(MAX_DATASET_SHAPES + 10) {
+            cache.save_dataset_shape(&format!("s3://b/{i}/"), shape("f", i as u64));
+        }
+        let all = cache.load_dataset_shapes();
+        assert_eq!(all.len(), MAX_DATASET_SHAPES, "kept to its bound");
+        assert!(
+            !all.contains_key("s3://b/0/"),
+            "and what went is what was opened longest ago"
+        );
+        assert!(
+            all.contains_key(&format!("s3://b/{}/", MAX_DATASET_SHAPES + 9)),
+            "while the most recent is still there"
+        );
+    }
+
+    /// `--clear-cache` takes it with everything else.
+    #[test]
+    fn clearing_the_cache_forgets_the_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CacheManager::with_dir(dir.path().to_path_buf());
+        cache.save_dataset_shape("s3://b/events/", shape("f", 1));
+        assert!(cache.dataset_shape("s3://b/events/", "f").is_some());
+
+        cache.clear_all().unwrap();
+        assert_eq!(
+            cache.dataset_shape("s3://b/events/", "f"),
+            None,
+            "nothing kept here survives being told to forget"
+        );
     }
 }

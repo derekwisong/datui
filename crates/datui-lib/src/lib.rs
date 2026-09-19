@@ -1854,6 +1854,158 @@ pub mod tests {
         );
     }
 
+    /// A pass that brings no count still leaves rows on screen.
+    ///
+    /// When the pass samples past `MAX_FOOTER_READS`, or a footer fails on the second
+    /// read, it comes back with no row groups — so there is no count, and an End waiting
+    /// on it defers to the ordinary one instead of jumping. The join has already dropped
+    /// the buffer by then, so if the jump is taken to have read the page, nothing reads
+    /// it: a table with no rows in it until the next keypress.
+    #[test]
+    fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
+        use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let wider = || {
+            df!("id" => (0..100i64).collect::<Vec<_>>(), "oops" => vec!["a"; 100])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 100,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(rows()).schema.clone(),
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        // No row groups: a dataset sampled past the footer limit, or one whose footer
+        // would not parse the second time.
+        state.set_footers_pending(Arc::new(move |_| {
+            Some(FootersFound {
+                dataset: dataset_of(wider()),
+                lf: wider(),
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                scan: None,
+            })
+        }));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut app = App::new(tx, runtime.handle().clone());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+
+        let reported = loop {
+            let event = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the pass reports back");
+            if matches!(event, AppEvent::BackgroundFootersJoined { .. }) {
+                break event;
+            }
+        };
+        let _ = app.handle(&reported);
+
+        assert!(
+            app.collect_inflight.is_some(),
+            "the join dropped the buffer, so something has to read it back"
+        );
+    }
+
+    /// End on a sorted staged dataset waits for the pass, as it does on a plain one.
+    ///
+    /// A sort is rebuilt over the joined scan, so the join lands underneath it and takes
+    /// a fresh `len_generation` on its way past. A count started before that comes back
+    /// answering a question nothing can match it to: the jump never happens, the status
+    /// line goes on saying it is counting, and `end_after_count` is stranded at a dead
+    /// generation — where a later failure for any other count prints "Could not count
+    /// the rows to find the end" about something the user never asked for.
+    #[test]
+    fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        state.set_footers_pending(Arc::new(|_| None));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // Sorted — which is one of the things the staging exists to let you do while
+        // the footers read — and then End.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.sort(vec!["id".to_string()], false);
+        state.defer_collect = false;
+        assert!(
+            state.scan_is_the_root(),
+            "a sort is rebuilt over whatever the root becomes, so the join lands under it"
+        );
+
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_when_the_footers_land,
+            Some(app.dataset_generation),
+            "so End waits for the pass rather than starting a count the join will orphan"
+        );
+        assert!(
+            app.end_after_count.is_none(),
+            "and nothing is left waiting on a count that will never be matched"
+        );
+    }
+
     /// A query over a dataset still reading its footers still gets counted.
     ///
     /// The pass is bringing the *dataset's* count, which is not the count of a query's
@@ -4324,14 +4476,15 @@ impl App {
         if self.end_when_the_footers_land.take() == Some(self.dataset_generation) {
             self.status_message = None;
             if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
-                let _ = self.events.send(next);
                 // The jump reads the page it lands on, so reading this one first would
                 // be a page fetched to be thrown away.
+                let _ = self.events.send(next);
                 return;
             }
-            // Unless the view was already at the end, in which case the jump moves
-            // nothing and reads nothing — and the join has dropped the buffer, so
-            // leaving it there is a table with no rows in it.
+            // Unless it asked for no read: the view was already at the end, or the pass
+            // brought no count and the jump is waiting on the ordinary one. The join has
+            // dropped the buffer either way, so falling through is the difference
+            // between a table and an empty one.
         }
         self.spawn_async_collect("Loading buffer...");
     }
@@ -4671,9 +4824,16 @@ impl App {
         // a second time — and the join takes a fresh `len_generation` on its way past,
         // so the count that came back would be answering a question nobody could match
         // it to and the jump would never happen. Wait for the pass instead.
+        // `scan_is_the_root`, not `counts_itself_later`: the question here is whether a
+        // join is going to land underneath this frame and take a fresh `len_generation`
+        // with it, which is what would leave a count answering a question nothing could
+        // match it to. A filter and a sort are rebuilt over the joined scan, so they are
+        // on this side of it even though they are not pristine.
         if matches!(jump, AppEvent::DoScrollEnd)
             && let Some(state) = self.data_table_state.as_ref()
-            && state.counts_itself_later()
+            && state.footers_pending().is_some()
+            && state.scan_is_the_root()
+            && !state.is_num_rows_valid()
         {
             self.end_when_the_footers_land = Some(self.dataset_generation);
             self.status_message = Some("Counting rows to find the end…".to_string());

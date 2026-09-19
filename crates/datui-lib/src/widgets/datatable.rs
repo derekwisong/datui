@@ -3975,7 +3975,11 @@ impl DataTableState {
         self.footers_pending.clone()
     }
 
-    /// Whether this dataset's row count is already on its way.
+    /// Whether *this frame's* row count is already on its way.
+    ///
+    /// The frame matters: what the pass is bringing is the dataset's count, which is
+    /// not the count of a query's result. Asking this about the wrong frame is how a
+    /// count nobody else was going to take gets declined.
     ///
     /// A staged open is still reading every footer, and those footers hold the count.
     /// Asking for it separately would read all of them a second time, so the dataset
@@ -4019,6 +4023,7 @@ impl DataTableState {
     /// differs: it now knows which files hold a column in a type the dataset cannot
     /// keep, and with every file's row count it can number the rows, which is what
     /// tells an absent cell from a null.
+    ///
     /// Gives them back as `Err` rather than taking them, while the user is looking at
     /// something built on top of the scan instead of the scan itself — see
     /// [`Self::scan_is_the_root`]. Rebuilding the root under a query takes away the
@@ -4026,15 +4031,19 @@ impl DataTableState {
     /// them again when the view comes back to the data.
     pub fn join_dataset_schema(
         &mut self,
-        found: FootersFound,
+        mut found: FootersFound,
     ) -> std::result::Result<(), Box<FootersFound>> {
         if !self.scan_is_the_root() {
             // The columns must wait; what the footers said about the files need not.
             // `set_file_row_groups` keeps the offsets without touching the count of a
             // frame that is a query's result rather than the dataset — so letting the
             // query go gets the total back without going and fetching it.
-            if !found.row_groups.is_empty() {
-                self.set_file_row_groups(&found.row_groups);
+            // Taken, not borrowed: this runs on every event for as long as the view
+            // stays off the scan, and applying the same row groups on each keystroke is
+            // a walk of every file in the dataset for nothing.
+            let row_groups = std::mem::take(&mut found.row_groups);
+            if !row_groups.is_empty() {
+                self.set_file_row_groups(&row_groups);
             }
             // Boxed because what comes back is most of a dataset's worth of schema, and
             // an `Err` that size would be carried by every call that succeeds too.
@@ -7037,6 +7046,70 @@ mod tests {
     use super::*;
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+
+    /// The join drops the rows it read through the frame it replaced.
+    ///
+    /// The buffer holds rows read at the old schema, through the old scan. Kept, the
+    /// next paint draws them under the new column order — and `display_slice_df` offsets
+    /// into them from `buffered_start_row`, so where the user is deep in a dataset it is
+    /// the wrong rows under the right numbers.
+    #[test]
+    fn the_join_drops_the_rows_read_through_the_frame_it_replaced() {
+        let narrow = || df!("id" => &[1i64, 2]).unwrap().lazy();
+        let wider = || {
+            df!("id" => &[1i64, 2], "oops" => &["a", "b"])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 2,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(narrow()).schema.clone(),
+            narrow(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.visible_rows = 2;
+        state.collect();
+        assert!(
+            state.buffered_df.is_some(),
+            "there are rows on hand, read at the old schema"
+        );
+
+        assert!(
+            state
+                .join_dataset_schema(FootersFound {
+                    dataset: dataset_of(wider()),
+                    lf: wider(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    scan: None,
+                })
+                .is_ok()
+        );
+
+        assert!(
+            state.buffered_df.is_none(),
+            "and they are let go, rather than drawn under the columns that replaced them"
+        );
+        assert_eq!(
+            (state.buffered_start_row, state.buffered_end_row),
+            (0, 0),
+            "with nothing left saying which rows they were"
+        );
+    }
 
     /// The join throws away a width measured on the frame it replaced.
     ///

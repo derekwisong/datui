@@ -1106,16 +1106,72 @@ mod tests {
     use super::*;
 
     /// A dataset that has not been counted says so rather than showing how far it got.
+    ///
+    /// Through a rendered panel, not the helper: the helper cannot tell whether its
+    /// caller passed `num_rows_if_valid()` or the raw field, and the raw field is what
+    /// the bug was.
     #[test]
     fn the_schema_tab_does_not_call_a_partial_the_total() {
-        assert_eq!(
-            rows_and_columns(Some(6541), 12),
-            "Rows (total): 6,541 · Columns: 12"
+        use crate::widgets::datatable::DataTableState;
+        use polars::prelude::*;
+
+        let rows = || df!("id" => (0..70i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        // As a staged open leaves it: a provisional from however far the buffer reached,
+        // with no count taken.
+        state.num_rows = 70;
+
+        let painted = |state: &DataTableState| {
+            let area = Rect::new(0, 0, 60, 12);
+            let mut buf = Buffer::empty(area);
+            let mut modal = InfoModal::default();
+            let panel = DataTableInfo::new(
+                state,
+                InfoContext {
+                    path: None,
+                    format: None,
+                    parquet_metadata: None,
+                },
+                &mut modal,
+                ratatui::style::Color::White,
+                ratatui::style::Color::Cyan,
+                ratatui::style::Color::White,
+                Style::default(),
+            );
+            panel.render_schema_summary(area, &mut buf);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let uncounted = painted(&state);
+        assert!(
+            uncounted.contains("counting…"),
+            "a count not taken is not a total: {uncounted}"
         );
-        assert_eq!(
-            rows_and_columns(None, 12),
-            "Rows (total): counting… · Columns: 12",
-            "not the 70 rows the buffer happens to hold"
+        assert!(
+            !uncounted.contains("70"),
+            "and the buffer's height is not shown in its place: {uncounted}"
+        );
+
+        state.set_num_rows(70);
+        let counted = painted(&state);
+        assert!(
+            counted.contains("Rows (total): 70"),
+            "and once it has been counted, that is what it says: {counted}"
         );
     }
 

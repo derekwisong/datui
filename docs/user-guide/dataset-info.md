@@ -8,7 +8,7 @@ or <kbd>Esc</kbd> closes it.
 | Tab | Shows |
 |---|---|
 | **Schema** | Total rows and columns, columns by type, whether the schema is stored (Parquet) or inferred (CSV, JSON), and every column with its type and, for Parquet, its codec and compression ratio |
-| **Resources** | File size, the memory used by the buffered rows, the format, and for Parquet the overall compression ratio, row groups, version and writer |
+| **Resources** | File size, the memory used by the buffered rows, the format, for Parquet the overall compression ratio, row groups, version and writer, and what opening the dataset cost |
 | **Partitions** | For a hive-partitioned dataset, its partition columns |
 | **Notes** | What datui noticed about the data while reading it. Only there when something is worth saying |
 
@@ -113,3 +113,55 @@ a quiet accent until you open the panel. `notes_accent = false` in the
 `[display]` section of the [config](configuration.md) turns that off; the Notes
 tab is still there either way. A note is an observation about the
 data, not a fault in it, so there is no pop-up and no error styling.
+
+## Measurements
+
+At the foot of the **Resources** tab, what opening this dataset cost.
+
+It is there for the datasets datui finds and reads itself — a folder of Parquet
+opened with `--hive`, a remote prefix, and a single remote object. Anything else
+is handed straight to Polars, which does not report what it did, and shows no
+Measurements section at all: a single local file, a CSV, a local folder opened
+without `--hive`, and a folder or a prefix opened with
+`single_spine_schema = false`.
+
+| Metric | Formula |
+|---|---|
+| Listing | time to find the dataset's files, and how many were found |
+| Footers | time the footer passes cost, and how many footers were read |
+| Total | the two times added up |
+
+A row appears only where there was something to measure. A single remote object
+is named, not searched for, so it has no Listing row — and with one stretch
+there is nothing to total, so it has no Total row either.
+
+For a remote dataset the Footers row also carries the requests datui made and
+the bytes they returned, and the Total carries them too. Those reads datui
+issues itself, sixty-four at a time, so it can count them exactly.
+
+**No Listing row reports requests, and a local dataset reports none anywhere.**
+A local folder is walked rather than requested, so there are none to report; and
+every remote listing hands its paging to the object store, which does not say
+how many round trips it took. Every figure here is one datui produced itself,
+and where it cannot count something it shows nothing rather than a zero, because
+a zero reads as "none" rather than "not measured".
+
+**"Footers read" is not the number of files.** A footer is read more than once
+on most datasets — one large enough to open before its footers are read has
+them read again behind the open, and one whose open could not settle its row
+count reads them again to count — so a three-file folder commonly reports six.
+The figure is what the reads cost, which is the point of it; the size of the
+dataset is on the Listing row.
+
+A count pass has to find the files before it can read them, so its walk of the
+folder is in the Footers time too. Only the open's own search is on the Listing
+row.
+
+Counting is measured once. It runs again whenever the row count is invalidated
+— clearing a filter does it — and those later passes are re-work on a dataset
+that is already open, not part of what opening it cost.
+
+The figures keep moving after you can first see them. A large remote dataset
+opens once two footers have been read and reads the rest behind the open, so
+the Footers row and the Total climb while you are already looking at rows — see
+[datasets whose files differ](loading-data.md#files-that-disagree).

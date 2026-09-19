@@ -142,23 +142,40 @@ fn footer_from_parquet_tail(tail_bytes: &[u8]) -> Result<ParquetFooter> {
 pub async fn footer_of_cloud_parquet(
     store: Arc<dyn ObjectStore>,
     key: &str,
+    meter: &crate::measurements::Meter,
 ) -> Result<ParquetFooter> {
-    read_parquet_footer(&store, &crate::cloud_browse::object_path(key)).await
+    let began = std::time::Instant::now();
+    let footer = read_parquet_footer(&store, &crate::cloud_browse::object_path(key), meter).await;
+    meter.read_footers(began.elapsed(), Some(1), true);
+    footer
 }
 
-/// Fetch the tail of one object and read its footer. Does not fetch the full file.
-async fn read_parquet_footer(store: &Arc<dyn ObjectStore>, path: &OsPath) -> Result<ParquetFooter> {
-    let meta = store
-        .head(path)
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("Cloud head failed: {}", e))?;
+/// Fetch the tail of one object and read its footer, counted against `meter`.
+///
+/// Does not fetch the full file.
+///
+/// Two requests, not one: this route does not know the object's size, so it asks before
+/// it reads. Both are counted — unmetered, the routes that come through here would
+/// report footers read against no requests at all.
+async fn read_parquet_footer(
+    store: &Arc<dyn ObjectStore>,
+    path: &OsPath,
+    meter: &crate::measurements::Meter,
+) -> Result<ParquetFooter> {
+    let head = store.head(path).await;
+    // A `head` returns no body, so it is a request that brought back nothing.
+    meter.footer_request(0);
+    let meta = head.map_err(|e| color_eyre::eyre::eyre!("Cloud head failed: {}", e))?;
     let size = meta.size;
     let start = size.saturating_sub(PARQUET_FOOTER_TAIL_BYTES as u64);
     let range = start..size;
-    let ranges = store
-        .get_ranges(path, &[range])
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("Cloud get_ranges failed: {}", e))?;
+    let got = store.get_ranges(path, &[range]).await;
+    meter.footer_request(
+        got.as_ref()
+            .map(|r| r.iter().map(|b| b.len() as u64).sum())
+            .unwrap_or(0),
+    );
+    let ranges = got.map_err(|e| color_eyre::eyre::eyre!("Cloud get_ranges failed: {}", e))?;
     let tail = ranges
         .into_iter()
         .next()
@@ -175,6 +192,7 @@ async fn read_parquet_footer(store: &Arc<dyn ObjectStore>, path: &OsPath) -> Res
 pub async fn schema_from_one_cloud_hive(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
+    meter: &crate::measurements::Meter,
 ) -> Result<(Arc<Schema>, Vec<String>)> {
     let prefix_trimmed = prefix.trim_end_matches('/');
     let prefix_path = if prefix_trimmed.is_empty() {
@@ -182,17 +200,39 @@ pub async fn schema_from_one_cloud_hive(
     } else {
         crate::cloud_browse::object_path(prefix_trimmed)
     };
+    // The walks are the listing: this route finds the prefix's two ends by listing one
+    // partition level at a time. They are timed as a listing and the footer reads are
+    // timed as footers, rather than one stretch over both — on a deep layout the walks
+    // are most of the wait, and billing them to the footer row would say a glob was
+    // slow to read footers when it was slow to find its files.
+    let listing_began = std::time::Instant::now();
     let mut values = Vec::new();
     let one_key = first_parquet_key_spine(&store, &prefix_path, 0, &mut values, false)
         .await?
         .ok_or_else(|| color_eyre::eyre::eyre!("No parquet file found in cloud hive prefix"))?;
-    let mut file_schema = (*read_parquet_footer(&store, &one_key).await?.schema).clone();
     let mut newest_values = Vec::new();
-    if let Some(newest) =
-        first_parquet_key_spine(&store, &prefix_path, 0, &mut newest_values, true).await?
-        && newest != one_key
-    {
-        let newest_schema = read_parquet_footer(&store, &newest).await?.schema;
+    let newest = first_parquet_key_spine(&store, &prefix_path, 0, &mut newest_values, true)
+        .await?
+        .filter(|newest| *newest != one_key);
+    // No file count. This route walks to the prefix's two ends and never lists what is
+    // between them, so it knows how long finding them took and does not know how many
+    // files there are. The two ends are not that number, and putting them under the
+    // word the other routes use for the size of the dataset would say a prefix of
+    // thousands holds two.
+    //
+    // And no request count either. This walk makes a `list_with_delimiter` call per
+    // partition level, but that call pages inside the object store exactly as a flat
+    // `list` does — so the number of calls datui makes is not the number of round trips
+    // it costs, and counting the calls would report a figure that grows further from
+    // the truth the larger the prefix.
+    meter.listed(listing_began.elapsed(), None, false);
+    // Two ends, or one when the prefix holds a single file and both walks land on it.
+    let ends = 1 + usize::from(newest.is_some());
+
+    let footers_began = std::time::Instant::now();
+    let mut file_schema = (*read_parquet_footer(&store, &one_key, meter).await?.schema).clone();
+    if let Some(newest) = newest {
+        let newest_schema = read_parquet_footer(&store, &newest, meter).await?.schema;
         for (name, dtype) in newest_schema.iter() {
             if !file_schema.contains(name) {
                 file_schema.with_column(name.clone(), dtype.clone());
@@ -215,6 +255,9 @@ pub async fn schema_from_one_cloud_hive(
             merged.with_column(name.clone(), dtype.clone());
         }
     }
+    // As many footers as were actually read: one when both walks landed on the same
+    // object, which a glob matching a single file does.
+    meter.read_footers(footers_began.elapsed(), Some(ends), true);
     Ok((Arc::new(merged), partition_columns))
 }
 
@@ -403,12 +446,14 @@ pub async fn footers_of_files(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
     read: &[usize],
+    meter: &Arc<crate::measurements::Meter>,
 ) -> Vec<Option<FileFooter>> {
     footers_of_files_reporting(
         store,
         files,
         read,
         &crate::schema_union::FooterProgress::default(),
+        meter,
     )
     .await
 }
@@ -423,7 +468,9 @@ pub async fn footers_of_files_reporting(
     files: &[DatasetFile],
     read: &[usize],
     progress: &crate::schema_union::FooterProgress,
+    meter: &Arc<crate::measurements::Meter>,
 ) -> Vec<Option<FileFooter>> {
+    let began = std::time::Instant::now();
     let pass = progress.pass(read.len());
     let permits = Arc::new(tokio::sync::Semaphore::new(FOOTERS_AT_ONCE));
     let mut reads = tokio::task::JoinSet::new();
@@ -433,10 +480,10 @@ pub async fn footers_of_files_reporting(
         .cloned()
         .enumerate()
     {
-        let (store, permits) = (store.clone(), permits.clone());
+        let (store, permits, meter) = (store.clone(), permits.clone(), meter.clone());
         reads.spawn(async move {
             let _permit = permits.acquire_owned().await;
-            (slot, footer_of_file(&store, &file).await.ok())
+            (slot, footer_of_file(&store, &file, &meter).await.ok())
         });
     }
     let mut out = vec![None; read.len()];
@@ -449,41 +496,85 @@ pub async fn footers_of_files_reporting(
         }
     }
     drop(pass);
+    // The requests are already counted — each read counted itself as it was made — so
+    // this only hands the running total back to be stamped with how long the pass took.
+    meter.read_footers(began.elapsed(), Some(read.len()), true);
     out
 }
 
 /// The rows in each row group of every file, in file order. Files whose footer cannot
 /// be read count as zero rows, as they always have.
+///
+/// Metered like any other footer pass, because that is what it is: a dataset whose open
+/// could not settle the count re-reads every footer to take it, and those reads cost
+/// exactly what the open's did. Left unmetered, a staged cloud open — which is every
+/// prefix past a wave of objects — would report about half the requests it made.
 pub async fn row_groups_of_files(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
+    meter: &Arc<crate::measurements::Meter>,
 ) -> Result<Vec<Vec<usize>>> {
-    Ok(
-        footers_of_files(store, files, &(0..files.len()).collect::<Vec<_>>())
-            .await
-            .into_iter()
-            .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
-            .collect(),
+    // Counted as the pass that settles the row count, which is recorded once: this runs
+    // again every time the count is invalidated, and a dataset explored for a few
+    // minutes would otherwise report an open that kept getting more expensive.
+    let counting = Arc::new(crate::measurements::Meter::default());
+    let began = std::time::Instant::now();
+    let groups = footers_of_files(
+        store,
+        files,
+        &(0..files.len()).collect::<Vec<_>>(),
+        &counting,
     )
+    .await;
+    // Against a meter of its own first, so that a pass the one-shot declines adds
+    // nothing to the dataset's figures.
+    let wire = counting.footers().and_then(|c| c.over_the_wire);
+    // Not recorded when nothing parsed, the same as the local count: a pass that
+    // settled nothing must not take the one measurement this gets, or the pass that
+    // eventually succeeds is declined and never reported.
+    if groups.iter().any(Option::is_some) {
+        meter.counted_rows(began.elapsed(), Some(files.len()), wire);
+    }
+    Ok(groups
+        .into_iter()
+        .map(|f| f.map(|f| f.row_group_rows).unwrap_or_default())
+        .collect())
 }
 
-async fn footer_of_file(store: &Arc<dyn ObjectStore>, file: &DatasetFile) -> Result<FileFooter> {
+/// Read a range, counting the request against `meter` and the bytes it returned.
+///
+/// The request is counted whether or not it succeeded — it was made either way, and a
+/// prefix that is slow because half its reads fail should say so — while only bytes
+/// that arrived are added. Written as a macro rather than a function because naming
+/// the store's byte buffer would mean taking a dependency on `bytes` for one signature.
+macro_rules! counted_range {
+    ($store:expr, $path:expr, $range:expr, $meter:expr) => {{
+        let got = $store.get_range($path, $range).await;
+        $meter.footer_request(got.as_ref().map(|b| b.len() as u64).unwrap_or(0));
+        got.map_err(|e| color_eyre::eyre::eyre!("Cloud read failed: {}", e))
+    }};
+}
+
+async fn footer_of_file(
+    store: &Arc<dyn ObjectStore>,
+    file: &DatasetFile,
+    meter: &crate::measurements::Meter,
+) -> Result<FileFooter> {
     let path = crate::cloud_browse::object_path(&file.key);
     let tail_start = file.size.saturating_sub(COUNT_TAIL_BYTES);
-    let tail = store
-        .get_range(&path, tail_start..file.size)
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("Cloud read failed: {}", e))?;
+    let tail = counted_range!(store, &path, tail_start..file.size, meter)?;
     let footer_len = footer_length(&tail)
         .ok_or_else(|| color_eyre::eyre::eyre!("{} is not a Parquet file", file.key))?;
     let needed = footer_len + 8;
     let tail = if needed as usize <= tail.len() {
         tail
     } else {
-        store
-            .get_range(&path, file.size.saturating_sub(needed)..file.size)
-            .await
-            .map_err(|e| color_eyre::eyre::eyre!("Cloud read failed: {}", e))?
+        counted_range!(
+            store,
+            &path,
+            file.size.saturating_sub(needed)..file.size,
+            meter
+        )?
     };
     let mut cursor = Cursor::new(tail.as_ref());
     let mut reader = ParquetReader::new(&mut cursor);
@@ -557,7 +648,13 @@ mod tests {
         files: &[DatasetFile],
     ) -> (crate::schema_union::DatasetSchema, Vec<String>) {
         let read: Vec<usize> = (0..files.len()).collect();
-        let footers = footers_of_files(store, files, &read).await;
+        let footers = footers_of_files(
+            store,
+            files,
+            &read,
+            &Arc::new(crate::measurements::Meter::default()),
+        )
+        .await;
         dataset_schema_from_footers(files, &read, &footers).unwrap()
     }
 
@@ -643,7 +740,13 @@ mod tests {
             }
             let (files, _skipped) = list_dataset_files(&store, "data/").await.unwrap();
             let read: Vec<usize> = (0..files.len()).collect();
-            let footers = footers_of_files(&store, &files, &read).await;
+            let footers = footers_of_files(
+                &store,
+                &files,
+                &read,
+                &Arc::new(crate::measurements::Meter::default()),
+            )
+            .await;
 
             let mut sizes: Vec<usize> = footers
                 .iter()
@@ -684,7 +787,13 @@ mod tests {
                 .unwrap();
             let (wide_files, _skipped) = list_dataset_files(&store, "wide/").await.unwrap();
             assert_eq!(wide_files.len(), 1, "only the wide file: {wide_files:?}");
-            let wide_footers = footers_of_files(&store, &wide_files, &[0]).await;
+            let wide_footers = footers_of_files(
+                &store,
+                &wide_files,
+                &[0],
+                &Arc::new(crate::measurements::Meter::default()),
+            )
+            .await;
             let size = wide_footers[0].as_ref().unwrap().row_group_bytes[0];
             assert!(
                 size < 1_000_000,
@@ -730,7 +839,13 @@ mod tests {
             // Only the last one's footer is read: its size is the one the schema must
             // carry, and it is the one a "by position" lookup would never reach.
             let read = [2usize];
-            let footers = footers_of_files(&store, &files, &read).await;
+            let footers = footers_of_files(
+                &store,
+                &files,
+                &read,
+                &Arc::new(crate::measurements::Meter::default()),
+            )
+            .await;
             let (dataset, _) = dataset_schema_from_footers(&files, &read, &footers).unwrap();
             assert_eq!(
                 dataset.median_file_bytes,
@@ -789,7 +904,10 @@ mod tests {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            &progress,
+            &crate::measurements::OpenReport {
+                progress: progress.clone(),
+                meter: Arc::new(crate::measurements::Meter::default()),
+            },
         );
 
         let pass = progress.last_pass();
@@ -799,6 +917,294 @@ mod tests {
             progress.reading(),
             None,
             "with nothing left to say once they landed"
+        );
+    }
+
+    /// A cloud count that read nothing leaves the measurement for the one that does.
+    ///
+    /// The twin of the local route's guard. Counting gets one measurement, and a pass
+    /// where no footer parsed settled nothing — a prefix caught mid-write is the case.
+    /// If such a pass took it, the count that eventually works is declined and the
+    /// Footers row reports the failed attempt for as long as the dataset is open.
+    #[test]
+    fn a_cloud_count_that_read_nothing_leaves_the_measurement_for_the_one_that_does() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let key = OsPath::from("data/date=2024-01-01/half-written.parquet");
+        rt.block_on(async {
+            store
+                .put(&key, PutPayload::from(b"not parquet yet".to_vec()))
+                .await
+                .unwrap();
+        });
+        let files = vec![DatasetFile {
+            key: "data/date=2024-01-01/half-written.parquet".to_string(),
+            size: 15,
+        }];
+
+        let meter = Arc::new(crate::measurements::Meter::default());
+        // As the open leaves it: a count belongs to an open this meter measured.
+        meter.listed(std::time::Duration::from_millis(1), Some(1), false);
+        rt.block_on(async {
+            row_groups_of_files(&store, &files, &meter).await.unwrap();
+        });
+        assert_eq!(
+            meter.footers(),
+            None,
+            "nothing under there parsed, so nothing was measured and the one \
+             measurement counting gets is still to be had"
+        );
+
+        // The writer finishes, and the count that works is the one reported.
+        let mut frame = df!("n" => &[1i64, 2, 3]).unwrap();
+        let mut body = Vec::new();
+        ParquetWriter::new(&mut body).finish(&mut frame).unwrap();
+        let size = body.len() as u64;
+        rt.block_on(async {
+            store.put(&key, PutPayload::from(body)).await.unwrap();
+        });
+        let files = vec![DatasetFile {
+            key: "data/date=2024-01-01/half-written.parquet".to_string(),
+            size,
+        }];
+        let groups =
+            rt.block_on(async { row_groups_of_files(&store, &files, &meter).await.unwrap() });
+        assert_eq!(
+            groups.iter().flatten().sum::<usize>(),
+            3,
+            "and it counts the three rows"
+        );
+        let footers = meter.footers().expect("the count that worked was measured");
+        assert_eq!(footers.files, Some(1), "over the one object");
+        assert!(
+            footers
+                .over_the_wire
+                .is_some_and(|w| w.bytes.is_some_and(|b| b > 15)),
+            "reporting the real read, not the fifteen bytes of the half-written one; \
+             got {:?}",
+            footers.over_the_wire
+        );
+    }
+
+    /// A prefix walked to its two ends reports the footers it actually read.
+    ///
+    /// When the prefix holds a single file both walks land on it and only one footer is
+    /// read, so reporting the two this route usually reads would be a figure of work
+    /// that did not happen. The walks are the listing and the reads are the footers,
+    /// timed apart: on a deep layout the walking is most of the wait, and billing it to
+    /// the footer row would say the open was slow to read footers when it was slow to
+    /// find its files.
+    ///
+    /// Against the function, not a route a user can reach: `schema_state_from_cloud_hive`
+    /// sends only starred paths here and does not strip the star, so the listing below
+    /// it matches nothing and every real glob falls through to a full scan — see #228.
+    /// Phase 6 of #195 replaces this route with one that expands globs itself. Until
+    /// then this holds the arithmetic so the replacement inherits it.
+    #[test]
+    fn a_glob_over_one_file_counts_the_one_footer_it_read() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let mut frame = df!("n" => &[1i64, 2, 3]).unwrap();
+        let mut body = Vec::new();
+        ParquetWriter::new(&mut body).finish(&mut frame).unwrap();
+        rt.block_on(async {
+            store
+                .put(
+                    &OsPath::from("data/date=2024-01-01/only.parquet"),
+                    PutPayload::from(body),
+                )
+                .await
+                .unwrap();
+        });
+
+        let meter = crate::measurements::Meter::default();
+        rt.block_on(async {
+            schema_from_one_cloud_hive(store.clone(), "data/", &meter)
+                .await
+                .expect("the prefix has a parquet file in it")
+        });
+
+        let footers = meter
+            .footers()
+            .expect("the route measured its footer reads");
+        assert_eq!(
+            footers.files,
+            Some(1),
+            "both walks landed on the same object, so one footer was read"
+        );
+        assert_eq!(
+            footers.over_the_wire.map(|w| w.requests),
+            Some(2),
+            "which cost two requests: this route must ask an object's size before it \
+             can ask for its tail"
+        );
+        let listing = meter
+            .listing()
+            .expect("and measured the walks that found it");
+        assert_eq!(
+            listing.files, None,
+            "and no file count at all: this route walks to a prefix's two ends and \
+             never lists what is between them, so it does not know how many files \
+             there are — and two is a smaller number than most such prefixes hold"
+        );
+        assert_eq!(
+            listing.over_the_wire, None,
+            "and nothing over the wire: this walk makes a list call per partition \
+             level, but each of those pages inside the object store just as a flat \
+             listing does, so the calls are not the round trips and datui counts neither"
+        );
+    }
+
+    /// A single remote object opens with a footer row and no listing row.
+    ///
+    /// There is nothing to list — the user named one object — and a listing row of zero
+    /// files would say datui looked and found nothing.
+    #[test]
+    fn a_single_remote_object_measures_its_footer_and_lists_nothing() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let mut frame = df!("n" => &[1i64, 2, 3]).unwrap();
+        let mut body = Vec::new();
+        ParquetWriter::new(&mut body).finish(&mut frame).unwrap();
+        rt.block_on(async {
+            store
+                .put(&OsPath::from("one.parquet"), PutPayload::from(body))
+                .await
+                .unwrap();
+        });
+
+        let meter = crate::measurements::Meter::default();
+        rt.block_on(async {
+            footer_of_cloud_parquet(store.clone(), "one.parquet", &meter)
+                .await
+                .expect("it is a parquet object")
+        });
+
+        let footers = meter.footers().expect("the read was measured");
+        assert_eq!(
+            footers.files,
+            Some(1),
+            "one footer, from the one object named"
+        );
+        assert_eq!(
+            footers.over_the_wire.map(|w| w.requests),
+            Some(2),
+            "a head to learn its size and a range to read its tail"
+        );
+        assert!(
+            footers
+                .over_the_wire
+                .is_some_and(|w| w.bytes.is_some_and(|b| b > 0)),
+            "the range came back with bytes in it"
+        );
+        assert_eq!(
+            meter.listing(),
+            None,
+            "and nothing was listed, so no listing row is claimed"
+        );
+        assert_eq!(
+            meter.total(),
+            None,
+            "nor a total: with one stretch a total is that stretch over again, the \
+             same time and the same requests under a second label"
+        );
+    }
+
+    /// The twin of the test above, for the meter rather than the counter: a cloud open
+    /// times its listing and its footer pass and counts what each cost.
+    ///
+    /// The requests and the bytes are the point. Each footer is a ranged read datui
+    /// issues itself, so it can say exactly how many it made and exactly how much came
+    /// back, and the Info panel says so without the word "estimated" — which is a claim
+    /// only worth making if the counting is real. Three objects, one ranged read each
+    /// (a Parquet footer this small sits inside the sixteen-kilobyte tail), so three
+    /// requests; the bytes are whatever those reads returned, which is more than none
+    /// and no more than the whole of the three objects.
+    #[test]
+    fn a_cloud_open_measures_what_its_listing_and_its_footers_cost() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let write = |rows: i64| -> Vec<u8> {
+            let mut frame = df!("n" => (0..rows).collect::<Vec<i64>>()).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let mut written = 0u64;
+        rt.block_on(async {
+            for (key, rows) in [
+                ("data/date=2024-01-01/a.parquet", 1),
+                ("data/date=2024-01-02/b.parquet", 2),
+                ("data/date=2024-01-03/c.parquet", 3),
+            ] {
+                let body = write(rows);
+                written += body.len() as u64;
+                store
+                    .put(&OsPath::from(key), PutPayload::from(body))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let meter = Arc::new(crate::measurements::Meter::default());
+        let _ = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &crate::measurements::OpenReport {
+                progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                meter: meter.clone(),
+            },
+        );
+
+        let listing = meter.listing().expect("the open measured its listing");
+        assert_eq!(listing.files, Some(3), "the listing returned three objects");
+        assert!(
+            listing.over_the_wire.is_none(),
+            "object_store turns the listing's pages over itself, so the requests are \
+             not datui's to count and it claims none"
+        );
+
+        let footers = meter.footers().expect("the open measured its footer pass");
+        assert_eq!(
+            footers.files,
+            Some(3),
+            "a footer was read from each of the three"
+        );
+        let wire = footers
+            .over_the_wire
+            .expect("datui issued the footer reads itself, so it counts them");
+        assert_eq!(
+            wire.requests, 3,
+            "one ranged read each: these footers fit inside the tail datui asks for"
+        );
+        assert!(
+            wire.bytes.is_some_and(|b| b > 0 && b <= written),
+            "the bytes are what those reads returned — some, and no more than the three \
+             objects hold ({} of {written})",
+            wire.bytes.unwrap_or(0)
+        );
+
+        let total = meter.total().expect("and a total over both");
+        assert_eq!(
+            total.over_the_wire.map(|w| w.requests),
+            Some(3),
+            "the total carries the requests of the stretch that made any"
         );
     }
 
@@ -855,7 +1261,10 @@ mod tests {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            &progress,
+            &crate::measurements::OpenReport {
+                progress: progress.clone(),
+                meter: Arc::new(crate::measurements::Meter::default()),
+            },
         )
         .expect("the prefix opens");
 
@@ -1007,7 +1416,10 @@ mod tests {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            &progress,
+            &crate::measurements::OpenReport {
+                progress: progress.clone(),
+                meter: Arc::new(crate::measurements::Meter::default()),
+            },
         )
         .expect("the prefix opens");
 
@@ -1083,7 +1495,10 @@ mod tests {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            &progress,
+            &crate::measurements::OpenReport {
+                progress: progress.clone(),
+                meter: Arc::new(crate::measurements::Meter::default()),
+            },
         )
         .expect("the prefix opens");
 
@@ -1132,7 +1547,13 @@ mod tests {
                 ]
             );
 
-            let groups = row_groups_of_files(&store, &files).await.unwrap();
+            let groups = row_groups_of_files(
+                &store,
+                &files,
+                &Arc::new(crate::measurements::Meter::default()),
+            )
+            .await
+            .unwrap();
             assert_eq!(groups, [vec![2], vec![5]]);
 
             let (dataset, partitions) = schema_of(&store, &files).await;
@@ -1215,7 +1636,13 @@ mod tests {
         let (dataset, listed, file_rows) = rt.block_on(async {
             let (listed, _skipped) = list_dataset_files(&store, "data").await.unwrap();
             let read: Vec<usize> = (0..listed.len()).collect();
-            let footers = footers_of_files(&store, &listed, &read).await;
+            let footers = footers_of_files(
+                &store,
+                &listed,
+                &read,
+                &Arc::new(crate::measurements::Meter::default()),
+            )
+            .await;
             let rows: Vec<usize> = footers
                 .iter()
                 .map(|f| {
@@ -1429,7 +1856,10 @@ mod tests {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            &progress,
+            &crate::measurements::OpenReport {
+                progress: progress.clone(),
+                meter: Arc::new(crate::measurements::Meter::default()),
+            },
         )
         .expect("the prefix opens despite the one that will not parse");
 
@@ -1589,7 +2019,10 @@ mod tests {
             polars::prelude::cloud::CloudOptions::default(),
             &crate::OpenOptions::default(),
             rt.handle(),
-            &progress,
+            &crate::measurements::OpenReport {
+                progress: progress.clone(),
+                meter: Arc::new(crate::measurements::Meter::default()),
+            },
         )
         .expect("the prefix opens");
 

@@ -92,6 +92,13 @@ pub struct DataTableState {
     /// counts sum to the exact row count while the frame is the scan as loaded
     /// (`is_pristine`) — far cheaper than a `len()` data scan over a huge/partitioned set.
     parquet_count_dir: Option<PathBuf>,
+    /// What finding and reading this dataset cost.
+    ///
+    /// On the dataset rather than on the app, for the reason `dataset_generation` is
+    /// bumped per dataset that reaches the screen rather than per open started: an open
+    /// that fails leaves the last dataset up, and its figures have to stay with it. A
+    /// meter the app held would by then be the failed load's.
+    measurements: Arc<crate::measurements::Meter>,
     filters: Vec<FilterStatement>,
     sort_columns: Vec<String>,
     sort_ascending: bool,
@@ -572,6 +579,7 @@ impl DataTableState {
             num_rows_valid: false,
             len_generation: next_len_generation(),
             parquet_count_dir: None,
+            measurements: Arc::new(crate::measurements::Meter::default()),
             filters: Vec::new(),
             sort_columns: Vec::new(),
             sort_ascending: true,
@@ -679,6 +687,7 @@ impl DataTableState {
             num_rows_valid: false,
             len_generation: next_len_generation(),
             parquet_count_dir: None,
+            measurements: Arc::new(crate::measurements::Meter::default()),
             filters: Vec::new(),
             sort_columns: Vec::new(),
             sort_ascending: true,
@@ -1797,15 +1806,23 @@ impl DataTableState {
         let (files, read, footers, _skipped) = Self::footers_of_parquet_dir_reporting(
             dir,
             &crate::schema_union::FooterProgress::default(),
+            &crate::measurements::Meter::default(),
         );
         (files, read, footers)
     }
 
     /// As [`Self::footers_of_parquet_dir`], counting each footer off against `progress`
-    /// as it is read, so the loading screen can say how far it has got.
+    /// as it is read, so the loading screen can say how far it has got, and timing the
+    /// listing and the footer pass separately into `meter`.
+    ///
+    /// Separately because they are two different costs: finding the files is one walk
+    /// of the folder and reading their footers is one open per file, so a folder that
+    /// is slow to open is slow at one or the other. Neither records requests or bytes —
+    /// a local folder is read, not requested.
     pub fn footers_of_parquet_dir_reporting(
         dir: &Path,
         progress: &crate::schema_union::FooterProgress,
+        meter: &crate::measurements::Meter,
     ) -> (
         Vec<PathBuf>,
         Vec<usize>,
@@ -1815,6 +1832,7 @@ impl DataTableState {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
         let mut skipped = crate::schema_union::SkippedFiles::default();
+        let listing_began = std::time::Instant::now();
         Self::collect_parquet_files_counting(dir, &mut files, &mut skipped, 0, MAX_DEPTH, false);
         // Load-bearing beyond reading in a predictable order. The scan hands these to
         // Polars as they are, and Polars takes the hive schema from the first of them,
@@ -1827,11 +1845,18 @@ impl DataTableState {
         // deleted. What the sort protects is those two tests being stable rather than
         // being a coin toss, which is not something a third test can assert.
         files.sort();
+        // After the sort: the files are not found until they are in the order the scan
+        // will read them in, and on a folder of many files the sort is part of the wait.
+        // No test holds the boundary there — a listing and a sort of the same files
+        // take an unpredictable share of one small number, so a test could only assert
+        // that the total is the total.
+        meter.listed(listing_began.elapsed(), Some(files.len()), false);
         let read = crate::schema_union::footers_to_read(files.len());
         let wanted: Vec<&Path> = read
             .iter()
             .filter_map(|i| files.get(*i).map(PathBuf::as_path))
             .collect();
+        let footers_began = std::time::Instant::now();
         let pass = progress.pass(wanted.len());
         let pass_ref = &pass;
         let workers = std::thread::available_parallelism()
@@ -1873,6 +1898,7 @@ impl DataTableState {
                 .collect()
         });
         drop(pass);
+        meter.read_footers(footers_began.elapsed(), Some(wanted.len()), false);
         (files, read, footers, skipped)
     }
 
@@ -1905,9 +1931,25 @@ impl DataTableState {
     /// fanned out across threads. Files that fail to read (e.g. an in-progress write) are
     /// skipped so a single bad file can't force the slow path; `Err` only if the directory
     /// has no readable Parquet files at all.
-    pub fn count_rows_from_parquet_dir(dir: &Path) -> Result<usize> {
+    pub fn count_rows_from_parquet_dir(
+        dir: &Path,
+        meter: &crate::measurements::Meter,
+    ) -> Result<usize> {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
+        // Metered as a footer pass, because it is one: a local hive dataset whose open
+        // did not settle the count re-walks the folder and re-reads every footer to
+        // take it. It runs on an ordinary three-file open, so leaving it out reported
+        // about half of what reading the footers actually cost.
+        // Timed from before the walk. This pass has to find the files again before it
+        // can read them, and what the pass cost is both halves — timed from after the
+        // walk, that second walk of the whole folder is reported in no row at all, and
+        // the total is short by it.
+        //
+        // No test holds the boundary. A walk and the reads that follow it take an
+        // unpredictable share of one small number on a fixture small enough to run, so
+        // a test could only assert that the total is the total.
+        let began = std::time::Instant::now();
         Self::collect_parquet_files(dir, &mut files, 0, MAX_DEPTH);
         if files.is_empty() {
             return Err(color_eyre::eyre::eyre!(
@@ -1915,6 +1957,7 @@ impl DataTableState {
                 dir.display()
             ));
         }
+        let counted = files.len();
 
         let workers = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -1949,11 +1992,17 @@ impl DataTableState {
         });
 
         if read_ok == 0 {
+            // Not recorded, and so not counted against the one shot this measurement
+            // gets: a pass where nothing parsed settled nothing, and the pass that
+            // eventually does is the one worth reporting.
             return Err(color_eyre::eyre::eyre!(
                 "Could not read any parquet footers under {}",
                 dir.display()
             ));
         }
+        // Only the first such pass counts — see `Meter::counted_rows`. The walk and the
+        // reads happen again every time a filter is cleared.
+        meter.counted_rows(began.elapsed(), Some(counted), None);
         Ok(total)
     }
 
@@ -3891,6 +3940,16 @@ impl DataTableState {
     /// enabling the cheap footer-sum row count while the frame is pristine.
     pub fn set_parquet_count_dir(&mut self, dir: PathBuf) {
         self.parquet_count_dir = Some(dir);
+    }
+
+    /// Hand this dataset the meter the route that built it wrote into.
+    pub fn set_measurements(&mut self, meter: Arc<crate::measurements::Meter>) {
+        self.measurements = meter;
+    }
+
+    /// What finding and reading this dataset cost.
+    pub fn measurements(&self) -> &Arc<crate::measurements::Meter> {
+        &self.measurements
     }
 
     /// The directory whose Parquet footers can be summed for an exact row count, if the
@@ -8724,6 +8783,84 @@ mod tests {
     }
 
     #[test]
+    fn a_count_that_read_nothing_leaves_the_measurement_for_the_one_that_does() {
+        // Counting gets one measurement, and a pass where no footer parsed settled
+        // nothing. If such a pass took it, the pass that eventually succeeds is
+        // declined and the row never reflects the count at all.
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("date=2024-01-01");
+        std::fs::create_dir_all(&part).unwrap();
+        std::fs::write(part.join("broken.parquet"), b"not parquet").unwrap();
+
+        let meter = crate::measurements::Meter::default();
+        // As the open leaves it. A count belongs to an open this meter measured, so
+        // without a listing here the count would be declined for that reason instead.
+        meter.listed(std::time::Duration::from_millis(1), Some(1), false);
+        assert!(
+            DataTableState::count_rows_from_parquet_dir(dir.path(), &meter).is_err(),
+            "nothing under there parses"
+        );
+        assert_eq!(
+            meter.footers(),
+            None,
+            "so nothing was measured, and the one measurement is still to be had"
+        );
+
+        // The file is replaced by one that does parse, as a half-written file is once
+        // its writer finishes.
+        let mut frame = df!("n" => &[1i64, 2]).unwrap();
+        let f = std::fs::File::create(part.join("broken.parquet")).unwrap();
+        ParquetWriter::new(f).finish(&mut frame).unwrap();
+        assert_eq!(
+            DataTableState::count_rows_from_parquet_dir(dir.path(), &meter).unwrap(),
+            2,
+            "and now it counts"
+        );
+        assert_eq!(
+            meter.footers().and_then(|c| c.files),
+            Some(1),
+            "and the count that worked is the one reported"
+        );
+    }
+
+    #[test]
+    fn counting_a_folder_again_is_not_more_of_what_the_open_cost() {
+        // Counting runs whenever the row count is invalidated, and clearing a filter
+        // does it — so on a dataset somebody is exploring this function runs over and
+        // over. Each run re-walks the folder and re-reads every footer, and if each one
+        // were added the section headed by what opening the dataset cost would climb
+        // for as long as the session lasted.
+        let dir = tempfile::tempdir().unwrap();
+        for day in 1..=3 {
+            let d = dir.path().join(format!("date=2024-01-0{day}"));
+            std::fs::create_dir_all(&d).unwrap();
+            let mut frame = df!("n" => &[day as i64]).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        }
+
+        let meter = crate::measurements::Meter::default();
+        meter.listed(std::time::Duration::from_millis(1), Some(3), false);
+        let first = DataTableState::count_rows_from_parquet_dir(dir.path(), &meter).unwrap();
+        let after_one = meter.footers().expect("the first count was measured");
+        assert_eq!(
+            after_one.files,
+            Some(3),
+            "a footer read from each of the three"
+        );
+
+        for _ in 0..3 {
+            let again = DataTableState::count_rows_from_parquet_dir(dir.path(), &meter).unwrap();
+            assert_eq!(again, first, "the same count every time");
+        }
+        assert_eq!(
+            meter.footers(),
+            Some(after_one),
+            "and the figures stand where the first count left them"
+        );
+    }
+
+    #[test]
     fn test_count_rows_from_parquet_dir_sums_footers() {
         let dir = tempfile::tempdir().unwrap();
         // Hive-style layout: two partitions, multiple files each.
@@ -8735,7 +8872,11 @@ mod tests {
         write_parquet(&p1.join("b.parquet"), 5);
         write_parquet(&p2.join("c.parquet"), 7);
 
-        let n = DataTableState::count_rows_from_parquet_dir(dir.path()).unwrap();
+        let n = DataTableState::count_rows_from_parquet_dir(
+            dir.path(),
+            &crate::measurements::Meter::default(),
+        )
+        .unwrap();
         assert_eq!(n, 22, "should sum footer row counts across all files");
     }
 
@@ -8748,7 +8889,11 @@ mod tests {
         // A corrupt .parquet must be skipped, not abort the whole count.
         fs::write(dir.path().join("bad.parquet"), b"not a parquet footer").unwrap();
 
-        let n = DataTableState::count_rows_from_parquet_dir(dir.path()).unwrap();
+        let n = DataTableState::count_rows_from_parquet_dir(
+            dir.path(),
+            &crate::measurements::Meter::default(),
+        )
+        .unwrap();
         assert_eq!(n, 8, "non-parquet and unreadable files should be skipped");
     }
 
@@ -8757,7 +8902,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("only.txt"), b"nothing here").unwrap();
         assert!(
-            DataTableState::count_rows_from_parquet_dir(dir.path()).is_err(),
+            DataTableState::count_rows_from_parquet_dir(
+                dir.path(),
+                &crate::measurements::Meter::default(),
+            )
+            .is_err(),
             "a directory with no parquet files should error so the caller can fall back"
         );
     }
@@ -9273,8 +9422,11 @@ mod tests {
         }
 
         let progress = crate::schema_union::FooterProgress::default();
-        let (files, read, footers, _skipped) =
-            DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress);
+        let (files, read, footers, _skipped) = DataTableState::footers_of_parquet_dir_reporting(
+            dir.path(),
+            &progress,
+            &crate::measurements::Meter::default(),
+        );
         assert_eq!((files.len(), read.len(), footers.len()), (4, 4, 4));
         assert_eq!(
             progress.reading(),
@@ -9291,6 +9443,50 @@ mod tests {
             progress.last_pass().read,
             4,
             "counting every footer it read, not just starting and stopping"
+        );
+    }
+
+    /// A local open measures finding the files and reading their footers separately.
+    ///
+    /// Separately because they are separate costs and a folder that is slow to open is
+    /// slow at one of them; a single figure over both would say a folder is slow
+    /// without saying at what. Neither claims requests or bytes: a local folder is
+    /// read, not requested, and a zero there would read as "nothing moved" rather than
+    /// "not datui's to count".
+    ///
+    /// Only the counts are asserted. The times are real elapsed times on a machine
+    /// doing other things, so the only claim about them that holds every time is that
+    /// they were recorded at all — which `Some` already says.
+    #[test]
+    fn a_local_open_measures_its_listing_and_its_footers() {
+        let dir = tempfile::tempdir().unwrap();
+        for day in 1..=4 {
+            let d = dir.path().join(format!("date=2024-01-0{day}"));
+            std::fs::create_dir_all(&d).unwrap();
+            let mut frame = df!("n" => &[day as i64]).unwrap();
+            let f = std::fs::File::create(d.join("data.parquet")).unwrap();
+            ParquetWriter::new(f).finish(&mut frame).unwrap();
+        }
+
+        let meter = crate::measurements::Meter::default();
+        let _ = DataTableState::footers_of_parquet_dir_reporting(
+            dir.path(),
+            &crate::schema_union::FooterProgress::default(),
+            &meter,
+        );
+
+        let listing = meter.listing().expect("the open measured its listing");
+        assert_eq!(listing.files, Some(4), "the walk found four files");
+        assert!(
+            listing.over_the_wire.is_none(),
+            "and made no requests to find them"
+        );
+        let footers = meter.footers().expect("and measured its footer pass");
+        assert_eq!(footers.files, Some(4), "a footer was read from each");
+
+        assert!(
+            footers.over_the_wire.is_none(),
+            "off a disk, not a wire: no requests to report and no bytes to claim"
         );
     }
 
@@ -9312,8 +9508,9 @@ mod tests {
         }
 
         let progress = crate::schema_union::FooterProgress::default();
+        let meter = crate::measurements::Meter::default();
         let (found, read, footers, _skipped) =
-            DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress);
+            DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress, &meter);
         assert_eq!(found.len(), files, "every file is listed");
         assert_eq!(
             read.len(),
@@ -9321,6 +9518,19 @@ mod tests {
             "and a sample of them is read"
         );
         assert!(footers.iter().all(Option::is_none), "none of them parses");
+        // The same distinction, in the measurement: the listing found every file and
+        // the footer pass read a sample of them. A fixture below the sampling threshold
+        // cannot tell the two numbers apart, which is why this one asserts them.
+        assert_eq!(
+            meter.listing().and_then(|c| c.files),
+            Some(files),
+            "the listing counts the files there are"
+        );
+        assert_eq!(
+            meter.footers().and_then(|c| c.files),
+            Some(crate::schema_union::MAX_FOOTER_READS),
+            "while the footer pass counts the footers it read, which is fewer"
+        );
 
         assert_eq!(
             progress.last_pass().total,

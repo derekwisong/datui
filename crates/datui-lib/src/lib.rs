@@ -6772,6 +6772,9 @@ impl App {
         report: &crate::measurements::OpenReport,
     ) -> Option<DataTableState> {
         let CloudTarget { full, key, pattern } = target;
+        // Kept before the listing takes ownership of it: this is the prefix that was
+        // listed, and the notes measure every file's path against it.
+        let root = cloud_hive::url_of_key(full, &key).unwrap_or_else(|| full.to_string());
         let (files, skipped) = {
             let store = store.clone();
             // The listing is one `list` whose pages object_store turns over itself, so
@@ -6810,7 +6813,8 @@ impl App {
             report.progress.clone(),
             report.meter.clone(),
         )?;
-        let opened = Self::cloud_dataset_from_footers(full, &files, &read, &footers, &cloud_opts)?;
+        let opened =
+            Self::cloud_dataset_from_footers(full, &root, &files, &read, &footers, &cloud_opts)?;
         let CloudDataset {
             dataset,
             file_rows,
@@ -6912,8 +6916,14 @@ impl App {
                     progress.clone(),
                     meter.clone(),
                 )?;
-                let whole =
-                    Self::cloud_dataset_from_footers(&full, &files, &read, &footers, &cloud_opts)?;
+                let whole = Self::cloud_dataset_from_footers(
+                    &full,
+                    &root,
+                    &files,
+                    &read,
+                    &footers,
+                    &cloud_opts,
+                )?;
                 // The same exclusion the open makes: a footer that would not read on
                 // this pass either is a file Polars cannot read, and scanning it takes
                 // the prefix down. This pass can find one the open could not — it only
@@ -6997,6 +7007,11 @@ impl App {
     #[cfg(feature = "cloud")]
     fn cloud_dataset_from_footers(
         full: &str,
+        // The literal part of `full`, which for a glob is everything before its star.
+        // The layout and column-range notes work by taking each file's path relative to
+        // the dataset's root, so a root with a star in it is a prefix of nothing and
+        // every note goes quietly empty.
+        root: &str,
         files: &[cloud_hive::DatasetFile],
         read: &[usize],
         footers: &[Option<cloud_hive::FileFooter>],
@@ -7059,7 +7074,7 @@ impl App {
             )
         };
         Some(CloudDataset {
-            dataset: dataset.with_partition_layouts(full, &urls),
+            dataset: dataset.with_partition_layouts(root, &urls),
             file_rows,
             urls,
             row_groups,
@@ -12603,7 +12618,6 @@ impl App {
                             .measurements()
                             .read_page(inflight.began.elapsed(), inflight.files);
                     }
-                    self.collect_inflight = None;
                     let taken = self
                         .pending_collect_result
                         .lock()

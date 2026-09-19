@@ -188,14 +188,18 @@ pub async fn list_dataset_files(
             .split('/')
             .any(crate::schema_union::is_bookkeeping)
     };
-    let keep_of = |f: &DatasetFile| {
-        f.size > 0
-            && !bookkeeping_of(&f.key)
-            && crate::discover::is_parquet_key(&f.key)
-            // A glob names the files it wants; everything else under the prefix is
-            // somebody else's.
-            && pattern.is_none_or(|p| p.is_match(&f.key))
+    // What counts as data under this prefix, whether or not a glob then narrows it.
+    // The narrowing is deliberately not part of this: the skipped-file counts are built
+    // from the same test, and a Parquet file a glob excluded is not one somebody might
+    // have meant as data and left unreadable — it is one they told datui to leave out.
+    // Folding the pattern in here made a glob report its own siblings as "not Parquet".
+    let is_data = |f: &DatasetFile| {
+        f.size > 0 && !bookkeeping_of(&f.key) && crate::discover::is_parquet_key(&f.key)
     };
+    // A glob names the files it wants; everything else under the prefix is somebody
+    // else's, and is neither read nor counted.
+    let wanted = |f: &DatasetFile| pattern.is_none_or(|p| p.is_match(&f.key));
+    let keep_of = |f: &DatasetFile| is_data(f) && wanted(f);
     // Every folder with data anywhere beneath it, which is every folder on the way down
     // to a file this keeps. What else is in one of those is beside somebody's data;
     // what is anywhere else is somebody's infrastructure, whatever the format calls it
@@ -226,7 +230,10 @@ pub async fn list_dataset_files(
     };
     let mut skipped = crate::schema_union::SkippedFiles::default();
     for f in &all {
-        if keep_of(f) {
+        // Counted against what the prefix holds, not what the glob asked for: a file
+        // the pattern excluded was never a candidate, and saying so would tell a user
+        // their own glob had passed over data.
+        if is_data(f) || !wanted(f) {
             continue;
         }
         let parquet_named = crate::discover::is_parquet_key(&f.key);
@@ -875,6 +882,86 @@ mod tests {
         );
     }
 
+    /// A glob opens through the route that gives it the schema union and the count.
+    ///
+    /// Through `schema_state_from_cloud_hive_with`, which is the function that connects
+    /// the pattern to the listing — the pieces each work on their own, and the bug this
+    /// closes (#228) was in the joining. Handing the starred key to the listing lists a
+    /// prefix containing a literal `*`, matches nothing, and drops the open onto a
+    /// whole-dataset scan with none of phases 1-5, silently.
+    ///
+    /// The scan past the schema cannot open a `memory://` URL and the route returns
+    /// `None`, which is fine: the listing and the footers have happened by then, and
+    /// the meter is what this reads them off.
+    #[test]
+    fn a_glob_reaches_the_route_that_lists_and_reads_it() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for key in [
+                "data/year=2024/a.parquet",
+                "data/year=2025/b.parquet",
+                "data/other/c.parquet",
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(body()))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let meter = Arc::new(crate::measurements::Meter::default());
+        let _ = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/year=*/*.parquet".to_string(),
+            "data/year=*/*.parquet".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &crate::measurements::OpenReport {
+                progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                meter: meter.clone(),
+            },
+        );
+
+        assert_eq!(
+            meter.listing().and_then(|c| c.files),
+            Some(2),
+            "the listing found the two files the glob names — not the sibling folder \
+             it does not. A starred key handed to the listing finds none of them"
+        );
+        assert_eq!(
+            meter.footers().and_then(|c| c.files),
+            Some(2),
+            "and their footers were read, which is what a glob used to get none of"
+        );
+
+        // The root the notes measure each file's path against has to be a literal
+        // prefix of those paths. Handing them the URL as typed gives a root with a star
+        // in it, which is a prefix of nothing — so `with_partition_layouts` and the
+        // column-range notes match no file and go quietly empty, and a glob silently
+        // loses two families of note the docs say it gets.
+        let full = "s3://bucket/data/year=*/*.parquet";
+        let root = url_of_key(full, prefix_of_glob("data/year=*/*.parquet")).unwrap();
+        assert_eq!(root, "s3://bucket/data");
+        let file_url = url_of_key(full, "data/year=2024/a.parquet").unwrap();
+        assert!(
+            file_url.starts_with(&root),
+            "{file_url} has to sit under {root}, or every note measured from the root \
+             is silently about no files at all"
+        );
+        assert!(!file_url.starts_with(full), "which the URL as typed is not");
+    }
+
     /// A glob opens as a dataset, not as whatever Polars makes of it.
     ///
     /// datui lists the literal part of the key and matches the rest itself. Handing the
@@ -946,11 +1033,15 @@ mod tests {
 
     /// A folder is the same table whether it is read from a disk or a bucket.
     ///
-    /// The two listings used to disagree in both directions: the local walk kept
-    /// anything ending `.parquet`, including a `_`-prefixed file every writer treats as
-    /// its own bookkeeping, and it missed the `occurrence.parquet/part-00001` shape
-    /// that Spark and GBIF write, where the part files have no extension and only the
-    /// folder name says what they are. Both now ask `is_parquet_key`.
+    /// The two listings used to disagree in one direction: the local walk checked the
+    /// extension, so it missed the `occurrence.parquet/part-00001` shape that Spark and
+    /// GBIF write, where the part files have no extension and only the folder name says
+    /// what they are. Both now ask `is_parquet_key`.
+    ///
+    /// The `_`-prefixed row of the fixture is not what this is testing — the local walk
+    /// classified those as the writer's own bookkeeping before this change too. It is
+    /// here because the two routes reaching the same answer by different means is the
+    /// thing worth pinning, not just the one case that moved.
     #[test]
     fn a_folder_is_the_same_table_from_a_disk_or_a_bucket() {
         use object_store::PutPayload;

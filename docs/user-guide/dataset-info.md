@@ -116,7 +116,8 @@ data, not a fault in it, so there is no pop-up and no error styling.
 
 ## Measurements
 
-At the foot of the **Resources** tab, what opening this dataset cost.
+At the foot of the **Resources** tab, what this dataset has cost: finding it,
+reading its footers, and fetching the page on screen.
 
 **Listing** and **Footers** are there for the datasets datui finds and reads
 itself — a folder of Parquet opened with `--hive`, a remote prefix, a remote glob,
@@ -125,8 +126,9 @@ not report what it did: a single local file, a CSV, a local folder opened withou
 `--hive`, and a folder or a prefix opened with `single_spine_schema = false` all
 show neither row, and no Total.
 
-**Last page** is there for every dataset, whichever route opened it, because datui
-always asks for the rows on screen and always times the answer.
+**Last page** is there whichever route opened the dataset, because datui asks for
+the rows on screen and times the answer either way. A dataset already known to be
+empty is the exception: there is no page to fetch, so there is nothing to report.
 
 A glob is listed and matched by datui rather than by the object store, so it counts
 as one of the datasets datui finds itself: the Listing row reports the files the

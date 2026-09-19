@@ -892,6 +892,91 @@ mod tests {
         );
     }
 
+    /// A corrupt object the open could not see is left out when the pass finds it.
+    ///
+    /// The staged open reads two footers, so an object that will not parse anywhere but
+    /// the two ends is invisible to it: the dataset opens with that object in its scan,
+    /// and the pass behind it is the first thing to know better. Everything the pass
+    /// hands over has to describe the same list — the scan it built, the urls it found,
+    /// and the counter that answers one entry per file it was given. A counter left
+    /// over from the open answers for a file more than the dataset now holds, and that
+    /// answer is dropped on a length check without a word: no count, no offsets, and
+    /// every page a scan of the whole prefix for the rest of the session.
+    #[test]
+    fn an_object_only_the_pass_finds_corrupt_is_left_out_by_the_pass() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        // One more than a wave, so the open reads only the two ends — and the bad one
+        // is in the middle, where neither end can see it.
+        let files = FOOTERS_AT_ONCE + 1;
+        let unreadable = files / 2;
+        rt.block_on(async {
+            for i in 0..files {
+                let key = format!("data/date=2024-01-{:03}/part.parquet", i + 1);
+                let bytes = if i == unreadable {
+                    b"not a parquet file".to_vec()
+                } else {
+                    body(i as i64)
+                };
+                store
+                    .put(&OsPath::from(key.as_str()), PutPayload::from(bytes))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let mut state = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        )
+        .expect("the prefix opens");
+
+        let join = state
+            .footers_pending()
+            .expect("the rest are still to be read");
+        let found = join(&progress).expect("the pass reads them");
+        assert!(
+            state.join_dataset_schema(found).is_ok(),
+            "nothing is built on top of the scan here"
+        );
+
+        let plan = state
+            .visible_lf()
+            .explain(false)
+            .expect("the scan can be planned");
+        assert!(
+            !plan.contains(&format!("date=2024-01-{:03}", unreadable + 1)),
+            "the object that will not parse is not one of the sources: {plan}"
+        );
+
+        let counter = state
+            .remote_files_counter()
+            .expect("the dataset has not counted itself yet");
+        let groups = counter().expect("the readable objects are counted");
+        state.set_file_row_groups(&groups);
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(files - 1),
+            "and the count lands — one row from every object that would open, rather \
+             than an answer for a list the dataset no longer holds, dropped in silence"
+        );
+    }
+
     /// A dataset small enough to read in one wave opens whole, rather than twice.
     ///
     /// `footers_of_files_reporting` fetches `FOOTERS_AT_ONCE` at a time, so up to that

@@ -1540,7 +1540,11 @@ pub mod tests {
                 file_rows: vec![100],
                 files: vec!["one".to_string()],
                 row_groups: vec![vec![100]],
-                scan: Some(Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows()))),
+                remote: Some(crate::widgets::datatable::RemoteRead {
+                    urls: vec!["one".to_string()],
+                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                    count: Arc::new(|| Ok(vec![vec![100]])),
+                }),
             })
         }));
 
@@ -1637,7 +1641,11 @@ pub mod tests {
                     file_rows: vec![100],
                     files: vec!["one".to_string()],
                     row_groups: vec![vec![100]],
-                    scan: Some(Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows()))),
+                    remote: Some(crate::widgets::datatable::RemoteRead {
+                        urls: vec!["one".to_string()],
+                        scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                        count: Arc::new(|| Ok(vec![vec![100]])),
+                    }),
                 })
             }));
             state
@@ -1722,7 +1730,11 @@ pub mod tests {
                 file_rows: vec![100],
                 files: vec!["one".to_string()],
                 row_groups: vec![vec![100]],
-                scan: Some(Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide()))),
+                remote: Some(crate::widgets::datatable::RemoteRead {
+                    urls: vec!["one".to_string()],
+                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
+                    count: Arc::new(|| Ok(vec![vec![100]])),
+                }),
             })
         }));
 
@@ -1911,7 +1923,7 @@ pub mod tests {
                 file_rows: Vec::new(),
                 files: Vec::new(),
                 row_groups: Vec::new(),
-                scan: None,
+                remote: None,
             })
         }));
 
@@ -2118,7 +2130,7 @@ pub mod tests {
                 file_rows: Vec::new(),
                 files: Vec::new(),
                 row_groups: Vec::new(),
-                scan: None,
+                remote: None,
             })
         }));
         app.load_active = true;
@@ -2236,7 +2248,7 @@ pub mod tests {
                     file_rows: Vec::new(),
                     files: Vec::new(),
                     row_groups: Vec::new(),
-                    scan: None,
+                    remote: None,
                 },
             ));
             let _ = app.handle(&AppEvent::Update);
@@ -2323,7 +2335,7 @@ pub mod tests {
                 file_rows: Vec::new(),
                 files: Vec::new(),
                 row_groups: Vec::new(),
-                scan: None,
+                remote: None,
             },
         ));
         let _ = app.handle(&AppEvent::Update);
@@ -2397,7 +2409,7 @@ pub mod tests {
                 file_rows: Vec::new(),
                 files: Vec::new(),
                 row_groups: Vec::new(),
-                scan: None,
+                remote: None,
             }),
         );
 
@@ -2447,7 +2459,7 @@ pub mod tests {
                 file_rows: Vec::new(),
                 files: Vec::new(),
                 row_groups: Vec::new(),
-                scan: None,
+                remote: None,
             }
         };
         let name_in =
@@ -2544,7 +2556,7 @@ pub mod tests {
                 file_rows: Vec::new(),
                 files: Vec::new(),
                 row_groups: Vec::new(),
-                scan: None,
+                remote: None,
             },
         ));
         let _ = app.handle(&AppEvent::Update);
@@ -2653,7 +2665,7 @@ pub mod tests {
                 file_rows: Vec::new(),
                 files: Vec::new(),
                 row_groups: Vec::new(),
-                scan: None,
+                remote: None,
             })
         }));
         app.load_active = true;
@@ -6755,6 +6767,13 @@ impl App {
         // The objects that will open. One whose footer would not read is one Polars
         // cannot read either, and left in the scan it takes the whole prefix down with
         // it on the first page.
+        //
+        // A staged open can only leave out what it has read: two footers, so an object
+        // that will not parse anywhere but the two ends is in this scan and the first
+        // page fails on it. That is a window, not a lost guarantee — the pass behind
+        // the open finds it and the join swaps in a scan without it — but for a folder
+        // with a file mid-write, a prefix over sixty-four objects shows an error where
+        // a smaller one shows rows.
         let readable = crate::schema_union::readable_paths(&urls, &dataset.unreadable);
         // Everything downstream describes the same list or none of it. The counter
         // returns one entry per object it is given and `set_file_row_groups` wants one
@@ -6800,10 +6819,11 @@ impl App {
             offsets: None,
         });
         // The footers just read hold the count too, so the dataset opens counted — but
-        // only when every file was read. A footer that was sampled past or failed would
-        // count as no rows, which both undercounts the dataset and puts that file's rows
-        // out of reach of a windowed scan; leaving the count to `RemoteFiles::count`
-        // means it is retried instead.
+        // `cloud_dataset_from_footers` gives row groups only when every file was read
+        // and every footer parsed. A footer sampled past or failed would count as no
+        // rows, which both undercounts the dataset and puts that file's rows out of
+        // reach of a windowed scan; leaving the count to `RemoteFiles::count` means it
+        // is retried instead.
         if !row_groups.is_empty() {
             state.set_file_row_groups(&row_groups);
         }
@@ -6828,20 +6848,47 @@ impl App {
                     Self::cloud_dataset_from_footers(&full, &files, &read, &footers, &cloud_opts)?;
                 // The same exclusion the open makes: a footer that would not read on
                 // this pass either is a file Polars cannot read, and scanning it takes
-                // the prefix down.
+                // the prefix down. This pass can find one the open could not — it only
+                // read two footers — so the exclusion belongs on both sides.
                 let readable =
                     crate::schema_union::readable_paths(&whole.urls, &whole.dataset.unreadable)
                         .into_owned();
                 let lf = (whole.scan)(&readable, &[]).ok()?;
+                // Over the same files, so the count it answers with fits the list the
+                // dataset is about to hold.
+                let counted: Vec<cloud_hive::DatasetFile> = files
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| whole.dataset.unreadable.binary_search(index).is_err())
+                    .map(|(_, file)| file.clone())
+                    .collect();
+                if counted.len() != readable.len() {
+                    return None;
+                }
+                let count: crate::widgets::datatable::FileCounter = {
+                    let (runtime, counted, store) =
+                        (runtime.clone(), Arc::new(counted), store.clone());
+                    Arc::new(move || {
+                        let (store, counted) = (store.clone(), counted.clone());
+                        wait_on_runtime(&runtime, async move {
+                            cloud_hive::row_groups_of_files(&store, &counted).await
+                        })
+                        .ok_or_else(|| "cancelled".to_string())?
+                        .map_err(|e| e.to_string())
+                    })
+                };
                 Some(crate::widgets::datatable::FootersFound {
                     dataset: whole.dataset,
                     lf,
                     file_rows: whole.file_rows,
-                    files: readable,
+                    // Every file listed: the dataset's per-file findings index this.
+                    files: whole.urls,
                     row_groups: whole.row_groups,
-                    // Built at the schema every footer gave, which is the point: the
-                    // one the dataset is holding cannot read the columns below.
-                    scan: Some(whole.scan),
+                    remote: Some(crate::widgets::datatable::RemoteRead {
+                        urls: readable,
+                        scan: whole.scan,
+                        count,
+                    }),
                 })
             }));
         }

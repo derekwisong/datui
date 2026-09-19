@@ -273,17 +273,28 @@ pub struct FootersFound {
     pub lf: LazyFrame,
     /// Each file's rows, in scan order.
     pub file_rows: Vec<usize>,
-    /// Each file's path or URL, in scan order.
+    /// Every file listed, in scan order — including any whose footer would not read.
+    /// The dataset's per-file findings index this, so it is the whole list.
     pub files: Vec<String>,
     /// Each file's row groups, or empty if a footer would not parse.
     pub row_groups: Vec<Vec<usize>>,
-    /// How to read some of the files rather than all of them, for a remote dataset.
-    ///
-    /// Carried because it is built from the schema: the one the dataset opened with
-    /// has never heard of the columns this pass found, and a windowed page read
-    /// through it asks for a column its scan does not have. `None` for a dataset that
+    /// How to read part of a remote dataset rather than all of it. `None` for one that
     /// does not read by file.
-    pub scan: Option<FileScan>,
+    pub remote: Option<RemoteRead>,
+}
+
+/// How a remote dataset reads some of its files, as the pass behind an open found them.
+///
+/// The three travel together because they describe one list. The scan is built at a
+/// schema — the one the dataset opened with has never heard of the columns this pass
+/// found — and the counter answers one entry per file it was given, which has to be the
+/// same list `urls` holds or the answer is dropped on a length check and the dataset
+/// never learns its own size.
+pub struct RemoteRead {
+    /// The files that will open, which is not every file listed.
+    pub urls: Vec<String>,
+    pub scan: FileScan,
+    pub count: FileCounter,
 }
 
 /// A remote dataset of many files, and how to read only some of them.
@@ -4055,7 +4066,7 @@ impl DataTableState {
             file_rows,
             files,
             row_groups,
-            scan,
+            remote,
         } = found;
         let (file_rows, files) = (file_rows.as_slice(), files.as_slice());
         let known: std::collections::HashSet<&str> =
@@ -4081,9 +4092,15 @@ impl DataTableState {
         // heard of the columns that just arrived. Left in place, the first windowed
         // page read asks it for a column it does not have and the table stops showing
         // rows at the moment it was supposed to show more of them.
-        if let (Some(scan), Some(remote)) = (scan, self.remote_files.as_mut()) {
-            remote.urls = Arc::new(files.to_vec());
-            remote.scan = scan;
+        if let (Some(found), Some(remote)) = (remote, self.remote_files.as_mut()) {
+            remote.urls = Arc::new(found.urls);
+            remote.scan = found.scan;
+            // The counter too, and for the same reason the scan is replaced: it answers
+            // one entry per file it was given, and the one the dataset opened with was
+            // given every file listed. Left beside a shorter `urls` its answer is
+            // dropped on a length check without a word, and the dataset spends the rest
+            // of the session re-counting itself and never reaching an end to jump to.
+            remote.count = found.count;
         }
         // Takes the notes, the drift groups and the row starts with it, and clears
         // `read_as_text` — sound only because the offer to read a column as text is
@@ -7095,7 +7112,7 @@ mod tests {
                     file_rows: Vec::new(),
                     files: Vec::new(),
                     row_groups: Vec::new(),
-                    scan: None,
+                    remote: None,
                 })
                 .is_ok()
         );
@@ -7156,7 +7173,7 @@ mod tests {
                     file_rows: Vec::new(),
                     files: Vec::new(),
                     row_groups: Vec::new(),
-                    scan: None,
+                    remote: None,
                 })
                 .is_ok(),
             "nothing is built on the scan here, so the columns go straight in"
@@ -7226,7 +7243,7 @@ mod tests {
             file_rows: vec![100],
             files: vec!["one".to_string()],
             row_groups: vec![vec![100]],
-            scan: None,
+            remote: None,
         });
         assert!(held.is_err(), "the columns wait for the query to be let go");
 
@@ -7296,7 +7313,7 @@ mod tests {
                     file_rows: Vec::new(),
                     files: Vec::new(),
                     row_groups: Vec::new(),
-                    scan: None,
+                    remote: None,
                 })
                 .is_ok()
         );
@@ -7346,7 +7363,7 @@ mod tests {
                 file_rows: Vec::new(),
                 files: Vec::new(),
                 row_groups: Vec::new(),
-                scan: None,
+                remote: None,
             }
         };
         let fresh = || {

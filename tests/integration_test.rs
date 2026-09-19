@@ -1193,13 +1193,16 @@ fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
     );
 
     let area = Rect::new(0, 0, 120, 24);
-    let bar_colours = |app: &mut App| -> Vec<Option<ratatui::style::Color>> {
+    let bar_of = |app: &mut App| -> (Vec<ratatui::style::Color>, String) {
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
-        (0..area.width)
-            .map(|x| buf[(x, area.height - 1)].fg)
-            .map(Some)
-            .collect()
+        let row = area.height - 1;
+        (
+            (0..area.width).map(|x| buf[(x, row)].fg).collect(),
+            (0..area.width)
+                .map(|x| buf[(x, row)].symbol().to_string())
+                .collect(),
+        )
     };
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
@@ -1208,7 +1211,7 @@ fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
         app.data_table_state.as_ref().unwrap().notes_unseen(),
         "the folders disagree, so there is a note and it has not been read"
     );
-    let accented = bar_colours(&mut app);
+    let (accented, accented_text) = bar_of(&mut app);
 
     // Opening the panel clears it, and the bar goes back to its ordinary colours.
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -1220,13 +1223,27 @@ fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    let plain = bar_colours(&mut app);
+    let (plain, plain_text) = bar_of(&mut app);
     let accented_cells: Vec<usize> = (0..plain.len())
         .filter(|x| accented[*x] != plain[*x])
         .collect();
     assert!(
         !accented_cells.is_empty(),
         "the accent was on the bar, and reading the notes took it off"
+    );
+    // And it is the Info key that carries it, not the row count changing width or a
+    // status message appearing — either of which would also colour some cells.
+    let accented_word: String = accented_cells
+        .iter()
+        .map(|x| accented_text.chars().nth(*x).unwrap_or(' '))
+        .collect();
+    assert!(
+        accented_word.contains("Info"),
+        "the cells that changed spell the Info key: {accented_word:?}"
+    );
+    assert_eq!(
+        accented_text, plain_text,
+        "and the accent is only a colour — the bar says the same thing either way"
     );
 
     // And a user who does not want it never sees it, however many notes there are.
@@ -1254,7 +1271,11 @@ fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
         off.data_table_state.as_ref().unwrap().notes_unseen(),
         "there is still a note to accent"
     );
-    let unaccented = bar_colours(&mut off);
+    let (unaccented, unaccented_text) = bar_of(&mut off);
+    assert_eq!(
+        unaccented_text, plain_text,
+        "the same bar, so the colours below are comparable"
+    );
     let still_accented: Vec<usize> = accented_cells
         .iter()
         .copied()
@@ -1318,6 +1339,10 @@ fn test_absent_null_and_conflicting_cells_still_differ_after_a_filter() {
         "2",
     )]);
     assert!(state.error.is_none(), "the filter itself must succeed");
+    // And a filter actually happened: without this the test passes when the predicate
+    // is dropped on the floor, because an unfiltered screen carries all three glyphs
+    // too. The criterion is about surviving a predicate, so there has to be one.
+    assert_eq!(current_rows(&app), 4, "1 is gone; 2, 3, 4 and 5 are left");
 
     let after = painted(&mut app, &rx, &tx, area);
     assert!(

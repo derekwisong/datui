@@ -1682,23 +1682,104 @@ impl DataTableState {
     /// walks used for schema/partition discovery, this visits the whole tree because an
     /// exact row count needs every file. Bounded depth guards against pathological trees.
     fn collect_parquet_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize, max_depth: usize) {
+        Self::collect_parquet_files_counting(
+            dir,
+            out,
+            &mut crate::schema_union::SkippedFiles::default(),
+            depth,
+            max_depth,
+            false,
+        );
+    }
+
+    /// As [`Self::collect_parquet_files`], counting what it walked past.
+    ///
+    /// A folder of Parquet files often holds other things, and datui reads none of
+    /// them. Which ones they are is the difference between bookkeeping and a mistake:
+    /// `_SUCCESS` beside the data is a writer saying it finished, while three CSVs in
+    /// the same folder are three files somebody expected to be in the table.
+    fn collect_parquet_files_counting(
+        dir: &Path,
+        out: &mut Vec<PathBuf>,
+        skipped: &mut crate::schema_union::SkippedFiles,
+        depth: usize,
+        max_depth: usize,
+        // Carried down rather than read off each leaf: a `.json` is a mistake beside
+        // the data and a record of it inside `_delta_log`, and its own name cannot say
+        // which. Every file under a writer's folder is that writer's.
+        under_bookkeeping: bool,
+    ) -> (bool, usize) {
+        // A subtree too deep to walk reports no data, which makes everything above it
+        // read as plumbing. At sixty-four levels that is unreachable, and the rows were
+        // already missing before it also changed what they were called.
         if depth >= max_depth {
-            return;
+            return (false, 0);
         }
         let Ok(entries) = fs::read_dir(dir) else {
-            return;
+            return (false, 0);
         };
+        // Held back until the folder has been read to the end: whether a file beside
+        // the data is worth mentioning depends on whether there is any data beside it,
+        // and that is not known until the last entry.
+        let mut here: Vec<PathBuf> = Vec::new();
+        let mut passed_over = 0usize;
+        let mut data_below = false;
         for entry in entries.flatten() {
             let child = entry.path();
+            let bookkeeping = under_bookkeeping
+                || child
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .as_deref()
+                    .is_some_and(crate::schema_union::is_bookkeeping);
             if child.is_dir() {
-                Self::collect_parquet_files(&child, out, depth + 1, max_depth);
-            } else if child
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
+                let (below, deferred) = Self::collect_parquet_files_counting(
+                    &child,
+                    out,
+                    skipped,
+                    depth + 1,
+                    max_depth,
+                    bookkeeping,
+                );
+                data_below |= below;
+                // A partition of this folder that holds no data of its own hands its
+                // strays up: a day that landed as CSV is part of the dataset, and only
+                // the folder above can see that it is.
+                passed_over += deferred;
+            } else if !bookkeeping
+                && child
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
             {
-                out.push(child);
+                here.push(child);
+            } else if !bookkeeping {
+                passed_over += 1;
+            } else {
+                skipped.count(true);
             }
         }
+        let holds_data = data_below || !here.is_empty();
+        out.append(&mut here);
+        // A folder whose own name carries a partition key is part of the dataset above
+        // it, whether or not its files turned out to be readable. Its strays go up to
+        // be judged there rather than written off here.
+        let partition = dir
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .is_some_and(|n| n.contains('='));
+        // Never at the top: there is nothing above the dataset's own folder to hand
+        // them to, and the caller has nowhere to put them.
+        if depth > 0 && !holds_data && partition && !under_bookkeeping {
+            return (false, passed_over);
+        }
+        // A folder with data anywhere beneath it is part of somebody's table, so what
+        // else is in there is beside their data. A folder with none is somebody's
+        // infrastructure — a manifest directory, a folder of images, a log under a name
+        // no convention covers — and nothing in it was ever going to be in this table.
+        for _ in 0..passed_over {
+            skipped.count(!holds_data);
+        }
+        (holds_data, 0)
     }
 
     /// Every Parquet file under `dir`, and what the footers of the ones worth reading
@@ -1713,7 +1794,11 @@ impl DataTableState {
     pub fn footers_of_parquet_dir(
         dir: &Path,
     ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileSchema>>) {
-        Self::footers_of_parquet_dir_reporting(dir, &crate::schema_union::FooterProgress::default())
+        let (files, read, footers, _skipped) = Self::footers_of_parquet_dir_reporting(
+            dir,
+            &crate::schema_union::FooterProgress::default(),
+        );
+        (files, read, footers)
     }
 
     /// As [`Self::footers_of_parquet_dir`], counting each footer off against `progress`
@@ -1721,10 +1806,16 @@ impl DataTableState {
     pub fn footers_of_parquet_dir_reporting(
         dir: &Path,
         progress: &crate::schema_union::FooterProgress,
-    ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileSchema>>) {
+    ) -> (
+        Vec<PathBuf>,
+        Vec<usize>,
+        Vec<Option<FileSchema>>,
+        crate::schema_union::SkippedFiles,
+    ) {
         const MAX_DEPTH: usize = 64;
         let mut files = Vec::new();
-        Self::collect_parquet_files(dir, &mut files, 0, MAX_DEPTH);
+        let mut skipped = crate::schema_union::SkippedFiles::default();
+        Self::collect_parquet_files_counting(dir, &mut files, &mut skipped, 0, MAX_DEPTH, false);
         // Load-bearing beyond reading in a predictable order. The scan hands these to
         // Polars as they are, and Polars takes the hive schema from the first of them,
         // so this decides whether a folder whose partition keys disagree opens with its
@@ -1782,7 +1873,7 @@ impl DataTableState {
                 .collect()
         });
         drop(pass);
-        (files, read, footers)
+        (files, read, footers, skipped)
     }
 
     /// One local Parquet file's columns, row count and row-group sizes, from its
@@ -9182,7 +9273,7 @@ mod tests {
         }
 
         let progress = crate::schema_union::FooterProgress::default();
-        let (files, read, footers) =
+        let (files, read, footers, _skipped) =
             DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress);
         assert_eq!((files.len(), read.len(), footers.len()), (4, 4, 4));
         assert_eq!(
@@ -9221,7 +9312,7 @@ mod tests {
         }
 
         let progress = crate::schema_union::FooterProgress::default();
-        let (found, read, footers) =
+        let (found, read, footers, _skipped) =
             DataTableState::footers_of_parquet_dir_reporting(dir.path(), &progress);
         assert_eq!(found.len(), files, "every file is listed");
         assert_eq!(

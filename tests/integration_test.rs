@@ -1671,6 +1671,182 @@ fn test_a_column_only_one_partition_has_says_which() {
     );
 }
 
+/// Files in the folder that are not Parquet are counted, so a silent drop is not one.
+///
+/// A `.csv` sitting in a folder of Parquet is a file somebody thought was in the table.
+/// datui reads none of it and, until now, said nothing at all about it — which is the
+/// shape of problem this whole issue is about.
+#[test]
+fn test_files_that_are_not_parquet_are_counted_rather_than_dropped_in_silence() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    std::fs::write(
+        dir.path().join("date=2024-01-01/extra.csv"),
+        "id
+1
+",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "read me").unwrap();
+    // A writer's bookkeeping, which is not a file anyone meant as data.
+    std::fs::write(dir.path().join("_SUCCESS"), "").unwrap();
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    let skipped = notes
+        .iter()
+        .find(|note| note.summary.contains("not Parquet"))
+        .unwrap_or_else(|| panic!("no note about the files that were not read: {notes:#?}"));
+    assert_eq!(
+        skipped.summary,
+        "in the folder, 2 files are not Parquet, 1 file a writer left behind"
+    );
+    assert_eq!(skipped.scope, "in this folder's listing");
+}
+
+/// And a folder holding only what a writer leaves behind says nothing.
+///
+/// `_SUCCESS` beside the data is a job reporting that it finished. A note about it on
+/// every folder any job ever wrote would put an accent on the Info key for the most
+/// ordinary thing a folder can contain.
+#[test]
+fn test_a_writers_own_bookkeeping_is_not_worth_a_note() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    std::fs::write(dir.path().join("_SUCCESS"), "").unwrap();
+    std::fs::write(dir.path().join("date=2024-01-01/.data.parquet.crc"), "").unwrap();
+    // A table format's own log. Everything in here belongs to the writer, whatever it
+    // is called — a folder of three hundred commits is six hundred files, and counting
+    // them as somebody's mistake would put an accent on the Info key for the most
+    // ordinary thing a folder of Parquet can be.
+    std::fs::create_dir_all(dir.path().join("_delta_log")).unwrap();
+    for commit in 0..5 {
+        std::fs::write(
+            dir.path().join(format!("_delta_log/{commit:020}.json")),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path()
+                .join(format!("_delta_log/.{commit:020}.json.crc")),
+            "",
+        )
+        .unwrap();
+    }
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(
+        !state
+            .notes()
+            .iter()
+            .any(|note| note.summary.contains("not Parquet")),
+        "nothing to say: {:#?}",
+        state.notes()
+    );
+}
+
+/// A table format's own Parquet is not the table's rows.
+///
+/// Delta writes its checkpoints as Parquet inside `_delta_log/`, with the table's own
+/// columns among its own. Read as data they are extra rows in a table that does not
+/// have them and columns nobody asked for — a wrong row count, silently. This is about
+/// what the table *contains*, not about what a note says.
+#[test]
+fn test_a_table_formats_own_parquet_is_not_part_of_the_table() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    // A checkpoint, which is Parquet and is not the table.
+    write_parquet(
+        dir.path(),
+        "_delta_log",
+        df!("id" => &[99i64], "txn" => &["commit"]).unwrap(),
+    );
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["date", "id"],
+        "the checkpoint's own columns are not the table's"
+    );
+    let ids: Vec<i64> = state
+        .lf
+        .clone()
+        .collect()
+        .expect("the table reads")
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect();
+    assert_eq!(ids, [1], "and its rows are not the table's rows");
+}
+
+/// An object with nothing in it, whose name said it was data, is a write that stopped.
+///
+/// The note leads with it because it is the one skip that is a fault rather than a
+/// tidy-up — and because nothing else can see it: a file that holds no bytes has no
+/// footer to fail to read.
+#[test]
+fn test_a_write_that_stopped_is_said_to_have_stopped() {
+    use datui::schema_union::SkippedFiles;
+    let note = datui::notes::from_dataset(
+        &datui::schema_union::union_file_schemas(
+            &[],
+            datui::schema_union::SchemaOrigin::AllFooters(0),
+        )
+        .with_skipped(SkippedFiles {
+            bookkeeping: 2,
+            not_parquet: 1,
+            empty: 1,
+        }),
+    );
+    let said: Vec<&str> = note.iter().map(|n| n.summary.as_str()).collect();
+    assert_eq!(
+        said,
+        [
+            "in the folder, 1 file is empty and was not read, 1 file is not Parquet, \
+          2 files a writer left behind"
+        ],
+        "the stopped write first, then the mistake, then the tidy-up"
+    );
+}
+
+/// The same rule on disk as in a bucket: a folder with no data in it is nobody's table.
+///
+/// The cloud half of this has a test; the local half had none, and a mutant that made
+/// the rule never fire survived the whole suite. Iceberg keeps its log in a plain
+/// `metadata/` — no underscore, no dot — so the name convention alone reads a table's
+/// own files as somebody's mistakes.
+#[test]
+fn test_a_local_folder_with_no_data_in_it_is_nobodys_table() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "data/date=1", df!("id" => &[1i64]).unwrap());
+    std::fs::create_dir_all(dir.path().join("metadata")).unwrap();
+    for name in ["v1.metadata.json", "v2.metadata.json", "snap-123.avro"] {
+        std::fs::write(dir.path().join("metadata").join(name), "{}").unwrap();
+    }
+    // And a day that landed as CSV, which is part of the dataset and is a mistake.
+    std::fs::create_dir_all(dir.path().join("data/date=2")).unwrap();
+    std::fs::write(dir.path().join("data/date=2/part-0.csv"), "id\n2\n").unwrap();
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    let about = notes
+        .iter()
+        .find(|note| note.summary.starts_with("in the folder"))
+        .unwrap_or_else(|| panic!("no note about what was not read: {notes:#?}"));
+    assert_eq!(
+        about.summary, "in the folder, 1 file is not Parquet, 3 files a writer left behind",
+        "the csv in the partition that has no data of its own, and Iceberg's three"
+    );
+}
+
 /// The offer in the Notes tab, taken: the values a type conflict hid appear on screen.
 #[test]
 fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {

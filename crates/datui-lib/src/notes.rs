@@ -13,7 +13,7 @@
 //! ratio any of them states.
 
 use crate::numfmt::group_chrome;
-use crate::schema_union::{ColumnDrift, ColumnRange, DatasetSchema, SchemaOrigin};
+use crate::schema_union::{ColumnDrift, ColumnRange, DatasetSchema, SchemaOrigin, SkippedFiles};
 use polars::prelude::{DataType, PlSmallStr};
 
 /// One thing datui noticed.
@@ -145,6 +145,7 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     notes.extend(row_group_note(dataset, &scope));
     notes.extend(small_files_note(dataset, &scope));
     notes.extend(partition_layout_note(dataset));
+    notes.extend(skipped_files_note(dataset));
 
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
@@ -428,6 +429,60 @@ fn text_note(column: &PlSmallStr, scope: &str) -> Note {
         scope: scope.to_string(),
         read_as_text: None,
     }
+}
+
+/// Files in the folder that are not Parquet, and so are not in the table.
+///
+/// Only the ones somebody might have meant as data. A writer leaves `_SUCCESS`, `.crc`
+/// and `_metadata` beside what it wrote, and saying so on every folder a job produced
+/// would put an accent on the Info key for the most ordinary thing a folder can
+/// contain — the same reason the small-files note waits for a threshold rather than
+/// firing on every folder with more than one file in it. Where the note does fire it
+/// counts them beside what it is about, so the numbers are the folder's rather than a
+/// selection from it — as far as the listing saw, which is not the same as all of it:
+/// a subtree it could not read, or one below the depth it stops at, is in neither.
+fn skipped_files_note(dataset: &DatasetSchema) -> Option<Note> {
+    let SkippedFiles {
+        bookkeeping,
+        not_parquet,
+        empty,
+    } = dataset.skipped;
+    if not_parquet == 0 && empty == 0 {
+        return None;
+    }
+    let files = |n: usize| {
+        if n == 1 {
+            "1 file".to_string()
+        } else {
+            format!("{} files", group_chrome(n))
+        }
+    };
+    // An object with nothing in it is a write that stopped, and saying so is the point;
+    // the rest is counted beside it so the total is the folder's, not a selection.
+    let mut said = Vec::new();
+    if empty > 0 {
+        said.push(format!(
+            "{} {} empty and {} not read",
+            files(empty),
+            if empty == 1 { "is" } else { "are" },
+            if empty == 1 { "was" } else { "were" }
+        ));
+    }
+    if not_parquet > 0 {
+        said.push(format!(
+            "{} {} not Parquet",
+            files(not_parquet),
+            if not_parquet == 1 { "is" } else { "are" }
+        ));
+    }
+    if bookkeeping > 0 {
+        said.push(format!("{} a writer left behind", files(bookkeeping)));
+    }
+    Some(Note {
+        summary: format!("in the folder, {}", said.join(", ")),
+        scope: "in this folder's listing".to_string(),
+        read_as_text: None,
+    })
 }
 
 /// A column that some files were written without. The one note that states a ratio,

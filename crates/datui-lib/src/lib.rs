@@ -6586,7 +6586,8 @@ impl App {
             return None;
         }
         let p = path.filter(|p| p.is_dir() && options.hive)?;
-        let (files, read, footers) = DataTableState::footers_of_parquet_dir_reporting(p, progress);
+        let (files, read, footers, skipped) =
+            DataTableState::footers_of_parquet_dir_reporting(p, progress);
         let first = files.first()?;
         let partition_columns = DataTableState::discover_hive_partition_columns(p);
         let values = DataTableState::hive_partition_values(p, first);
@@ -6632,7 +6633,9 @@ impl App {
             DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
                 .ok()?;
         state.set_dataset_schema(
-            dataset.with_partition_layouts(&p.to_string_lossy(), &paths),
+            dataset
+                .with_partition_layouts(&p.to_string_lossy(), &paths)
+                .with_skipped(skipped),
             &file_rows,
             &paths,
         );
@@ -6728,14 +6731,13 @@ impl App {
         runtime: &tokio::runtime::Handle,
         progress: &Arc<crate::schema_union::FooterProgress>,
     ) -> Option<DataTableState> {
-        let files = {
+        let (files, skipped) = {
             let store = store.clone();
-            Arc::new(
-                wait_on_runtime(runtime, async move {
-                    cloud_hive::list_dataset_files(&store, &key).await
-                })?
-                .ok()?,
-            )
+            let (files, skipped) = wait_on_runtime(runtime, async move {
+                cloud_hive::list_dataset_files(&store, &key).await
+            })?
+            .ok()?;
+            (Arc::new(files), skipped)
         };
         // Past one wave of concurrent reads the footers stop being free: the two ends
         // open the dataset and the rest are read behind it, joining when they land. Up
@@ -6827,7 +6829,7 @@ impl App {
         if !row_groups.is_empty() {
             state.set_file_row_groups(&row_groups);
         }
-        state.set_dataset_schema(dataset, &file_rows, &urls);
+        state.set_dataset_schema(dataset.with_skipped(skipped), &file_rows, &urls);
         if staged {
             // Everything the pass behind the open needs, held as one closure the way
             // the scan and the counter are: the store and the listing it already has,
@@ -6878,7 +6880,11 @@ impl App {
                     })
                 };
                 Some(crate::widgets::datatable::FootersFound {
-                    dataset: whole.dataset,
+                    // What the listing passed over travels with the pass, or the note
+                    // about it is on screen from the open and gone the moment the
+                    // columns join — which on a prefix of more than a wave of files is
+                    // every prefix there is.
+                    dataset: whole.dataset.with_skipped(skipped),
                     lf,
                     file_rows: whole.file_rows,
                     // Every file listed: the dataset's per-file findings index this.

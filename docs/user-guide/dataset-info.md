@@ -46,8 +46,10 @@ files with something in them. Where datui notices either, it says so:
 
 Every note says what it is based on — `in all 6,541 footers`, or
 `in 20,000 of 200,000 footers (sample)` — so a count never stands for files
-datui has not looked at. None of them costs a read of its own: they come from
-the footers the schema and the row count already needed.
+datui has not looked at. A cloud folder that is still reading its footers behind
+the data says `in 2 of 6,541 footers (sample)` until they land, and the notes are
+rewritten from all of them when they do. None of them costs a read of its own:
+they come from the footers the schema and the row count already needed.
 
 A note is one sentence and the line beneath it saying what it is based on;
 <kbd>↑</kbd> and <kbd>↓</kbd> move between them. When the list is taller than the

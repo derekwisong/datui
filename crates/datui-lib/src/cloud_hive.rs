@@ -316,7 +316,7 @@ pub fn dataset_schema_from_footers(
 }
 
 /// How many footers are read at once when counting.
-const FOOTERS_AT_ONCE: usize = 64;
+pub const FOOTERS_AT_ONCE: usize = 64;
 /// The first read of a footer. Most footers fit; a larger one costs a second request.
 const COUNT_TAIL_BYTES: u64 = 16 * 1024;
 
@@ -734,6 +734,307 @@ mod tests {
             progress.reading(),
             None,
             "with nothing left to say once they landed"
+        );
+    }
+
+    /// A dataset too big to read whole opens from its two ends, and the rest joins.
+    ///
+    /// The column only a middle file has is the whole point: the two ends cannot know
+    /// about it, so it is missing from the dataset as it opens and arrives when the
+    /// pass behind the open lands. It joins at the end of the order, and everything
+    /// already there — including where the user has scrolled to — stays put.
+    #[test]
+    fn a_column_only_a_middle_file_has_joins_after_the_open() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let plain = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i], "v" => &[i * 2]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let with_oops = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i], "v" => &[i * 2], "oops" => &["vendor"]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        // One more than a wave of concurrent reads, which is where the open stops
+        // waiting for every footer.
+        let files = FOOTERS_AT_ONCE + 1;
+        let odd_one_out = files / 2;
+        rt.block_on(async {
+            for i in 0..files {
+                let key = format!("data/date=2024-01-{:03}/part.parquet", i + 1);
+                let body = if i == odd_one_out {
+                    with_oops(i as i64)
+                } else {
+                    plain(i as i64)
+                };
+                store
+                    .put(&OsPath::from(key.as_str()), PutPayload::from(body))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let mut state = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        )
+        .expect("the prefix opens");
+
+        assert_eq!(
+            progress.last_pass().read,
+            2,
+            "the open waited for two footers, not {files}"
+        );
+        assert!(
+            !state.get_column_order().iter().any(|c| c == "oops"),
+            "the two ends cannot know about a column only the middle has: {:?}",
+            state.get_column_order()
+        );
+        // And nothing else is sent after the same footers. The counter this returns is
+        // a second pass over every footer of the dataset — the one cost staging the
+        // open was meant to avoid, and it would double it instead.
+        assert!(
+            state.remote_files_counter().is_none(),
+            "the pass already reading every footer is where the count comes from"
+        );
+
+        // The user, meanwhile, has been reading it: scrolled a column across and moved
+        // down the rows.
+        state.scroll_right();
+        let scrolled_to = state.termcol_index;
+        assert!(scrolled_to > 0, "the fixture can be scrolled");
+
+        let join = state
+            .footers_pending()
+            .expect("the rest are still to be read");
+        let found = join(&progress).expect("the pass reads them");
+        // As `build_schema_state` marks a prefix that is scanned where it lies, and as
+        // a rendered table has a height.
+        state.set_remote_source();
+        state.visible_rows = 10;
+        assert!(
+            state.join_dataset_schema(found).is_ok(),
+            "nothing is built on top of the scan here, so they go straight in"
+        );
+
+        assert_eq!(
+            progress.last_pass().read,
+            files,
+            "the pass behind the open read every footer"
+        );
+        assert_eq!(
+            state.get_column_order().last().map(String::as_str),
+            Some("oops"),
+            "the column joins, at the end, where nothing already shown has to move: \
+             {:?}",
+            state.get_column_order()
+        );
+        assert_eq!(
+            state.termcol_index, scrolled_to,
+            "and the view does not move under the user to make room"
+        );
+        assert!(
+            state.footers_pending().is_none(),
+            "with nothing left to wait for"
+        );
+        // And the dataset can still be read. Knowing every file's row groups turns on
+        // the windowed read, which goes through the scan the dataset is holding rather
+        // than through `lf` — and the scan it opened with was built at the two-footer
+        // schema, which has never heard of the column that just joined. Left in place
+        // it makes every page after the join fail with `unable to find column "oops"`,
+        // which is the table going blank at the moment it was to show more.
+        let mut request = state
+            .prepare_async_collect(None)
+            .expect("a page is planned");
+        // Resolved rather than collected: Polars cannot fetch from the in-memory store,
+        // so the read itself fails here for a reason that has nothing to do with this.
+        // Resolving is where the fault showed anyway — the page asks the scan for the
+        // columns on screen, and a scan that has not heard of one of them cannot be
+        // planned at all.
+        let planned = request.lf.collect_schema();
+        assert!(
+            planned.is_ok(),
+            "the first page after the join could not even be planned: {:?}",
+            planned.err()
+        );
+        let planned = planned.unwrap();
+        assert!(
+            planned.iter_names().any(|name| name == "oops"),
+            "and it reads the column that just joined: {:?}",
+            planned.iter_names().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(files),
+            "and the count the pass brought back with it, one row a file — without a \
+             second pass over the same footers to learn it"
+        );
+        // Nothing was read here. The join happens on the thread drawing the screen, so
+        // a collect inside it is a remote read the whole terminal waits on — and with
+        // no count yet it would be a `len()` over every file in the dataset.
+        assert!(
+            state.display_df().is_none(),
+            "the frame is rebuilt but not read; the caller reads it back off the loop"
+        );
+    }
+
+    /// A corrupt object the open could not see is left out when the pass finds it.
+    ///
+    /// The staged open reads two footers, so an object that will not parse anywhere but
+    /// the two ends is invisible to it: the dataset opens with that object in its scan,
+    /// and the pass behind it is the first thing to know better. Everything the pass
+    /// hands over has to describe the same list — the scan it built, the urls it found,
+    /// and the counter that answers one entry per file it was given. A counter left
+    /// over from the open answers for a file more than the dataset now holds, and that
+    /// answer is dropped on a length check without a word: no count, no offsets, and
+    /// every page a scan of the whole prefix for the rest of the session.
+    #[test]
+    fn an_object_only_the_pass_finds_corrupt_is_left_out_by_the_pass() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        // One more than a wave, so the open reads only the two ends — and the bad one
+        // is in the middle, where neither end can see it.
+        let files = FOOTERS_AT_ONCE + 1;
+        let unreadable = files / 2;
+        rt.block_on(async {
+            for i in 0..files {
+                let key = format!("data/date=2024-01-{:03}/part.parquet", i + 1);
+                let bytes = if i == unreadable {
+                    b"not a parquet file".to_vec()
+                } else {
+                    body(i as i64)
+                };
+                store
+                    .put(&OsPath::from(key.as_str()), PutPayload::from(bytes))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let mut state = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        )
+        .expect("the prefix opens");
+
+        let join = state
+            .footers_pending()
+            .expect("the rest are still to be read");
+        let found = join(&progress).expect("the pass reads them");
+        assert!(
+            state.join_dataset_schema(found).is_ok(),
+            "nothing is built on top of the scan here"
+        );
+
+        let plan = state
+            .visible_lf()
+            .explain(false)
+            .expect("the scan can be planned");
+        assert!(
+            !plan.contains(&format!("date=2024-01-{:03}", unreadable + 1)),
+            "the object that will not parse is not one of the sources: {plan}"
+        );
+
+        let counter = state
+            .remote_files_counter()
+            .expect("the dataset has not counted itself yet");
+        let groups = counter().expect("the readable objects are counted");
+        state.set_file_row_groups(&groups);
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(files - 1),
+            "and the count lands — one row from every object that would open, rather \
+             than an answer for a list the dataset no longer holds, dropped in silence"
+        );
+    }
+
+    /// A dataset small enough to read in one wave opens whole, rather than twice.
+    ///
+    /// `footers_of_files_reporting` fetches `FOOTERS_AT_ONCE` at a time, so up to that
+    /// many the footers cost the same one round trip whether two are read or all of
+    /// them. Opening such a dataset from two would show it incomplete for a moment and
+    /// then rebuild it, for nothing — and it would lose the row numbering that tells an
+    /// absent cell from a null.
+    #[test]
+    fn a_dataset_of_one_wave_of_footers_opens_whole() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for i in 0..FOOTERS_AT_ONCE {
+                let key = format!("data/date=2024-01-{:03}/part.parquet", i + 1);
+                store
+                    .put(
+                        &OsPath::from(key.as_str()),
+                        PutPayload::from(body(i as i64)),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let state = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        )
+        .expect("the prefix opens");
+
+        assert_eq!(
+            progress.last_pass().read,
+            FOOTERS_AT_ONCE,
+            "a wave's worth is read at the open, not two of them"
+        );
+        assert!(
+            state.footers_pending().is_none(),
+            "with nothing left to read behind it"
+        );
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(FOOTERS_AT_ONCE),
+            "counted from those footers as it opens, rather than left to a later pass"
         );
     }
 

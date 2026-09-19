@@ -394,6 +394,21 @@ pub fn footers_to_read(files: usize) -> Vec<usize> {
     sample
 }
 
+/// The first file and the last, which is what a dataset opens from while the rest of
+/// its footers are still being read. Ascending, and one index when there is one file.
+///
+/// The last by name, not by date: the files are sorted by key, and a dataset whose
+/// partition values are not zero-padded puts `month=9` after `month=10`. The pair is a
+/// heuristic either way — between the oldest shape and a recent one lies most of what a
+/// dataset disagrees about — and everything it misses arrives with the rest.
+pub fn ends_of(files: usize) -> Vec<usize> {
+    match files {
+        0 => Vec::new(),
+        1 => vec![0],
+        n => vec![0, n - 1],
+    }
+}
+
 /// The schema of a dataset of `files` files whose footers at the indices `read` were
 /// fetched, in that order.
 ///

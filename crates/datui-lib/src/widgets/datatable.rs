@@ -154,6 +154,9 @@ pub struct DataTableState {
     /// Each file's path or URL, in scan order, so a row can be traced to the file it
     /// came from and an export can name it.
     drift_files: Vec<String>,
+    /// Set while the dataset is on screen from a footer or two and the rest are still
+    /// to be read. Cleared when their answer joins. See [`FootersJoin`].
+    footers_pending: Option<FootersJoin>,
     /// What datui noticed about the dataset, from the footers it had to read anyway.
     notes: Vec<crate::notes::Note>,
     /// Whether the Info panel has been opened since the notes were gathered. Belongs to
@@ -256,6 +259,43 @@ pub struct CollectRequest {
 pub type FileScan = Arc<dyn Fn(&[String], &[PlSmallStr]) -> PolarsResult<LazyFrame> + Send + Sync>;
 /// Counts the rows in each row group of every file of a dataset. Blocks.
 pub type FileCounter = Arc<dyn Fn() -> Result<Vec<Vec<usize>>, String> + Send + Sync>;
+/// Reads every footer of a dataset that opened from a couple of them, and returns what
+/// they say. `None` when they could not be read, in which case the dataset stays as it
+/// opened. Blocks, and counts itself off against the progress it is given.
+pub type FootersJoin =
+    Arc<dyn Fn(&Arc<crate::schema_union::FooterProgress>) -> Option<FootersFound> + Send + Sync>;
+/// What reading every footer turned up, and everything built from it that the dataset
+/// has to be given together — the schema and the scans that read at that schema.
+pub struct FootersFound {
+    /// Every column every file has, and which files disagree about what.
+    pub dataset: crate::schema_union::DatasetSchema,
+    /// The scan that reads the dataset whole.
+    pub lf: LazyFrame,
+    /// Each file's rows, in scan order.
+    pub file_rows: Vec<usize>,
+    /// Every file listed, in scan order — including any whose footer would not read.
+    /// The dataset's per-file findings index this, so it is the whole list.
+    pub files: Vec<String>,
+    /// Each file's row groups, or empty if a footer would not parse.
+    pub row_groups: Vec<Vec<usize>>,
+    /// How to read part of a remote dataset rather than all of it. `None` for one that
+    /// does not read by file.
+    pub remote: Option<RemoteRead>,
+}
+
+/// How a remote dataset reads some of its files, as the pass behind an open found them.
+///
+/// The three travel together because they describe one list. The scan is built at a
+/// schema — the one the dataset opened with has never heard of the columns this pass
+/// found — and the counter answers one entry per file it was given, which has to be the
+/// same list `urls` holds or the answer is dropped on a length check and the dataset
+/// never learns its own size.
+pub struct RemoteRead {
+    /// The files that will open, which is not every file listed.
+    pub urls: Vec<String>,
+    pub scan: FileScan,
+    pub count: FileCounter,
+}
 
 /// A remote dataset of many files, and how to read only some of them.
 ///
@@ -560,6 +600,7 @@ impl DataTableState {
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
             drift_files: Vec::new(),
+            footers_pending: None,
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
@@ -668,6 +709,7 @@ impl DataTableState {
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
             drift_files: Vec::new(),
+            footers_pending: None,
             notes: Vec::new(),
             notes_seen: false,
             notes_at_open: Vec::new(),
@@ -3723,6 +3765,26 @@ impl DataTableState {
             && self.drilled_down_group_index.is_none()
     }
 
+    /// Whether the frame on screen still grows from the dataset's own scan.
+    ///
+    /// A filter and a sort do: `apply_transformations` rebuilds them over whatever the
+    /// root is, so widening the root under them is exactly what should happen. A query,
+    /// a SQL statement, a fuzzy search, a pivot, a melt and a drill-down do not — each
+    /// makes its own result the root, with its own columns, and replacing the root
+    /// underneath one leaves the view naming columns the frame no longer has.
+    ///
+    /// `grouped` and `drilled_down_group_index` are set together by a drill down and
+    /// cleared together by a drill up, so asking both is belt and braces — kept because
+    /// what they guard is the frame being rebuilt under a view of one group of it.
+    pub fn scan_is_the_root(&self) -> bool {
+        self.active_query.is_empty()
+            && self.active_sql_query.is_empty()
+            && self.active_fuzzy_query.is_empty()
+            && self.reshaped_lf.is_none()
+            && self.grouped.is_none()
+            && self.drilled_down_group_index.is_none()
+    }
+
     /// A pristine scan's count is its footer's: take it back, without a `len()`, when
     /// the frame is the scan as loaded again.
     fn restore_footer_count(&mut self) {
@@ -3917,6 +3979,163 @@ impl DataTableState {
         self.read_as_text = Vec::new();
         self.dataset_at_open = Some(schema.clone());
         self.dataset_schema = Some(schema);
+    }
+
+    /// The pass that is still reading this dataset's footers, if one is.
+    pub fn footers_pending(&self) -> Option<FootersJoin> {
+        self.footers_pending.clone()
+    }
+
+    /// Whether *this frame's* row count is already on its way.
+    ///
+    /// The frame matters: what the pass is bringing is the dataset's count, which is
+    /// not the count of a query's result. Asking this about the wrong frame is how a
+    /// count nobody else was going to take gets declined.
+    ///
+    /// A staged open is still reading every footer, and those footers hold the count.
+    /// Asking for it separately would read all of them a second time, so the dataset
+    /// says it will have one shortly and the caller does not start a count of its own.
+    pub fn counts_itself_later(&self) -> bool {
+        // Only while it does not have one, and only while the frame is the scan. What
+        // the pass is bringing is the *dataset's* count; a query's result has a count
+        // of its own that nobody else is going to take. Declining it there means the
+        // row count spins for as long as the query is open and `End` says it is
+        // counting while nothing is — and it costs nothing to take, because a frame
+        // that is not the scan does not read footers for it either.
+        self.footers_pending.is_some() && !self.num_rows_valid && self.is_pristine()
+    }
+
+    /// Give up on the rest of the footers: the pass could not read them.
+    ///
+    /// The dataset stays as it opened — a working view of it, built from two footers —
+    /// and stops waiting. That matters beyond the columns: while a pass is pending the
+    /// dataset declines to count itself, because the pass was going to bring the count
+    /// with it. One failed pass would otherwise cost it an exact row count, and its
+    /// windowed reads, for the rest of the session.
+    pub fn give_up_on_pending_footers(&mut self) {
+        self.footers_pending = None;
+    }
+
+    /// Record that the dataset opened from a sample of its footers and the rest are
+    /// coming. See [`FootersJoin`].
+    pub fn set_footers_pending(&mut self, join: FootersJoin) {
+        self.footers_pending = Some(join);
+    }
+
+    /// Every footer's answer, joined to the dataset already on screen.
+    ///
+    /// The open painted from the first file and the newest; this is what the rest of
+    /// them say. Columns only ever join: a name the opening schema did not have goes on
+    /// the end, and every name already there keeps its place — including the places a
+    /// user has since moved them to — so nothing moves under the cursor except to make
+    /// room for what arrived.
+    ///
+    /// The frame is rebuilt rather than widened in place, because the scan itself
+    /// differs: it now knows which files hold a column in a type the dataset cannot
+    /// keep, and with every file's row count it can number the rows, which is what
+    /// tells an absent cell from a null.
+    ///
+    /// Gives them back as `Err` rather than taking them, while the user is looking at
+    /// something built on top of the scan instead of the scan itself — see
+    /// [`Self::scan_is_the_root`]. Rebuilding the root under a query takes away the
+    /// columns the query named; handing them back lets the caller keep them and offer
+    /// them again when the view comes back to the data.
+    pub fn join_dataset_schema(
+        &mut self,
+        mut found: FootersFound,
+    ) -> std::result::Result<(), Box<FootersFound>> {
+        if !self.scan_is_the_root() {
+            // The columns must wait; what the footers said about the files need not.
+            // `set_file_row_groups` keeps the offsets without touching the count of a
+            // frame that is a query's result rather than the dataset — so letting the
+            // query go gets the total back without going and fetching it.
+            // Taken, not borrowed: this runs on every event for as long as the view
+            // stays off the scan, and applying the same row groups on each keystroke is
+            // a walk of every file in the dataset for nothing.
+            let row_groups = std::mem::take(&mut found.row_groups);
+            if !row_groups.is_empty() {
+                self.set_file_row_groups(&row_groups);
+            }
+            // Boxed because what comes back is most of a dataset's worth of schema, and
+            // an `Err` that size would be carried by every call that succeeds too.
+            return Err(Box::new(found));
+        }
+        let FootersFound {
+            dataset,
+            lf,
+            file_rows,
+            files,
+            row_groups,
+            remote,
+        } = found;
+        let (file_rows, files) = (file_rows.as_slice(), files.as_slice());
+        let known: std::collections::HashSet<&str> =
+            self.column_order.iter().map(String::as_str).collect();
+        let joining: Vec<String> = dataset
+            .schema
+            .iter_names()
+            .map(|name| name.to_string())
+            .filter(|name| {
+                name != crate::schema_union::DRIFT_COLUMN && !known.contains(name.as_str())
+            })
+            .collect();
+        drop(known);
+        self.column_order.extend(joining);
+        // Columns only join — but a name can still go, if the footer that was the only
+        // evidence for it would not parse this time round. Every read projects
+        // `column_order`, so a name the new schema does not have is not a missing
+        // column on screen, it is a scan that cannot run at all.
+        self.column_order
+            .retain(|name| dataset.schema.contains(name.as_str()));
+        self.schema = dataset.schema.clone();
+        // The scan is built at a schema, and the one this dataset opened with has never
+        // heard of the columns that just arrived. Left in place, the first windowed
+        // page read asks it for a column it does not have and the table stops showing
+        // rows at the moment it was supposed to show more of them.
+        if let (Some(found), Some(remote)) = (remote, self.remote_files.as_mut()) {
+            remote.urls = Arc::new(found.urls);
+            remote.scan = found.scan;
+            // The counter too, and for the same reason the scan is replaced: it answers
+            // one entry per file it was given, and the one the dataset opened with was
+            // given every file listed. Left beside a shorter `urls` its answer is
+            // dropped on a length check without a word, and the dataset spends the rest
+            // of the session re-counting itself and never reaching an end to jump to.
+            remote.count = found.count;
+        }
+        // Takes the notes, the drift groups and the row starts with it, and clears
+        // `read_as_text` — sound only because the offer to read a column as text is
+        // not made until the footers are all in, so there is nothing to clear.
+        self.set_dataset_schema(dataset, file_rows, files);
+        self.footers_pending = None;
+        self.original_lf = lf.clone();
+        self.base_lf = lf.clone();
+        self.lf = lf;
+        // The rows on screen were read through the old frame. Dropping the buffer has
+        // the next collect read them through the new one, at the row the user is still
+        // sitting on — `start_row` and the column scroll are left exactly as they are.
+        self.buffered_start_row = 0;
+        self.buffered_end_row = 0;
+        self.buffered_df = None;
+        // Measured on the frame that just went. A dataset that opened two columns wide
+        // and gained thirty would plan its first page after the join from the two-column
+        // width, which against a bucket is a read many times the budget the user set.
+        self.observed_bytes_per_row = None;
+        // Every file's row groups are known now, so this is the dataset's count. Set
+        // before the rebuild so the count is in place the moment the frame is, rather
+        // than for any ordering the lines below depend on.
+        if !row_groups.is_empty() {
+            self.set_file_row_groups(&row_groups);
+        }
+        // Rebuilt but not read. This runs on the thread drawing the screen, and
+        // `apply_transformations` ends in a `collect` — against a dataset in a bucket
+        // that is a page fetched, and with no count yet it is a `len()` over every file
+        // in the dataset, which is the whole cost this staging exists to avoid. The
+        // buffer is gone and the caller reads it back off the event loop. This line is
+        // what keeps the collect off this thread; do not take it away.
+        let deferred = std::mem::replace(&mut self.defer_collect, true);
+        self.apply_transformations();
+        self.defer_collect = deferred;
+        Ok(())
     }
 
     /// The frame as the user sees it: `lf` without the hidden row-index column.
@@ -4315,7 +4534,16 @@ impl DataTableState {
 
     /// The counter for a remote dataset's files, while its count would be the data's:
     /// the frame is the scan as loaded, and the files have not been counted yet.
+    ///
+    /// Not while a pass is already reading every footer of this dataset. That pass
+    /// brings the row groups back with it, and this counter reads the same footers a
+    /// second time — for a prefix of 6,541 files, 6,541 ranged reads to learn what is
+    /// already on its way. Staging the open to save round trips and then spending them
+    /// here would be worse than not staging it at all.
     pub fn remote_files_counter(&self) -> Option<FileCounter> {
+        if self.footers_pending.is_some() {
+            return None;
+        }
         self.remote_files
             .as_ref()
             .filter(|f| f.offsets.is_none() && self.is_pristine())
@@ -6835,6 +7063,391 @@ mod tests {
     use super::*;
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+
+    /// The join drops the rows it read through the frame it replaced.
+    ///
+    /// The buffer holds rows read at the old schema, through the old scan. Kept, the
+    /// next paint draws them under the new column order — and `display_slice_df` offsets
+    /// into them from `buffered_start_row`, so where the user is deep in a dataset it is
+    /// the wrong rows under the right numbers.
+    #[test]
+    fn the_join_drops_the_rows_read_through_the_frame_it_replaced() {
+        let narrow = || df!("id" => &[1i64, 2]).unwrap().lazy();
+        let wider = || {
+            df!("id" => &[1i64, 2], "oops" => &["a", "b"])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 2,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(narrow()).schema.clone(),
+            narrow(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.visible_rows = 2;
+        state.collect();
+        assert!(
+            state.buffered_df.is_some(),
+            "there are rows on hand, read at the old schema"
+        );
+
+        assert!(
+            state
+                .join_dataset_schema(FootersFound {
+                    dataset: dataset_of(wider()),
+                    lf: wider(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    remote: None,
+                })
+                .is_ok()
+        );
+
+        assert!(
+            state.buffered_df.is_none(),
+            "and they are let go, rather than drawn under the columns that replaced them"
+        );
+        assert_eq!(
+            (state.buffered_start_row, state.buffered_end_row),
+            (0, 0),
+            "with nothing left saying which rows they were"
+        );
+    }
+
+    /// The join throws away a width measured on the frame it replaced.
+    ///
+    /// `bytes_per_row` prefers what was observed over what the schema estimates, and the
+    /// observation belongs to the frame that just went. A dataset that opened two
+    /// columns wide and gained thirty would plan its first page after the join from the
+    /// two-column width — against a bucket, a read many times the budget the user set.
+    /// `install_base` clears it for the same reason.
+    #[test]
+    fn the_join_does_not_keep_a_width_measured_on_the_frame_it_replaced() {
+        let narrow = || df!("id" => &[1i64, 2]).unwrap().lazy();
+        let wide = || {
+            df!("id" => &[1i64, 2], "a" => &["x", "y"], "b" => &["x", "y"])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 2,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(narrow()).schema.clone(),
+            narrow(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.observed_bytes_per_row = Some(8);
+        let measured_narrow = state.bytes_per_row();
+
+        assert!(
+            state
+                .join_dataset_schema(FootersFound {
+                    dataset: dataset_of(wide()),
+                    lf: wide(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    remote: None,
+                })
+                .is_ok(),
+            "nothing is built on the scan here, so the columns go straight in"
+        );
+
+        assert!(
+            state.bytes_per_row() > measured_narrow,
+            "a row of the widened dataset is not planned at the width of the old one: \
+             {} vs {measured_narrow}",
+            state.bytes_per_row()
+        );
+    }
+
+    /// A dataset stops saying a count is coming once one has arrived.
+    ///
+    /// While a pass is reading its footers the dataset declines to count itself, because
+    /// that pass is bringing the count — and the control bar shows a spinner in place of
+    /// a number it would otherwise print as fact. When the pass lands on a view built on
+    /// the scan the columns have to wait, but the row groups describe the same files the
+    /// frame is already reading, so the number need not: without this the user watches
+    /// that spinner over a count the dataset is holding.
+    #[test]
+    fn a_count_that_has_arrived_is_not_held_back_with_the_columns() {
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let wider = || {
+            df!("id" => (0..100i64).collect::<Vec<_>>(), "oops" => vec!["a"; 100])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 100,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(rows()).schema.clone(),
+            rows(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.set_footers_pending(Arc::new(|_| None));
+        assert!(
+            state.counts_itself_later(),
+            "the pass is bringing a count, so the dataset is not going to fetch one"
+        );
+
+        // The user is in a query when it lands, so the columns cannot go in.
+        state.active_query = "select doubled: id * 2".to_string();
+        let held = state.join_dataset_schema(FootersFound {
+            dataset: dataset_of(wider()),
+            lf: wider(),
+            file_rows: vec![100],
+            files: vec!["one".to_string()],
+            row_groups: vec![vec![100]],
+            remote: None,
+        });
+        assert!(held.is_err(), "the columns wait for the query to be let go");
+
+        // What the footers said about the files stays, so letting the query go gets the
+        // total back rather than sending anyone to fetch it again.
+        state.active_query.clear();
+        state.restore_footer_count();
+        assert_eq!(
+            state.num_rows_if_valid(),
+            Some(100),
+            "the count is there, without a read to find it"
+        );
+        assert!(
+            !state.counts_itself_later(),
+            "so the dataset stops saying one is coming, and the bar prints a number \
+             rather than a spinner over one it is holding"
+        );
+    }
+
+    /// A column the second pass could not see goes, rather than breaking every read.
+    ///
+    /// Columns only join — but the pass reads footers again, and a footer that parsed
+    /// at the open can fail the second time: a transient error, or the object replaced
+    /// between the two reads. If that was the only file with a column, the name is left
+    /// naming nothing. Every page projects `column_order`, so a name the new schema
+    /// does not have is not a blank column on screen, it is a scan that will not plan.
+    #[test]
+    fn a_column_the_second_pass_could_not_see_leaves_the_order() {
+        let at_open = || {
+            df!("id" => &[1i64], "only_the_first_file_had_this" => &["x"])
+                .unwrap()
+                .lazy()
+        };
+        let second_time = || df!("id" => &[1i64], "oops" => &["a"]).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(at_open()).schema.clone(),
+            at_open(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        assert!(
+            state
+                .get_column_order()
+                .iter()
+                .any(|c| c == "only_the_first_file_had_this"),
+            "the dataset opened with it"
+        );
+
+        assert!(
+            state
+                .join_dataset_schema(FootersFound {
+                    dataset: dataset_of(second_time()),
+                    lf: second_time(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    remote: None,
+                })
+                .is_ok()
+        );
+
+        assert_eq!(
+            state.get_column_order(),
+            ["id", "oops"],
+            "the name the pass can no longer account for is not left naming nothing"
+        );
+    }
+
+    /// Every way of building on the scan holds the arriving columns off, not just one.
+    ///
+    /// Each of these replaces the frame's root with a result of its own, whose columns
+    /// are not the dataset's. The doc on `scan_is_the_root` says so of all of them; the
+    /// query is the one the app-level test exercises, so this is the rest.
+    #[test]
+    fn anything_built_on_the_scan_holds_the_arriving_columns_off() {
+        // A string column because a fuzzy search needs one to search.
+        let narrow = || {
+            df!("id" => &[1i64, 2], "v" => &[10i64, 20], "name" => &["one", "two"])
+                .unwrap()
+                .lazy()
+        };
+        let wider = || {
+            df!(
+                "id" => &[1i64, 2],
+                "v" => &[10i64, 20],
+                "name" => &["one", "two"],
+                "oops" => &["a", "b"],
+            )
+            .unwrap()
+            .lazy()
+        };
+        let found = || {
+            let mut lf = wider();
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 2,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            FootersFound {
+                dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
+                lf: wider(),
+                file_rows: Vec::new(),
+                files: Vec::new(),
+                row_groups: Vec::new(),
+                remote: None,
+            }
+        };
+        let fresh = || {
+            let mut lf = narrow();
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            DataTableState::from_schema_and_lazyframe(
+                schema,
+                narrow(),
+                &crate::OpenOptions::default(),
+                None,
+            )
+            .unwrap()
+        };
+
+        // A filter and a sort are not built on the scan, they are the scan with
+        // something done to it, and `apply_transformations` puts them back over
+        // whatever the root becomes. Those the columns may join under.
+        let mut sorted = fresh();
+        sorted.sort(vec!["id".to_string()], true);
+        assert!(
+            sorted.join_dataset_schema(found()).is_ok(),
+            "a sort is rebuilt over the wider scan, so the columns go in under it"
+        );
+
+        let mut queried = fresh();
+        queried.query("select doubled: v * 2".to_string());
+        assert!(
+            queried.join_dataset_schema(found()).is_err(),
+            "a query's columns are its own"
+        );
+
+        let mut sql = fresh();
+        sql.sql_query("SELECT id FROM df".to_string());
+        assert!(sql.error.is_none(), "the statement runs: {:?}", sql.error);
+        assert!(
+            sql.join_dataset_schema(found()).is_err(),
+            "and a SQL statement's are too"
+        );
+
+        let mut fuzzy = fresh();
+        fuzzy.fuzzy_search("10".to_string());
+        assert!(
+            fuzzy.join_dataset_schema(found()).is_err(),
+            "and what a fuzzy search matched is a result, not the dataset"
+        );
+
+        let mut melted = fresh();
+        melted
+            .melt(&MeltSpec {
+                index: vec!["id".to_string()],
+                value_columns: vec!["v".to_string()],
+                variable_name: "variable".to_string(),
+                value_name: "value".to_string(),
+            })
+            .expect("the melt runs");
+        assert!(
+            melted.join_dataset_schema(found()).is_err(),
+            "a melt's rows are not the dataset's rows"
+        );
+
+        let mut pivoted = fresh();
+        pivoted
+            .pivot(&PivotSpec {
+                index: vec!["id".to_string()],
+                pivot_column: "name".to_string(),
+                value_column: "v".to_string(),
+                aggregation: PivotAggregation::First,
+                sort_columns: None,
+            })
+            .expect("the pivot runs");
+        assert!(
+            pivoted.join_dataset_schema(found()).is_err(),
+            "and a pivot's columns are made from the data, not read from it"
+        );
+
+        let mut drilled = fresh();
+        // The field rather than the drill itself, which needs a grouped frame to drill
+        // into: what is being asked here is whether the clause is consulted.
+        drilled.drilled_down_group_index = Some(0);
+        assert!(
+            drilled.join_dataset_schema(found()).is_err(),
+            "and a drill-down is showing one group of it, not it"
+        );
+    }
 
     /// Three files of two rows each, and every way they can conflict.
     ///

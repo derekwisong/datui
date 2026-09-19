@@ -446,6 +446,19 @@ pub struct DataTableInfo<'a> {
     pub highlight: Style,
 }
 
+/// The first line of the Schema tab: the dataset's size, or that it does not know yet.
+///
+/// Told `None` rather than a number, because what a state holds before it has been
+/// counted is how far its buffer reached — printed under a heading that says "total",
+/// that reads as the size of the dataset. On a folder of thousands of files still being
+/// counted it would say `Rows (total): 70` beside a control bar showing a spinner.
+fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
+    match rows {
+        Some(rows) => format!("Rows (total): {} · Columns: {}", format_int(rows), columns),
+        None => format!("Rows (total): counting… · Columns: {columns}"),
+    }
+}
+
 impl<'a> DataTableInfo<'a> {
     pub fn new(
         state: &'a DataTableState,
@@ -482,13 +495,9 @@ impl<'a> DataTableInfo<'a> {
 
     fn render_schema_summary(&self, area: Rect, buf: &mut Buffer) -> u16 {
         let ncols = self.state.schema.len();
-        let nrows = self.state.num_rows;
         let mut lines = vec![];
-        lines.push(format!(
-            "Rows (total): {} · Columns: {}",
-            format_int(nrows),
-            ncols
-        ));
+        // `num_rows_if_valid`, not `num_rows`: see `rows_and_columns`.
+        lines.push(rows_and_columns(self.state.num_rows_if_valid(), ncols));
         let by_type = columns_by_type(self.state.schema.as_ref());
         if !by_type.is_empty() {
             lines.push(by_type);
@@ -1095,6 +1104,76 @@ pub fn read_parquet_metadata(path: &Path) -> Option<ParquetMetadataCache> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dataset that has not been counted says so rather than showing how far it got.
+    ///
+    /// Through a rendered panel, not the helper: the helper cannot tell whether its
+    /// caller passed `num_rows_if_valid()` or the raw field, and the raw field is what
+    /// the bug was.
+    #[test]
+    fn the_schema_tab_does_not_call_a_partial_the_total() {
+        use crate::widgets::datatable::DataTableState;
+        use polars::prelude::*;
+
+        let rows = || df!("id" => (0..70i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        // As a staged open leaves it: a provisional from however far the buffer reached,
+        // with no count taken.
+        state.num_rows = 70;
+
+        let painted = |state: &DataTableState| {
+            let area = Rect::new(0, 0, 60, 12);
+            let mut buf = Buffer::empty(area);
+            let mut modal = InfoModal::default();
+            let panel = DataTableInfo::new(
+                state,
+                InfoContext {
+                    path: None,
+                    format: None,
+                    parquet_metadata: None,
+                },
+                &mut modal,
+                ratatui::style::Color::White,
+                ratatui::style::Color::Cyan,
+                ratatui::style::Color::White,
+                Style::default(),
+            );
+            panel.render_schema_summary(area, &mut buf);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let uncounted = painted(&state);
+        assert!(
+            uncounted.contains("counting…"),
+            "a count not taken is not a total: {uncounted}"
+        );
+        assert!(
+            !uncounted.contains("70"),
+            "and the buffer's height is not shown in its place: {uncounted}"
+        );
+
+        state.set_num_rows(70);
+        let counted = painted(&state);
+        assert!(
+            counted.contains("Rows (total): 70"),
+            "and once it has been counted, that is what it says: {counted}"
+        );
+    }
 
     #[test]
     fn the_tabs_on_offer_depend_on_the_dataset() {

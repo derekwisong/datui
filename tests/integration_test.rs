@@ -2160,6 +2160,87 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
     );
 }
 
+/// The bar says the footers are still arriving, after the dataset is on screen.
+///
+/// A cloud prefix of many files opens from two of them and reads the rest behind the
+/// data. Nothing is blocked and nothing is wrong, so it is said in the control bar
+/// rather than on a loading screen — but it is said, because otherwise columns appear
+/// minutes later with no explanation.
+#[test]
+fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "date=2024-01-01",
+        df!("id" => &[0i64, 1, 2]).unwrap(),
+    );
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let _ = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 24));
+    // Said only for a dataset that is itself waiting. The counter is shared with every
+    // open, and one abandoned half way through goes on counting: without the dataset's
+    // own say-so this bar would count a folder the user walked away from.
+    app.data_table_state
+        .as_mut()
+        .expect("a dataset")
+        .set_footers_pending(std::sync::Arc::new(|_| None));
+    app.footer_progress.begin(6541);
+    for _ in 0..1203 {
+        app.footer_progress.advance();
+    }
+
+    let area = Rect::new(0, 0, 100, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("Reading footers: 1,203 of 6,541"),
+        "the bar says what is still arriving: {bar:?}"
+    );
+    // And it prints the count, because this dataset has one: every file of it was read
+    // at the open. A spinner here would be spinning over a number in hand. What is not
+    // shown is a count that has not been taken — see
+    // `a_count_that_has_arrived_is_not_held_back_with_the_columns`, where the dataset
+    // says a count is still coming exactly while it has none.
+    assert!(
+        bar.contains("Rows: 3"),
+        "the count it does have is shown: {bar:?}"
+    );
+
+    // And says nothing for a dataset that is not the one waiting: the folder this user
+    // gave up on goes on reading its footers, and this is not it.
+    app.data_table_state
+        .as_mut()
+        .expect("a dataset")
+        .give_up_on_pending_footers();
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let other: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        !other.contains("Reading footers"),
+        "a count belonging to a folder the user left is not this dataset's: {other:?}"
+    );
+    app.data_table_state
+        .as_mut()
+        .expect("a dataset")
+        .set_footers_pending(std::sync::Arc::new(|_| None));
+
+    // And stops saying it the moment they have.
+    app.footer_progress.done();
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        !bar.contains("Reading footers"),
+        "and nothing once they are all in: {bar:?}"
+    );
+}
+
 /// One frame, one number — while the pass is still running.
 ///
 /// The body and the bar are painted a millisecond apart, with the threads reading the

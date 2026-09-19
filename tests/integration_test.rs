@@ -5116,6 +5116,15 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
         })
         .collect();
 
+    // That the Describe table is the thing on screen, before reading figures off it.
+    // Without this the fallback is the data table, whose header also begins with a
+    // column name, and the failure would be about the wrong screen.
+    assert!(
+        rows.iter()
+            .any(|line| line.contains("Count") && line.contains("Nulls")),
+        "Describe should be on screen with its Count and Nulls columns; got:\n{}",
+        rows.join("\n")
+    );
     let extra = rows
         .iter()
         .find(|line| line.trim_start().starts_with("extra"))
@@ -5125,6 +5134,10 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
                 rows.join("\n")
             )
         });
+    // `skip(1)` steps over the column name, which this fixture keeps to a single token
+    // on purpose: a name with a space in it would put its second half where Count is.
+    // The row also runs into the sidebar at the right, which is harmless while only the
+    // first two figures are read.
     let figures: Vec<&str> = extra.split_whitespace().skip(1).collect();
     assert_eq!(
         figures.first().copied(),

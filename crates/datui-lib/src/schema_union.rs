@@ -212,6 +212,20 @@ impl ColumnDrift {
     }
 }
 
+/// Where a column that is not in every file sits, in the dataset's own partitions.
+///
+/// The count alone — "in 1 of 6,541 files" — says a column is unusual without saying
+/// where to look. These are the two shapes worth naming: a column that belongs to one
+/// partition, and one that starts partway through a dataset ordered by its partitions,
+/// which is what a field added to a feed looks like ever after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnRange {
+    /// Every file that has it is under this one partition.
+    Only(String),
+    /// No file before this partition has it, and every file from there on does.
+    NoneBefore(String),
+}
+
 /// One dataset's schema, and what deciding it revealed.
 #[derive(Debug, Clone)]
 pub struct DatasetSchema {
@@ -244,6 +258,11 @@ pub struct DatasetSchema {
     pub median_row_group_bytes: Option<usize>,
     /// The middle file's size, over the footers read. `None` when none was read.
     pub median_file_bytes: Option<usize>,
+    /// Where each column that is not in every file sits, for those whose files fall
+    /// into a shape worth naming. Empty for a dataset with no partitions, and for one
+    /// whose footers were sampled — a file whose footer was not read looks like a file
+    /// missing nothing, and a range drawn over those would be a guess.
+    pub column_ranges: HashMap<PlSmallStr, ColumnRange>,
     /// The distinct ways the dataset's files are partitioned, and how many files are
     /// laid out each way, commonest first. One entry, or none, for a dataset whose
     /// folders agree — which is nearly all of them.
@@ -330,7 +349,78 @@ impl DatasetSchema {
         counts.truncate(KEPT);
         self.partition_layouts = counts;
         self.listed_files = paths.len();
+        self.column_ranges = self.ranges_of_columns(root, paths);
         self
+    }
+
+    /// Where each column that is not in every file sits, by partition. See
+    /// [`ColumnRange`].
+    ///
+    /// Nothing for a sampled dataset: `file_group` says a file whose footer was not
+    /// read is missing nothing, which is the right answer for drawing cells and the
+    /// wrong one for saying where a column begins.
+    fn ranges_of_columns(&self, root: &str, paths: &[String]) -> HashMap<PlSmallStr, ColumnRange> {
+        if matches!(self.origin, SchemaOrigin::FooterSample { .. })
+            || self.file_group.len() != paths.len()
+        {
+            return HashMap::new();
+        }
+        // Per column: the first file that has it, the last that does not, and the
+        // partitions of the files that do — two of them is already enough to know it is
+        // not "only" one, so the third is never kept.
+        struct Seen {
+            first_present: Option<usize>,
+            last_absent: Option<usize>,
+            partitions: Vec<String>,
+        }
+        let mut seen: HashMap<PlSmallStr, Seen> = HashMap::new();
+        let partition_of = |index: usize| -> Option<String> {
+            let below = paths.get(index)?.strip_prefix(root)?;
+            let values = partition_values_of(below);
+            (!values.is_empty()).then(|| values.join("/"))
+        };
+        for (index, group) in self.file_group.iter().enumerate() {
+            let missing: &[PlSmallStr] = self
+                .groups
+                .get(*group as usize)
+                .map(|g| g.absent.as_slice())
+                .unwrap_or(&[]);
+            for column in &self.columns {
+                if column.present_in == 0 || column.present_in >= self.files {
+                    continue;
+                }
+                let entry = seen.entry(column.name.clone()).or_insert(Seen {
+                    first_present: None,
+                    last_absent: None,
+                    partitions: Vec::new(),
+                });
+                if missing.contains(&column.name) {
+                    entry.last_absent = Some(index);
+                } else {
+                    entry.first_present.get_or_insert(index);
+                    if entry.partitions.len() < 2
+                        && let Some(partition) = partition_of(index)
+                        && !entry.partitions.contains(&partition)
+                    {
+                        entry.partitions.push(partition);
+                    }
+                }
+            }
+        }
+        seen.into_iter()
+            .filter_map(|(name, entry)| {
+                let first = entry.first_present?;
+                if entry.partitions.len() == 1 {
+                    return Some((name, ColumnRange::Only(entry.partitions[0].clone())));
+                }
+                // Every file without it comes before every file with it, so the column
+                // starts where it starts and is there from then on.
+                (entry.last_absent? < first)
+                    .then(|| partition_of(first))
+                    .flatten()
+                    .map(|partition| (name, ColumnRange::NoneBefore(partition)))
+            })
+            .collect()
     }
 
     /// This dataset as it reads with `as_text` read as text from every file.
@@ -590,6 +680,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         read_as_text: Vec::new(),
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
         median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
+        column_ranges: HashMap::new(),
         partition_layouts: Vec::new(),
         partition_layouts_dropped: (0, 0),
         listed_files: 0,
@@ -606,6 +697,28 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
 ///
 /// A segment is a partition only if it has a key before the `=`. The file's own name
 /// is never one — `data/x=1/2024=05.parquet` partitions by `x`, not by `x` and `2024`.
+/// The `key=value` segments of a path below the dataset's root, in the order they are
+/// written. The values as well as the keys, which is what tells one partition from
+/// another rather than one layout from another.
+fn partition_values_of(path: &str) -> Vec<String> {
+    #[cfg(windows)]
+    let separators: &[char] = &['/', '\\'];
+    #[cfg(not(windows))]
+    let separators: &[char] = &['/'];
+    let mut segments: Vec<&str> = path.split(separators).collect();
+    // The file name itself is not a partition, whatever it is called.
+    segments.pop();
+    segments
+        .into_iter()
+        .filter(|segment| {
+            segment
+                .split_once('=')
+                .is_some_and(|(key, _)| !key.is_empty())
+        })
+        .map(|segment| segment.to_string())
+        .collect()
+}
+
 fn partition_keys_of(path: &str) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     // A backslash separates on Windows and is an ordinary character in a Linux file

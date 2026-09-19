@@ -13,7 +13,7 @@
 //! ratio any of them states.
 
 use crate::numfmt::group_chrome;
-use crate::schema_union::{ColumnDrift, DatasetSchema, SchemaOrigin};
+use crate::schema_union::{ColumnDrift, ColumnRange, DatasetSchema, SchemaOrigin};
 use polars::prelude::{DataType, PlSmallStr};
 
 /// One thing datui noticed.
@@ -126,7 +126,13 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
         // A column can be missing from some files, stored differently in others, and
         // stored in a narrower type among the rest. Each is true on its own, so each
         // is said on its own: nothing here suppresses anything else.
-        notes.extend(absence_note(column, readable, &denominator, &scope));
+        notes.extend(absence_note(
+            column,
+            readable,
+            &denominator,
+            dataset.column_ranges.get(&column.name),
+            &scope,
+        ));
         notes.extend(conflict_note(column, dataset, chosen, others, &scope));
         notes.extend(widening_note(column, chosen, &scope));
     }
@@ -430,17 +436,26 @@ fn absence_note(
     column: &ColumnDrift,
     readable: usize,
     denominator: &str,
+    range: Option<&ColumnRange>,
     scope: &str,
 ) -> Option<Note> {
     if column.present_in == 0 || column.present_in >= readable {
         return None;
     }
+    // Where, as well as how many. A count says a column is unusual; a partition says
+    // where to look, and for a field a feed started sending it says when.
+    let where_it_is = match range {
+        Some(ColumnRange::Only(partition)) => format!(", all under {partition}"),
+        Some(ColumnRange::NoneBefore(partition)) => format!(", none before {partition}"),
+        None => String::new(),
+    };
     Some(Note {
         summary: format!(
-            "{} is in {} of {}; absent from the rest, not null",
+            "{} is in {} of {}{}; absent from the rest, not null",
             column.name,
             group_chrome(column.present_in),
-            denominator
+            denominator,
+            where_it_is
         ),
         scope: scope.to_string(),
         read_as_text: None,
@@ -599,6 +614,72 @@ mod tests {
                 paths: vec!["d/date=1/a.parquet", "d/date=2/b.parquet"],
                 expected: vec![],
                 ..Shape::default()
+            },
+            // --- where a column that is not in every file sits ---
+            Shape {
+                what: "a column only one partition has",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("oops", DataType::String)], 1),
+                    file(&[("id", DataType::Int64)], 1),
+                ],
+                paths: vec![
+                    "d/date=2024-03-01/a.parquet",
+                    "d/date=2024-03-02/b.parquet",
+                    "d/date=2024-03-03/c.parquet",
+                ],
+                expected: vec![
+                    "oops is in 1 of 3 files, all under date=2024-03-02; absent from \
+                     the rest, not null",
+                ],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column the feed started sending",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                ],
+                paths: vec![
+                    "d/date=2010-07-17/a.parquet",
+                    "d/date=2010-07-18/b.parquet",
+                    "d/date=2010-07-19/c.parquet",
+                ],
+                expected: vec![
+                    "fee is in 2 of 3 files, none before date=2010-07-18; absent from \
+                     the rest, not null",
+                ],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column in some files but no pattern to where",
+                files: vec![
+                    file(&[("id", DataType::Int64), ("odd", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("odd", DataType::Int64)], 1),
+                ],
+                paths: vec![
+                    "d/date=1/a.parquet",
+                    "d/date=2/b.parquet",
+                    "d/date=3/c.parquet",
+                ],
+                expected: vec!["odd is in 2 of 3 files; absent from the rest, not null"],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column of a dataset whose footers were sampled",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("oops", DataType::String)], 1),
+                ],
+                // A file whose footer was not read looks like a file missing nothing,
+                // so where a column begins cannot be told from the two that were.
+                sampled: Some(6541),
+                paths: vec!["d/date=2024-03-01/a.parquet", "d/date=2024-03-02/b.parquet"],
+                expected: vec![
+                    "oops is in 1 of the 2 footers read; absent from the rest, not null",
+                ],
             },
             // --- files that hold nothing at all ---
             Shape {

@@ -5071,3 +5071,83 @@ fn test_sql_inside_a_drill_down_stays_in_the_group() {
         "a in 0, 3, ..., 27: within the group"
     );
 }
+
+/// Phase 2 promised that aggregations show nulls: a column some files were written
+/// without must read as null everywhere it is absent, not vanish from the aggregate and
+/// not stop it. Describe is the aggregation a user reaches for first, so this asserts on
+/// the panel it paints — the `Nulls` figure beside `extra` — rather than on the results
+/// struct behind it. `extra` is in two of the three files, so it counts two values and
+/// one null, and that one null is an absence: no file wrote a null into `extra`.
+#[test]
+fn test_an_aggregation_counts_an_absent_column_as_null() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[3i64], "extra" => &["y"]).unwrap(),
+    );
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 120, 30);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    // `a` opens the analysis modal, Enter runs the tool the sidebar starts on, Describe.
+    if let Some(next) = app.event(&key(KeyCode::Char('a'))) {
+        let _ = tx.send(next);
+    }
+    if let Some(next) = app.event(&key(KeyCode::Enter)) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let rows: Vec<String> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect();
+
+    // That the Describe table is the thing on screen, before reading figures off it.
+    // Without this the fallback is the data table, whose header also begins with a
+    // column name, and the failure would be about the wrong screen.
+    assert!(
+        rows.iter()
+            .any(|line| line.contains("Count") && line.contains("Nulls")),
+        "Describe should be on screen with its Count and Nulls columns; got:\n{}",
+        rows.join("\n")
+    );
+    let extra = rows
+        .iter()
+        .find(|line| line.trim_start().starts_with("extra"))
+        .unwrap_or_else(|| {
+            panic!(
+                "describe should list `extra`, the column two of the three files have; got:\n{}",
+                rows.join("\n")
+            )
+        });
+    // `skip(1)` steps over the column name, which this fixture keeps to a single token
+    // on purpose: a name with a space in it would put its second half where Count is.
+    // The row also runs into the sidebar at the right, which is harmless while only the
+    // first two figures are read.
+    let figures: Vec<&str> = extra.split_whitespace().skip(1).collect();
+    assert_eq!(
+        figures.first().copied(),
+        Some("2"),
+        "two files wrote `extra`, so it counts two values; row was {extra:?}"
+    );
+    assert_eq!(
+        figures.get(1).copied(),
+        Some("1"),
+        "the third file was written without `extra`, and that absence counts as a null \
+         in the aggregate; row was {extra:?}"
+    );
+}

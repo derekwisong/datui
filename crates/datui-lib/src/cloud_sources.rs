@@ -1565,6 +1565,23 @@ mod tests {
         }
     }
 
+    /// Serialises the tests that touch the remembered-places global.
+    ///
+    /// `take_public_places` drains the list rather than reading it, so two tests using
+    /// it at once each take what the other put there and one of them asserts against an
+    /// empty list. It fails about one `--workspace` run in ten, which is often enough
+    /// to redden CI at random and rare enough to be read as a new regression every
+    /// time — see #211.
+    ///
+    /// Poisoning is ignored: a test that panicked while holding this has already
+    /// failed, and the global it left behind is drained by the next taker anyway.
+    fn places_guard() -> std::sync::MutexGuard<'static, ()> {
+        static PLACES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        PLACES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn with_machine<T>(machine: &Machine, body: impl FnOnce(&Environment<'_>) -> T) -> T {
         let var = |key: &str| machine.vars.get(key).cloned();
         let exists = |path: &Path| machine.files.contains_key(path);
@@ -1685,6 +1702,7 @@ mod tests {
 
     #[test]
     fn a_login_that_may_not_own_the_place_tries_then_remembers() {
+        let _places = places_guard();
         let machine = Machine::new(
             &[
                 ("AWS_ACCESS_KEY_ID", "AKIA"),
@@ -2317,6 +2335,7 @@ mod tests {
 
     #[test]
     fn a_failed_login_that_may_not_own_the_place_reads_it_unsigned() {
+        let _places = places_guard();
         // A profile whose SSO session expired: `aws` fails.
         let machine = Machine::new(
             &[("AWS_PROFILE", "work")],

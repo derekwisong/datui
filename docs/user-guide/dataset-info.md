@@ -118,18 +118,39 @@ data, not a fault in it, so there is no pop-up and no error styling.
 
 At the foot of the **Resources** tab, what opening this dataset cost.
 
-It is there for the datasets datui finds and reads itself — a folder of Parquet
-opened with `--hive`, a remote prefix, and a single remote object. Anything else
-is handed straight to Polars, which does not report what it did, and shows no
-Measurements section at all: a single local file, a CSV, a local folder opened
-without `--hive`, and a folder or a prefix opened with
-`single_spine_schema = false`.
+**Listing** and **Footers** are there for the datasets datui finds and reads
+itself — a folder of Parquet opened with `--hive`, a remote prefix, a remote glob,
+and a single remote object. Anything else is handed straight to Polars, which does
+not report what it did: a single local file, a CSV, a local folder opened without
+`--hive`, and a folder or a prefix opened with `single_spine_schema = false` all
+show neither row, and no Total.
+
+**Last page** is there for every dataset, whichever route opened it, because datui
+always asks for the rows on screen and always times the answer.
+
+A glob is listed and matched by datui rather than by the object store, so it counts
+as one of the datasets datui finds itself: the Listing row reports the files the
+pattern matched, out of everything under the literal part of the key.
 
 | Metric | Formula |
 |---|---|
 | Listing | time to find the dataset's files, and how many were found |
 | Footers | time the footer passes cost, and how many footers were read |
-| Total | the two times added up |
+| Last page | time from asking for the rows on screen to having them, and how many files were read for them |
+| Total | the listing and the footers added up |
+
+**Last page** is the one figure that changes as you move. It is replaced every time
+a page of rows is fetched, so it says what the page you are looking at cost — not
+what every page since the open came to. It reports how many files were read only
+where datui chose them: a windowed remote scan reads just the files holding those
+rows, while everything else hands the whole scan to Polars, which reads what it
+decides to and does not say. It carries no byte figure at all, for the same reason
+— Polars does that read, and the row-group sizes in the footers would describe
+whole row groups of every column rather than what crossed the wire for the columns
+on screen.
+
+**Total** covers the open: the listing and the footer passes. The page is not part
+of opening the dataset.
 
 A row appears only where there was something to measure. A single remote object
 is named, not searched for, so it has no Listing row — and with one stretch

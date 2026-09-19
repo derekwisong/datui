@@ -1755,11 +1755,12 @@ impl DataTableState {
                 // strays up: a day that landed as CSV is part of the dataset, and only
                 // the folder above can see that it is.
                 passed_over += deferred;
-            } else if !bookkeeping
-                && child
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
-            {
+            } else if !bookkeeping && crate::discover::is_parquet_key(&child.to_string_lossy()) {
+                // The same test the cloud listing uses, so a folder is the same table
+                // wherever it is read from. It takes the whole path because one of the
+                // two shapes it knows lives in the folder name: Spark and GBIF write a
+                // dataset as `occurrence.parquet/part-00001`, where the part files have
+                // no extension of their own and only the folder says what they are.
                 here.push(child);
             } else if !bookkeeping {
                 passed_over += 1;
@@ -4731,6 +4732,23 @@ impl DataTableState {
 
     /// The frame for buffer rows `[start, start + len)`, columns in display order. For a
     /// remote dataset whose files are counted, a scan of only the files holding them.
+    /// How many of the dataset's files a page at `start` would read.
+    ///
+    /// A windowed remote scan reads only the files holding those rows; everything else
+    /// hands the whole scan to Polars, which reads what it decides to and does not say.
+    /// `None` is that second case — not zero, which would claim a page came from
+    /// nowhere.
+    pub fn files_a_page_reads(&self, start: usize, len: usize) -> Option<usize> {
+        let (files, offsets) = self
+            .remote_files
+            .as_ref()
+            .filter(|_| self.remote_window())
+            .and_then(|f| f.offsets.as_ref().map(|o| (f, o)))?;
+        let _ = files;
+        let (first, last) = files_holding(offsets, start, len)?;
+        Some(last - first + 1)
+    }
+
     fn buffer_lf(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
         let mut all_columns = self.binary_stub_exprs();
         if self.drift_column_present {

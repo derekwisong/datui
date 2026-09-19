@@ -818,6 +818,7 @@ impl<'a> DataTableInfo<'a> {
         let mut rows: Vec<(&str, String)> = [
             ("Listing:", "files", "file", meter.listing()),
             ("Footers:", "footers read", "footer read", meter.footers()),
+            ("Last page:", "files read", "file read", meter.last_page()),
         ]
         .into_iter()
         .filter_map(|(label, unit, singular, cost)| {

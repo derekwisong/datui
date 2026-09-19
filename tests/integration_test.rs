@@ -5316,6 +5316,11 @@ fn test_a_dataset_polars_opened_reports_nothing_about_opening_it() {
         None,
         "the count pass ran, and belongs to no open this meter measured"
     );
+    assert_eq!(
+        state.measurements().total(),
+        None,
+        "and with neither stretch there is nothing to total"
+    );
 
     for k in [KeyCode::Char('i'), KeyCode::Tab, KeyCode::Right] {
         if let Some(next) = app.event(&key(k)) {
@@ -5327,8 +5332,14 @@ fn test_a_dataset_polars_opened_reports_nothing_about_opening_it() {
     app.render(area, &mut buf);
     let text = rendered_text(&buf);
     assert!(
-        !text.contains("Measurements"),
+        !text.contains("Listing:") && !text.contains("Footers:") && !text.contains("Total:"),
         "so the Resources tab says nothing about what the open cost; got:\n{text}"
+    );
+    // The page it is showing is datui's own work on any route, and is reported.
+    assert!(
+        text.contains("Last page:"),
+        "while what the page on screen cost is measured whichever route opened the \
+         dataset; got:\n{text}"
     );
 }
 

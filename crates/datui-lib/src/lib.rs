@@ -153,6 +153,8 @@ mod export_format_tests {
         app.data_table_state = Some(state);
         let generation = app.task_generation;
         app.collect_inflight = Some(InflightCollect {
+            began: std::time::Instant::now(),
+            files: None,
             generation,
             dataset,
             start: 0,
@@ -3939,6 +3941,11 @@ pub(crate) struct ChartCacheXY {
 /// change to `lf`, so a filter applied while it runs plans a fresh collect).
 #[derive(Clone, Copy)]
 struct InflightCollect {
+    /// When the request went out, and how many of the dataset's files it will read, for
+    /// the Last page measurement. `files` is `None` where Polars was handed the whole
+    /// scan and reads what it decides to.
+    began: std::time::Instant,
+    files: Option<usize>,
     generation: u64,
     dataset: u64,
     start: usize,
@@ -3977,6 +3984,21 @@ struct LenCount {
     /// The open's meter. Counting a local folder re-reads every footer, which costs
     /// what the open's own pass cost and is tallied with it.
     meter: Arc<crate::measurements::Meter>,
+}
+
+/// What a cloud open was pointed at: the URL as the user gave it, the prefix to list,
+/// and the glob to keep, where they named one.
+///
+/// Together because they are one thought — where to look — and apart they put this
+/// function's signature past the point where a reader can hold it.
+struct CloudTarget<'a> {
+    /// The URL as typed, which is where the bucket and scheme come from.
+    full: &'a str,
+    /// The literal prefix to list: the whole key, or the part of a glob before its star.
+    key: String,
+    /// The glob the user named, where they named one. The listing keeps only the keys
+    /// it matches, so everything downstream sees a plain list of files.
+    pattern: Option<&'a globset::GlobMatcher>,
 }
 
 /// A count, and for a remote dataset of many files the row groups it was summed from.
@@ -4755,6 +4777,11 @@ impl App {
         };
         self.task_generation = self.task_generation.wrapping_add(1);
         self.collect_inflight = Some(InflightCollect {
+            began: std::time::Instant::now(),
+            files: state.files_a_page_reads(
+                request.buffer_start,
+                request.buffer_end.saturating_sub(request.buffer_start),
+            ),
             generation: self.task_generation,
             dataset: state.len_generation(),
             start: request.buffer_start,
@@ -6691,36 +6718,42 @@ impl App {
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
     ) -> Option<DataTableState> {
-        // A prefix: every file listed once, and the scan, the schema and the count all
-        // work from that list. A glob keeps the older route, which Polars expands.
-        if !full.contains('*') {
-            return Self::schema_state_from_cloud_files(
-                &full, key, store, cloud_opts, options, runtime, report,
-            );
-        }
-        let meter = report.meter.clone();
-        let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
-            cloud_hive::schema_from_one_cloud_hive(store, &key, &meter).await
-        })?
-        .ok()?;
-        let args = ScanArgsParquet {
-            schema: Some(merged_schema.clone()),
-            cloud_options: Some(cloud_opts),
-            hive_options: polars::io::HiveOptions::new_enabled(),
-            glob: true,
-            // Older files lack the columns only the newest has; they read as null.
-            allow_missing_columns: true,
-            ..Default::default()
+        // Every file listed once, and the scan, the schema and the count all work from
+        // that list — for a glob as much as for a prefix. datui expands the glob
+        // itself: it lists the literal part of the key and matches the rest, so a glob
+        // is an ordinary list of files by the time anything else sees it, and gets the
+        // schema union, the row count, the notes and the measurements that a prefix
+        // gets.
+        //
+        // The star cannot be handed to the object store. A listing prefix is a literal
+        // string, so `data/*.parquet` matches nothing and the open falls through to a
+        // whole-dataset scan with none of the above — which is what used to happen, for
+        // every glob, silently (#228).
+        let pattern = full.contains('*').then(|| {
+            globset::GlobBuilder::new(&key)
+                .literal_separator(true)
+                .build()
+                .map(|g| g.compile_matcher())
+        });
+        let pattern = match pattern {
+            // A pattern datui cannot read is not one it should guess at.
+            Some(Err(_)) => return None,
+            Some(Ok(matcher)) => Some(matcher),
+            None => None,
         };
-        let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args).ok()?;
-        let lf = Self::hoist_partition_columns(lf, &merged_schema, &partition_columns, false);
-        DataTableState::from_schema_and_lazyframe(
-            merged_schema,
-            lf,
+        let listed = cloud_hive::prefix_of_glob(&key).to_string();
+        Self::schema_state_from_cloud_files(
+            CloudTarget {
+                full: &full,
+                key: listed,
+                pattern: pattern.as_ref(),
+            },
+            store,
+            cloud_opts,
             options,
-            Some(partition_columns),
+            runtime,
+            report,
         )
-        .ok()
     }
 
     /// A cloud prefix of Parquet files as one dataset, from a single listing of it.
@@ -6731,14 +6764,14 @@ impl App {
     /// and a buffer reads only the files holding its rows (see `RemoteFiles`).
     #[cfg(feature = "cloud")]
     fn schema_state_from_cloud_files(
-        full: &str,
-        key: String,
+        target: CloudTarget<'_>,
         store: Arc<dyn object_store::ObjectStore>,
         cloud_opts: CloudOptions,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
         report: &crate::measurements::OpenReport,
     ) -> Option<DataTableState> {
+        let CloudTarget { full, key, pattern } = target;
         let (files, skipped) = {
             let store = store.clone();
             // The listing is one `list` whose pages object_store turns over itself, so
@@ -6749,8 +6782,9 @@ impl App {
             // The count is after the filtering: what is reported is the dataset's
             // files, not every object under the prefix.
             let listing_began = std::time::Instant::now();
+            let pattern = pattern.cloned();
             let (files, skipped) = wait_on_runtime(runtime, async move {
-                cloud_hive::list_dataset_files(&store, &key).await
+                cloud_hive::list_dataset_files(&store, &key, pattern.as_ref()).await
             })?
             .ok()?;
             report
@@ -12559,6 +12593,16 @@ impl App {
             }
             AppEvent::BackgroundCollectReady { generation } => {
                 if *generation == self.task_generation {
+                    // Timed to here rather than to the next paint: this is the moment
+                    // the rows exist to be drawn, and the frame that draws them costs
+                    // the same whatever the page cost to fetch.
+                    if let Some(inflight) = self.collect_inflight.take()
+                        && let Some(state) = self.data_table_state.as_ref()
+                    {
+                        state
+                            .measurements()
+                            .read_page(inflight.began.elapsed(), inflight.files);
+                    }
                     self.collect_inflight = None;
                     let taken = self
                         .pending_collect_result

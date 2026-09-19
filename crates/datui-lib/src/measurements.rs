@@ -142,6 +142,22 @@ impl Tally {
         self.ran.store(true, Ordering::Release);
     }
 
+    /// Record a stretch in place of whatever this tally held, rather than adding to it.
+    fn replace(&self, took: Duration, files: Option<usize>) {
+        self.nanos.store(
+            took.as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        match files {
+            Some(files) => {
+                self.files.store(files, Ordering::Relaxed);
+                self.counted_files.store(true, Ordering::Relaxed);
+            }
+            None => self.counted_files.store(false, Ordering::Relaxed),
+        }
+        self.ran.store(true, Ordering::Release);
+    }
+
     /// One more request, and the bytes it returned. Called from the threads doing the
     /// reading, once per request, before the stretch is recorded.
     fn request(&self, bytes: u64) {
@@ -210,6 +226,9 @@ pub struct OpenReport {
 pub struct Meter {
     listing: Tally,
     footers: Tally,
+    /// The most recent page of rows, replacing rather than adding: this one says what
+    /// the page on screen cost, not what every page since the open came to.
+    last_page: Tally,
     /// Whether a pass to settle the row count has already been counted.
     counted_rows: AtomicBool,
 }
@@ -274,6 +293,27 @@ impl Meter {
         true
     }
 
+    /// Reading the page now on screen took `took` and read `files` of the dataset's
+    /// files.
+    ///
+    /// Replaces rather than adds: this is the cost of the page a user is looking at,
+    /// and adding every page they have scrolled through would answer a question nobody
+    /// asked. `files` is `None` where Polars was handed the whole scan and decided for
+    /// itself what to read.
+    ///
+    /// No byte figure. Polars does this read and does not report what it fetched, and
+    /// the row-group sizes the footers hold would give the size of whole row groups for
+    /// every column — not the columns on screen, and not what crossed the wire. A
+    /// number that wrong is worse than none.
+    pub fn read_page(&self, took: Duration, files: Option<usize>) {
+        self.last_page.replace(took, files);
+    }
+
+    /// What the page now on screen cost, or `None` before one has been read.
+    pub fn last_page(&self) -> Option<Cost> {
+        self.last_page.cost()
+    }
+
     /// One footer request, and the bytes it returned. Counted as the reads happen; what
     /// they come to is published when the pass ends.
     pub fn footer_request(&self, bytes: u64) {
@@ -302,6 +342,8 @@ impl Meter {
     /// when no stretch did: a local dataset's total is a time, not a time and a
     /// pretence of nothing having been transferred.
     pub fn total(&self) -> Option<Total> {
+        // Listing and footers only. The page is not part of opening the dataset — it is
+        // what looking at one costs, and it changes every time the view moves.
         let parts: Vec<Cost> = [self.listing(), self.footers()]
             .into_iter()
             .flatten()
@@ -487,6 +529,47 @@ mod tests {
             }),
             "eight requests, and no byte figure: a thousand bytes is what four of them \
              returned, not eight"
+        );
+    }
+
+    /// The page replaces, and is no part of what opening the dataset cost.
+    ///
+    /// Every other stretch adds, because reading a dataset's footers twice really did
+    /// cost twice. A page is different: there is one on screen, the figure describes
+    /// that one, and scrolling through a hundred of them must not report the hundred
+    /// added together as though the last one had taken a minute.
+    #[test]
+    fn the_page_on_screen_replaces_the_one_before_it_and_is_not_part_of_the_open() {
+        let meter = Meter::default();
+        meter.listed(Duration::from_millis(10), Some(3), false);
+        meter.read_footers(Duration::from_millis(20), Some(3), false);
+
+        meter.read_page(Duration::from_millis(500), Some(2));
+        meter.read_page(Duration::from_millis(300), Some(1));
+        assert_eq!(
+            meter.last_page(),
+            Some(Cost {
+                took: Duration::from_millis(300),
+                files: Some(1),
+                over_the_wire: None
+            }),
+            "the page on screen is the one before last replaced, not added to it"
+        );
+
+        let total = meter.total().expect("the open was measured");
+        assert_eq!(
+            total.took,
+            Duration::from_millis(30),
+            "and the total is the listing and the footers — looking at a page is not \
+             part of opening the dataset"
+        );
+
+        // A page Polars chose the files for reports a time and no count.
+        meter.read_page(Duration::from_millis(40), None);
+        assert_eq!(
+            meter.last_page().and_then(|c| c.files),
+            None,
+            "a whole-scan read says how long it took and not how many files it touched"
         );
     }
 

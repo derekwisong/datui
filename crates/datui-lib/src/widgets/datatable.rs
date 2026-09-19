@@ -1756,10 +1756,15 @@ impl DataTableState {
                 // the folder above can see that it is.
                 passed_over += deferred;
             } else if !bookkeeping
-                && child
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("parquet"))
+                && crate::discover::is_parquet_key(&Self::folder_and_name(&child))
             {
+                // The same test the cloud listing uses, so a folder is the same table
+                // wherever it is read from. It gets the folder and the name rather than
+                // the whole path: one of the two shapes it knows lives in the folder
+                // name — Spark and GBIF write a dataset as
+                // `occurrence.parquet/part-00001`, where the part files have no
+                // extension of their own — and a whole path would reach it with
+                // backslashes on Windows, which that test does not split on.
                 here.push(child);
             } else if !bookkeeping {
                 passed_over += 1;
@@ -1789,6 +1794,19 @@ impl DataTableState {
             skipped.count(!holds_data);
         }
         (holds_data, 0)
+    }
+
+    /// A path as the shared Parquet test wants it: the folder and the file, joined with
+    /// a forward slash whatever the platform used.
+    ///
+    /// That test knows two shapes, and one of them — `occurrence.parquet/part-00001` —
+    /// is only visible when the folder comes with the name.
+    fn folder_and_name(path: &Path) -> String {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        match path.parent().and_then(|p| p.file_name()) {
+            Some(folder) => format!("{}/{name}", folder.to_string_lossy()),
+            None => name.into_owned(),
+        }
     }
 
     /// Every Parquet file under `dir`, and what the footers of the ones worth reading
@@ -4727,6 +4745,24 @@ impl DataTableState {
             }
             self.row_group_offsets = Some(row_offsets);
         }
+    }
+
+    /// The frame for buffer rows `[start, start + len)`, columns in display order. For a
+    /// remote dataset whose files are counted, a scan of only the files holding them.
+    /// How many of the dataset's files a page at `start` would read.
+    ///
+    /// A windowed remote scan reads only the files holding those rows; everything else
+    /// hands the whole scan to Polars, which reads what it decides to and does not say.
+    /// `None` is that second case — not zero, which would claim a page came from
+    /// nowhere.
+    pub fn files_a_page_reads(&self, start: usize, len: usize) -> Option<usize> {
+        let offsets = self
+            .remote_files
+            .as_ref()
+            .filter(|_| self.remote_window())
+            .and_then(|f| f.offsets.as_ref())?;
+        let (first, last) = files_holding(offsets, start, len)?;
+        Some(last - first + 1)
     }
 
     /// The frame for buffer rows `[start, start + len)`, columns in display order. For a

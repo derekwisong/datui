@@ -63,7 +63,11 @@ opens as one table with `--hive`. Pass the root directory or a glob; a glob
 usually needs quoting so your shell leaves it alone. Only Parquet is supported.
 
 Partition columns appear first in the table and on the **Partitions** tab of the
-[Info panel](dataset-info.md). A directory is faster to open than a glob.
+[Info panel](dataset-info.md). On disk, a directory is faster to open than a glob:
+a local glob is handed to Polars, while a directory is walked by datui and gets the
+schema union, the row count and the notes. In a bucket both are datui's — it lists
+the prefix and matches the pattern itself — so a remote glob opens the same way a
+remote prefix does.
 
 ### Files that disagree
 
@@ -197,11 +201,11 @@ Two folders that use the same keys in a different order — `y=/m=` and `m=/y=` 
 are not a disagreement: hive columns are matched by name, and such a dataset reads
 fine. Nothing is said about a `key=value` folder *above* the one you opened
 either, since that is not in dispute. The note is silent when
-`--single-spine-schema false` is set and for a glob, because neither route looks
-at the file names this way.
+`--single-spine-schema false` is set, because that route does not look at the file
+names this way.
 
 `--single-spine-schema false` skips the footer pass and lets Polars decide the
-schema from one file, as it does for a glob.
+schema from one file.
 
 ## Binary columns
 
@@ -229,9 +233,10 @@ read those as empty. The row count comes from the files' footers, read many at
 once, not from the data. Once it is in, reading any part of the dataset opens only
 the few files holding those rows, so <kbd>End</kbd> or a jump to the middle of a
 billion rows costs a few files. <kbd>End</kbd> pressed before the count is in waits
-for it. A glob (`s3://bucket/events/*/*.parquet`) is still expanded and counted by
-Polars itself, which reads files in order. Every other
-format, and anything
+for it. A glob (`s3://bucket/events/*/*.parquet`) is expanded by datui: it lists the
+literal part of the key and matches the rest itself, so a glob opens as the same
+kind of dataset a prefix does, with the same schema union, row count and notes.
+Every other format, and anything
 over HTTP, is downloaded to a temporary file (`--temp-dir` to choose where;
 you are asked first when it is large) and then opened like a local file. One
 remote path per run.

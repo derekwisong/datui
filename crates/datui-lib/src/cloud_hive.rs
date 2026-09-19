@@ -13,72 +13,7 @@ use crate::schema_union::FileSchema;
 pub use crate::schema_union::lenient_scan;
 use crate::schema_union::with_partition_columns;
 
-const MAX_PARTITION_DEPTH: usize = 64;
 const PARQUET_FOOTER_TAIL_BYTES: usize = 256 * 1024;
-
-/// Find the first parquet object key along a single spine of a hive-style prefix.
-/// Uses list_with_delimiter to walk one branch (first partition value at each level).
-async fn first_parquet_key_spine(
-    store: &Arc<dyn ObjectStore>,
-    prefix: &OsPath,
-    depth: usize,
-    values: &mut Vec<(String, String)>,
-    newest: bool,
-) -> Result<Option<OsPath>> {
-    if depth >= MAX_PARTITION_DEPTH {
-        return Ok(None);
-    }
-    let result = store
-        .list_with_delimiter(Some(prefix))
-        .await
-        .map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))?;
-
-    let mut objects: Vec<&OsPath> = result
-        .objects
-        .iter()
-        .map(|o| &o.location)
-        .filter(|l| crate::discover::is_parquet_key(l.as_ref()))
-        .collect();
-    objects.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
-    let object = if newest {
-        objects.last()
-    } else {
-        objects.first()
-    };
-    if let Some(object) = object {
-        return Ok(Some((*object).clone()));
-    }
-    for common in &result.common_prefixes {
-        if let Some((k, v)) = common.filename().and_then(|n| n.split_once('=')) {
-            values.push((k.to_string(), v.to_string()));
-        }
-    }
-    let mut partitions: Vec<&OsPath> = result
-        .common_prefixes
-        .iter()
-        .filter(|c| c.as_ref().contains('='))
-        .collect();
-    partitions.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
-    let partition = if newest {
-        partitions.last()
-    } else {
-        partitions.first()
-    };
-    match partition {
-        Some(partition) => {
-            Box::pin(first_parquet_key_spine(
-                store,
-                partition,
-                depth + 1,
-                values,
-                newest,
-            ))
-            .await
-        }
-        None => Ok(None),
-    }
-}
-
 /// Discover partition column names from the first common prefix at each level (single spine).
 fn partition_columns_from_prefix(prefix_str: &str) -> Vec<String> {
     let mut columns = Vec::new();
@@ -183,84 +118,6 @@ async fn read_parquet_footer(
     footer_from_parquet_tail(&tail)
 }
 
-/// Infer (merged_schema, partition_columns) from the first and the last parquet file in
-/// a cloud hive prefix, by name. Uses single-spine listings and reads only footers.
-/// Datasets gain columns over time (the first day of a blockchain has no previous
-/// block), so the last file's new columns are added after the first file's; the scan
-/// fills them with nulls where older files lack them. Returns error on failure so
-/// caller can fall back to collect_schema().
-pub async fn schema_from_one_cloud_hive(
-    store: Arc<dyn ObjectStore>,
-    prefix: &str,
-    meter: &crate::measurements::Meter,
-) -> Result<(Arc<Schema>, Vec<String>)> {
-    let prefix_trimmed = prefix.trim_end_matches('/');
-    let prefix_path = if prefix_trimmed.is_empty() {
-        OsPath::default()
-    } else {
-        crate::cloud_browse::object_path(prefix_trimmed)
-    };
-    // The walks are the listing: this route finds the prefix's two ends by listing one
-    // partition level at a time. They are timed as a listing and the footer reads are
-    // timed as footers, rather than one stretch over both — on a deep layout the walks
-    // are most of the wait, and billing them to the footer row would say a glob was
-    // slow to read footers when it was slow to find its files.
-    let listing_began = std::time::Instant::now();
-    let mut values = Vec::new();
-    let one_key = first_parquet_key_spine(&store, &prefix_path, 0, &mut values, false)
-        .await?
-        .ok_or_else(|| color_eyre::eyre::eyre!("No parquet file found in cloud hive prefix"))?;
-    let mut newest_values = Vec::new();
-    let newest = first_parquet_key_spine(&store, &prefix_path, 0, &mut newest_values, true)
-        .await?
-        .filter(|newest| *newest != one_key);
-    // No file count. This route walks to the prefix's two ends and never lists what is
-    // between them, so it knows how long finding them took and does not know how many
-    // files there are. The two ends are not that number, and putting them under the
-    // word the other routes use for the size of the dataset would say a prefix of
-    // thousands holds two.
-    //
-    // And no request count either. This walk makes a `list_with_delimiter` call per
-    // partition level, but that call pages inside the object store exactly as a flat
-    // `list` does — so the number of calls datui makes is not the number of round trips
-    // it costs, and counting the calls would report a figure that grows further from
-    // the truth the larger the prefix.
-    meter.listed(listing_began.elapsed(), None, false);
-    // Two ends, or one when the prefix holds a single file and both walks land on it.
-    let ends = 1 + usize::from(newest.is_some());
-
-    let footers_began = std::time::Instant::now();
-    let mut file_schema = (*read_parquet_footer(&store, &one_key, meter).await?.schema).clone();
-    if let Some(newest) = newest {
-        let newest_schema = read_parquet_footer(&store, &newest, meter).await?.schema;
-        for (name, dtype) in newest_schema.iter() {
-            if !file_schema.contains(name) {
-                file_schema.with_column(name.clone(), dtype.clone());
-            }
-        }
-    }
-    values.extend(newest_values);
-    let key_str = one_key.as_ref();
-    let partition_columns = partition_columns_from_prefix(key_str);
-    let part_set: HashSet<&str> = partition_columns.iter().map(String::as_str).collect();
-    let mut merged = Schema::with_capacity(partition_columns.len() + file_schema.len());
-    for name in &partition_columns {
-        merged.with_column(
-            name.clone().into(),
-            crate::widgets::datatable::partition_dtype(name, &file_schema, &values),
-        );
-    }
-    for (name, dtype) in file_schema.iter() {
-        if !part_set.contains(name.as_str()) {
-            merged.with_column(name.clone(), dtype.clone());
-        }
-    }
-    // As many footers as were actually read: one when both walks landed on the same
-    // object, which a glob matching a single file does.
-    meter.read_footers(footers_began.elapsed(), Some(ends), true);
-    Ok((Arc::new(merged), partition_columns))
-}
-
 /// One data file of a cloud dataset: its key in the store and its size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatasetFile {
@@ -272,9 +129,33 @@ pub struct DatasetFile {
 /// prefix reads them in. One listing, however deep the partitions go. Job files,
 /// hidden files and empty objects are left out: none of them is data, and a scan that
 /// tried to read one would fail.
+/// The literal part of a globbed key: everything up to the last `/` before the first
+/// `*`, which is the deepest prefix a listing can start from.
+///
+/// `data/*.parquet` lists `data/`; `logs/year=*/day=*/x.parquet` lists `logs/`; a key
+/// whose first segment is starred lists the whole bucket, which is what it asked for.
+pub fn prefix_of_glob(key: &str) -> &str {
+    let star = match key.find('*') {
+        Some(at) => at,
+        None => return key,
+    };
+    match key[..star].rfind('/') {
+        Some(slash) => &key[..slash],
+        None => "",
+    }
+}
+
+/// Keeping only the keys `pattern` matches, where one was given.
+///
+/// This is how datui opens a glob: it lists the literal prefix and does the matching
+/// itself, so a glob becomes an ordinary list of files and gets everything a prefix
+/// gets — the schema union over every footer, the row count, the notes and the
+/// measurements. Handing the star to the object store instead matches nothing, because
+/// a listing prefix is a literal string and `*` is a character like any other.
 pub async fn list_dataset_files(
     store: &Arc<dyn ObjectStore>,
     prefix: &str,
+    pattern: Option<&globset::GlobMatcher>,
 ) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
     use futures::TryStreamExt;
     let prefix = prefix.trim_matches('/');
@@ -307,9 +188,18 @@ pub async fn list_dataset_files(
             .split('/')
             .any(crate::schema_union::is_bookkeeping)
     };
-    let keep_of = |f: &DatasetFile| {
+    // What counts as data under this prefix, whether or not a glob then narrows it.
+    // The narrowing is deliberately not part of this: the skipped-file counts are built
+    // from the same test, and a Parquet file a glob excluded is not one somebody might
+    // have meant as data and left unreadable — it is one they told datui to leave out.
+    // Folding the pattern in here made a glob report its own siblings as "not Parquet".
+    let is_data = |f: &DatasetFile| {
         f.size > 0 && !bookkeeping_of(&f.key) && crate::discover::is_parquet_key(&f.key)
     };
+    // A glob names the files it wants; everything else under the prefix is somebody
+    // else's, and is neither read nor counted.
+    let wanted = |f: &DatasetFile| pattern.is_none_or(|p| p.is_match(&f.key));
+    let keep_of = |f: &DatasetFile| is_data(f) && wanted(f);
     // Every folder with data anywhere beneath it, which is every folder on the way down
     // to a file this keeps. What else is in one of those is beside somebody's data;
     // what is anywhere else is somebody's infrastructure, whatever the format calls it
@@ -340,7 +230,10 @@ pub async fn list_dataset_files(
     };
     let mut skipped = crate::schema_union::SkippedFiles::default();
     for f in &all {
-        if keep_of(f) {
+        // Counted against what the prefix holds, not what the glob asked for: a file
+        // the pattern excluded was never a candidate, and saying so would tell a user
+        // their own glob had passed over data.
+        if is_data(f) || !wanted(f) {
             continue;
         }
         let parquet_named = crate::discover::is_parquet_key(&f.key);
@@ -738,7 +631,7 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let (files, _skipped) = list_dataset_files(&store, "data/").await.unwrap();
+            let (files, _skipped) = list_dataset_files(&store, "data/", None).await.unwrap();
             let read: Vec<usize> = (0..files.len()).collect();
             let footers = footers_of_files(
                 &store,
@@ -785,7 +678,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let (wide_files, _skipped) = list_dataset_files(&store, "wide/").await.unwrap();
+            let (wide_files, _skipped) = list_dataset_files(&store, "wide/", None).await.unwrap();
             assert_eq!(wide_files.len(), 1, "only the wide file: {wide_files:?}");
             let wide_footers = footers_of_files(
                 &store,
@@ -833,7 +726,7 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let (files, _skipped) = list_dataset_files(&store, "s/").await.unwrap();
+            let (files, _skipped) = list_dataset_files(&store, "s/", None).await.unwrap();
             assert_eq!(files.len(), 3);
 
             // Only the last one's footer is read: its size is the one the schema must
@@ -989,134 +882,239 @@ mod tests {
         );
     }
 
-    /// A prefix walked to its two ends reports the footers it actually read.
+    /// A glob opens through the route that gives it the schema union and the count.
     ///
-    /// When the prefix holds a single file both walks land on it and only one footer is
-    /// read, so reporting the two this route usually reads would be a figure of work
-    /// that did not happen. The walks are the listing and the reads are the footers,
-    /// timed apart: on a deep layout the walking is most of the wait, and billing it to
-    /// the footer row would say the open was slow to read footers when it was slow to
-    /// find its files.
+    /// Through `schema_state_from_cloud_hive_with`, which is the function that connects
+    /// the pattern to the listing — the pieces each work on their own, and the bug this
+    /// closes (#228) was in the joining. Handing the starred key to the listing lists a
+    /// prefix containing a literal `*`, matches nothing, and drops the open onto a
+    /// whole-dataset scan with none of phases 1-5, silently.
     ///
-    /// Against the function, not a route a user can reach: `schema_state_from_cloud_hive`
-    /// sends only starred paths here and does not strip the star, so the listing below
-    /// it matches nothing and every real glob falls through to a full scan — see #228.
-    /// Phase 6 of #195 replaces this route with one that expands globs itself. Until
-    /// then this holds the arithmetic so the replacement inherits it.
+    /// The scan past the schema cannot open a `memory://` URL and the route returns
+    /// `None`, which is fine: the listing and the footers have happened by then, and
+    /// the meter is what this reads them off.
     #[test]
-    fn a_glob_over_one_file_counts_the_one_footer_it_read() {
+    fn a_glob_reaches_the_route_that_lists_and_reads_it() {
         use object_store::PutPayload;
         use polars::prelude::{ParquetWriter, df};
 
+        let body = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let mut frame = df!("n" => &[1i64, 2, 3]).unwrap();
-        let mut body = Vec::new();
-        ParquetWriter::new(&mut body).finish(&mut frame).unwrap();
         rt.block_on(async {
-            store
-                .put(
-                    &OsPath::from("data/date=2024-01-01/only.parquet"),
-                    PutPayload::from(body),
+            for key in [
+                "data/year=2024/a.parquet",
+                "data/year=2025/b.parquet",
+                "data/other/c.parquet",
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(body()))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let meter = Arc::new(crate::measurements::Meter::default());
+        let _ = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/year=*/*.parquet".to_string(),
+            "data/year=*/*.parquet".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &crate::measurements::OpenReport {
+                progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                meter: meter.clone(),
+            },
+        );
+
+        assert_eq!(
+            meter.listing().and_then(|c| c.files),
+            Some(2),
+            "the listing found the two files the glob names — not the sibling folder \
+             it does not. A starred key handed to the listing finds none of them"
+        );
+        assert_eq!(
+            meter.footers().and_then(|c| c.files),
+            Some(2),
+            "and their footers were read, which is what a glob used to get none of"
+        );
+
+        // The root the notes measure each file's path against has to be a literal
+        // prefix of those paths. Handing them the URL as typed gives a root with a star
+        // in it, which is a prefix of nothing — so `with_partition_layouts` and the
+        // column-range notes match no file and go quietly empty, and a glob silently
+        // loses two families of note the docs say it gets.
+        let full = "s3://bucket/data/year=*/*.parquet";
+        let root = url_of_key(full, prefix_of_glob("data/year=*/*.parquet")).unwrap();
+        assert_eq!(root, "s3://bucket/data");
+        let file_url = url_of_key(full, "data/year=2024/a.parquet").unwrap();
+        assert!(
+            file_url.starts_with(&root),
+            "{file_url} has to sit under {root}, or every note measured from the root \
+             is silently about no files at all"
+        );
+        assert!(!file_url.starts_with(full), "which the URL as typed is not");
+    }
+
+    /// A glob opens as a dataset, not as whatever Polars makes of it.
+    ///
+    /// datui lists the literal part of the key and matches the rest itself. Handing the
+    /// star to the object store lists a prefix containing a literal `*`, which matches
+    /// nothing — so every glob used to fall through to a whole-dataset scan and get
+    /// none of the schema union, the row count, the notes or the measurements (#228).
+    #[test]
+    fn a_glob_opens_the_files_it_names_and_no_others() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for key in [
+                "data/year=2024/a.parquet",
+                "data/year=2025/b.parquet",
+                "data/other/c.parquet",
+                "elsewhere/d.parquet",
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(body()))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        // The literal prefix a glob lists from.
+        assert_eq!(prefix_of_glob("data/year=*/*.parquet"), "data");
+        assert_eq!(prefix_of_glob("data/*.parquet"), "data");
+        assert_eq!(prefix_of_glob("*.parquet"), "");
+        assert_eq!(prefix_of_glob("data/plain.parquet"), "data/plain.parquet");
+
+        let matcher = globset::GlobBuilder::new("data/year=*/*.parquet")
+            .literal_separator(true)
+            .build()
+            .unwrap()
+            .compile_matcher();
+        let (files, _skipped) = rt
+            .block_on(async {
+                list_dataset_files(
+                    &store,
+                    prefix_of_glob("data/year=*/*.parquet"),
+                    Some(&matcher),
                 )
                 .await
-                .unwrap();
-        });
+            })
+            .expect("the prefix lists");
+        let keys: Vec<&str> = files.iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["data/year=2024/a.parquet", "data/year=2025/b.parquet"],
+            "the two the glob names — not the sibling folder it does not, and not the \
+             one outside the prefix altogether"
+        );
 
-        let meter = crate::measurements::Meter::default();
-        rt.block_on(async {
-            schema_from_one_cloud_hive(store.clone(), "data/", &meter)
-                .await
-                .expect("the prefix has a parquet file in it")
-        });
-
-        let footers = meter
-            .footers()
-            .expect("the route measured its footer reads");
-        assert_eq!(
-            footers.files,
-            Some(1),
-            "both walks landed on the same object, so one footer was read"
-        );
-        assert_eq!(
-            footers.over_the_wire.map(|w| w.requests),
-            Some(2),
-            "which cost two requests: this route must ask an object's size before it \
-             can ask for its tail"
-        );
-        let listing = meter
-            .listing()
-            .expect("and measured the walks that found it");
-        assert_eq!(
-            listing.files, None,
-            "and no file count at all: this route walks to a prefix's two ends and \
-             never lists what is between them, so it does not know how many files \
-             there are — and two is a smaller number than most such prefixes hold"
-        );
-        assert_eq!(
-            listing.over_the_wire, None,
-            "and nothing over the wire: this walk makes a list call per partition \
-             level, but each of those pages inside the object store just as a flat \
-             listing does, so the calls are not the round trips and datui counts neither"
+        // `literal_separator` is what keeps a single star inside one path segment.
+        assert!(
+            !matcher.is_match("data/year=2024/deeper/a.parquet"),
+            "a single star does not cross a slash"
         );
     }
 
-    /// A single remote object opens with a footer row and no listing row.
+    /// A folder is the same table whether it is read from a disk or a bucket.
     ///
-    /// There is nothing to list — the user named one object — and a listing row of zero
-    /// files would say datui looked and found nothing.
+    /// The two listings used to disagree in one direction: the local walk checked the
+    /// extension, so it missed the `occurrence.parquet/part-00001` shape that Spark and
+    /// GBIF write, where the part files have no extension and only the folder name says
+    /// what they are. Both now ask `is_parquet_key`.
+    ///
+    /// The `_`-prefixed row of the fixture is not what this is testing — the local walk
+    /// classified those as the writer's own bookkeeping before this change too. It is
+    /// here because the two routes reaching the same answer by different means is the
+    /// thing worth pinning, not just the one case that moved.
     #[test]
-    fn a_single_remote_object_measures_its_footer_and_lists_nothing() {
+    fn a_folder_is_the_same_table_from_a_disk_or_a_bucket() {
         use object_store::PutPayload;
         use polars::prelude::{ParquetWriter, df};
 
+        let body = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        // One of each shape the two routes used to disagree about.
+        let layout = [
+            ("date=1/data.parquet", true),
+            ("date=1/_2024.parquet", false),
+            ("occurrence.parquet/part-00001", true),
+            ("date=1/notes.csv", false),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, _) in layout {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body()).unwrap();
+        }
+        let (local, _read, _footers, _skipped) =
+            crate::widgets::datatable::DataTableState::footers_of_parquet_dir_reporting(
+                dir.path(),
+                &crate::schema_union::FooterProgress::default(),
+                &crate::measurements::Meter::default(),
+            );
+        let mut from_disk: Vec<String> = local
+            .iter()
+            .map(|p| {
+                p.strip_prefix(dir.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        from_disk.sort();
+
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let mut frame = df!("n" => &[1i64, 2, 3]).unwrap();
-        let mut body = Vec::new();
-        ParquetWriter::new(&mut body).finish(&mut frame).unwrap();
         rt.block_on(async {
-            store
-                .put(&OsPath::from("one.parquet"), PutPayload::from(body))
-                .await
-                .unwrap();
+            for (rel, _) in layout {
+                store
+                    .put(
+                        &OsPath::from(format!("data/{rel}")),
+                        PutPayload::from(body()),
+                    )
+                    .await
+                    .unwrap();
+            }
         });
+        let (cloud, _skipped) = rt
+            .block_on(async { list_dataset_files(&store, "data/", None).await })
+            .expect("the prefix lists");
+        let mut from_bucket: Vec<String> = cloud
+            .iter()
+            .map(|f| f.key.trim_start_matches("data/").to_string())
+            .collect();
+        from_bucket.sort();
 
-        let meter = crate::measurements::Meter::default();
-        rt.block_on(async {
-            footer_of_cloud_parquet(store.clone(), "one.parquet", &meter)
-                .await
-                .expect("it is a parquet object")
-        });
+        let mut wanted: Vec<String> = layout
+            .iter()
+            .filter(|(_, keep)| *keep)
+            .map(|(rel, _)| rel.to_string())
+            .collect();
+        wanted.sort();
 
-        let footers = meter.footers().expect("the read was measured");
-        assert_eq!(
-            footers.files,
-            Some(1),
-            "one footer, from the one object named"
-        );
-        assert_eq!(
-            footers.over_the_wire.map(|w| w.requests),
-            Some(2),
-            "a head to learn its size and a range to read its tail"
-        );
-        assert!(
-            footers
-                .over_the_wire
-                .is_some_and(|w| w.bytes.is_some_and(|b| b > 0)),
-            "the range came back with bytes in it"
-        );
-        assert_eq!(
-            meter.listing(),
-            None,
-            "and nothing was listed, so no listing row is claimed"
-        );
-        assert_eq!(
-            meter.total(),
-            None,
-            "nor a total: with one stretch a total is that stretch over again, the \
-             same time and the same requests under a second label"
-        );
+        assert_eq!(from_disk, wanted, "the disk reads the table");
+        assert_eq!(from_bucket, wanted, "and the bucket reads the same one");
     }
 
     /// The twin of the test above, for the meter rather than the counter: a cloud open
@@ -1537,7 +1535,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let (files, _skipped) = list_dataset_files(&store, "data/").await.unwrap();
+            let (files, _skipped) = list_dataset_files(&store, "data/", None).await.unwrap();
             let keys: Vec<&str> = files.iter().map(|f| f.key.as_str()).collect();
             assert_eq!(
                 keys,
@@ -1586,7 +1584,7 @@ mod tests {
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
         let schema = rt.block_on(async {
-            let (files, _skipped) = list_dataset_files(&store, "data").await.unwrap();
+            let (files, _skipped) = list_dataset_files(&store, "data", None).await.unwrap();
             schema_of(&store, &files).await.0.schema
         });
         let df = lenient_scan(&urls, schema, None, None, &[])
@@ -1634,7 +1632,7 @@ mod tests {
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
         let (dataset, listed, file_rows) = rt.block_on(async {
-            let (listed, _skipped) = list_dataset_files(&store, "data").await.unwrap();
+            let (listed, _skipped) = list_dataset_files(&store, "data", None).await.unwrap();
             let read: Vec<usize> = (0..listed.len()).collect();
             let footers = footers_of_files(
                 &store,
@@ -1772,7 +1770,7 @@ mod tests {
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
         let (dataset, listed) = rt.block_on(async {
-            let (listed, _skipped) = list_dataset_files(&store, "data").await.unwrap();
+            let (listed, _skipped) = list_dataset_files(&store, "data", None).await.unwrap();
             (schema_of(&store, &listed).await.0, listed)
         });
         assert_eq!(dataset.unreadable, [1], "named, and left out of the scan");
@@ -1947,7 +1945,7 @@ mod tests {
         });
 
         let (files, skipped) = rt
-            .block_on(list_dataset_files(&store, "t"))
+            .block_on(list_dataset_files(&store, "t", None))
             .expect("the prefix lists");
         assert_eq!(
             files.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(),
@@ -2085,7 +2083,7 @@ mod tests {
         });
 
         let (files, skipped) = rt
-            .block_on(list_dataset_files(&store, "data"))
+            .block_on(list_dataset_files(&store, "data", None))
             .expect("the prefix lists");
         assert_eq!(
             files.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(),

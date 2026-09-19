@@ -392,6 +392,15 @@ impl DatasetSchema {
             let values = partition_values_of(below);
             (!values.is_empty()).then(|| values.join("/"))
         };
+        // Whether "before" means the same thing to the listing and to a reader. The
+        // listing is sorted bytewise, which puts `part=10` before `part=2`; where the
+        // two disagree there is no honest way to say a column starts somewhere, so
+        // nothing does.
+        let reads_in_order = (0..paths.len())
+            .filter_map(&partition_of)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|pair| natural_cmp(&pair[0], &pair[1]) != std::cmp::Ordering::Greater);
         // The columns worth asking about, and for each group the ones it lacks — both
         // settled once rather than per file. There are few groups and many files, and
         // a scan of every column's name against every group's absent list, per file,
@@ -404,14 +413,25 @@ impl DatasetSchema {
         if drifting.is_empty() {
             return HashMap::new();
         }
+        // Built by walking each group's own absent list, not by asking every column
+        // whether it is in it: a dataset can have a group per file, and asking is a
+        // scan of the list per column per group.
+        let where_in_drifting: HashMap<&PlSmallStr, usize> = drifting
+            .iter()
+            .enumerate()
+            .map(|(at, column)| (&column.name, at))
+            .collect();
         let missing_by_group: Vec<Vec<bool>> = self
             .groups
             .iter()
             .map(|group| {
-                drifting
-                    .iter()
-                    .map(|column| group.absent.contains(&column.name))
-                    .collect()
+                let mut missing = vec![false; drifting.len()];
+                for name in &group.absent {
+                    if let Some(at) = where_in_drifting.get(name) {
+                        missing[*at] = true;
+                    }
+                }
+                missing
             })
             .collect();
         let none_missing: Vec<bool> = vec![false; drifting.len()];
@@ -455,16 +475,27 @@ impl DatasetSchema {
                 // sounding as though it does.
                 if !entry.unplaced
                     && entry.with.len() == 1
-                    && entry.without.iter().any(|other| other != &entry.with[0])
+                    // Somewhere else, as a place rather than as a different string:
+                    // a file at `y=2024/m=03` is a file under `y=2024`.
+                    && entry
+                        .without
+                        .iter()
+                        .any(|other| !partition_holds(&entry.with[0], other))
                 {
                     return Some((name, ColumnRange::Only(entry.with[0].clone())));
                 }
-                // Every file without it comes before every file with it, so the column
-                // starts where it starts and is there from then on.
-                (entry.last_absent? < first)
-                    .then(|| partition_of(first))
-                    .flatten()
-                    .map(|partition| (name, ColumnRange::NoneBefore(partition)))
+                // Every file without it comes before every file with it — and the
+                // reader will check that against the partition values, not against the
+                // order the listing happened to be in.
+                let last_absent = entry.last_absent?;
+                if last_absent > first || !reads_in_order {
+                    return None;
+                }
+                let (ends, begins) = (partition_of(last_absent)?, partition_of(first)?);
+                // And the boundary is a boundary: a partition half of whose files have
+                // the column is not one the column begins at.
+                (!partition_holds(&begins, &ends) && !partition_holds(&ends, &begins))
+                    .then_some((name, ColumnRange::NoneBefore(begins)))
             })
             .collect()
     }
@@ -739,15 +770,71 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
     }
 }
 
+/// Whether one partition path holds another: `y=2024` holds `y=2024/m=03`, and a file
+/// in the second is a file in the first.
+///
+/// Compared as places rather than as strings. `only y=2024` is a claim about a folder
+/// tree, so a file at `y=2024/m=03` without the column is a file under `y=2024`
+/// without it, and the claim is false — even though the two strings differ.
+fn partition_holds(outer: &str, inner: &str) -> bool {
+    inner == outer
+        || inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Compares partition values the way a reader does: `part=2` before `part=10`.
+///
+/// The listing is sorted bytewise, which puts `part=10` before `part=2`. A note saying
+/// "from `X` on" is read against the values, so where the two orders disagree the
+/// sentence is false — see [`ends_of`], which has to live with the same thing.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+    loop {
+        match (a.first(), b.first()) {
+            (None, None) => return Ordering::Equal,
+            (None, _) => return Ordering::Less,
+            (_, None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let digits = |s: &[u8]| s.iter().take_while(|c| c.is_ascii_digit()).count();
+                let (na, nb) = (digits(a), digits(b));
+                // Leading zeros do not make a number bigger, so compare by value first
+                // and let the written form break a tie.
+                let (xs, ys) = (&a[..na], &b[..nb]);
+                fn trim(s: &[u8]) -> &[u8] {
+                    let lead = s.iter().take_while(|c| **c == b'0').count();
+                    &s[lead.min(s.len().saturating_sub(1))..]
+                }
+                let (tx, ty) = (trim(xs), trim(ys));
+                match tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty)) {
+                    Ordering::Equal => {}
+                    other => return other,
+                }
+                a = &a[na..];
+                b = &b[nb..];
+            }
+            (Some(x), Some(y)) => match x.cmp(y) {
+                Ordering::Equal => {
+                    a = &a[1..];
+                    b = &b[1..];
+                }
+                other => return other,
+            },
+        }
+    }
+}
+
 /// The `key=value` segments of a path below the dataset's root, in the order they are
 /// written. The values as well as the keys, which is what tells one partition from
 /// another rather than one layout from another.
 ///
 /// Not sorted and not deduplicated, unlike the keys: an order is a set of columns, a
 /// partition is a place, and a place is where the path says it is. One consequence is
-/// that `y=2024/m=03` and `m=03/y=2024` are one layout but two partitions, so a dataset
-/// that mixes the two orders has no column it can say is "only" anywhere. That is a
-/// missed note rather than a wrong one.
+/// that `y=2024/m=03` and `m=03/y=2024` are one layout but two partitions. A column is
+/// then never "only" anywhere, which is a missed note rather than a wrong one — and it
+/// can never begin anywhere either, because the two spellings do not order against each
+/// other the way the folders they name do, which `reads_in_order` refuses.
 fn partition_values_of(path: &str) -> Vec<String> {
     #[cfg(windows)]
     let separators: &[char] = &['/', '\\'];
@@ -2440,6 +2527,47 @@ mod tests {
             }
         }
         runs
+    }
+
+    /// Partition values compared the way a reader compares them.
+    #[test]
+    fn a_reader_puts_part_2_before_part_10() {
+        use std::cmp::Ordering;
+        let cmp = |a: &str, b: &str| natural_cmp(a, b);
+        assert_eq!(
+            cmp("part=2", "part=10"),
+            Ordering::Less,
+            "which bytes do not"
+        );
+        assert_eq!(cmp("part=10", "part=2"), Ordering::Greater);
+        assert_eq!(cmp("date=2024-01-02", "date=2024-01-03"), Ordering::Less);
+        assert_eq!(cmp("date=2024-01-02", "date=2024-01-02"), Ordering::Equal);
+        assert_eq!(
+            cmp("m=03", "m=3"),
+            Ordering::Equal,
+            "the same number written two ways is neither before nor after itself — a \
+             dataset that spells one month both ways is past helping, and this at \
+             least does not invent an order for it"
+        );
+        assert_eq!(cmp("a=1/b=2", "a=1/b=10"), Ordering::Less);
+        assert_eq!(
+            cmp("x=a", "x=b"),
+            Ordering::Less,
+            "and letters are still letters"
+        );
+    }
+
+    /// A partition path holds another when the second is inside it.
+    #[test]
+    fn a_partition_holds_the_ones_below_it() {
+        assert!(partition_holds("y=2024", "y=2024/m=03"));
+        assert!(partition_holds("y=2024", "y=2024"));
+        assert!(!partition_holds("y=2024", "y=2025"));
+        assert!(
+            !partition_holds("y=202", "y=2024"),
+            "a prefix of the spelling is not a folder above it"
+        );
+        assert!(!partition_holds("y=2024/m=03", "y=2024"));
     }
 
     /// The two things the doc promises about what counts as a partition.

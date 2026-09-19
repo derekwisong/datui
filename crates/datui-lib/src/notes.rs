@@ -668,6 +668,75 @@ mod tests {
                 ..Shape::default()
             },
             Shape {
+                what: "a column starting where the listing and the reader disagree",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                ],
+                // Sorted bytewise, `part=10` comes second. Saying "from part=10 on"
+                // would tell a reader that parts 2 and 3 are without it, and they are
+                // not: there is no honest way to say where this one starts.
+                paths: vec![
+                    "d/part=1/a.parquet",
+                    "d/part=10/b.parquet",
+                    "d/part=2/c.parquet",
+                    "d/part=3/d.parquet",
+                ],
+                expected: vec!["fee is in 3 of 4 files; absent from the rest, not null"],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column starting halfway through a partition",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                ],
+                // `date=2024-01-02` holds one file with `fee` and one without, so it is
+                // not a date the column begins at.
+                paths: vec![
+                    "d/date=2024-01-01/a.parquet",
+                    "d/date=2024-01-02/b.parquet",
+                    "d/date=2024-01-02/c.parquet",
+                    "d/date=2024-01-03/d.parquet",
+                ],
+                expected: vec!["fee is in 2 of 4 files; absent from the rest, not null"],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column whose partition holds the file without it",
+                files: vec![
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64)], 1),
+                ],
+                // The file without it is at `y=2024/m=03`, which is under `y=2024`.
+                // "only y=2024" would send a reader to a folder that holds it.
+                paths: vec!["d/y=2024/a.parquet", "d/y=2024/m=03/b.parquet"],
+                expected: vec![
+                    "fee is in 1 of 2 files; absent from the rest, not null",
+                    // Ragged depth is a disagreement in its own right, and says so.
+                    "the folders do not all partition by the same keys: 1 file by m/y, \
+                     1 file by y",
+                ],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column of a dataset partitioned more than one level deep",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                ],
+                paths: vec!["d/y=2024/m=02/a.parquet", "d/y=2024/m=03/b.parquet"],
+                expected: vec![
+                    "fee is in 1 of 2 files, only y=2024/m=03; absent from the rest, \
+                     not null",
+                ],
+                ..Shape::default()
+            },
+            Shape {
                 what: "a column in a file that sits under no partition at all",
                 files: vec![
                     file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),

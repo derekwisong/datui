@@ -48,7 +48,10 @@ Where the files that have a column fall into a shape worth naming, the note says
 as well as counting them: `fee is in 4,001 of 6,541 files, none before
 date=2010-07-18` is a field a feed started sending, and `oops is in 1 of 6,541
 files, only date=2024-03-02` is one folder's mistake. Only those two shapes —
-a column scattered across a dataset is just a count. A dataset whose footers were
+a column scattered across a dataset is just a count. `none before` also needs the
+folders to sort the way you would read them: where partition values are not
+zero-padded, `part=10` comes before `part=2` in the listing and there is no
+honest way to say where a column starts, so nothing is said. A dataset whose footers were
 sampled gets no such phrase: a file whose footer was not read looks like a file
 missing nothing, and a range drawn over those would be a guess.
 

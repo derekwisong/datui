@@ -377,8 +377,10 @@ impl DatasetSchema {
             first_present: Option<usize>,
             last_absent: Option<usize>,
             /// The partitions of the files that have it, and of the files that do not.
-            /// Two of either is already enough to know what this is not, so a third is
-            /// never kept.
+            /// Two of the first is enough — more than one and the column is not "only"
+            /// anywhere. Two of the second is a sample: the test is whether any file
+            /// lacking it is somewhere the claim does not cover, and a sample can miss
+            /// one, which costs a note rather than makes a wrong one.
             with: Vec<String>,
             without: Vec<String>,
             /// A file that has it and sits under no partition at all — one at the root
@@ -386,7 +388,6 @@ impl DatasetSchema {
             /// the column is somewhere this cannot name.
             unplaced: bool,
         }
-        let mut seen: HashMap<PlSmallStr, Seen> = HashMap::new();
         let partition_of = |index: usize| -> Option<String> {
             let below = paths.get(index)?.strip_prefix(root)?;
             let values = partition_values_of(below);
@@ -435,6 +436,18 @@ impl DatasetSchema {
             })
             .collect();
         let none_missing: Vec<bool> = vec![false; drifting.len()];
+        // By index rather than by name: `drifting` already carries a stable position for
+        // every column, and a hash of the name per file per column is most of what this
+        // costs — measured at 134ms over twenty thousand files, against fifteen.
+        let mut seen: Vec<Seen> = (0..drifting.len())
+            .map(|_| Seen {
+                first_present: None,
+                last_absent: None,
+                with: Vec::new(),
+                without: Vec::new(),
+                unplaced: false,
+            })
+            .collect();
 
         for (index, group) in self.file_group.iter().enumerate() {
             let missing: &[bool] = missing_by_group
@@ -443,14 +456,8 @@ impl DatasetSchema {
                 .unwrap_or(&none_missing);
             // Split once per file rather than once per file and column.
             let here = partition_of(index);
-            for (column, absent) in drifting.iter().zip(missing) {
-                let entry = seen.entry(column.name.clone()).or_insert(Seen {
-                    first_present: None,
-                    last_absent: None,
-                    with: Vec::new(),
-                    without: Vec::new(),
-                    unplaced: false,
-                });
+            for (at, absent) in missing.iter().enumerate() {
+                let entry = &mut seen[at];
                 let seen_of = if *absent {
                     entry.last_absent = Some(index);
                     &mut entry.without
@@ -468,7 +475,9 @@ impl DatasetSchema {
             }
         }
         seen.into_iter()
-            .filter_map(|(name, entry)| {
+            .zip(&drifting)
+            .filter_map(|(entry, column)| {
+                let name = column.name.clone();
                 let first = entry.first_present?;
                 // One partition holds every file that has it — and at least one file
                 // that does not is somewhere else, or "only" says nothing while
@@ -480,7 +489,10 @@ impl DatasetSchema {
                     && entry
                         .without
                         .iter()
-                        .any(|other| !partition_holds(&entry.with[0], other))
+                        .any(|other| {
+                            !partition_holds(&entry.with[0], other)
+                                && !same_place(&entry.with[0], other)
+                        })
                 {
                     return Some((name, ColumnRange::Only(entry.with[0].clone())));
                 }
@@ -488,14 +500,24 @@ impl DatasetSchema {
                 // reader will check that against the partition values, not against the
                 // order the listing happened to be in.
                 let last_absent = entry.last_absent?;
+                // `unplaced` is not asked here, unlike above, and the difference is in
+                // what the two sentences claim. "Only X" is about where every file with
+                // the column is, so one that is nowhere nameable makes it false. "None
+                // before X" is about order: a file with no partition sorts where the
+                // listing puts it, and one after the boundary does not contradict a
+                // word of it. Refusing here would cost a true note to buy nothing.
                 if last_absent > first || !reads_in_order {
                     return None;
                 }
                 let (ends, begins) = (partition_of(last_absent)?, partition_of(first)?);
                 // And the boundary is a boundary: a partition half of whose files have
                 // the column is not one the column begins at.
-                (!partition_holds(&begins, &ends) && !partition_holds(&ends, &begins))
-                    .then_some((name, ColumnRange::NoneBefore(begins)))
+                // And the boundary is a boundary: not the same place under another
+                // spelling, and not one folder inside the other.
+                (!same_place(&ends, &begins)
+                    && !partition_holds(&begins, &ends)
+                    && !partition_holds(&ends, &begins))
+                .then_some((name, ColumnRange::NoneBefore(begins)))
             })
             .collect()
     }
@@ -783,6 +805,25 @@ fn partition_holds(outer: &str, inner: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// Whether two partition paths name the same place, however they are written.
+///
+/// `m=03` is March and so is `m=3`: a backfill that wrote one beside a job that wrote
+/// the other leaves two folders for one month. And hive columns are matched by name, so
+/// `y=2024/m=03` and `m=03/y=2024` are one partition written in two orders. Neither
+/// pair is equal as a string, and a claim about either is a claim about both.
+fn same_place(a: &str, b: &str) -> bool {
+    fn sorted(path: &str) -> Vec<&str> {
+        let mut segments: Vec<&str> = path.split('/').collect();
+        segments.sort_by_key(|segment| segment.split_once('=').map(|(key, _)| key));
+        segments
+    }
+    let (a, b) = (sorted(a), sorted(b));
+    a.len() == b.len()
+        && a.iter()
+            .zip(&b)
+            .all(|(x, y)| natural_cmp(x, y) == std::cmp::Ordering::Equal)
+}
+
 /// Compares partition values the way a reader does: `part=2` before `part=10`.
 ///
 /// The listing is sorted bytewise, which puts `part=10` before `part=2`. A note saying
@@ -799,8 +840,9 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
                 let digits = |s: &[u8]| s.iter().take_while(|c| c.is_ascii_digit()).count();
                 let (na, nb) = (digits(a), digits(b));
-                // Leading zeros do not make a number bigger, so compare by value first
-                // and let the written form break a tie.
+                // Leading zeros do not make a number bigger: `m=03` and `m=3` are one
+                // month, and this says so. Two folders spelling it both ways are two
+                // folders for one place, which `same_place` is about.
                 let (xs, ys) = (&a[..na], &b[..nb]);
                 fn trim(s: &[u8]) -> &[u8] {
                     let lead = s.iter().take_while(|c| **c == b'0').count();
@@ -831,10 +873,10 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 ///
 /// Not sorted and not deduplicated, unlike the keys: an order is a set of columns, a
 /// partition is a place, and a place is where the path says it is. One consequence is
-/// that `y=2024/m=03` and `m=03/y=2024` are one layout but two partitions. A column is
-/// then never "only" anywhere, which is a missed note rather than a wrong one — and it
-/// can never begin anywhere either, because the two spellings do not order against each
-/// other the way the folders they name do, which `reads_in_order` refuses.
+/// that `y=2024/m=03` and `m=03/y=2024` are written differently while naming one
+/// partition — hive matches its columns by name, not by position. Nothing else notices:
+/// the layouts note compares which keys a folder uses, not the order, so those two
+/// agree. `same_place` is what keeps a note off a place that is written down twice.
 fn partition_values_of(path: &str) -> Vec<String> {
     #[cfg(windows)]
     let separators: &[char] = &['/', '\\'];

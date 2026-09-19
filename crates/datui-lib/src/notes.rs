@@ -688,6 +688,58 @@ mod tests {
                 ..Shape::default()
             },
             Shape {
+                what: "a column starting at a month spelled two ways",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                ],
+                // `m=03` is March and so is `m=3` — a backfill beside a job. March
+                // lacks the column, so "none before m=3" says it starts at a month
+                // whose folder does not have it.
+                paths: vec!["d/m=03/a.parquet", "d/m=3/b.parquet", "d/m=4/c.parquet"],
+                expected: vec!["fee is in 2 of 3 files; absent from the rest, not null"],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column of a dataset whose folders name their keys in two orders",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                ],
+                // Hive matches partition columns by name, so these two folders are one
+                // partition written both ways round. Saying the column begins at the
+                // second would be saying it begins where the first is.
+                paths: vec!["d/m=03/y=2024/a.parquet", "d/y=2024/m=03/b.parquet"],
+                // And nothing else says so: the layouts note compares which keys a
+                // folder uses, not the order it writes them in, so these two agree.
+                // This note staying quiet is the only thing between a reader and a
+                // sentence about a place that is written down twice.
+                expected: vec!["fee is in 1 of 2 files; absent from the rest, not null"],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column two files of one partition have",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                ],
+                // The ordinary shape: a partition holds more than one file. Counting
+                // its partition twice would make it look like two, and the note that
+                // names it would quietly stop appearing.
+                paths: vec![
+                    "d/date=2024-03-01/a.parquet",
+                    "d/date=2024-03-02/b.parquet",
+                    "d/date=2024-03-02/c.parquet",
+                ],
+                expected: vec![
+                    "fee is in 2 of 3 files, only date=2024-03-02; absent from the \
+                     rest, not null",
+                ],
+                ..Shape::default()
+            },
+            Shape {
                 what: "a column starting halfway through a partition",
                 files: vec![
                     file(&[("id", DataType::Int64)], 1),

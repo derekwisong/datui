@@ -42,6 +42,7 @@ files with something in them. Where datui notices either, it says so:
 | There are very many files and the middle one holds very little | The listing and the footers |
 | The folders do not all partition by the same keys | The file names |
 | A file's footer could not be read, so it was left out | The footers |
+| Files in the folder are not Parquet, so they are not in the table | The listing |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
 
 Where the files that have a column fall into a shape worth naming, the note says so
@@ -54,6 +55,26 @@ zero-padded, `part=10` comes before `part=2` in the listing and there is no
 honest way to say where a column starts, so nothing is said. A dataset whose footers were
 sampled gets no such phrase: a file whose footer was not read looks like a file
 missing nothing, and a range drawn over those would be a guess.
+
+A folder of Parquet files often holds other things, and what matters is where
+they are rather than what they are called. A file in a folder that holds data is
+one somebody may have meant to be in the table — a `.csv` beside the parts — and
+that is counted and said. A file in a folder with no data anywhere beneath it is
+somebody's plumbing: a table format's log, a manifest directory, a folder of
+images. Delta and Hudi name theirs with a leading `_` or `.`, Iceberg does not,
+and the next format will do something else again; none of them is a mistake and
+datui says nothing about any of them on its own.
+
+An object with nothing in it and a name that says Parquet is the exception worth
+leading with: a write that stopped. In a bucket nothing else can see it — the
+object is dropped before any footer is read — while on disk the same file turns
+up as a footer that could not be read, which is a different note saying the same
+thing. One with nothing in it and no such
+name is a folder marker — a console leaves one per partition — and is plumbing
+like the rest.
+
+What it counts is what the listing saw. A folder it could not read, or one
+deeper than datui walks, is not in the total.
 
 Every note says what it is based on — `in all 6,541 footers`, or
 `in 20,000 of 200,000 footers (sample)` — so a count never stands for files

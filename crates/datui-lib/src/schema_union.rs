@@ -226,6 +226,64 @@ pub enum ColumnRange {
     NoneBefore(String),
 }
 
+/// What a dataset's listing walked past: files under the folder that are not read.
+///
+/// Split by whether anyone could have meant them as data, which is a question about
+/// where a file is rather than what it is called.
+///
+/// **A file beside the data** — a `.csv` in a folder that also holds Parquet — is one
+/// somebody may have expected in the table. That is worth saying.
+///
+/// **A file somewhere else** is infrastructure. Delta keeps its log in `_delta_log/`,
+/// Hudi in `.hoodie/`, Iceberg in a plain `metadata/` beside the data; a bucket made
+/// through a console is full of zero-byte folder markers. Naming those conventions one
+/// by one is a game with no end — the test that holds for all of them is that a folder
+/// with no Parquet in it is nobody's table, whatever it is called.
+///
+/// Not a complete accounting of the folder: a subtree that cannot be read, or one below
+/// the depth the walk stops at, is neither listed nor counted. What the note says is
+/// how many files were passed over among those it saw.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SkippedFiles {
+    /// Files a writer leaves beside the data: a name beginning `_` or `.`.
+    pub bookkeeping: usize,
+    /// Everything else that is not a Parquet file.
+    pub not_parquet: usize,
+    /// Objects with nothing in them, whose name says they are data. Not a file anyone
+    /// left on purpose: a write that stopped, which is the skip most worth saying.
+    ///
+    /// Only ever counted from a store listing, which knows a size. The same file on
+    /// disk is opened and turns up as a footer that would not read, which says the same
+    /// thing in another note's words.
+    pub empty: usize,
+}
+
+impl SkippedFiles {
+    /// Count one file the listing passed over.
+    ///
+    /// `bookkeeping` is the caller's, because only the caller knows where the file was.
+    /// A `.json` is a mistake beside the data and a record of the table inside
+    /// `_delta_log/` or `metadata/`, and its own name cannot say which.
+    pub fn count(&mut self, bookkeeping: bool) {
+        if bookkeeping {
+            self.bookkeeping += 1;
+        } else {
+            self.not_parquet += 1;
+        }
+    }
+}
+
+/// Whether a path segment is a writer's own rather than anybody's data.
+///
+/// A leading `_` or `.` is the convention Hive, Spark, Delta and Hudi share. It is not
+/// the whole answer — Iceberg keeps its log in a plain `metadata/` folder, and the next
+/// format will do something else again — which is why this is only half the test. The
+/// other half asks where the file is rather than what it is called: see
+/// [`SkippedFiles`].
+pub fn is_bookkeeping(segment: &str) -> bool {
+    segment.starts_with(['_', '.'])
+}
+
 /// One dataset's schema, and what deciding it revealed.
 #[derive(Debug, Clone)]
 pub struct DatasetSchema {
@@ -274,6 +332,9 @@ pub struct DatasetSchema {
     /// per file is not worth remembering in full, but a note that counts what it does
     /// not name has to count all of it.
     pub partition_layouts_dropped: (usize, usize),
+    /// What the listing passed over on the way to the files it read. From the listing,
+    /// which had to look at every name anyway.
+    pub skipped: SkippedFiles,
     /// How many file names were read to find the layouts, including the ones with no
     /// partition keys at all.
     pub listed_files: usize,
@@ -520,6 +581,12 @@ impl DatasetSchema {
                 .then_some((name, ColumnRange::NoneBefore(begins)))
             })
             .collect()
+    }
+
+    /// Record what the listing passed over. See [`SkippedFiles`].
+    pub fn with_skipped(mut self, skipped: SkippedFiles) -> DatasetSchema {
+        self.skipped = skipped;
+        self
     }
 
     /// This dataset as it reads with `as_text` read as text from every file.
@@ -780,6 +847,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
         median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
         column_ranges: HashMap::new(),
+        skipped: SkippedFiles::default(),
         partition_layouts: Vec::new(),
         partition_layouts_dropped: (0, 0),
         listed_files: 0,

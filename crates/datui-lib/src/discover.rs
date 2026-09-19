@@ -540,6 +540,18 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
     let mut subdirs = Vec::new();
     for entry in iter.flatten() {
         let path = entry.path();
+        // A table format's own files are not the table's. Delta writes its checkpoints
+        // as Parquet holding the table's own columns, so counted here the home screen
+        // promises a row count the table does not have — which is what opening it then
+        // disagrees with. The same test the open makes, so the two agree.
+        if path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .as_deref()
+            .is_some_and(crate::schema_union::is_bookkeeping)
+        {
+            continue;
+        }
         if path.is_dir() {
             subdirs.push(path);
         } else if path

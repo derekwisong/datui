@@ -232,7 +232,7 @@ pub struct DatasetFile {
 pub async fn list_dataset_files(
     store: &Arc<dyn ObjectStore>,
     prefix: &str,
-) -> Result<Vec<DatasetFile>> {
+) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
     use futures::TryStreamExt;
     let prefix = prefix.trim_matches('/');
     let prefix_path = (!prefix.is_empty()).then(|| crate::cloud_browse::object_path(prefix));
@@ -241,20 +241,85 @@ pub async fn list_dataset_files(
         .try_collect()
         .await
         .map_err(|e| color_eyre::eyre::eyre!("Cloud list failed: {}", e))?;
-    let mut files: Vec<DatasetFile> = objects
+    // Counted as they are passed over rather than walked again: the listing is the one
+    // place that sees every name, and a note that says how many objects were not read
+    // costs nothing here and a second listing anywhere else.
+    fn folder_of(key: &str) -> &str {
+        key.rsplit_once('/').map_or("", |(dir, _)| dir)
+    }
+    let all: Vec<DatasetFile> = objects
         .into_iter()
-        .filter(|o| o.size > 0)
         .map(|o| DatasetFile {
             key: o.location.as_ref().to_string(),
             size: o.size,
         })
-        .filter(|f| {
-            let name = f.key.rsplit('/').next().unwrap_or("");
-            !name.starts_with(['_', '.']) && crate::discover::is_parquet_key(&f.key)
-        })
         .collect();
+    // Every segment below the prefix, not just the name: a `.json` inside `_delta_log/`
+    // is the table's own record of itself, and its name alone does not say so. Empty
+    // rather than the whole key when the prefix does not match, so a dataset that
+    // happens to live under a `_`-named folder is not written off entirely.
+    let bookkeeping_of = |key: &str| {
+        key.strip_prefix(prefix)
+            .unwrap_or("")
+            .split('/')
+            .any(crate::schema_union::is_bookkeeping)
+    };
+    let keep_of = |f: &DatasetFile| {
+        f.size > 0 && !bookkeeping_of(&f.key) && crate::discover::is_parquet_key(&f.key)
+    };
+    // Every folder with data anywhere beneath it, which is every folder on the way down
+    // to a file this keeps. What else is in one of those is beside somebody's data;
+    // what is anywhere else is somebody's infrastructure, whatever the format calls it
+    // — see `SkippedFiles`.
+    let mut with_data: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    // From every object whose name says data, not only the ones kept: a write that
+    // stopped leaves nothing behind, and a partition whose only file is that write
+    // would otherwise be a folder with no data in it — so the one skip most worth
+    // saying would be filed as plumbing, in exactly the case that matters.
+    for f in all
+        .iter()
+        .filter(|f| !bookkeeping_of(&f.key) && crate::discover::is_parquet_key(&f.key))
+    {
+        let mut folder = folder_of(&f.key);
+        while !folder.is_empty() && with_data.insert(folder) {
+            folder = folder_of(folder);
+        }
+        with_data.insert("");
+    }
+    // A partition of a dataset is part of it even when its own files all failed to be
+    // Parquet: a day that landed as CSV is the mistake this note is for. A folder whose
+    // name carries a partition key, under one that holds data, is one of those. A
+    // `metadata/` beside the data is not.
+    let beside_data = |folder: &str| {
+        with_data.contains(folder)
+            || (folder.rsplit('/').next().unwrap_or(folder).contains('=')
+                && with_data.contains(folder_of(folder)))
+    };
+    let mut skipped = crate::schema_union::SkippedFiles::default();
+    for f in &all {
+        if keep_of(f) {
+            continue;
+        }
+        let parquet_named = crate::discover::is_parquet_key(&f.key);
+        if bookkeeping_of(&f.key)
+            || !beside_data(folder_of(&f.key))
+            // Nothing in it and a name that never said data: a folder marker, which a
+            // console writes one of per partition. Not a file anyone left behind by
+            // mistake, and not a write that stopped either.
+            || (f.size == 0 && !parquet_named)
+        {
+            skipped.count(true);
+        } else if f.size == 0 {
+            // A name that says data over nothing at all is a write that stopped, which
+            // is the one skip worth its own count.
+            skipped.empty += 1;
+        } else {
+            skipped.count(false);
+        }
+    }
+    let mut files: Vec<DatasetFile> = all.into_iter().filter(|f| keep_of(f)).collect();
     files.sort_by(|a, b| a.key.cmp(&b.key));
-    Ok(files)
+    Ok((files, skipped))
 }
 
 /// The schema to scan a dataset's files with, and its partition columns.
@@ -576,7 +641,7 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let files = list_dataset_files(&store, "data/").await.unwrap();
+            let (files, _skipped) = list_dataset_files(&store, "data/").await.unwrap();
             let read: Vec<usize> = (0..files.len()).collect();
             let footers = footers_of_files(&store, &files, &read).await;
 
@@ -617,7 +682,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let wide_files = list_dataset_files(&store, "wide/").await.unwrap();
+            let (wide_files, _skipped) = list_dataset_files(&store, "wide/").await.unwrap();
             assert_eq!(wide_files.len(), 1, "only the wide file: {wide_files:?}");
             let wide_footers = footers_of_files(&store, &wide_files, &[0]).await;
             let size = wide_footers[0].as_ref().unwrap().row_group_bytes[0];
@@ -659,7 +724,7 @@ mod tests {
                     .await
                     .unwrap();
             }
-            let files = list_dataset_files(&store, "s/").await.unwrap();
+            let (files, _skipped) = list_dataset_files(&store, "s/").await.unwrap();
             assert_eq!(files.len(), 3);
 
             // Only the last one's footer is read: its size is the one the schema must
@@ -1057,7 +1122,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let files = list_dataset_files(&store, "data/").await.unwrap();
+            let (files, _skipped) = list_dataset_files(&store, "data/").await.unwrap();
             let keys: Vec<&str> = files.iter().map(|f| f.key.as_str()).collect();
             assert_eq!(
                 keys,
@@ -1100,7 +1165,7 @@ mod tests {
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
         let schema = rt.block_on(async {
-            let files = list_dataset_files(&store, "data").await.unwrap();
+            let (files, _skipped) = list_dataset_files(&store, "data").await.unwrap();
             schema_of(&store, &files).await.0.schema
         });
         let df = lenient_scan(&urls, schema, None, None, &[])
@@ -1148,7 +1213,7 @@ mod tests {
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
         let (dataset, listed, file_rows) = rt.block_on(async {
-            let listed = list_dataset_files(&store, "data").await.unwrap();
+            let (listed, _skipped) = list_dataset_files(&store, "data").await.unwrap();
             let read: Vec<usize> = (0..listed.len()).collect();
             let footers = footers_of_files(&store, &listed, &read).await;
             let rows: Vec<usize> = footers
@@ -1280,7 +1345,7 @@ mod tests {
         let store: Arc<dyn ObjectStore> =
             Arc::new(object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap());
         let (dataset, listed) = rt.block_on(async {
-            let listed = list_dataset_files(&store, "data").await.unwrap();
+            let (listed, _skipped) = list_dataset_files(&store, "data").await.unwrap();
             (schema_of(&store, &listed).await.0, listed)
         });
         assert_eq!(dataset.unreadable, [1], "named, and left out of the scan");
@@ -1395,6 +1460,214 @@ mod tests {
             Some(2),
             "one row from each object that would open, and the count lands rather than \
              being dropped on a length nobody mentions"
+        );
+    }
+
+    /// A table format's own files are its own, whatever the format calls them.
+    ///
+    /// Delta and Hudi put a `_` or a `.` on theirs and Iceberg does not — its log is a
+    /// plain `metadata/` beside the data. Naming each convention is a game with no end,
+    /// so the test is where a file is: a folder with no Parquet in it is nobody's
+    /// table. The same rule silences the zero-byte folder markers a console leaves,
+    /// one per partition, which would otherwise read as hundreds of stopped writes.
+    #[test]
+    fn a_folder_with_no_data_in_it_is_nobodys_table() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let parquet = || -> Vec<u8> {
+            let mut frame = df!("id" => &[1i64]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for (key, body) in [
+                ("t/data/date=1/part-0.parquet", parquet()),
+                // Iceberg's log: no underscore, no dot, and not a mistake.
+                ("t/metadata/v1.metadata.json", b"{}".to_vec()),
+                ("t/metadata/v2.metadata.json", b"{}".to_vec()),
+                ("t/metadata/snap-123.avro", b"x".to_vec()),
+                ("t/metadata/version-hint.text", b"2".to_vec()),
+                // What a console leaves when somebody makes a folder: nothing at all,
+                // under a name with no extension.
+                ("t/data/date=1", Vec::new()),
+                ("t/data/date=2", Vec::new()),
+                // And beside the data: one real mistake, one write that stopped, and
+                // one empty file whose name never said it was data.
+                ("t/data/date=1/extra.csv", b"id\n1\n".to_vec()),
+                ("t/data/date=1/part-1.parquet", Vec::new()),
+                ("t/data/date=1/README", Vec::new()),
+                // A whole partition whose only write stopped, two levels down, so no
+                // folder above it holds data either. Nothing readable is left anywhere
+                // on that path — it is part of the dataset because the name of a file
+                // that was meant to be there says so, and the stopped write is the
+                // thing worth saying.
+                ("t/data/y=2024/m=03/part-0.parquet", Vec::new()),
+                // While a day that landed as CSV is the ordinary mistake.
+                ("t/data/date=4/part-0.csv", b"id\n4\n".to_vec()),
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(body))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let (files, skipped) = rt
+            .block_on(list_dataset_files(&store, "t"))
+            .expect("the prefix lists");
+        assert_eq!(
+            files.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(),
+            ["t/data/date=1/part-0.parquet"]
+        );
+        assert_eq!(
+            skipped.not_parquet, 2,
+            "the csv beside the data and the day that landed as one: both are files \
+             somebody meant to be in the table"
+        );
+        assert_eq!(
+            skipped.empty, 2,
+            "and both whose names said Parquet over nothing at all — including the \
+             one alone in its partition, which is the case that matters most"
+        );
+        assert_eq!(
+            skipped.bookkeeping, 7,
+            "the four Iceberg files, the two folder markers, and a README with \
+             nothing in it: placeholders and plumbing"
+        );
+    }
+
+    /// What the listing passed over survives the pass behind a staged open.
+    ///
+    /// A prefix of more than a wave of objects opens from two footers and reads the
+    /// rest behind the data. The pass builds a whole new dataset, and anything the open
+    /// recorded that the pass does not carry is on screen from the open and gone the
+    /// moment the columns join — a note that flashes and disappears, on every prefix
+    /// big enough to be staged, which is every prefix worth staging.
+    #[test]
+    fn a_staged_open_does_not_lose_what_the_listing_passed_over() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = |i: i64| -> Vec<u8> {
+            let mut frame = df!("id" => &[i]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let files = FOOTERS_AT_ONCE + 1;
+        rt.block_on(async {
+            for i in 0..files {
+                let key = format!("data/date=2024-01-{:03}/part.parquet", i + 1);
+                store
+                    .put(
+                        &OsPath::from(key.as_str()),
+                        PutPayload::from(body(i as i64)),
+                    )
+                    .await
+                    .unwrap();
+            }
+            store
+                .put(
+                    &OsPath::from("data/date=2024-01-001/extra.csv"),
+                    PutPayload::from(b"id\n1\n".to_vec()),
+                )
+                .await
+                .unwrap();
+        });
+
+        let progress = Arc::new(crate::schema_union::FooterProgress::default());
+        let mut state = crate::App::schema_state_from_cloud_hive_with(
+            "memory://data/".to_string(),
+            "data/".to_string(),
+            store,
+            polars::prelude::cloud::CloudOptions::default(),
+            &crate::OpenOptions::default(),
+            rt.handle(),
+            &progress,
+        )
+        .expect("the prefix opens");
+
+        let said = |state: &crate::widgets::datatable::DataTableState| {
+            state
+                .notes()
+                .iter()
+                .any(|note| note.summary.contains("not Parquet"))
+        };
+        assert!(said(&state), "the open says so");
+
+        let join = state
+            .footers_pending()
+            .expect("the rest are still to be read");
+        let found = join(&progress).expect("the pass reads them");
+        assert!(state.join_dataset_schema(found).is_ok());
+        assert!(
+            said(&state),
+            "and it still does once the columns have joined: {:#?}",
+            state.notes()
+        );
+    }
+
+    /// The listing counts what it passes over, and says which kind each was.
+    ///
+    /// Three kinds, and they mean different things to a reader: a `.csv` somebody
+    /// thought was in the table, a write that stopped and left nothing behind, and the
+    /// table's own log — which is not a mistake at all, however many files it is.
+    #[test]
+    fn the_listing_counts_what_it_passes_over() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let parquet = || -> Vec<u8> {
+            let mut frame = df!("id" => &[1i64]).unwrap();
+            let mut bytes = Vec::new();
+            ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+            bytes
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            for (key, body) in [
+                ("data/date=1/part-0.parquet", parquet()),
+                ("data/date=1/extra.csv", b"id\n1\n".to_vec()),
+                ("data/date=1/notes.txt", b"read me".to_vec()),
+                // A write that stopped: the name says data, the object has nothing in
+                // it, and no footer note can reach it because it never gets that far.
+                ("data/date=1/part-1.parquet", Vec::new()),
+                ("data/_SUCCESS", Vec::new()),
+                // The table's own log, whose files are named like anybody's.
+                ("data/_delta_log/00000000000000000000.json", b"{}".to_vec()),
+                ("data/_delta_log/.00000000000000000000.json.crc", Vec::new()),
+            ] {
+                store
+                    .put(&OsPath::from(key), PutPayload::from(body))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let (files, skipped) = rt
+            .block_on(list_dataset_files(&store, "data"))
+            .expect("the prefix lists");
+        assert_eq!(
+            files.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(),
+            ["data/date=1/part-0.parquet"],
+            "one object is the table"
+        );
+        assert_eq!(
+            skipped,
+            crate::schema_union::SkippedFiles {
+                not_parquet: 2,
+                empty: 1,
+                bookkeeping: 3,
+            },
+            "the csv and the txt are somebody's, the empty part is a write that \
+             stopped, and `_SUCCESS` and both log files are the writer's own"
         );
     }
 

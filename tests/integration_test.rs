@@ -1666,7 +1666,7 @@ fn test_a_column_only_one_partition_has_says_which() {
         .unwrap_or_else(|| panic!("no note about `oops`: {notes:#?}"));
     assert_eq!(
         about_oops.summary,
-        "oops is in 1 of 3 files, all under date=2024-03-02; absent from the rest, \
+        "oops is in 1 of 3 files, only date=2024-03-02; absent from the rest, \
          not null"
     );
 }
@@ -2998,7 +2998,7 @@ fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
     assert_eq!(notes.len(), 1, "one column is not in every file");
     assert_eq!(
         notes[0].summary,
-        "extra is in 1 of 2 files, all under date=2024-01-02; absent from the rest, \
+        "extra is in 1 of 2 files, only date=2024-01-02; absent from the rest, \
          not null"
     );
     assert_eq!(
@@ -3089,8 +3089,10 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
         .filter(|name| screen.contains(&format!("{name} is in 1 of 2 files")))
         .count();
     assert!(
-        shown > 0 && shown < 6,
-        "some notes fit and some do not, which is what this is about: {shown} of 6"
+        (2..6).contains(&shown),
+        "some notes fit and some do not, which is what this is about — and a panel \
+         this tall holds at least two, or the panel has got much greedier than the \
+         note got longer: {shown} of 6"
     );
     assert!(
         screen.contains(&format!("{} below", 6 - shown)),
@@ -3215,6 +3217,11 @@ fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
     let shortest = (4u16..14)
         .find(|height| drawn_at(*height).contains("is in 1 of 2 files"))
         .expect("some panel in this range draws a note");
+    assert!(
+        shortest <= 7,
+        "a note fits in a short panel; {shortest} rows to draw one means the panel has \
+         got greedier, and the loop below would pass on one height and prove nothing"
+    );
 
     // From there up, every height draws one. The bug this guards is a panel that has
     // the room and refuses anyway, which showed as a gap in the middle of this range.

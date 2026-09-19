@@ -360,7 +360,12 @@ impl DatasetSchema {
     /// read is missing nothing, which is the right answer for drawing cells and the
     /// wrong one for saying where a column begins.
     fn ranges_of_columns(&self, root: &str, paths: &[String]) -> HashMap<PlSmallStr, ColumnRange> {
+        // A file whose footer was not read is recorded as missing nothing, which is the
+        // right answer for drawing its cells and the wrong one for saying where a
+        // column begins. That is true of a sampled dataset and equally true of a file
+        // whose footer would not parse, which is a file datui never opened either.
         if matches!(self.origin, SchemaOrigin::FooterSample { .. })
+            || !self.unreadable.is_empty()
             || self.file_group.len() != paths.len()
         {
             return HashMap::new();
@@ -371,7 +376,15 @@ impl DatasetSchema {
         struct Seen {
             first_present: Option<usize>,
             last_absent: Option<usize>,
-            partitions: Vec<String>,
+            /// The partitions of the files that have it, and of the files that do not.
+            /// Two of either is already enough to know what this is not, so a third is
+            /// never kept.
+            with: Vec<String>,
+            without: Vec<String>,
+            /// A file that has it and sits under no partition at all — one at the root
+            /// beside the partition folders. There is no "all under" to be had then:
+            /// the column is somewhere this cannot name.
+            unplaced: bool,
         }
         let mut seen: HashMap<PlSmallStr, Seen> = HashMap::new();
         let partition_of = |index: usize| -> Option<String> {
@@ -379,39 +392,72 @@ impl DatasetSchema {
             let values = partition_values_of(below);
             (!values.is_empty()).then(|| values.join("/"))
         };
+        // The columns worth asking about, and for each group the ones it lacks — both
+        // settled once rather than per file. There are few groups and many files, and
+        // a scan of every column's name against every group's absent list, per file,
+        // is the shape of thing this file has been caught by before.
+        let drifting: Vec<&ColumnDrift> = self
+            .columns
+            .iter()
+            .filter(|column| column.present_in > 0 && column.present_in < self.files)
+            .collect();
+        if drifting.is_empty() {
+            return HashMap::new();
+        }
+        let missing_by_group: Vec<Vec<bool>> = self
+            .groups
+            .iter()
+            .map(|group| {
+                drifting
+                    .iter()
+                    .map(|column| group.absent.contains(&column.name))
+                    .collect()
+            })
+            .collect();
+        let none_missing: Vec<bool> = vec![false; drifting.len()];
+
         for (index, group) in self.file_group.iter().enumerate() {
-            let missing: &[PlSmallStr] = self
-                .groups
+            let missing: &[bool] = missing_by_group
                 .get(*group as usize)
-                .map(|g| g.absent.as_slice())
-                .unwrap_or(&[]);
-            for column in &self.columns {
-                if column.present_in == 0 || column.present_in >= self.files {
-                    continue;
-                }
+                .map(Vec::as_slice)
+                .unwrap_or(&none_missing);
+            // Split once per file rather than once per file and column.
+            let here = partition_of(index);
+            for (column, absent) in drifting.iter().zip(missing) {
                 let entry = seen.entry(column.name.clone()).or_insert(Seen {
                     first_present: None,
                     last_absent: None,
-                    partitions: Vec::new(),
+                    with: Vec::new(),
+                    without: Vec::new(),
+                    unplaced: false,
                 });
-                if missing.contains(&column.name) {
+                let seen_of = if *absent {
                     entry.last_absent = Some(index);
+                    &mut entry.without
                 } else {
                     entry.first_present.get_or_insert(index);
-                    if entry.partitions.len() < 2
-                        && let Some(partition) = partition_of(index)
-                        && !entry.partitions.contains(&partition)
-                    {
-                        entry.partitions.push(partition);
-                    }
+                    entry.unplaced |= here.is_none();
+                    &mut entry.with
+                };
+                if seen_of.len() < 2
+                    && let Some(partition) = here.as_ref()
+                    && !seen_of.contains(partition)
+                {
+                    seen_of.push(partition.clone());
                 }
             }
         }
         seen.into_iter()
             .filter_map(|(name, entry)| {
                 let first = entry.first_present?;
-                if entry.partitions.len() == 1 {
-                    return Some((name, ColumnRange::Only(entry.partitions[0].clone())));
+                // One partition holds every file that has it — and at least one file
+                // that does not is somewhere else, or "only" says nothing while
+                // sounding as though it does.
+                if !entry.unplaced
+                    && entry.with.len() == 1
+                    && entry.without.iter().any(|other| other != &entry.with[0])
+                {
+                    return Some((name, ColumnRange::Only(entry.with[0].clone())));
                 }
                 // Every file without it comes before every file with it, so the column
                 // starts where it starts and is there from then on.
@@ -693,13 +739,15 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
     }
 }
 
-/// The hive partition keys in a path, in order: `a=1/b=2/f.parquet` is `[a, b]`.
-///
-/// A segment is a partition only if it has a key before the `=`. The file's own name
-/// is never one — `data/x=1/2024=05.parquet` partitions by `x`, not by `x` and `2024`.
 /// The `key=value` segments of a path below the dataset's root, in the order they are
 /// written. The values as well as the keys, which is what tells one partition from
 /// another rather than one layout from another.
+///
+/// Not sorted and not deduplicated, unlike the keys: an order is a set of columns, a
+/// partition is a place, and a place is where the path says it is. One consequence is
+/// that `y=2024/m=03` and `m=03/y=2024` are one layout but two partitions, so a dataset
+/// that mixes the two orders has no column it can say is "only" anywhere. That is a
+/// missed note rather than a wrong one.
 fn partition_values_of(path: &str) -> Vec<String> {
     #[cfg(windows)]
     let separators: &[char] = &['/', '\\'];
@@ -719,6 +767,10 @@ fn partition_values_of(path: &str) -> Vec<String> {
         .collect()
 }
 
+/// The hive partition keys in a path, in order: `a=1/b=2/f.parquet` is `[a, b]`.
+///
+/// A segment is a partition only if it has a key before the `=`. The file's own name
+/// is never one — `data/x=1/2024=05.parquet` partitions by `x`, not by `x` and `2024`.
 fn partition_keys_of(path: &str) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     // A backslash separates on Windows and is an ordinary character in a Linux file
@@ -2388,6 +2440,42 @@ mod tests {
             }
         }
         runs
+    }
+
+    /// The two things the doc promises about what counts as a partition.
+    ///
+    /// Reachable only through `with_partition_layouts` otherwise, where every fixture
+    /// path is `root/key=value/file.parquet` — which exercises neither: no file name
+    /// there holds an `=`, and no segment lacks a key. Both guards could be deleted
+    /// with the whole suite green.
+    #[test]
+    fn a_file_name_is_not_a_partition_and_neither_is_a_bare_segment() {
+        assert_eq!(partition_values_of("/x=1/f.parquet"), ["x=1"]);
+        assert_eq!(
+            partition_values_of("/x=1/2024=05.parquet"),
+            ["x=1"],
+            "the file's own name is never a partition, whatever it is called"
+        );
+        assert_eq!(
+            partition_values_of("/raw/x=1/f.parquet"),
+            ["x=1"],
+            "and a segment with no key before the `=` is not one either"
+        );
+        assert_eq!(
+            partition_values_of("/=1/f.parquet"),
+            Vec::<String>::new(),
+            "an empty key is no key"
+        );
+        assert_eq!(
+            partition_values_of("/y=2024/m=03/f.parquet"),
+            ["y=2024", "m=03"],
+            "in the order written, because a partition is a place"
+        );
+        assert_eq!(
+            partition_values_of("/date=2024=05/f.parquet"),
+            ["date=2024=05"],
+            "and a value may hold an `=` of its own"
+        );
     }
 
     #[test]

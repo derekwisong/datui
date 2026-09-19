@@ -445,7 +445,7 @@ fn absence_note(
     // Where, as well as how many. A count says a column is unusual; a partition says
     // where to look, and for a field a feed started sending it says when.
     let where_it_is = match range {
-        Some(ColumnRange::Only(partition)) => format!(", all under {partition}"),
+        Some(ColumnRange::Only(partition)) => format!(", only {partition}"),
         Some(ColumnRange::NoneBefore(partition)) => format!(", none before {partition}"),
         None => String::new(),
     };
@@ -629,7 +629,7 @@ mod tests {
                     "d/date=2024-03-03/c.parquet",
                 ],
                 expected: vec![
-                    "oops is in 1 of 3 files, all under date=2024-03-02; absent from \
+                    "oops is in 1 of 3 files, only date=2024-03-02; absent from \
                      the rest, not null",
                 ],
                 ..Shape::default()
@@ -665,6 +665,63 @@ mod tests {
                     "d/date=3/c.parquet",
                 ],
                 expected: vec!["odd is in 2 of 3 files; absent from the rest, not null"],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column in a file that sits under no partition at all",
+                files: vec![
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64)], 1),
+                ],
+                // One file at the root beside the partition folders. Half the files
+                // that have `fee` are not under `date=2024-01-02`, so there is no
+                // "only" to be had — and saying it anyway sends a reader to the
+                // wrong folder, which is worse than the count on its own.
+                paths: vec![
+                    "d/aaa.parquet",
+                    "d/date=2024-01-02/b.parquet",
+                    "d/date=2024-01-03/c.parquet",
+                ],
+                expected: vec!["fee is in 2 of 3 files; absent from the rest, not null"],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column whose files are all in the one partition anyway",
+                files: vec![
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                    file(&[("id", DataType::Int64)], 1),
+                ],
+                // Every file is under `date=2024-03-02`, the one without it included.
+                // "only" earns its place by contrast with the files that are not,
+                // and there are none: the phrase would say nothing while sounding as
+                // though the missing file were somewhere else.
+                paths: vec![
+                    "d/date=2024-03-02/a.parquet",
+                    "d/date=2024-03-02/b.parquet",
+                    "d/date=2024-03-02/c.parquet",
+                ],
+                expected: vec!["fee is in 2 of 3 files; absent from the rest, not null"],
+                ..Shape::default()
+            },
+            Shape {
+                what: "a column of a dataset with a footer that would not parse",
+                files: vec![
+                    file(&[("id", DataType::Int64)], 1),
+                    None,
+                    file(&[("id", DataType::Int64), ("fee", DataType::Int64)], 1),
+                ],
+                // A file whose footer would not read counts as missing nothing, which
+                // makes it look like a file that has the column. Anchoring on it would
+                // put a partition datui never opened into a sentence whose own scope
+                // says it read two files.
+                paths: vec!["d/x=1/a.parquet", "d/x=2/b.parquet", "d/x=3/c.parquet"],
+                expected: vec![
+                    "fee is in 1 of the 2 files that could be read; absent from the \
+                     rest, not null",
+                    "1 file could not be read and was left out; the rows are not shown",
+                ],
                 ..Shape::default()
             },
             Shape {

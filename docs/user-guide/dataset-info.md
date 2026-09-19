@@ -47,7 +47,7 @@ files with something in them. Where datui notices either, it says so:
 Where the files that have a column fall into a shape worth naming, the note says so
 as well as counting them: `fee is in 4,001 of 6,541 files, none before
 date=2010-07-18` is a field a feed started sending, and `oops is in 1 of 6,541
-files, all under date=2024-03-02` is one folder's mistake. Only those two shapes —
+files, only date=2024-03-02` is one folder's mistake. Only those two shapes —
 a column scattered across a dataset is just a count. A dataset whose footers were
 sampled gets no such phrase: a file whose footer was not read looks like a file
 missing nothing, and a range drawn over those would be a guess.

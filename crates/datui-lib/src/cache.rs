@@ -450,20 +450,31 @@ pub struct CachedFooter {
 }
 
 impl DatasetShape {
-    /// The fingerprint of a listing: how many files, how much they weigh, and when each
-    /// was last written.
+    /// The fingerprint of a listing: which files, how many, how much they weigh, when
+    /// each was last written, and the store's own tag for each where it gave one.
     ///
     /// Everything a listing can see without opening anything, which is the point — this
-    /// has to be cheap enough to be worth taking. A file added, removed, resized or
+    /// has to be cheap enough to be worth taking, and all of it arrives in the one
+    /// response that had to happen anyway. A file added, removed, renamed, resized or
     /// rewritten changes it; a dataset that has not been touched does not.
-    pub fn fingerprint_of(files: impl IntoIterator<Item = (u64, u64)>) -> String {
+    ///
+    /// The names are in it because the cache is a positional join: the remembered
+    /// footers are lined up against a freshly listed dataset by position, so the
+    /// identity of what is being joined belongs in the thing that says the join is
+    /// still valid. The ETag is in it because size and a whole-second timestamp cannot
+    /// see a file overwritten within the same second at the same length.
+    pub fn fingerprint_of<'a>(
+        files: impl IntoIterator<Item = (&'a str, u64, u64, Option<&'a str>)>,
+    ) -> String {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         let mut count = 0usize;
         let mut bytes = 0u64;
-        for (size, stamp) in files {
+        for (key, size, stamp, etag) in files {
+            key.hash(&mut hasher);
             size.hash(&mut hasher);
             stamp.hash(&mut hasher);
+            etag.hash(&mut hasher);
             count += 1;
             bytes = bytes.saturating_add(size);
         }
@@ -515,10 +526,43 @@ impl CacheManager {
     /// letting the caller check is deliberate: an entry whose fingerprint has moved on
     /// describes a dataset that no longer exists, and there is no use for it that is
     /// not a mistake.
+    ///
+    /// A hit is recorded as use, so what ages out is what has not been opened in
+    /// longest rather than what has not been rebuilt in longest.
     pub fn dataset_shape(&self, path: &str, fingerprint: &str) -> Option<DatasetShape> {
-        self.load_dataset_shapes()
+        let shape = self
+            .load_dataset_shapes()
             .remove(path)
-            .filter(|shape| shape.fingerprint == fingerprint)
+            .filter(|shape| shape.fingerprint == fingerprint)?;
+        // A hit counts as use. Without this the clock only moves on a miss, so the
+        // entries that age out first are the datasets that never change — the ones with
+        // a perfect hit rate and the most to gain — while a dataset rewritten every day
+        // keeps resetting its own and stays forever.
+        self.touch_dataset_shape(path);
+        Some(shape)
+    }
+
+    /// Mark a shape as used just now, so eviction sees it as recent.
+    ///
+    /// Best effort: a shape that cannot be re-dated is still a shape that can be used,
+    /// and failing the open over it would be absurd.
+    fn touch_dataset_shape(&self, path: &str) {
+        let _ = self.with_cache_lock("dataset_shapes", || {
+            let mut all = self.load_dataset_shapes();
+            if let Some(shape) = all.get_mut(path) {
+                shape.taken_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default();
+            }
+            let json = serde_json::to_string(&all)?;
+            let temp = self.cache_file(&format!("dataset_shapes.{}.tmp", std::process::id()));
+            fs::write(&temp, json)?;
+            fs::rename(&temp, self.dataset_shape_path()).inspect_err(|_| {
+                let _ = fs::remove_file(&temp);
+            })?;
+            Ok(())
+        });
     }
 
     /// Remember one dataset's shape, keeping the others.
@@ -854,31 +898,64 @@ mod dataset_shape_tests {
     /// The fingerprint sees everything a listing can see, and nothing it cannot.
     #[test]
     fn the_fingerprint_moves_when_the_files_do() {
-        let base = DatasetShape::fingerprint_of([(100, 7), (200, 8)]);
+        let base = DatasetShape::fingerprint_of([
+            ("a.parquet", 100, 7, Some("e1")),
+            ("b.parquet", 200, 8, Some("e2")),
+        ]);
         assert_eq!(
             base,
-            DatasetShape::fingerprint_of([(100, 7), (200, 8)]),
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 200, 8, Some("e2")),
+            ]),
             "the same listing twice is the same fingerprint"
         );
         assert_ne!(
             base,
-            DatasetShape::fingerprint_of([(100, 7)]),
+            DatasetShape::fingerprint_of([("a.parquet", 100, 7, Some("e1"))]),
             "a file removed"
         );
         assert_ne!(
             base,
-            DatasetShape::fingerprint_of([(100, 7), (200, 8), (50, 9)]),
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 200, 8, Some("e2")),
+                ("c.parquet", 50, 9, Some("e3")),
+            ]),
             "a file added"
         );
         assert_ne!(
             base,
-            DatasetShape::fingerprint_of([(100, 7), (201, 8)]),
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 201, 8, Some("e2")),
+            ]),
             "a file resized"
         );
         assert_ne!(
             base,
-            DatasetShape::fingerprint_of([(100, 7), (200, 9)]),
-            "and a file rewritten to the same length, which only the stamp catches"
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 200, 9, Some("e2")),
+            ]),
+            "a file rewritten, which the stamp catches"
+        );
+        assert_ne!(
+            base,
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("b.parquet", 200, 8, Some("e9")),
+            ]),
+            "a file rewritten within the same second at the same length, which only \
+             the store's own tag catches"
+        );
+        assert_ne!(
+            base,
+            DatasetShape::fingerprint_of([
+                ("a.parquet", 100, 7, Some("e1")),
+                ("renamed.parquet", 200, 8, Some("e2")),
+            ]),
+            "and a file renamed, which reorders the positional join the cache is"
         );
     }
 

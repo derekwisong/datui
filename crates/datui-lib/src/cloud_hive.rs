@@ -125,9 +125,14 @@ pub struct DatasetFile {
     pub size: u64,
     /// When the object was last written, in seconds since the epoch, where the store
     /// said. Part of the fingerprint that decides whether what datui remembers about
-    /// this dataset still describes it: a file rewritten to the same length changes
-    /// nothing else a listing can see.
+    /// this dataset still describes it.
     pub stamp: u64,
+    /// The store's own tag for this version of the object, where it gave one.
+    ///
+    /// The strongest part of that fingerprint, and free — it comes back in the same
+    /// listing response as the size. A size and a whole-second timestamp cannot see a
+    /// file overwritten within the same second at the same length; an ETag can.
+    pub etag: Option<String>,
 }
 
 /// Every Parquet file under `prefix`, sorted by key, which is the order a scan of the
@@ -182,6 +187,7 @@ pub async fn list_dataset_files(
             key: o.location.as_ref().to_string(),
             size: o.size,
             stamp: o.last_modified.timestamp().try_into().unwrap_or_default(),
+            etag: o.e_tag.clone(),
         })
         .collect();
     // Every segment below the prefix, not just the name: a `.json` inside `_delta_log/`
@@ -916,6 +922,7 @@ mod tests {
             key: "data/date=2024-01-01/half-written.parquet".to_string(),
             size: 15,
             stamp: 0,
+            etag: None,
         }];
 
         let meter = Arc::new(crate::measurements::Meter::default());
@@ -943,6 +950,7 @@ mod tests {
             key: "data/date=2024-01-01/half-written.parquet".to_string(),
             size,
             stamp: 0,
+            etag: None,
         }];
         let groups =
             rt.block_on(async { row_groups_of_files(&store, &files, &meter).await.unwrap() });
@@ -1034,6 +1042,166 @@ mod tests {
         assert!(
             footers_from_cache(&broken, &schemas).is_none(),
             "an entry that points at a schema it does not have is refused whole"
+        );
+    }
+
+    /// A dataset too large to open in one wave is remembered by the pass behind it.
+    ///
+    /// This is the case the cache exists for — a prefix whose footers cost seconds —
+    /// and it is the one that used to be missed. Such a dataset opens from two footers
+    /// and reads the rest behind the data, so the open itself has nothing worth
+    /// keeping; saving only there meant the cache held nothing but datasets small
+    /// enough to open in a single wave, which are the cheapest to read anyway.
+    ///
+    /// Also pins the guard that keeps the two-footer view out: caching it would hand
+    /// the next open a five-thousand-file dataset with two files' worth of schema, no
+    /// row numbering and sample-scoped notes, and nothing would say so.
+    #[test]
+    fn a_dataset_read_behind_the_open_is_remembered_by_the_pass_that_read_it() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let body = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        // One past the wave, so the open stages.
+        let count = FOOTERS_AT_ONCE + 1;
+        rt.block_on(async {
+            for i in 0..count {
+                store
+                    .put(
+                        &OsPath::from(format!("data/f{i:04}.parquet")),
+                        PutPayload::from(body()),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
+        let report = || crate::measurements::OpenReport {
+            progress: Arc::new(crate::schema_union::FooterProgress::default()),
+            meter: Arc::new(crate::measurements::Meter::default()),
+            remembered: Some(cache.clone()),
+        };
+        let open = || {
+            let r = report();
+            let state = crate::App::schema_state_from_cloud_hive_with(
+                "memory://data/".to_string(),
+                "data/".to_string(),
+                store.clone(),
+                polars::prelude::cloud::CloudOptions::default(),
+                &crate::OpenOptions::default(),
+                rt.handle(),
+                &r,
+            );
+            (state, r.meter.clone())
+        };
+
+        let (state, meter) = open();
+        assert_eq!(
+            meter.footers().and_then(|c| c.files),
+            Some(2),
+            "the open itself reads the two ends, which is what staging is"
+        );
+        assert!(
+            cache.load_dataset_shapes().is_empty(),
+            "and keeps nothing: a two-footer view of {count} files is not this dataset, \
+             and kept as one it would open next time with two files' worth of schema"
+        );
+
+        // The pass behind it reads every footer, and that is the one worth keeping.
+        let pending = state
+            .as_ref()
+            .and_then(|s| s.footers_pending())
+            .expect("a staged open leaves a pass behind it");
+        let _ = pending(&Arc::new(crate::schema_union::FooterProgress::default()));
+
+        let (_, second) = open();
+        assert_eq!(
+            second.footers(),
+            None,
+            "so the next open reads no footers at all, for a dataset of {count} files"
+        );
+    }
+
+    /// A footer that would not read this time is not remembered as unreadable forever.
+    ///
+    /// A read fails for a corrupt file and for a throttled request alike, and nothing
+    /// here can tell them apart. Keeping the failure would turn a moment's trouble into
+    /// a file missing from the dataset on every open from now until something else in
+    /// the prefix changes — and the note would go on saying one file could not be read,
+    /// about a file that reads perfectly well.
+    #[test]
+    fn a_footer_that_would_not_read_is_not_remembered_as_unreadable() {
+        use object_store::PutPayload;
+        use polars::prelude::{ParquetWriter, df};
+
+        let good = || {
+            let mut frame = df!("n" => &[1i64]).unwrap();
+            let mut out = Vec::new();
+            ParquetWriter::new(&mut out).finish(&mut frame).unwrap();
+            out
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            store
+                .put(&OsPath::from("data/a.parquet"), PutPayload::from(good()))
+                .await
+                .unwrap();
+            // Mid-write, or throttled, or a token that expired: all the same from here.
+            store
+                .put(
+                    &OsPath::from("data/b.parquet"),
+                    PutPayload::from(b"not parquet yet".to_vec()),
+                )
+                .await
+                .unwrap();
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
+        let open = || {
+            let meter = Arc::new(crate::measurements::Meter::default());
+            let _ = crate::App::schema_state_from_cloud_hive_with(
+                "memory://data/".to_string(),
+                "data/".to_string(),
+                store.clone(),
+                polars::prelude::cloud::CloudOptions::default(),
+                &crate::OpenOptions::default(),
+                rt.handle(),
+                &crate::measurements::OpenReport {
+                    progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                    meter: meter.clone(),
+                    remembered: Some(cache.clone()),
+                },
+            );
+            meter
+        };
+
+        let first = open();
+        assert_eq!(
+            first.footers().and_then(|c| c.files),
+            Some(2),
+            "both were tried"
+        );
+        assert!(
+            cache.load_dataset_shapes().is_empty(),
+            "and nothing was kept, because one of them did not come back"
+        );
+
+        let second = open();
+        assert_eq!(
+            second.footers().and_then(|c| c.files),
+            Some(2),
+            "so the next open tries again rather than taking the failure as settled"
         );
     }
 

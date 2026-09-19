@@ -6799,20 +6799,63 @@ impl App {
         // open the dataset and the rest are read behind it, joining when they land. Up
         // to a wave they cost one round trip either way, so the dataset opens whole —
         // rows numbered, absent cells marked, notes complete.
-        let staged = files.len() > cloud_hive::FOOTERS_AT_ONCE;
-        let read = if staged {
+        // What the listing says this dataset is now. Taking it costs nothing — the
+        // listing has already happened, and it is the only thing that has to — and it
+        // is what decides whether the footers can be skipped entirely.
+        let fingerprint =
+            crate::cache::DatasetShape::fingerprint_of(files.iter().map(|f| (f.size, f.stamp)));
+        let remembered = report
+            .remembered
+            .as_ref()
+            .and_then(|cache| cache.dataset_shape(full, &fingerprint))
+            .filter(|shape| shape.files.len() == files.len())
+            .and_then(|shape| cloud_hive::footers_from_cache(&shape.files, &shape.schemas));
+
+        let staged = remembered.is_none() && files.len() > cloud_hive::FOOTERS_AT_ONCE;
+        let read = if let Some(cached) = &remembered {
+            // Every file, because the cache holds every file: a remembered dataset
+            // opens whole, with its rows numbered and its notes complete, however large
+            // it is. That is the point of remembering it.
+            let _ = cached;
+            (0..files.len()).collect()
+        } else if staged {
             crate::schema_union::ends_of(files.len())
         } else {
             crate::schema_union::footers_to_read(files.len())
         };
-        let footers = Self::cloud_footers(
-            store.clone(),
-            files.clone(),
-            read.clone(),
-            runtime,
-            report.progress.clone(),
-            report.meter.clone(),
-        )?;
+        let footers = match remembered {
+            Some(cached) => cached,
+            None => Self::cloud_footers(
+                store.clone(),
+                files.clone(),
+                read.clone(),
+                runtime,
+                report.progress.clone(),
+                report.meter.clone(),
+            )?,
+        };
+        // Remembered only when every footer was read. A staged open has two of them and
+        // a sampled one has a spread, and either kept as though it were the whole
+        // dataset would hand the next open a smaller dataset than it asked for — with
+        // nothing to say that is what happened. The pass behind a staged open writes
+        // its own entry when it lands, which is the one worth having.
+        if read.len() == files.len()
+            && let Some(cache) = report.remembered.as_ref()
+        {
+            let (cached, schemas) = cloud_hive::footers_to_cache(&footers);
+            cache.save_dataset_shape(
+                full,
+                crate::cache::DatasetShape {
+                    fingerprint: fingerprint.clone(),
+                    files: cached,
+                    schemas,
+                    taken_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or_default(),
+                },
+            );
+        }
         let opened =
             Self::cloud_dataset_from_footers(full, &root, &files, &read, &footers, &cloud_opts)?;
         let CloudDataset {
@@ -7262,6 +7305,7 @@ impl App {
         let attempt = |report: &crate::measurements::OpenReport| crate::measurements::OpenReport {
             progress: report.progress.clone(),
             meter: Arc::new(crate::measurements::Meter::default()),
+            remembered: report.remembered.clone(),
         };
 
         let local = attempt(report);
@@ -12319,6 +12363,7 @@ impl App {
                 let report = crate::measurements::OpenReport {
                     progress: self.footer_progress.clone(),
                     meter: Arc::new(crate::measurements::Meter::default()),
+                    remembered: Some(self.cache.clone()),
                 };
                 self.spawn_bg("Caching schema...", move |task_gen, tx| {
                     match Self::build_schema_state(

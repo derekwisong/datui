@@ -211,6 +211,14 @@ pub struct OpenReport {
     pub progress: std::sync::Arc<crate::schema_union::FooterProgress>,
     /// What the work has cost, for the Info panel.
     pub meter: std::sync::Arc<Meter>,
+    /// Where to look for what a previous open of this dataset learned, and where to
+    /// leave what this one learns. `None` for a route with nowhere to keep it, and for
+    /// the tests that do not care.
+    ///
+    /// It travels with the other two because it belongs to the same moment — an open
+    /// reports what it is doing, records what it cost, and remembers what it found, and
+    /// all three are handed down the same routes.
+    pub remembered: Option<crate::cache::CacheManager>,
 }
 
 /// What the open on screen cost, as it is measured.

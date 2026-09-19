@@ -61,6 +61,7 @@ pub mod glyphs;
 pub(crate) mod help_strings;
 pub mod home;
 pub mod locality;
+pub mod measurements;
 pub mod notes;
 pub mod numfmt;
 pub mod pivot_melt_modal;
@@ -196,6 +197,7 @@ mod export_format_tests {
             files: None,
             lf: unreadable,
             streaming: false,
+            meter: Arc::new(crate::measurements::Meter::default()),
         };
         let rows = |counted: Result<Counted, ()>| counted.map(|c| c.rows);
         assert_eq!(
@@ -3972,6 +3974,9 @@ struct LenCount {
     files: Option<crate::widgets::datatable::FileCounter>,
     lf: LazyFrame,
     streaming: bool,
+    /// The open's meter. Counting a local folder re-reads every footer, which costs
+    /// what the open's own pass cost and is tallied with it.
+    meter: Arc<crate::measurements::Meter>,
 }
 
 /// A count, and for a remote dataset of many files the row groups it was summed from.
@@ -3995,6 +4000,7 @@ impl LenCount {
             len_generation: state.len_generation(),
             count_dir: state.parquet_count_dir(),
             files: state.remote_files_counter(),
+            meter: state.measurements().clone(),
             lf: state.lf_clone(),
             streaming: state.polars_streaming_enabled(),
         }
@@ -4018,7 +4024,7 @@ impl LenCount {
             });
         }
         match &self.count_dir {
-            Some(dir) => DataTableState::count_rows_from_parquet_dir(dir)
+            Some(dir) => DataTableState::count_rows_from_parquet_dir(dir, &self.meter)
                 .map(Counted::from)
                 .map_err(|_| ()),
             None => {
@@ -6581,13 +6587,14 @@ impl App {
         path: Option<&Path>,
         options: &OpenOptions,
         progress: &crate::schema_union::FooterProgress,
+        meter: &crate::measurements::Meter,
     ) -> Option<DataTableState> {
         if !options.single_spine_schema {
             return None;
         }
         let p = path.filter(|p| p.is_dir() && options.hive)?;
         let (files, read, footers, skipped) =
-            DataTableState::footers_of_parquet_dir_reporting(p, progress);
+            DataTableState::footers_of_parquet_dir_reporting(p, progress, meter);
         let first = files.first()?;
         let partition_columns = DataTableState::discover_hive_partition_columns(p);
         let values = DataTableState::hive_partition_values(p, first);
@@ -6650,7 +6657,7 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        progress: &Arc<crate::schema_union::FooterProgress>,
+        report: &crate::measurements::OpenReport,
     ) -> Option<DataTableState> {
         if !options.single_spine_schema {
             return None;
@@ -6665,7 +6672,7 @@ impl App {
         let (full, cloud_opts, store) = Self::cloud_store_for(p, cloud, runtime).ok()?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full).ok()?;
         Self::schema_state_from_cloud_hive_with(
-            full, key, store, cloud_opts, options, runtime, progress,
+            full, key, store, cloud_opts, options, runtime, report,
         )
     }
 
@@ -6682,17 +6689,18 @@ impl App {
         cloud_opts: CloudOptions,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
-        progress: &Arc<crate::schema_union::FooterProgress>,
+        report: &crate::measurements::OpenReport,
     ) -> Option<DataTableState> {
         // A prefix: every file listed once, and the scan, the schema and the count all
         // work from that list. A glob keeps the older route, which Polars expands.
         if !full.contains('*') {
             return Self::schema_state_from_cloud_files(
-                &full, key, store, cloud_opts, options, runtime, progress,
+                &full, key, store, cloud_opts, options, runtime, report,
             );
         }
+        let meter = report.meter.clone();
         let (merged_schema, partition_columns) = wait_on_runtime(runtime, async move {
-            cloud_hive::schema_from_one_cloud_hive(store, &key).await
+            cloud_hive::schema_from_one_cloud_hive(store, &key, &meter).await
         })?
         .ok()?;
         let args = ScanArgsParquet {
@@ -6729,14 +6737,25 @@ impl App {
         cloud_opts: CloudOptions,
         options: &OpenOptions,
         runtime: &tokio::runtime::Handle,
-        progress: &Arc<crate::schema_union::FooterProgress>,
+        report: &crate::measurements::OpenReport,
     ) -> Option<DataTableState> {
         let (files, skipped) = {
             let store = store.clone();
+            // The listing is one `list` whose pages object_store turns over itself, so
+            // this brackets the whole of it: the first request to the last page. The
+            // request count is not datui's to give — the paging happens inside the
+            // store — so the listing reports a time and the data files it found, and
+            // leaves requests and bytes to the footer pass, which does issue its own.
+            // The count is after the filtering: what is reported is the dataset's
+            // files, not every object under the prefix.
+            let listing_began = std::time::Instant::now();
             let (files, skipped) = wait_on_runtime(runtime, async move {
                 cloud_hive::list_dataset_files(&store, &key).await
             })?
             .ok()?;
+            report
+                .meter
+                .listed(listing_began.elapsed(), Some(files.len()), false);
             (Arc::new(files), skipped)
         };
         // Past one wave of concurrent reads the footers stop being free: the two ends
@@ -6754,7 +6773,8 @@ impl App {
             files.clone(),
             read.clone(),
             runtime,
-            progress.clone(),
+            report.progress.clone(),
+            report.meter.clone(),
         )?;
         let opened = Self::cloud_dataset_from_footers(full, &files, &read, &footers, &cloud_opts)?;
         let CloudDataset {
@@ -6801,10 +6821,13 @@ impl App {
         }
         let count: crate::widgets::datatable::FileCounter = {
             let (runtime, counted, store) = (runtime.clone(), Arc::new(counted), store.clone());
+            // The same meter again: this counts by re-reading every footer, so its
+            // requests are footer requests and belong in the same tally.
+            let meter = report.meter.clone();
             Arc::new(move || {
-                let (store, counted) = (store.clone(), counted.clone());
+                let (store, counted, meter) = (store.clone(), counted.clone(), meter.clone());
                 wait_on_runtime(&runtime, async move {
-                    cloud_hive::row_groups_of_files(&store, &counted).await
+                    cloud_hive::row_groups_of_files(&store, &counted, &meter).await
                 })
                 .ok_or_else(|| "cancelled".to_string())?
                 .map_err(|e| e.to_string())
@@ -6837,6 +6860,14 @@ impl App {
             // reading.
             let (store, cloud_opts, runtime) = (store.clone(), cloud_opts.clone(), runtime.clone());
             let (files, full) = (files.clone(), full.to_string());
+            // The same meter the open is writing into, not a new one: this pass reads
+            // the dataset's footers over again — including the two ends the open
+            // already read, since the whole dataset is built from one set of them, and
+            // a sample of them past `MAX_FOOTER_READS` — and what the footers cost is
+            // both passes added up, re-reads and all. It is held rather than handed
+            // in because it belongs to this dataset: the next open builds its own state
+            // and its own meter, and this closure goes with the state it was built for.
+            let meter = report.meter.clone();
             state.set_footers_pending(Arc::new(move |progress: &Arc<_>| {
                 let read = crate::schema_union::footers_to_read(files.len());
                 let footers = Self::cloud_footers(
@@ -6845,6 +6876,7 @@ impl App {
                     read.clone(),
                     &runtime,
                     progress.clone(),
+                    meter.clone(),
                 )?;
                 let whole =
                     Self::cloud_dataset_from_footers(&full, &files, &read, &footers, &cloud_opts)?;
@@ -6870,10 +6902,13 @@ impl App {
                 let count: crate::widgets::datatable::FileCounter = {
                     let (runtime, counted, store) =
                         (runtime.clone(), Arc::new(counted), store.clone());
+                    // As above: counting re-reads every footer, and those reads count.
+                    let meter = meter.clone();
                     Arc::new(move || {
-                        let (store, counted) = (store.clone(), counted.clone());
+                        let (store, counted, meter) =
+                            (store.clone(), counted.clone(), meter.clone());
                         wait_on_runtime(&runtime, async move {
-                            cloud_hive::row_groups_of_files(&store, &counted).await
+                            cloud_hive::row_groups_of_files(&store, &counted, &meter).await
                         })
                         .ok_or_else(|| "cancelled".to_string())?
                         .map_err(|e| e.to_string())
@@ -6912,9 +6947,10 @@ impl App {
         read: Vec<usize>,
         runtime: &tokio::runtime::Handle,
         progress: Arc<crate::schema_union::FooterProgress>,
+        meter: Arc<crate::measurements::Meter>,
     ) -> Option<Vec<Option<cloud_hive::FileFooter>>> {
         wait_on_runtime(runtime, async move {
-            cloud_hive::footers_of_files_reporting(&store, &files, &read, &progress).await
+            cloud_hive::footers_of_files_reporting(&store, &files, &read, &progress, &meter).await
         })
     }
 
@@ -7032,10 +7068,15 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        progress: &Arc<crate::schema_union::FooterProgress>,
+        report: &crate::measurements::OpenReport,
     ) -> Result<(DataTableState, String)> {
-        let (mut state, label) =
-            Self::schema_state_by_route(lf, path, options, cloud, runtime, progress)?;
+        let (mut state, label, meter) =
+            Self::schema_state_by_route(lf, path, options, cloud, runtime, report)?;
+        // The dataset leaves with the meter of the route that actually built it, so it
+        // is installed with the dataset and nothing else can reach it. An open that
+        // fails never gets here, which is what keeps the dataset still on screen
+        // showing its own figures.
+        state.set_measurements(meter);
         // The display path of a downloaded object is its URL too; only a scan that
         // really reads the object store in place buffers like one.
         if path.is_some_and(source::scans_in_place) {
@@ -7115,14 +7156,16 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
+        report: &crate::measurements::OpenReport,
     ) -> Result<DataTableState> {
         let (full, cloud_opts, store) = Self::cloud_store_for(path, cloud, runtime)?;
         let (_bucket, key) = Self::cloud_bucket_and_key(&full)?;
         if key.is_empty() {
             return Err(color_eyre::eyre::eyre!("a bucket, not an object"));
         }
+        let meter = report.meter.clone();
         let footer = wait_on_runtime(runtime, async move {
-            cloud_hive::footer_of_cloud_parquet(store, &key).await
+            cloud_hive::footer_of_cloud_parquet(store, &key, &meter).await
         })
         .ok_or_else(|| color_eyre::eyre::eyre!("cancelled"))??;
         let args = ScanArgsParquet {
@@ -7148,19 +7191,47 @@ impl App {
         options: &OpenOptions,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        progress: &Arc<crate::schema_union::FooterProgress>,
-    ) -> Result<(DataTableState, String)> {
+        report: &crate::measurements::OpenReport,
+    ) -> Result<(DataTableState, String, Arc<crate::measurements::Meter>)> {
         #[cfg(not(feature = "cloud"))]
         let _ = (cloud, runtime);
 
-        if let Some(state) = Self::schema_state_from_local_hive(path, options, progress) {
-            return Ok((state, "one-file (local)".to_string()));
+        // A meter per attempt, and the winner's is the open's. The routes are tried in
+        // order and the earlier ones measure before they discover they cannot finish —
+        // the local hive route times its walk and its footer pass, then bails five
+        // different ways. Sharing one meter would leave those figures on a dataset some
+        // later route built, which is a row saying no files on a dataset that has them.
+        //
+        // Two guards, and the test holds them together rather than either alone: the
+        // attempts take separate meters, and both full-scan arms hand back an empty
+        // one. A folder whose only Parquet is a writer's own bookkeeping — a
+        // `_delta_log` checkpoint — reaches the screen through the second of those, so
+        // `test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened`
+        // fails when both are reverted and passes when either still stands. The
+        // per-attempt meter alone is defensive: the route guards are mutually
+        // exclusive enough that nothing reaches a later route through the first.
+        let attempt = |report: &crate::measurements::OpenReport| crate::measurements::OpenReport {
+            progress: report.progress.clone(),
+            meter: Arc::new(crate::measurements::Meter::default()),
+        };
+
+        let local = attempt(report);
+        if let Some(state) =
+            Self::schema_state_from_local_hive(path, options, &local.progress, &local.meter)
+        {
+            return Ok((state, "one-file (local)".to_string(), local.meter));
         }
         #[cfg(feature = "cloud")]
+        let cloud_hive_attempt = attempt(report);
+        #[cfg(feature = "cloud")]
         if let Some(state) =
-            Self::schema_state_from_cloud_hive(path, options, cloud, runtime, progress)
+            Self::schema_state_from_cloud_hive(path, options, cloud, runtime, &cloud_hive_attempt)
         {
-            return Ok((state, "one-file (cloud)".to_string()));
+            return Ok((
+                state,
+                "one-file (cloud)".to_string(),
+                cloud_hive_attempt.meter,
+            ));
         }
         #[cfg(feature = "cloud")]
         if let Some(p) = path.filter(|p| {
@@ -7168,18 +7239,32 @@ impl App {
                 && !options.hive
                 && !source::is_prefix_or_glob(&p.to_string_lossy())
         }) {
-            match Self::schema_state_from_cloud_object(p, options, cloud, runtime) {
-                Ok(state) => return Ok((state, "footer (cloud)".to_string())),
+            let object = attempt(report);
+            match Self::schema_state_from_cloud_object(p, options, cloud, runtime, &object) {
+                Ok(state) => return Ok((state, "footer (cloud)".to_string(), object.meter)),
                 // Visible in the debug overlay, because the fallback costs a row group
                 // for the count and that should not pass for the intended path.
                 Err(e) => {
-                    return Self::schema_state_from_full_scan(lf, path, options)
-                        .map(|state| (state, format!("full scan (cloud footer: {e})")));
+                    // A fresh meter, not the failed footer read's: the full scan
+                    // measures nothing, and showing the attempt that did not work
+                    // would describe a route the dataset did not come by.
+                    return Self::schema_state_from_full_scan(lf, path, options).map(|state| {
+                        (
+                            state,
+                            format!("full scan (cloud footer: {e})"),
+                            Arc::new(crate::measurements::Meter::default()),
+                        )
+                    });
                 }
             }
         }
-        Self::schema_state_from_full_scan(lf, path, options)
-            .map(|state| (state, "full scan".to_string()))
+        Self::schema_state_from_full_scan(lf, path, options).map(|state| {
+            (
+                state,
+                "full scan".to_string(),
+                Arc::new(crate::measurements::Meter::default()),
+            )
+        })
     }
 
     /// Build the LazyFrame for `paths`.
@@ -11513,6 +11598,10 @@ impl App {
                 // A new counter for a new load. Abandoning a load cancels nothing —
                 // the footers keep being read — so a shared one would go on reporting
                 // the abandoned folder's progress under the next file's name.
+                //
+                // The meter needs no equivalent: it belongs to the dataset rather than
+                // to the app, so a load that never reaches the screen never has one
+                // installed. See `DataTableState::measurements`.
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 // Whatever the last dataset was still reading is no longer wanted.
                 *self
@@ -11569,6 +11658,10 @@ impl App {
                 // A new counter for a new load. Abandoning a load cancels nothing —
                 // the footers keep being read — so a shared one would go on reporting
                 // the abandoned folder's progress under the next file's name.
+                //
+                // The meter needs no equivalent: it belongs to the dataset rather than
+                // to the app, so a load that never reaches the screen never has one
+                // installed. See `DataTableState::measurements`.
                 self.footer_progress = Arc::new(crate::schema_union::FooterProgress::default());
                 // Whatever the last dataset was still reading is no longer wanted.
                 *self
@@ -12174,7 +12267,10 @@ impl App {
                 let schema_slot = self.pending_schema_result.clone();
                 let cloud = self.app_config.cloud.clone();
                 let runtime = self.runtime.clone();
-                let progress = self.footer_progress.clone();
+                let report = crate::measurements::OpenReport {
+                    progress: self.footer_progress.clone(),
+                    meter: Arc::new(crate::measurements::Meter::default()),
+                };
                 self.spawn_bg("Caching schema...", move |task_gen, tx| {
                     match Self::build_schema_state(
                         lf_owned,
@@ -12182,7 +12278,7 @@ impl App {
                         &options_owned,
                         &cloud,
                         &runtime,
-                        &progress,
+                        &report,
                     ) {
                         Ok((state, debug_label)) => {
                             let mut slot = schema_slot.lock().unwrap_or_else(|e| e.into_inner());

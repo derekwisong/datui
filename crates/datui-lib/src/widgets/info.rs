@@ -359,7 +359,10 @@ impl InfoModal {
     }
 }
 
-/// Context for the info panel: path, format, optional Parquet metadata.
+/// Context for the info panel: path, format, and optional Parquet metadata.
+///
+/// What the open cost is not here: it belongs to the dataset, and the panel already
+/// has the dataset.
 pub struct InfoContext<'a> {
     pub path: Option<&'a Path>,
     pub format: Option<ExportFormat>,
@@ -798,7 +801,71 @@ impl<'a> DataTableInfo<'a> {
                     buf,
                     LABEL_WIDTH,
                 );
+                y += 1;
             }
+        }
+        self.render_measurements(area, buf, &mut y, LABEL_WIDTH);
+    }
+
+    /// What the open cost, under its own heading at the foot of the tab.
+    ///
+    /// Only what was measured: a row appears for a stretch of work that happened, and a
+    /// stretch that made no requests of its own shows a time and a count and stops
+    /// there. A figure datui cannot stand behind is not shown as a zero — see
+    /// [`crate::measurements`] and `docs/user-guide/dataset-info.md`.
+    fn render_measurements(&self, area: Rect, buf: &mut Buffer, y: &mut u16, label_w: u16) {
+        let meter = self.state.measurements();
+        let mut rows: Vec<(&str, String)> = [
+            ("Listing:", "files", "file", meter.listing()),
+            ("Footers:", "footers read", "footer read", meter.footers()),
+        ]
+        .into_iter()
+        .filter_map(|(label, unit, singular, cost)| {
+            Some((label, measurement_line(&cost?, unit, singular)))
+        })
+        .collect();
+        if let Some(total) = meter.total() {
+            rows.push(("Total:", total_line(&total)));
+        }
+        if rows.is_empty() {
+            return;
+        }
+        let bottom = area.y + area.height;
+        // The heading and at least one row, or neither: a heading alone says a section
+        // was cut off where there may have been nothing to cut. The blank line is at
+        // `y`, the heading at `y + 1` and the first row at `y + 2`, so all three have
+        // to fit — for every tab layout there is exactly one height at which checking
+        // any fewer leaves a bare heading.
+        if *y + 2 >= bottom {
+            return;
+        }
+        *y += 1;
+        Paragraph::new("Measurements").render(
+            Rect {
+                y: *y,
+                width: area.width,
+                height: 1,
+                ..area
+            },
+            buf,
+        );
+        *y += 1;
+        for (label, line) in rows {
+            if *y >= bottom {
+                return;
+            }
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(label_w), Constraint::Min(1)])
+                .split(Rect {
+                    y: *y,
+                    width: area.width,
+                    height: 1,
+                    ..area
+                });
+            Paragraph::new(label).render(chunks[0], buf);
+            Paragraph::new(line).render(chunks[1], buf);
+            *y += 1;
         }
     }
 
@@ -1003,6 +1070,81 @@ impl<'a> DataTableInfo<'a> {
     }
 }
 
+/// How long a stretch took, in a unit that does not round it away.
+///
+/// Milliseconds under a second, to two places. Most of these figures are under a
+/// second — a local folder of a few files is walked in a fraction of a millisecond —
+/// and in seconds to two places every one of them prints `0.00s`, which reads as "not
+/// measured" rather than "quick".
+///
+/// Two places rather than one because a one-file folder's listing really is tens of
+/// microseconds. There is still a floor: under five microseconds this prints
+/// `0.00 ms`. Nothing datui can do makes a five-microsecond walk legible, and a figure
+/// that small is honestly reported as none.
+fn format_took(took: std::time::Duration) -> String {
+    let ms = took.as_secs_f64() * 1000.0;
+    // Rounded to the two places that are printed, then chosen. Rounding to whole
+    // milliseconds instead moves the switch to 999.5 ms, which is a wide band of
+    // figures the doc promises in milliseconds and would hand back in seconds; and not
+    // rounding at all prints `1000.00 ms` for 999.997, which reads as larger than the
+    // `1.00s` a tick later.
+    if (ms * 100.0).round() < 100_000.0 {
+        format!("{ms:.2} ms")
+    } else {
+        format!("{:.2}s", took.as_secs_f64())
+    }
+}
+
+/// What datui asked for over a network, where it did the asking.
+fn wire_line(wire: crate::measurements::OverTheWire) -> String {
+    let mut line = format!(
+        ", {} request{}",
+        format_int(wire.requests),
+        if wire.requests == 1 { "" } else { "s" }
+    );
+    // A byte figure only where datui counted the bytes. Everything that reports
+    // requests today also weighs them; this is what stops a stretch that one day does
+    // not from printing `0 B`, which would say its requests came back empty.
+    if let Some(bytes) = wire.bytes {
+        line.push_str(&format!(", {}", format_bytes(bytes)));
+    }
+    line
+}
+
+/// One measurement as a line: how long, over how many of whatever it counted, and —
+/// where datui made the requests itself — how many and how much came back.
+///
+/// `unit` is not always "files". The listing counts the dataset's files; a footer pass
+/// counts footers read, and those are not the same number — a dataset that opens before
+/// its footers are read has them read again behind the open, and one that cannot settle
+/// its row count reads them all again to count. Calling both "files" would put a figure
+/// larger than the dataset under the word the listing uses for the dataset's size.
+fn measurement_line(cost: &crate::measurements::Cost, unit: &str, singular: &str) -> String {
+    let mut line = format_took(cost.took);
+    // A stretch that never learned a count says a time and stops, rather than putting
+    // a number that is not the size of the dataset under the word the other rows use
+    // for exactly that.
+    if let Some(files) = cost.files {
+        let unit = if files == 1 { singular } else { unit };
+        line.push_str(&format!(", {} {unit}", format_int(files)));
+    }
+    if let Some(wire) = cost.over_the_wire {
+        line.push_str(&wire_line(wire));
+    }
+    line
+}
+
+/// The total as a line: a time, and the requests behind it.
+///
+/// No file count, deliberately — see [`crate::measurements::Meter::total`].
+fn total_line(total: &crate::measurements::Total) -> String {
+    let mut line = format_took(total.took);
+    if let Some(wire) = total.over_the_wire {
+        line.push_str(&wire_line(wire));
+    }
+    line
+}
+
 /// Comma-group a count for the info panel. Thin alias over the shared chrome
 /// formatter, kept so call sites and tests read the same as before.
 fn format_int(n: usize) -> String {
@@ -1173,6 +1315,220 @@ mod tests {
             counted.contains("Rows (total): 70"),
             "and once it has been counted, that is what it says: {counted}"
         );
+    }
+
+    /// Times read in the unit the docs promise, on both sides of the switch.
+    ///
+    /// The band just under a second is the whole point. Judging it in whole
+    /// milliseconds moves the switch to 999.5 ms, so half a millisecond's worth of
+    /// figures the page promises in milliseconds come back in seconds; not rounding at
+    /// all prints `1000.00 ms`, which beside the `1.00s` a tick later says the slower
+    /// open was the faster one. Neither shows up in a test that only uses round
+    /// numbers, which is why these are not round.
+    #[test]
+    fn a_time_reads_in_the_unit_the_page_promises() {
+        use std::time::Duration;
+
+        let cases = [
+            (Duration::ZERO, "0.00 ms"),
+            (Duration::from_nanos(1_000), "0.00 ms"),
+            (Duration::from_nanos(5_000), "0.01 ms"),
+            (Duration::from_micros(344), "0.34 ms"),
+            (Duration::from_micros(999_500), "999.50 ms"),
+            (Duration::from_nanos(999_994_999), "999.99 ms"),
+            (Duration::from_nanos(999_995_000), "1.00s"),
+            (Duration::from_secs(1), "1.00s"),
+            (Duration::from_millis(3_880), "3.88s"),
+        ];
+        for (took, expected) in cases {
+            assert_eq!(
+                format_took(took),
+                expected,
+                "{took:?} should read as {expected}"
+            );
+        }
+    }
+
+    /// The Resources tab shows what the open cost, and shows only what was measured.
+    ///
+    /// Through the rendered tab rather than [`measurement_line`], because the bug worth
+    /// guarding is a row reaching the panel for a stretch of work that never ran — a
+    /// dataset opened before any of this existed would otherwise read as one whose
+    /// listing took no time at all.
+    #[test]
+    fn the_resources_tab_shows_what_was_measured_and_nothing_else() {
+        use crate::measurements::Meter;
+        use crate::widgets::datatable::DataTableState;
+        use polars::prelude::*;
+        use std::time::Duration;
+
+        // The meter rides on the dataset, so each case paints a dataset carrying the
+        // meter under test rather than handing one to the panel beside it.
+        let dataset_with = |meter: &std::sync::Arc<Meter>| {
+            let rows = || df!("id" => (0..3i64).collect::<Vec<_>>()).unwrap().lazy();
+            let mut lf = rows();
+            let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+            let mut state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                rows(),
+                &crate::OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            state.set_measurements(meter.clone());
+            state
+        };
+
+        let painted = |meter: &std::sync::Arc<Meter>, height: u16| {
+            let state = dataset_with(meter);
+            let area = Rect::new(0, 0, 70, height);
+            let mut buf = Buffer::empty(area);
+            let mut modal = InfoModal::default();
+            let panel = DataTableInfo::new(
+                &state,
+                InfoContext {
+                    path: None,
+                    format: None,
+                    parquet_metadata: None,
+                },
+                &mut modal,
+                ratatui::style::Color::White,
+                ratatui::style::Color::Cyan,
+                ratatui::style::Color::White,
+                Style::default(),
+            );
+            panel.render_resources_tab(area, &mut buf);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // Nothing measured: no heading, and above all no row of zeroes standing in for
+        // a measurement that was never taken.
+        let unmeasured = painted(&std::sync::Arc::new(Meter::default()), 24);
+        assert!(
+            !unmeasured.contains("Measurements"),
+            "a meter holding nothing has nothing to show: {unmeasured}"
+        );
+
+        // A local open: two stretches, neither of which made a request.
+        let local = std::sync::Arc::new(Meter::default());
+        local.listed(Duration::from_micros(344), Some(6541), false);
+        local.read_footers(Duration::from_millis(3880), Some(6541), false);
+        let shown = painted(&local, 24);
+        assert!(
+            shown.contains("Measurements"),
+            "once there is something to say, the section appears: {shown}"
+        );
+        assert!(
+            shown.contains("0.34 ms, 6,541 files"),
+            "a listing that really took a third of a millisecond says so, rather than \
+             rounding to a figure that reads as unmeasured: {shown}"
+        );
+        assert!(
+            shown.contains("3.88s, 6,541 footers read"),
+            "and a stretch over a second is in seconds, counting footers rather than files: {shown}"
+        );
+        assert!(
+            shown.contains("Total:") && shown.contains("3.88s"),
+            "the total is a time: {shown}"
+        );
+        assert!(
+            !shown.contains("13,082"),
+            "and not the two file counts added together, which is not the size of \
+             anything: {shown}"
+        );
+        assert!(
+            !shown.contains("requests"),
+            "a local open made none, and says nothing rather than saying zero: {shown}"
+        );
+
+        // One of a thing is one of a thing. A one-file folder and a single remote
+        // object both reach this, and "1 files read" is what the counts are for.
+        let just_one = std::sync::Arc::new(Meter::default());
+        just_one.listed(Duration::from_millis(1), Some(1), false);
+        just_one.footer_request(512);
+        just_one.read_footers(Duration::from_millis(2), Some(1), true);
+        let singular = painted(&just_one, 24);
+        assert!(
+            singular.contains("1 file,") || singular.contains("1 file "),
+            "one file, not one files: {singular}"
+        );
+        assert!(
+            singular.contains("1 footer read,"),
+            "and one footer read, not one footers read: {singular}"
+        );
+        assert!(
+            !singular.contains("1 files") && !singular.contains("1 footers"),
+            "neither plural appears anywhere: {singular}"
+        );
+
+        // A glob: a listing with no file count and nothing over the wire, beside
+        // footers that have both. The row must show a bare time — a `0 files` or a
+        // `0 requests` here would each say datui looked and found none.
+        let globbed = std::sync::Arc::new(Meter::default());
+        globbed.listed(Duration::from_millis(1), None, false);
+        // Two footers, two requests each: this route must ask an object's size before
+        // it can ask for its tail.
+        for _ in 0..4 {
+            globbed.footer_request(250);
+        }
+        globbed.read_footers(Duration::from_millis(3), Some(2), true);
+        let glob_shown = painted(&globbed, 24);
+        let row = |label: &str| -> String {
+            glob_shown
+                .lines()
+                .find(|l| l.trim_start().starts_with(label))
+                .unwrap_or_else(|| panic!("{label} row is shown: {glob_shown}"))
+                .to_string()
+        };
+        let listing_row = row("Listing:");
+        assert_eq!(
+            listing_row.trim_end(),
+            "Listing:        1.00 ms",
+            "the walk reports a time and nothing else: no file count it never learned, \
+             and no request count no listing route can take"
+        );
+        let total_row = row("Total:");
+        assert!(
+            total_row.contains("4.00 ms") && total_row.contains("4 requests"),
+            "and the total is both times with the footer reads' requests: {total_row:?}"
+        );
+
+        // A remote open: the footer pass counted its own requests and bytes.
+        let remote = std::sync::Arc::new(Meter::default());
+        remote.listed(Duration::from_millis(500), Some(3), false);
+        remote.footer_request(49_152);
+        remote.read_footers(Duration::from_millis(1500), Some(3), true);
+        let over_wire = painted(&remote, 24);
+        assert!(
+            over_wire.contains("1.50s, 3 footers read, 1 request, 48.0 KiB"),
+            "the footer row says what datui asked for and what came back: {over_wire}"
+        );
+        assert!(
+            over_wire.contains("500.00 ms, 3 files") && !over_wire.contains("500.00 ms, 3 files, "),
+            "while the listing, whose pages the store turns over itself, claims no \
+             requests of its own: {over_wire}"
+        );
+
+        // Every height, down to one that fits nothing. A heading with no row under it
+        // is the failure this checks for: it says a section was cut off where there may
+        // have been nothing to cut, and there is exactly one height per tab layout at
+        // which a guard that is short by one produces it.
+        for height in 1..=24u16 {
+            let short = painted(&local, height);
+            if short.contains("Measurements") {
+                assert!(
+                    short.contains("Listing:"),
+                    "at height {height} the heading is shown with no row under it: {short}"
+                );
+            }
+        }
     }
 
     #[test]

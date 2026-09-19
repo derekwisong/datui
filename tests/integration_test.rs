@@ -5151,3 +5151,283 @@ fn test_an_aggregation_counts_an_absent_column_as_null() {
          in the aggregate; row was {extra:?}"
     );
 }
+
+/// Opening a folder measures what it cost, and the Info panel says so.
+///
+/// The end of the wiring rather than any one link in it: the open records into the
+/// meter the app holds, the panel is handed that same meter, and the Resources tab
+/// prints it. Each of those is guarded on its own elsewhere; none of those guards would
+/// notice the panel being handed a meter nobody wrote to, which is the failure a user
+/// would actually see — a Measurements section that says a dataset of three files was
+/// found in no time at all.
+///
+/// Only the counts are asserted. The times are real elapsed times, so the only claim
+/// that holds on every machine is that they were taken.
+#[test]
+fn test_opening_a_folder_measures_it_and_the_info_panel_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in 1..=3 {
+        write_parquet(
+            dir.path(),
+            &format!("date=2024-01-0{day}"),
+            df!("id" => &[day as i64]).unwrap(),
+        );
+    }
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
+    let area = Rect::new(0, 0, 100, 30);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    // `i` opens the panel on the Schema tab with the focus in its body; Tab moves the
+    // focus to the tab bar, and one step right from Schema is Resources.
+    for k in [KeyCode::Char('i'), KeyCode::Tab, KeyCode::Right] {
+        if let Some(next) = app.event(&key(k)) {
+            let _ = tx.send(next);
+        }
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+
+    assert!(
+        text.contains("Measurements"),
+        "the Resources tab says what the open cost; got:\n{text}"
+    );
+    assert!(
+        text.contains("Listing:") && text.contains("Footers:"),
+        "naming the two stretches it timed; got:\n{text}"
+    );
+    assert!(
+        text.contains("3 files"),
+        "the listing found three files; got:\n{text}"
+    );
+    // Six, not three. The open reads a footer from each file, and then the count pass
+    // re-walks the folder and reads every footer again to settle the row count — which
+    // happens on an ordinary three-file open, not only in some corner. Both are footer
+    // reads and both cost what they cost, so the row says six.
+    assert!(
+        text.contains("6 footers read"),
+        "and the footer row counts the open's pass and the count's, which is six reads \
+         over three files; got:\n{text}"
+    );
+    assert!(
+        !text.contains("requests"),
+        "a local folder is read, not requested, so no request count is claimed; got:\n{text}"
+    );
+}
+
+/// A route that measures and then gives up leaves nothing on the dataset another route
+/// built.
+///
+/// The routes are tried cheapest first, and the early ones measure before they discover
+/// they cannot finish. A folder whose only Parquet sits under a `_delta_log` is the case
+/// that reaches the screen: the hive route walks it, counts the checkpoint as the
+/// writer's own bookkeeping, records a listing of no files and a footer pass over none,
+/// and then gives up — while the full scan's glob does match the checkpoint and opens
+/// it. Sharing one meter across the attempts paints `0 files` on a dataset showing rows.
+#[test]
+fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("_delta_log");
+    std::fs::create_dir_all(&log).unwrap();
+    let mut frame = df!("id" => &[1i64, 2, 3]).unwrap();
+    let f = File::create(log.join("00000.checkpoint.parquet")).unwrap();
+    ParquetWriter::new(f).finish(&mut frame).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![dir.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+    let area = Rect::new(0, 0, 100, 30);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("the full scan opened the checkpoint");
+    let listing = state.measurements().listing();
+    assert!(
+        listing.is_none_or(|c| c.files != Some(0)),
+        "the hive route walked, found nothing it would read, and gave up — its empty \
+         listing must not end up on the dataset that did open; got {listing:?}"
+    );
+
+    for k in [KeyCode::Char('i'), KeyCode::Tab, KeyCode::Right] {
+        if let Some(next) = app.event(&key(k)) {
+            let _ = tx.send(next);
+        }
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(
+        !text.contains("0 files"),
+        "and the Resources tab shows no listing of no files; got:\n{text}"
+    );
+}
+
+/// A dataset Polars opened shows no measurements, even though its rows are counted
+/// afterwards.
+///
+/// `--single-spine-schema false` turns off the footer pass and hands the folder
+/// straight to Polars, so there is nothing for datui to report. But the row count is
+/// still taken from the footers afterwards, against the same dataset — and that pass
+/// writing into the meter would raise a section out of nothing, headed by what opening
+/// the dataset cost and containing only work done after it was already on screen.
+#[test]
+fn test_a_dataset_polars_opened_reports_nothing_about_opening_it() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in 1..=3 {
+        write_parquet(
+            dir.path(),
+            &format!("date=2024-01-0{day}"),
+            df!("id" => &[day as i64]).unwrap(),
+        );
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![dir.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            single_spine_schema: false,
+            ..OpenOptions::default()
+        },
+    );
+    let area = Rect::new(0, 0, 100, 30);
+    let _ = painted(&mut app, &rx, &tx, area);
+
+    let state = app.data_table_state.as_ref().expect("the folder opened");
+    assert_eq!(
+        state.measurements().footers(),
+        None,
+        "the count pass ran, and belongs to no open this meter measured"
+    );
+
+    for k in [KeyCode::Char('i'), KeyCode::Tab, KeyCode::Right] {
+        if let Some(next) = app.event(&key(k)) {
+            let _ = tx.send(next);
+        }
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(
+        !text.contains("Measurements"),
+        "so the Resources tab says nothing about what the open cost; got:\n{text}"
+    );
+}
+
+/// A second open does not inherit the first's figures, and a *failed* second open does
+/// not give its figures to the dataset it left on screen.
+///
+/// The meter belongs to the dataset, not to the app, which is what makes the second
+/// half true: a load that never reaches the screen never has its meter installed, so
+/// the dataset still up keeps its own. An app-held meter gets this wrong in a way that
+/// is hard to see — the panel keeps its heading and its shape, and only the numbers
+/// underneath belong to something else.
+#[test]
+fn test_a_second_open_measures_itself_and_not_the_dataset_before_it() {
+    let first = tempfile::tempdir().unwrap();
+    for day in 1..=3 {
+        write_parquet(
+            first.path(),
+            &format!("date=2024-01-0{day}"),
+            df!("id" => &[day as i64]).unwrap(),
+        );
+    }
+    let second = tempfile::tempdir().unwrap();
+    write_parquet(
+        second.path(),
+        "date=2024-02-01",
+        df!("id" => &[9i64]).unwrap(),
+    );
+    // Seven files that are named like Parquet and are not, so the open fails after its
+    // listing and its footer pass have both been measured.
+    let broken = tempfile::tempdir().unwrap();
+    let broken_part = broken.path().join("date=2024-03-01");
+    std::fs::create_dir_all(&broken_part).unwrap();
+    for i in 0..7 {
+        std::fs::write(broken_part.join(format!("f{i}.parquet")), b"not parquet").unwrap();
+    }
+
+    let hive = || OpenOptions {
+        hive: true,
+        ..OpenOptions::default()
+    };
+    let files_of = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .and_then(|s| s.measurements().listing())
+            .and_then(|c| c.files)
+    };
+
+    let (mut app, rx, tx) = open_local_dataset_with_channel(first.path());
+    let area = Rect::new(0, 0, 100, 30);
+    let _ = painted(&mut app, &rx, &tx, area);
+    let meter_of_the_first = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .measurements()
+        .clone();
+    assert_eq!(
+        files_of(&app),
+        Some(3),
+        "the first open measured its own three files"
+    );
+
+    // A second open that succeeds replaces both the dataset and its figures.
+    pump_open_until_loaded(&mut app, &rx, vec![second.path().to_path_buf()], hive());
+    let _ = painted(&mut app, &rx, &tx, area);
+    assert!(
+        !std::sync::Arc::ptr_eq(
+            &meter_of_the_first,
+            app.data_table_state.as_ref().unwrap().measurements()
+        ),
+        "the second dataset was installed with a meter of its own"
+    );
+    assert_eq!(
+        files_of(&app),
+        Some(1),
+        "and reports the one file it found, not the four both folders hold between them"
+    );
+
+    // A third open that fails leaves the second dataset up — and leaves its figures
+    // alone. The failed load measured seven files; none of them may appear here.
+    let meter_of_the_second = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .measurements()
+        .clone();
+    pump_open_until_loaded(&mut app, &rx, vec![broken.path().to_path_buf()], hive());
+    let _ = painted(&mut app, &rx, &tx, area);
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &meter_of_the_second,
+            app.data_table_state.as_ref().unwrap().measurements()
+        ),
+        "the dataset on screen is still the second one, with the meter it was \
+         installed with"
+    );
+    assert_eq!(
+        files_of(&app),
+        Some(1),
+        "so the panel still says one file — not the seven the load that failed walked"
+    );
+}

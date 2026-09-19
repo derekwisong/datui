@@ -33,7 +33,7 @@ files with something in them. Where datui notices either, it says so:
 
 | Note | From |
 |---|---|
-| A column is not in every file | The footers |
+| A column is not in every file, and which partitions have it | The footers and the file names |
 | Files disagree on a column's type, beyond what widening settles | The footers |
 | A column is stored as more than one type the scan can read into one | The footers |
 | A column is read as text, so it compares as text | The footers |
@@ -43,6 +43,17 @@ files with something in them. Where datui notices either, it says so:
 | The folders do not all partition by the same keys | The file names |
 | A file's footer could not be read, so it was left out | The footers |
 | A filter or sort leaves rows out, because their files hold its column in another type | The footers |
+
+Where the files that have a column fall into a shape worth naming, the note says so
+as well as counting them: `fee is in 4,001 of 6,541 files, none before
+date=2010-07-18` is a field a feed started sending, and `oops is in 1 of 6,541
+files, only date=2024-03-02` is one folder's mistake. Only those two shapes —
+a column scattered across a dataset is just a count. `none before` also needs the
+folders to sort the way you would read them: where partition values are not
+zero-padded, `part=10` comes before `part=2` in the listing and there is no
+honest way to say where a column starts, so nothing is said. A dataset whose footers were
+sampled gets no such phrase: a file whose footer was not read looks like a file
+missing nothing, and a range drawn over those would be a guess.
 
 Every note says what it is based on — `in all 6,541 footers`, or
 `in 20,000 of 200,000 footers (sample)` — so a count never stands for files

@@ -1610,6 +1610,67 @@ fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
     );
 }
 
+/// A column the feed started sending is named by where it starts, not only by a count.
+///
+/// "in 2 of 3 files" says a column is unusual; "none before date=2024-01-02" says when
+/// it began, which for a field added to a feed is the whole question. Through a real
+/// folder rather than a hand-built footer list, because the partition it names comes
+/// from the file's own path.
+#[test]
+fn test_a_column_that_starts_partway_through_says_where_it_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-01-02",
+        df!("id" => &[2i64], "fee" => &[10i64]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "date=2024-01-03",
+        df!("id" => &[3i64], "fee" => &[30i64]).unwrap(),
+    );
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    let about_fee = notes
+        .iter()
+        .find(|note| note.summary.starts_with("fee is in"))
+        .unwrap_or_else(|| panic!("no note about `fee`: {notes:#?}"));
+    assert_eq!(
+        about_fee.summary,
+        "fee is in 2 of 3 files, none before date=2024-01-02; absent from the rest, \
+         not null"
+    );
+}
+
+/// And a column that belongs to one partition is named by that partition.
+#[test]
+fn test_a_column_only_one_partition_has_says_which() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "date=2024-03-01", df!("id" => &[1i64]).unwrap());
+    write_parquet(
+        dir.path(),
+        "date=2024-03-02",
+        df!("id" => &[2i64], "oops" => &["x"]).unwrap(),
+    );
+    write_parquet(dir.path(), "date=2024-03-03", df!("id" => &[3i64]).unwrap());
+
+    let app = open_local_dataset(dir.path());
+    let state = app.data_table_state.as_ref().unwrap();
+    let notes = state.notes();
+    let about_oops = notes
+        .iter()
+        .find(|note| note.summary.starts_with("oops is in"))
+        .unwrap_or_else(|| panic!("no note about `oops`: {notes:#?}"));
+    assert_eq!(
+        about_oops.summary,
+        "oops is in 1 of 3 files, only date=2024-03-02; absent from the rest, \
+         not null"
+    );
+}
+
 /// The offer in the Notes tab, taken: the values a type conflict hid appear on screen.
 #[test]
 fn test_the_notes_tab_offers_to_read_a_conflicting_column_as_text() {
@@ -2937,7 +2998,8 @@ fn test_a_drifting_dataset_has_notes_and_offers_them_once() {
     assert_eq!(notes.len(), 1, "one column is not in every file");
     assert_eq!(
         notes[0].summary,
-        "extra is in 1 of 2 files; absent from the rest, not null"
+        "extra is in 1 of 2 files, only date=2024-01-02; absent from the rest, \
+         not null"
     );
     assert_eq!(
         notes[0].scope, "in all 2 footers",
@@ -3019,9 +3081,22 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
     app.render(area, &mut buf);
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
 
+    // Derived rather than counted out here: how many notes fit depends on how long
+    // they are, and a note says more now than it used to. What has to hold is that the
+    // ones that do not fit are counted rather than dropped.
+    let shown = ["a", "b", "c", "d", "e", "f"]
+        .iter()
+        .filter(|name| screen.contains(&format!("{name} is in 1 of 2 files")))
+        .count();
     assert!(
-        screen.contains("3 below"),
-        "three of the six notes fit whole, so three are out of view, got:\n{screen}"
+        (2..6).contains(&shown),
+        "some notes fit and some do not, which is what this is about — and a panel \
+         this tall holds at least two, or the panel has got much greedier than the \
+         note got longer: {shown} of 6"
+    );
+    assert!(
+        screen.contains(&format!("{} below", 6 - shown)),
+        "and the ones out of view are counted, got:\n{screen}"
     );
     assert!(
         screen.contains("a is in 1 of 2 files"),
@@ -3131,15 +3206,31 @@ fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
     ] {
         app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
     }
-    // Walk every height that can hold at least one note and its basis line.
-    for height in 5u16..12 {
+    // The shortest panel that draws a note, found rather than written down: how tall
+    // that is depends on how long a note is, and a note says more than it used to.
+    let mut drawn_at = |height: u16| -> String {
         let area = Rect::new(0, 0, 100, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
-        let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+        buf.content().iter().map(|c| c.symbol()).collect()
+    };
+    let shortest = (4u16..14)
+        .find(|height| drawn_at(*height).contains("is in 1 of 2 files"))
+        .expect("some panel in this range draws a note");
+    assert!(
+        shortest <= 7,
+        "a note fits in a short panel; {shortest} rows to draw one means the panel has \
+         got greedier, and the loop below would pass on one height and prove nothing"
+    );
+
+    // From there up, every height draws one. The bug this guards is a panel that has
+    // the room and refuses anyway, which showed as a gap in the middle of this range.
+    for height in shortest..14 {
+        let screen = drawn_at(height);
         assert!(
             screen.contains("is in 1 of 2 files"),
-            "a {height}-row panel has room for a note, so it draws one: {screen:?}"
+            "a {height}-row panel has room for a note — {shortest} rows is enough — so \
+             it draws one: {screen:?}"
         );
         assert!(
             !screen.contains("no room"),

@@ -212,6 +212,20 @@ impl ColumnDrift {
     }
 }
 
+/// Where a column that is not in every file sits, in the dataset's own partitions.
+///
+/// The count alone — "in 1 of 6,541 files" — says a column is unusual without saying
+/// where to look. These are the two shapes worth naming: a column that belongs to one
+/// partition, and one that starts partway through a dataset ordered by its partitions,
+/// which is what a field added to a feed looks like ever after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnRange {
+    /// Every file that has it is under this one partition.
+    Only(String),
+    /// No file before this partition has it, and every file from there on does.
+    NoneBefore(String),
+}
+
 /// One dataset's schema, and what deciding it revealed.
 #[derive(Debug, Clone)]
 pub struct DatasetSchema {
@@ -244,6 +258,11 @@ pub struct DatasetSchema {
     pub median_row_group_bytes: Option<usize>,
     /// The middle file's size, over the footers read. `None` when none was read.
     pub median_file_bytes: Option<usize>,
+    /// Where each column that is not in every file sits, for those whose files fall
+    /// into a shape worth naming. Empty for a dataset with no partitions, and for one
+    /// whose footers were sampled — a file whose footer was not read looks like a file
+    /// missing nothing, and a range drawn over those would be a guess.
+    pub column_ranges: HashMap<PlSmallStr, ColumnRange>,
     /// The distinct ways the dataset's files are partitioned, and how many files are
     /// laid out each way, commonest first. One entry, or none, for a dataset whose
     /// folders agree — which is nearly all of them.
@@ -330,7 +349,177 @@ impl DatasetSchema {
         counts.truncate(KEPT);
         self.partition_layouts = counts;
         self.listed_files = paths.len();
+        self.column_ranges = self.ranges_of_columns(root, paths);
         self
+    }
+
+    /// Where each column that is not in every file sits, by partition. See
+    /// [`ColumnRange`].
+    ///
+    /// Nothing for a sampled dataset: `file_group` says a file whose footer was not
+    /// read is missing nothing, which is the right answer for drawing cells and the
+    /// wrong one for saying where a column begins.
+    fn ranges_of_columns(&self, root: &str, paths: &[String]) -> HashMap<PlSmallStr, ColumnRange> {
+        // A file whose footer was not read is recorded as missing nothing, which is the
+        // right answer for drawing its cells and the wrong one for saying where a
+        // column begins. That is true of a sampled dataset and equally true of a file
+        // whose footer would not parse, which is a file datui never opened either.
+        if matches!(self.origin, SchemaOrigin::FooterSample { .. })
+            || !self.unreadable.is_empty()
+            || self.file_group.len() != paths.len()
+        {
+            return HashMap::new();
+        }
+        // Per column: the first file that has it, the last that does not, and the
+        // partitions of the files that do — two of them is already enough to know it is
+        // not "only" one, so the third is never kept.
+        struct Seen {
+            first_present: Option<usize>,
+            last_absent: Option<usize>,
+            /// The partitions of the files that have it, and of the files that do not.
+            /// Two of the first is enough — more than one and the column is not "only"
+            /// anywhere. Two of the second is a sample: the test is whether any file
+            /// lacking it is somewhere the claim does not cover, and a sample can miss
+            /// one, which costs a note rather than makes a wrong one.
+            with: Vec<String>,
+            without: Vec<String>,
+            /// A file that has it and sits under no partition at all — one at the root
+            /// beside the partition folders. There is no "all under" to be had then:
+            /// the column is somewhere this cannot name.
+            unplaced: bool,
+        }
+        let partition_of = |index: usize| -> Option<String> {
+            let below = paths.get(index)?.strip_prefix(root)?;
+            let values = partition_values_of(below);
+            (!values.is_empty()).then(|| values.join("/"))
+        };
+        // Whether "before" means the same thing to the listing and to a reader. The
+        // listing is sorted bytewise, which puts `part=10` before `part=2`; where the
+        // two disagree there is no honest way to say a column starts somewhere, so
+        // nothing does.
+        let reads_in_order = (0..paths.len())
+            .filter_map(&partition_of)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|pair| natural_cmp(&pair[0], &pair[1]) != std::cmp::Ordering::Greater);
+        // The columns worth asking about, and for each group the ones it lacks — both
+        // settled once rather than per file. There are few groups and many files, and
+        // a scan of every column's name against every group's absent list, per file,
+        // is the shape of thing this file has been caught by before.
+        let drifting: Vec<&ColumnDrift> = self
+            .columns
+            .iter()
+            .filter(|column| column.present_in > 0 && column.present_in < self.files)
+            .collect();
+        if drifting.is_empty() {
+            return HashMap::new();
+        }
+        // Built by walking each group's own absent list, not by asking every column
+        // whether it is in it: a dataset can have a group per file, and asking is a
+        // scan of the list per column per group.
+        let where_in_drifting: HashMap<&PlSmallStr, usize> = drifting
+            .iter()
+            .enumerate()
+            .map(|(at, column)| (&column.name, at))
+            .collect();
+        let missing_by_group: Vec<Vec<bool>> = self
+            .groups
+            .iter()
+            .map(|group| {
+                let mut missing = vec![false; drifting.len()];
+                for name in &group.absent {
+                    if let Some(at) = where_in_drifting.get(name) {
+                        missing[*at] = true;
+                    }
+                }
+                missing
+            })
+            .collect();
+        let none_missing: Vec<bool> = vec![false; drifting.len()];
+        // By index rather than by name: `drifting` already carries a stable position for
+        // every column, and a hash of the name per file per column is most of what this
+        // costs — measured at 134ms over twenty thousand files, against fifteen.
+        let mut seen: Vec<Seen> = (0..drifting.len())
+            .map(|_| Seen {
+                first_present: None,
+                last_absent: None,
+                with: Vec::new(),
+                without: Vec::new(),
+                unplaced: false,
+            })
+            .collect();
+
+        for (index, group) in self.file_group.iter().enumerate() {
+            let missing: &[bool] = missing_by_group
+                .get(*group as usize)
+                .map(Vec::as_slice)
+                .unwrap_or(&none_missing);
+            // Split once per file rather than once per file and column.
+            let here = partition_of(index);
+            for (at, absent) in missing.iter().enumerate() {
+                let entry = &mut seen[at];
+                let seen_of = if *absent {
+                    entry.last_absent = Some(index);
+                    &mut entry.without
+                } else {
+                    entry.first_present.get_or_insert(index);
+                    entry.unplaced |= here.is_none();
+                    &mut entry.with
+                };
+                if seen_of.len() < 2
+                    && let Some(partition) = here.as_ref()
+                    && !seen_of.contains(partition)
+                {
+                    seen_of.push(partition.clone());
+                }
+            }
+        }
+        seen.into_iter()
+            .zip(&drifting)
+            .filter_map(|(entry, column)| {
+                let name = column.name.clone();
+                let first = entry.first_present?;
+                // One partition holds every file that has it — and at least one file
+                // that does not is somewhere else, or "only" says nothing while
+                // sounding as though it does.
+                if !entry.unplaced
+                    && entry.with.len() == 1
+                    // Somewhere else, as a place rather than as a different string:
+                    // a file at `y=2024/m=03` is a file under `y=2024`.
+                    && entry
+                        .without
+                        .iter()
+                        .any(|other| {
+                            !partition_holds(&entry.with[0], other)
+                                && !same_place(&entry.with[0], other)
+                        })
+                {
+                    return Some((name, ColumnRange::Only(entry.with[0].clone())));
+                }
+                // Every file without it comes before every file with it — and the
+                // reader will check that against the partition values, not against the
+                // order the listing happened to be in.
+                let last_absent = entry.last_absent?;
+                // `unplaced` is not asked here, unlike above, and the difference is in
+                // what the two sentences claim. "Only X" is about where every file with
+                // the column is, so one that is nowhere nameable makes it false. "None
+                // before X" is about order: a file with no partition sorts where the
+                // listing puts it, and one after the boundary does not contradict a
+                // word of it. Refusing here would cost a true note to buy nothing.
+                if last_absent > first || !reads_in_order {
+                    return None;
+                }
+                let (ends, begins) = (partition_of(last_absent)?, partition_of(first)?);
+                // And the boundary is a boundary: a partition half of whose files have
+                // the column is not one the column begins at.
+                // And the boundary is a boundary: not the same place under another
+                // spelling, and not one folder inside the other.
+                (!same_place(&ends, &begins)
+                    && !partition_holds(&begins, &ends)
+                    && !partition_holds(&ends, &begins))
+                .then_some((name, ColumnRange::NoneBefore(begins)))
+            })
+            .collect()
     }
 
     /// This dataset as it reads with `as_text` read as text from every file.
@@ -590,6 +779,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         read_as_text: Vec::new(),
         empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
         median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
+        column_ranges: HashMap::new(),
         partition_layouts: Vec::new(),
         partition_layouts_dropped: (0, 0),
         listed_files: 0,
@@ -600,6 +790,110 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
                 .flat_map(|f| f.row_group_bytes.iter().copied()),
         ),
     }
+}
+
+/// Whether one partition path holds another: `y=2024` holds `y=2024/m=03`, and a file
+/// in the second is a file in the first.
+///
+/// Compared as places rather than as strings. `only y=2024` is a claim about a folder
+/// tree, so a file at `y=2024/m=03` without the column is a file under `y=2024`
+/// without it, and the claim is false — even though the two strings differ.
+fn partition_holds(outer: &str, inner: &str) -> bool {
+    inner == outer
+        || inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether two partition paths name the same place, however they are written.
+///
+/// `m=03` is March and so is `m=3`: a backfill that wrote one beside a job that wrote
+/// the other leaves two folders for one month. And hive columns are matched by name, so
+/// `y=2024/m=03` and `m=03/y=2024` are one partition written in two orders. Neither
+/// pair is equal as a string, and a claim about either is a claim about both.
+fn same_place(a: &str, b: &str) -> bool {
+    fn sorted(path: &str) -> Vec<&str> {
+        let mut segments: Vec<&str> = path.split('/').collect();
+        segments.sort_by_key(|segment| segment.split_once('=').map(|(key, _)| key));
+        segments
+    }
+    let (a, b) = (sorted(a), sorted(b));
+    a.len() == b.len()
+        && a.iter()
+            .zip(&b)
+            .all(|(x, y)| natural_cmp(x, y) == std::cmp::Ordering::Equal)
+}
+
+/// Compares partition values the way a reader does: `part=2` before `part=10`.
+///
+/// The listing is sorted bytewise, which puts `part=10` before `part=2`. A note saying
+/// "from `X` on" is read against the values, so where the two orders disagree the
+/// sentence is false — see [`ends_of`], which has to live with the same thing.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+    loop {
+        match (a.first(), b.first()) {
+            (None, None) => return Ordering::Equal,
+            (None, _) => return Ordering::Less,
+            (_, None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let digits = |s: &[u8]| s.iter().take_while(|c| c.is_ascii_digit()).count();
+                let (na, nb) = (digits(a), digits(b));
+                // Leading zeros do not make a number bigger: `m=03` and `m=3` are one
+                // month, and this says so. Two folders spelling it both ways are two
+                // folders for one place, which `same_place` is about.
+                let (xs, ys) = (&a[..na], &b[..nb]);
+                fn trim(s: &[u8]) -> &[u8] {
+                    let lead = s.iter().take_while(|c| **c == b'0').count();
+                    &s[lead.min(s.len().saturating_sub(1))..]
+                }
+                let (tx, ty) = (trim(xs), trim(ys));
+                match tx.len().cmp(&ty.len()).then_with(|| tx.cmp(ty)) {
+                    Ordering::Equal => {}
+                    other => return other,
+                }
+                a = &a[na..];
+                b = &b[nb..];
+            }
+            (Some(x), Some(y)) => match x.cmp(y) {
+                Ordering::Equal => {
+                    a = &a[1..];
+                    b = &b[1..];
+                }
+                other => return other,
+            },
+        }
+    }
+}
+
+/// The `key=value` segments of a path below the dataset's root, in the order they are
+/// written. The values as well as the keys, which is what tells one partition from
+/// another rather than one layout from another.
+///
+/// Not sorted and not deduplicated, unlike the keys: an order is a set of columns, a
+/// partition is a place, and a place is where the path says it is. One consequence is
+/// that `y=2024/m=03` and `m=03/y=2024` are written differently while naming one
+/// partition — hive matches its columns by name, not by position. Nothing else notices:
+/// the layouts note compares which keys a folder uses, not the order, so those two
+/// agree. `same_place` is what keeps a note off a place that is written down twice.
+fn partition_values_of(path: &str) -> Vec<String> {
+    #[cfg(windows)]
+    let separators: &[char] = &['/', '\\'];
+    #[cfg(not(windows))]
+    let separators: &[char] = &['/'];
+    let mut segments: Vec<&str> = path.split(separators).collect();
+    // The file name itself is not a partition, whatever it is called.
+    segments.pop();
+    segments
+        .into_iter()
+        .filter(|segment| {
+            segment
+                .split_once('=')
+                .is_some_and(|(key, _)| !key.is_empty())
+        })
+        .map(|segment| segment.to_string())
+        .collect()
 }
 
 /// The hive partition keys in a path, in order: `a=1/b=2/f.parquet` is `[a, b]`.
@@ -2275,6 +2569,83 @@ mod tests {
             }
         }
         runs
+    }
+
+    /// Partition values compared the way a reader compares them.
+    #[test]
+    fn a_reader_puts_part_2_before_part_10() {
+        use std::cmp::Ordering;
+        let cmp = |a: &str, b: &str| natural_cmp(a, b);
+        assert_eq!(
+            cmp("part=2", "part=10"),
+            Ordering::Less,
+            "which bytes do not"
+        );
+        assert_eq!(cmp("part=10", "part=2"), Ordering::Greater);
+        assert_eq!(cmp("date=2024-01-02", "date=2024-01-03"), Ordering::Less);
+        assert_eq!(cmp("date=2024-01-02", "date=2024-01-02"), Ordering::Equal);
+        assert_eq!(
+            cmp("m=03", "m=3"),
+            Ordering::Equal,
+            "the same number written two ways is neither before nor after itself — a \
+             dataset that spells one month both ways is past helping, and this at \
+             least does not invent an order for it"
+        );
+        assert_eq!(cmp("a=1/b=2", "a=1/b=10"), Ordering::Less);
+        assert_eq!(
+            cmp("x=a", "x=b"),
+            Ordering::Less,
+            "and letters are still letters"
+        );
+    }
+
+    /// A partition path holds another when the second is inside it.
+    #[test]
+    fn a_partition_holds_the_ones_below_it() {
+        assert!(partition_holds("y=2024", "y=2024/m=03"));
+        assert!(partition_holds("y=2024", "y=2024"));
+        assert!(!partition_holds("y=2024", "y=2025"));
+        assert!(
+            !partition_holds("y=202", "y=2024"),
+            "a prefix of the spelling is not a folder above it"
+        );
+        assert!(!partition_holds("y=2024/m=03", "y=2024"));
+    }
+
+    /// The two things the doc promises about what counts as a partition.
+    ///
+    /// Reachable only through `with_partition_layouts` otherwise, where every fixture
+    /// path is `root/key=value/file.parquet` — which exercises neither: no file name
+    /// there holds an `=`, and no segment lacks a key. Both guards could be deleted
+    /// with the whole suite green.
+    #[test]
+    fn a_file_name_is_not_a_partition_and_neither_is_a_bare_segment() {
+        assert_eq!(partition_values_of("/x=1/f.parquet"), ["x=1"]);
+        assert_eq!(
+            partition_values_of("/x=1/2024=05.parquet"),
+            ["x=1"],
+            "the file's own name is never a partition, whatever it is called"
+        );
+        assert_eq!(
+            partition_values_of("/raw/x=1/f.parquet"),
+            ["x=1"],
+            "and a segment with no key before the `=` is not one either"
+        );
+        assert_eq!(
+            partition_values_of("/=1/f.parquet"),
+            Vec::<String>::new(),
+            "an empty key is no key"
+        );
+        assert_eq!(
+            partition_values_of("/y=2024/m=03/f.parquet"),
+            ["y=2024", "m=03"],
+            "in the order written, because a partition is a place"
+        );
+        assert_eq!(
+            partition_values_of("/date=2024=05/f.parquet"),
+            ["date=2024=05"],
+            "and a value may hold an `=` of its own"
+        );
     }
 
     #[test]

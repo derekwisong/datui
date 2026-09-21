@@ -476,6 +476,15 @@ fn enrich_dataset(entry: &mut Entry) {
     let mut files = Vec::new();
     collect_parquet_files(&entry.path, 0, &mut files);
     if files.is_empty() || files.len() > MAX_FOOTERS_PER_DATASET {
+        // Whether these are one table is still worth asking, and it does not need
+        // every footer: three files spread across the folder answer it. Without this a
+        // folder large enough to be past the counting limit would skip the check
+        // entirely, which is backwards — the more tables it holds, the more a union of
+        // them costs.
+        if entry.kind == EntryKind::MultiFile && !agree_on_a_schema(&files) {
+            downgrade_to_directory(entry);
+            return;
+        }
         // Still worth knowing the shape, even when the row count is out of reach.
         if let Some(first) = files.first()
             && let Some(meta) = crate::widgets::info::read_parquet_metadata(first)
@@ -495,6 +504,7 @@ fn enrich_dataset(entry: &mut Entry) {
     let mut cols = None;
     let mut bytes = 0u64;
     let mut columns = Vec::new();
+    let mut per_file: Vec<Vec<String>> = Vec::with_capacity(files.len());
     let mut cost = Cost::default();
     let mut uncompressed = 0u64;
     let mut row_groups = 0usize;
@@ -504,9 +514,13 @@ fn enrich_dataset(entry: &mut Entry) {
         };
         rows += meta.num_rows;
         cols.get_or_insert(meta.schema_descr.columns().len());
+        let names = column_names(&meta);
         if columns.is_empty() {
-            columns = column_names(&meta);
+            columns = names.clone();
         }
+        // The columns a reader sees, not the leaves the footer names: see
+        // [`crate::schema_union::top_level_columns`].
+        per_file.push(crate::schema_union::top_level_columns(&names));
         let mut per_file = Cost::default();
         physical_facts(&meta, &mut per_file);
         uncompressed += per_file.uncompressed.unwrap_or(0);
@@ -518,6 +532,23 @@ fn enrich_dataset(entry: &mut Entry) {
             bytes += m.len();
         }
     }
+    // The footers are read by now, so whether these files are one table is known
+    // rather than guessed. A folder of separate tables is a place to look inside: its
+    // row count is the sum of unrelated things, its column count belongs to whichever
+    // file happened to be read first, and opening it unions tables that share nothing.
+    //
+    // Only `multi` is reconsidered. A `key=value` layout says what the writer meant,
+    // and a hive folder's files hold the same table by construction.
+    if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_one_table(&per_file) {
+        entry.size = Some(bytes);
+        // Every column any file has, rather than the first file's. Nothing here is one
+        // table's shape, but the names are what the folder holds, and searching the
+        // home screen by column should still find the folder that has one.
+        entry.columns = union_of(&per_file);
+        downgrade_to_directory(entry);
+        return;
+    }
+
     entry.rows = Some(rows);
     entry.cols = cols;
     entry.size = Some(bytes);
@@ -526,6 +557,51 @@ fn enrich_dataset(entry: &mut Entry) {
     cost.row_groups = (row_groups > 0).then_some(row_groups);
     cost.partitions = entry.cost.partitions.take();
     entry.cost = cost;
+}
+
+/// Whether a spread of a folder's files agree on a schema, for a folder with too many
+/// files to read every footer of.
+///
+/// The ends and the middle, because keys and filenames sort, so a folder written table
+/// by table can easily start with several files of the same table. Fewer than two
+/// readable footers decide nothing, and the folder keeps the kind its names suggested.
+fn agree_on_a_schema(files: &[PathBuf]) -> bool {
+    if files.len() < 2 {
+        return true;
+    }
+    let picks = [0, files.len() / 2, files.len() - 1];
+    let per_file: Vec<Vec<String>> = picks
+        .iter()
+        .filter_map(|i| files.get(*i))
+        .filter_map(|file| crate::widgets::info::read_parquet_metadata(file))
+        .map(|meta| crate::schema_union::top_level_columns(&column_names(&meta)))
+        .collect();
+    per_file.len() < 2 || crate::schema_union::is_one_table(&per_file)
+}
+
+/// A folder whose files turned out to be separate tables is a place to look inside.
+///
+/// Its row count would be the sum of unrelated things and its column count would
+/// belong to whichever file was read first, so neither is reported.
+fn downgrade_to_directory(entry: &mut Entry) {
+    entry.kind = EntryKind::Directory;
+    entry.rows = None;
+    entry.cols = None;
+    entry.cost = Cost {
+        partitions: entry.cost.partitions.take(),
+        ..Cost::default()
+    };
+}
+
+/// Every column name any of the files has, in the order they first appear.
+fn union_of(per_file: &[Vec<String>]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    per_file
+        .iter()
+        .flatten()
+        .filter(|name| seen.insert(name.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Collect Parquet files under `dir`, breadth-bounded and depth-bounded, stopping
@@ -872,4 +948,186 @@ pub fn schema_preview(entry: &Entry) -> Option<SchemaPreview> {
             .map(|(name, dtype)| (name.to_string(), dtype.clone()))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+    use polars::prelude::*;
+
+    /// Write `columns` as a one-row Parquet file named `name` under `dir`.
+    fn write(dir: &Path, name: &str, columns: &[&str]) {
+        let mut frame = DataFrame::new(
+            1,
+            columns
+                .iter()
+                .map(|c| Column::new((*c).into(), &[1i32]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let file = std::fs::File::create(dir.join(name)).unwrap();
+        ParquetWriter::new(file).finish(&mut frame).unwrap();
+    }
+
+    fn measured(dir: &Path) -> Entry {
+        let mut entry = Entry {
+            path: dir.to_path_buf(),
+            kind: classify_directory(dir),
+            name: dir.file_name().unwrap().to_string_lossy().into_owned(),
+            size: None,
+            modified: None,
+            rows: None,
+            cols: None,
+            columns: Vec::new(),
+            cost: Cost::default(),
+        };
+        enrich(&mut entry);
+        entry
+    }
+
+    /// The shape that prompted this: one Parquet file per table, sharing an extension
+    /// and nothing else. Named for what it is rather than what it is called, because
+    /// the filenames are exactly what cannot decide it.
+    #[test]
+    fn a_folder_of_separate_tables_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "circuits.parquet",
+            &["circuit_id", "lat", "lng"],
+        );
+        write(
+            dir.path(),
+            "drivers.parquet",
+            &["driver_id", "code", "nationality"],
+        );
+        write(
+            dir.path(),
+            "laps.parquet",
+            &["lap", "position", "time_millis"],
+        );
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            EntryKind::MultiFile,
+            "the filenames alone still say multi"
+        );
+        let entry = measured(dir.path());
+        assert_eq!(
+            entry.kind,
+            EntryKind::Directory,
+            "reading the footers says otherwise"
+        );
+        assert_eq!(
+            entry.rows, None,
+            "a sum across separate tables is not a row count"
+        );
+        assert_eq!(entry.cols, None);
+    }
+
+    /// The rows of one table split across files, which is what `multi` is for.
+    #[test]
+    fn a_folder_of_one_table_stays_a_dataset() {
+        let dir = tempfile::tempdir().unwrap();
+        for part in 0..3 {
+            write(
+                dir.path(),
+                &format!("part-0000{part}.parquet"),
+                &["id", "ts", "amount"],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::MultiFile);
+        assert_eq!(entry.rows, Some(3));
+        assert_eq!(entry.cols, Some(3));
+    }
+
+    /// A dataset whose columns changed over time is still one dataset. This is the
+    /// case a rule about shared columns gets wrong: the older files have a third of
+    /// what the newest one does.
+    #[test]
+    fn a_dataset_that_gained_columns_stays_a_dataset() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "2009.parquet", &["id", "ts"]);
+        write(dir.path(), "2015.parquet", &["id", "ts", "fee"]);
+        write(
+            dir.path(),
+            "2025.parquet",
+            &["id", "ts", "fee", "witness", "address", "value"],
+        );
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::MultiFile);
+        assert_eq!(entry.rows, Some(3));
+    }
+
+    /// Past the counting limit the row count is out of reach, but whether the folder
+    /// is one table is not — and a folder of a hundred tables is exactly where reading
+    /// them as one costs most.
+    #[test]
+    fn a_folder_too_large_to_count_is_still_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        for table in 0..MAX_FOOTERS_PER_DATASET + 1 {
+            write(
+                dir.path(),
+                &format!("table_{table:03}.parquet"),
+                &[&format!("{table}_id"), &format!("{table}_value")],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory);
+        assert_eq!(entry.rows, None, "too many files to count either way");
+    }
+
+    /// The same folder size, but one table split across it.
+    #[test]
+    fn a_large_folder_of_one_table_stays_a_dataset() {
+        let dir = tempfile::tempdir().unwrap();
+        for part in 0..MAX_FOOTERS_PER_DATASET + 1 {
+            write(
+                dir.path(),
+                &format!("part-{part:05}.parquet"),
+                &["id", "ts"],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::MultiFile);
+    }
+
+    /// Searching the home screen by column should still find a folder that holds one,
+    /// even once the folder is no longer offered as a single table.
+    #[test]
+    fn a_downgraded_folder_keeps_every_column_its_files_have() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "circuits.parquet",
+            &["circuit_id", "lat", "lng"],
+        );
+        write(
+            dir.path(),
+            "drivers.parquet",
+            &["driver_id", "code", "nationality"],
+        );
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory);
+        for column in [
+            "circuit_id",
+            "lat",
+            "lng",
+            "driver_id",
+            "code",
+            "nationality",
+        ] {
+            assert!(
+                entry.columns.iter().any(|c| c == column),
+                "{column} in {:?}",
+                entry.columns
+            );
+        }
+    }
 }

@@ -6197,6 +6197,7 @@ impl App {
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
             known: self.cache.load_dataset_facts(),
+            cloud_kinds: self.home.cloud_kinds.clone(),
         };
 
         self.home.listing_in_flight = true;
@@ -6443,8 +6444,12 @@ impl App {
 
     /// Look inside the folders a cloud listing returned, a few at a time, so the ones
     /// that are datasets say `hive` or `multi` and open as one. One small listing
-    /// request per folder, never an object read, and at most `PEEKS_PER_LISTING` of
-    /// them per listing; each folder is peeked at once per session.
+    /// request per folder, and at most `PEEKS_PER_LISTING` of them per listing; each
+    /// folder is peeked at once per session.
+    ///
+    /// A folder the listing takes for `multi` costs a little more: up to three ranged
+    /// reads of a few kilobytes each, to ask the footers whether its files are really
+    /// one table. Nothing else reads an object, and nothing reads a whole one.
     #[cfg(feature = "cloud")]
     fn peek_cloud_folders(&mut self, root: &Path) {
         const PEEKS_PER_LISTING: usize = 48;

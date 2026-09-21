@@ -1988,3 +1988,41 @@ fn bitcoin_transactions_open_count_and_reach_any_row() {
     assert!(state.error.is_none(), "{:?}", state.error);
     println!("{}", screen_text(&mut app, 200, 12));
 }
+
+/// A folder is offered as one table only when its files agree on a schema, and the
+/// question is settled from a few footers while browsing rather than by opening it.
+///
+/// Public datasets, so this needs no credentials. The negative case — a folder holding
+/// one Parquet file per table — has no public home worth hard-coding; the in-memory
+/// tests in `cloud_browse` cover it from both directions.
+#[test]
+#[ignore = "reads public datasets over the network; set DATUI_LIVE_PUBLIC=1"]
+fn a_partitioned_dataset_is_not_mistaken_for_separate_tables() {
+    if std::env::var("DATUI_LIVE_PUBLIC").is_err() {
+        eprintln!("skipped: set DATUI_LIVE_PUBLIC=1 to run");
+        return;
+    }
+    let runtime = common::test_runtime();
+    let config = CloudConfig::default();
+
+    // One GBIF snapshot: many part files, all the same table, and named `000001`
+    // rather than anything ending `.parquet` — only the folder says what they are.
+    let parts = "s3://gbif-open-data-us-east-1/occurrence/2026-06-01/occurrence.parquet/";
+    let kind = runtime
+        .block_on(cloud_browse::peek_kind(parts, &config))
+        .expect("peeking a public prefix");
+    println!("{parts} -> {kind:?}");
+    assert_eq!(
+        kind,
+        datui::discover::EntryKind::MultiFile,
+        "the parts of one snapshot are one table"
+    );
+
+    // The prefix above them is partitioned, which is decided from names alone.
+    let all = "s3://aws-public-blockchain/v1.0/btc/transactions/";
+    let kind = runtime
+        .block_on(cloud_browse::peek_kind(all, &config))
+        .expect("peeking a public prefix");
+    println!("{all} -> {kind:?}");
+    assert_eq!(kind, datui::discover::EntryKind::Hive);
+}

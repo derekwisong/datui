@@ -284,6 +284,82 @@ pub fn is_bookkeeping(segment: &str) -> bool {
     segment.starts_with(['_', '.'])
 }
 
+/// Agreement a folder's files must exceed to be read as one table.
+///
+/// Every folder measured whose files are one table scored 1.0, and every folder of
+/// separate tables scored at most 0.222, so the figure sits in a wide gap rather than
+/// on a boundary. It is low deliberately: the cost of reading one table as several is
+/// one keystroke, and the cost of reading several as one is a folder that cannot be
+/// opened at all.
+///
+/// Exceeded rather than met, because the denominator is the narrower file's width: two
+/// tables joined on one key, `[id, name]` beside `[id, customer_id, amount]`, land
+/// exactly on it, and they are two tables.
+pub const ONE_TABLE_AGREEMENT: f64 = 0.5;
+
+/// How much a folder's files agree on a schema: the least overlap between any file and
+/// the widest one, over the smaller of the two column counts.
+///
+/// Containment rather than overlap, because gaining a column is what a dataset does
+/// over time. An older file's columns are then a subset of a newer one's and this stays
+/// 1.0 however many were added, where a Jaccard ratio falls — far enough that a real
+/// dataset which grew from five columns to fifty scores below a folder of unrelated
+/// tables that share a key. Measured, not supposed: see the tests below.
+///
+/// Against the widest file rather than every pair, which is O(n²) and unaffordable at
+/// twenty thousand files. Exact whenever one file's columns contain every other file's,
+/// which is the shape growth produces; optimistic otherwise, and optimistic here means
+/// reading the folder as one table, which is the reversible mistake.
+///
+/// Fewer than two files is one table by definition, and so is a folder whose files all
+/// have no columns to disagree about.
+pub fn column_agreement(files: &[Vec<String>]) -> f64 {
+    let Some(widest) = files.iter().max_by_key(|f| f.len()) else {
+        return 1.0;
+    };
+    if widest.is_empty() {
+        return 1.0;
+    }
+    let widest: std::collections::BTreeSet<&str> = widest.iter().map(String::as_str).collect();
+    files
+        .iter()
+        .map(|file| {
+            let file: std::collections::BTreeSet<&str> = file.iter().map(String::as_str).collect();
+            let smaller = file.len().min(widest.len());
+            if smaller == 0 {
+                // A file with no columns tells us nothing either way, and dividing by
+                // its width would say it disagrees with everything.
+                return 1.0;
+            }
+            file.intersection(&widest).count() as f64 / smaller as f64
+        })
+        .fold(1.0, f64::min)
+}
+
+/// Whether a folder's files are the same table, rather than separate ones stored side
+/// by side.
+pub fn is_one_table(files: &[Vec<String>]) -> bool {
+    column_agreement(files) > ONE_TABLE_AGREEMENT
+}
+
+/// The top-level column names in a list of Parquet leaf paths.
+///
+/// A footer names every leaf, so a struct or a list arrives as `inputs.list.element.
+/// address` and its wrappers are an encoding choice: the same column written by
+/// parquet-mr and by Arrow gives different leaves. Comparing those would make a
+/// dataset whose writer changed look like two tables, so the comparison is over the
+/// columns a reader sees. Order is kept and duplicates dropped, since many leaves
+/// share one root.
+pub fn top_level_columns(leaves: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    leaves
+        .iter()
+        .map(|leaf| leaf.split_once('.').map_or(leaf.as_str(), |(root, _)| root))
+        .filter(|root| seen.insert(root.to_string()))
+        .map(str::to_string)
+        .collect()
+}
+
 /// One dataset's schema, and what deciding it revealed.
 #[derive(Debug, Clone)]
 pub struct DatasetSchema {
@@ -1557,6 +1633,222 @@ mod tests {
             file_bytes: 0,
             row_group_bytes: Vec::new(),
         })
+    }
+
+    /// Column sets for a folder, one slice per file.
+    fn cols(files: &[&[&str]]) -> Vec<Vec<String>> {
+        files
+            .iter()
+            .map(|f| f.iter().map(|c| (*c).to_string()).collect())
+            .collect()
+    }
+
+    /// Column names of a dataset that grew from `from` to `to` columns, the older
+    /// files first.
+    fn grew(files: usize, from: usize, to: usize) -> Vec<Vec<String>> {
+        let names = |n: usize| (0..n).map(|i| format!("c{i}")).collect::<Vec<_>>();
+        let mut out: Vec<Vec<String>> = (0..files - 1).map(|_| names(from)).collect();
+        out.push(names(to));
+        out
+    }
+
+    /// The shapes a folder of one table takes. Scores are what the statistic gives
+    /// today; the assertion is only that each is read as one table.
+    #[test]
+    fn one_table_whatever_its_files_did_over_time() {
+        for (what, files) in [
+            (
+                "identical part files",
+                cols(&[&["a", "b", "c"], &["a", "b", "c"], &["a", "b", "c"]]),
+            ),
+            (
+                "a column only one file has",
+                cols(&[&["id"], &["id", "oops"], &["id"]]),
+            ),
+            (
+                "a column that starts",
+                cols(&[&["id", "ts"], &["id", "ts"], &["id", "ts", "fee"]]),
+            ),
+            (
+                "a column that stops",
+                cols(&[&["id", "ts", "fee"], &["id", "ts"], &["id", "ts"]]),
+            ),
+            (
+                "a file truncated to one column",
+                cols(&[&["a", "b", "c", "d"], &["a"], &["a", "b", "c", "d"]]),
+            ),
+            ("five columns grown to fifty", grew(10, 5, 50)),
+            (
+                "one column each way",
+                cols(&[&["a", "b", "c", "d", "e"], &["a", "b", "c", "d", "f"]]),
+            ),
+            (
+                "a column renamed",
+                cols(&[&["id", "ts", "amount"], &["id", "ts", "amt"]]),
+            ),
+            ("one file", cols(&[&["a", "b"]])),
+            ("no files", Vec::new()),
+        ] {
+            let score = column_agreement(&files);
+            assert!(
+                is_one_table(&files),
+                "{what} should be one table, scored {score:.3}"
+            );
+        }
+    }
+
+    /// Folders that hold separate tables, including ones that share columns.
+    #[test]
+    fn separate_tables_are_not_one_table() {
+        for (what, files) in [
+            ("two tables", cols(&[&["a", "b", "c"], &["x", "y", "z"]])),
+            (
+                "tables sharing a key",
+                cols(&[&["id", "a", "b"], &["id", "x", "y"], &["id", "p", "q"]]),
+            ),
+            (
+                // A season of Formula 1 as six tables in one folder, the columns read
+                // from the footers of gs://pitscope-prod-data/jolpica/1950/. Every one
+                // carries `season`, and two of them most of a race's identity, so this
+                // is the shape a rule that only asks whether columns are shared calls
+                // one table.
+                "a season of six tables",
+                cols(&[
+                    &[
+                        "season",
+                        "circuit_id",
+                        "url",
+                        "circuit_name",
+                        "lat",
+                        "lng",
+                        "locality",
+                        "country",
+                    ],
+                    &["season", "constructor_id", "url", "name", "nationality"],
+                    &[
+                        "season",
+                        "round",
+                        "driver_id",
+                        "position",
+                        "points",
+                        "wins",
+                        "constructor_id",
+                    ],
+                    &[
+                        "season",
+                        "driver_id",
+                        "permanent_number",
+                        "code",
+                        "url",
+                        "given_name",
+                        "family_name",
+                        "date_of_birth",
+                        "nationality",
+                    ],
+                    &[
+                        "season",
+                        "round",
+                        "race_name",
+                        "circuit_id",
+                        "race_date",
+                        "driver_id",
+                        "constructor_id",
+                        "number",
+                        "grid",
+                        "position",
+                        "position_text",
+                        "points",
+                        "laps",
+                        "status",
+                        "time_millis",
+                        "time_text",
+                        "fastest_lap_rank",
+                        "fastest_lap_number",
+                        "fastest_lap_time",
+                        "fastest_lap_avg_speed",
+                    ],
+                    &[
+                        "season",
+                        "round",
+                        "race_name",
+                        "circuit_id",
+                        "circuit_name",
+                        "locality",
+                        "country",
+                        "lat",
+                        "lng",
+                        "date",
+                        "time",
+                        "qualifying_date",
+                        "qualifying_time",
+                        "sprint_date",
+                        "sprint_time",
+                        "sprint_shootout_date",
+                        "sprint_shootout_time",
+                        "url",
+                    ],
+                ]),
+            ),
+        ] {
+            let score = column_agreement(&files);
+            assert!(
+                !is_one_table(&files),
+                "{what} should be separate tables, scored {score:.3}"
+            );
+        }
+    }
+
+    /// Growth is what containment is for: a Jaccard ratio puts this folder below a
+    /// folder of unrelated tables, which is the mistake this statistic exists to avoid.
+    #[test]
+    fn growth_scores_above_unrelated_tables_sharing_a_key() {
+        let grown = grew(10, 5, 50);
+        let unrelated = cols(&[&["id", "a", "b"], &["id", "x", "y"], &["id", "p", "q"]]);
+        assert_eq!(column_agreement(&grown), 1.0);
+        assert!(column_agreement(&grown) > column_agreement(&unrelated));
+    }
+
+    /// Two tables joined on a key land exactly on the threshold, because half of the
+    /// narrower one is shared. They are still two tables.
+    #[test]
+    fn two_tables_sharing_a_key_are_not_one_table() {
+        let files = cols(&[&["id", "name"], &["id", "customer_id", "amount"]]);
+        assert_eq!(column_agreement(&files), ONE_TABLE_AGREEMENT);
+        assert!(!is_one_table(&files));
+    }
+
+    /// The leaves a footer names are an encoding choice; the columns a reader sees are
+    /// not. A list written by parquet-mr and by Arrow must compare as the same column.
+    #[test]
+    fn a_nested_column_is_one_column_however_it_was_written() {
+        let old_writer = vec![
+            "id".to_string(),
+            "tags.array".to_string(),
+            "refs.array".to_string(),
+        ];
+        let new_writer = vec![
+            "id".to_string(),
+            "tags.list.element".to_string(),
+            "refs.list.element".to_string(),
+        ];
+        let files = vec![
+            top_level_columns(&old_writer),
+            top_level_columns(&new_writer),
+        ];
+        assert_eq!(files[0], vec!["id", "tags", "refs"]);
+        assert!(
+            is_one_table(&files),
+            "the same three columns, written twice"
+        );
+        // Without the flattening these share only `id`, and the folder is demoted.
+        assert!(!is_one_table(&[old_writer, new_writer]));
+    }
+
+    /// A file with no columns cannot disagree, and must not divide by its own width.
+    #[test]
+    fn an_empty_file_does_not_decide_the_folder() {
+        let files = cols(&[&["a", "b"], &[], &["a", "b"]]);
+        assert_eq!(column_agreement(&files), 1.0);
     }
 
     fn union(files: &[Option<FileSchema>]) -> DatasetSchema {

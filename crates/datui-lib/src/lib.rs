@@ -2219,6 +2219,89 @@ pub mod tests {
         );
     }
 
+    /// A footer pass that could not read them waits for work already asked for, too.
+    ///
+    /// The failure branch re-reads for a different reason than the success branch — the
+    /// pass brought no count, so the dataset has to go and count itself the ordinary way
+    /// — but it goes through the same collect, and that collect bumps `task_generation`
+    /// just the same. It used to run on the spot, the one way into the collect that
+    /// asked nothing about what was already running: an export in its collect phase
+    /// never wrote its file and said nothing about it.
+    ///
+    /// Revert `reread_owed` and this fails on the first assert: the generation moves
+    /// while the export is still waiting on it.
+    #[test]
+    fn a_pass_that_failed_waits_for_work_already_asked_for() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => &[1i64]).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(frame()).schema.clone(),
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // An export is collecting: it is waiting on this exact generation, and its
+        // answer is thrown away if anything bumps it.
+        app.loading_state = LoadingState::Exporting {
+            file_path: std::path::PathBuf::from("/tmp/out.csv"),
+            current_phase: "Collecting".to_string(),
+            progress_percent: 0,
+        };
+        let waiting_on = app.task_generation();
+
+        // The pass comes back empty-handed for the dataset on screen.
+        let live = app.dataset_generation;
+        App::record_footers(&app.pending_footers_result, live, None);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+
+        assert_eq!(
+            app.task_generation(),
+            waiting_on,
+            "the export is still waiting on the answer this app would have thrown away"
+        );
+        assert_eq!(
+            app.reread_owed,
+            Some(live),
+            "and the re-read the dataset is owed is remembered, not dropped"
+        );
+
+        // The export finishes, and the errand gets its turn on the next event.
+        app.loading_state = LoadingState::Idle;
+        let _ = app.handle(&AppEvent::Update);
+
+        assert!(
+            app.task_generation() != waiting_on,
+            "the dataset gets the collect it was owed once nothing is waiting on the \
+             generation — without it, it never counts itself at all"
+        );
+        assert!(
+            app.reread_owed.is_none(),
+            "and the errand is done rather than run again on every event"
+        );
+    }
+
     /// Columns arriving during work already asked for wait for it, rather than
     /// cancelling it.
     ///
@@ -4318,6 +4401,13 @@ pub struct App {
     /// the scan under a query takes the query's own columns away, and offered again the
     /// moment the view comes back to the dataset itself.
     footers_held: Option<(u64, crate::widgets::datatable::FootersFound)>,
+    /// A re-read the dataset is owed by a footer pass that came back empty-handed, held
+    /// back because the collect it goes through would bump `task_generation` out from
+    /// under work already running. The pass that failed brings no columns to hold, so
+    /// `footers_held` has nothing to say about it, and the dataset still needs the
+    /// ordinary count the pass was going to save it — hence an errand of its own, tried
+    /// again after every event until the work it would cancel is done.
+    reread_owed: Option<u64>,
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
@@ -4567,6 +4657,9 @@ impl App {
     /// dropped the buffer, so nothing dropping this leaves the table with no rows to
     /// show at the moment it was to show more of them.
     fn reread_after_the_footers_joined(&mut self) {
+        // Any re-read satisfies one that was owed: this is the collect the errand was
+        // waiting to run, whoever asked for it.
+        self.reread_owed = None;
         // End was pressed while the footers were still coming, and they are what the
         // end was waiting on. Taken either way: a flag left from a dataset that is gone
         // is not this one's to act on. The jump reads the page it lands on, so reading
@@ -4585,6 +4678,29 @@ impl App {
             // between a table and an empty one.
         }
         self.spawn_async_collect("Loading buffer...");
+    }
+
+    /// Run the re-read a failed footer pass owes the dataset, once it can be run
+    /// without throwing another answer away.
+    ///
+    /// The failure branch of `BackgroundFootersJoined` used to re-read on the spot,
+    /// which bumped `task_generation` with no check at all — the one path into the
+    /// collect that never asked `work_the_join_would_cancel`. An export in its collect
+    /// phase then never wrote its file and said nothing about it. So the errand waits
+    /// its turn, the way held columns already do.
+    fn reread_when_the_work_allows(&mut self) {
+        let Some(generation) = self.reread_owed else {
+            return;
+        };
+        if generation != self.dataset_generation {
+            // The dataset it was owed to is gone; so is the errand.
+            self.reread_owed = None;
+            return;
+        }
+        if self.work_the_join_would_cancel() {
+            return;
+        }
+        self.reread_after_the_footers_joined();
     }
 
     /// Work already running that the re-read after a join would cancel.
@@ -5182,6 +5298,7 @@ impl App {
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
             footers_held: None,
+            reread_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
             collect_inflight: None,
@@ -11650,6 +11767,9 @@ impl App {
         if self.join_held_footers() {
             self.reread_after_the_footers_joined();
         }
+        // And the same turn for a re-read owed to a dataset whose footers could not be
+        // read: it waits on the same work, and gets in the same way.
+        self.reread_when_the_work_allows();
         self.ensure_chart_data();
         Ok(out)
     }
@@ -12819,8 +12939,13 @@ impl App {
                             state.give_up_on_pending_footers();
                         }
                         // The pass is not bringing a count after all, so the jump goes
-                        // back to waiting on the ordinary one the collect below starts.
-                        self.reread_after_the_footers_joined();
+                        // back to waiting on the ordinary one the collect starts. Owed
+                        // rather than run: the collect bumps `task_generation`, and an
+                        // export or an analysis may be waiting on the one it would bump
+                        // past. `reread_when_the_work_allows` runs it the moment that
+                        // work is done.
+                        self.reread_owed = Some(slot_generation);
+                        self.reread_when_the_work_allows();
                         return None;
                     };
                     self.footers_held = Some((slot_generation, found));

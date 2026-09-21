@@ -14,7 +14,7 @@ use std::time::Duration;
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{App, AppEvent};
+use crate::{App, AppEvent, GenerationLease};
 
 /// Keys held while busy. Beyond this the newest is dropped, and the user told: the
 /// oldest may be the `/` that puts the rest into the query bar, and without it the
@@ -58,6 +58,18 @@ pub struct EventPump {
     rx: Receiver<AppEvent>,
     held: VecDeque<KeyEvent>,
     held_for: Screen,
+    /// Continuations a handler returned, each holding a lease on the generation.
+    ///
+    /// Ahead of the channel rather than appended to it. A follow-up is the rest of the
+    /// event just handled, so it belongs before results that arrived while that handler
+    /// ran — and what sits in the channel right behind it is the finished phase's
+    /// `BackgroundWorkFinished`, which is exactly what made the generation look free in
+    /// the middle of an errand.
+    ///
+    /// The lease covers the gap the break leaves. A frame is drawn and the terminal is
+    /// polled before the continuation runs, so a key can be handled in between, and that
+    /// key must not find the generation free either.
+    next_up: VecDeque<(AppEvent, GenerationLease)>,
 }
 
 impl EventPump {
@@ -69,6 +81,7 @@ impl EventPump {
             rx,
             held: VecDeque::new(),
             held_for,
+            next_up: VecDeque::new(),
         }
     }
 
@@ -151,9 +164,17 @@ impl EventPump {
         Ok(true)
     }
 
+    /// The next event to handle: a continuation first, then the channel.
+    fn take_next(&mut self) -> Result<(AppEvent, Option<GenerationLease>), TryRecvError> {
+        match self.next_up.pop_front() {
+            Some((event, lease)) => Ok((event, Some(lease))),
+            None => self.rx.try_recv().map(|event| (event, None)),
+        }
+    }
+
     /// Handle everything waiting on the channel.
     pub fn drain(&mut self) -> Result<Drained> {
-        let first = self.rx.try_recv();
+        let first = self.take_next();
         self.drain_from(first)
     }
 
@@ -161,20 +182,33 @@ impl EventPump {
     /// it. For drivers without a terminal to wait on: a background result is the only
     /// thing that can end a busy state.
     pub fn wait_and_drain(&mut self, timeout: Duration) -> Result<Drained> {
-        let first = self.rx.recv_timeout(timeout).map_err(|e| match e {
-            RecvTimeoutError::Timeout => TryRecvError::Empty,
-            RecvTimeoutError::Disconnected => TryRecvError::Disconnected,
-        });
+        // A continuation is already here; waiting on the channel would sit on it for the
+        // whole timeout while the errand it belongs to is halfway through.
+        if !self.next_up.is_empty() {
+            let first = self.take_next();
+            return self.drain_from(first);
+        }
+        let first = self
+            .rx
+            .recv_timeout(timeout)
+            .map(|event| (event, None))
+            .map_err(|e| match e {
+                RecvTimeoutError::Timeout => TryRecvError::Empty,
+                RecvTimeoutError::Disconnected => TryRecvError::Disconnected,
+            });
         self.drain_from(first)
     }
 
-    fn drain_from(&mut self, mut next: Result<AppEvent, TryRecvError>) -> Result<Drained> {
+    fn drain_from(
+        &mut self,
+        mut next: Result<(AppEvent, Option<GenerationLease>), TryRecvError>,
+    ) -> Result<Drained> {
         let mut updated = false;
         loop {
             match next {
-                Ok(AppEvent::Exit) => return Ok(Drained::Exit),
-                Ok(AppEvent::Crash(msg)) => return Ok(Drained::Crash(msg)),
-                Ok(event) => {
+                Ok((AppEvent::Exit, _)) => return Ok(Drained::Exit),
+                Ok((AppEvent::Crash(msg), _)) => return Ok(Drained::Crash(msg)),
+                Ok((event, continuation)) => {
                     updated = true;
                     let follow_up = match self.app.handle(&event) {
                         Ok(follow_up) => follow_up,
@@ -183,24 +217,33 @@ impl EventPump {
                             None
                         }
                     };
+                    // After the handler, never before: whatever phase this event started
+                    // has taken its own lease by now, so the count does not dip to zero
+                    // between the two.
+                    drop(continuation);
                     self.discard_stale();
                     if let Some(follow_up) = follow_up {
-                        self.tx.send(follow_up)?;
                         // A handler that returns a follow-up event is deferring work so
                         // the UI can show the current phase first — the `Do*` events all
                         // rely on this. Draining the follow-up in the same pass defeats
                         // that: the phase label never renders and the throbber never
                         // moves. Break so a frame is drawn and keys are polled first.
-                        // Order is unaffected; the follow-up was appended to the queue.
+                        self.queue_continuation(follow_up);
                         break;
                     }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return Ok(Drained::Exit),
             }
-            next = self.rx.try_recv();
+            next = self.take_next();
         }
         Ok(Drained::Continue { updated })
+    }
+
+    /// Hold a continuation, and the generation, until it is dispatched.
+    fn queue_continuation(&mut self, follow_up: AppEvent) {
+        let lease = self.app.lease_the_generation();
+        self.next_up.push_back((follow_up, lease));
     }
 
     /// Offer one key to the app, the way the channel drain does, then reconcile the
@@ -208,7 +251,7 @@ impl EventPump {
     fn dispatch(&mut self, key: KeyEvent) -> Result<()> {
         let gen_before = self.app.screen_generation();
         match self.app.handle(&AppEvent::Key(key)) {
-            Ok(Some(follow_up)) => self.tx.send(follow_up)?,
+            Ok(Some(follow_up)) => self.queue_continuation(follow_up),
             Ok(None) => {}
             // Only reachable if the app went busy between the check and the call, which
             // nothing on this thread does; the key keeps its place either way.
@@ -394,6 +437,122 @@ mod tests {
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
         buf.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    /// A continuation never goes to the back of the channel.
+    ///
+    /// The gap #221 was left short by is created by exactly one thing: putting a
+    /// handler's follow-up behind whatever arrived while that handler ran — including
+    /// the finished phase's `BackgroundWorkFinished`. `queue_continuation` is the only
+    /// way a follow-up should travel, and `EventPump::send`, for callers pushing an
+    /// event of their own, is the only `tx.send` that belongs in this file.
+    #[test]
+    fn a_continuation_never_goes_to_the_back_of_the_channel() {
+        let source = include_str!("event_pump.rs");
+        // Split so this test's own needle is not one of the things it finds.
+        let needle = concat!("self.tx", ".send(");
+        assert_eq!(
+            source.matches(needle).count(),
+            1,
+            "the one send left should be `EventPump::send`. A follow-up sent to the \
+             channel lands behind the lease release of the phase that produced it, and \
+             the generation reads free in the middle of an errand — see GenerationLease."
+        );
+    }
+
+    /// A continuation holds the generation until it has been dispatched.
+    ///
+    /// This is the gap #221 was left short by. An errand of several phases hands off
+    /// through a returned event, and the pump breaks there so a frame can be drawn —
+    /// so for one iteration of the loop the phase that finished has dropped its lease
+    /// and the phase that follows has not taken one. A collect starting in that window
+    /// bumps `task_generation` out from under the errand, and `BackgroundSchemaReady`'s
+    /// mismatch branch then returns without resetting anything: the dataset never opens,
+    /// silently, for the rest of the session.
+    ///
+    /// The open is the errand used here because its first handoff is the one that costs
+    /// most, and because it needs no worker to reach: `Open` returns `DoLoadScanPaths`
+    /// before anything has been spawned at all.
+    #[test]
+    fn a_continuation_holds_the_generation_until_it_is_dispatched() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        let mut file = std::fs::File::create(&path).expect("create csv");
+        writeln!(file, "name,age\nada,36").expect("write csv");
+        drop(file);
+
+        let mut p = pump();
+        assert!(!p.app.work_a_bump_would_strand(), "nothing is running yet");
+
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+
+        // `Open` has returned `DoLoadScanPaths` and nothing has been spawned: this is
+        // the moment the loop draws a frame and reads the terminal.
+        assert!(
+            !p.next_up.is_empty(),
+            "the continuation is waiting to be dispatched"
+        );
+        assert!(
+            p.app.work_a_bump_would_strand(),
+            "and the generation is held while it waits"
+        );
+
+        // Dispatching it hands the lease to the phase it starts, rather than dropping
+        // one before the other takes it.
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+        assert!(
+            p.app.work_a_bump_would_strand(),
+            "the scan it started is running now, and holds it in turn"
+        );
+
+        settle(&mut p);
+        assert!(
+            p.app.data_table_state.is_some(),
+            "and the open finishes, which is the point"
+        );
+        assert!(
+            !p.app.work_a_bump_would_strand(),
+            "with the generation free again afterwards"
+        );
+    }
+
+    /// A key handled in that window does not find the generation free either.
+    ///
+    /// The pump breaks so a frame can be drawn and the terminal polled, so exactly one
+    /// key can be handled between a continuation being queued and being dispatched.
+    /// Ctrl-C and the other hard escapes act even while busy, and `App::handle` runs the
+    /// deferred errands at its tail whatever the key was.
+    #[test]
+    fn a_key_in_the_handoff_window_does_not_find_the_generation_free() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        let mut file = std::fs::File::create(&path).expect("create csv");
+        writeln!(file, "name,age\nada,36").expect("write csv");
+        drop(file);
+
+        let mut p = pump();
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+        assert!(!p.next_up.is_empty(), "mid-handoff");
+
+        let held_at = p.app.task_generation();
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        assert_eq!(
+            p.app.task_generation(),
+            held_at,
+            "a key in the window did not bump the generation the open is waiting on"
+        );
+
+        settle(&mut p);
+        assert!(
+            p.app.data_table_state.is_some(),
+            "and the open still finishes"
+        );
     }
 
     /// The app hands a key it cannot act on back to the caller rather than dropping

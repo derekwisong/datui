@@ -6850,8 +6850,9 @@ impl App {
             }
             KeyCode::Left => self.home_collapse(true),
             KeyCode::Right => match self.selected_dataset_folder() {
-                // Into a partitioned cloud folder rather than opening it, to reach one
-                // partition.
+                // Into a folder that opens as one dataset rather than opening it, to
+                // reach one partition or one file. This clears the filter, as browsing
+                // anywhere does.
                 Some(folder) => self.home_browse_into(folder),
                 None => self.home_collapse(false),
             },

@@ -176,8 +176,10 @@ pub fn home_control_keys(
         }
         if on_dataset_folder {
             // → does not fold on this row, it goes inside the folder — and nothing else
-            // on screen says that door exists.
-            keys.push((g.arrow_left, "Fold"));
+            // on screen says that door exists. One chip, not two beside it: the bar is
+            // cut from the right and this hint is already near that end, so `← Fold`
+            // alongside would cost eleven more columns and be the first thing lost. ←
+            // still folds, and says so on every other row.
             keys.push((g.arrow_right, "Inside"));
         } else {
             keys.push((g.updown_lr, "Fold"));
@@ -301,12 +303,14 @@ mod tests {
             "the door is advertised: {on_folder:?}"
         );
         assert!(
-            on_folder.contains(&(g.arrow_left, "Fold")),
-            "and ← still folds: {on_folder:?}"
-        );
-        assert!(
             !on_folder.iter().any(|(key, _)| *key == g.updown_lr),
             "the pair would say → folds, which it does not here: {on_folder:?}"
+        );
+        assert_eq!(
+            on_folder.len(),
+            labels(false).len(),
+            "one chip in place of one, so the bar is no wider on this row than any \
+             other — it is cut from the right and this hint is near that end"
         );
 
         let elsewhere = labels(false);

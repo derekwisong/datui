@@ -5479,7 +5479,9 @@ fn test_right_goes_inside_a_local_multi_file_folder() {
     );
 
     // The bar says the door is there, since nothing else on screen does.
-    let area = Rect::new(0, 0, 120, 24);
+    // Wide on purpose: the bar is cut from the right, and this assertion is about
+    // what the bar says, not about where the fitting loop stops.
+    let area = Rect::new(0, 0, 200, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let bar: String = (0..area.width)
@@ -5500,8 +5502,10 @@ fn test_right_goes_inside_a_local_multi_file_folder() {
 }
 
 /// The hint, and the descent, are only offered on a row that is a dataset folder.
+/// `→` elsewhere goes on expanding the section, which on a visible row is already
+/// expanded and so does nothing.
 #[test]
-fn test_right_still_folds_the_section_on_an_ordinary_row() {
+fn test_right_does_not_browse_from_an_ordinary_row() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(tmp.path().join("one.parquet"), b"x").unwrap();
 
@@ -5521,7 +5525,9 @@ fn test_right_still_folds_the_section_on_an_ordinary_row() {
         .expect("the file is listed");
     app.home.selected = row;
 
-    let area = Rect::new(0, 0, 120, 24);
+    // Wide on purpose: the bar is cut from the right, and this assertion is about
+    // what the bar says, not about where the fitting loop stops.
+    let area = Rect::new(0, 0, 200, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let bar: String = (0..area.width)

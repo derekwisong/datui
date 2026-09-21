@@ -190,7 +190,11 @@ each type in the color the table uses.
 
 A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
 hold the same table is `multi`. Both open with <kbd>Enter</kbd> as a single
-dataset.
+dataset, and <kbd>→</kbd> goes inside one instead, to reach a single partition or
+a single file. That is the way to look at the files when the label is wrong.
+<kbd>Esc</kbd> comes back out; in a bucket the first row inside,
+`<folder> (all files)`, opens the whole folder again, and locally there is no
+such row.
 
 Sharing a file extension is not enough to make a folder one table. A database
 exported one Parquet file per table — `circuits.parquet`, `drivers.parquet`,

@@ -186,6 +186,29 @@ dataset shows `? × 39`. CSV and other formats that need a scan to count show
 neither. Below the counts, the pane lists the full schema of a Parquet dataset,
 each type in the color the table uses.
 
+### When a folder is one dataset
+
+A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
+hold the same table is `multi`. Both open with <kbd>Enter</kbd> as a single
+dataset.
+
+Sharing a file extension is not enough to make a folder one table. A database
+exported one Parquet file per table — `circuits.parquet`, `drivers.parquet`,
+`laps.parquet` — looks identical from its names, and reading it as one table
+would union things that share no columns. So the footers decide: datui compares
+the columns of the folder's files, and a folder whose files do not agree is left
+as a directory to look inside.
+
+Files are compared by how much of the narrower one the wider one holds, not by
+how much they have in common overall, because gaining a column is what a dataset
+does over time. A blockchain that added `txinwitness` in 2017 is still one
+dataset, and so is one that grew from five columns to fifty.
+
+The columns come from footers that are read anyway to count the rows, so locally
+this costs nothing. In a bucket, three of the folder's files are read while you
+browse — one small ranged request each, never a whole object — and a folder that
+cannot be read keeps the label its names suggested.
+
 ### Where a row's data lives
 
 A marker before each name says what opening it will cost:
@@ -347,11 +370,15 @@ returns. Row counts and columns would need a read per object, which someone is
 billed for, so they are not fetched until you open one.
 
 Folders are looked inside, a few at a time, once each listing lands: one small
-listing request per folder, for at most 48 of them, and never a read of an object.
-A folder of `key=value` partitions is then labelled `hive`, and a folder of Parquet
-files `multi`, like a local one. <kbd>Enter</kbd> opens it as one dataset, with the
-partitions as columns; <kbd>→</kbd> goes inside instead, where the first row,
-`<folder> (all partitions)`, opens the whole folder again.
+listing request per folder, for at most 48 of them. A folder of `key=value`
+partitions is then labelled `hive`, and a folder of Parquet files whose schemas
+agree `multi`, like a local one — see
+[When a folder is one dataset](#when-a-folder-is-one-dataset). Deciding that last
+one reads the footers of up to three of the folder's files, a few kilobytes each;
+nothing else here reads an object, and nothing reads a whole one. <kbd>Enter</kbd>
+opens it as one dataset, with the partitions as columns; <kbd>→</kbd> goes inside
+instead, where the first row, `<folder> (all partitions)`, opens the whole folder
+again.
 
 A partitioned dataset whose files gained columns over time, such as a blockchain's
 first day, which has no previous block, opens with every column: its schema comes

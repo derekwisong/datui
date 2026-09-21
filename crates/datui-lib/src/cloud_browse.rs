@@ -702,7 +702,110 @@ async fn peek_page(
         .iter()
         .map(|o| (o.location.as_ref().to_string(), o.size))
         .collect();
-    Ok(classify_listing(&folders, &objects))
+    let kind = classify_listing(&folders, &objects);
+    if kind != crate::discover::EntryKind::MultiFile {
+        return Ok(kind);
+    }
+    // The listing said these files share an extension. Whether they are one table is a
+    // question only their footers answer, and the objects just listed carry the sizes
+    // that make reading a footer a single ranged request.
+    Ok(verified_kind(resolved, &objects).await.unwrap_or(kind))
+}
+
+/// Parquet footers read to decide whether a folder is one table.
+///
+/// Three is enough to catch a folder of separate tables, whose files have nothing in
+/// common with each other, while costing a fraction of what counting the dataset does.
+/// A folder that survives this is read as one table and its real schema union is built
+/// at open time, where every footer is read.
+const VERIFY_FOOTERS: usize = 3;
+
+/// Which of a folder's files to read, spread across the listing rather than taken from
+/// its head.
+///
+/// Keys come back in lexicographic order, so the first files of a folder written table
+/// by table can easily be the same table — `circuits`, `constructor_standings`,
+/// `constructors` — while its ends never are.
+fn footers_to_verify(files: usize) -> Vec<usize> {
+    if files <= VERIFY_FOOTERS {
+        (0..files).collect()
+    } else {
+        vec![0, files / 2, files - 1]
+    }
+}
+
+/// Whether a folder the listing called `multi` holds one table, from a few of its
+/// footers. `None` when it could not be decided, and the listing's answer stands: the
+/// optimistic reading is the reversible one.
+async fn verified_kind(
+    resolved: &crate::cloud_sources::Resolved,
+    objects: &[(String, u64)],
+) -> Option<crate::discover::EntryKind> {
+    // Azure lists through a different store, which `store_for_bucket` cannot build.
+    if crate::source::azure_parts(&resolved.url).is_some() {
+        return None;
+    }
+    let (provider, bucket, _) = split_bucket_url(&resolved.url)?;
+    let store = store_for_bucket(
+        provider,
+        &bucket,
+        &resolved.s3,
+        resolved.signing == Signing::Unsigned,
+        resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
+        resolved.google_credentials.as_deref(),
+    )
+    .ok()?;
+    kind_from_footers(&store, objects).await
+}
+
+/// The half of [`verified_kind`] that reads, given a store to read from.
+async fn kind_from_footers(
+    store: &std::sync::Arc<dyn object_store::ObjectStore>,
+    objects: &[(String, u64)],
+) -> Option<crate::discover::EntryKind> {
+    let parquet: Vec<&(String, u64)> = objects
+        .iter()
+        .filter(|(key, _)| crate::discover::is_parquet_key(key))
+        .collect();
+    if parquet.len() < 2 {
+        return None;
+    }
+    let picks = footers_to_verify(parquet.len());
+
+    let meter = std::sync::Arc::new(crate::measurements::Meter::default());
+    let store = store.clone();
+    let mut reads = tokio::task::JoinSet::new();
+    for index in picks {
+        let (key, size) = parquet[index].clone();
+        let (store, meter) = (store.clone(), meter.clone());
+        reads.spawn(async move {
+            let file = crate::cloud_hive::DatasetFile {
+                key,
+                size,
+                stamp: 0,
+                etag: None,
+            };
+            crate::cloud_hive::footer_of_file(&store, &file, &meter)
+                .await
+                .ok()
+        });
+    }
+
+    let mut per_file: Vec<Vec<String>> = Vec::new();
+    while let Some(joined) = reads.join_next().await {
+        if let Ok(Some(footer)) = joined {
+            per_file.push(footer.schema.iter_names().map(|n| n.to_string()).collect());
+        }
+    }
+    // One readable footer says nothing about agreement, and none says nothing at all.
+    if per_file.len() < 2 {
+        return None;
+    }
+    Some(if crate::schema_union::is_one_table(&per_file) {
+        crate::discover::EntryKind::MultiFile
+    } else {
+        crate::discover::EntryKind::Directory
+    })
 }
 
 /// A folder's kind from what one listing of it shows, by the rules a local folder is
@@ -2389,5 +2492,112 @@ mod aws_role_tests {
             ("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "/v2/creds"),
         ]);
         assert_eq!(found[0].note, "AWS_ACCESS_KEY_ID");
+    }
+}
+
+#[cfg(test)]
+mod one_table_tests {
+    use super::*;
+    use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path as OsPath};
+    use polars::prelude::*;
+    use std::sync::Arc;
+
+    /// One row of Parquet with the given columns.
+    fn parquet(columns: &[&str]) -> Vec<u8> {
+        let mut frame = DataFrame::new(
+            1,
+            columns
+                .iter()
+                .map(|c| Column::new((*c).into(), &[1i32]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        ParquetWriter::new(&mut bytes).finish(&mut frame).unwrap();
+        bytes
+    }
+
+    /// Put `files` in a store and ask what the folder is.
+    fn kind_of(files: &[(&str, &[&str])]) -> Option<crate::discover::EntryKind> {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        rt.block_on(async {
+            let mut objects = Vec::new();
+            for (key, columns) in files {
+                let bytes = parquet(columns);
+                objects.push((format!("data/{key}"), bytes.len() as u64));
+                store
+                    .put(
+                        &OsPath::from(format!("data/{key}")),
+                        PutPayload::from(bytes),
+                    )
+                    .await
+                    .unwrap();
+            }
+            kind_from_footers(&store, &objects).await
+        })
+    }
+
+    /// The shape that prompted this, as it sits in a bucket: one file per table.
+    #[test]
+    fn separate_tables_in_a_bucket_are_a_folder() {
+        let kind = kind_of(&[
+            ("circuits.parquet", &["circuit_id", "lat", "lng"]),
+            ("drivers.parquet", &["driver_id", "code", "nationality"]),
+            ("laps.parquet", &["lap", "position", "time_millis"]),
+        ]);
+        assert_eq!(kind, Some(crate::discover::EntryKind::Directory));
+    }
+
+    #[test]
+    fn parts_of_one_table_stay_one_dataset() {
+        let kind = kind_of(&[
+            ("part-00000.parquet", &["id", "ts", "amount"]),
+            ("part-00001.parquet", &["id", "ts", "amount"]),
+            ("part-00002.parquet", &["id", "ts", "amount"]),
+        ]);
+        assert_eq!(kind, Some(crate::discover::EntryKind::MultiFile));
+    }
+
+    /// A dataset that gained columns over the years is still one dataset, and the
+    /// files read are its ends, which is where the difference is.
+    #[test]
+    fn a_dataset_that_gained_columns_stays_one_dataset() {
+        let kind = kind_of(&[
+            ("date=2009-01-03.parquet", &["id", "ts"]),
+            ("date=2015-06-01.parquet", &["id", "ts", "fee"]),
+            (
+                "date=2025-06-01.parquet",
+                &["id", "ts", "fee", "witness", "address"],
+            ),
+        ]);
+        assert_eq!(kind, Some(crate::discover::EntryKind::MultiFile));
+    }
+
+    /// Nothing readable means nothing decided, and the listing's answer stands.
+    #[test]
+    fn a_folder_that_cannot_be_read_is_left_as_it_was() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let objects = vec![
+            ("data/a.parquet".to_string(), 10),
+            ("data/b.parquet".to_string(), 10),
+        ];
+        assert_eq!(rt.block_on(kind_from_footers(&store, &objects)), None);
+    }
+
+    /// One file cannot disagree with anything.
+    #[test]
+    fn a_single_file_decides_nothing() {
+        assert_eq!(kind_of(&[("only.parquet", &["a", "b"])]), None);
+    }
+
+    /// The ends of a listing are where a table-per-file folder differs; its head can
+    /// be three files of the same table by alphabetical accident.
+    #[test]
+    fn the_files_read_span_the_listing() {
+        assert_eq!(footers_to_verify(2), vec![0, 1]);
+        assert_eq!(footers_to_verify(3), vec![0, 1, 2]);
+        assert_eq!(footers_to_verify(15), vec![0, 7, 14]);
     }
 }

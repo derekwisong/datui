@@ -241,8 +241,15 @@ pub fn folder_dataset_url(path: &Path) -> PathBuf {
 
 /// A row for the cloud folder being browsed, when what it holds makes it one dataset.
 #[cfg(feature = "cloud")]
-fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
+fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> Option<Entry> {
     if !is_object_store_url(dir) || cloud_account(dir).is_some() {
+        return None;
+    }
+    // What this folder holds was already decided when the listing above it peeked
+    // inside, and that peek read footers where the names alone were not enough. A
+    // folder it found to be separate tables must not be offered as one dataset here
+    // either — this row is the other door to the same open.
+    if peeked == Some(&EntryKind::Directory) {
         return None;
     }
     let folders: Vec<String> = rows
@@ -510,6 +517,11 @@ pub struct Measured {
     /// dropped on the way to the screen -- so a hive dataset measured the ordinary
     /// way showed no partitions, and a compressed file no codec.
     pub cost: crate::discover::Cost,
+    /// What the footers said it is, when that differs from what its filenames
+    /// suggested: a folder whose files turn out to be separate tables is a directory,
+    /// not a dataset. `None` when measuring did not change what it is, which is the
+    /// ordinary case. See [`crate::discover::enrich`].
+    pub kind: Option<crate::discover::EntryKind>,
 }
 
 /// How rows are ordered within each section.
@@ -719,6 +731,8 @@ pub struct ListingRequest {
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
     pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    /// What looking inside each cloud folder found, from this session's peeks.
+    pub cloud_kinds: std::collections::HashMap<PathBuf, EntryKind>,
 }
 
 /// What a listing pass produced.
@@ -734,6 +748,7 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
         cols: probe.cols,
         size: probe.size.or(original.size),
         columns: probe.columns.clone(),
+        kind: (probe.kind != original.kind).then_some(probe.kind),
         // The source is resolved from the live mount table on every listing, so only
         // what the file said about itself is carried forward.
         cost: crate::discover::Cost {
@@ -764,6 +779,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         desktop_dirs,
         browsing,
         probed,
+        cloud_kinds,
         unreachable,
         probe_errors,
         network_check,
@@ -825,7 +841,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         #[cfg(feature = "cloud")]
         let rows = {
             let mut rows = rows;
-            if let Some(whole) = whole_folder_row(&dir, &rows) {
+            if let Some(whole) = whole_folder_row(&dir, &rows, cloud_kinds.get(&dir)) {
                 rows.insert(0, whole);
             }
             rows
@@ -1089,6 +1105,25 @@ fn apply_known_facts(
     let Some(facts) = known.get(&row.path) else {
         return;
     };
+
+    // A folder whose files were read and found to be separate tables stays a
+    // directory, rather than being called a dataset again by the next listing: its
+    // kind comes from its filenames, which have not changed and were never the
+    // evidence.
+    //
+    // Tested before the fingerprint below rather than after, because that fingerprint
+    // is a file's: a listing gives a directory no size, so `same_bytes` is never true
+    // for one. A directory's own mtime is what it has, and it moves when a file is
+    // added or removed, which is when this answer could change.
+    if !remote && row.kind == EntryKind::MultiFile && facts.kind == Some(EntryKind::Directory) {
+        let same_mtime = row
+            .modified
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_some_and(|d| d.as_secs() == facts.mtime);
+        if same_mtime {
+            row.kind = EntryKind::Directory;
+        }
+    }
 
     if !remote {
         let same_bytes = row.size.map(|s| s == facts.size).unwrap_or(false)
@@ -1399,6 +1434,7 @@ impl HomeState {
             // The synchronous path is for tests and library callers; it consults no
             // cache, so what it produces is exactly what is on disk right now.
             known: Default::default(),
+            cloud_kinds: self.cloud_kinds.clone(),
         };
         let listing = build_listing(&request);
         self.apply_listing(listing);
@@ -2112,6 +2148,9 @@ impl HomeState {
                 if let Some(m) = self.enriched.get(&row.path) {
                     row.rows = m.rows;
                     row.cols = m.cols;
+                    if let Some(kind) = m.kind {
+                        row.kind = kind;
+                    }
                     if m.size.is_some() {
                         row.size = m.size;
                     }

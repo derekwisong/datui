@@ -476,6 +476,15 @@ fn enrich_dataset(entry: &mut Entry) {
     let mut files = Vec::new();
     collect_parquet_files(&entry.path, 0, &mut files);
     if files.is_empty() || files.len() > MAX_FOOTERS_PER_DATASET {
+        // Whether these are one table is still worth asking, and it does not need
+        // every footer: three files spread across the folder answer it. Without this a
+        // folder large enough to be past the counting limit would skip the check
+        // entirely, which is backwards — the more tables it holds, the more a union of
+        // them costs.
+        if entry.kind == EntryKind::MultiFile && !agree_on_a_schema(&files) {
+            downgrade_to_directory(entry);
+            return;
+        }
         // Still worth knowing the shape, even when the row count is out of reach.
         if let Some(first) = files.first()
             && let Some(meta) = crate::widgets::info::read_parquet_metadata(first)
@@ -509,7 +518,9 @@ fn enrich_dataset(entry: &mut Entry) {
         if columns.is_empty() {
             columns = names.clone();
         }
-        per_file.push(names);
+        // The columns a reader sees, not the leaves the footer names: see
+        // [`crate::schema_union::top_level_columns`].
+        per_file.push(crate::schema_union::top_level_columns(&names));
         let mut per_file = Cost::default();
         physical_facts(&meta, &mut per_file);
         uncompressed += per_file.uncompressed.unwrap_or(0);
@@ -529,18 +540,12 @@ fn enrich_dataset(entry: &mut Entry) {
     // Only `multi` is reconsidered. A `key=value` layout says what the writer meant,
     // and a hive folder's files hold the same table by construction.
     if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_one_table(&per_file) {
-        entry.kind = EntryKind::Directory;
-        entry.rows = None;
-        entry.cols = None;
         entry.size = Some(bytes);
         // Every column any file has, rather than the first file's. Nothing here is one
         // table's shape, but the names are what the folder holds, and searching the
         // home screen by column should still find the folder that has one.
         entry.columns = union_of(&per_file);
-        entry.cost = Cost {
-            partitions: entry.cost.partitions.take(),
-            ..Cost::default()
-        };
+        downgrade_to_directory(entry);
         return;
     }
 
@@ -552,6 +557,40 @@ fn enrich_dataset(entry: &mut Entry) {
     cost.row_groups = (row_groups > 0).then_some(row_groups);
     cost.partitions = entry.cost.partitions.take();
     entry.cost = cost;
+}
+
+/// Whether a spread of a folder's files agree on a schema, for a folder with too many
+/// files to read every footer of.
+///
+/// The ends and the middle, because keys and filenames sort, so a folder written table
+/// by table can easily start with several files of the same table. Fewer than two
+/// readable footers decide nothing, and the folder keeps the kind its names suggested.
+fn agree_on_a_schema(files: &[PathBuf]) -> bool {
+    if files.len() < 2 {
+        return true;
+    }
+    let picks = [0, files.len() / 2, files.len() - 1];
+    let per_file: Vec<Vec<String>> = picks
+        .iter()
+        .filter_map(|i| files.get(*i))
+        .filter_map(|file| crate::widgets::info::read_parquet_metadata(file))
+        .map(|meta| crate::schema_union::top_level_columns(&column_names(&meta)))
+        .collect();
+    per_file.len() < 2 || crate::schema_union::is_one_table(&per_file)
+}
+
+/// A folder whose files turned out to be separate tables is a place to look inside.
+///
+/// Its row count would be the sum of unrelated things and its column count would
+/// belong to whichever file was read first, so neither is reported.
+fn downgrade_to_directory(entry: &mut Entry) {
+    entry.kind = EntryKind::Directory;
+    entry.rows = None;
+    entry.cols = None;
+    entry.cost = Cost {
+        partitions: entry.cost.partitions.take(),
+        ..Cost::default()
+    };
 }
 
 /// Every column name any of the files has, in the order they first appear.
@@ -1021,6 +1060,41 @@ mod classification_tests {
         let entry = measured(dir.path());
         assert_eq!(entry.kind, EntryKind::MultiFile);
         assert_eq!(entry.rows, Some(3));
+    }
+
+    /// Past the counting limit the row count is out of reach, but whether the folder
+    /// is one table is not — and a folder of a hundred tables is exactly where reading
+    /// them as one costs most.
+    #[test]
+    fn a_folder_too_large_to_count_is_still_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        for table in 0..MAX_FOOTERS_PER_DATASET + 1 {
+            write(
+                dir.path(),
+                &format!("table_{table:03}.parquet"),
+                &[&format!("{table}_id"), &format!("{table}_value")],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::Directory);
+        assert_eq!(entry.rows, None, "too many files to count either way");
+    }
+
+    /// The same folder size, but one table split across it.
+    #[test]
+    fn a_large_folder_of_one_table_stays_a_dataset() {
+        let dir = tempfile::tempdir().unwrap();
+        for part in 0..MAX_FOOTERS_PER_DATASET + 1 {
+            write(
+                dir.path(),
+                &format!("part-{part:05}.parquet"),
+                &["id", "ts"],
+            );
+        }
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::MultiFile);
     }
 
     /// Searching the home screen by column should still find a folder that holds one,

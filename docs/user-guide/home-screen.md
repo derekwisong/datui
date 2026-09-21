@@ -370,10 +370,12 @@ returns. Row counts and columns would need a read per object, which someone is
 billed for, so they are not fetched until you open one.
 
 Folders are looked inside, a few at a time, once each listing lands: one small
-listing request per folder, for at most 48 of them, and never a read of an object.
-A folder of `key=value` partitions is then labelled `hive`, and a folder of Parquet
-files whose schemas agree `multi`, like a local one — see
-[When a folder is one dataset](#when-a-folder-is-one-dataset). <kbd>Enter</kbd>
+listing request per folder, for at most 48 of them. A folder of `key=value`
+partitions is then labelled `hive`, and a folder of Parquet files whose schemas
+agree `multi`, like a local one — see
+[When a folder is one dataset](#when-a-folder-is-one-dataset). Deciding that last
+one reads the footers of up to three of the folder's files, a few kilobytes each;
+nothing else here reads an object, and nothing reads a whole one. <kbd>Enter</kbd>
 opens it as one dataset, with the partitions as columns; <kbd>→</kbd> goes inside
 instead, where the first row, `<folder> (all partitions)`, opens the whole folder
 again.

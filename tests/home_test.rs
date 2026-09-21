@@ -1365,6 +1365,7 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
         network_check: |_| false,
         cloud: Vec::new(),
         known: Default::default(),
+        cloud_kinds: Default::default(),
     };
 
     // Built on another thread entirely, then handed over.
@@ -1576,6 +1577,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
         network_check: pretend_remote,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
+        cloud_kinds: Default::default(),
     });
 
     let mut home = HomeState {
@@ -1645,6 +1647,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
         network_check: |_| false,
         cloud: Vec::new(),
         known: cache.load_dataset_facts(),
+        cloud_kinds: Default::default(),
     });
 
     let mut home = HomeState::default();
@@ -2581,6 +2584,7 @@ fn test_sections_are_ordered_by_intent_and_the_derived_ones_start_folded() {
             ..Default::default()
         }],
         known: Default::default(),
+        cloud_kinds: Default::default(),
     });
 
     let titles: Vec<&str> = listing.sections.iter().map(|s| s.title.as_str()).collect();
@@ -3090,4 +3094,132 @@ fn test_azure_steps_through_account_container_and_folder() {
     home.rebuild(&[], &[]);
     assert_eq!(home.pending_probes(), vec![account.to_path_buf()]);
     assert_eq!(home.sections[0].title, "datalake001");
+}
+
+/// A folder whose footers said its files are separate tables must not be offered as
+/// one dataset again by the next run's listing. The kind is the only thing carried
+/// over: a directory has no size for the fingerprint that guards the rest, so this is
+/// checked against its modification time instead.
+#[test]
+fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
+    use datui::cache::DatasetFacts;
+    use datui::home::{ListingRequest, build_listing};
+
+    let tmp = TempDir::new().unwrap();
+    let folder = tmp.path().join("exports");
+    fs::create_dir(&folder).unwrap();
+    // Two names that share an extension and nothing else, so the listing says `multi`.
+    touch(&folder, "circuits.parquet");
+    touch(&folder, "drivers.parquet");
+    let mtime = fs::metadata(&folder)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let listed = |known: Vec<(std::path::PathBuf, DatasetFacts)>| {
+        let request = ListingRequest {
+            config_dirs: Vec::new(),
+            recents: Vec::new(),
+            desktop_dirs: Vec::new(),
+            browsing: Some(tmp.path().to_path_buf()),
+            probed: Default::default(),
+            unreachable: Default::default(),
+            probe_errors: Default::default(),
+            network_check: |_| false,
+            cloud: Vec::new(),
+            known: known.into_iter().collect(),
+            cloud_kinds: Default::default(),
+        };
+        build_listing(&request)
+            .sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .find(|entry| entry.path == folder)
+            .expect("the folder is listed")
+            .kind
+    };
+
+    assert_eq!(
+        listed(Vec::new()),
+        EntryKind::MultiFile,
+        "the filenames alone still say multi"
+    );
+
+    let facts = |mtime| DatasetFacts {
+        mtime,
+        size: 0,
+        rows: None,
+        cols: None,
+        columns: vec!["circuit_id".into(), "driver_id".into()],
+        kind: Some(EntryKind::Directory),
+        cost: Default::default(),
+    };
+    assert_eq!(
+        listed(vec![(folder.clone(), facts(mtime))]),
+        EntryKind::Directory,
+        "what the footers said survives the next listing"
+    );
+    assert_eq!(
+        listed(vec![(folder.clone(), facts(mtime - 1))]),
+        EntryKind::MultiFile,
+        "a folder whose contents changed is measured again"
+    );
+}
+
+/// The row that opens a cloud folder as one dataset is the other door to the same
+/// open, so a folder whose footers said its files are separate tables must not offer
+/// it. Otherwise stepping inside the folder — which is what the label now invites —
+/// puts the union back on the first row.
+#[cfg(feature = "cloud")]
+#[test]
+fn test_a_folder_of_separate_tables_offers_no_whole_folder_row() {
+    use datui::discover::{Entry, EntryKind};
+    use std::path::PathBuf;
+
+    let exports = PathBuf::from("gs://bucket/exports");
+    let object = |name: &str| {
+        let mut entry = Entry::directory(&exports.join(name));
+        entry.name = name.to_string();
+        entry.kind = EntryKind::File;
+        entry.size = Some(1_000);
+        entry
+    };
+    let mut home = HomeState {
+        network_check: |_| true,
+        ..Default::default()
+    };
+    home.probe_ready(
+        exports.clone(),
+        vec![
+            object("circuits.parquet"),
+            object("drivers.parquet"),
+            object("laps.parquet"),
+        ],
+    );
+    home.browsing = Some(exports.clone());
+
+    // With nothing known about the folder, the names alone still offer the union.
+    home.rebuild(&[], &[]);
+    assert_eq!(
+        home.sections[0].rows[0].name, "exports (all files)",
+        "unpeeked, the listing offers it"
+    );
+
+    // Once the peek has read footers and found separate tables, it must not.
+    home.cloud_kinds
+        .insert(exports.clone(), EntryKind::Directory);
+    home.rebuild(&[], &[]);
+    assert!(
+        !home.sections[0].rows[0].name.contains("all files"),
+        "got {:?}",
+        home.sections[0].rows[0].name
+    );
+    assert_eq!(
+        home.sections[0].rows.len(),
+        3,
+        "the three objects, and no more"
+    );
 }

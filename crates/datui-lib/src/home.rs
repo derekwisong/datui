@@ -241,8 +241,15 @@ pub fn folder_dataset_url(path: &Path) -> PathBuf {
 
 /// A row for the cloud folder being browsed, when what it holds makes it one dataset.
 #[cfg(feature = "cloud")]
-fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
+fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> Option<Entry> {
     if !is_object_store_url(dir) || cloud_account(dir).is_some() {
+        return None;
+    }
+    // What this folder holds was already decided when the listing above it peeked
+    // inside, and that peek read footers where the names alone were not enough. A
+    // folder it found to be separate tables must not be offered as one dataset here
+    // either — this row is the other door to the same open.
+    if peeked == Some(&EntryKind::Directory) {
         return None;
     }
     let folders: Vec<String> = rows
@@ -724,6 +731,8 @@ pub struct ListingRequest {
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
     pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    /// What looking inside each cloud folder found, from this session's peeks.
+    pub cloud_kinds: std::collections::HashMap<PathBuf, EntryKind>,
 }
 
 /// What a listing pass produced.
@@ -770,6 +779,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         desktop_dirs,
         browsing,
         probed,
+        cloud_kinds,
         unreachable,
         probe_errors,
         network_check,
@@ -831,7 +841,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         #[cfg(feature = "cloud")]
         let rows = {
             let mut rows = rows;
-            if let Some(whole) = whole_folder_row(&dir, &rows) {
+            if let Some(whole) = whole_folder_row(&dir, &rows, cloud_kinds.get(&dir)) {
                 rows.insert(0, whole);
             }
             rows
@@ -1096,6 +1106,25 @@ fn apply_known_facts(
         return;
     };
 
+    // A folder whose files were read and found to be separate tables stays a
+    // directory, rather than being called a dataset again by the next listing: its
+    // kind comes from its filenames, which have not changed and were never the
+    // evidence.
+    //
+    // Tested before the fingerprint below rather than after, because that fingerprint
+    // is a file's: a listing gives a directory no size, so `same_bytes` is never true
+    // for one. A directory's own mtime is what it has, and it moves when a file is
+    // added or removed, which is when this answer could change.
+    if !remote && row.kind == EntryKind::MultiFile && facts.kind == Some(EntryKind::Directory) {
+        let same_mtime = row
+            .modified
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_some_and(|d| d.as_secs() == facts.mtime);
+        if same_mtime {
+            row.kind = EntryKind::Directory;
+        }
+    }
+
     if !remote {
         let same_bytes = row.size.map(|s| s == facts.size).unwrap_or(false)
             && row
@@ -1118,15 +1147,6 @@ fn apply_known_facts(
     let source = row.cost.source.take();
     row.cost = facts.cost.clone();
     row.cost.source = source;
-    // A folder whose files were read and found to be separate tables stays a
-    // directory, rather than being called a dataset again by the next listing: its
-    // kind comes from its filenames, which have not changed and were never the
-    // evidence. Narrow on purpose — only this one correction survives, and only while
-    // the fingerprint above still matches.
-    if !remote && row.kind == EntryKind::MultiFile && facts.kind == Some(EntryKind::Directory) {
-        row.kind = EntryKind::Directory;
-    }
-
     if remote {
         // A remote row was never stat'ed, so these are all it has.
         row.size = row.size.or(Some(facts.size));
@@ -1414,6 +1434,7 @@ impl HomeState {
             // The synchronous path is for tests and library callers; it consults no
             // cache, so what it produces is exactly what is on disk right now.
             known: Default::default(),
+            cloud_kinds: self.cloud_kinds.clone(),
         };
         let listing = build_listing(&request);
         self.apply_listing(listing);

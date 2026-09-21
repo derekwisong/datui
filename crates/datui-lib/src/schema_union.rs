@@ -284,13 +284,17 @@ pub fn is_bookkeeping(segment: &str) -> bool {
     segment.starts_with(['_', '.'])
 }
 
-/// Least agreement at which a folder's files are read as one table.
+/// Agreement a folder's files must exceed to be read as one table.
 ///
 /// Every folder measured whose files are one table scored 1.0, and every folder of
 /// separate tables scored at most 0.222, so the figure sits in a wide gap rather than
 /// on a boundary. It is low deliberately: the cost of reading one table as several is
 /// one keystroke, and the cost of reading several as one is a folder that cannot be
 /// opened at all.
+///
+/// Exceeded rather than met, because the denominator is the narrower file's width: two
+/// tables joined on one key, `[id, name]` beside `[id, customer_id, amount]`, land
+/// exactly on it, and they are two tables.
 pub const ONE_TABLE_AGREEMENT: f64 = 0.5;
 
 /// How much a folder's files agree on a schema: the least overlap between any file and
@@ -335,7 +339,25 @@ pub fn column_agreement(files: &[Vec<String>]) -> f64 {
 /// Whether a folder's files are the same table, rather than separate ones stored side
 /// by side.
 pub fn is_one_table(files: &[Vec<String>]) -> bool {
-    column_agreement(files) >= ONE_TABLE_AGREEMENT
+    column_agreement(files) > ONE_TABLE_AGREEMENT
+}
+
+/// The top-level column names in a list of Parquet leaf paths.
+///
+/// A footer names every leaf, so a struct or a list arrives as `inputs.list.element.
+/// address` and its wrappers are an encoding choice: the same column written by
+/// parquet-mr and by Arrow gives different leaves. Comparing those would make a
+/// dataset whose writer changed look like two tables, so the comparison is over the
+/// columns a reader sees. Order is kept and duplicates dropped, since many leaves
+/// share one root.
+pub fn top_level_columns(leaves: &[String]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    leaves
+        .iter()
+        .map(|leaf| leaf.split_once('.').map_or(leaf.as_str(), |(root, _)| root))
+        .filter(|root| seen.insert(root.to_string()))
+        .map(str::to_string)
+        .collect()
 }
 
 /// One dataset's schema, and what deciding it revealed.
@@ -1784,6 +1806,42 @@ mod tests {
         let unrelated = cols(&[&["id", "a", "b"], &["id", "x", "y"], &["id", "p", "q"]]);
         assert_eq!(column_agreement(&grown), 1.0);
         assert!(column_agreement(&grown) > column_agreement(&unrelated));
+    }
+
+    /// Two tables joined on a key land exactly on the threshold, because half of the
+    /// narrower one is shared. They are still two tables.
+    #[test]
+    fn two_tables_sharing_a_key_are_not_one_table() {
+        let files = cols(&[&["id", "name"], &["id", "customer_id", "amount"]]);
+        assert_eq!(column_agreement(&files), ONE_TABLE_AGREEMENT);
+        assert!(!is_one_table(&files));
+    }
+
+    /// The leaves a footer names are an encoding choice; the columns a reader sees are
+    /// not. A list written by parquet-mr and by Arrow must compare as the same column.
+    #[test]
+    fn a_nested_column_is_one_column_however_it_was_written() {
+        let old_writer = vec![
+            "id".to_string(),
+            "tags.array".to_string(),
+            "refs.array".to_string(),
+        ];
+        let new_writer = vec![
+            "id".to_string(),
+            "tags.list.element".to_string(),
+            "refs.list.element".to_string(),
+        ];
+        let files = vec![
+            top_level_columns(&old_writer),
+            top_level_columns(&new_writer),
+        ];
+        assert_eq!(files[0], vec!["id", "tags", "refs"]);
+        assert!(
+            is_one_table(&files),
+            "the same three columns, written twice"
+        );
+        // Without the flattening these share only `id`, and the folder is demoted.
+        assert!(!is_one_table(&[old_writer, new_writer]));
     }
 
     /// A file with no columns cannot disagree, and must not divide by its own width.

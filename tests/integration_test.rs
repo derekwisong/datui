@@ -5702,3 +5702,60 @@ fn test_a_folder_of_lake_tables_does_not_say_there_is_nothing_here() {
         "and the screen does not say there is nothing here: {screen}"
     );
 }
+
+/// `→` goes inside a lake table, as it does a hive or multi folder.
+///
+/// A cloud Delta root used to be labelled `multi`, where `→` descended; recognizing it
+/// made `→` fold the section instead. Enter goes inside either way, so nothing was
+/// unreachable, but the key that means "look inside this folder" stopped meaning it on
+/// the one row where looking inside is all datui can do.
+#[test]
+fn test_right_goes_inside_a_lake_table() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    for part in ["part-0.parquet", "part-1.parquet"] {
+        std::fs::write(table.join(part), b"x").unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
+        .expect("the table is listed");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Delta)
+    );
+
+    // Wide on purpose: this is about what the bar says, not where it is cut.
+    let area = Rect::new(0, 0, 200, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        bar.contains("Inside"),
+        "the key is offered here too: {bar:?}"
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Right,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(table.as_path()),
+        "→ went inside the table rather than folding the section"
+    );
+}

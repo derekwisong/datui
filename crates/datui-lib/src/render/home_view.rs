@@ -83,9 +83,12 @@ fn meta_columns(entry: &Entry) -> String {
     // A dataset too large to count still knows its width. Showing `? x 158` says more
     // than a blank, and the `?` is an admission rather than a guess.
     let times = glyphs::get().times;
+    // A column count read from a spread of a folder rather than all of it is a floor,
+    // so it says so, the way the row count already says `?` when it is out of reach.
+    let more = if entry.cols_sampled { "+" } else { "" };
     let shape = match (entry.rows, entry.cols) {
-        (Some(r), Some(c)) => format!("{} {times} {c}", discover::format_rows(r)),
-        (None, Some(c)) => format!("? {times} {c}"),
+        (Some(r), Some(c)) => format!("{} {times} {c}{more}", discover::format_rows(r)),
+        (None, Some(c)) => format!("? {times} {c}{more}"),
         _ => String::new(),
     };
     let size = entry.size.map(discover::format_size).unwrap_or_default();
@@ -1050,7 +1053,8 @@ fn preview_head(
         facts.push(("rows", discover::format_rows(rows), plain));
     }
     if let Some(cols) = entry.cols {
-        facts.push(("columns", cols.to_string(), plain));
+        let more = if entry.cols_sampled { "+" } else { "" };
+        facts.push(("columns", format!("{cols}{more}"), plain));
     }
     if let Some(size) = entry.size {
         facts.push(("on disk", discover::format_size(size), plain));

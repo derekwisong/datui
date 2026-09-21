@@ -507,6 +507,8 @@ impl CloudSource {
 pub struct Measured {
     pub rows: Option<usize>,
     pub cols: Option<usize>,
+    /// Whether `cols` is a floor rather than a total. See [`crate::discover::Entry`].
+    pub cols_sampled: bool,
     pub size: Option<u64>,
     /// Column names, when the format gave them up for free.
     pub columns: Vec<String>,
@@ -746,6 +748,7 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
     Measured {
         rows: probe.rows,
         cols: probe.cols,
+        cols_sampled: probe.cols_sampled,
         size: probe.size.or(original.size),
         columns: probe.columns.clone(),
         kind: (probe.kind != original.kind).then_some(probe.kind),
@@ -1139,6 +1142,7 @@ fn apply_known_facts(
 
     row.rows = facts.rows;
     row.cols = facts.cols;
+    row.cols_sampled = facts.cols_sampled;
     if !facts.columns.is_empty() {
         row.columns = facts.columns.clone();
     }
@@ -1153,7 +1157,11 @@ fn apply_known_facts(
         // What it was last seen to be, rather than what its name suggests. Guessing
         // here is how the same dataset ends up reading `hive` in one section and
         // something else in another.
+        // Only from a build that classified the way this one does: a Delta root
+        // measured before lake tables were recognized is recorded as `multifile`, and
+        // restoring that opens it as one table again.
         if row.kind == EntryKind::Unknown
+            && facts.classified_by == crate::discover::CLASSIFIER_VERSION
             && let Some(kind) = facts.kind
         {
             row.kind = kind;
@@ -1179,8 +1187,10 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
             size,
             rows: entry.rows,
             cols: entry.cols,
+            cols_sampled: entry.cols_sampled,
             columns: entry.columns.clone(),
             kind: Some(entry.kind),
+            classified_by: crate::discover::CLASSIFIER_VERSION,
             // The source is where it is *now*, not where it was when measured: a
             // path can move between mounts, and a stale answer to "will this be
             // slow" is worse than no answer.
@@ -2154,6 +2164,7 @@ impl HomeState {
                 if let Some(m) = self.enriched.get(&row.path) {
                     row.rows = m.rows;
                     row.cols = m.cols;
+                    row.cols_sampled = m.cols_sampled;
                     if let Some(kind) = m.kind {
                         row.kind = kind;
                     }
@@ -2213,6 +2224,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         modified: source.listed_at,
         rows: None,
         cols: None,
+        cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
     }
@@ -2263,6 +2275,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         modified: None,
         rows: None,
         cols: None,
+        cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
     };
@@ -2358,4 +2371,65 @@ fn common_prefix(a: &str, b: &str) -> String {
 /// Expand `~` and `$VAR` in a path the user typed.
 pub fn expand_user_path(raw: &str) -> PathBuf {
     crate::config::expand_config_path(raw)
+}
+
+#[cfg(test)]
+mod known_facts_tests {
+    use super::*;
+    use crate::cache::DatasetFacts;
+
+    /// A kind recorded by a build that classified differently is not restored.
+    ///
+    /// A remote row was never stat'ed, so its cached kind is all it has and is restored
+    /// rather than re-derived. That makes it a way for an answer this build would not
+    /// give to come back: a Delta root measured before lake tables were recognized was
+    /// recorded as `multifile`, and restoring that opens it as one table again — #237
+    /// read back off disk. Everything else in the record is a measurement rather than a
+    /// judgement, and survives.
+    #[test]
+    fn a_kind_from_an_older_classifier_is_not_restored() {
+        let remote = std::path::PathBuf::from("s3://bucket/warehouse/orders");
+        let facts = |classified_by| DatasetFacts {
+            mtime: 0,
+            size: 4096,
+            rows: Some(1_000),
+            cols: Some(7),
+            cols_sampled: false,
+            columns: vec!["id".into(), "amount".into()],
+            kind: Some(EntryKind::MultiFile),
+            classified_by,
+            cost: Default::default(),
+        };
+        let unprobed = || {
+            let mut row = Entry::directory(&remote);
+            row.kind = EntryKind::Unknown;
+            row
+        };
+
+        let index = |classified_by| {
+            std::collections::HashMap::from([(remote.clone(), facts(classified_by))])
+        };
+
+        let mut row = unprobed();
+        apply_known_facts(&mut row, &index(crate::discover::CLASSIFIER_VERSION), true);
+        assert_eq!(
+            row.kind,
+            EntryKind::MultiFile,
+            "this build's own answer comes back"
+        );
+
+        let mut row = unprobed();
+        apply_known_facts(&mut row, &index(0), true);
+        assert_eq!(
+            row.kind,
+            EntryKind::Unknown,
+            "an older build's does not: it may be a lake table this one would recognize"
+        );
+        assert_eq!(
+            row.rows,
+            Some(1_000),
+            "but what it measured is still measured"
+        );
+        assert_eq!(row.columns, vec!["id".to_string(), "amount".to_string()]);
+    }
 }

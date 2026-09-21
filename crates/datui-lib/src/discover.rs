@@ -61,8 +61,27 @@ pub enum EntryKind {
     /// Somewhere remote that has not been looked at yet. Classifying it would mean
     /// reading it, which is the call that blocks when the network is gone — so it is
     /// offered as openable and left unlabelled rather than guessed at.
+    ///
+    /// Also what a kind this build does not recognize reads back as. The dataset index
+    /// is one JSON map, and a value an older datui cannot parse would otherwise fail the
+    /// whole map and discard every dataset fact it had — see `CLASSIFIER_VERSION`, which
+    /// is why a new kind can appear in a file an older build reads.
+    #[serde(other)]
     Unknown,
 }
+
+/// Bumped whenever a build starts classifying something differently.
+///
+/// A cached kind is the only thing a remote row has to go on — it was never stat'ed, and
+/// classifying it means reading it — so it is restored rather than re-derived. That makes
+/// it a way for an answer this build would not give to come back: a Delta root measured
+/// before lake tables were recognized was recorded as `multifile`, and restoring that
+/// opens it as one table, which is the whole of #237 read back off disk.
+///
+/// So the kind is restored only when the build that wrote it classified the way this one
+/// does. Everything else in the record — rows, columns, cost — is a measurement rather
+/// than a judgement, and survives.
+pub const CLASSIFIER_VERSION: u32 = 2;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -124,6 +143,11 @@ pub struct Entry {
     pub rows: Option<usize>,
     /// Column count, same caveat.
     pub cols: Option<usize>,
+    /// Whether `cols` came from a spread of the folder rather than all of it. A folder
+    /// past the footer budget is read at its ends and its middle, so the count is a
+    /// floor: shown as `6+` rather than `6`, the way the row count is already shown as
+    /// `?` when it is out of reach.
+    pub cols_sampled: bool,
     /// Column names, when they were free to obtain. A Parquet footer carries them
     /// alongside the row count, so knowing what is *in* a dataset costs nothing
     /// beyond knowing how big it is.
@@ -208,6 +232,7 @@ impl Entry {
             modified: None,
             rows: None,
             cols: None,
+            cols_sampled: false,
             columns: Vec::new(),
             cost: Cost::default(),
         }
@@ -574,7 +599,8 @@ fn enrich_dataset(entry: &mut Entry) {
             // dataset that grew is narrowest. Still a sample and not a total: the
             // count beside it is already `?`.
             entry.columns = union_of(&names);
-            entry.cols = Some(entry.columns.len());
+            entry.cols = Some(column_count(&entry.columns));
+            entry.cols_sampled = true;
             // From one file, so it describes how the dataset is written rather
             // than its total: codec and row-group sizing are a property of the
             // writer and are uniform in practice.
@@ -639,7 +665,7 @@ fn enrich_dataset(entry: &mut Entry) {
     }
 
     entry.rows = Some(rows);
-    entry.cols = Some(columns.len());
+    entry.cols = Some(column_count(&columns));
     entry.size = Some(bytes);
     entry.columns = columns;
     cost.uncompressed = (uncompressed > 0).then_some(uncompressed);
@@ -691,6 +717,17 @@ fn downgrade_to_directory(entry: &mut Entry) {
         partitions: entry.cost.partitions.take(),
         ..Cost::default()
     };
+}
+
+/// How many columns a reader sees, from the leaf paths a footer names.
+///
+/// Leaves, counted directly, double for a folder whose writer changed: the same nested
+/// column written by parquet-mr and by Arrow gives `inputs.list.element.address` in one
+/// file and `inputs.bag.array_element.address` in the other, and a union of leaf paths
+/// holds both. The top-level names are what `is_one_table` already compares, and what
+/// the table itself shows — a struct is one column there, not one per field.
+fn column_count(leaves: &[String]) -> usize {
+    crate::schema_union::top_level_columns(leaves).len()
 }
 
 /// Every column name any of the files has, in the order they first appear.
@@ -1117,6 +1154,7 @@ mod classification_tests {
             modified: None,
             rows: None,
             cols: None,
+            cols_sampled: false,
             columns: Vec::new(),
             cost: Cost::default(),
         };
@@ -1325,7 +1363,71 @@ mod classification_tests {
         );
     }
 
-    /// The files a folder offers come back in order, whatever order the directory was
+    /// A folder's column count is the columns a reader sees, not the leaves its footers
+    /// name — so a writer change cannot double it.
+    ///
+    /// The same nested column written by parquet-mr and by Arrow gives different leaf
+    /// paths, and a union of leaf paths holds both spellings. `is_one_table` already
+    /// compares top-level names and correctly keeps such a folder as one dataset, so the
+    /// row was reporting roughly twice the width of a dataset it had just called one
+    /// table.
+    #[test]
+    fn a_writer_change_does_not_double_the_column_count() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two spellings of one nested column, as two Parquet writers produce them.
+        write(
+            dir.path(),
+            "old.parquet",
+            &["id", "inputs.list.element.address"],
+        );
+        write(
+            dir.path(),
+            "new.parquet",
+            &["id", "inputs.bag.array_element.address"],
+        );
+
+        let entry = measured(dir.path());
+        assert_eq!(entry.kind, EntryKind::MultiFile, "still one table");
+        assert_eq!(
+            entry.cols,
+            Some(2),
+            "`id` and `inputs`, which is what the table shows: {:?}",
+            entry.columns
+        );
+        assert!(
+            entry.columns.len() > 2,
+            "both leaf spellings are still searchable: {:?}",
+            entry.columns
+        );
+    }
+
+    /// A count read from a spread of a folder rather than all of it says it is a floor.
+    #[test]
+    fn a_sampled_column_count_says_it_is_a_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        for part in 0..MAX_FOOTERS_PER_DATASET * 2 {
+            write(
+                dir.path(),
+                &format!("part-{part:04}.parquet"),
+                &["id", "ts"],
+            );
+        }
+        let entry = measured(dir.path());
+        assert_eq!(entry.rows, None, "too many files to count");
+        assert!(entry.cols.is_some(), "but the width is still worth having");
+        assert!(
+            entry.cols_sampled,
+            "and it is marked as the floor it is, not presented as a total"
+        );
+
+        // A folder small enough to read every footer of claims no such thing.
+        let small = tempfile::tempdir().unwrap();
+        write(small.path(), "a.parquet", &["id", "ts"]);
+        write(small.path(), "b.parquet", &["id", "ts"]);
+        assert!(!measured(small.path()).cols_sampled);
+    }
+
+    /// The files a folder offers come back in order, whatever order the directory was    /// The files a folder offers come back in order, whatever order the directory was
     /// written in.
     ///
     /// Every caller reads order as meaning something — `sample_footers` takes the ends

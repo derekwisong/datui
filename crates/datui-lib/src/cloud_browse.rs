@@ -1098,6 +1098,7 @@ async fn list_level(
             modified: None,
             rows: None,
             cols: None,
+            cols_sampled: false,
             columns: Vec::new(),
             cost: Default::default(),
         });
@@ -1125,6 +1126,7 @@ async fn list_level(
             modified: Some(object.last_modified.into()),
             rows: None,
             cols: None,
+            cols_sampled: false,
             columns: Vec::new(),
             cost: Default::default(),
         });
@@ -1188,6 +1190,7 @@ async fn list_azure_objects(
             modified: Some(object.last_modified.into()),
             rows: None,
             cols: None,
+            cols_sampled: false,
             columns: Vec::new(),
             cost: Default::default(),
         });

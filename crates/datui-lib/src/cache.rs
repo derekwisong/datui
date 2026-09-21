@@ -372,6 +372,11 @@ pub struct DatasetFacts {
     pub size: u64,
     pub rows: Option<usize>,
     pub cols: Option<usize>,
+    /// Whether `cols` is a floor rather than a total: the folder was too large to read
+    /// every footer of, so it was sampled. Restored with the count, or the row would
+    /// present a sample as a total the next time it is listed.
+    #[serde(default)]
+    pub cols_sampled: bool,
     /// Column names, which is what makes searching by column possible before
     /// anything has been read this run.
     #[serde(default)]
@@ -381,6 +386,10 @@ pub struct DatasetFacts {
     /// `hive` under its own directory should not say something else under Recent.
     #[serde(default)]
     pub kind: Option<crate::discover::EntryKind>,
+    /// Which build's rules `kind` came from. See [`crate::discover::CLASSIFIER_VERSION`].
+    /// Absent in records written before this existed, which is what `0` means.
+    #[serde(default)]
+    pub classified_by: u32,
     /// What opening it will cost: compression, layout, partitioning. Worth keeping
     /// for the same reason the row count is — it came from a footer read that a
     /// remote dataset may not get a second chance at.
@@ -993,5 +1002,38 @@ mod dataset_shape_tests {
             None,
             "nothing kept here survives being told to forget"
         );
+    }
+}
+
+#[cfg(test)]
+mod facts_compat_tests {
+    use super::DatasetFacts;
+    use crate::discover::EntryKind;
+
+    /// A kind this build does not recognize costs its own row, not the whole index.
+    ///
+    /// The dataset index is one JSON map read with `unwrap_or_default`, so a value that
+    /// fails to parse discards every fact datui had learned about every dataset — not
+    /// the one row it could not read. `EntryKind` gains variants as datui learns to
+    /// recognize more (a Delta root, an Iceberg root), so an older build reading a newer
+    /// cache is an ordinary event rather than a corruption.
+    #[test]
+    fn an_unknown_kind_costs_only_its_own_row() {
+        let json = r#"{"mtime":1,"size":2,"rows":3,"cols":4,"columns":[],"kind":"quicksand"}"#;
+        let facts: DatasetFacts = serde_json::from_str(json).expect("the record still parses");
+        assert_eq!(
+            facts.kind,
+            Some(EntryKind::Unknown),
+            "a kind from the future reads as unexamined"
+        );
+        assert_eq!(facts.rows, Some(3), "and the measurements survive with it");
+        assert_eq!(facts.classified_by, 0, "recorded before that existed");
+
+        // And the map around it survives too, which is the point.
+        let index = r#"{"/a":{"mtime":1,"size":2,"rows":3,"cols":4,"columns":[],"kind":"quicksand"},
+                        "/b":{"mtime":1,"size":2,"rows":9,"cols":1,"columns":[],"kind":"hive"}}"#;
+        let map: std::collections::HashMap<std::path::PathBuf, DatasetFacts> =
+            serde_json::from_str(index).expect("the index still parses");
+        assert_eq!(map.len(), 2, "both rows, not none of them");
     }
 }

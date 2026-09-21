@@ -7338,10 +7338,14 @@ impl App {
             .browsing
             .as_deref()
             .is_some_and(|dir| home::folder_dataset_url(dir) == entry.path);
-        (matches!(
+        // A lake table too: Enter already goes inside one, and → doing the same is what
+        // every other folder-shaped row does. Before this it folded the section, which
+        // on a cloud Delta root was a step backwards — labelled `multi`, → went inside.
+        ((matches!(
             entry.kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) && !whole_of_here)
+        ) || entry.kind.is_lake_table())
+            && !whole_of_here)
             .then_some(entry.path)
     }
 

@@ -45,7 +45,7 @@ zstd = "0.14"
 plotters = "0.3"
 calamine = { version = "0.36", features = ["chrono"] }
 orc-rust = "0.9"
-arrow = "59"
+arrow = "60"
 tempfile = "3.14"
 ureq = { version = "3.4", optional = true }
 object_store = { version = "0.13.1", optional = true, default-features = false, features = ["aws", "azure", "gcp"] }

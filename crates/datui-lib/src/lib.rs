@@ -7461,14 +7461,15 @@ impl App {
         }
         // A cloud folder that is a dataset opens as one: its URL as a prefix, which is
         // what makes the open a scan of every file under it.
-        if matches!(
+        let folder = matches!(
             kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) && home::is_object_store_url(&path)
-        {
-            return Some(self.home_open_path(home::folder_dataset_url(&path)));
+        );
+        if folder && home::is_object_store_url(&path) {
+            // A prefix, not a directory: the scan is what walks it.
+            return Some(self.home_open_path(home::folder_dataset_url(&path), false));
         }
-        Some(self.home_open_path(path))
+        Some(self.home_open_path(path, folder))
     }
 
     /// Browse into `path` as a jump, from wherever the user was.
@@ -7490,12 +7491,15 @@ impl App {
     ///
     /// The recent entry is recorded by the `Open` handler, which every open goes
     /// through, so this does not record one itself.
-    fn home_open_path(&mut self, path: PathBuf) -> AppEvent {
-        let mut options = OpenOptions::default();
-        // A directory of partitions is only meaningful read as one hive dataset.
-        if path.is_dir() {
-            options.hive = true;
-        }
+    fn home_open_path(&mut self, path: PathBuf, hive: bool) -> AppEvent {
+        // A directory of partitions is only meaningful read as one hive dataset. Told
+        // rather than stat'ed: the caller already knows what this is, and on a share that
+        // has gone away a `stat` here would freeze the thread reading the keys — the same
+        // reason the size below is left to the `Open` handler.
+        let options = OpenOptions {
+            hive,
+            ..OpenOptions::default()
+        };
         self.input_mode = InputMode::Normal;
         self.set_loading_phase("Scanning input", 10);
         // A frame is drawn between this keypress and the `Open` that carries it out,

@@ -6055,3 +6055,69 @@ fn test_a_typed_path_that_is_not_there_says_so() {
         "the answer is reported rather than swallowed: {status:?}"
     );
 }
+
+/// Opening a hive directory from the home screen still reads it as one dataset.
+///
+/// `home_open_path` used to work that out with a `stat`, which on a share that has gone
+/// away is the freeze this whole path exists to avoid. It is told now, from the kind the
+/// caller already has — so the thing to pin is that the answer did not change.
+#[test]
+fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let hive = tmp.path().join("sales");
+    for part in ["year=2024", "year=2025"] {
+        std::fs::create_dir_all(hive.join(part)).unwrap();
+        std::fs::write(hive.join(part).join("part-0.parquet"), b"x").unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Hive)
+    );
+
+    let opened = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    match opened {
+        Some(AppEvent::Open(paths, options)) => {
+            assert_eq!(paths, vec![hive.clone()]);
+            assert!(options.hive, "read as one partitioned dataset");
+        }
+        _ => panic!("Enter on a hive folder opens it"),
+    }
+
+    // And a single file is not. (The open above left the home screen.)
+    app.enter_home();
+    std::fs::write(tmp.path().join("one.parquet"), b"x").unwrap();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "one.parquet"),
+        )
+        .expect("the file is listed");
+    app.home.selected = row;
+    match app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))) {
+        Some(AppEvent::Open(_, options)) => assert!(!options.hive, "a file is not a hive tree"),
+        _ => panic!("Enter on a file opens it"),
+    }
+}

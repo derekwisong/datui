@@ -599,7 +599,8 @@ fn enrich_dataset(entry: &mut Entry) {
             // dataset that grew is narrowest. Still a sample and not a total: the
             // count beside it is already `?`.
             entry.columns = union_of(&names);
-            entry.cols = Some(column_count(&entry.columns));
+            entry.cols =
+                Some(union_of(&sampled.iter().map(top_level_names).collect::<Vec<_>>()).len());
             entry.cols_sampled = true;
             // From one file, so it describes how the dataset is written rather
             // than its total: codec and row-group sizing are a property of the
@@ -618,6 +619,11 @@ fn enrich_dataset(entry: &mut Entry) {
     // `txinwitness`, answered no to "which of these has `txinwitness`?".
     let mut columns: Vec<String> = Vec::new();
     let mut seen_columns = std::collections::HashSet::new();
+    // The columns a reader sees, unioned the same way. Kept beside the leaves rather
+    // than derived from them, because a leaf path cannot say whether its dots are
+    // nesting or part of a name. See [`top_level_names`].
+    let mut top_level: Vec<String> = Vec::new();
+    let mut seen_top_level = std::collections::HashSet::new();
     let mut per_file: Vec<Vec<String>> = Vec::with_capacity(files.len());
     let mut cost = Cost::default();
     let mut uncompressed = 0u64;
@@ -631,6 +637,11 @@ fn enrich_dataset(entry: &mut Entry) {
         for name in &names {
             if seen_columns.insert(name.clone()) {
                 columns.push(name.clone());
+            }
+        }
+        for name in top_level_names(&meta) {
+            if seen_top_level.insert(name.clone()) {
+                top_level.push(name);
             }
         }
         // The columns a reader sees, not the leaves the footer names: see
@@ -665,7 +676,7 @@ fn enrich_dataset(entry: &mut Entry) {
     }
 
     entry.rows = Some(rows);
-    entry.cols = Some(column_count(&columns));
+    entry.cols = Some(top_level.len());
     entry.size = Some(bytes);
     entry.columns = columns;
     cost.uncompressed = (uncompressed > 0).then_some(uncompressed);
@@ -720,15 +731,24 @@ fn downgrade_to_directory(entry: &mut Entry) {
     };
 }
 
-/// How many columns a reader sees, from the leaf paths a footer names.
+/// The columns a reader sees: the schema's own top-level fields.
 ///
-/// Leaves, counted directly, double for a folder whose writer changed: the same nested
-/// column written by parquet-mr and by Arrow gives `inputs.list.element.address` in one
-/// file and `inputs.bag.array_element.address` in the other, and a union of leaf paths
-/// holds both. The top-level names are what `is_one_table` already compares, and what
-/// the table itself shows — a struct is one column there, not one per field.
-fn column_count(leaves: &[String]) -> usize {
-    crate::schema_union::top_level_columns(leaves).len()
+/// Not the leaves a footer names, and not those leaves split on a dot either. Leaves
+/// counted directly double for a folder whose writer changed — the same nested column
+/// written by parquet-mr and by Arrow gives `inputs.list.element.address` in one file and
+/// `inputs.bag.array_element.address` in the other, and a union of leaf paths holds both.
+/// Splitting the dotted path fixes that and breaks something else: a column literally
+/// named `user.id` is one column, and so is a struct `user` with a field `id`, and the
+/// string cannot tell them apart.
+///
+/// The schema knows. `fields()` is the root's own children, which is what a struct counts
+/// as here, what `schema_preview` lists in the details pane, and what the table shows.
+fn top_level_names(meta: &crate::widgets::info::ParquetMetadataCache) -> Vec<String> {
+    meta.schema_descr
+        .fields()
+        .iter()
+        .map(|field| field.name().to_string())
+        .collect()
 }
 
 /// Every column name any of the files has, in the order they first appear.
@@ -852,8 +872,8 @@ pub fn enrich_parquet(entry: &mut Entry) {
         entry.columns = column_names(&meta);
         // The columns a reader sees, as a folder's row reports them: `schema_descr`
         // names the leaves, so a file with one struct of three fields counted four and
-        // then listed two in the pane beside it. See [`column_count`].
-        entry.cols = Some(column_count(&entry.columns));
+        // then listed two in the pane beside it. See [`top_level_names`].
+        entry.cols = Some(top_level_names(&meta).len());
         physical_facts(&meta, &mut entry.cost);
     }
 }
@@ -1149,6 +1169,26 @@ mod classification_tests {
         ParquetWriter::new(file).finish(&mut frame).unwrap();
     }
 
+    /// A one-row Parquet file with a struct column, so the leaves and the columns a
+    /// reader sees are genuinely different things rather than dots in a name.
+    fn write_nested(dir: &Path, name: &str, struct_name: &str, fields: &[&str]) {
+        let inner = DataFrame::new(
+            1,
+            fields
+                .iter()
+                .map(|f| Column::new((*f).into(), &[1i32]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let nested = inner
+            .into_struct(struct_name.into())
+            .into_series()
+            .into_column();
+        let mut frame = DataFrame::new(1, vec![Column::new("id".into(), &[1i32]), nested]).unwrap();
+        let file = std::fs::File::create(dir.join(name)).unwrap();
+        ParquetWriter::new(file).finish(&mut frame).unwrap();
+    }
+
     fn measured(dir: &Path) -> Entry {
         let mut entry = Entry {
             path: dir.to_path_buf(),
@@ -1367,15 +1407,16 @@ mod classification_tests {
         );
     }
 
-    /// A single file counts its columns the same way a folder does.
+    /// A single file counts its columns the same way a folder does, and both count what
+    /// opening it shows.
     ///
     /// `enrich_parquet` read `schema_descr.columns()`, which is the leaf list — so a file
-    /// with one struct of three fields said `columns 4` above a schema list of two, and a
+    /// with one struct of two fields said `columns 3` above a schema list of two, and a
     /// folder holding only that file said something different again.
     #[test]
     fn a_file_and_a_folder_of_it_count_the_same_columns() {
         let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "one.parquet", &["id", "inputs.a", "inputs.b"]);
+        write_nested(dir.path(), "one.parquet", "inputs", &["address", "value"]);
 
         let mut file = Entry::new(dir.path().join("one.parquet"), EntryKind::File);
         enrich(&mut file);
@@ -1385,8 +1426,13 @@ mod classification_tests {
             "`id` and `inputs`, which is what opening it shows: {:?}",
             file.columns
         );
+        assert!(
+            file.columns.iter().any(|c| c == "inputs.address"),
+            "the leaves are still searchable: {:?}",
+            file.columns
+        );
 
-        write(dir.path(), "two.parquet", &["id", "inputs.a", "inputs.b"]);
+        write_nested(dir.path(), "two.parquet", "inputs", &["address", "value"]);
         let folder = measured(dir.path());
         assert_eq!(folder.kind, EntryKind::MultiFile);
         assert_eq!(
@@ -1395,45 +1441,45 @@ mod classification_tests {
         );
     }
 
-    /// A folder's column count is the columns a reader sees, not the leaves its footers    /// A folder's column count is the columns a reader sees, not the leaves its footers
-    /// name — so a writer change cannot double it.
+    /// Dots in a column's own name are not nesting, and are not counted as if they were.
     ///
-    /// The same nested column written by parquet-mr and by Arrow gives different leaf
-    /// paths, and a union of leaf paths holds both spellings. `is_one_table` already
-    /// compares top-level names and correctly keeps such a folder as one dataset, so the
-    /// row was reporting roughly twice the width of a dataset it had just called one
-    /// table.
+    /// The obvious fix for the leaf problem — split the dotted path and count the roots —
+    /// gets this wrong: `user.id` and `user.name` written by a flattening export are two
+    /// columns, not one. The schema says which is which; the string cannot.
+    #[test]
+    fn a_dotted_column_name_is_its_own_column() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "flat.parquet", &["id", "user.id", "user.name"]);
+
+        let mut file = Entry::new(dir.path().join("flat.parquet"), EntryKind::File);
+        enrich(&mut file);
+        assert_eq!(file.cols, Some(3), "three columns: {:?}", file.columns);
+    }
+
+    /// A folder whose files encode the same nested column differently counts it once.
+    ///
+    /// The union is over leaf paths, and the same nested column written by parquet-mr and
+    /// by Arrow gives different leaves — so the row reported roughly twice the width of a
+    /// folder `is_one_table` had just called one dataset. Counted from each file's own
+    /// root fields, the two spellings are one `inputs` whatever the leaves under it are.
     #[test]
     fn a_writer_change_does_not_double_the_column_count() {
         let dir = tempfile::tempdir().unwrap();
-        // Two spellings of one nested column, as two Parquet writers produce them. Flat
-        // columns whose names hold the dots, rather than real structs: `column_names`
-        // joins `path_in_schema` with `.`, so what reaches `column_count` is the same
-        // string either way. (It does mean this folder really has three columns when
-        // opened, which is the undercount #248 notes for a column literally named `a.b`
-        // beside a struct `a` — not what is being tested here.)
-        write(
-            dir.path(),
-            "old.parquet",
-            &["id", "inputs.list.element.address"],
-        );
-        write(
-            dir.path(),
-            "new.parquet",
-            &["id", "inputs.bag.array_element.address"],
-        );
+        write_nested(dir.path(), "old.parquet", "inputs", &["address"]);
+        // The same column, one field wider, as a later writer left it.
+        write_nested(dir.path(), "new.parquet", "inputs", &["address", "value"]);
 
         let entry = measured(dir.path());
         assert_eq!(entry.kind, EntryKind::MultiFile, "still one table");
         assert_eq!(
             entry.cols,
             Some(2),
-            "one `inputs`, not one per spelling of it: {:?}",
+            "one `inputs`, not one per shape of it: {:?}",
             entry.columns
         );
         assert!(
             entry.columns.len() > 2,
-            "both leaf spellings are still searchable: {:?}",
+            "while every leaf stays searchable: {:?}",
             entry.columns
         );
     }

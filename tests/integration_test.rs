@@ -5811,9 +5811,16 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
         screen.contains("39+"),
         "the row and the pane say the count is a floor: {screen}"
     );
+    // Both render sites, named separately: a `contains` over the whole screen would be
+    // satisfied by either one alone.
+    let times = datui::glyphs::get().times;
     assert!(
-        !screen.contains("× 39 ") && !screen.contains("columns 39\n"),
-        "and neither presents it as a total: {screen}"
+        screen.contains(&format!("? {times} 39+")),
+        "the row's shape says the width is a floor: {screen}"
+    );
+    assert!(
+        screen.contains("columns   39+"),
+        "and so does the details pane: {screen}"
     );
 }
 

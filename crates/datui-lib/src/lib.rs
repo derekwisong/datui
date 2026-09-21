@@ -4325,7 +4325,13 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        let view = match state.quality_evidence_view(predicate) {
+        let scope = self
+            .analysis_modal
+            .data_quality_last_plan
+            .as_ref()
+            .map(|plan| plan.scope)
+            .unwrap_or(self.analysis_modal.data_quality_plan.scope);
+        let view = match state.quality_evidence_view(scope, predicate) {
             Ok(view) => view,
             Err(error) => {
                 self.error_modal
@@ -13232,11 +13238,41 @@ impl App {
             }
             AppEvent::AnalysisDataQualityCompute => {
                 if let Some(state) = &self.data_table_state {
-                    let (lf, source) = state.data_quality_scan();
-                    let cached_rows = state.num_rows_if_valid();
                     let plan = self.analysis_modal.data_quality_plan.clone();
+                    let (lf, source, cached_rows) = match plan.scope {
+                        data_quality::QualityScope::CurrentView => {
+                            let (lf, source) = state.data_quality_scan();
+                            (lf, source, state.num_rows_if_valid())
+                        }
+                        data_quality::QualityScope::WholeSource => {
+                            let (lf, source) = state.data_quality_source_scan();
+                            (lf, source, None)
+                        }
+                        data_quality::QualityScope::FirstRows(rows) => {
+                            let (lf, source) = state.data_quality_scan();
+                            (
+                                lf.slice(0, rows as u32),
+                                source,
+                                state.num_rows_if_valid().map(|n| n.min(rows)),
+                            )
+                        }
+                    };
                     let streaming = state.polars_streaming;
                     self.spawn_bg("Profiling data quality...", move |task_gen, tx| {
+                        let lf = if plan.scope == data_quality::QualityScope::WholeSource {
+                            match data_quality::prepare_source_quality_scan(lf, source.as_ref()) {
+                                Ok(lf) => lf,
+                                Err(error) => {
+                                    let _ = tx.send(AppEvent::BackgroundError {
+                                        generation: task_gen,
+                                        message: format!("{error}"),
+                                    });
+                                    return;
+                                }
+                            }
+                        } else {
+                            lf
+                        };
                         let total_rows = match cached_rows {
                             Some(rows) => rows,
                             None => match crate::statistics::collect_lazy(

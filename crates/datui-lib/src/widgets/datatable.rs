@@ -3690,9 +3690,37 @@ impl DataTableState {
         (lf, source)
     }
 
+    /// Source-level profiling starts from the loaded scan, independent of the
+    /// current query, filters, sort, and column projection. Schema projection is
+    /// deferred to the background worker so opening the plan performs no I/O.
+    pub(crate) fn data_quality_source_scan(
+        &self,
+    ) -> (LazyFrame, Option<crate::data_quality::QualitySourceContext>) {
+        let known_files =
+            !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
+        let source = if known_files {
+            Some(crate::data_quality::QualitySourceContext {
+                file_names: self.drift_files.clone(),
+                file_starts: self.drift_file_starts.clone(),
+                row_index_column: if self.drift_at_open {
+                    crate::schema_union::DRIFT_COLUMN.to_string()
+                } else {
+                    "__datui_quality_row".to_string()
+                },
+            })
+        } else {
+            None
+        };
+        (self.original_lf.clone(), source)
+    }
+
     /// Build a temporary filtered table without changing the current pipeline. The
     /// caller keeps this state to restore its query, filters, sort, and buffer.
-    pub(crate) fn quality_evidence_view(&self, predicate: Expr) -> Result<Self> {
+    pub(crate) fn quality_evidence_view(
+        &self,
+        scope: crate::data_quality::QualityScope,
+        predicate: Expr,
+    ) -> Result<Self> {
         let options = crate::OpenOptions {
             pages_lookahead: Some(self.pages_lookahead),
             pages_lookback: Some(self.pages_lookback),
@@ -3703,14 +3731,29 @@ impl DataTableState {
             polars_streaming: self.polars_streaming,
             ..crate::OpenOptions::default()
         };
+        let (lf, schema) = match scope {
+            crate::data_quality::QualityScope::CurrentView => {
+                (self.visible_lf(), self.schema.clone())
+            }
+            crate::data_quality::QualityScope::WholeSource => {
+                let lf = self.query_source();
+                let schema = lf.clone().collect_schema()?;
+                (lf, schema)
+            }
+            crate::data_quality::QualityScope::FirstRows(rows) => {
+                (self.visible_lf().slice(0, rows as u32), self.schema.clone())
+            }
+        };
         let mut view = Self::from_schema_and_lazyframe(
-            self.schema.clone(),
-            self.visible_lf().filter(predicate),
+            schema,
+            lf.filter(predicate),
             &options,
             self.partition_columns.clone(),
         )?;
-        view.column_order = self.column_order.clone();
-        view.locked_columns_count = self.locked_columns_count;
+        if scope != crate::data_quality::QualityScope::WholeSource {
+            view.column_order = self.column_order.clone();
+            view.locked_columns_count = self.locked_columns_count;
+        }
         view.visible_rows = self.visible_rows;
         view.remote_source = self.remote_source;
         Ok(view)
@@ -6364,7 +6407,7 @@ struct RowNumbersParams {
 /// Placeholder shown in the table for binary columns. Their values (often large blobs, e.g.
 /// raw document bytes) are never read into the display buffer — only this stub is — which keeps
 /// scrolling and jump-to-end fast. The real bytes remain in `lf` for export/analysis.
-const BINARY_STUB: &str = "‹binary›";
+pub(crate) const BINARY_STUB: &str = "‹binary›";
 
 /// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
 /// (strings, raw bytes, categorical/enum labels) are fine to clip — a partial value still reads
@@ -10235,6 +10278,34 @@ mod tests {
         state.query(String::new());
         assert!(state.remote_window());
         assert_eq!(state.num_rows_if_valid(), Some(100));
+    }
+
+    #[test]
+    fn quality_source_scope_ignores_current_query_and_evidence_matches_scope() {
+        let lf = df!("a" => &[1i32, 2, 3, 4]).unwrap().lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.query("select a where a > 2".to_string());
+        let (current, _) = state.data_quality_scan();
+        let (source, context) = state.data_quality_source_scan();
+        let source =
+            crate::data_quality::prepare_source_quality_scan(source, context.as_ref()).unwrap();
+        assert_eq!(current.collect().unwrap().height(), 2);
+        assert_eq!(source.collect().unwrap().height(), 4);
+
+        let evidence = state
+            .quality_evidence_view(
+                crate::data_quality::QualityScope::WholeSource,
+                col("a").eq(lit(1)),
+            )
+            .unwrap();
+        assert_eq!(evidence.visible_lf().collect().unwrap().height(), 1);
+        let bounded = state
+            .quality_evidence_view(
+                crate::data_quality::QualityScope::FirstRows(1),
+                col("a").eq(lit(4)),
+            )
+            .unwrap();
+        assert_eq!(bounded.visible_lf().collect().unwrap().height(), 0);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
 use crate::config::Theme;
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison, QualityCompute,
-    QualityGrain, QualityMetric, QualityPage, TemporalRole,
+    QualityGrain, QualityMetric, QualityPage, QualityScope, TemporalRole,
 };
 use crate::glyphs;
 use crate::numfmt;
@@ -151,7 +151,7 @@ fn render_plan_strip(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut
         Line::from(vec![
             Span::styled("scope ", Style::default().fg(config.theme.get("dimmed"))),
             Span::styled(
-                "current",
+                config.plan.scope.label(),
                 Style::default()
                     .fg(config.theme.get("accent"))
                     .add_modifier(Modifier::BOLD),
@@ -243,7 +243,10 @@ fn render_plan(
             .join(" -> ")
     };
     let rows = vec![
-        Row::new(vec![Cell::from("Scope"), Cell::from("Current view")]),
+        Row::new(vec![
+            Cell::from("Scope"),
+            Cell::from(config.plan.scope.label()),
+        ]),
         Row::new(vec![
             Cell::from("Grain"),
             Cell::from(config.plan.grain.label()),
@@ -1390,7 +1393,10 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     };
     let table_rows = vec![
         Row::new(vec![Cell::from("Source"), Cell::from(source)]),
-        Row::new(vec![Cell::from("Scope"), Cell::from("current table view")]),
+        Row::new(vec![
+            Cell::from("Scope"),
+            Cell::from(config.plan.scope.label()),
+        ]),
         Row::new(vec![
             Cell::from("Grain"),
             Cell::from(config.plan.grain.label()),
@@ -1519,7 +1525,11 @@ fn planned_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize>
     if plan.compute == QualityCompute::Metadata {
         return Some(0);
     }
-    let total = state.num_rows_if_valid()?;
+    let total = match plan.scope {
+        QualityScope::CurrentView => state.num_rows_if_valid()?,
+        QualityScope::WholeSource => return None,
+        QualityScope::FirstRows(rows) => state.num_rows_if_valid()?.min(rows),
+    };
     match plan.compute {
         QualityCompute::Metadata => unreachable!(),
         QualityCompute::Sample => Some(total.min(plan.sample_rows.min(50_000))),
@@ -1528,6 +1538,9 @@ fn planned_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize>
 }
 
 fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize> {
+    if plan.scope == QualityScope::WholeSource {
+        return None;
+    }
     let rows = match plan.compute {
         QualityCompute::Metadata => 0,
         QualityCompute::Sample => {
@@ -1538,9 +1551,13 @@ fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<
             } else {
                 2
             };
-            state
-                .num_rows_if_valid()?
-                .min(plan.sample_rows.saturating_mul(multiplier).min(50_000))
+            let rows = state.num_rows_if_valid()?;
+            let rows = match plan.scope {
+                QualityScope::FirstRows(limit) => rows.min(limit),
+                QualityScope::CurrentView => rows,
+                QualityScope::WholeSource => unreachable!(),
+            };
+            rows.min(plan.sample_rows.saturating_mul(multiplier).min(50_000))
         }
         QualityCompute::Full => return None,
     };

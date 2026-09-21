@@ -9,11 +9,62 @@ const DEFAULT_SAMPLE_ROWS: usize = 10_000;
 const DEFAULT_CHUNK_ROWS: usize = 1_000_000;
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QualityScope {
+    #[default]
+    CurrentView,
+    WholeSource,
+    FirstRows(usize),
+}
+
+impl QualityScope {
+    pub fn label(self) -> String {
+        match self {
+            Self::CurrentView => "current view".to_string(),
+            Self::WholeSource => "whole source".to_string(),
+            Self::FirstRows(rows) => format!("first {rows} view rows"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QualitySourceContext {
     pub file_names: Vec<String>,
     pub file_starts: Vec<usize>,
     pub row_index_column: String,
+}
+
+/// Prepare the loaded source in the worker, keeping only a provenance index
+/// and replacing binary payloads before any value collection.
+pub fn prepare_source_quality_scan(
+    lf: LazyFrame,
+    source: Option<&QualitySourceContext>,
+) -> Result<LazyFrame> {
+    let schema = lf.clone().collect_schema()?;
+    let expressions = schema
+        .iter()
+        .filter_map(|(name, dtype)| {
+            let column = name.as_str();
+            if column == crate::schema_union::DRIFT_COLUMN
+                && !source.is_some_and(|context| context.row_index_column == column)
+            {
+                return None;
+            }
+            Some(if matches!(dtype, DataType::Binary) {
+                lit(crate::widgets::datatable::BINARY_STUB).alias(column)
+            } else {
+                col(column)
+            })
+        })
+        .collect::<Vec<_>>();
+    let lf = lf.select(expressions);
+    Ok(
+        if source.is_some_and(|context| context.row_index_column == "__datui_quality_row") {
+            lf.with_row_index("__datui_quality_row", None)
+        } else {
+            lf
+        },
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,6 +190,7 @@ pub struct TemporalRoleAssignment {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataQualityPlan {
+    pub scope: QualityScope,
     pub compute: QualityCompute,
     pub sample_rows: usize,
     pub sample_seed: u64,
@@ -152,6 +204,7 @@ pub struct DataQualityPlan {
 impl Default for DataQualityPlan {
     fn default() -> Self {
         Self {
+            scope: QualityScope::CurrentView,
             compute: QualityCompute::Sample,
             sample_rows: DEFAULT_SAMPLE_ROWS,
             sample_seed: 42_891,
@@ -182,7 +235,8 @@ impl DataQualityPlan {
 
     pub fn compact_summary(&self) -> String {
         format!(
-            "scope current -> grain {} -> compute {} -> compare {}",
+            "scope {} -> grain {} -> compute {} -> compare {}",
+            self.scope.label(),
             self.grain.label(),
             match self.compute {
                 QualityCompute::Sample => format!("{} rows", self.sample_rows),
@@ -2091,7 +2145,38 @@ mod tests {
         plan.comparison = QualityComparison::Previous;
         assert_eq!(
             plan.compact_summary(),
-            "scope current -> grain 1000000 rows (physical order) -> compute 10000 rows -> compare previous"
+            "scope current view -> grain 1000000 rows (physical order) -> compute 10000 rows -> compare previous"
+        );
+    }
+
+    #[test]
+    fn source_projection_preserves_rows_without_binary_payloads() {
+        let source = QualitySourceContext {
+            file_names: vec!["one.parquet".to_string()],
+            file_starts: vec![0],
+            row_index_column: "__datui_quality_row".to_string(),
+        };
+        let frame = df!(
+            "value" => &[1i64, 2, 3],
+            "blob" => &[&b"one"[..], &b"two"[..], &b"three"[..]],
+        )
+        .unwrap()
+        .lazy();
+        let prepared = prepare_source_quality_scan(frame, Some(&source)).unwrap();
+        let collected = prepared.collect().unwrap();
+        assert_eq!(collected.height(), 3);
+        assert_eq!(
+            collected
+                .column("__datui_quality_row")
+                .unwrap()
+                .u32()
+                .unwrap()
+                .get(2),
+            Some(2)
+        );
+        assert_eq!(
+            collected.column("blob").unwrap().str().unwrap().get(0),
+            Some(crate::widgets::datatable::BINARY_STUB)
         );
     }
 

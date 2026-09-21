@@ -39,7 +39,8 @@ statistics of both columns.
 
 ## Data quality
 
-Choose **Data Quality** to profile the current view. The first screen is an
+Choose **Data Quality** to profile the current view, loaded source, or a bounded
+prefix of the current view. The first screen is an
 inert plan: no values are read until you press <kbd>Enter</kbd>. It shows the
 scope, profile grain, compute mode, comparison, estimated rows and transfer
 direction. Press <kbd>p</kbd> for the estimate basis. A full value scan asks for
@@ -47,13 +48,17 @@ confirmation.
 
 | Setting | Choices |
 |---|---|
+| Scope | Current view, whole loaded source, first 10,000 view rows, or first 1,000,000 view rows |
 | Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or weekly windows on an assigned time role |
 | Compute | Metadata only, a seeded sample from a bounded prefix, or full scan |
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 
 Press <kbd>e</kbd> to edit a copy of the plan. <kbd>Esc</kbd> discards edits.
-The Time roles row opens an explicit mapping table; every role starts
+Use Left/Right on Scope to change which rows are eligible. Whole source ignores
+the active query, filters, and sort; the access plan reports its row count and
+read size as unknown until the run. A bounded prefix is selected before
+sampling, so sampling never reaches past its limit. The Time roles row opens an explicit mapping table; every role starts
 unassigned. Datui recognizes physical date and datetime types but never guesses
 their business meaning from column names.
 
@@ -65,7 +70,7 @@ provenance, and available category-variant examples. For an exact null, empty,
 whitespace, non-finite, constant, or category-variant observation,
 <kbd>Enter</kbd> again opens matching
 rows in a temporary table; <kbd>Esc</kbd> returns to the same observation.
-The row view may read the source again. A sampled observation says when an
+The row view uses the same scope and may read the source again. A sampled observation says when an
 exact row view requires a full profile. Columns reports null,
 empty, whitespace, non-finite, distinct,
 parse, and range measurements. Segments keeps both row denominators visible and
@@ -80,7 +85,7 @@ On Segments, highlight a row and press <kbd>b</kbd> to make it the baseline;
 comparison deltas update from the measured profiles without another data read.
 
 Sampling is a compute choice, not a grain. It selects rows without replacement
-from at most the first 50,000 eligible rows; it is not a random sample of the
+from at most the first 50,000 eligible rows in the selected scope; it is not a random sample of the
 entire dataset. Segment totals outside dataset grain are unknown in a sampled
 run, and displayed as such. File mapping is available only while
 the current view still preserves source-row provenance; otherwise the Segments

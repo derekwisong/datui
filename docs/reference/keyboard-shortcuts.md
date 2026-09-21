@@ -129,7 +129,7 @@ On the Sort tab, with a column highlighted:
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
 | <kbd>Enter</kbd> | Run the highlighted tool, or open the detail of a column or a correlation pair |
 | <kbd>1</kbd>–<kbd>4</kbd> | In Data Quality, open Overview, Columns, Segments, or Trends |
-| <kbd>e</kbd> | In Data Quality, edit a copy of the profile plan |
+| <kbd>e</kbd> | In Data Quality, edit scope, grain, compute, comparison, and time roles in a copy of the plan |
 | <kbd>p</kbd> | In Data Quality, show the detailed access plan |
 | <kbd>[</kbd> <kbd>]</kbd> | In Data Quality Segments/Trends, choose a column |
 | <kbd>m</kbd> | In Data Quality Segments/Trends, choose a measurement |

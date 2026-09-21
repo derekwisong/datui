@@ -1,6 +1,6 @@
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, QualityComparison, QualityCompute, QualityGrain,
-    QualityMetric, QualityPage, TemporalRole, TemporalRoleAssignment,
+    QualityMetric, QualityPage, QualityScope, TemporalRole, TemporalRoleAssignment,
 };
 use crate::statistics::{AnalysisResults, DistributionType};
 use ratatui::widgets::TableState;
@@ -352,6 +352,25 @@ impl AnalysisModal {
 
     pub fn adjust_quality_plan(&mut self, forward: bool, partition_columns: &[String]) {
         match self.data_quality_plan_field {
+            0 => {
+                let choices = [
+                    QualityScope::CurrentView,
+                    QualityScope::WholeSource,
+                    QualityScope::FirstRows(10_000),
+                    QualityScope::FirstRows(1_000_000),
+                ];
+                let current = choices
+                    .iter()
+                    .position(|choice| *choice == self.data_quality_plan.scope)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (current + 1) % choices.len()
+                } else {
+                    (current + choices.len() - 1) % choices.len()
+                };
+                self.data_quality_plan.scope = choices[next];
+                self.data_quality_plan.baseline_segment = None;
+            }
             1 => {
                 let mut choices = vec![QualityGrain::Dataset, QualityGrain::File];
                 choices.extend(
@@ -728,5 +747,26 @@ impl AnalysisModal {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod quality_scope_tests {
+    use super::*;
+
+    #[test]
+    fn scope_choices_wrap_without_changing_grain() {
+        let mut modal = AnalysisModal::new();
+        modal.data_quality_plan_field = 0;
+        modal.adjust_quality_plan(true, &[]);
+        assert_eq!(modal.data_quality_plan.scope, QualityScope::WholeSource);
+        modal.adjust_quality_plan(false, &[]);
+        assert_eq!(modal.data_quality_plan.scope, QualityScope::CurrentView);
+        modal.adjust_quality_plan(false, &[]);
+        assert_eq!(
+            modal.data_quality_plan.scope,
+            QualityScope::FirstRows(1_000_000)
+        );
+        assert_eq!(modal.data_quality_plan.grain, QualityGrain::Dataset);
     }
 }

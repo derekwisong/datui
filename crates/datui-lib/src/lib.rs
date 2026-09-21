@@ -1320,6 +1320,64 @@ mod template_rollback_tests {
         );
         assert!(state.error.is_none(), "with no error left over");
     }
+
+    /// A template whose SQL drops a column that the same template's sort names. The
+    /// sorted frame cannot be built at all, so the row count errors — and reporting
+    /// that as zero rows used to blank the table and return before `load_buffer`, the
+    /// only other place a failure is recorded. `apply_template` decides whether to roll
+    /// back by looking for an error, found none, and returned `Ok`: the user was left
+    /// with a blank table wearing the template's sort, told nothing.
+    #[test]
+    fn a_template_whose_sort_names_a_column_its_query_removed_fails_loudly() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("three.csv");
+        std::fs::write(&path, "id,keep,dropped\n0,a,7\n1,b,8\n2,c,9\n").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        let mut template = app
+            .create_template_from_current_state(
+                "sort what the query dropped".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query = Some("select id, keep from df".to_string());
+        // Applied after the query, and naming the column the query just dropped.
+        template.settings.sort_columns = vec!["dropped".to_string()];
+
+        assert!(
+            app.apply_template(&template).is_err(),
+            "the template fails, rather than quietly leaving a blank table"
+        );
+
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.view_sort_columns().is_empty(),
+            "the sort it failed on does not survive"
+        );
+        assert!(
+            state.active_sql_query.is_empty(),
+            "nor does the query that dropped the column"
+        );
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(names, ["id", "keep", "dropped"], "the user's frame is back");
+        assert_eq!(
+            state.lf.clone().collect().unwrap().height(),
+            3,
+            "with its rows, rather than the blank table the failure used to leave"
+        );
+        assert!(state.error.is_none(), "and the rollback clears the error");
+    }
 }
 
 #[cfg(test)]

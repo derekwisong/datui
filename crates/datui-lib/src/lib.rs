@@ -2426,6 +2426,119 @@ pub mod tests {
         );
     }
 
+    /// A parked End's message does not follow the user off the dataset.
+    ///
+    /// It parks without setting `busy`, so `abandon_load`'s cleanup — which is a load's
+    /// — did not reach it, and Ctrl+O left it set. Painted on the home screen it replaces
+    /// every key chip on the bar with a sentence about a dataset the user has left, and
+    /// the failure that follows writes an error there that nothing ever clears.
+    #[test]
+    fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
+        use crate::AppEvent;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+
+        app.enter_home();
+
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Counting rows"),
+            "the home bar is the home screen's: {bar:?}"
+        );
+        assert!(
+            bar.contains("Enter"),
+            "and it still has its keys rather than a sentence: {bar:?}"
+        );
+
+        // And the count it was waiting on then fails, with the user somewhere else.
+        // (Both halves of the fix are exercised: `abandon_load` clears the message on
+        // the way out, and the gate below keeps it off a view that is not the table.)
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: waiting,
+        });
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Could not count the rows"),
+            "an error about a dataset they have left is not the home screen's news: \
+             {bar:?}"
+        );
+    }
+
+    /// And it does not reappear on the next dataset either.
+    ///
+    /// The message is deliberately *not* cleared on the way out: the End is still parked,
+    /// and coming back to the same table with Esc should still say so. What must not
+    /// happen is it greeting a different dataset — which it does not, because opening one
+    /// puts up its own line. This pins that, since nothing else would notice if the order
+    /// of those two ever changed.
+    #[test]
+    fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
+        use crate::{OpenOptions, widgets::datatable::DataTableState};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+
+        app.enter_home();
+
+        // And they open something else, which installs its own frame.
+        let rows = || df!("id" => &[1i64, 2, 3]).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let next = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(next, None, &OpenOptions::default(), None);
+        app.busy = false;
+
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Counting rows"),
+            "the new dataset's bar is not the old one's: {bar:?}"
+        );
+    }
+
+    /// The chart view's bar is the chart's, not a parked End's.
+    ///
+    /// `abandon_load` does not run here — the user has not left the dataset — so this is
+    /// the gate on its own: the message is still set, and the view it belongs to is not
+    /// the one on screen. Once the chart is ready `chart_preparing()` goes false, and
+    /// before the gate the bar read "Counting rows to find the end…" where the chart keys
+    /// belong.
+    #[test]
+    fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+
+        app.input_mode = crate::InputMode::Chart;
+        app.chart_modal.active = true;
+
+        let bar = control_bar(&mut app);
+        assert!(
+            app.status_message.is_some(),
+            "the End is still waiting, and the field still says so"
+        );
+        assert!(
+            !bar.contains("Counting rows"),
+            "but the chart's bar is the chart's: {bar:?}"
+        );
+    }
+
     /// An End waiting on a count whose frame is gone, whose count then fails, is retired
     /// without saying anything.
     ///
@@ -2466,14 +2579,50 @@ pub mod tests {
             app.end_after_count, None,
             "the End it belonged to is retired"
         );
-        // On the field, not the bar: `status_message` is painted only while `busy`, and
-        // an End waiting on a remote count does not set it — the spinner on the row
-        // count is what the user sees. The message is still what the *next* busy moment
-        // would print, so leaving it set is the bug.
-        assert_eq!(
-            app.status_message, None,
-            "the status it put up comes down, rather than becoming an error about a \
-             frame the user is no longer looking at"
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Counting rows"),
+            "the status it put up comes down: {bar:?}"
+        );
+        assert!(
+            !bar.contains("Could not count the rows"),
+            "and does not become an error about a frame the user is no longer looking \
+             at: {bar:?}"
+        );
+    }
+
+    /// The bar says a count is running for an End, and says when it failed.
+    ///
+    /// Both messages were written and painted by nothing: the status line was shown only
+    /// while `busy`, and an End waiting on a remote count parks without setting it —
+    /// deliberately, so keys keep working. Three code paths existed to take a message
+    /// down that could never appear.
+    #[test]
+    fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
+        use crate::AppEvent;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(
+            !app.busy,
+            "the jump parked rather than blocking the keyboard"
+        );
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Counting rows"),
+            "and the line says why the view has not moved: {bar:?}"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: waiting,
+        });
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Could not count the rows"),
+            "and says so when the count it was waiting on fails: {bar:?}"
         );
     }
 
@@ -5332,11 +5481,14 @@ pub struct App {
     /// theirs asking for it: going home, abandoning a load. Keys held while busy carry
     /// the value they were typed under and are dropped if it has moved on.
     screen_generation: u64,
-    /// Set by the main loop when it had to drop a key typed while busy, shown beside
-    /// the status message until the held keys have been replayed.
+    /// Set by the main loop when it had to drop a key typed while busy, shown beside a
+    /// status message while work is running. Cleared once the held keys have been
+    /// replayed.
     input_dropped: bool,
-    throbber_frame: u8,             // Spinner frame index (0..3) for control bar
-    status_message: Option<String>, // Status text shown in control bar when busy (replaces keybindings)
+    throbber_frame: u8, // Spinner frame index (0..3) for control bar
+    /// Status text for the control bar, at the table view. Shown whether or not the app
+    /// is busy: an End waiting on a remote row count parks without setting `busy`.
+    status_message: Option<String>,
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
     /// Temp file path for HTTP-downloaded data; removed when user opens different data or exits.
@@ -6933,7 +7085,6 @@ impl App {
         if matches!(self.loading_state, LoadingState::Loading { .. }) {
             self.loading_state = LoadingState::Idle;
             self.busy = false;
-            self.status_message = None;
         }
         // Keys typed at the frozen screen were meant for the load, not for home:
         // replayed there they could open a dataset nobody asked for.
@@ -15567,13 +15718,29 @@ impl Widget for &mut App {
                     ))
                 } else if self.chart_preparing() {
                     Some("Preparing chart...".to_string())
+                } else if main_view_content == MainViewContent::Datatable {
+                    // Whatever is on the line, busy or not. An End waiting on a remote
+                    // count parks without setting `busy` — keys go on working meanwhile,
+                    // which is the point of parking — so both the message explaining the
+                    // wait and the one saying the count failed were written here and
+                    // painted by nothing.
+                    //
+                    // Only at the table, because that is what these messages are about.
+                    // A parked End survives Ctrl+O, and the home screen has a caption and
+                    // a row count of its own: shown there it would replace every key chip
+                    // on the bar with a sentence about a dataset the user has left.
+                    //
+                    // Not every message needs this branch. The one `jump_key` puts up
+                    // while a footer pass is running is superseded by the footers line
+                    // above, which says the same thing with numbers.
+                    self.status_message.clone()
                 } else {
                     None
                 }
             }
         };
         let status_msg = status_msg.map(|msg| {
-            if self.input_dropped {
+            if self.input_dropped && self.busy {
                 format!("{msg}  input dropped while busy")
             } else {
                 msg

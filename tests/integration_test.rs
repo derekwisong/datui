@@ -5937,23 +5937,23 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
-    app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
-    // Listed first, then the mount becomes one the home screen will not touch on this
-    // thread — which is the state a Recent row on a share is already in.
+    // A share, as the mount table would have it — and the table in Recent, which is how
+    // a row on one comes to be listed without anything having looked at it.
     app.home.network_check = |_| true;
-    for section in app.home.sections.iter_mut() {
-        for entry in section.rows.iter_mut().filter(|e| e.name == "orders") {
-            entry.kind = datui::discover::EntryKind::Unknown;
-        }
-    }
+    app.home.rebuild(&[], std::slice::from_ref(&table));
+
     let row = app
         .home
         .visible()
         .iter()
-        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
-        .expect("the table is listed");
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == table))
+        .expect("the table is listed under Recent");
     app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Unknown),
+        "nothing has looked at it, which is the whole point"
+    );
 
     // The key itself decides nothing: it asks.
     let asked = app.event(&AppEvent::Key(KeyEvent::new(
@@ -6001,58 +6001,6 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
     assert!(
         status.contains("Delta") && status.contains("not read"),
         "and says why: {status:?}"
-    );
-}
-
-/// An answer that arrives after the user has gone somewhere else is not acted on.
-#[test]
-fn test_a_classification_that_lands_after_the_user_left_opens_nothing() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let folder = tmp.path().join("data");
-    std::fs::create_dir_all(&folder).unwrap();
-
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    app.enter_home();
-    let generation = app.task_generation();
-
-    // They left the home screen while the worker was out.
-    app.input_mode = InputMode::Normal;
-
-    let follow = app.event(&AppEvent::BackgroundKindReady {
-        generation,
-        path: folder.clone(),
-        found: Some(datui::discover::EntryKind::MultiFile),
-        jump: false,
-    });
-
-    assert!(follow.is_none(), "nothing was opened");
-    assert_eq!(
-        app.home.browsing, None,
-        "and nothing browsed anywhere either"
-    );
-}
-
-/// A path typed at `~` that is not there says so, from the worker's answer.
-#[test]
-fn test_a_typed_path_that_is_not_there_says_so() {
-    let (tx, _rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    app.enter_home();
-    let generation = app.task_generation();
-
-    let follow = app.event(&AppEvent::BackgroundKindReady {
-        generation,
-        path: PathBuf::from("/mnt/gone/orders"),
-        found: None,
-        jump: true,
-    });
-
-    assert!(follow.is_none());
-    let status = app.home.status.clone().unwrap_or_default();
-    assert!(
-        status.contains("No such path"),
-        "the answer is reported rather than swallowed: {status:?}"
     );
 }
 

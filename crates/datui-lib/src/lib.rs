@@ -2426,6 +2426,131 @@ pub mod tests {
         );
     }
 
+    /// An answer whose question is no longer the one being asked is dropped — and the
+    /// busy state it was holding goes with it.
+    ///
+    /// `spawn_bg` sets `busy` and this answer is the only thing that comes back, so a
+    /// drop that does not clear it holds every key for the rest of the session. The other
+    /// handlers can drop and say nothing because a bumped `task_generation` means
+    /// something else took `busy` over; leaving the home screen bumps nothing.
+    #[test]
+    fn a_classify_answer_nobody_is_waiting_for_still_puts_busy_down() {
+        use crate::{App, AppEvent, InputMode};
+
+        type MovedOn = fn(&mut App);
+        let cases: Vec<(&str, MovedOn)> = vec![
+            ("they went back to the data", |app: &mut App| {
+                app.input_mode = InputMode::Normal;
+            }),
+            ("the browse moved under it", |app: &mut App| {
+                app.home_generation = app.home_generation.wrapping_add(1);
+            }),
+            ("something else took the generation", |app: &mut App| {
+                app.task_generation = app.task_generation.wrapping_add(1);
+            }),
+        ];
+
+        for (what, moved_on) in cases {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(tx, crate::tests::test_runtime());
+            app.enter_home();
+            let path = std::path::PathBuf::from("/mnt/share/orders");
+            let asked_at = app.home_generation;
+            let generation = app.task_generation;
+            app.classify_inflight = Some((path.clone(), asked_at));
+            app.busy = true;
+
+            moved_on(&mut app);
+
+            let follow = app.event(&AppEvent::BackgroundKindReady {
+                generation,
+                home_generation: asked_at,
+                path: path.clone(),
+                found: Some(crate::discover::EntryKind::MultiFile),
+                jump: false,
+            });
+
+            assert!(follow.is_none(), "nothing was opened when {what}");
+            assert_eq!(app.home.browsing, None, "and nothing browsed when {what}");
+            assert!(
+                !app.is_busy(),
+                "and the keyboard came back when {what} — nothing else owns it"
+            );
+            assert!(
+                app.classify_inflight.is_none(),
+                "and the look is no longer outstanding when {what}"
+            );
+        }
+    }
+
+    /// One look at a time.
+    ///
+    /// Every key acts on the home screen even while `busy` — `hard_escape_while_busy`
+    /// says so there — so Enter twice would start two workers, and the user would be
+    /// taken into the first answer and then into the second.
+    #[test]
+    fn a_second_look_is_not_started_while_one_is_out() {
+        use crate::{App, AppEvent};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        let first = std::path::PathBuf::from("/mnt/share/aaa");
+        app.classify_inflight = Some((first.clone(), app.home_generation));
+
+        let follow = app.event(&AppEvent::ClassifyThenOpen {
+            path: std::path::PathBuf::from("/mnt/share/bbb"),
+            jump: false,
+        });
+
+        assert!(follow.is_none());
+        assert_eq!(
+            app.classify_inflight.as_ref().map(|(p, _)| p.as_path()),
+            Some(first.as_path()),
+            "the look that is out is still the one that is out"
+        );
+    }
+
+    /// A typed path the worker could not find comes back to the prompt with the text in
+    /// it, the way a local one never left.
+    #[test]
+    fn a_typed_path_that_is_not_there_comes_back_to_the_prompt() {
+        use crate::{App, AppEvent};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        let path = std::path::PathBuf::from("/mnt/share/nope");
+        let asked_at = app.home_generation;
+        let generation = app.task_generation;
+        app.classify_inflight = Some((path.clone(), asked_at));
+        app.busy = true;
+
+        let follow = app.event(&AppEvent::BackgroundKindReady {
+            generation,
+            home_generation: asked_at,
+            path: path.clone(),
+            found: None,
+            jump: true,
+        });
+
+        assert!(follow.is_none());
+        assert!(
+            app.home
+                .status
+                .as_deref()
+                .is_some_and(|s| s.contains("No such path")),
+            "it says so: {:?}",
+            app.home.status
+        );
+        assert!(app.home.path_input_active, "and the prompt is back");
+        assert_eq!(
+            app.home.path_input,
+            path.display().to_string(),
+            "with the path still in it"
+        );
+    }
+
     /// A parked End's message does not follow the user off the dataset.
     ///
     /// It parks without setting `busy`, so `abandon_load`'s cleanup — which is a load's
@@ -4460,6 +4585,10 @@ pub enum AppEvent {
     /// there.
     BackgroundKindReady {
         generation: u64,
+        /// The home screen the look was asked from. A browse that has moved since —
+        /// Backspace, Esc, another row — makes the answer one about somewhere the user
+        /// has navigated away from, and acting on it yanks them back into it.
+        home_generation: u64,
         path: PathBuf,
         found: Option<discover::EntryKind>,
         jump: bool,
@@ -5348,6 +5477,11 @@ pub struct App {
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     home_generation: u64,
+    /// The look a `ClassifyThenOpen` has out, if any, and the home screen it was asked
+    /// from. One at a time: every key acts on the home screen even while `busy`, because
+    /// `hard_escape_while_busy` says so there — so Enter twice would send the user into
+    /// the first answer and then into the second.
+    classify_inflight: Option<(PathBuf, u64)>,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -5852,6 +5986,10 @@ impl App {
     /// paths that retire such an End can take the message back down without reaching
     /// for a literal, and without clearing a message that belongs to something else.
     const COUNTING_FOR_END: &'static str = "Counting rows to find the end…";
+
+    /// What the control bar says while a path is being looked at. Named so the answer can
+    /// take down its own line without clearing one that belongs to something else.
+    const LOOKING: &'static str = "Looking...";
 
     /// Work already running that the re-read after a join would cancel.
     ///
@@ -6452,6 +6590,7 @@ impl App {
             cloud_discovery_started: false,
             home_search_inflight: false,
             home_generation: 0,
+            classify_inflight: None,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -7416,15 +7555,20 @@ impl App {
 
     /// Whether finding out what a path is could sit on a mount that never answers.
     ///
-    /// Two halves. An object-store or HTTP URL is a string as far as the home screen is
-    /// concerned — `is_dir` is false for one without a syscall, and what is behind it is
-    /// the scan's business. And an ordinary local path answers at once, so making the
-    /// user wait a round trip for it would be a delay bought with nothing.
+    /// Two halves. An object-store or HTTP URL names something no mount is responsible
+    /// for — what is behind it is the scan's business, and stat'ing it only ever asks the
+    /// working directory about a file called `s3:` — and an ordinary local path answers at
+    /// once, so making the user wait a round trip for it would be a delay bought with
+    /// nothing.
     ///
     /// What is left is a path on a mount the home screen calls a network one, which is
     /// the case `is_remote_path` exists to name and the only one worth a worker.
     fn looking_could_block(&self, path: &Path) -> bool {
-        matches!(source::input_source(path), source::InputSource::Local(_))
+        // `cloud://<id>` is a place, not a path: `input_source` calls the unknown scheme
+        // local and `is_remote_path` calls it remote, so without this a worker would be
+        // sent to stat it and come back with "No such path".
+        !home::is_cloud_place(path)
+            && matches!(source::input_source(path), source::InputSource::Local(_))
             && (self.home.network_check)(path)
     }
 
@@ -7535,19 +7679,23 @@ impl App {
                         return None;
                     }
                     let path = home::expand_user_path(&raw);
-                    self.home.path_input.clear();
-                    self.home.path_input_active = false;
                     // Whether it is there, whether it is a directory and what kind of one
                     // are three filesystem calls, and a typed path is exactly where a
                     // dead mount gets named. All three go to a worker when the mount is
                     // one that might not answer.
                     if self.looking_could_block(&path) {
+                        self.home.path_input.clear();
+                        self.home.path_input_active = false;
                         return Some(AppEvent::ClassifyThenOpen { path, jump: true });
                     }
+                    // Before the prompt closes: a typo is worth fixing where it was
+                    // typed, rather than retyping the whole path.
                     if !path.exists() {
                         self.home.status = Some(format!("No such path: {}", path.display()));
                         return None;
                     }
+                    self.home.path_input.clear();
+                    self.home.path_input_active = false;
                     let kind = if path.is_dir() {
                         discover::classify_directory(&path)
                     } else {
@@ -14522,15 +14670,24 @@ impl App {
                 None
             }
             AppEvent::ClassifyThenOpen { path, jump } => {
+                // One look at a time. Every key acts on the home screen even while
+                // `busy`, so a second Enter would start a second worker and the user
+                // would be taken into the first answer and then the second. The line
+                // below says which one is being looked at.
+                if self.classify_inflight.is_some() {
+                    return None;
+                }
                 let looking = path.clone();
                 let jump = *jump;
+                let home_generation = self.home_generation;
+                self.classify_inflight = Some((looking.clone(), home_generation));
                 let name = looking
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| looking.display().to_string());
                 // The home screen's own line, because the control bar's is the table's.
                 self.home.status = Some(format!("Looking at {name}…"));
-                self.spawn_bg("Looking...", move |task_gen, tx| {
+                self.spawn_bg(Self::LOOKING, move |task_gen, tx| {
                     // Every one of these can sit forever on a share that has gone away,
                     // which is the whole reason they are here and not where keys are read.
                     let found = if !looking.exists() {
@@ -14542,6 +14699,7 @@ impl App {
                     };
                     let _ = tx.send(AppEvent::BackgroundKindReady {
                         generation: task_gen,
+                        home_generation,
                         path: looking,
                         found,
                         jump,
@@ -14551,21 +14709,41 @@ impl App {
             }
             AppEvent::BackgroundKindReady {
                 generation,
+                home_generation,
                 path,
                 found,
                 jump,
             } => {
+                // Before the gate, all of it. `spawn_bg` set `busy` and this is the only
+                // thing that comes back, so dropping the answer without clearing it holds
+                // every key for the rest of the session — nothing else owns it, the way a
+                // bumped `task_generation` owns the ones the other handlers drop.
+                let requested = self.classify_inflight.take();
+                self.busy = false;
+                if self.status_message.as_deref() == Some(Self::LOOKING) {
+                    self.status_message = None;
+                }
+                self.home.status = None;
+
                 // A key pressed on the home screen answers on the home screen. If they
-                // opened something else meanwhile the generation has moved; if they went
-                // back to the data, opening now would arrive from nowhere.
-                if *generation != self.task_generation || self.input_mode != InputMode::Home {
+                // opened something else meanwhile the task generation has moved; if the
+                // browse has, the answer is about somewhere they navigated away from; and
+                // if they went back to the data, opening now would arrive from nowhere.
+                if *generation != self.task_generation
+                    || self.input_mode != InputMode::Home
+                    || *home_generation != self.home_generation
+                    || requested.as_ref().map(|(p, _)| p.as_path()) != Some(path.as_path())
+                {
                     return None;
                 }
-                self.busy = false;
-                self.status_message = None;
-                self.home.status = None;
+
                 let Some(kind) = *found else {
                     self.home.status = Some(format!("No such path: {}", path.display()));
+                    if *jump {
+                        // A typo typed at `~` is worth another go without retyping it.
+                        self.home.path_input = path.display().to_string();
+                        self.home.path_input_active = true;
+                    }
                     return None;
                 };
                 self.open_what_it_is(path.clone(), kind, *jump)

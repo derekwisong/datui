@@ -2093,6 +2093,218 @@ pub mod tests {
         );
     }
 
+    /// A count the join orphaned does not strand End, nor speak for a later count.
+    ///
+    /// End on a query over a staged dataset takes the ordinary count — the pass is
+    /// bringing the *dataset's* count, which is not the query's. But the pass's columns
+    /// are held while the query is up and go in the moment the user leaves it, and that
+    /// join takes a fresh `len_generation` past the count already running. What comes
+    /// back then answers a frame that is gone.
+    ///
+    /// Both halves of that were wrong. The flag was cleared only on the matching branch,
+    /// so it sat on a dead generation for the rest of the session — the view never moved
+    /// and nothing was said. And `BackgroundLenFailed` took the flag without checking
+    /// whose count had failed, so the next count to fail for any reason printed "Could
+    /// not count the rows to find the end" about a key pressed on a different frame.
+    #[test]
+    fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
+        use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let wide = || {
+            df!("id" => (0..100i64).collect::<Vec<_>>(), "extra" => vec!["a"; 100])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 100,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        state.set_footers_pending(Arc::new(move |_| {
+            Some(FootersFound {
+                dataset: dataset_of(wide()),
+                lf: wide(),
+                file_rows: vec![100],
+                files: vec!["one".to_string()],
+                row_groups: vec![vec![100]],
+                remote: Some(crate::widgets::datatable::RemoteRead {
+                    urls: vec!["one".to_string()],
+                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
+                    count: Arc::new(|| Ok(vec![vec![100]])),
+                }),
+            })
+        }));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // A question of the dataset, whose answer has a count of its own.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query("select doubled: id * 2".to_string());
+        state.defer_collect = false;
+        let orphaned = app.data_table_state.as_ref().unwrap().len_generation();
+
+        // End, which takes that count rather than waiting for the pass.
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(orphaned),
+            "the jump is waiting on the query's own count"
+        );
+
+        // The pass lands while the query is up, so its columns are held.
+        let live = app.dataset_generation;
+        let found = app
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.footers_pending())
+            .and_then(|pass| pass(&app.footer_progress));
+        App::record_footers(&app.pending_footers_result, live, found);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+        assert!(
+            app.footers_held.is_some(),
+            "held rather than joined, because a query is the root"
+        );
+
+        // The user leaves the query, and the join goes in underneath the count.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query(String::new());
+        state.defer_collect = false;
+        let _ = app.handle(&AppEvent::Update);
+        let joined = app.data_table_state.as_ref().unwrap().len_generation();
+        assert_ne!(
+            joined, orphaned,
+            "the join took a fresh generation past the count that was already running"
+        );
+
+        // And the count comes back, answering a frame that is gone.
+        let next = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: orphaned,
+            num_rows: 100,
+            file_row_groups: None,
+        });
+        assert!(
+            app.end_after_count != Some(orphaned),
+            "the jump is not left waiting on a generation nothing will ever match"
+        );
+        assert!(
+            matches!(next, Some(AppEvent::DoScrollEnd)),
+            "and the End the user pressed is asked again of the frame that is here now, \
+             rather than dropped"
+        );
+
+        // Which lands, once the loop runs it as it would any follow-up.
+        let mut follow = next;
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().start_row,
+            90,
+            "the view is at the end the user asked for"
+        );
+    }
+
+    /// A count that failed for a frame that is gone does not answer for the End on this
+    /// one.
+    ///
+    /// Counts for two frames can be in flight at once — a join or a query takes a fresh
+    /// `len_generation` without stopping the count already running — so a failure
+    /// arriving is not necessarily the failure of the count End is waiting on.
+    /// `BackgroundLenFailed` took the flag without looking at whose count had failed:
+    /// the older one failing dropped the live End on the floor and printed "Could not
+    /// count the rows to find the end" about it, while the count that End was actually
+    /// waiting on was still running and about to succeed.
+    #[test]
+    fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // End on the frame that is here, whose count is running.
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(live),
+            "the jump is waiting on this frame's count"
+        );
+        app.status_message = None;
+
+        // And a count for some frame that is long gone fails.
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live.wrapping_sub(1),
+        });
+
+        assert_eq!(
+            app.end_after_count,
+            Some(live),
+            "the End is still waiting on its own count, which has not failed"
+        );
+        assert_eq!(
+            app.status_message, None,
+            "and nothing is said about a count the user is not waiting on"
+        );
+    }
+
     /// A query over a dataset still reading its footers still gets counted.
     ///
     /// The pass is bringing the *dataset's* count, which is not the count of a query's
@@ -12875,6 +13087,17 @@ impl App {
                         self.status_message = None;
                         return self.jump_key(AppEvent::DoScrollEnd);
                     }
+                } else if self.end_after_count == Some(*len_generation) {
+                    // This is the count End was waiting on, and it answers a frame that
+                    // is gone — a join landed underneath it and took a fresh
+                    // `len_generation` past it. Left here, the flag is stranded on a
+                    // generation nothing will ever match: the view never moves, and the
+                    // next count to fail for any reason speaks in its name. So ask
+                    // again, against the frame that is here now; `jump_key` decides
+                    // afresh whether that means jumping, counting or waiting.
+                    self.end_after_count = None;
+                    self.status_message = None;
+                    return self.jump_key(AppEvent::DoScrollEnd);
                 }
                 None
             }
@@ -12882,9 +13105,25 @@ impl App {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
                 }
-                if self.end_after_count.take().is_some() {
-                    self.status_message =
-                        Some("Could not count the rows to find the end".to_string());
+                // Only for the count End was actually waiting on. Taken unconditionally,
+                // a count that failed for one frame answered for an End pressed on
+                // another — printing "Could not count the rows to find the end" about a
+                // key the user pressed somewhere else entirely, and long since.
+                if self.end_after_count == Some(*len_generation) {
+                    self.end_after_count = None;
+                    if self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.len_generation() == *len_generation)
+                    {
+                        self.status_message =
+                            Some("Could not count the rows to find the end".to_string());
+                    } else {
+                        // The frame it was counting is gone, so its failure says nothing
+                        // about the one on screen. Ask again, as above.
+                        self.status_message = None;
+                        return self.jump_key(AppEvent::DoScrollEnd);
+                    }
                 }
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total.

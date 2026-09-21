@@ -2399,6 +2399,80 @@ pub mod tests {
         );
     }
 
+    /// A dataset waiting on an owed re-read still says its count is coming.
+    ///
+    /// The number a staged open holds is only as far as the buffer reached. While the
+    /// pass is out the dataset says so itself, and the bar shows a spinner. A pass that
+    /// fails takes that away — it gives up on the footers the moment it lands — and the
+    /// count that would replace it is the one the errand is waiting to start. Between
+    /// the two the bar has nothing marking the number provisional, and prints a prefix
+    /// of six thousand files as `Rows: 70`, plainly, for as long as the work in front of
+    /// the errand takes.
+    #[test]
+    fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use polars::prelude::*;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..70i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        // As a staged open leaves it: a provisional from a short read, a pass still out.
+        state.num_rows = 70;
+        state.set_footers_pending(Arc::new(|_| None));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.busy = false;
+
+        let bar_says_seventy = |app: &mut App| {
+            let area = Rect::new(0, 0, 100, 24);
+            let mut buf = Buffer::empty(area);
+            (&mut *app).render(area, &mut buf);
+            (0..area.width)
+                .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+                .collect::<String>()
+                .contains("Rows: 70")
+        };
+        assert!(
+            !bar_says_seventy(&mut app),
+            "while the pass is out the dataset says its count is coming"
+        );
+
+        // An export is running, so the errand the failure raises has to wait.
+        app.loading_state = LoadingState::Exporting {
+            file_path: std::path::PathBuf::from("/tmp/out.csv"),
+            current_phase: "Collecting".to_string(),
+            progress_percent: 0,
+        };
+        let live = app.dataset_generation;
+        App::record_footers(&app.pending_footers_result, live, None);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+        assert!(
+            app.reread_owed.is_some(),
+            "the fixture is a dataset owed a re-read it cannot have yet"
+        );
+
+        app.busy = false;
+        assert!(
+            !bar_says_seventy(&mut app),
+            "and it goes on saying so while the count it is owed waits its turn"
+        );
+    }
+
     /// A query over a dataset still reading its footers still gets counted.
     ///
     /// The pass is bringing the *dataset's* count, which is not the count of a query's
@@ -14844,6 +14918,14 @@ impl Widget for &mut App {
         // plainly, a prefix of six thousand files reads `Rows: 70`.
         let count_pending = self.len_count_inflight.is_some()
             || self.awaiting_dataset
+            // A re-read owed to a dataset whose footers could not be read is a count
+            // that is coming: the collect it is waiting to run is what starts one. The
+            // dataset has already stopped saying it counts itself later (it gave up on
+            // the pass the moment that pass failed), so without this the bar falls
+            // through to printing the number it happens to hold — which is only as far
+            // as the buffer reached. A prefix of six thousand files reads `Rows: 70`,
+            // plainly, for as long as the work in front of the errand takes.
+            || self.reread_owed.is_some()
             || self
                 .data_table_state
                 .as_ref()

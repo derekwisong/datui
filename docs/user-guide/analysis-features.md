@@ -64,18 +64,29 @@ observations. Press <kbd>Enter</kbd> on one for its definition, denominator,
 provenance, and available category-variant examples. Columns reports null,
 empty, whitespace, non-finite, distinct,
 parse, and range measurements. Segments keeps both row denominators visible and
-shows null-rate changes for the selected comparison. Trends charts null-cell
-rates across ordered row chunks or time windows and reports lifecycle
+shows the chosen column measurement and its percentage-point change against
+the selected comparison. Press <kbd>[</kbd>/<kbd>]</kbd> to choose a column
+and <kbd>m</kbd> to cycle null, empty, whitespace, non-finite, distinct,
+integer-parse, and decimal-parse rates. Trends charts that measurement across
+ordered row chunks or time windows and reports lifecycle
 latency for accepted role pairs, including missing endpoints, negative
 durations, p50/p90/p95/p99, and maximum duration.
+On Segments, highlight a row and press <kbd>b</kbd> to make it the baseline;
+comparison deltas update from the measured profiles without another data read.
 
 Sampling is a compute choice, not a grain. It selects rows without replacement
 from at most the first 50,000 eligible rows; it is not a random sample of the
 entire dataset. Segment totals outside dataset grain are unknown in a sampled
 run, and displayed as such. File mapping is available only while
 the current view still preserves source-row provenance; otherwise the Segments
-screen says that it is unavailable. Remote sources are read-only and the access
-plan always reports zero remote writes.
+screen says that it is unavailable. Row chunks use the current view's physical
+order, and sampled rows keep their original chunk labels. Remote sources are
+read-only and the access plan always reports zero remote writes.
+
+Complete profiles are reused during the session when the dataset, current
+view, and full plan (including sample seed and time roles) match. Reopening
+Data Quality then shows the cached result without reading values again;
+changing the view or plan requires a new run.
 
 ### Data-quality metric definitions
 

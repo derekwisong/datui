@@ -4110,6 +4110,13 @@ impl LenCount {
     }
 }
 
+struct QualityCacheEntry {
+    dataset_generation: u64,
+    view_generation: u64,
+    plan: data_quality::DataQualityPlan,
+    results: data_quality::DataQualityResults,
+}
+
 pub struct App {
     pub data_table_state: Option<DataTableState>,
     /// How far the footer pass of an open has got. Written by the threads reading
@@ -4169,6 +4176,7 @@ pub struct App {
     pub pivot_melt_modal: PivotMeltModal,
     pub template_modal: TemplateModal,
     pub analysis_modal: AnalysisModal,
+    quality_cache: Vec<QualityCacheEntry>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
@@ -4293,6 +4301,75 @@ pub struct App {
 }
 
 impl App {
+    fn restore_recent_quality_plan(&mut self) {
+        let Some(view_generation) = self
+            .data_table_state
+            .as_ref()
+            .map(DataTableState::len_generation)
+        else {
+            return;
+        };
+        if self.analysis_modal.data_quality_plan != data_quality::DataQualityPlan::default() {
+            return;
+        }
+        if let Some(cached) = self.quality_cache.iter().find(|entry| {
+            entry.dataset_generation == self.dataset_generation
+                && entry.view_generation == view_generation
+        }) {
+            self.analysis_modal.data_quality_plan = cached.plan.clone();
+        }
+    }
+
+    fn restore_cached_quality(&mut self) -> bool {
+        let Some(view_generation) = self
+            .data_table_state
+            .as_ref()
+            .map(DataTableState::len_generation)
+        else {
+            return false;
+        };
+        let plan = &self.analysis_modal.data_quality_plan;
+        let Some(cached) = self.quality_cache.iter().find(|entry| {
+            entry.dataset_generation == self.dataset_generation
+                && entry.view_generation == view_generation
+                && &entry.plan == plan
+        }) else {
+            return false;
+        };
+        self.analysis_modal.data_quality_results = Some(cached.results.clone());
+        self.analysis_modal.data_quality_last_plan = Some(plan.clone());
+        self.analysis_modal.data_quality_from_cache = true;
+        self.analysis_modal
+            .set_quality_page(data_quality::QualityPage::Overview);
+        true
+    }
+
+    fn cache_quality_result(&mut self, results: &data_quality::DataQualityResults) {
+        let Some(view_generation) = self
+            .data_table_state
+            .as_ref()
+            .map(DataTableState::len_generation)
+        else {
+            return;
+        };
+        let plan = self.analysis_modal.data_quality_plan.clone();
+        self.quality_cache.retain(|entry| {
+            !(entry.dataset_generation == self.dataset_generation
+                && entry.view_generation == view_generation
+                && entry.plan == plan)
+        });
+        self.quality_cache.insert(
+            0,
+            QualityCacheEntry {
+                dataset_generation: self.dataset_generation,
+                view_generation,
+                plan,
+                results: results.clone(),
+            },
+        );
+        self.quality_cache.truncate(4);
+    }
+
     /// Returns true when the app is busy (background work in progress).
     pub fn is_busy(&self) -> bool {
         self.busy
@@ -4677,6 +4754,7 @@ impl App {
         // an open that fails leaves the last dataset up, and the pass still reading its
         // footers has to be able to finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
+        self.quality_cache.clear();
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -5090,6 +5168,7 @@ impl App {
             pivot_melt_modal: PivotMeltModal::new(),
             template_modal: TemplateModal::new(),
             analysis_modal: AnalysisModal::new(),
+            quality_cache: Vec::new(),
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -9613,14 +9692,81 @@ impl App {
                     }
                     KeyCode::Char('2') => {
                         self.analysis_modal.set_quality_page(QualityPage::Columns);
+                        self.analysis_modal
+                            .data_quality_table_state
+                            .select(Some(self.analysis_modal.data_quality_column_index));
                         return None;
                     }
                     KeyCode::Char('3') => {
+                        if self.analysis_modal.data_quality_page == QualityPage::Columns {
+                            self.analysis_modal.data_quality_column_index = self
+                                .analysis_modal
+                                .data_quality_table_state
+                                .selected()
+                                .unwrap_or(0);
+                        }
                         self.analysis_modal.set_quality_page(QualityPage::Segments);
                         return None;
                     }
                     KeyCode::Char('4') => {
+                        if self.analysis_modal.data_quality_page == QualityPage::Columns {
+                            self.analysis_modal.data_quality_column_index = self
+                                .analysis_modal
+                                .data_quality_table_state
+                                .selected()
+                                .unwrap_or(0);
+                        }
                         self.analysis_modal.set_quality_page(QualityPage::Trends);
+                        return None;
+                    }
+                    KeyCode::Char('m')
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Segments | QualityPage::Trends
+                        ) =>
+                    {
+                        self.analysis_modal.cycle_quality_metric();
+                        return None;
+                    }
+                    KeyCode::Char('b')
+                        if self.analysis_modal.data_quality_page == QualityPage::Segments
+                            && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main =>
+                    {
+                        if let Some(mut results) = self.analysis_modal.data_quality_results.take() {
+                            if let Some(label) = self
+                                .analysis_modal
+                                .data_quality_table_state
+                                .selected()
+                                .and_then(|index| results.segments.get(index))
+                                .map(|segment| segment.label.clone())
+                            {
+                                self.analysis_modal.data_quality_plan.comparison =
+                                    crate::data_quality::QualityComparison::Baseline;
+                                self.analysis_modal.data_quality_plan.baseline_segment =
+                                    Some(label);
+                                results.compare_segments(&self.analysis_modal.data_quality_plan);
+                                self.cache_quality_result(&results);
+                                self.analysis_modal.data_quality_last_plan =
+                                    Some(self.analysis_modal.data_quality_plan.clone());
+                            }
+                            self.analysis_modal.data_quality_results = Some(results);
+                        }
+                        return None;
+                    }
+                    KeyCode::Char('[') | KeyCode::Char(']')
+                        if matches!(
+                            self.analysis_modal.data_quality_page,
+                            QualityPage::Segments | QualityPage::Trends
+                        ) =>
+                    {
+                        let count = self
+                            .analysis_modal
+                            .data_quality_results
+                            .as_ref()
+                            .map(|results| results.columns.len())
+                            .unwrap_or(0);
+                        self.analysis_modal
+                            .cycle_quality_column(count, event.code == KeyCode::Char(']'));
                         return None;
                     }
                     KeyCode::Char('r') => {
@@ -9628,6 +9774,7 @@ impl App {
                         self.analysis_modal.data_quality_plan.sample_seed =
                             self.analysis_modal.random_seed;
                         self.analysis_modal.data_quality_results = None;
+                        self.analysis_modal.data_quality_from_cache = false;
                         if self.analysis_modal.data_quality_plan.compute
                             == crate::data_quality::QualityCompute::Full
                         {
@@ -9669,6 +9816,9 @@ impl App {
                                 self.analysis_modal.set_quality_page(QualityPage::Overview);
                                 return None;
                             }
+                            if self.restore_cached_quality() {
+                                return None;
+                            }
                             if self.analysis_modal.data_quality_plan.compute
                                 == crate::data_quality::QualityCompute::Full
                                 && !self.analysis_modal.data_quality_confirm_run
@@ -9678,6 +9828,7 @@ impl App {
                             }
                             self.analysis_modal.data_quality_confirm_run = false;
                             self.analysis_modal.data_quality_results = None;
+                            self.analysis_modal.data_quality_from_cache = false;
                             self.analysis_modal.computing = Some(AnalysisProgress {
                                 phase: "Profiling data quality".to_string(),
                                 current: 0,
@@ -9955,6 +10106,10 @@ impl App {
                                 });
                                 self.busy = true;
                                 return Some(AppEvent::AnalysisCorrelationCompute);
+                            }
+                            Some(analysis_modal::AnalysisTool::DataQuality) => {
+                                self.restore_recent_quality_plan();
+                                self.restore_cached_quality();
                             }
                             _ => {}
                         }
@@ -13233,10 +13388,16 @@ impl App {
                 generation,
                 results,
             } => {
-                if *generation == self.task_generation {
+                if *generation == self.task_generation
+                    && self.analysis_modal.active
+                    && self.analysis_modal.selected_tool
+                        == Some(analysis_modal::AnalysisTool::DataQuality)
+                {
+                    self.cache_quality_result(results);
                     self.analysis_modal.data_quality_last_plan =
                         Some(self.analysis_modal.data_quality_plan.clone());
                     self.analysis_modal.data_quality_results = Some(results.clone());
+                    self.analysis_modal.data_quality_from_cache = false;
                     self.analysis_modal
                         .set_quality_page(crate::data_quality::QualityPage::Overview);
                     self.analysis_modal.computing = None;

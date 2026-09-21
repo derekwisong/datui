@@ -1,6 +1,6 @@
 use crate::data_quality::{
     DataQualityPlan, DataQualityResults, QualityComparison, QualityCompute, QualityGrain,
-    QualityPage, TemporalRole, TemporalRoleAssignment,
+    QualityMetric, QualityPage, TemporalRole, TemporalRoleAssignment,
 };
 use crate::statistics::{AnalysisResults, DistributionType};
 use ratatui::widgets::TableState;
@@ -79,6 +79,9 @@ pub struct AnalysisModal {
     pub data_quality_confirm_run: bool,
     pub data_quality_plan_before_edit: Option<DataQualityPlan>,
     pub data_quality_last_plan: Option<DataQualityPlan>,
+    pub data_quality_from_cache: bool,
+    pub data_quality_metric: QualityMetric,
+    pub data_quality_column_index: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -125,6 +128,9 @@ impl AnalysisModal {
         self.data_quality_confirm_run = false;
         self.data_quality_plan_before_edit = None;
         self.data_quality_last_plan = None;
+        self.data_quality_from_cache = false;
+        self.data_quality_metric = QualityMetric::NullRate;
+        self.data_quality_column_index = 0;
         // Generate initial random seed (use 0 if system time is before UNIX_EPOCH)
         self.random_seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -157,6 +163,9 @@ impl AnalysisModal {
         self.data_quality_confirm_run = false;
         self.data_quality_plan_before_edit = None;
         self.data_quality_last_plan = None;
+        self.data_quality_from_cache = false;
+        self.data_quality_metric = QualityMetric::NullRate;
+        self.data_quality_column_index = 0;
     }
 
     /// Returns the cached results for the currently selected tool, if any.
@@ -323,6 +332,24 @@ impl AnalysisModal {
         self.data_quality_table_state.select(Some(0));
     }
 
+    pub fn cycle_quality_metric(&mut self) {
+        let current = QualityMetric::ALL
+            .iter()
+            .position(|metric| *metric == self.data_quality_metric)
+            .unwrap_or(0);
+        self.data_quality_metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
+    }
+
+    pub fn cycle_quality_column(&mut self, count: usize, forward: bool) {
+        if count == 0 {
+            self.data_quality_column_index = 0;
+        } else if forward {
+            self.data_quality_column_index = (self.data_quality_column_index + 1) % count;
+        } else {
+            self.data_quality_column_index = (self.data_quality_column_index + count - 1) % count;
+        }
+    }
+
     pub fn adjust_quality_plan(&mut self, forward: bool, partition_columns: &[String]) {
         match self.data_quality_plan_field {
             1 => {
@@ -355,6 +382,7 @@ impl AnalysisModal {
                     current - 1
                 };
                 self.data_quality_plan.grain = choices[next].clone();
+                self.data_quality_plan.baseline_segment = None;
             }
             2 => {
                 self.data_quality_plan.compute = match (self.data_quality_plan.compute, forward) {
@@ -379,6 +407,9 @@ impl AnalysisModal {
                         (QualityComparison::Baseline, true) => QualityComparison::None,
                         (QualityComparison::None, false) => QualityComparison::Baseline,
                     };
+                if self.data_quality_plan.comparison != QualityComparison::Baseline {
+                    self.data_quality_plan.baseline_segment = None;
+                }
             }
             5 => {
                 let choices = [None, Some(3_600), Some(86_400), Some(604_800)];

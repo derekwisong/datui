@@ -836,6 +836,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     );
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
     assert!(app.analysis_modal.data_quality_results.is_none());
+    app.analysis_modal.data_quality_plan.sample_seed = 7_119;
 
     app.analysis_modal.focus = AnalysisFocus::Main;
     let next = app.event(&AppEvent::Key(KeyEvent::new(
@@ -918,6 +919,75 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             }
         }
     }
+
+    app.analysis_modal.set_quality_page(QualityPage::Segments);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('b'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.comparison,
+        datui::data_quality::QualityComparison::Baseline
+    );
+    assert!(
+        app.analysis_modal
+            .data_quality_plan
+            .baseline_segment
+            .is_some()
+    );
+    assert!(!app.is_busy());
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('m'),
+        KeyModifiers::NONE,
+    )));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char(']'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.data_quality_metric,
+        datui::data_quality::QualityMetric::EmptyRate
+    );
+    assert_eq!(app.analysis_modal.data_quality_column_index, 1);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('4'),
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
+    assert_eq!(app.analysis_modal.data_quality_column_index, 1);
+
+    app.analysis_modal.close();
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_from_cache);
+    assert_eq!(app.analysis_modal.data_quality_plan.sample_seed, 7_119);
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    assert!(!app.is_busy());
+
+    app.analysis_modal.close();
+    let state = app.data_table_state.as_mut().unwrap();
+    state.defer_collect = true;
+    state.reverse();
+    state.defer_collect = false;
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.data_quality_from_cache);
+    assert!(app.analysis_modal.data_quality_results.is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
 }
 
 /// Regression for commit 7b7bfe8: holding PageDown at the end of the data once

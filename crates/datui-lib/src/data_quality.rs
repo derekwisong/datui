@@ -65,7 +65,7 @@ impl QualityGrain {
             Self::Dataset => "dataset".to_string(),
             Self::File => "file".to_string(),
             Self::Partition(column) => format!("partition:{column}"),
-            Self::RowChunks(rows) => format!("{rows} rows"),
+            Self::RowChunks(rows) => format!("{rows} rows (physical order)"),
             Self::TimeWindows { column, every } => format!("{every} on {column}"),
         }
     }
@@ -144,6 +144,7 @@ pub struct DataQualityPlan {
     pub sample_seed: u64,
     pub grain: QualityGrain,
     pub comparison: QualityComparison,
+    pub baseline_segment: Option<String>,
     pub temporal_roles: Vec<TemporalRoleAssignment>,
     pub latency_threshold_seconds: Option<i64>,
 }
@@ -156,6 +157,7 @@ impl Default for DataQualityPlan {
             sample_seed: 42_891,
             grain: QualityGrain::Dataset,
             comparison: QualityComparison::None,
+            baseline_segment: None,
             temporal_roles: Vec::new(),
             latency_threshold_seconds: None,
         }
@@ -163,6 +165,17 @@ impl Default for DataQualityPlan {
 }
 
 impl DataQualityPlan {
+    pub fn comparison_label(&self) -> String {
+        if self.comparison == QualityComparison::Baseline {
+            self.baseline_segment
+                .as_ref()
+                .map(|label| format!("baseline: {label}"))
+                .unwrap_or_else(|| self.comparison.label().to_string())
+        } else {
+            self.comparison.label().to_string()
+        }
+    }
+
     pub fn set_row_chunks(&mut self) {
         self.grain = QualityGrain::RowChunks(DEFAULT_CHUNK_ROWS);
     }
@@ -175,7 +188,7 @@ impl DataQualityPlan {
                 QualityCompute::Sample => format!("{} rows", self.sample_rows),
                 other => other.label().to_string(),
             },
-            self.comparison.label()
+            self.comparison_label()
         )
     }
 }
@@ -195,6 +208,62 @@ impl QualityPrecision {
             Self::Sampled => "sampled",
             Self::Exact => "exact",
             Self::Estimated => "estimated",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QualityMetric {
+    #[default]
+    NullRate,
+    EmptyRate,
+    WhitespaceRate,
+    NonFiniteRate,
+    DistinctShare,
+    IntegerParseShare,
+    DecimalParseShare,
+}
+
+impl QualityMetric {
+    pub const ALL: [Self; 7] = [
+        Self::NullRate,
+        Self::EmptyRate,
+        Self::WhitespaceRate,
+        Self::NonFiniteRate,
+        Self::DistinctShare,
+        Self::IntegerParseShare,
+        Self::DecimalParseShare,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NullRate => "Null rate",
+            Self::EmptyRate => "Empty rate",
+            Self::WhitespaceRate => "Whitespace rate",
+            Self::NonFiniteRate => "Non-finite rate",
+            Self::DistinctShare => "Distinct share",
+            Self::IntegerParseShare => "Integer parse share",
+            Self::DecimalParseShare => "Decimal parse share",
+        }
+    }
+
+    pub fn value(self, column: &ColumnQualityProfile) -> Option<f64> {
+        let ratio = |numerator: usize, denominator: usize| {
+            (denominator > 0).then(|| numerator as f64 / denominator as f64)
+        };
+        match self {
+            Self::NullRate => ratio(column.null_count, column.evaluated_rows),
+            Self::EmptyRate => ratio(column.empty_count?, column.evaluated_rows),
+            Self::WhitespaceRate => ratio(column.whitespace_count?, column.evaluated_rows),
+            Self::NonFiniteRate => ratio(
+                column.nan_count?
+                    + column.positive_infinity_count?
+                    + column.negative_infinity_count?,
+                column.evaluated_rows,
+            ),
+            Self::DistinctShare => ratio(column.distinct_count?, column.non_null_rows()),
+            Self::IntegerParseShare => ratio(column.integer_parse_count?, column.non_null_rows()),
+            Self::DecimalParseShare => ratio(column.decimal_parse_count?, column.non_null_rows()),
         }
     }
 }
@@ -297,6 +366,7 @@ pub struct SegmentQualityProfile {
     pub label: String,
     pub total_rows: Option<usize>,
     pub evaluated_rows: usize,
+    pub columns: Vec<ColumnQualityProfile>,
     pub null_cells: usize,
     pub null_rate: f64,
     pub compared_with: Option<String>,
@@ -337,6 +407,16 @@ pub struct DataQualityResults {
 }
 
 impl DataQualityResults {
+    pub fn compare_segments(&mut self, plan: &DataQualityPlan) {
+        apply_comparisons(
+            &mut self.segments,
+            &plan.grain,
+            plan.comparison,
+            plan.baseline_segment.as_deref(),
+            self.precision,
+        );
+    }
+
     pub fn empty(total_rows: usize, plan: &DataQualityPlan, schema: &Schema) -> Self {
         Self {
             total_rows,
@@ -393,16 +473,17 @@ pub fn compute_data_quality(
         return compute_full_quality(lf, total_rows, plan, source, &schema, polars_streaming);
     }
 
-    let (profile_df, evaluated_rows, precision) = match plan.compute {
+    let (profile_df, sample_positions, evaluated_rows, precision) = match plan.compute {
         QualityCompute::Sample if total_rows > plan.sample_rows.min(50_000) => {
-            let df = sample_quality_rows(lf, plan.sample_rows, plan.sample_seed, polars_streaming)?;
+            let (df, positions) =
+                sample_quality_rows(lf, plan.sample_rows, plan.sample_seed, polars_streaming)?;
             let height = df.height();
-            (df, height, QualityPrecision::Sampled)
+            (df, Some(positions), height, QualityPrecision::Sampled)
         }
         QualityCompute::Sample => {
             let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
             let height = df.height();
-            (df, height, QualityPrecision::Exact)
+            (df, None, height, QualityPrecision::Exact)
         }
         QualityCompute::Metadata | QualityCompute::Full => unreachable!(),
     };
@@ -420,9 +501,10 @@ pub fn compute_data_quality(
         plan,
         precision,
         &schema,
+        sample_positions.as_deref(),
         polars_streaming,
     )?;
-    let temporal = profile_temporal(&profile_df, plan)?;
+    let temporal = profile_temporal(&profile_df, plan, sample_positions.as_deref())?;
 
     Ok(DataQualityResults {
         total_rows,
@@ -443,13 +525,14 @@ fn sample_quality_rows(
     sample_rows: usize,
     seed: u64,
     polars_streaming: bool,
-) -> Result<DataFrame> {
+) -> Result<(DataFrame, Vec<u32>)> {
     let requested = sample_rows.min(50_000);
     let candidate_rows = requested.saturating_mul(2).min(50_000);
     let candidates = collect_lazy(lf.clone().limit(candidate_rows as u32), polars_streaming)
         .map_err(Report::from)?;
     if candidates.height() <= requested {
-        return Ok(candidates);
+        let positions = (0..candidates.height() as u32).collect();
+        return Ok((candidates, positions));
     }
     let mut indices = (0..candidates.height() as u32).collect::<Vec<_>>();
     let mut random = seed;
@@ -465,7 +548,11 @@ fn sample_quality_rows(
     }
     indices.truncate(requested);
     indices.sort_unstable();
-    Ok(candidates.take(&UInt32Chunked::new("quality_sample".into(), indices))?)
+    let sampled = candidates.take(&UInt32Chunked::new(
+        "quality_sample".into(),
+        indices.clone(),
+    ))?;
+    Ok((sampled, indices))
 }
 
 fn compute_full_quality(
@@ -838,7 +925,11 @@ struct SegmentRows {
     indices: Vec<u32>,
 }
 
-fn segment_rows(df: &DataFrame, plan: &DataQualityPlan) -> Result<Vec<SegmentRows>> {
+fn segment_rows(
+    df: &DataFrame,
+    plan: &DataQualityPlan,
+    sample_positions: Option<&[u32]>,
+) -> Result<Vec<SegmentRows>> {
     let all_rows = || SegmentRows {
         label: "current view".to_string(),
         indices: (0..df.height() as u32).collect(),
@@ -847,14 +938,23 @@ fn segment_rows(df: &DataFrame, plan: &DataQualityPlan) -> Result<Vec<SegmentRow
         QualityGrain::Dataset => vec![all_rows()],
         QualityGrain::RowChunks(size) => {
             let size = (*size).max(1);
-            (0..df.height())
-                .step_by(size)
-                .map(|start| {
-                    let end = (start + size).min(df.height());
-                    SegmentRows {
-                        label: format!("rows {}-{}", start + 1, end),
-                        indices: (start as u32..end as u32).collect(),
-                    }
+            let mut chunks = BTreeMap::<usize, Vec<u32>>::new();
+            for row in 0..df.height() {
+                let position = sample_positions
+                    .and_then(|positions| positions.get(row))
+                    .copied()
+                    .unwrap_or(row as u32) as usize;
+                chunks.entry(position / size).or_default().push(row as u32);
+            }
+            chunks
+                .into_iter()
+                .map(|(chunk, indices)| SegmentRows {
+                    label: format!(
+                        "rows {}-{}",
+                        chunk.saturating_mul(size) + 1,
+                        (chunk + 1).saturating_mul(size)
+                    ),
+                    indices,
                 })
                 .collect()
         }
@@ -962,9 +1062,10 @@ fn profile_segments(
     plan: &DataQualityPlan,
     precision: QualityPrecision,
     schema: &Schema,
+    sample_positions: Option<&[u32]>,
     polars_streaming: bool,
 ) -> Result<Vec<SegmentQualityProfile>> {
-    let groups = segment_rows(df, plan)?;
+    let groups = segment_rows(df, plan, sample_positions)?;
     let mut profiles = Vec::with_capacity(groups.len());
     for group in groups {
         let segment = take_rows(df, &group.indices)?;
@@ -984,13 +1085,20 @@ fn profile_segments(
                 None
             },
             evaluated_rows: segment.height(),
+            columns,
             null_cells,
             null_rate: rate(null_cells, denominator),
             compared_with: None,
             largest_change: None,
         });
     }
-    apply_comparisons(&mut profiles, &plan.grain, plan.comparison, precision);
+    apply_comparisons(
+        &mut profiles,
+        &plan.grain,
+        plan.comparison,
+        plan.baseline_segment.as_deref(),
+        precision,
+    );
     Ok(profiles)
 }
 
@@ -1024,6 +1132,7 @@ fn profile_segments_lazy(
             },
             total_rows: Some(total_rows),
             evaluated_rows: total_rows,
+            columns,
             null_cells,
             null_rate: rate(null_cells, denominator),
             compared_with: None,
@@ -1056,6 +1165,7 @@ fn profile_segments_lazy(
             label: segment_label(&plan.grain, &raw_label),
             total_rows: Some(evaluated_rows),
             evaluated_rows,
+            columns,
             null_cells,
             null_rate: rate(null_cells, denominator),
             compared_with: None,
@@ -1072,6 +1182,7 @@ fn profile_segments_lazy(
         &mut segments,
         &plan.grain,
         plan.comparison,
+        plan.baseline_segment.as_deref(),
         QualityPrecision::Exact,
     );
     Ok(segments)
@@ -1152,8 +1263,13 @@ fn apply_comparisons(
     segments: &mut [SegmentQualityProfile],
     grain: &QualityGrain,
     comparison: QualityComparison,
+    baseline_segment: Option<&str>,
     precision: QualityPrecision,
 ) {
+    for segment in segments.iter_mut() {
+        segment.compared_with = None;
+        segment.largest_change = None;
+    }
     if comparison == QualityComparison::Previous
         && matches!(grain, QualityGrain::File | QualityGrain::Partition(_))
     {
@@ -1162,11 +1278,20 @@ fn apply_comparisons(
         }
         return;
     }
+    let baseline_index = baseline_segment
+        .and_then(|label| segments.iter().position(|segment| segment.label == label))
+        .or_else(|| baseline_segment.is_none().then_some(0));
+    if comparison == QualityComparison::Baseline && baseline_index.is_none() {
+        for segment in segments {
+            segment.largest_change = Some("selected baseline unavailable".to_string());
+        }
+        return;
+    }
     for index in 0..segments.len() {
         let compared = match comparison {
             QualityComparison::None => None,
             QualityComparison::Previous if index > 0 => Some(index - 1),
-            QualityComparison::Baseline if index > 0 => Some(0),
+            QualityComparison::Baseline if Some(index) != baseline_index => baseline_index,
             QualityComparison::Previous | QualityComparison::Baseline => None,
         };
         if let Some(other) = compared {
@@ -1180,7 +1305,11 @@ fn apply_comparisons(
     }
 }
 
-fn profile_temporal(df: &DataFrame, plan: &DataQualityPlan) -> Result<Vec<TemporalLatencyProfile>> {
+fn profile_temporal(
+    df: &DataFrame,
+    plan: &DataQualityPlan,
+    sample_positions: Option<&[u32]>,
+) -> Result<Vec<TemporalLatencyProfile>> {
     let role_column = |role| {
         plan.temporal_roles
             .iter()
@@ -1195,7 +1324,7 @@ fn profile_temporal(df: &DataFrame, plan: &DataQualityPlan) -> Result<Vec<Tempor
         (TemporalRole::Received, TemporalRole::Processed),
         (TemporalRole::Event, TemporalRole::Processed),
     ];
-    let groups = segment_rows(df, plan)?;
+    let groups = segment_rows(df, plan, sample_positions)?;
     let mut profiles = Vec::new();
     for group in groups {
         let segment = take_rows(df, &group.indices)?;
@@ -1821,6 +1950,7 @@ mod tests {
         .lazy();
         let mut plan = DataQualityPlan {
             sample_rows: 20,
+            sample_seed: 1,
             grain: QualityGrain::RowChunks(10),
             ..DataQualityPlan::default()
         };
@@ -1829,7 +1959,7 @@ mod tests {
         let other = sample_quality_rows(&frame, 20, 2, false).unwrap();
         assert_eq!(first, again);
         assert_ne!(first, other);
-        assert_eq!(first.column("id").unwrap().n_unique().unwrap(), 20);
+        assert_eq!(first.0.column("id").unwrap().n_unique().unwrap(), 20);
 
         let results = compute_data_quality(&frame, 100, &plan, None, false).unwrap();
         assert!(
@@ -1838,6 +1968,21 @@ mod tests {
                 .iter()
                 .all(|segment| segment.total_rows.is_none())
         );
+        let mut expected_chunks = BTreeMap::<usize, usize>::new();
+        for position in first.1 {
+            *expected_chunks.entry(position as usize / 10).or_default() += 1;
+        }
+        for (chunk, count) in expected_chunks {
+            let label = format!("rows {}-{}", chunk * 10 + 1, (chunk + 1) * 10);
+            assert_eq!(
+                results
+                    .segments
+                    .iter()
+                    .find(|segment| segment.label == label)
+                    .map(|segment| segment.evaluated_rows),
+                Some(count)
+            );
+        }
         plan.compute = QualityCompute::Full;
         let full = compute_data_quality(&frame, 100, &plan, None, false).unwrap();
         assert!(
@@ -1866,7 +2011,7 @@ mod tests {
         plan.comparison = QualityComparison::Previous;
         assert_eq!(
             plan.compact_summary(),
-            "scope current -> grain 1000000 rows -> compute 10000 rows -> compare previous"
+            "scope current -> grain 1000000 rows (physical order) -> compute 10000 rows -> compare previous"
         );
     }
 
@@ -1881,11 +2026,35 @@ mod tests {
         let results = compute_data_quality(&fixture(), 4, &plan, None, false).unwrap();
         assert_eq!(results.segments.len(), 2);
         assert_eq!(results.segments[0].evaluated_rows, 2);
+        let first_dirty = results.segments[0]
+            .columns
+            .iter()
+            .find(|column| column.name == "dirty")
+            .unwrap();
+        let second_dirty = results.segments[1]
+            .columns
+            .iter()
+            .find(|column| column.name == "dirty")
+            .unwrap();
+        assert_eq!(QualityMetric::EmptyRate.value(first_dirty), Some(0.5));
+        assert_eq!(QualityMetric::EmptyRate.value(second_dirty), Some(0.0));
+        assert_eq!(QualityMetric::NullRate.value(second_dirty), Some(0.5));
         assert_eq!(
             results.segments[1].compared_with.as_deref(),
             Some("rows 1-2")
         );
         assert!(results.segments[1].largest_change.is_some());
+
+        let mut selected = results;
+        let mut baseline_plan = plan.clone();
+        baseline_plan.comparison = QualityComparison::Baseline;
+        baseline_plan.baseline_segment = Some("rows 3-4".to_string());
+        selected.compare_segments(&baseline_plan);
+        assert_eq!(
+            selected.segments[0].compared_with.as_deref(),
+            Some("rows 3-4")
+        );
+        assert!(selected.segments[1].compared_with.is_none());
     }
 
     #[test]

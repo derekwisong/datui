@@ -131,6 +131,9 @@ On the Sort tab, with a column highlighted:
 | <kbd>1</kbd>–<kbd>4</kbd> | In Data Quality, open Overview, Columns, Segments, or Trends |
 | <kbd>e</kbd> | In Data Quality, edit a copy of the profile plan |
 | <kbd>p</kbd> | In Data Quality, show the detailed access plan |
+| <kbd>[</kbd> <kbd>]</kbd> | In Data Quality Segments/Trends, choose a column |
+| <kbd>m</kbd> | In Data Quality Segments/Trends, choose a measurement |
+| <kbd>b</kbd> | In Data Quality Segments, use the selected segment as baseline |
 | <kbd>s</kbd> | In the distribution detail, toggle the histogram between linear and log |
 | <kbd>r</kbd> | In Data Quality, rerun with a new seed; elsewhere redraw a sample when sampling is on |
 | <kbd>Esc</kbd> | Back one level |

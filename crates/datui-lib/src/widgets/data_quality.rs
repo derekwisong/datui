@@ -1,8 +1,8 @@
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
 use crate::config::Theme;
 use crate::data_quality::{
-    DataQualityPlan, DataQualityResults, ObservationKind, QualityCompute, QualityGrain,
-    QualityPage, TemporalRole,
+    DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison, QualityCompute,
+    QualityGrain, QualityMetric, QualityPage, TemporalRole,
 };
 use crate::glyphs;
 use crate::numfmt;
@@ -20,6 +20,9 @@ pub struct DataQualityWidgetConfig<'a> {
     pub state: &'a DataTableState,
     pub plan: &'a DataQualityPlan,
     pub results: Option<&'a DataQualityResults>,
+    pub from_cache: bool,
+    pub metric: QualityMetric,
+    pub column_index: usize,
     pub page: QualityPage,
     pub editing: bool,
     pub plan_field: usize,
@@ -120,6 +123,12 @@ fn render_breadcrumb(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    if config.from_cache {
+        spans.push(Span::styled(
+            "  [session cache]",
+            Style::default().fg(config.theme.get("dimmed")),
+        ));
+    }
     Paragraph::new(Line::from(spans))
         .style(Style::default().bg(config.theme.get("controls_bg")))
         .render(area, buf);
@@ -168,7 +177,7 @@ fn render_plan_strip(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut
                 Style::default().fg(config.theme.get("dimmed")),
             ),
             Span::styled(
-                config.plan.comparison.label(),
+                config.plan.comparison_label(),
                 Style::default().fg(config.theme.get("accent")),
             ),
         ]),
@@ -245,7 +254,7 @@ fn render_plan(
         ]),
         Row::new(vec![
             Cell::from("Compare"),
-            Cell::from(config.plan.comparison.label()),
+            Cell::from(config.plan.comparison_label()),
         ]),
         Row::new(vec![Cell::from("Time roles"), Cell::from(temporal)]),
         Row::new(vec![
@@ -690,7 +699,21 @@ fn render_segments(
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
         .margin(1)
         .split(area);
-    render_section_title("SEGMENTS", sections[0], config.theme, buf);
+    let column = results.columns.get(config.column_index);
+    let mut heading = format!(
+        "SEGMENTS  /  {}  /  {}",
+        column.map(|profile| profile.name.as_str()).unwrap_or("-"),
+        config.metric.label()
+    );
+    if config.plan.comparison == QualityComparison::Previous
+        && matches!(
+            config.plan.grain,
+            QualityGrain::File | QualityGrain::Partition(_)
+        )
+    {
+        heading.push_str("  /  PREVIOUS NEEDS ORDER");
+    }
+    render_section_title(&heading, sections[0], config.theme, buf);
     let layout = if sections[1].width >= 124 {
         2
     } else if sections[1].width >= 72 {
@@ -699,15 +722,19 @@ fn render_segments(
         0
     };
     let rows = results.segments.iter().map(|segment| {
-        let null = format!(
-            "{} ({:.1}%)",
-            numfmt::group_chrome(segment.null_cells),
-            segment.null_rate * 100.0
-        );
-        let change = segment
-            .largest_change
-            .clone()
-            .unwrap_or_else(|| "-".to_string());
+        let value = segment_metric_value(segment, config.column_index, config.metric);
+        let metric = metric_label(value);
+        let compared = segment
+            .compared_with
+            .as_ref()
+            .and_then(|label| results.segments.iter().find(|other| &other.label == label));
+        let change =
+            value
+                .zip(compared.and_then(|other| {
+                    segment_metric_value(other, config.column_index, config.metric)
+                }))
+                .map(|(current, prior)| format!("{:+.2} pp", (current - prior) * 100.0))
+                .unwrap_or_else(|| "-".to_string());
         Row::new(match layout {
             2 => vec![
                 segment.label.clone(),
@@ -716,20 +743,21 @@ fn render_segments(
                     .map(numfmt::group_chrome)
                     .unwrap_or_else(|| "unknown".to_string()),
                 numfmt::group_chrome(segment.evaluated_rows),
-                null,
+                metric.clone(),
                 segment
                     .compared_with
                     .clone()
                     .unwrap_or_else(|| "-".to_string()),
                 change,
+                format!("{:.1}%", segment.null_rate * 100.0),
             ],
             1 => vec![
                 segment.label.clone(),
                 numfmt::group_chrome(segment.evaluated_rows),
-                null,
+                metric.clone(),
                 change,
             ],
-            _ => vec![segment.label.clone(), null, change],
+            _ => vec![segment.label.clone(), metric, change],
         })
     });
     normalize_selection(table_state, results.segments.len());
@@ -739,9 +767,10 @@ fn render_segments(
                 "Segment",
                 "Total rows",
                 "Evaluated",
-                "Null cells",
+                "Selected metric",
                 "Compared with",
-                "Largest change",
+                "Delta",
+                "All-null rate",
             ],
             vec![
                 Constraint::Length(24),
@@ -749,11 +778,12 @@ fn render_segments(
                 Constraint::Length(16),
                 Constraint::Length(20),
                 Constraint::Length(24),
+                Constraint::Length(12),
                 Constraint::Fill(1),
             ],
         ),
         1 => (
-            vec!["Segment", "Evaluated", "Null cells", "Change"],
+            vec!["Segment", "Evaluated", "Metric", "Delta"],
             vec![
                 Constraint::Length(26),
                 Constraint::Length(12),
@@ -762,7 +792,7 @@ fn render_segments(
             ],
         ),
         _ => (
-            vec!["Segment", "Null", "Change"],
+            vec!["Segment", "Metric", "Delta"],
             vec![
                 Constraint::Fill(1),
                 Constraint::Length(12),
@@ -775,6 +805,20 @@ fn render_segments(
         .row_highlight_style(config.theme.highlight_style())
         .highlight_symbol(glyphs::get().selector);
     StatefulWidget::render(table, sections[1], buf, table_state);
+}
+
+fn segment_metric_value(
+    segment: &crate::data_quality::SegmentQualityProfile,
+    column_index: usize,
+    metric: QualityMetric,
+) -> Option<f64> {
+    metric.value(segment.columns.get(column_index)?)
+}
+
+fn metric_label(value: Option<f64>) -> String {
+    value
+        .map(|value| format!("{:.1}%", value * 100.0))
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn render_trends(
@@ -803,8 +847,18 @@ fn render_trends(
         .margin(1)
         .split(area);
     if show_trend {
-        render_section_title("NULL RATE ACROSS SEGMENTS", sections[0], config.theme, buf);
-        render_null_trend(results, sections[1], config.theme, buf);
+        let column = results
+            .columns
+            .get(config.column_index)
+            .map(|profile| profile.name.as_str())
+            .unwrap_or("-");
+        render_section_title(
+            &format!("{}  /  {} ACROSS SEGMENTS", column, config.metric.label()),
+            sections[0],
+            config.theme,
+            buf,
+        );
+        render_metric_trend(results, config, sections[1], buf);
     }
     render_section_title("LIFECYCLE LATENCY", sections[2], config.theme, buf);
     if results.temporal.is_empty() {
@@ -908,37 +962,65 @@ fn render_trends(
     StatefulWidget::render(table, sections[3], buf, table_state);
 }
 
-fn render_null_trend(results: &DataQualityResults, area: Rect, theme: &Theme, buf: &mut Buffer) {
+fn render_metric_trend(
+    results: &DataQualityResults,
+    config: &DataQualityWidgetConfig<'_>,
+    area: Rect,
+    buf: &mut Buffer,
+) {
     let max_bars = area.width.saturating_sub(4) as usize;
     if max_bars == 0 {
         return;
     }
     let count = results.segments.len().min(max_bars);
+    if !results
+        .segments
+        .iter()
+        .take(count)
+        .any(|segment| segment_metric_value(segment, config.column_index, config.metric).is_some())
+    {
+        Paragraph::new("No values for this column/measurement in the displayed segments.")
+            .style(Style::default().fg(config.theme.get("dimmed")))
+            .render(area, buf);
+        return;
+    }
     let max_rate = results
         .segments
         .iter()
         .take(count)
-        .map(|segment| segment.null_rate)
+        .filter_map(|segment| segment_metric_value(segment, config.column_index, config.metric))
         .fold(0.01_f64, f64::max);
     let bars = results
         .segments
         .iter()
         .take(count)
         .map(|segment| {
-            let level = (segment.null_rate / max_rate * 7.0).round().clamp(0.0, 7.0) as usize;
-            glyphs::get().mini_bars[level]
+            segment_metric_value(segment, config.column_index, config.metric)
+                .map(|value| {
+                    let level = (value / max_rate * 7.0).round().clamp(0.0, 7.0) as usize;
+                    glyphs::get().mini_bars[level]
+                })
+                .unwrap_or(" ")
         })
         .collect::<String>();
     let first = &results.segments[0];
     let last = &results.segments[count - 1];
     Paragraph::new(vec![
-        Line::styled(bars, Style::default().fg(theme.get("accent"))),
+        Line::styled(bars, Style::default().fg(config.theme.get("accent"))),
         Line::raw(format!(
-            "{} {:.1}%  ->  {} {:.1}%",
+            "{} {}  ->  {} {}",
             first.label,
-            first.null_rate * 100.0,
+            metric_label(segment_metric_value(
+                first,
+                config.column_index,
+                config.metric
+            )),
             last.label,
-            last.null_rate * 100.0
+            metric_label(segment_metric_value(
+                last,
+                config.column_index,
+                config.metric
+            ))
         )),
         Line::styled(
             if count < results.segments.len() {
@@ -953,7 +1035,7 @@ fn render_null_trend(results: &DataQualityResults, area: Rect, theme: &Theme, bu
                     max_rate * 100.0
                 )
             },
-            Style::default().fg(theme.get("dimmed")),
+            Style::default().fg(config.theme.get("dimmed")),
         ),
     ])
     .render(area, buf);
@@ -1223,6 +1305,20 @@ fn render_controls(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut B
             ("e", "Edit plan"),
             ("p", "Plan details"),
             ("Esc", "Back"),
+        ]
+    } else if config.page == QualityPage::Segments {
+        vec![
+            ("[ ]", "Column"),
+            ("m", "Metric"),
+            ("b", "Baseline"),
+            ("1-4", "Page"),
+        ]
+    } else if config.page == QualityPage::Trends {
+        vec![
+            ("[ ]", "Column"),
+            ("m", "Metric"),
+            ("1-4", "Page"),
+            ("p", "Access"),
         ]
     } else {
         vec![

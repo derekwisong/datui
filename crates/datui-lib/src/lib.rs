@@ -2466,14 +2466,50 @@ pub mod tests {
             app.end_after_count, None,
             "the End it belonged to is retired"
         );
-        // On the field, not the bar: `status_message` is painted only while `busy`, and
-        // an End waiting on a remote count does not set it — the spinner on the row
-        // count is what the user sees. The message is still what the *next* busy moment
-        // would print, so leaving it set is the bug.
-        assert_eq!(
-            app.status_message, None,
-            "the status it put up comes down, rather than becoming an error about a \
-             frame the user is no longer looking at"
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Counting rows"),
+            "the status it put up comes down: {bar:?}"
+        );
+        assert!(
+            !bar.contains("Could not count the rows"),
+            "and does not become an error about a frame the user is no longer looking \
+             at: {bar:?}"
+        );
+    }
+
+    /// The bar says a count is running for an End, and says when it failed.
+    ///
+    /// Both messages were written and painted by nothing: the status line was shown only
+    /// while `busy`, and an End waiting on a remote count parks without setting it —
+    /// deliberately, so keys keep working. Three code paths existed to take a message
+    /// down that could never appear.
+    #[test]
+    fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
+        use crate::AppEvent;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(
+            !app.busy,
+            "the jump parked rather than blocking the keyboard"
+        );
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Counting rows"),
+            "and the line says why the view has not moved: {bar:?}"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: waiting,
+        });
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Could not count the rows"),
+            "and says so when the count it was waiting on fails: {bar:?}"
         );
     }
 
@@ -15568,7 +15604,12 @@ impl Widget for &mut App {
                 } else if self.chart_preparing() {
                     Some("Preparing chart...".to_string())
                 } else {
-                    None
+                    // Whatever is on the line, busy or not. An End waiting on a remote
+                    // count parks without setting `busy` — keys go on working meanwhile,
+                    // which is the point of parking — so both the message explaining the
+                    // wait and the one saying the count failed were written here and
+                    // painted by nothing. Every site that sets this wants it seen.
+                    self.status_message.clone()
                 }
             }
         };

@@ -5916,3 +5916,142 @@ fn test_right_into_a_lake_table_says_why() {
         "→ says why it is showing files rather than a table: {status:?}"
     );
 }
+
+/// A Delta root on a mount that may not answer is looked at on a worker, and recognized.
+///
+/// `EntryKind::Unknown` — the only thing a remote row that has never been probed can be —
+/// is offered as openable, so Enter read the whole root as one table. Classifying it
+/// where the keys are read is the other half of the trap: `exists`, `is_dir` and a
+/// `read_dir` on a hard-mounted share that has gone away is an uninterruptible freeze,
+/// with Ctrl+C on the same thread.
+#[test]
+fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    for part in ["part-0.parquet", "part-1.parquet"] {
+        std::fs::write(table.join(part), b"x").unwrap();
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    // Listed first, then the mount becomes one the home screen will not touch on this
+    // thread — which is the state a Recent row on a share is already in.
+    app.home.network_check = |_| true;
+    for section in app.home.sections.iter_mut() {
+        for entry in section.rows.iter_mut().filter(|e| e.name == "orders") {
+            entry.kind = datui::discover::EntryKind::Unknown;
+        }
+    }
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
+        .expect("the table is listed");
+    app.home.selected = row;
+
+    // The key itself decides nothing: it asks.
+    let asked = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        matches!(asked, Some(AppEvent::ClassifyThenOpen { .. })),
+        "Enter handed the look to a worker rather than doing it here"
+    );
+    let mut follow = asked;
+    while let Some(event) = follow {
+        follow = app.event(&event);
+    }
+    assert!(app.is_busy(), "and says so while the worker is out");
+
+    // The worker's answer comes back on the channel.
+    let mut opened = false;
+    for _ in 0..50 {
+        let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(10)) else {
+            break;
+        };
+        if matches!(event, AppEvent::Open(..)) {
+            opened = true;
+        }
+        let mut follow = app.event(&event);
+        while let Some(next) = follow {
+            if matches!(next, AppEvent::Open(..)) {
+                opened = true;
+            }
+            follow = app.event(&next);
+        }
+        if !app.is_busy() {
+            break;
+        }
+    }
+
+    assert!(!opened, "it was never opened as one table");
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(table.as_path()),
+        "the worker found a Delta root, and Enter went inside it"
+    );
+    let status = app.home.status.clone().unwrap_or_default();
+    assert!(
+        status.contains("Delta") && status.contains("not read"),
+        "and says why: {status:?}"
+    );
+}
+
+/// An answer that arrives after the user has gone somewhere else is not acted on.
+#[test]
+fn test_a_classification_that_lands_after_the_user_left_opens_nothing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let folder = tmp.path().join("data");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    let generation = app.task_generation();
+
+    // They left the home screen while the worker was out.
+    app.input_mode = InputMode::Normal;
+
+    let follow = app.event(&AppEvent::BackgroundKindReady {
+        generation,
+        path: folder.clone(),
+        found: Some(datui::discover::EntryKind::MultiFile),
+        jump: false,
+    });
+
+    assert!(follow.is_none(), "nothing was opened");
+    assert_eq!(
+        app.home.browsing, None,
+        "and nothing browsed anywhere either"
+    );
+}
+
+/// A path typed at `~` that is not there says so, from the worker's answer.
+#[test]
+fn test_a_typed_path_that_is_not_there_says_so() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    let generation = app.task_generation();
+
+    let follow = app.event(&AppEvent::BackgroundKindReady {
+        generation,
+        path: PathBuf::from("/mnt/gone/orders"),
+        found: None,
+        jump: true,
+    });
+
+    assert!(follow.is_none());
+    let status = app.home.status.clone().unwrap_or_default();
+    assert!(
+        status.contains("No such path"),
+        "the answer is reported rather than swallowed: {status:?}"
+    );
+}

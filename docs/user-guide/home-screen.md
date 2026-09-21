@@ -213,6 +213,12 @@ both sides in place, so reading them as one table gives rows the table does not
 have. <kbd>Enter</kbd> and <kbd>→</kbd> both go inside instead, where the data
 files can be opened one at a time, and say so when they do.
 
+A row on a network share has not been looked at — reading it while you are only
+listing is how a dead mount freezes a file browser — so <kbd>Enter</kbd> looks
+first, on a background thread, and then does whatever the answer calls for. The
+row says `Looking at …` meanwhile, and <kbd>Ctrl</kbd>+<kbd>C</kbd> still works if
+the share never answers.
+
 | Format | What marks the root |
 |---|---|
 | Delta Lake | `_delta_log/` |

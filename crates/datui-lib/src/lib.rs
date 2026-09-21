@@ -4443,6 +4443,27 @@ pub enum AppEvent {
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
     /// work sent first.
     BackgroundWorkFinished,
+    /// Look at a path off the interface thread, then do with it whatever it turns out to
+    /// need — browse into it, say it is a lake table, or open it.
+    ///
+    /// `exists`, `is_dir` and `classify_directory` are all filesystem calls, and the home
+    /// screen is full of paths on mounts that may not answer. Doing them where the keys
+    /// are read is an uninterruptible freeze with Ctrl+C on the same thread.
+    ClassifyThenOpen {
+        path: PathBuf,
+        /// A jump — a path typed at `~` — rather than a row that was already listed. Esc
+        /// then comes back from there to the listing, not up through wherever the path
+        /// happens to sit.
+        jump: bool,
+    },
+    /// What [`AppEvent::ClassifyThenOpen`]'s worker found. `None` is a path that is not
+    /// there.
+    BackgroundKindReady {
+        generation: u64,
+        path: PathBuf,
+        found: Option<discover::EntryKind>,
+        jump: bool,
+    },
 }
 
 /// A lease on the current `task_generation`, held by background work whose answer
@@ -7373,49 +7394,96 @@ impl App {
             }
             return None;
         }
-        let mut entry = self.home.selected_entry()?;
-        // A row nothing has classified — one whose cached kind this build will not take,
-        // see `discover::CLASSIFIER_VERSION` — is looked at now rather than opened as
-        // whatever it turns out to be. `EntryKind::Unknown` is offered as openable, so
-        // without this, refusing a stale `multi` only changed the chip and Enter still
-        // read a whole lake root as one table.
-        //
-        // Never for a path the home screen calls remote. `classify_directory` is a
-        // `read_dir` and a dozen stats, and this runs on the thread that draws and reads
-        // the keyboard: on a hard-mounted share that has gone away it is an
-        // uninterruptible freeze, with Ctrl+C on the same thread. That is the rule
-        // `is_remote_path` exists for, and `unmeasured_visible` and
-        // `request_home_measurements` both keep to. So a remote row opens as it did
-        // before — classifying it belongs on a worker, which is #254.
-        if entry.kind == discover::EntryKind::Unknown
-            && !(self.home.network_check)(&entry.path)
-            && entry.path.is_dir()
-        {
-            entry.kind = discover::classify_directory(&entry.path);
+        let entry = self.home.selected_entry()?;
+        // A row nothing has looked at is looked at before it is opened, rather than
+        // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
+        // openable, so without this a lake root reached this way is read as one table:
+        // #237 through the door #249 leaves open.
+        let mut entry = entry;
+        if entry.kind == discover::EntryKind::Unknown {
+            if self.looking_could_block(&entry.path) {
+                return Some(AppEvent::ClassifyThenOpen {
+                    path: entry.path,
+                    jump: false,
+                });
+            }
+            if entry.path.is_dir() {
+                entry.kind = discover::classify_directory(&entry.path);
+            }
         }
-        if entry.kind == discover::EntryKind::Directory {
-            self.home_browse_into(entry.path);
+        self.open_what_it_is(entry.path, entry.kind, false)
+    }
+
+    /// Whether finding out what a path is could sit on a mount that never answers.
+    ///
+    /// Two halves. An object-store or HTTP URL is a string as far as the home screen is
+    /// concerned — `is_dir` is false for one without a syscall, and what is behind it is
+    /// the scan's business. And an ordinary local path answers at once, so making the
+    /// user wait a round trip for it would be a delay bought with nothing.
+    ///
+    /// What is left is a path on a mount the home screen calls a network one, which is
+    /// the case `is_remote_path` exists to name and the only one worth a worker.
+    fn looking_could_block(&self, path: &Path) -> bool {
+        matches!(source::input_source(path), source::InputSource::Local(_))
+            && (self.home.network_check)(path)
+    }
+
+    /// Do with a path whatever its kind calls for: browse into it, say it is a lake
+    /// table, or open it.
+    ///
+    /// `jump` is a path typed at `~` rather than a row already listed, which starts a new
+    /// browse so Esc comes back from there to the listing.
+    fn open_what_it_is(
+        &mut self,
+        path: PathBuf,
+        kind: discover::EntryKind,
+        jump: bool,
+    ) -> Option<AppEvent> {
+        let go_inside = |app: &mut Self, path: PathBuf| {
+            if jump {
+                app.home_jump_into(path);
+            } else {
+                app.home_browse_into(path);
+            }
+        };
+        if kind == discover::EntryKind::Directory {
+            go_inside(self, path);
             return None;
         }
         // A lake table's files are not its rows: the ones a delete or an update
         // tombstoned are still on disk, every rewritten version is here together, and
         // compaction leaves both sides in place. Going inside is what datui can honestly
         // do with one, and saying so is better than a silent wrong answer.
-        if let Some(note) = Self::lake_table_note(entry.kind) {
-            self.home_browse_into(entry.path);
+        if let Some(note) = Self::lake_table_note(kind) {
+            go_inside(self, path);
             self.home.status = Some(note);
             return None;
         }
         // A cloud folder that is a dataset opens as one: its URL as a prefix, which is
         // what makes the open a scan of every file under it.
         if matches!(
-            entry.kind,
+            kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) && home::is_object_store_url(&entry.path)
+        ) && home::is_object_store_url(&path)
         {
-            return Some(self.home_open_path(home::folder_dataset_url(&entry.path)));
+            return Some(self.home_open_path(home::folder_dataset_url(&path)));
         }
-        Some(self.home_open_path(entry.path))
+        Some(self.home_open_path(path))
+    }
+
+    /// Browse into `path` as a jump, from wherever the user was.
+    ///
+    /// Unlike `home_browse_into`, the browse *starts* here: Esc comes back from here to
+    /// the listing rather than up through whatever the path happens to sit under.
+    fn home_jump_into(&mut self, path: PathBuf) {
+        self.home.browse_start = Some(path.clone());
+        self.home.browsing = Some(path);
+        self.home.status = None;
+        self.home.search.reset();
+        self.home.filter.clear();
+        self.home.sync_search_section();
+        self.home.selected = 0;
+        self.home_refresh();
     }
 
     /// Load a path from the home screen.
@@ -7463,31 +7531,25 @@ impl App {
                         return None;
                     }
                     let path = home::expand_user_path(&raw);
+                    self.home.path_input.clear();
+                    self.home.path_input_active = false;
+                    // Whether it is there, whether it is a directory and what kind of one
+                    // are three filesystem calls, and a typed path is exactly where a
+                    // dead mount gets named. All three go to a worker when the mount is
+                    // one that might not answer.
+                    if self.looking_could_block(&path) {
+                        return Some(AppEvent::ClassifyThenOpen { path, jump: true });
+                    }
                     if !path.exists() {
                         self.home.status = Some(format!("No such path: {}", path.display()));
                         return None;
                     }
-                    self.home.path_input.clear();
-                    self.home.path_input_active = false;
-                    let kind = path.is_dir().then(|| discover::classify_directory(&path));
-                    if let Some(kind) = kind
-                        && (kind == discover::EntryKind::Directory || kind.is_lake_table())
-                    {
-                        // An ordinary directory: browse it rather than trying to load it.
-                        // A lake table too, for the same reason Enter goes inside one.
-                        // A jump starts a new browse: Esc comes back from here to the
-                        // listing, not up through wherever the path happens to sit.
-                        self.home.browse_start = Some(path.clone());
-                        self.home.browsing = Some(path);
-                        self.home.search.reset();
-                        self.home.filter.clear();
-                        self.home.sync_search_section();
-                        self.home.selected = 0;
-                        self.home_refresh();
-                        self.home.status = Self::lake_table_note(kind);
-                        return None;
-                    }
-                    return Some(self.home_open_path(path));
+                    let kind = if path.is_dir() {
+                        discover::classify_directory(&path)
+                    } else {
+                        discover::EntryKind::File
+                    };
+                    return self.open_what_it_is(path, kind, true);
                 }
                 KeyCode::Backspace => {
                     self.home.path_input.pop();
@@ -14454,6 +14516,55 @@ impl App {
                     }
                 }
                 None
+            }
+            AppEvent::ClassifyThenOpen { path, jump } => {
+                let looking = path.clone();
+                let jump = *jump;
+                let name = looking
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| looking.display().to_string());
+                // The home screen's own line, because the control bar's is the table's.
+                self.home.status = Some(format!("Looking at {name}…"));
+                self.spawn_bg("Looking...", move |task_gen, tx| {
+                    // Every one of these can sit forever on a share that has gone away,
+                    // which is the whole reason they are here and not where keys are read.
+                    let found = if !looking.exists() {
+                        None
+                    } else if looking.is_dir() {
+                        Some(crate::discover::classify_directory(&looking))
+                    } else {
+                        Some(crate::discover::EntryKind::File)
+                    };
+                    let _ = tx.send(AppEvent::BackgroundKindReady {
+                        generation: task_gen,
+                        path: looking,
+                        found,
+                        jump,
+                    });
+                });
+                None
+            }
+            AppEvent::BackgroundKindReady {
+                generation,
+                path,
+                found,
+                jump,
+            } => {
+                // A key pressed on the home screen answers on the home screen. If they
+                // opened something else meanwhile the generation has moved; if they went
+                // back to the data, opening now would arrive from nowhere.
+                if *generation != self.task_generation || self.input_mode != InputMode::Home {
+                    return None;
+                }
+                self.busy = false;
+                self.status_message = None;
+                self.home.status = None;
+                let Some(kind) = *found else {
+                    self.home.status = Some(format!("No such path: {}", path.display()));
+                    return None;
+                };
+                self.open_what_it_is(path.clone(), kind, *jump)
             }
             AppEvent::BackgroundWorkFinished => {
                 // Behind the result its work sent, so the handler that consumed that

@@ -1320,6 +1320,64 @@ mod template_rollback_tests {
         );
         assert!(state.error.is_none(), "with no error left over");
     }
+
+    /// A template whose SQL drops a column that the same template's sort names. The
+    /// sorted frame cannot be built at all, so the row count errors — and reporting
+    /// that as zero rows used to blank the table and return before `load_buffer`, the
+    /// only other place a failure is recorded. `apply_template` decides whether to roll
+    /// back by looking for an error, found none, and returned `Ok`: the user was left
+    /// with a blank table wearing the template's sort, told nothing.
+    #[test]
+    fn a_template_whose_sort_names_a_column_its_query_removed_fails_loudly() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("three.csv");
+        std::fs::write(&path, "id,keep,dropped\n0,a,7\n1,b,8\n2,c,9\n").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        let mut template = app
+            .create_template_from_current_state(
+                "sort what the query dropped".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query = Some("select id, keep from df".to_string());
+        // Applied after the query, and naming the column the query just dropped.
+        template.settings.sort_columns = vec!["dropped".to_string()];
+
+        assert!(
+            app.apply_template(&template).is_err(),
+            "the template fails, rather than quietly leaving a blank table"
+        );
+
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.view_sort_columns().is_empty(),
+            "the sort it failed on does not survive"
+        );
+        assert!(
+            state.active_sql_query.is_empty(),
+            "nor does the query that dropped the column"
+        );
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(names, ["id", "keep", "dropped"], "the user's frame is back");
+        assert_eq!(
+            state.lf.clone().collect().unwrap().height(),
+            3,
+            "with its rows, rather than the blank table the failure used to leave"
+        );
+        assert!(state.error.is_none(), "and the rollback clears the error");
+    }
 }
 
 #[cfg(test)]
@@ -1690,7 +1748,7 @@ pub mod tests {
     #[test]
     fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
-        use crate::{App, OpenOptions};
+        use crate::{App, AppEvent, OpenOptions};
         use polars::prelude::*;
         use std::sync::Arc;
 
@@ -1748,10 +1806,23 @@ pub mod tests {
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
         app.spawn_async_collect("Loading buffer...");
 
-        let joined = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the pass reports back");
-        let _ = app.handle(&joined);
+        // Two answers are in flight here — the pass's and the collect's — and either
+        // can reach the queue first. Taking whatever arrives first and calling it the
+        // pass's is a race: when the collect wins, the count the pass carries has not
+        // been applied yet and the assert below reads `None`. It loses that race about
+        // once in a few hundred runs on a loaded machine, which is every so often on
+        // CI. So take events until the pass's own has been handled.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let event = rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("the pass reports back");
+            let is_the_pass = matches!(event, AppEvent::BackgroundFootersJoined { .. });
+            let _ = app.handle(&event);
+            if is_the_pass {
+                break;
+            }
+        }
 
         assert_eq!(
             app.data_table_state.as_ref().unwrap().num_rows_if_valid(),
@@ -2022,6 +2093,386 @@ pub mod tests {
         );
     }
 
+    /// A count the join orphaned does not strand End, nor speak for a later count.
+    ///
+    /// End on a query over a staged dataset takes the ordinary count — the pass is
+    /// bringing the *dataset's* count, which is not the query's. But the pass's columns
+    /// are held while the query is up and go in the moment the user leaves it, and that
+    /// join takes a fresh `len_generation` past the count already running. What comes
+    /// back then answers a frame that is gone.
+    ///
+    /// Both halves of that were wrong. The flag was cleared only on the matching branch,
+    /// so it sat on a dead generation for the rest of the session — the view never moved
+    /// and nothing was said. And `BackgroundLenFailed` took the flag without checking
+    /// whose count had failed, so the next count to fail for any reason printed "Could
+    /// not count the rows to find the end" about a key pressed on a different frame.
+    #[test]
+    fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
+        use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let wide = || {
+            df!("id" => (0..100i64).collect::<Vec<_>>(), "extra" => vec!["a"; 100])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 100,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        state.set_footers_pending(Arc::new(move |_| {
+            Some(FootersFound {
+                dataset: dataset_of(wide()),
+                lf: wide(),
+                file_rows: vec![100],
+                files: vec!["one".to_string()],
+                row_groups: vec![vec![100]],
+                remote: Some(crate::widgets::datatable::RemoteRead {
+                    urls: vec!["one".to_string()],
+                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
+                    count: Arc::new(|| Ok(vec![vec![100]])),
+                }),
+            })
+        }));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // A question of the dataset, whose answer has a count of its own.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query("select doubled: id * 2".to_string());
+        state.defer_collect = false;
+        let orphaned = app.data_table_state.as_ref().unwrap().len_generation();
+
+        // End, which takes that count rather than waiting for the pass.
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(orphaned),
+            "the jump is waiting on the query's own count"
+        );
+
+        // The pass lands while the query is up, so its columns are held.
+        let live = app.dataset_generation;
+        let found = app
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.footers_pending())
+            .and_then(|pass| pass(&app.footer_progress));
+        App::record_footers(&app.pending_footers_result, live, found);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+        assert!(
+            app.footers_held.is_some(),
+            "held rather than joined, because a query is the root"
+        );
+
+        // The user leaves the query, and the join goes in underneath the count.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query(String::new());
+        state.defer_collect = false;
+        let _ = app.handle(&AppEvent::Update);
+        let joined = app.data_table_state.as_ref().unwrap().len_generation();
+        assert_ne!(
+            joined, orphaned,
+            "the join took a fresh generation past the count that was already running"
+        );
+
+        // And the count comes back, answering a frame that is gone.
+        let before = app.data_table_state.as_ref().unwrap().start_row;
+        let next = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: orphaned,
+            num_rows: 100,
+            file_row_groups: None,
+        });
+        assert_eq!(
+            app.end_after_count, None,
+            "the jump is not left waiting on a generation nothing will ever match"
+        );
+        assert_ne!(
+            app.status_message.as_deref(),
+            Some(App::COUNTING_FOR_END),
+            "and the line does not go on saying it is counting for an end nobody awaits"
+        );
+
+        // Retired, not re-issued: nothing jumps on the strength of the stale answer.
+        let mut follow = next;
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().start_row,
+            before,
+            "and the view stays where it is rather than moving on a stale answer"
+        );
+    }
+
+    /// A count that failed for a frame that is gone does not answer for the End on this
+    /// one.
+    ///
+    /// Counts for two frames can be in flight at once — a join or a query takes a fresh
+    /// `len_generation` without stopping the count already running — so a failure
+    /// arriving is not necessarily the failure of the count End is waiting on.
+    /// `BackgroundLenFailed` took the flag without looking at whose count had failed:
+    /// the older one failing dropped the live End on the floor and printed "Could not
+    /// count the rows to find the end" about it, while the count that End was actually
+    /// waiting on was still running and about to succeed.
+    #[test]
+    fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // End on the frame that is here, whose count is running.
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(live),
+            "the jump is waiting on this frame's count"
+        );
+        app.status_message = None;
+
+        // And a count for some frame that is long gone fails.
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live.wrapping_sub(1),
+        });
+
+        assert_eq!(
+            app.end_after_count,
+            Some(live),
+            "the End is still waiting on its own count, which has not failed"
+        );
+        assert_eq!(
+            app.status_message, None,
+            "and nothing is said about a count the user is not waiting on"
+        );
+    }
+
+    /// An End pressed on the folder the user walked away from does not move the one they
+    /// opened next.
+    ///
+    /// `end_after_count` names a `len_generation`, which says nothing about which
+    /// dataset it belonged to — so it has to be put down when a dataset is, the way
+    /// `end_when_the_footers_land` already is. Without that, a stale count returning
+    /// after the user has opened something else hands the new dataset the old one's
+    /// key: it starts a count it was never asked for and scrolls itself to the bottom
+    /// when that count lands.
+    #[test]
+    fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let remote_state = |n: i64| {
+            let rows = move || df!("id" => (0..n).collect::<Vec<_>>()).unwrap().lazy();
+            let mut lf = rows();
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let mut state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                rows(),
+                &OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            state.set_remote_source();
+            state.set_remote_files(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(move || Ok(vec![vec![n as usize]])),
+                offsets: None,
+            });
+            state.visible_rows = 10;
+            state
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(remote_state(100), None, &OpenOptions::default(), None);
+        let theirs = app.data_table_state.as_ref().unwrap().len_generation();
+
+        // End on the first folder, before its count lands.
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(theirs),
+            "the jump is waiting on that folder's count"
+        );
+
+        // And they open another one instead.
+        app.load_active = true;
+        app.apply_schema_ready(remote_state(500), None, &OpenOptions::default(), None);
+        assert_eq!(
+            app.end_after_count, None,
+            "the key they pressed in the folder they left does not come with them"
+        );
+
+        // The first folder's count finally arrives.
+        let mut follow = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: theirs,
+            num_rows: 100,
+            file_row_groups: None,
+        });
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        let next = app.data_table_state.as_ref().unwrap().len_generation();
+        assert_ne!(
+            app.end_after_count,
+            Some(next),
+            "and the folder on screen has not inherited it"
+        );
+
+        // Even once its own count lands, as it would.
+        let mut follow = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: next,
+            num_rows: 500,
+            file_row_groups: None,
+        });
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().start_row,
+            0,
+            "the folder they are looking at stays where they left it, at the top"
+        );
+    }
+
+    /// A dataset waiting on an owed re-read still says its count is coming.
+    ///
+    /// The number a staged open holds is only as far as the buffer reached. While the
+    /// pass is out the dataset says so itself, and the bar shows a spinner. A pass that
+    /// fails takes that away — it gives up on the footers the moment it lands — and the
+    /// count that would replace it is the one the errand is waiting to start. Between
+    /// the two the bar has nothing marking the number provisional, and prints a prefix
+    /// of six thousand files as `Rows: 70`, plainly, for as long as the work in front of
+    /// the errand takes.
+    #[test]
+    fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use polars::prelude::*;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..70i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        // As a staged open leaves it: a provisional from a short read, a pass still out.
+        state.num_rows = 70;
+        state.set_footers_pending(Arc::new(|_| None));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.busy = false;
+
+        let bar_says_seventy = |app: &mut App| {
+            let area = Rect::new(0, 0, 100, 24);
+            let mut buf = Buffer::empty(area);
+            (&mut *app).render(area, &mut buf);
+            (0..area.width)
+                .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+                .collect::<String>()
+                .contains("Rows: 70")
+        };
+        assert!(
+            !bar_says_seventy(&mut app),
+            "while the pass is out the dataset says its count is coming"
+        );
+
+        // An export is running, so the errand the failure raises has to wait.
+        app.loading_state = LoadingState::Exporting {
+            file_path: std::path::PathBuf::from("/tmp/out.csv"),
+            current_phase: "Collecting".to_string(),
+            progress_percent: 0,
+        };
+        let live = app.dataset_generation;
+        App::record_footers(&app.pending_footers_result, live, None);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+        assert!(
+            app.reread_owed.is_some(),
+            "the fixture is a dataset owed a re-read it cannot have yet"
+        );
+
+        app.busy = false;
+        assert!(
+            !bar_says_seventy(&mut app),
+            "and it goes on saying so while the count it is owed waits its turn"
+        );
+    }
+
     /// A query over a dataset still reading its footers still gets counted.
     ///
     /// The pass is bringing the *dataset's* count, which is not the count of a query's
@@ -2158,6 +2609,89 @@ pub mod tests {
         assert!(
             app.footers_held.is_none(),
             "and they are not kept waiting for a dataset that is gone"
+        );
+    }
+
+    /// A footer pass that could not read them waits for work already asked for, too.
+    ///
+    /// The failure branch re-reads for a different reason than the success branch — the
+    /// pass brought no count, so the dataset has to go and count itself the ordinary way
+    /// — but it goes through the same collect, and that collect bumps `task_generation`
+    /// just the same. It used to run on the spot, the one way into the collect that
+    /// asked nothing about what was already running: an export in its collect phase
+    /// never wrote its file and said nothing about it.
+    ///
+    /// Revert `reread_owed` and this fails on the first assert: the generation moves
+    /// while the export is still waiting on it.
+    #[test]
+    fn a_pass_that_failed_waits_for_work_already_asked_for() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => &[1i64]).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(frame()).schema.clone(),
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // An export is collecting: it is waiting on this exact generation, and its
+        // answer is thrown away if anything bumps it.
+        app.loading_state = LoadingState::Exporting {
+            file_path: std::path::PathBuf::from("/tmp/out.csv"),
+            current_phase: "Collecting".to_string(),
+            progress_percent: 0,
+        };
+        let waiting_on = app.task_generation();
+
+        // The pass comes back empty-handed for the dataset on screen.
+        let live = app.dataset_generation;
+        App::record_footers(&app.pending_footers_result, live, None);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+
+        assert_eq!(
+            app.task_generation(),
+            waiting_on,
+            "the export is still waiting on the answer this app would have thrown away"
+        );
+        assert_eq!(
+            app.reread_owed,
+            Some(live),
+            "and the re-read the dataset is owed is remembered, not dropped"
+        );
+
+        // The export finishes, and the errand gets its turn on the next event.
+        app.loading_state = LoadingState::Idle;
+        let _ = app.handle(&AppEvent::Update);
+
+        assert!(
+            app.task_generation() != waiting_on,
+            "the dataset gets the collect it was owed once nothing is waiting on the \
+             generation — without it, it never counts itself at all"
+        );
+        assert!(
+            app.reread_owed.is_none(),
+            "and the errand is done rather than run again on every event"
         );
     }
 
@@ -4260,6 +4794,13 @@ pub struct App {
     /// the scan under a query takes the query's own columns away, and offered again the
     /// moment the view comes back to the dataset itself.
     footers_held: Option<(u64, crate::widgets::datatable::FootersFound)>,
+    /// A re-read the dataset is owed by a footer pass that came back empty-handed, held
+    /// back because the collect it goes through would bump `task_generation` out from
+    /// under work already running. The pass that failed brings no columns to hold, so
+    /// `footers_held` has nothing to say about it, and the dataset still needs the
+    /// ordinary count the pass was going to save it — hence an errand of its own, tried
+    /// again after every event until the work it would cancel is done.
+    reread_owed: Option<u64>,
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
@@ -4509,6 +5050,9 @@ impl App {
     /// dropped the buffer, so nothing dropping this leaves the table with no rows to
     /// show at the moment it was to show more of them.
     fn reread_after_the_footers_joined(&mut self) {
+        // Any re-read satisfies one that was owed: this is the collect the errand was
+        // waiting to run, whoever asked for it.
+        self.reread_owed = None;
         // End was pressed while the footers were still coming, and they are what the
         // end was waiting on. Taken either way: a flag left from a dataset that is gone
         // is not this one's to act on. The jump reads the page it lands on, so reading
@@ -4528,6 +5072,53 @@ impl App {
         }
         self.spawn_async_collect("Loading buffer...");
     }
+
+    /// Run the re-read a failed footer pass owes the dataset, once it can be run
+    /// without throwing another answer away.
+    ///
+    /// The failure branch of `BackgroundFootersJoined` used to re-read on the spot,
+    /// which bumped `task_generation` with no check at all — the one path into the
+    /// collect that never asked `work_the_join_would_cancel`. An export in its collect
+    /// phase then never wrote its file and said nothing about it. So the errand waits
+    /// its turn, the way held columns already do.
+    fn reread_when_the_work_allows(&mut self) {
+        let Some(generation) = self.reread_owed else {
+            return;
+        };
+        if generation != self.dataset_generation {
+            // The dataset it was owed to is gone; so is the errand.
+            self.reread_owed = None;
+            return;
+        }
+        if self.work_the_join_would_cancel() {
+            return;
+        }
+        self.reread_after_the_footers_joined();
+    }
+
+    /// Retire an End that was waiting on a count which can no longer answer it.
+    ///
+    /// Only the flag and the message it put up: the jump itself is not re-issued. See
+    /// the caller in `BackgroundLenReady` for why asking again is the wrong repair.
+    fn retire_the_end_that_was_waiting(&mut self) {
+        self.end_after_count = None;
+        self.take_down_the_counting_status();
+    }
+
+    /// Take down "Counting rows to find the end…", and only that.
+    ///
+    /// Clearing the status outright would wipe whatever else is using the line — a
+    /// load's phase, an export's progress — on behalf of a key pressed somewhere else.
+    fn take_down_the_counting_status(&mut self) {
+        if self.status_message.as_deref() == Some(Self::COUNTING_FOR_END) {
+            self.status_message = None;
+        }
+    }
+
+    /// What the status line says while an End is waiting on a row count. Named so the
+    /// paths that retire such an End can take the message back down without reaching
+    /// for a literal, and without clearing a message that belongs to something else.
+    const COUNTING_FOR_END: &'static str = "Counting rows to find the end…";
 
     /// Work already running that the re-read after a join would cancel.
     ///
@@ -4658,6 +5249,11 @@ impl App {
         );
         // A key pressed at the dataset being replaced belongs to it, not to this one.
         self.end_when_the_footers_land = None;
+        // Its companion, for the same reason. This one keys itself to a
+        // `len_generation`, which says nothing about which dataset it belonged to, so
+        // without clearing it here an End pressed on the folder the user walked away
+        // from is still live against the one they opened next.
+        self.end_after_count = None;
         // One per dataset that reaches the screen, rather than one per open started:
         // an open that fails leaves the last dataset up, and the pass still reading its
         // footers has to be able to finish into it.
@@ -4881,7 +5477,7 @@ impl App {
             && !state.is_num_rows_valid()
         {
             self.end_when_the_footers_land = Some(self.dataset_generation);
-            self.status_message = Some("Counting rows to find the end…".to_string());
+            self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             return None;
         }
         if matches!(jump, AppEvent::DoScrollEnd)
@@ -4891,7 +5487,7 @@ impl App {
         {
             let generation = state.len_generation();
             self.end_after_count = Some(generation);
-            self.status_message = Some("Counting rows to find the end…".to_string());
+            self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             if self.len_count_inflight != Some(generation) {
                 let job = LenCount::for_state(state);
                 self.len_count_inflight = Some(generation);
@@ -5124,6 +5720,7 @@ impl App {
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
             footers_held: None,
+            reread_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
             collect_inflight: None,
@@ -11597,6 +12194,9 @@ impl App {
         if self.join_held_footers() {
             self.reread_after_the_footers_joined();
         }
+        // And the same turn for a re-read owed to a dataset whose footers could not be
+        // read: it waits on the same work, and gets in the same way.
+        self.reread_when_the_work_allows();
         self.ensure_chart_data();
         Ok(out)
     }
@@ -12689,6 +13289,22 @@ impl App {
                         self.status_message = None;
                         return self.jump_key(AppEvent::DoScrollEnd);
                     }
+                } else if self.end_after_count == Some(*len_generation) {
+                    // This is the count End was waiting on, and it answers a frame that
+                    // is gone — a join landed underneath it and took a fresh
+                    // `len_generation` past it. Left here the flag is stranded on a
+                    // generation nothing will ever match: the next count to fail for any
+                    // reason would speak in its name. So it is retired, and the status
+                    // it put up comes down with it.
+                    //
+                    // Retired, not asked again of the frame that is here. That frame can
+                    // belong to a dataset the user opened since — `end_after_count`
+                    // names a `len_generation`, which says nothing about which dataset —
+                    // and re-asking made the *new* dataset scroll itself to the end on
+                    // the strength of a key pressed in the old one. A jump the frame
+                    // change swallowed is a jump the user can make again; a jump that
+                    // arrives on its own, in a folder they did not press it in, is not.
+                    self.retire_the_end_that_was_waiting();
                 }
                 None
             }
@@ -12696,13 +13312,31 @@ impl App {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
                 }
-                if self.end_after_count.take().is_some() {
-                    self.status_message =
-                        Some("Could not count the rows to find the end".to_string());
-                }
                 // Mark this generation's count as failed so the row count renders as "?"
-                // instead of a misleading provisional total.
+                // instead of a misleading provisional total. Before the End handling
+                // below, which can return early: this is about the count, not about who
+                // was waiting on it, and it was unconditional before that return existed.
                 self.len_count_failed = Some(*len_generation);
+                // Only for the count End was actually waiting on. Taken unconditionally,
+                // a count that failed for one frame answered for an End pressed on
+                // another — printing "Could not count the rows to find the end" about a
+                // key the user pressed somewhere else entirely, and long since.
+                if self.end_after_count == Some(*len_generation) {
+                    self.end_after_count = None;
+                    if self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.len_generation() == *len_generation)
+                    {
+                        self.status_message =
+                            Some("Could not count the rows to find the end".to_string());
+                    } else {
+                        // The frame it was counting is gone, so its failure says nothing
+                        // about the one on screen, and the End it belonged to cannot be
+                        // answered by it. Retired quietly, as above.
+                        self.take_down_the_counting_status();
+                    }
+                }
                 None
             }
             AppEvent::BackgroundCollectReady { generation } => {
@@ -12766,8 +13400,13 @@ impl App {
                             state.give_up_on_pending_footers();
                         }
                         // The pass is not bringing a count after all, so the jump goes
-                        // back to waiting on the ordinary one the collect below starts.
-                        self.reread_after_the_footers_joined();
+                        // back to waiting on the ordinary one the collect starts. Owed
+                        // rather than run: the collect bumps `task_generation`, and an
+                        // export or an analysis may be waiting on the one it would bump
+                        // past. `reread_when_the_work_allows` runs it the moment that
+                        // work is done.
+                        self.reread_owed = Some(slot_generation);
+                        self.reread_when_the_work_allows();
                         return None;
                     };
                     self.footers_held = Some((slot_generation, found));
@@ -14284,6 +14923,14 @@ impl Widget for &mut App {
         // plainly, a prefix of six thousand files reads `Rows: 70`.
         let count_pending = self.len_count_inflight.is_some()
             || self.awaiting_dataset
+            // A re-read owed to a dataset whose footers could not be read is a count
+            // that is coming: the collect it is waiting to run is what starts one. The
+            // dataset has already stopped saying it counts itself later (it gave up on
+            // the pass the moment that pass failed), so without this the bar falls
+            // through to printing the number it happens to hold — which is only as far
+            // as the buffer reached. A prefix of six thousand files reads `Rows: 70`,
+            // plainly, for as long as the work in front of the errand takes.
+            || self.reread_owed.is_some()
             || self
                 .data_table_state
                 .as_ref()

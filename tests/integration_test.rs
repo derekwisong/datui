@@ -5442,3 +5442,103 @@ fn test_a_second_open_measures_itself_and_not_the_dataset_before_it() {
         "so the panel still says one file — not the seven the load that failed walked"
     );
 }
+
+/// `→` goes inside a local folder that opens as one dataset, as it has always done in a
+/// bucket.
+///
+/// The gate was `is_object_store_url`, so on a local hive tree or a local folder of part
+/// files there was no way in at all: Enter opened the whole thing, `←`/`→` folded the
+/// section, and the files inside were unreachable from the home screen. That is the
+/// escape hatch for a folder classified wrongly, and locally there was none.
+#[test]
+fn test_right_goes_inside_a_local_multi_file_folder() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let folder = tmp.path().join("sales");
+    std::fs::create_dir_all(&folder).unwrap();
+    for part in ["part-0.parquet", "part-1.parquet", "part-2.parquet"] {
+        std::fs::write(folder.join(part), b"x").unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::MultiFile),
+        "a folder of part files is offered as one dataset"
+    );
+
+    // The bar says the door is there, since nothing else on screen does.
+    let area = Rect::new(0, 0, 120, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(bar.contains("Inside"), "the bar offers the key: {bar:?}");
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Right,
+        KeyModifiers::NONE,
+    )));
+
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(folder.as_path()),
+        "→ browsed into the folder rather than folding the section"
+    );
+}
+
+/// The hint, and the descent, are only offered on a row that is a dataset folder.
+#[test]
+fn test_right_still_folds_the_section_on_an_ordinary_row() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("one.parquet"), b"x").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "one.parquet"),
+        )
+        .expect("the file is listed");
+    app.home.selected = row;
+
+    let area = Rect::new(0, 0, 120, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let bar: String = (0..area.width)
+        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+        .collect();
+    assert!(
+        !bar.contains("Inside"),
+        "a file is not a folder to go inside: {bar:?}"
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Right,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(tmp.path()),
+        "→ on a file does not browse anywhere"
+    );
+}

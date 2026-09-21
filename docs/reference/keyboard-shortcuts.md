@@ -48,7 +48,7 @@ Letters type into the filter here, so none of them is a key.
 | <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | Move |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on a cloud `hive` or `multi` folder goes inside it |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section; <kbd>→</kbd> on a `hive` or `multi` folder goes inside it |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name, and search below the working directory |
 | <kbd>~</kbd> | Type a path; <kbd>Tab</kbd> completes |

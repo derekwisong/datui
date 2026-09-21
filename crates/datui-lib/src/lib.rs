@@ -6688,10 +6688,20 @@ impl App {
         self.home_refresh();
     }
 
-    /// The highlighted row, when it is a cloud folder that opens as one dataset and so
-    /// can be browsed into only with →.
-    fn selected_cloud_dataset_folder(&self) -> Option<PathBuf> {
+    /// The highlighted row, when it is a folder that opens as one dataset and so can be
+    /// browsed into only with →.
+    ///
+    /// Local or remote. The split this used to carry — remote only — was never about
+    /// where the folder was: a cloud prefix simply could not be descended into until
+    /// there was a listing to descend with. A local `hive` tree or folder of part files
+    /// had no way in at all, so Enter opened the whole thing, ←/→ folded the section and
+    /// the files inside were unreachable. That matters more since a folder's
+    /// classification began depending on its files' schemas: looking inside is the only
+    /// recourse when the answer is wrong.
+    fn selected_dataset_folder(&self) -> Option<PathBuf> {
         let entry = self.home.selected_entry()?;
+        // The row that opens the folder being browsed as one dataset, which is inside
+        // that folder already: → on it would descend into where it already is.
         let whole_of_here = self
             .home
             .browsing
@@ -6700,8 +6710,7 @@ impl App {
         (matches!(
             entry.kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) && home::is_object_store_url(&entry.path)
-            && !whole_of_here)
+        ) && !whole_of_here)
             .then_some(entry.path)
     }
 
@@ -6840,7 +6849,7 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Left => self.home_collapse(true),
-            KeyCode::Right => match self.selected_cloud_dataset_folder() {
+            KeyCode::Right => match self.selected_dataset_folder() {
                 // Into a partitioned cloud folder rather than opening it, to reach one
                 // partition.
                 Some(folder) => self.home_browse_into(folder),

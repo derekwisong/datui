@@ -110,6 +110,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
             },
             !app.home.filter.is_empty(),
             app.data_table_state.is_some(),
+            app.selected_dataset_folder().is_some(),
         )),
     }
 }
@@ -136,6 +137,7 @@ pub fn home_control_keys(
     browsing: Browse,
     has_filter: bool,
     has_data: bool,
+    on_dataset_folder: bool,
 ) -> Vec<(&'static str, &'static str)> {
     // Named keys are spelled out — "Enter", "Tab", "Bksp" — matching the analysis and
     // chart bars, and avoiding U+23CE and U+21E5, which plenty of terminal fonts do
@@ -172,7 +174,14 @@ pub fn home_control_keys(
         if browsing != Browse::Listing {
             keys.push(("Bksp", "Up"));
         }
-        keys.push((g.updown_lr, "Fold"));
+        if on_dataset_folder {
+            // → does not fold on this row, it goes inside the folder — and nothing else
+            // on screen says that door exists.
+            keys.push((g.arrow_left, "Fold"));
+            keys.push((g.arrow_right, "Inside"));
+        } else {
+            keys.push((g.updown_lr, "Fold"));
+        }
         keys.push(("^↑↓", "Section"));
         // The key is an action; which order is currently in effect is state, and it
         // belongs with the other state at the far end of the bar rather than dressed
@@ -193,13 +202,15 @@ mod tests {
     use super::{Browse, home_control_keys};
 
     /// Every combination of home-screen state the control bar can be drawn in.
-    fn all_states() -> Vec<(bool, Browse, bool, bool)> {
+    fn all_states() -> Vec<(bool, Browse, bool, bool, bool)> {
         let mut out = Vec::new();
         for path_input in [false, true] {
             for browsing in [Browse::Listing, Browse::AtStart, Browse::BelowStart] {
                 for filter in [false, true] {
                     for data in [false, true] {
-                        out.push((path_input, browsing, filter, data));
+                        for folder in [false, true] {
+                            out.push((path_input, browsing, filter, data, folder));
+                        }
                     }
                 }
             }
@@ -211,11 +222,11 @@ mod tests {
     fn home_bar_never_advertises_bare_q_as_quit() {
         // The bug this guards: the bar said "q Quit" while `q` typed into the filter,
         // so there was no discoverable way to leave the home screen.
-        for (p, b, f, d) in all_states() {
-            for (key, _) in home_control_keys(p, b, f, d) {
+        for (p, b, f, d, n) in all_states() {
+            for (key, _) in home_control_keys(p, b, f, d, n) {
                 assert_ne!(
                     key, "q",
-                    "bare `q` advertised in state (path={p}, browsing={b:?}, filter={f}, data={d})"
+                    "bare `q` advertised in state (path={p}, browsing={b:?}, filter={f}, data={d}, folder={n})"
                 );
             }
         }
@@ -223,11 +234,11 @@ mod tests {
 
     #[test]
     fn home_bar_always_offers_a_way_out() {
-        for (p, b, f, d) in all_states() {
-            let keys = home_control_keys(p, b, f, d);
+        for (p, b, f, d, n) in all_states() {
+            let keys = home_control_keys(p, b, f, d, n);
             assert!(
                 keys.iter().any(|(_, label)| *label == "Quit"),
-                "no quit offered in state (path={p}, browsing={b:?}, filter={f}, data={d})"
+                "no quit offered in state (path={p}, browsing={b:?}, filter={f}, data={d}, folder={n})"
             );
         }
     }
@@ -236,8 +247,8 @@ mod tests {
     fn home_bar_leads_with_the_way_out() {
         // A narrow terminal cuts the bar from the right. Whatever survives has to
         // include how to leave.
-        for (p, b, f, d) in all_states() {
-            let keys = home_control_keys(p, b, f, d);
+        for (p, b, f, d, n) in all_states() {
+            let keys = home_control_keys(p, b, f, d, n);
             // Esc while there is a layer to back out of; Ctrl+C at the top, where
             // Esc does nothing and is not offered.
             let way_out = keys
@@ -246,7 +257,7 @@ mod tests {
                 .expect("a way out is always offered");
             assert!(
                 way_out < 3,
-                "the way out is {way_out} deep in state (path={p}, browsing={b:?}, filter={f}, data={d}); \
+                "the way out is {way_out} deep in state (path={p}, browsing={b:?}, filter={f}, data={d}, folder={n}); \
                  a narrow bar would cut it"
             );
         }
@@ -256,7 +267,7 @@ mod tests {
     fn home_bar_labels_esc_with_what_it_will_do() {
         // Esc escalates, so the label has to track the state rather than say "Back".
         let esc = |p, b, f, d| {
-            home_control_keys(p, b, f, d)
+            home_control_keys(p, b, f, d, false)
                 .into_iter()
                 .find(|(key, _)| *key == "Esc")
                 .map(|(_, label)| label)
@@ -273,10 +284,46 @@ mod tests {
         assert_eq!(esc(true, Browse::Listing, false, false), Some("Cancel"));
     }
 
+    /// On a folder that opens as one dataset, → does not fold — it goes inside. The bar
+    /// is the only thing on screen that says so.
+    #[test]
+    fn home_bar_offers_inside_only_on_a_dataset_folder() {
+        let g = crate::glyphs::get();
+        let labels = |folder| {
+            home_control_keys(false, Browse::Listing, false, false, folder)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+
+        let on_folder = labels(true);
+        assert!(
+            on_folder.contains(&(g.arrow_right, "Inside")),
+            "the door is advertised: {on_folder:?}"
+        );
+        assert!(
+            on_folder.contains(&(g.arrow_left, "Fold")),
+            "and ← still folds: {on_folder:?}"
+        );
+        assert!(
+            !on_folder.iter().any(|(key, _)| *key == g.updown_lr),
+            "the pair would say → folds, which it does not here: {on_folder:?}"
+        );
+
+        let elsewhere = labels(false);
+        assert!(
+            !elsewhere.iter().any(|(_, label)| *label == "Inside"),
+            "nothing to go inside of: {elsewhere:?}"
+        );
+        assert!(
+            elsewhere.contains(&(g.updown_lr, "Fold")),
+            "both arrows fold: {elsewhere:?}"
+        );
+    }
+
     #[test]
     fn home_bar_offers_up_only_while_browsing() {
         let has_up = |b| {
-            home_control_keys(false, b, false, false)
+            home_control_keys(false, b, false, false, false)
                 .iter()
                 .any(|(_, label)| *label == "Up")
         };

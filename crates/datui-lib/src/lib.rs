@@ -1748,7 +1748,7 @@ pub mod tests {
     #[test]
     fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
-        use crate::{App, OpenOptions};
+        use crate::{App, AppEvent, OpenOptions};
         use polars::prelude::*;
         use std::sync::Arc;
 
@@ -1806,10 +1806,23 @@ pub mod tests {
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
         app.spawn_async_collect("Loading buffer...");
 
-        let joined = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the pass reports back");
-        let _ = app.handle(&joined);
+        // Two answers are in flight here — the pass's and the collect's — and either
+        // can reach the queue first. Taking whatever arrives first and calling it the
+        // pass's is a race: when the collect wins, the count the pass carries has not
+        // been applied yet and the assert below reads `None`. It loses that race about
+        // once in a few hundred runs on a loaded machine, which is every so often on
+        // CI. So take events until the pass's own has been handled.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let event = rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("the pass reports back");
+            let is_the_pass = matches!(event, AppEvent::BackgroundFootersJoined { .. });
+            let _ = app.handle(&event);
+            if is_the_pass {
+                break;
+            }
+        }
 
         assert_eq!(
             app.data_table_state.as_ref().unwrap().num_rows_if_valid(),

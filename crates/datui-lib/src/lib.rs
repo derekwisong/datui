@@ -2210,30 +2210,31 @@ pub mod tests {
         );
 
         // And the count comes back, answering a frame that is gone.
+        let before = app.data_table_state.as_ref().unwrap().start_row;
         let next = app.event(&AppEvent::BackgroundLenReady {
             len_generation: orphaned,
             num_rows: 100,
             file_row_groups: None,
         });
-        assert!(
-            app.end_after_count != Some(orphaned),
+        assert_eq!(
+            app.end_after_count, None,
             "the jump is not left waiting on a generation nothing will ever match"
         );
-        assert!(
-            matches!(next, Some(AppEvent::DoScrollEnd)),
-            "and the End the user pressed is asked again of the frame that is here now, \
-             rather than dropped"
+        assert_ne!(
+            app.status_message.as_deref(),
+            Some(App::COUNTING_FOR_END),
+            "and the line does not go on saying it is counting for an end nobody awaits"
         );
 
-        // Which lands, once the loop runs it as it would any follow-up.
+        // Retired, not re-issued: nothing jumps on the strength of the stale answer.
         let mut follow = next;
         while let Some(event) = follow {
             follow = app.event(&event);
         }
         assert_eq!(
             app.data_table_state.as_ref().unwrap().start_row,
-            90,
-            "the view is at the end the user asked for"
+            before,
+            "and the view stays where it is rather than moving on a stale answer"
         );
     }
 
@@ -2302,6 +2303,99 @@ pub mod tests {
         assert_eq!(
             app.status_message, None,
             "and nothing is said about a count the user is not waiting on"
+        );
+    }
+
+    /// An End pressed on the folder the user walked away from does not move the one they
+    /// opened next.
+    ///
+    /// `end_after_count` names a `len_generation`, which says nothing about which
+    /// dataset it belonged to — so it has to be put down when a dataset is, the way
+    /// `end_when_the_footers_land` already is. Without that, a stale count returning
+    /// after the user has opened something else hands the new dataset the old one's
+    /// key: it starts a count it was never asked for and scrolls itself to the bottom
+    /// when that count lands.
+    #[test]
+    fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let remote_state = |n: i64| {
+            let rows = move || df!("id" => (0..n).collect::<Vec<_>>()).unwrap().lazy();
+            let mut lf = rows();
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let mut state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                rows(),
+                &OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            state.set_remote_source();
+            state.set_remote_files(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(move || Ok(vec![vec![n as usize]])),
+                offsets: None,
+            });
+            state.visible_rows = 10;
+            state
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(remote_state(100), None, &OpenOptions::default(), None);
+        let theirs = app.data_table_state.as_ref().unwrap().len_generation();
+
+        // End on the first folder, before its count lands.
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(theirs),
+            "the jump is waiting on that folder's count"
+        );
+
+        // And they open another one instead.
+        app.load_active = true;
+        app.apply_schema_ready(remote_state(500), None, &OpenOptions::default(), None);
+        assert_eq!(
+            app.end_after_count, None,
+            "the key they pressed in the folder they left does not come with them"
+        );
+
+        // The first folder's count finally arrives.
+        let mut follow = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: theirs,
+            num_rows: 100,
+            file_row_groups: None,
+        });
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        let next = app.data_table_state.as_ref().unwrap().len_generation();
+        assert_ne!(
+            app.end_after_count,
+            Some(next),
+            "and the folder on screen has not inherited it"
+        );
+
+        // Even once its own count lands, as it would.
+        let mut follow = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: next,
+            num_rows: 500,
+            file_row_groups: None,
+        });
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().start_row,
+            0,
+            "the folder they are looking at stays where they left it, at the top"
         );
     }
 
@@ -4928,6 +5022,30 @@ impl App {
         self.reread_after_the_footers_joined();
     }
 
+    /// Retire an End that was waiting on a count which can no longer answer it.
+    ///
+    /// Only the flag and the message it put up: the jump itself is not re-issued. See
+    /// the caller in `BackgroundLenReady` for why asking again is the wrong repair.
+    fn retire_the_end_that_was_waiting(&mut self) {
+        self.end_after_count = None;
+        self.take_down_the_counting_status();
+    }
+
+    /// Take down "Counting rows to find the end…", and only that.
+    ///
+    /// Clearing the status outright would wipe whatever else is using the line — a
+    /// load's phase, an export's progress — on behalf of a key pressed somewhere else.
+    fn take_down_the_counting_status(&mut self) {
+        if self.status_message.as_deref() == Some(Self::COUNTING_FOR_END) {
+            self.status_message = None;
+        }
+    }
+
+    /// What the status line says while an End is waiting on a row count. Named so the
+    /// paths that retire such an End can take the message back down without reaching
+    /// for a literal, and without clearing a message that belongs to something else.
+    const COUNTING_FOR_END: &'static str = "Counting rows to find the end…";
+
     /// Work already running that the re-read after a join would cancel.
     ///
     /// The re-read goes through the ordinary collect, which bumps `task_generation` —
@@ -5057,6 +5175,11 @@ impl App {
         );
         // A key pressed at the dataset being replaced belongs to it, not to this one.
         self.end_when_the_footers_land = None;
+        // Its companion, for the same reason. This one keys itself to a
+        // `len_generation`, which says nothing about which dataset it belonged to, so
+        // without clearing it here an End pressed on the folder the user walked away
+        // from is still live against the one they opened next.
+        self.end_after_count = None;
         // One per dataset that reaches the screen, rather than one per open started:
         // an open that fails leaves the last dataset up, and the pass still reading its
         // footers has to be able to finish into it.
@@ -5280,7 +5403,7 @@ impl App {
             && !state.is_num_rows_valid()
         {
             self.end_when_the_footers_land = Some(self.dataset_generation);
-            self.status_message = Some("Counting rows to find the end…".to_string());
+            self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             return None;
         }
         if matches!(jump, AppEvent::DoScrollEnd)
@@ -5290,7 +5413,7 @@ impl App {
         {
             let generation = state.len_generation();
             self.end_after_count = Some(generation);
-            self.status_message = Some("Counting rows to find the end…".to_string());
+            self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             if self.len_count_inflight != Some(generation) {
                 let job = LenCount::for_state(state);
                 self.len_count_inflight = Some(generation);
@@ -13090,14 +13213,19 @@ impl App {
                 } else if self.end_after_count == Some(*len_generation) {
                     // This is the count End was waiting on, and it answers a frame that
                     // is gone — a join landed underneath it and took a fresh
-                    // `len_generation` past it. Left here, the flag is stranded on a
-                    // generation nothing will ever match: the view never moves, and the
-                    // next count to fail for any reason speaks in its name. So ask
-                    // again, against the frame that is here now; `jump_key` decides
-                    // afresh whether that means jumping, counting or waiting.
-                    self.end_after_count = None;
-                    self.status_message = None;
-                    return self.jump_key(AppEvent::DoScrollEnd);
+                    // `len_generation` past it. Left here the flag is stranded on a
+                    // generation nothing will ever match: the next count to fail for any
+                    // reason would speak in its name. So it is retired, and the status
+                    // it put up comes down with it.
+                    //
+                    // Retired, not asked again of the frame that is here. That frame can
+                    // belong to a dataset the user opened since — `end_after_count`
+                    // names a `len_generation`, which says nothing about which dataset —
+                    // and re-asking made the *new* dataset scroll itself to the end on
+                    // the strength of a key pressed in the old one. A jump the frame
+                    // change swallowed is a jump the user can make again; a jump that
+                    // arrives on its own, in a folder they did not press it in, is not.
+                    self.retire_the_end_that_was_waiting();
                 }
                 None
             }
@@ -13125,9 +13253,9 @@ impl App {
                             Some("Could not count the rows to find the end".to_string());
                     } else {
                         // The frame it was counting is gone, so its failure says nothing
-                        // about the one on screen. Ask again, as above.
-                        self.status_message = None;
-                        return self.jump_key(AppEvent::DoScrollEnd);
+                        // about the one on screen, and the End it belonged to cannot be
+                        // answered by it. Retired quietly, as above.
+                        self.take_down_the_counting_status();
                     }
                 }
                 None

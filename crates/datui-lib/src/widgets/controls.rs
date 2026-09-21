@@ -270,14 +270,29 @@ impl Widget for &Controls {
             (base.fg(self.label_color), base)
         };
 
-        // Status message mode: [spinner 2ch] [message Fill] [row_count 21ch]
+        // The trailing chunk, in columns, or `None` when there is no row count to show.
+        // A row count fits in twenty; a view's own caption may not, and truncating it
+        // mid-word ("by recent · 78 dat") is worse than giving it the room it asked for.
+        //
+        // Worked out once, above both modes, because the chip-fitting loop below has to
+        // subtract exactly what its layout will later ask for — and because the status
+        // layout used to hardcode twenty-one here and truncate the caption itself.
+        let trailing = self.row_count.map(|_| {
+            self.caption
+                .as_ref()
+                .map(|c| c.chars().count() as u16 + 1)
+                .unwrap_or(20)
+                .max(20)
+        });
+
+        // Status message mode: [spinner 2ch] [message Fill] [row count or caption]
         if let Some(ref msg) = self.status_message {
             let mut constraints = vec![
                 Constraint::Length(2), // spinner
                 Constraint::Fill(1),   // status message
             ];
-            if self.row_count.is_some() {
-                constraints.push(Constraint::Length(21));
+            if let Some(width) = trailing {
+                constraints.push(Constraint::Length(width));
             }
 
             let layout = Layout::new(Direction::Horizontal, constraints).split(area);
@@ -334,22 +349,15 @@ impl Widget for &Controls {
             (key.chars().count() as u16 + 2) + (action.chars().count() as u16 + 3)
         };
 
-        // The trailing chunk, worked out once. A row count fits in twenty columns; a
-        // view's own caption may not, and truncating it mid-word ("by recent · 78 dat")
-        // is worse than giving it the room it asked for.
+        // Budgeting a flat twenty-one against a caption like "by recent  ·  128 datasets"
+        // — twenty-seven — admits chips worth seven columns the solver then has to take
+        // back out of the tail, and the tail is the last chip: at eighty-five columns the
+        // bar read "type  Filte →  Inside".
         //
-        // Once, because the loop below has to subtract exactly what the layout will ask
-        // for. Budgeting a flat twenty-one against a caption like "by recent  ·  128
-        // datasets" — twenty-seven — admits chips worth seven columns the solver then
-        // has to take back out of the tail, and the tail is the last chip.
-        let trailing = self.row_count.map(|_| {
-            self.caption
-                .as_ref()
-                .map(|c| c.chars().count() as u16 + 1)
-                .unwrap_or(20)
-                .max(20)
-        });
-        // Plus one, for the fill between the chips and the chunk.
+        // Plus one so the no-caption case reserves the twenty-one it always did. `Fill(1)`
+        // is satisfied by nothing, so the extra column is a margin rather than a
+        // requirement — it costs one chip at one width and keeps the common case as it
+        // was.
         let right_reserved = trailing.map(|width| width + 1).unwrap_or(1);
         let mut available = area.width.saturating_sub(right_reserved);
 
@@ -462,6 +470,35 @@ mod tests {
                     );
                 }
             }
+            // And the invariant above is not satisfied by simply losing the tail: past
+            // the width where every chip fits, every chip is there.
+            if width >= 92 {
+                assert!(
+                    bar.contains("Inside"),
+                    "the last chip fits at {width} and is not shown: {bar:?}"
+                );
+            }
+        }
+    }
+
+    /// A status message does not truncate the caption beside it either.
+    ///
+    /// The status layout hardcoded twenty-one columns for the trailing chunk while the
+    /// caption asked for its own width, so it cut one mid-word — "by recent  ·  128 dat"
+    /// — which is the thing the keybinding branch was fixed not to do.
+    #[test]
+    fn a_status_message_does_not_truncate_the_caption() {
+        let caption = "by recent  ·  128 datasets".to_string();
+        let controls = Controls::with_row_count(0)
+            .with_caption(Some(caption.clone()))
+            .with_status_message(Some("Counting rows to find the end…".to_string()));
+
+        for width in 70..=140u16 {
+            let bar = render_to_string(&controls, width);
+            assert!(
+                bar.contains(&caption),
+                "the caption is whole at width {width}: {bar:?}"
+            );
         }
     }
 

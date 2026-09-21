@@ -337,7 +337,7 @@ jobs:
       - name: Open winget-pkgs PR (attempt 1)
         id: winget1
         continue-on-error: true
-        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-03-15
+        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-09-20
         with:
           identifier: derekwisong.datui
           installers-regex: '-windows-x86_64\.zip$'
@@ -354,7 +354,7 @@ jobs:
         id: winget2
         if: steps.winget1.outcome == 'failure'
         continue-on-error: true
-        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-03-15
+        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-09-20
         with:
           identifier: derekwisong.datui
           installers-regex: '-windows-x86_64\.zip$'
@@ -369,7 +369,7 @@ jobs:
 
       - name: Open winget-pkgs PR (attempt 3)
         if: steps.winget1.outcome == 'failure' && steps.winget2.outcome == 'failure'
-        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-03-15
+        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-09-20
         with:
           identifier: derekwisong.datui
           installers-regex: '-windows-x86_64\.zip$'

@@ -704,11 +704,11 @@ fn union_of(per_file: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
-/// Names taken from one directory before the order they are in stops being worth
-/// having. Twenty thousand is the figure `schema_union` already calls unaffordable to
-/// compare pairwise; past it the spread `sample_footers` takes is over the names this
-/// listing saw rather than over the folder, and the row count is long out of reach
-/// either way.
+/// Names taken from one directory before reading the rest stops being worth the walk.
+/// Past it the spread `sample_footers` takes is over the names this listing saw rather
+/// than over the folder — the bug this bound is a compromise with — and the row count is
+/// long out of reach either way. Twenty thousand is the size `schema_union`'s own
+/// measurements take as the large case.
 const MAX_NAMES_PER_DIR: usize = 20_000;
 
 /// Collect Parquet files under `dir`, breadth-bounded and depth-bounded, stopping
@@ -730,8 +730,9 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
     // the same wrong answer with the appearance of an order.
     //
     // Names only here: the `is_regular_file` stat that used to run on every candidate
-    // now runs only on the ones actually kept, so a folder of thousands costs one
-    // directory read and sixty-five stats rather than thousands of them.
+    // now runs only on the ones actually kept. Reading the whole directory to sort it is
+    // not free either — one `getdents` walk and one sort, where the old shape stopped at
+    // the sixty-fifth entry — and that is what the sample meaning what it says costs.
     let mut files = Vec::new();
     for entry in iter.flatten() {
         let path = entry.path();
@@ -747,7 +748,16 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
         {
             continue;
         }
-        if path.is_dir() {
+        // The type the directory read already returned, rather than a `stat` per entry:
+        // a folder of two hundred thousand files is visited whole here, and `is_dir` on
+        // every one of them is the cost of doing so. A symlink still gets the stat,
+        // because whether to walk into one is a question `d_type` cannot answer.
+        let is_dir = match entry.file_type() {
+            Ok(kind) if kind.is_symlink() => path.is_dir(),
+            Ok(kind) => kind.is_dir(),
+            Err(_) => path.is_dir(),
+        };
+        if is_dir {
             subdirs.push(path);
         } else if path
             .extension()
@@ -1347,34 +1357,35 @@ mod classification_tests {
     ///
     /// The ordering itself is `the_files_a_folder_offers_come_back_in_order`'s to prove:
     /// a directory read may return sorted entries of its own accord, so an assertion
-    /// here about order could hold for the wrong reason. What this pins is the cap —
-    /// sorting before truncating must not lose the "too many to count" signal.
+    /// here about order could hold for the wrong reason. What this pins is *which* files
+    /// survive the cap, and that the cap still says "too many to count".
     #[test]
-    fn a_folder_past_the_budget_still_says_it_is_past_the_budget() {
+    fn a_folder_past_the_budget_keeps_the_folders_first_files() {
         let dir = tempfile::tempdir().unwrap();
-        // Written back to front, so creation order and sorted order disagree.
-        for part in (0..MAX_FOOTERS_PER_DATASET * 3).rev() {
+        for part in 0..MAX_FOOTERS_PER_DATASET * 3 {
             write(dir.path(), &format!("part-{part:04}.parquet"), &["id"]);
         }
         let mut files = Vec::new();
         collect_parquet_files(dir.path(), 0, &mut files);
-        assert!(
-            files.len() > MAX_FOOTERS_PER_DATASET,
-            "the list still says there are too many to count"
+
+        assert_eq!(
+            files.len(),
+            MAX_FOOTERS_PER_DATASET + 1,
+            "one past the budget, which is what says there are too many to count"
         );
         let names: Vec<String> = files
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
+        let expected: Vec<String> = (0..=MAX_FOOTERS_PER_DATASET)
+            .map(|part| format!("part-{part:04}.parquet"))
+            .collect();
+        // Not "sorted", which a directory read may be of its own accord, but the
+        // folder's own first sixty-five. Sorting after truncating gives sixty-five
+        // sorted names from wherever the read began, which is a different set.
         assert_eq!(
-            files.len(),
-            MAX_FOOTERS_PER_DATASET + 1,
-            "one past the budget, which is what says there are too many"
-        );
-        assert_eq!(
-            names.first().map(String::as_str),
-            Some("part-0000.parquet"),
-            "and they are the folder's first files, not the listing's: {names:?}"
+            names, expected,
+            "the folder's first files, not the listing's"
         );
     }
 

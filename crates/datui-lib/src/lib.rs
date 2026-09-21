@@ -7143,7 +7143,10 @@ impl App {
         self.home.browsing = Some(path);
         // "Below here" now means somewhere else. Whatever the last walk found
         // describes a different place, and a fresh one starts on the next
-        // keystroke.
+        // keystroke. The status line goes with them: "these are the files under it"
+        // is about wherever "it" was. A caller with something to say about the place
+        // it is going says it after this returns.
+        self.home.status = None;
         self.home.search.reset();
         self.home.filter.clear();
         self.home.sync_search_section();
@@ -7211,8 +7214,8 @@ impl App {
         // compaction leaves both sides in place. Going inside is what datui can honestly
         // do with one, and saying so is better than a silent wrong answer.
         if let Some(note) = Self::lake_table_note(entry.kind) {
-            self.home.status = Some(note);
             self.home_browse_into(entry.path);
+            self.home.status = Some(note);
             return None;
         }
         // A cloud folder that is a dataset opens as one: its URL as a prefix, which is
@@ -7286,7 +7289,6 @@ impl App {
                         // A lake table too, for the same reason Enter goes inside one.
                         // A jump starts a new browse: Esc comes back from here to the
                         // listing, not up through wherever the path happens to sit.
-                        self.home.status = Self::lake_table_note(kind);
                         self.home.browse_start = Some(path.clone());
                         self.home.browsing = Some(path);
                         self.home.search.reset();
@@ -7294,6 +7296,7 @@ impl App {
                         self.home.sync_search_section();
                         self.home.selected = 0;
                         self.home_refresh();
+                        self.home.status = Self::lake_table_note(kind);
                         return None;
                     }
                     return Some(self.home_open_path(path));

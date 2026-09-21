@@ -35,7 +35,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a cloud folder labelled `hive` or `multi`, <kbd>→</kbd> goes inside it instead of opening it |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder labelled `hive` or `multi`, <kbd>→</kbd> goes inside it instead of opening it, so one partition or one file can be reached |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
@@ -190,7 +190,11 @@ each type in the color the table uses.
 
 A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
 hold the same table is `multi`. Both open with <kbd>Enter</kbd> as a single
-dataset.
+dataset, and <kbd>→</kbd> goes inside one instead, to reach a single partition or
+a single file. That is the way to look at the files when the label is wrong.
+<kbd>Esc</kbd> comes back out; in a bucket the first row inside,
+`<folder> (all files)`, opens the whole folder again, and locally there is no
+such row.
 
 Sharing a file extension is not enough to make a folder one table. A database
 exported one Parquet file per table — `circuits.parquet`, `drivers.parquet`,

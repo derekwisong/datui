@@ -65,7 +65,10 @@ selection:
 | `partition region=west` | Rows with that source-column value; `∅` selects null |
 | `time event=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 timestamp interval; end is exclusive and date-only bounds mean UTC midnight |
 
-Source-scoped plans report unknown row counts and read sizes until the run.
+Source-scoped plans report unknown row counts and read sizes until a full run.
+Metadata-only runs do not count rows. A bounded sample reports an eligible row
+count only when its probe reaches the end of the scope or a valid count was
+already cached; otherwise that count stays unknown.
 The selected scope is applied before sampling, so sampling never reaches beyond
 its bounds. The Time roles row opens an explicit mapping table; every role starts
 unassigned. Datui recognizes physical date and datetime types but never guesses

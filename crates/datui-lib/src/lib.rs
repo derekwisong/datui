@@ -13388,31 +13388,9 @@ impl App {
                                 return;
                             }
                         };
-                        let total_rows = match cached_rows {
-                            Some(rows) => rows,
-                            None => match crate::statistics::collect_lazy(
-                                crate::widgets::datatable::row_count_lf(&lf),
-                                streaming,
-                            ) {
-                                Ok(count_df) => match count_df.get(0) {
-                                    Some(column) => match column.first() {
-                                        Some(AnyValue::UInt64(rows)) => *rows as usize,
-                                        _ => 0,
-                                    },
-                                    None => 0,
-                                },
-                                Err(error) => {
-                                    let _ = tx.send(AppEvent::BackgroundError {
-                                        generation: task_gen,
-                                        message: format!("{error}"),
-                                    });
-                                    return;
-                                }
-                            },
-                        };
                         match crate::data_quality::compute_data_quality(
                             &lf,
-                            total_rows,
+                            cached_rows,
                             &plan,
                             source.as_ref(),
                             streaming,

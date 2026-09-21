@@ -788,7 +788,7 @@ fn test_stale_background_events_are_ignored() {
     app.event(&AppEvent::BackgroundDataQualityReady {
         generation: stale_gen,
         results: DataQualityResults {
-            total_rows: 999_999,
+            total_rows: Some(999_999),
             evaluated_rows: 1,
             precision: QualityPrecision::Sampled,
             sample_seed: 1,
@@ -1108,7 +1108,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
             .as_ref()
             .unwrap()
             .total_rows,
-        2
+        Some(2)
     );
     key(&mut app, KeyCode::Char('e'));
     key(&mut app, KeyCode::Down);
@@ -1177,7 +1177,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     app.event(&next.unwrap());
     drain_events(&mut app, &rx);
     let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
-    assert_eq!(results.total_rows, 2);
+    assert_eq!(results.total_rows, Some(2));
     assert_eq!(results.evaluated_rows, 2);
     let id = results
         .columns
@@ -1186,6 +1186,25 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
         .unwrap();
     assert_eq!(id.min.as_deref(), Some("3"));
     assert_eq!(id.max.as_deref(), Some("4"));
+
+    app.analysis_modal.data_quality_plan.scope = QualityScope::WholeSource;
+    app.analysis_modal.data_quality_plan.sample_rows = 1;
+    app.event(&AppEvent::AnalysisDataQualityCompute);
+    drain_events(&mut app, &rx);
+    let sampled = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(sampled.total_rows, None);
+    assert_eq!(sampled.evaluated_rows, 1);
+    assert_eq!(
+        sampled.precision,
+        datui::data_quality::QualityPrecision::Sampled
+    );
+
+    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
+    app.event(&AppEvent::AnalysisDataQualityCompute);
+    drain_events(&mut app, &rx);
+    let full = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(full.total_rows, Some(4));
+    assert_eq!(full.evaluated_rows, 4);
 }
 
 /// Regression for commit 7b7bfe8: holding PageDown at the end of the data once

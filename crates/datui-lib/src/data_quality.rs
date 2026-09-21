@@ -717,7 +717,7 @@ pub struct TemporalLatencyProfile {
 
 #[derive(Debug, Clone)]
 pub struct DataQualityResults {
-    pub total_rows: usize,
+    pub total_rows: Option<usize>,
     pub evaluated_rows: usize,
     pub precision: QualityPrecision,
     pub sample_seed: u64,
@@ -740,7 +740,7 @@ impl DataQualityResults {
         );
     }
 
-    pub fn empty(total_rows: usize, plan: &DataQualityPlan, schema: &Schema) -> Self {
+    pub fn empty(total_rows: Option<usize>, plan: &DataQualityPlan, schema: &Schema) -> Self {
         Self {
             total_rows,
             evaluated_rows: 0,
@@ -782,7 +782,7 @@ impl DataQualityResults {
 
 pub fn compute_data_quality(
     lf: &LazyFrame,
-    total_rows: usize,
+    total_rows: Option<usize>,
     plan: &DataQualityPlan,
     source: Option<&QualitySourceContext>,
     polars_streaming: bool,
@@ -793,20 +793,45 @@ pub fn compute_data_quality(
         return Ok(DataQualityResults::empty(total_rows, plan, &schema));
     }
     if plan.compute == QualityCompute::Full {
+        let total_rows = match total_rows {
+            Some(rows) => rows,
+            None => {
+                let count = collect_lazy(
+                    crate::widgets::datatable::row_count_lf(lf),
+                    polars_streaming,
+                )
+                .map_err(Report::from)?;
+                let count_values = count
+                    .get(0)
+                    .ok_or_else(|| Report::msg("Data quality row count was not returned"))?;
+                let Some(AnyValue::UInt64(rows)) = count_values.first() else {
+                    return Err(Report::msg("Data quality row count was not UInt64"));
+                };
+                *rows as usize
+            }
+        };
         return compute_full_quality(lf, total_rows, plan, source, &schema, polars_streaming);
     }
 
-    let (profile_df, sample_positions, evaluated_rows, precision) = match plan.compute {
-        QualityCompute::Sample if total_rows > plan.sample_rows.min(50_000) => {
-            let (df, positions) =
+    let (profile_df, sample_positions, evaluated_rows, precision, total_rows) = match plan.compute {
+        QualityCompute::Sample
+            if total_rows.is_none_or(|rows| rows > plan.sample_rows.min(50_000)) =>
+        {
+            let (df, positions, observed_total) =
                 sample_quality_rows(lf, plan.sample_rows, plan.sample_seed, polars_streaming)?;
             let height = df.height();
-            (df, Some(positions), height, QualityPrecision::Sampled)
+            let total_rows = total_rows.or(observed_total);
+            let precision = if total_rows == Some(height) {
+                QualityPrecision::Exact
+            } else {
+                QualityPrecision::Sampled
+            };
+            (df, Some(positions), height, precision, total_rows)
         }
         QualityCompute::Sample => {
             let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
             let height = df.height();
-            (df, None, height, QualityPrecision::Exact)
+            (df, None, height, QualityPrecision::Exact, Some(height))
         }
         QualityCompute::Metadata | QualityCompute::Full => unreachable!(),
     };
@@ -848,14 +873,19 @@ fn sample_quality_rows(
     sample_rows: usize,
     seed: u64,
     polars_streaming: bool,
-) -> Result<(DataFrame, Vec<u32>)> {
+) -> Result<(DataFrame, Vec<u32>, Option<usize>)> {
     let requested = sample_rows.min(50_000);
     let candidate_rows = requested.saturating_mul(2).min(50_000);
-    let candidates = collect_lazy(lf.clone().limit(candidate_rows as u32), polars_streaming)
+    let probe_rows = candidate_rows.saturating_add(1).min(50_000);
+    let mut candidates = collect_lazy(lf.clone().limit(probe_rows as u32), polars_streaming)
         .map_err(Report::from)?;
+    let observed_total = (candidates.height() < probe_rows).then_some(candidates.height());
+    if candidates.height() > candidate_rows {
+        candidates = candidates.slice(0, candidate_rows);
+    }
     if candidates.height() <= requested {
         let positions = (0..candidates.height() as u32).collect();
-        return Ok((candidates, positions));
+        return Ok((candidates, positions, observed_total));
     }
     let mut indices = (0..candidates.height() as u32).collect::<Vec<_>>();
     let mut random = seed;
@@ -875,7 +905,7 @@ fn sample_quality_rows(
         "quality_sample".into(),
         indices.clone(),
     ))?;
-    Ok((sampled, indices))
+    Ok((sampled, indices, observed_total))
 }
 
 fn compute_full_quality(
@@ -900,7 +930,7 @@ fn compute_full_quality(
     let segments = profile_segments_lazy(lf, total_rows, plan, source, schema, polars_streaming)?;
     let temporal = profile_temporal_lazy(lf, plan, source, polars_streaming)?;
     Ok(DataQualityResults {
-        total_rows,
+        total_rows: Some(total_rows),
         evaluated_rows: total_rows,
         precision: QualityPrecision::Exact,
         sample_seed: plan.sample_seed,
@@ -1383,7 +1413,7 @@ fn take_rows(df: &DataFrame, indices: &[u32]) -> PolarsResult<DataFrame> {
 
 fn profile_segments(
     df: &DataFrame,
-    total_rows: usize,
+    total_rows: Option<usize>,
     plan: &DataQualityPlan,
     precision: QualityPrecision,
     schema: &Schema,
@@ -1403,7 +1433,7 @@ fn profile_segments(
         profiles.push(SegmentQualityProfile {
             label: group.label,
             total_rows: if matches!(plan.grain, QualityGrain::Dataset) {
-                Some(total_rows)
+                total_rows
             } else if precision == QualityPrecision::Exact {
                 Some(segment.height())
             } else {
@@ -2235,7 +2265,7 @@ mod tests {
             compute: QualityCompute::Full,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&fixture(), 4, &plan, None, false).unwrap();
+        let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
 
         assert_eq!(results.precision, QualityPrecision::Exact);
         assert_eq!(results.evaluated_rows, 4);
@@ -2320,10 +2350,43 @@ mod tests {
             sample_seed: 7,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&fixture(), 4, &plan, None, false).unwrap();
+        let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
         assert_eq!(results.precision, QualityPrecision::Sampled);
-        assert_eq!(results.total_rows, 4);
+        assert_eq!(results.total_rows, Some(4));
         assert_eq!(results.evaluated_rows, 2);
+    }
+
+    #[test]
+    fn unknown_sample_total_stays_unknown_until_bounded_probe_reaches_end() {
+        let frame = DataFrame::new(
+            100,
+            vec![Column::new("id".into(), (0..100).collect::<Vec<_>>())],
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            sample_rows: 10,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+        assert_eq!(results.total_rows, None);
+        assert_eq!(results.evaluated_rows, 10);
+        assert_eq!(results.precision, QualityPrecision::Sampled);
+        assert_eq!(results.segments[0].total_rows, None);
+
+        let short = frame.clone().limit(8);
+        let results = compute_data_quality(&short, None, &plan, None, false).unwrap();
+        assert_eq!(results.total_rows, Some(8));
+        assert_eq!(results.evaluated_rows, 8);
+        assert_eq!(results.precision, QualityPrecision::Exact);
+
+        let metadata = DataQualityPlan {
+            compute: QualityCompute::Metadata,
+            ..plan
+        };
+        let results = compute_data_quality(&frame, None, &metadata, None, false).unwrap();
+        assert_eq!(results.total_rows, None);
+        assert_eq!(results.evaluated_rows, 0);
     }
 
     #[test]
@@ -2347,7 +2410,7 @@ mod tests {
         assert_ne!(first, other);
         assert_eq!(first.0.column("id").unwrap().n_unique().unwrap(), 20);
 
-        let results = compute_data_quality(&frame, 100, &plan, None, false).unwrap();
+        let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
         assert!(
             results
                 .segments
@@ -2370,7 +2433,7 @@ mod tests {
             );
         }
         plan.compute = QualityCompute::Full;
-        let full = compute_data_quality(&frame, 100, &plan, None, false).unwrap();
+        let full = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
         assert!(
             full.segments
                 .iter()
@@ -2384,7 +2447,7 @@ mod tests {
             compute: QualityCompute::Metadata,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&fixture(), 4, &plan, None, false).unwrap();
+        let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
         assert_eq!(results.precision, QualityPrecision::Metadata);
         assert_eq!(results.evaluated_rows, 0);
         assert_eq!(results.columns.len(), 5);
@@ -2556,12 +2619,13 @@ mod tests {
             compute: QualityCompute::Full,
             ..DataQualityPlan::default()
         };
-        let result = compute_data_quality(&frame, 2, &plan, None, false).unwrap();
+        let result = compute_data_quality(&frame, Some(2), &plan, None, false).unwrap();
         assert_eq!(result.columns[0].null_count, 0);
         assert_eq!(result.columns[0].min_length, Some(1));
         assert_eq!(result.columns[0].max_length, Some(2));
         let sampled =
-            compute_data_quality(&frame, 2, &DataQualityPlan::default(), None, false).unwrap();
+            compute_data_quality(&frame, Some(2), &DataQualityPlan::default(), None, false)
+                .unwrap();
         assert_eq!(sampled.columns[0].min_length, Some(1));
         assert_eq!(sampled.columns[0].max_length, Some(2));
     }
@@ -2574,7 +2638,7 @@ mod tests {
             comparison: QualityComparison::Previous,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&fixture(), 4, &plan, None, false).unwrap();
+        let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
         assert_eq!(results.segments.len(), 2);
         assert_eq!(results.segments[0].evaluated_rows, 2);
         let first_dirty = results.segments[0]
@@ -2635,7 +2699,7 @@ mod tests {
             ..DataQualityPlan::default()
         };
 
-        let without_roles = compute_data_quality(&frame, 4, &plan, None, false).unwrap();
+        let without_roles = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
         assert!(without_roles.temporal.is_empty());
 
         plan.temporal_roles = vec![
@@ -2650,7 +2714,7 @@ mod tests {
                 timezone: None,
             },
         ];
-        let results = compute_data_quality(&frame, 4, &plan, None, false).unwrap();
+        let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
         assert_eq!(results.temporal.len(), 1);
         let latency = &results.temporal[0];
         assert_eq!(latency.missing_start, 1);
@@ -2677,7 +2741,7 @@ mod tests {
             grain: QualityGrain::File,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&frame, 4, &plan, Some(&source), false).unwrap();
+        let results = compute_data_quality(&frame, Some(4), &plan, Some(&source), false).unwrap();
         assert_eq!(results.columns.len(), 1);
         assert_eq!(results.segments.len(), 2);
         assert_eq!(results.segments[0].evaluated_rows, 2);
@@ -2696,7 +2760,7 @@ mod tests {
             compute: QualityCompute::Full,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&frame, 4, &plan, None, false).unwrap();
+        let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
         let identity = results.identity.unwrap();
         assert_eq!(identity.duplicate_groups, 1);
         assert_eq!(identity.extra_rows, 1);
@@ -2721,7 +2785,7 @@ mod tests {
             sample_rows: 3,
             ..DataQualityPlan::default()
         };
-        let results = compute_data_quality(&frame, 3, &plan, None, false).unwrap();
+        let results = compute_data_quality(&frame, Some(3), &plan, None, false).unwrap();
         let identity = results.identity.unwrap();
         assert_eq!(identity.duplicate_groups, 1);
         assert_eq!(identity.rows_involved, 2);
@@ -2751,7 +2815,8 @@ mod tests {
             grain: QualityGrain::Partition("partition".to_string()),
             ..DataQualityPlan::default()
         };
-        let partitioned = compute_data_quality(&frame, 3, &partition_plan, None, false).unwrap();
+        let partitioned =
+            compute_data_quality(&frame, Some(3), &partition_plan, None, false).unwrap();
         assert_eq!(partitioned.segments.len(), 2);
         assert_eq!(partitioned.segments[0].evaluated_rows, 2);
 
@@ -2763,7 +2828,7 @@ mod tests {
             },
             ..DataQualityPlan::default()
         };
-        let windowed = compute_data_quality(&frame, 3, &window_plan, None, false).unwrap();
+        let windowed = compute_data_quality(&frame, Some(3), &window_plan, None, false).unwrap();
         assert_eq!(windowed.segments.len(), 2);
         assert!(windowed.segments[0].label.contains("1w"));
     }

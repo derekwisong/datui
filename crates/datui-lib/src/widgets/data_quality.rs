@@ -531,7 +531,7 @@ fn render_observation_detail(
             format!(
                 "{} precision; {} eligible rows; sample seed {}",
                 results.precision.label(),
-                numfmt::group_chrome(results.total_rows),
+                count_label(results.total_rows),
                 results.sample_seed
             ),
             Style::default().fg(config.theme.get("dimmed")),
@@ -1233,7 +1233,7 @@ fn render_detail(
             format!(
                 "Provenance: {} of {} eligible rows; {} precision; sample seed {}.",
                 numfmt::group_chrome(profile.evaluated_rows),
-                numfmt::group_chrome(results.total_rows),
+                count_label(results.total_rows),
                 results.precision.label(),
                 results.sample_seed
             ),

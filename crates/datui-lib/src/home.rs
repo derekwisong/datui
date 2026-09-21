@@ -1522,11 +1522,15 @@ impl HomeState {
     }
 
     /// Whether the listing holds anything openable at all, folded or not.
+    ///
+    /// A lake table counts. datui cannot read one as a table yet, so it is not a dataset
+    /// — but it is somewhere to go, and a warehouse directory of fifty `delta` rows with
+    /// "No datasets here." printed underneath them is plainly wrong.
     pub fn has_any_dataset(&self) -> bool {
         self.sections
             .iter()
             .flat_map(|s| s.rows.iter())
-            .any(|e| e.kind.is_dataset())
+            .any(|e| e.kind.is_dataset() || e.kind.is_lake_table())
     }
 
     /// Lines currently on screen: a header per non-empty section, followed by its
@@ -2131,7 +2135,9 @@ impl HomeState {
             if (self.network_check)(&entry.path) {
                 continue;
             }
-            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
+            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown)
+                && !entry.kind.is_lake_table()
+            {
                 out.push(entry.clone());
             }
             if out.len() >= limit {

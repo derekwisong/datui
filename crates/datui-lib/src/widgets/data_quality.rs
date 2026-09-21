@@ -468,11 +468,26 @@ fn render_observation_detail(
             Style::default().fg(config.theme.get("dimmed")),
         ),
     ];
+    let can_open_rows = results.precision == crate::data_quality::QualityPrecision::Exact
+        && observation.evidence_predicate().is_some();
+    lines.push(Line::styled(
+        if can_open_rows {
+            "Enter opens matching rows (the source may be read again)."
+        } else if results.precision == crate::data_quality::QualityPrecision::Sampled {
+            "Sampled observation: run a full profile for exact matching rows."
+        } else {
+            "No deterministic row filter for this aggregate; use the measured fact above."
+        },
+        Style::default().fg(config.theme.get("dimmed")),
+    ));
     if observation.kind == ObservationKind::CategoryVariants {
         for group in results
             .category_variants
             .iter()
-            .filter(|group| group.column == observation.column)
+            .filter(|group| {
+                group.column == observation.column
+                    && observation.normalized_category.as_ref() == Some(&group.normalized)
+            })
             .take(3)
         {
             lines.push(Line::raw(format!(
@@ -494,7 +509,11 @@ fn render_observation_detail(
     Paragraph::new(lines)
         .block(
             Block::default()
-                .title(" OBSERVATION — Enter/Esc Close ")
+                .title(if can_open_rows {
+                    " OBSERVATION — Enter Rows / Esc Back "
+                } else {
+                    " OBSERVATION — Enter/Esc Close "
+                })
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(config.theme.get("modal_border_active"))),
@@ -1283,8 +1302,10 @@ fn render_narrow_tool_picker(
 fn render_controls(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let actions = if config.running {
         vec![("Esc", "Cancel run")]
-    } else if config.show_access || config.observation_detail {
+    } else if config.show_access {
         vec![("Enter", "Close"), ("Esc", "Close")]
+    } else if config.observation_detail {
+        vec![("Enter", "Evidence"), ("Esc", "Back")]
     } else if config.page == QualityPage::TimeRoles {
         vec![
             (glyphs::get().updown, "Role"),

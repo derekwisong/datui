@@ -4177,6 +4177,8 @@ pub struct App {
     pub template_modal: TemplateModal,
     pub analysis_modal: AnalysisModal,
     quality_cache: Vec<QualityCacheEntry>,
+    quality_evidence_return: Option<Box<DataTableState>>,
+    pub(crate) quality_evidence_label: Option<String>,
     pub chart_modal: ChartModal,
     pub chart_export_modal: ChartExportModal,
     pub export_modal: ExportModal,
@@ -4301,6 +4303,60 @@ pub struct App {
 }
 
 impl App {
+    fn open_quality_evidence(&mut self) {
+        let Some(observation) = self
+            .analysis_modal
+            .data_quality_results
+            .as_ref()
+            .filter(|results| results.precision == data_quality::QualityPrecision::Exact)
+            .and_then(|results| {
+                self.analysis_modal
+                    .data_quality_table_state
+                    .selected()
+                    .and_then(|index| results.observations.get(index))
+            })
+        else {
+            return;
+        };
+        let Some(predicate) = observation.evidence_predicate() else {
+            return;
+        };
+        let label = format!("{} / {}", observation.kind.label(), observation.column);
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let view = match state.quality_evidence_view(predicate) {
+            Ok(view) => view,
+            Err(error) => {
+                self.error_modal
+                    .show(format!("Cannot open matching rows: {error}"));
+                return;
+            }
+        };
+        if let Some(original) = self.data_table_state.replace(view) {
+            self.quality_evidence_return = Some(Box::new(original));
+            self.quality_evidence_label = Some(label);
+            self.analysis_modal.active = false;
+            self.collect_inflight = None;
+            self.spawn_async_collect("Loading matching rows...");
+        }
+    }
+
+    fn return_from_quality_evidence(&mut self, reopen_analysis: bool) -> bool {
+        let Some(original) = self.quality_evidence_return.take() else {
+            return false;
+        };
+        self.task_generation = self.task_generation.wrapping_add(1);
+        self.collect_inflight = None;
+        self.len_count_inflight = None;
+        self.data_table_state = Some(*original);
+        self.quality_evidence_label = None;
+        self.analysis_modal.active = reopen_analysis;
+        self.busy = false;
+        self.status_message = None;
+        true
+    }
+
     fn restore_recent_quality_plan(&mut self) {
         let Some(view_generation) = self
             .data_table_state
@@ -4418,8 +4474,12 @@ impl App {
             && self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality)
             && self.analysis_modal.computing.is_some()
             && key.code == KeyCode::Esc;
+        let leave_quality_evidence = self.quality_evidence_return.is_some()
+            && self.input_mode == InputMode::Normal
+            && key.code == KeyCode::Esc;
         quit || home
             || cancel_quality
+            || leave_quality_evidence
             || self.confirmation_modal.active
             || self.input_mode == InputMode::Home
     }
@@ -4755,6 +4815,8 @@ impl App {
         // footers has to be able to finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
         self.quality_cache.clear();
+        self.quality_evidence_return = None;
+        self.quality_evidence_label = None;
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -5169,6 +5231,8 @@ impl App {
             template_modal: TemplateModal::new(),
             analysis_modal: AnalysisModal::new(),
             quality_cache: Vec::new(),
+            quality_evidence_return: None,
+            quality_evidence_label: None,
             chart_modal: ChartModal::new(),
             chart_export_modal: ChartExportModal::new(),
             export_modal: ExportModal::new(),
@@ -5792,6 +5856,9 @@ impl App {
     }
 
     pub fn enter_home(&mut self) {
+        if self.return_from_quality_evidence(false) {
+            self.analysis_modal.close();
+        }
         self.abandon_load();
         self.home.status = None;
         self.home.folds = self.cache.load_folds();
@@ -7870,6 +7937,17 @@ impl App {
             return Some(AppEvent::Exit);
         }
 
+        if event.code == KeyCode::Esc
+            && self.input_mode == InputMode::Normal
+            && !self.analysis_modal.active
+            && !self.error_modal.active
+            && !self.success_modal.active
+            && !self.confirmation_modal.active
+            && self.return_from_quality_evidence(true)
+        {
+            return None;
+        }
+
         // F1 opens help first so no other branch (e.g. Editing) can consume it.
         if event.code == KeyCode::F(1) {
             self.open_help_overlay();
@@ -9640,7 +9718,10 @@ impl App {
                         return None;
                     }
                     KeyCode::Enter if self.analysis_modal.data_quality_observation_detail => {
-                        self.analysis_modal.data_quality_observation_detail = false;
+                        self.open_quality_evidence();
+                        if self.analysis_modal.active && !self.error_modal.active {
+                            self.analysis_modal.data_quality_observation_detail = false;
+                        }
                         return None;
                     }
                     KeyCode::Esc if self.analysis_modal.data_quality_confirm_run => {
@@ -11970,7 +12051,10 @@ impl App {
             }
             KeyCode::Char('a') => {
                 // Open analysis modal; no computation until user selects a tool from the sidebar (Enter)
-                if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                if self.data_table_state.is_some()
+                    && self.input_mode == InputMode::Normal
+                    && self.quality_evidence_return.is_none()
+                {
                     self.analysis_modal.open();
                 }
                 None

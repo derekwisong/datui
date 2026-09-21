@@ -862,6 +862,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             affected_rows: 1,
             evaluated_rows: 10,
             fact: "1 null row".to_string(),
+            normalized_category: None,
         });
     app.analysis_modal.data_quality_table_state.select(Some(0));
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -970,6 +971,64 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_plan.sample_seed, 7_119);
     assert!(app.analysis_modal.data_quality_results.is_some());
     assert!(!app.is_busy());
+
+    let column = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .schema
+        .iter_names()
+        .next()
+        .unwrap()
+        .to_string();
+    let original_view = app.data_table_state.as_ref().unwrap().len_generation();
+    let results = app.analysis_modal.data_quality_results.as_mut().unwrap();
+    results.precision = datui::data_quality::QualityPrecision::Exact;
+    results.observations = vec![datui::data_quality::QualityObservation {
+        kind: datui::data_quality::ObservationKind::Nulls,
+        column,
+        affected_rows: 0,
+        evaluated_rows: results.evaluated_rows,
+        fact: "matching rows".to_string(),
+        normalized_category: None,
+    }];
+    app.analysis_modal.set_quality_page(QualityPage::Overview);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.active);
+    let area = Rect::new(0, 0, 80, 24);
+    let mut evidence_buffer = Buffer::empty(area);
+    app.render(area, &mut evidence_buffer);
+    assert!(
+        evidence_buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .contains("Esc back to result")
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.active);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.active);
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().len_generation(),
+        original_view
+    );
 
     app.analysis_modal.close();
     let state = app.data_table_state.as_mut().unwrap();

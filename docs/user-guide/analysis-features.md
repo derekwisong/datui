@@ -61,7 +61,12 @@ After a run, use <kbd>1</kbd>–<kbd>4</kbd> for Overview, Columns, Segments,
 and Trends. Results state eligible and evaluated rows and whether values are
 exact, sampled, or metadata-only. Overview includes dataset notes and neutral
 observations. Press <kbd>Enter</kbd> on one for its definition, denominator,
-provenance, and available category-variant examples. Columns reports null,
+provenance, and available category-variant examples. For an exact null, empty,
+whitespace, non-finite, constant, or category-variant observation,
+<kbd>Enter</kbd> again opens matching
+rows in a temporary table; <kbd>Esc</kbd> returns to the same observation.
+The row view may read the source again. A sampled observation says when an
+exact row view requires a full profile. Columns reports null,
 empty, whitespace, non-finite, distinct,
 parse, and range measurements. Segments keeps both row denominators visible and
 shows the chosen column measurement and its percentage-point change against

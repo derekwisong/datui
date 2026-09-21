@@ -341,6 +341,42 @@ pub struct QualityObservation {
     pub affected_rows: usize,
     pub evaluated_rows: usize,
     pub fact: String,
+    pub normalized_category: Option<String>,
+}
+
+impl QualityObservation {
+    pub fn evidence_predicate(&self) -> Option<Expr> {
+        let value = col(&self.column);
+        match self.kind {
+            ObservationKind::Nulls => Some(value.is_null()),
+            ObservationKind::Empty => Some(value.eq(lit(""))),
+            ObservationKind::Whitespace => Some(
+                value
+                    .clone()
+                    .str()
+                    .strip_chars(lit(LiteralValue::untyped_null()))
+                    .eq(lit(""))
+                    .and(value.neq(lit(""))),
+            ),
+            ObservationKind::NonFinite => Some(
+                value
+                    .clone()
+                    .is_nan()
+                    .or(value.clone().eq(lit(f64::INFINITY)))
+                    .or(value.eq(lit(f64::NEG_INFINITY))),
+            ),
+            ObservationKind::Constant => Some(value.is_not_null()),
+            ObservationKind::CategoryVariants => Some(
+                value
+                    .str()
+                    .strip_chars(lit(LiteralValue::untyped_null()))
+                    .str()
+                    .to_lowercase()
+                    .eq(lit(self.normalized_category.clone()?)),
+            ),
+            ObservationKind::ParseableText | ObservationKind::DuplicateRows => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -902,6 +938,7 @@ fn identity_observations(
                 identity.extra_rows,
                 identity.precision.label()
             ),
+            normalized_category: None,
         });
     }
     observations.extend(variants.iter().map(|group| QualityObservation {
@@ -915,6 +952,7 @@ fn identity_observations(
             group.variants.len(),
             group.normalized
         ),
+        normalized_category: Some(group.normalized.clone()),
     }));
     observations
 }
@@ -1812,6 +1850,7 @@ fn observation(
         affected_rows,
         evaluated_rows: profile.evaluated_rows,
         fact,
+        normalized_category: None,
     }
 }
 
@@ -1924,6 +1963,47 @@ mod tests {
                 .iter()
                 .any(|item| item.kind == ObservationKind::Constant)
         );
+    }
+
+    #[test]
+    fn exact_observation_predicates_select_matching_rows() {
+        let examples = [
+            (ObservationKind::Nulls, "dirty", 1),
+            (ObservationKind::Empty, "dirty", 1),
+            (ObservationKind::Whitespace, "dirty", 1),
+            (ObservationKind::NonFinite, "amount", 2),
+            (ObservationKind::Constant, "constant", 4),
+        ];
+        for (kind, column, expected) in examples {
+            let observation = QualityObservation {
+                kind,
+                column: column.to_string(),
+                affected_rows: expected,
+                evaluated_rows: 4,
+                fact: String::new(),
+                normalized_category: None,
+            };
+            let rows = fixture()
+                .filter(observation.evidence_predicate().unwrap())
+                .collect()
+                .unwrap();
+            assert_eq!(rows.height(), expected, "{}", kind.label());
+        }
+        let category = QualityObservation {
+            kind: ObservationKind::CategoryVariants,
+            column: "category".to_string(),
+            affected_rows: 3,
+            evaluated_rows: 3,
+            fact: String::new(),
+            normalized_category: Some("north".to_string()),
+        };
+        let rows = df!("category" => &["North", " north ", "NORTH"])
+            .unwrap()
+            .lazy()
+            .filter(category.evidence_predicate().unwrap())
+            .collect()
+            .unwrap();
+        assert_eq!(rows.height(), 3);
     }
 
     #[test]

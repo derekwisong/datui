@@ -1,6 +1,6 @@
 Data Quality profiles the current view deliberately. Nothing scans values until you run the visible plan.
 
-Enter: Run the plan or inspect the selected result
+Enter: Run the plan, inspect an observation, or open exact matching rows
 e: Edit grain, compute budget, comparison and explicit time roles
 p: Show the detailed access plan
 1 / 2 / 3 / 4: Overview / Columns / Segments / Trends
@@ -18,3 +18,4 @@ Sampling selects rows without replacement from a bounded prefix of at most 50,00
 Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The breadcrumb labels a reused run.
 
 Full scans require confirmation. While a plan is running, Esc cancels the result and leaves the source unchanged. File and partition comparisons require an explicit order before "previous" is meaningful.
+For exact null, empty, whitespace, non-finite, constant, and category-variant observations, Enter from the detail opens a temporary row view. Esc returns to the same observation. Sampled observations explain when an exact row view needs a full run.

@@ -2306,6 +2306,133 @@ pub mod tests {
         );
     }
 
+    /// An App on a remote dataset of a hundred rows that has not been counted yet.
+    ///
+    /// The receiver comes back with it: dropped, the channel closes and the App's own
+    /// sends start failing.
+    fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEvent>) {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = frame();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(frame())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        (app, rx)
+    }
+
+    /// The bottom line of a rendered App — the control bar, as a string.
+    fn control_bar(app: &mut crate::App) -> String {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        let area = Rect::new(0, 0, 120, 24);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..area.width)
+            .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+            .collect()
+    }
+
+    /// The bar says `?` when this frame's count failed, rather than the partial the
+    /// buffer happened to reach.
+    ///
+    /// The widget's own `?` has a test; what had none is the App deciding to ask for it.
+    /// Two bugs were found in and around `len_count_failed` and the suite noticed
+    /// neither, because nothing rendered the bar: deleting the write that produces `?`
+    /// left the whole workspace green.
+    #[test]
+    fn the_bar_says_question_mark_when_the_count_failed() {
+        use crate::AppEvent;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+
+        assert!(
+            !control_bar(&mut app).contains("Rows: ?"),
+            "nothing has failed yet"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live,
+        });
+
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Rows: ?"),
+            "the count failed, so the total is unknown: {bar:?}"
+        );
+    }
+
+    /// An End waiting on a count whose frame is gone, whose count then fails, is retired
+    /// without saying anything.
+    ///
+    /// The frame it was counting has been replaced, so its failure says nothing about the
+    /// one on screen and cannot answer the End that was waiting on it. Reached by nothing
+    /// in the suite until now: deleting the branch left every test green.
+    #[test]
+    fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
+        use crate::AppEvent;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.end_after_count, Some(waiting));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(crate::App::COUNTING_FOR_END),
+            "the status says the count is running"
+        );
+
+        // A question of the dataset takes a fresh generation out from under the count.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query("select doubled: id * 2".to_string());
+        state.defer_collect = false;
+        assert_ne!(
+            app.data_table_state.as_ref().unwrap().len_generation(),
+            waiting,
+            "the frame the count belongs to is gone"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: waiting,
+        });
+
+        assert_eq!(
+            app.end_after_count, None,
+            "the End it belonged to is retired"
+        );
+        assert_eq!(
+            app.status_message, None,
+            "and the status it put up comes down, rather than becoming an error about a \
+             frame the user is no longer looking at"
+        );
+    }
+
     /// An End pressed on the folder the user walked away from does not move the one they
     /// opened next.
     ///

@@ -35,7 +35,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder labelled `hive` or `multi`, <kbd>→</kbd> goes inside it instead of opening it, so one partition or one file can be reached |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder labelled `hive`, `multi`, `delta`, `iceberg` or `hudi`, <kbd>→</kbd> goes inside it, so one partition or one file can be reached |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
@@ -181,10 +181,12 @@ modified    3 days ago
 | `partitions` | directory names | the layout of a partitioned dataset, without opening a file |
 
 None of this reads the data itself. Row and column counts come from Parquet
-footers, summed over at most 64 files for hive and multi-file datasets; a larger
-dataset shows `? × 39`. CSV and other formats that need a scan to count show
-neither. Below the counts, the pane lists the full schema of a Parquet dataset,
-each type in the color the table uses.
+footers, summed over at most 64 files for hive and multi-file datasets. A larger
+one is not counted, and its columns come from a spread of the folder rather than
+all of it, so it shows `? × 39+`: neither figure is a total, and both say so. CSV
+and other formats that need a scan to count show neither. Below the counts,
+the pane lists the full schema of a Parquet dataset, each type in the color the
+table uses.
 
 ### When a folder is one dataset
 
@@ -208,8 +210,8 @@ says which of them are live. datui does not read that log yet, so it does not
 offer the table as one dataset — the files a delete or an update tombstoned are
 still on disk, every rewritten version is there together, and compaction leaves
 both sides in place, so reading them as one table gives rows the table does not
-have. <kbd>Enter</kbd> goes inside instead, where the data files can be opened
-one at a time.
+have. <kbd>Enter</kbd> and <kbd>→</kbd> both go inside instead, where the data
+files can be opened one at a time, and say so when they do.
 
 | Format | What marks the root |
 |---|---|

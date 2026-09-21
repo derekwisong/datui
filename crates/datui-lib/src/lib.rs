@@ -7338,10 +7338,14 @@ impl App {
             .browsing
             .as_deref()
             .is_some_and(|dir| home::folder_dataset_url(dir) == entry.path);
-        (matches!(
+        // A lake table too: Enter already goes inside one, and → doing the same is what
+        // every other folder-shaped row does. Before this it folded the section, which
+        // on a cloud Delta root was a step backwards — labelled `multi`, → went inside.
+        ((matches!(
             entry.kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) && !whole_of_here)
+        ) || entry.kind.is_lake_table())
+            && !whole_of_here)
             .then_some(entry.path)
     }
 
@@ -7369,7 +7373,26 @@ impl App {
             }
             return None;
         }
-        let entry = self.home.selected_entry()?;
+        let mut entry = self.home.selected_entry()?;
+        // A row nothing has classified — one whose cached kind this build will not take,
+        // see `discover::CLASSIFIER_VERSION` — is looked at now rather than opened as
+        // whatever it turns out to be. `EntryKind::Unknown` is offered as openable, so
+        // without this, refusing a stale `multi` only changed the chip and Enter still
+        // read a whole lake root as one table.
+        //
+        // Never for a path the home screen calls remote. `classify_directory` is a
+        // `read_dir` and a dozen stats, and this runs on the thread that draws and reads
+        // the keyboard: on a hard-mounted share that has gone away it is an
+        // uninterruptible freeze, with Ctrl+C on the same thread. That is the rule
+        // `is_remote_path` exists for, and `unmeasured_visible` and
+        // `request_home_measurements` both keep to. So a remote row opens as it did
+        // before — classifying it belongs on a worker, which is #254.
+        if entry.kind == discover::EntryKind::Unknown
+            && !(self.home.network_check)(&entry.path)
+            && entry.path.is_dir()
+        {
+            entry.kind = discover::classify_directory(&entry.path);
+        }
         if entry.kind == discover::EntryKind::Directory {
             self.home_browse_into(entry.path);
             return None;
@@ -7509,7 +7532,19 @@ impl App {
                 // Into a folder that opens as one dataset rather than opening it, to
                 // reach one partition or one file. This clears the filter, as browsing
                 // anywhere does.
-                Some(folder) => self.home_browse_into(folder),
+                Some(folder) => {
+                    // The same sentence Enter leaves, for the same reason: this is the
+                    // door the control bar advertises on a lake row, and arriving inside
+                    // one with no explanation is the silent wrong answer #237 is about.
+                    let note = self
+                        .home
+                        .selected_entry()
+                        .and_then(|entry| Self::lake_table_note(entry.kind));
+                    self.home_browse_into(folder);
+                    if note.is_some() {
+                        self.home.status = note;
+                    }
+                }
                 None => self.home_collapse(false),
             },
             KeyCode::PageUp => self.home.move_selection(-10),

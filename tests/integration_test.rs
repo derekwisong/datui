@@ -6004,6 +6004,69 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
     );
 }
 
+/// A background probe answering does not cancel the open the user asked for.
+///
+/// The first gate was `home_generation`, which means "the listing was rebuilt" and not
+/// "the user navigated": a probe of some other root answering bumps it. On a home screen
+/// with network roots — the only kind where this path runs at all — that made Enter do
+/// nothing, at random, with no message.
+#[test]
+fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    std::fs::write(table.join("part-0.parquet"), b"x").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.network_check = |_| true;
+    app.home.rebuild(&[], std::slice::from_ref(&table));
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == table))
+        .expect("the table is listed under Recent");
+    app.home.selected = row;
+
+    let mut follow = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(event) = follow {
+        follow = app.event(&event);
+    }
+
+    // A listing the user did not ask for lands while the look is out. Through the event,
+    // because it is the handler that refreshes the home screen — which is what the first
+    // gate mistook for the user having navigated.
+    app.event(&AppEvent::HomeProbeReady {
+        root: PathBuf::from("/mnt/somewhere-else"),
+        rows: Some(Vec::new()),
+    });
+
+    for _ in 0..50 {
+        let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(10)) else {
+            break;
+        };
+        let mut follow = app.event(&event);
+        while let Some(next) = follow {
+            follow = app.event(&next);
+        }
+        if !app.is_busy() {
+            break;
+        }
+    }
+
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(table.as_path()),
+        "the answer was still the one the user was waiting for"
+    );
+}
+
 /// Opening a hive directory from the home screen still reads it as one dataset.
 ///
 /// `home_open_path` used to work that out with a `stat`, which on a share that has gone
@@ -6067,5 +6130,43 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     ))) {
         Some(AppEvent::Open(_, options)) => assert!(!options.hive, "a file is not a hive tree"),
         _ => panic!("Enter on a file opens it"),
+    }
+
+    // And the case that proves the answer is told rather than stat'ed: a row whose kind
+    // says hive but whose path no longer answers, which is how a dropped mount presents
+    // itself. `is_dir()` is false there, so a stat would call it a single file.
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    let gone = PathBuf::from("/mnt/gone/sales");
+    for section in app.home.sections.iter_mut() {
+        for entry in section.rows.iter_mut().filter(|e| e.name == "sales") {
+            entry.path = gone.clone();
+        }
+    }
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == gone))
+        .expect("the row is listed");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Hive),
+        "the row still says hive"
+    );
+    match app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))) {
+        Some(AppEvent::Open(paths, options)) => {
+            assert_eq!(paths, vec![gone]);
+            assert!(
+                options.hive,
+                "told from the kind, not worked out with a stat that cannot reach it"
+            );
+        }
+        other => panic!("Enter opens it: {}", other.is_some()),
     }
 }

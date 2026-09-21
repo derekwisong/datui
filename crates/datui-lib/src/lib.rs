@@ -2426,55 +2426,83 @@ pub mod tests {
         );
     }
 
-    /// An answer whose question is no longer the one being asked is dropped — and the
-    /// busy state it was holding goes with it.
+    /// A look, set up as `ClassifyThenOpen` leaves it.
+    #[cfg(test)]
+    fn a_look_is_out(app: &mut crate::App, path: &std::path::Path) -> u64 {
+        app.classify_requests = app.classify_requests.wrapping_add(1);
+        let id = app.classify_requests;
+        app.classify_inflight = Some(crate::ClassifyRequest {
+            id,
+            path: path.to_path_buf(),
+            browsing: app.home.browsing.clone(),
+        });
+        app.busy = true;
+        id
+    }
+
+    /// An answer nobody is waiting for is dropped — and the busy state it was holding
+    /// goes with it, except where something else has taken that over.
     ///
     /// `spawn_bg` sets `busy` and this answer is the only thing that comes back, so a
-    /// drop that does not clear it holds every key for the rest of the session. The other
-    /// handlers can drop and say nothing because a bumped `task_generation` means
-    /// something else took `busy` over; leaving the home screen bumps nothing.
+    /// drop that does not clear it holds every key for the rest of the session. The
+    /// exception is the one the other handlers rely on: a bumped `task_generation` means
+    /// an `Open` or a collect set `busy` itself, and clearing it here takes the throbber
+    /// off a load that is still running.
     #[test]
-    fn a_classify_answer_nobody_is_waiting_for_still_puts_busy_down() {
+    fn a_classify_answer_nobody_is_waiting_for_leaves_the_right_busy_behind() {
         use crate::{App, AppEvent, InputMode};
 
         type MovedOn = fn(&mut App);
-        let cases: Vec<(&str, MovedOn)> = vec![
-            ("they went back to the data", |app: &mut App| {
-                app.input_mode = InputMode::Normal;
-            }),
-            ("the browse moved under it", |app: &mut App| {
-                app.home_generation = app.home_generation.wrapping_add(1);
-            }),
-            ("something else took the generation", |app: &mut App| {
-                app.task_generation = app.task_generation.wrapping_add(1);
-            }),
+        let cases: Vec<(&str, MovedOn, bool)> = vec![
+            (
+                "they went back to the data",
+                |app: &mut App| app.input_mode = InputMode::Normal,
+                false,
+            ),
+            (
+                "the browse moved under it",
+                |app: &mut App| app.home.browsing = Some(std::path::PathBuf::from("/elsewhere")),
+                false,
+            ),
+            (
+                "an open took the generation",
+                |app: &mut App| {
+                    app.task_generation = app.task_generation.wrapping_add(1);
+                    app.busy = true;
+                },
+                true,
+            ),
         ];
 
-        for (what, moved_on) in cases {
+        for (what, moved_on, busy_after) in cases {
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
             app.enter_home();
             let path = std::path::PathBuf::from("/mnt/share/orders");
-            let asked_at = app.home_generation;
+            let request = a_look_is_out(&mut app, &path);
             let generation = app.task_generation;
-            app.classify_inflight = Some((path.clone(), asked_at));
-            app.busy = true;
 
             moved_on(&mut app);
+            let moved_to = app.home.browsing.clone();
 
             let follow = app.event(&AppEvent::BackgroundKindReady {
                 generation,
-                home_generation: asked_at,
+                request,
                 path: path.clone(),
                 found: Some(crate::discover::EntryKind::MultiFile),
                 jump: false,
             });
 
             assert!(follow.is_none(), "nothing was opened when {what}");
-            assert_eq!(app.home.browsing, None, "and nothing browsed when {what}");
-            assert!(
-                !app.is_busy(),
-                "and the keyboard came back when {what} — nothing else owns it"
+            assert_eq!(
+                app.home.browsing, moved_to,
+                "and it did not browse into the answer's path when {what}"
+            );
+            assert_eq!(
+                app.is_busy(),
+                busy_after,
+                "busy after {what}: an answer puts down the busy it was holding, and \
+                 only that one"
             );
             assert!(
                 app.classify_inflight.is_none(),
@@ -2483,32 +2511,75 @@ pub mod tests {
         }
     }
 
-    /// One look at a time.
+    /// A newer look replaces an older one, and the older answer touches nothing.
     ///
-    /// Every key acts on the home screen even while `busy` — `hard_escape_while_busy`
-    /// says so there — so Enter twice would start two workers, and the user would be
-    /// taken into the first answer and then into the second.
+    /// Every key acts on the home screen even while `busy`, so a second Enter is
+    /// reachable. Refusing it meant a look at a share that never answers killed the
+    /// feature for the rest of the session, silently — and the older answer must not put
+    /// down the busy state the newer one is holding.
     #[test]
-    fn a_second_look_is_not_started_while_one_is_out() {
+    fn a_newer_look_replaces_an_older_one() {
         use crate::{App, AppEvent};
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.enter_home();
         let first = std::path::PathBuf::from("/mnt/share/aaa");
-        app.classify_inflight = Some((first.clone(), app.home_generation));
+        let stale = a_look_is_out(&mut app, &first);
+        let generation = app.task_generation;
 
-        let follow = app.event(&AppEvent::ClassifyThenOpen {
-            path: std::path::PathBuf::from("/mnt/share/bbb"),
+        // A second Enter, at a row the user moved to while the first was out.
+        let second = std::path::PathBuf::from("/mnt/share/bbb");
+        let _ = app.event(&AppEvent::ClassifyThenOpen {
+            path: second.clone(),
+            jump: false,
+        });
+        assert_eq!(
+            app.classify_inflight.as_ref().map(|r| r.path.as_path()),
+            Some(second.as_path()),
+            "the newer look is the one being waited on"
+        );
+
+        // And the older answer arrives.
+        let follow = app.event(&AppEvent::BackgroundKindReady {
+            generation,
+            request: stale,
+            path: first,
+            found: Some(crate::discover::EntryKind::MultiFile),
             jump: false,
         });
 
-        assert!(follow.is_none());
-        assert_eq!(
-            app.classify_inflight.as_ref().map(|(p, _)| p.as_path()),
-            Some(first.as_path()),
-            "the look that is out is still the one that is out"
+        assert!(follow.is_none(), "the stale answer opened nothing");
+        assert!(
+            app.classify_inflight.is_some(),
+            "and did not cancel the look that replaced it"
         );
+        assert!(app.is_busy(), "nor put down its busy state");
+    }
+
+    /// Going home puts down a look that may never answer.
+    ///
+    /// The case the whole path exists for is a share that has gone away, where the worker
+    /// sits forever. Without this the keyboard waits with it: `abandon_load` clears
+    /// `busy` only for a load, and a look is not one.
+    #[test]
+    fn going_home_does_not_wait_on_a_look_that_may_never_answer() {
+        use crate::App;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"));
+        app.home.status = Some("Looking at orders…".to_string());
+
+        app.enter_home();
+
+        assert!(
+            !app.is_busy(),
+            "the keyboard is not waiting on a dead share"
+        );
+        assert!(app.classify_inflight.is_none(), "and the look is put down");
+        assert_eq!(app.home.status, None, "with its line");
     }
 
     /// A typed path the worker could not find comes back to the prompt with the text in
@@ -2521,14 +2592,12 @@ pub mod tests {
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.enter_home();
         let path = std::path::PathBuf::from("/mnt/share/nope");
-        let asked_at = app.home_generation;
+        let request = a_look_is_out(&mut app, &path);
         let generation = app.task_generation;
-        app.classify_inflight = Some((path.clone(), asked_at));
-        app.busy = true;
 
         let follow = app.event(&AppEvent::BackgroundKindReady {
             generation,
-            home_generation: asked_at,
+            request,
             path: path.clone(),
             found: None,
             jump: true,
@@ -4585,14 +4654,26 @@ pub enum AppEvent {
     /// there.
     BackgroundKindReady {
         generation: u64,
-        /// The home screen the look was asked from. A browse that has moved since —
-        /// Backspace, Esc, another row — makes the answer one about somewhere the user
-        /// has navigated away from, and acting on it yanks them back into it.
-        home_generation: u64,
+        /// Which look this answers. A newer one replaces it, and the older answer is then
+        /// not the one the user is waiting for — nor the owner of the busy state.
+        request: u64,
         path: PathBuf,
         found: Option<discover::EntryKind>,
         jump: bool,
     },
+}
+
+/// A look at a path that is out on a worker, and what would make its answer stale.
+///
+/// `browsing` rather than `home_generation`: the question is whether the user is still
+/// where they asked from, and the listing is rebuilt for reasons that are nothing to do
+/// with them — a probe of some other root answering is enough. Gating on that made Enter
+/// on a share row do nothing, at random.
+struct ClassifyRequest {
+    id: u64,
+    path: PathBuf,
+    /// Where the home screen was pointed when the look was asked for.
+    browsing: Option<PathBuf>,
 }
 
 /// A lease on the current `task_generation`, held by background work whose answer
@@ -5477,11 +5558,13 @@ pub struct App {
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     home_generation: u64,
-    /// The look a `ClassifyThenOpen` has out, if any, and the home screen it was asked
-    /// from. One at a time: every key acts on the home screen even while `busy`, because
-    /// `hard_escape_while_busy` says so there — so Enter twice would send the user into
-    /// the first answer and then into the second.
-    classify_inflight: Option<(PathBuf, u64)>,
+    /// The look a `ClassifyThenOpen` has out, if any. Every key acts on the home screen
+    /// even while `busy` — `hard_escape_while_busy` says so there — so a second Enter is
+    /// reachable, and the newer look replaces the older: its answer is the one the user
+    /// is waiting for. See [`ClassifyRequest`].
+    classify_inflight: Option<ClassifyRequest>,
+    /// Ids for those, so a superseded answer can be told from the one being waited on.
+    classify_requests: u64,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -6591,6 +6674,7 @@ impl App {
             home_search_inflight: false,
             home_generation: 0,
             classify_inflight: None,
+            classify_requests: 0,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -7229,6 +7313,14 @@ impl App {
         // the throbber up on the home screen, and its result could later land in a
         // different dataset with the same column names.
         self.reset_chart_state();
+        // A look that is out belongs to the home screen being left, and the thread it is
+        // on may never come back — a share that has gone away is the case it exists for.
+        // Its answer will find nothing outstanding and touch nothing; the keyboard does
+        // not wait for it.
+        if self.classify_inflight.take().is_some() {
+            self.busy = false;
+            self.home.status = None;
+        }
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
@@ -14670,17 +14762,20 @@ impl App {
                 None
             }
             AppEvent::ClassifyThenOpen { path, jump } => {
-                // One look at a time. Every key acts on the home screen even while
-                // `busy`, so a second Enter would start a second worker and the user
-                // would be taken into the first answer and then the second. The line
-                // below says which one is being looked at.
-                if self.classify_inflight.is_some() {
-                    return None;
-                }
+                // A second Enter replaces the first rather than being refused. Every key
+                // acts on the home screen even while `busy`, so a second one is
+                // reachable, and the newer look is the one the user is waiting for — and
+                // refusing meant a look at a share that never answers killed the feature
+                // for the rest of the session, silently.
                 let looking = path.clone();
                 let jump = *jump;
-                let home_generation = self.home_generation;
-                self.classify_inflight = Some((looking.clone(), home_generation));
+                self.classify_requests = self.classify_requests.wrapping_add(1);
+                let request = self.classify_requests;
+                self.classify_inflight = Some(ClassifyRequest {
+                    id: request,
+                    path: looking.clone(),
+                    browsing: self.home.browsing.clone(),
+                });
                 let name = looking
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -14699,7 +14794,7 @@ impl App {
                     };
                     let _ = tx.send(AppEvent::BackgroundKindReady {
                         generation: task_gen,
-                        home_generation,
+                        request,
                         path: looking,
                         found,
                         jump,
@@ -14709,31 +14804,42 @@ impl App {
             }
             AppEvent::BackgroundKindReady {
                 generation,
-                home_generation,
+                request,
                 path,
                 found,
                 jump,
             } => {
-                // Before the gate, all of it. `spawn_bg` set `busy` and this is the only
-                // thing that comes back, so dropping the answer without clearing it holds
-                // every key for the rest of the session — nothing else owns it, the way a
-                // bumped `task_generation` owns the ones the other handlers drop.
-                let requested = self.classify_inflight.take();
-                self.busy = false;
+                // Superseded, or belonging to nothing: a newer look owns the busy state
+                // and the status line, so this one touches neither.
+                if self
+                    .classify_inflight
+                    .as_ref()
+                    .map(|r| (r.id, r.path.as_path()))
+                    != Some((*request, path.as_path()))
+                {
+                    return None;
+                }
+                let asked = self.classify_inflight.take().expect("just matched");
                 if self.status_message.as_deref() == Some(Self::LOOKING) {
                     self.status_message = None;
                 }
                 self.home.status = None;
 
+                // Something else took the busy state over. A bump comes from an `Open` or
+                // a collect, and both set `busy` themselves — clearing it here would take
+                // the throbber off a load still running and let keys land on a table
+                // being replaced. Their answer, their busy.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                // Otherwise it is this look's, and goes down however the answer lands.
+                self.busy = false;
+
                 // A key pressed on the home screen answers on the home screen. If they
-                // opened something else meanwhile the task generation has moved; if the
-                // browse has, the answer is about somewhere they navigated away from; and
-                // if they went back to the data, opening now would arrive from nowhere.
-                if *generation != self.task_generation
-                    || self.input_mode != InputMode::Home
-                    || *home_generation != self.home_generation
-                    || requested.as_ref().map(|(p, _)| p.as_path()) != Some(path.as_path())
-                {
+                // went back to the data, opening now would arrive from nowhere; if the
+                // browse has moved, the answer is about somewhere they navigated away
+                // from, and acting on it would take them back into it.
+                if self.input_mode != InputMode::Home || self.home.browsing != asked.browsing {
                     return None;
                 }
 

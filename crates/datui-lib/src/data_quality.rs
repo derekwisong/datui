@@ -1713,6 +1713,25 @@ fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
             );
         }
 
+        if matches!(dtype, DataType::List(_)) {
+            exprs.push(
+                column
+                    .clone()
+                    .list()
+                    .len()
+                    .min()
+                    .alias(format!("{prefix}min_length")),
+            );
+            exprs.push(
+                column
+                    .clone()
+                    .list()
+                    .len()
+                    .max()
+                    .alias(format!("{prefix}max_length")),
+            );
+        }
+
         if dtype.is_float() {
             let float = column.cast(DataType::Float64);
             exprs.push(float.clone().is_nan().sum().alias(format!("{prefix}nan")));
@@ -2178,6 +2197,30 @@ mod tests {
             collected.column("blob").unwrap().str().unwrap().get(0),
             Some(crate::widgets::datatable::BINARY_STUB)
         );
+    }
+
+    #[test]
+    fn full_profile_accepts_list_columns() {
+        let lists = Column::new(
+            "items".into(),
+            &[
+                Series::new("".into(), &[1i32, 2]),
+                Series::new("".into(), &[3i32]),
+            ],
+        );
+        let frame = DataFrame::new(2, vec![lists]).unwrap().lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let result = compute_data_quality(&frame, 2, &plan, None, false).unwrap();
+        assert_eq!(result.columns[0].null_count, 0);
+        assert_eq!(result.columns[0].min_length, Some(1));
+        assert_eq!(result.columns[0].max_length, Some(2));
+        let sampled =
+            compute_data_quality(&frame, 2, &DataQualityPlan::default(), None, false).unwrap();
+        assert_eq!(sampled.columns[0].min_length, Some(1));
+        assert_eq!(sampled.columns[0].max_length, Some(2));
     }
 
     #[test]

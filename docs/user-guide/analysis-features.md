@@ -108,7 +108,7 @@ changing the view or plan requires a new run.
 | NaN / infinity | Separate counts for NaN, positive infinity and negative infinity; reads floating-point values |
 | Distinct | Distinct non-null values observed in the evaluated rows; sampled runs do not claim dataset-wide uniqueness |
 | Dominant share | Most frequent non-null value count ÷ evaluated non-null rows |
-| Range / text length | Minimum and maximum value, or minimum and maximum character length for text |
+| Range / length | Minimum and maximum value, character length for text, or element count for lists |
 | Parse share | Values accepted by the named integer, decimal, ISO-date or ISO-datetime parser ÷ evaluated non-null text values |
 | Duplicate groups | Groups of identical complete evaluated rows; extra rows is Σ(group size − 1), rows involved is Σ(group size) |
 | Category variants | Original text values that become equal after outer-whitespace removal and lowercase normalization |

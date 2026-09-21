@@ -1140,7 +1140,12 @@ fn render_detail(
                 .unwrap_or_else(|| "-".to_string())
         )),
         Line::raw(format!(
-            "Text length: {} .. {}",
+            "{} length: {} .. {}",
+            if matches!(profile.dtype, polars::prelude::DataType::List(_)) {
+                "List"
+            } else {
+                "Text"
+            },
             profile
                 .min_length
                 .map(|value| value.to_string())

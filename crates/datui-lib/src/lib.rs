@@ -7060,6 +7060,9 @@ impl App {
 
     /// Move the browse up to `to`, or back to the root listing when `None`.
     fn home_leave_browsing(&mut self, to: Option<PathBuf>) {
+        // Whatever the last place said about itself, it said about that place. "these
+        // are the files under it" is wrong the moment "it" is somewhere else.
+        self.home.status = None;
         self.home.browsing = to;
         // Backspace can climb above where the browse began; the start follows, so a
         // later Esc still has a place to stop.
@@ -7174,6 +7177,19 @@ impl App {
             .then_some(entry.path)
     }
 
+    /// What to say when the user asks to open a lake table: datui goes inside it rather
+    /// than reading it, and the reason is not guessable from the row.
+    ///
+    /// `None` for anything else. Shared by the two doors onto a path — the highlighted
+    /// row, and a path typed at `~` — because the second one had no lake check at all
+    /// and loaded the root as a folder of Parquet files, which is the whole of #237
+    /// reached one keystroke differently.
+    fn lake_table_note(kind: discover::EntryKind) -> Option<String> {
+        kind.lake_name().map(|format| {
+            format!("datui does not read {format} tables yet — these are the files under it")
+        })
+    }
+
     /// Open the highlighted entry: toggle a section, descend into a directory, or
     /// load a dataset.
     fn home_open_selected(&mut self) -> Option<AppEvent> {
@@ -7194,10 +7210,8 @@ impl App {
         // tombstoned are still on disk, every rewritten version is here together, and
         // compaction leaves both sides in place. Going inside is what datui can honestly
         // do with one, and saying so is better than a silent wrong answer.
-        if let Some(format) = entry.kind.lake_name() {
-            self.home.status = Some(format!(
-                "datui does not read {format} tables yet — these are the files under it"
-            ));
+        if let Some(note) = Self::lake_table_note(entry.kind) {
+            self.home.status = Some(note);
             self.home_browse_into(entry.path);
             return None;
         }
@@ -7264,12 +7278,15 @@ impl App {
                     }
                     self.home.path_input.clear();
                     self.home.path_input_active = false;
-                    if path.is_dir()
-                        && discover::classify_directory(&path) == discover::EntryKind::Directory
+                    let kind = path.is_dir().then(|| discover::classify_directory(&path));
+                    if let Some(kind) = kind
+                        && (kind == discover::EntryKind::Directory || kind.is_lake_table())
                     {
                         // An ordinary directory: browse it rather than trying to load it.
+                        // A lake table too, for the same reason Enter goes inside one.
                         // A jump starts a new browse: Esc comes back from here to the
                         // listing, not up through wherever the path happens to sit.
+                        self.home.status = Self::lake_table_note(kind);
                         self.home.browse_start = Some(path.clone());
                         self.home.browsing = Some(path);
                         self.home.search.reset();

@@ -217,6 +217,11 @@ one at a time.
 | Hudi | `.hoodie/` |
 | Iceberg | `metadata/` holding a `*.metadata.json`, beside `data/` |
 
+In a bucket the Iceberg test is `metadata/` beside `data/` with no Parquet at the
+root: looking inside `metadata/` would be a second listing, and the layout is
+enough. So a folder that happens to hold both names is labelled `iceberg` there.
+It is still somewhere to go, which a table read as one table is not.
+
 Files are compared by how much of the narrower one the wider one holds, not by
 how much they have in common overall, because gaining a column is what a dataset
 does over time. A blockchain that added `txinwitness` in 2017 is still one

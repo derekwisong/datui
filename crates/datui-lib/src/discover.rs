@@ -704,6 +704,13 @@ fn union_of(per_file: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
+/// Names taken from one directory before the order they are in stops being worth
+/// having. Twenty thousand is the figure `schema_union` already calls unaffordable to
+/// compare pairwise; past it the spread `sample_footers` takes is over the names this
+/// listing saw rather than over the folder, and the row count is long out of reach
+/// either way.
+const MAX_NAMES_PER_DIR: usize = 20_000;
+
 /// Collect Parquet files under `dir`, breadth-bounded and depth-bounded, stopping
 /// once the cap is exceeded so a huge dataset costs the same as a small one.
 fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
@@ -714,11 +721,17 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
         return;
     };
     let mut subdirs = Vec::new();
-    // Sorted before they are appended, like the subdirectories below. A directory read
-    // returns its entries in whatever order the filesystem holds them, and every caller
-    // of this list reads order as meaning something: the ends and the middle are the
-    // spread `sample_footers` takes, and the last file is the newest in a folder written
-    // over time. Unsorted, "the last file" was whichever one the inode table put there.
+    // Every candidate in this directory, sorted before any is kept — not the first
+    // handful the directory read happened to return. A directory read gives its entries
+    // in whatever order the filesystem holds them, and every caller of this list reads
+    // order as meaning something: the ends and the middle are the spread
+    // `sample_footers` takes, and the last file is the newest in a folder written over
+    // time. Truncating first and sorting after would sort an arbitrary subset, which is
+    // the same wrong answer with the appearance of an order.
+    //
+    // Names only here: the `is_regular_file` stat that used to run on every candidate
+    // now runs only on the ones actually kept, so a folder of thousands costs one
+    // directory read and sixty-five stats rather than thousands of them.
     let mut files = Vec::new();
     for entry in iter.flatten() {
         let path = entry.path();
@@ -741,16 +754,18 @@ fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
             .and_then(|e| e.to_str())
             .map(|e| e.eq_ignore_ascii_case("parquet"))
             .unwrap_or(false)
-            && is_regular_file(&path)
         {
             files.push(path);
-            if out.len() + files.len() > MAX_FOOTERS_PER_DATASET {
+            if files.len() >= MAX_NAMES_PER_DIR {
                 break;
             }
         }
     }
     files.sort();
-    out.append(&mut files);
+    // One past the budget is deliberate: the callers read `len() > MAX` as "too many to
+    // count", so the list has to be able to say so.
+    let room = (MAX_FOOTERS_PER_DATASET + 1).saturating_sub(out.len());
+    out.extend(files.into_iter().filter(|p| is_regular_file(p)).take(room));
     if out.len() > MAX_FOOTERS_PER_DATASET {
         return;
     }
@@ -1297,6 +1312,69 @@ mod classification_tests {
             classify_directory(no_data.path()),
             EntryKind::MultiFile,
             "metadata with no data/ beside it is somebody's folder, not a table root"
+        );
+    }
+
+    /// The files a folder offers come back in order, whatever order the directory was
+    /// written in.
+    ///
+    /// Every caller reads order as meaning something — `sample_footers` takes the ends
+    /// and the middle, and the union of the columns is built in the order the files
+    /// appear. Unsorted, "the last file" was whichever one the filesystem happened to
+    /// return last, which on the filesystems that return creation order is the one
+    /// written first as often as not.
+    #[test]
+    fn the_files_a_folder_offers_come_back_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["c.parquet", "a.parquet", "d.parquet", "b.parquet"] {
+            write(dir.path(), name, &["id"]);
+        }
+        let mut files = Vec::new();
+        collect_parquet_files(dir.path(), 0, &mut files);
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a.parquet", "b.parquet", "c.parquet", "d.parquet"],
+            "sorted, not in the order the directory was written"
+        );
+    }
+
+    /// A folder past the budget still says so, and the files it keeps are the folder's
+    /// first rather than the listing's.
+    ///
+    /// The ordering itself is `the_files_a_folder_offers_come_back_in_order`'s to prove:
+    /// a directory read may return sorted entries of its own accord, so an assertion
+    /// here about order could hold for the wrong reason. What this pins is the cap —
+    /// sorting before truncating must not lose the "too many to count" signal.
+    #[test]
+    fn a_folder_past_the_budget_still_says_it_is_past_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        // Written back to front, so creation order and sorted order disagree.
+        for part in (0..MAX_FOOTERS_PER_DATASET * 3).rev() {
+            write(dir.path(), &format!("part-{part:04}.parquet"), &["id"]);
+        }
+        let mut files = Vec::new();
+        collect_parquet_files(dir.path(), 0, &mut files);
+        assert!(
+            files.len() > MAX_FOOTERS_PER_DATASET,
+            "the list still says there are too many to count"
+        );
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            files.len(),
+            MAX_FOOTERS_PER_DATASET + 1,
+            "one past the budget, which is what says there are too many"
+        );
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("part-0000.parquet"),
+            "and they are the folder's first files, not the listing's: {names:?}"
         );
     }
 

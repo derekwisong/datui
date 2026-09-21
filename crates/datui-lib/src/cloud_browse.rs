@@ -851,17 +851,21 @@ pub fn classify_listing(
     if folder(".hoodie") {
         return EntryKind::Hudi;
     }
-    // Iceberg's marker is a plain name, so it takes the whole shape rather than the
-    // name alone: `metadata/` beside `data/`, and nothing else of the table's at the
-    // root. Whether `metadata/` holds a `*.metadata.json` is not asked — that is a
-    // second listing, and this is the layout the spec describes.
-    if folder("metadata") && folder("data") && files.is_empty() {
-        return EntryKind::Iceberg;
-    }
     let parquet = files
         .iter()
         .filter(|key| crate::discover::is_parquet_key(key))
         .count();
+    // Iceberg's marker is a plain name, so it takes the whole shape rather than the name
+    // alone: `metadata/` beside `data/`, and the table's own data under `data/` rather
+    // than at the root. Whether `metadata/` holds a `*.metadata.json` is not asked, as
+    // it is locally — that is a second listing, and this is the layout the spec
+    // describes. So this is the looser of the two rules, and deliberately: a project
+    // folder that happens to hold `data/` and `metadata/` is mislabelled and still
+    // browsable, where a real Iceberg table read as one table is wrong about the rows.
+    // A README beside them does not disqualify it.
+    if folder("metadata") && folder("data") && parquet == 0 {
+        return EntryKind::Iceberg;
+    }
     if partitions > 0 && partitions >= files.len() {
         return EntryKind::Hive;
     }
@@ -1901,7 +1905,15 @@ mod tests {
         assert_eq!(
             classify_listing(&folders(&["t/metadata/", "t/data/"]), &parts),
             EntryKind::MultiFile,
-            "an Iceberg root holds no data files of its own"
+            "an Iceberg root holds its data under data/, not beside it"
+        );
+        assert_eq!(
+            classify_listing(
+                &folders(&["t/metadata/", "t/data/"]),
+                &files(&[("t/README.md", 20)])
+            ),
+            EntryKind::Iceberg,
+            "but something else beside them does not disqualify it"
         );
         assert_eq!(
             classify_listing(&folders(&[]), &parts),

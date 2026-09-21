@@ -2386,6 +2386,42 @@ pub mod tests {
         );
     }
 
+    /// A count that failed for a frame that is gone does not take the `?` off the frame
+    /// that is here.
+    ///
+    /// `len_count_failed` is one slot and the bar reads it against the frame on screen.
+    /// Written for whichever count failed last, an orphan — a join, a query, a filter or
+    /// a sort takes a fresh `len_generation` without stopping the count already running
+    /// — overwrote the live frame's own failure. `count_unknown` then went false and the
+    /// bar printed the number the buffer had reached, plainly, on a dataset whose count
+    /// failed.
+    #[test]
+    fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
+        use crate::AppEvent;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live,
+        });
+        assert!(
+            control_bar(&mut app).contains("Rows: ?"),
+            "this frame's count failed"
+        );
+
+        // And now a count orphaned by an earlier frame change fails too.
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live.wrapping_sub(1),
+        });
+
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Rows: ?"),
+            "a stranger's failure says nothing about this frame: {bar:?}"
+        );
+    }
+
     /// An End waiting on a count whose frame is gone, whose count then fails, is retired
     /// without saying anything.
     ///
@@ -13442,8 +13478,24 @@ impl App {
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total. Before the End handling
                 // below, which can return early: this is about the count, not about who
-                // was waiting on it, and it was unconditional before that return existed.
-                self.len_count_failed = Some(*len_generation);
+                // was waiting on it.
+                //
+                // Only for the frame on screen, because the slot holds one generation.
+                // Counts for two frames run at once — a join, a query, a filter or a
+                // sort takes a fresh `len_generation` without stopping the count already
+                // running — so a failure arriving is not necessarily this frame's.
+                // Written unconditionally, an orphan's failure overwrote a live frame's,
+                // `count_unknown` went false, and the bar fell through from "?" to the
+                // number the buffer happened to reach: a confident partial on a dataset
+                // whose count failed. The orphan's own failure is worth nothing to
+                // anybody — nothing will ever render against a generation that is gone.
+                if self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.len_generation() == *len_generation)
+                {
+                    self.len_count_failed = Some(*len_generation);
+                }
                 // Only for the count End was actually waiting on. Taken unconditionally,
                 // a count that failed for one frame answered for an End pressed on
                 // another — printing "Could not count the rows to find the end" about a

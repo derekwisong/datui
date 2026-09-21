@@ -2631,20 +2631,150 @@ pub mod tests {
     /// exemption has to be a deliberate act rather than an oversight.
     ///
     /// `spawn_bg` leases by construction, so a new kind of gated background work is
-    /// accounted for without anyone remembering to account for it. The only way back to
-    /// the old hazard is `spawn_bg_replaceable`, so that is what this counts.
+    /// accounted for without anyone remembering to account for it. The two ways around
+    /// it are `spawn_bg_replaceable` and `spawn_bg_inner`, and this counts both, over
+    /// every file in the crate rather than this one — they are private to the crate
+    /// root, which every module below it can reach.
+    ///
+    /// It cannot catch a raw `runtime.spawn_blocking` that captures `task_generation`
+    /// itself. That is a different shape, and the three that exist do not carry a
+    /// generation at all.
     #[test]
     fn the_collect_is_the_only_unleased_spawn() {
-        let source = include_str!("lib.rs");
-        // Split so this test's own needle is not one of the things it finds.
-        let needle = concat!("self.spawn_bg_", "replaceable(");
-        let calls = source.matches(needle).count();
-        assert_eq!(
-            calls, 1,
-            "the buffer collect is the one spawn whose answer is asked for again if a \
-             bump throws it away. Anything else that skips the lease can be stranded by \
-             a bump, silently — see GenerationLease."
+        // Split so this test's own needles are not among the things it finds.
+        let needles = [
+            (concat!("spawn_bg_", "replaceable("), 1usize),
+            (concat!("spawn_bg_", "inner("), 2usize),
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sources = Vec::new();
+        let mut stack = vec![src];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .expect("the crate's own source")
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    sources.push(std::fs::read_to_string(&path).expect("a source file"));
+                }
+            }
+        }
+        assert!(sources.len() > 20, "the crate's sources were found");
+
+        for (needle, expected) in needles {
+            let found: usize = sources.iter().map(|s| s.matches(needle).count()).sum();
+            assert_eq!(
+                found, expected,
+                "`{needle}` appears {found} times, not {expected}. The buffer collect is \
+                 the one spawn whose answer is asked for again if a bump throws it away; \
+                 anything else that skips the lease can be stranded by a bump, silently. \
+                 See GenerationLease."
+            );
+        }
+    }
+
+    /// A re-read does not go in during the gap between two phases of an open.
+    ///
+    /// A handler's follow-up is queued rather than dispatched, so the worker that sent
+    /// the result has already dropped its lease by the time the next phase spawns: the
+    /// count is zero for one event in the middle of an errand that is very much still
+    /// running. A collect started there shares the open's generation, and its own
+    /// completion handler clears `loading_state` and `busy` — tearing down the loading
+    /// screen of a dataset that has not arrived, and releasing every key the pump was
+    /// holding onto the dataset the user left.
+    #[test]
+    fn a_re_read_does_not_go_in_between_two_phases_of_an_open() {
+        use crate::widgets::datatable::{DataTableState, FootersFound};
+        use crate::{App, AppEvent, GenerationLease, LoadingState, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => &[1i64]).unwrap().lazy();
+        let wider = || df!("id" => &[1i64], "oops" => &["a"]).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(frame()).schema.clone(),
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // Each errand that hands off through the event queue, at the moment it is
+        // between two workers and holds no lease at all.
+        type Between = fn(&mut App);
+        let mid_errand: Vec<(&str, Between)> = vec![
+            ("an open", |app: &mut App| app.awaiting_dataset = true),
+            ("an export", |app: &mut App| {
+                app.loading_state = LoadingState::Exporting {
+                    file_path: std::path::PathBuf::from("/tmp/out.csv"),
+                    current_phase: "Collecting".to_string(),
+                    progress_percent: 0,
+                };
+            }),
+            ("an analysis", |app: &mut App| {
+                app.analysis_modal.computing = Some(crate::analysis_modal::AnalysisProgress {
+                    phase: "Counting".to_string(),
+                    current: 0,
+                    total: 1,
+                });
+            }),
+        ];
+
+        for (what, between) in mid_errand {
+            between(&mut app);
+            assert_eq!(
+                app.leases, 0,
+                "no worker is running during {what}'s handoff"
+            );
+            let waiting_on = app.task_generation();
+            app.footers_held = Some((
+                app.dataset_generation,
+                FootersFound {
+                    dataset: dataset_of(wider()),
+                    lf: wider(),
+                    file_rows: Vec::new(),
+                    files: Vec::new(),
+                    row_groups: Vec::new(),
+                    remote: None,
+                },
+            ));
+            let _ = app.handle(&AppEvent::Update);
+            assert_eq!(
+                app.task_generation(),
+                waiting_on,
+                "{what} is still running, between workers, and its generation held"
+            );
+
+            app.awaiting_dataset = false;
+            app.loading_state = LoadingState::Idle;
+            app.analysis_modal.computing = None;
+        }
+        // And with nothing between workers either, the columns go in.
+        let _ = app.handle(&AppEvent::Update);
+        assert!(
+            app.footers_held.is_none(),
+            "nothing is running now, so the columns are joined rather than held"
         );
+        let _: Option<GenerationLease> = None;
     }
 
     /// A count landing while a load is in flight does not cancel the load.
@@ -4187,8 +4317,16 @@ pub enum AppEvent {
 /// count lives on `App`, the lease lives on a worker thread, and the event is queued
 /// behind the result that worker just sent — so the handler that consumes the result has
 /// already run by the time the lease is retired. A worker that panics unwinds through
-/// the same `Drop`, so a permanent "something is waiting" cannot be stranded. This is
-/// [`crate::schema_union::Pass`]'s trick, for a count on the other side of a channel.
+/// the same `Drop`, so a permanent "something is waiting" cannot be stranded that way.
+/// This is [`crate::schema_union::Pass`]'s trick, for a count on the other side of a
+/// channel.
+///
+/// One worker, though, not one errand. An errand of several phases hands off through the
+/// event queue and holds no lease for an event at a time, which is why
+/// `work_a_bump_would_strand` asks about those separately. And a worker that never
+/// returns at all — a `hard` NFS mount, a wedged object-store read — never drops its
+/// lease; that thread already leaves `busy` set for the session, so the app is wedged
+/// with or without this, but the count does not rescue it.
 struct GenerationLease {
     events: Sender<AppEvent>,
 }
@@ -5445,15 +5583,8 @@ impl App {
         self.spawn_async_collect("Loading buffer...");
     }
 
-    /// Run the re-read a failed footer pass owes the dataset, once it can be run
-    /// without throwing another answer away.
-    ///
-    /// The failure branch of `BackgroundFootersJoined` used to re-read on the spot,
-    /// which bumped `task_generation` with no check at all — the one path into the
-    /// collect that never asked `work_the_join_would_cancel`. An export in its collect
-    /// phase then never wrote its file and said nothing about it. So the errand waits
-    /// its turn, the way held columns already do.
-    /// Run a buffer collect that was asked for while a lease was outstanding.
+    /// Run a buffer collect that was asked for while other work was waiting on the
+    /// generation.
     ///
     /// The same shape as `reread_when_the_work_allows` below, and for the same reason:
     /// the collect bumps `task_generation`, so it waits its turn and is tried again
@@ -5464,8 +5595,9 @@ impl App {
         };
         if *generation != self.dataset_generation {
             // The dataset it was owed to is gone, and so is the view it was filling.
+            // Only the errand is put down: `busy` and the status line belong to whatever
+            // replaced the dataset, and are not this errand's to clear.
             self.collect_owed = None;
-            self.busy = false;
             return;
         }
         if self.work_a_bump_would_strand() {
@@ -5480,6 +5612,14 @@ impl App {
         }
     }
 
+    /// Run the re-read a failed footer pass owes the dataset, once it can be run
+    /// without throwing another answer away.
+    ///
+    /// The failure branch of `BackgroundFootersJoined` used to re-read on the spot,
+    /// which bumped `task_generation` with no check at all — the one path into the
+    /// collect that never asked `work_the_join_would_cancel`. An export in its collect
+    /// phase then never wrote its file and said nothing about it. So the errand waits
+    /// its turn, the way held columns already do.
     fn reread_when_the_work_allows(&mut self) {
         let Some(generation) = self.reread_owed else {
             return;
@@ -5770,8 +5910,8 @@ impl App {
         };
         // Everything past here bumps `task_generation`, so everything holding a lease on
         // it has to be done first. The collect the user asked for is queued rather than
-        // refused: `busy` stays set, the throbber goes on turning, and it is tried again
-        // after every event until the work in front of it finishes.
+        // refused: the throbber that was already turning goes on turning, and it is
+        // tried again after every event until the work in front of it finishes.
         //
         // This is the door #238 was about. `BackgroundLenReady` answers a count by
         // jumping to the end, which reaches here with no key pressed and minutes after
@@ -5781,10 +5921,13 @@ impl App {
         // `loading_state` stayed set and the file never opened, silently, for the rest
         // of the session.
         if a_bump_would_strand {
-            if let Some(job) = count {
-                let tx = self.events.clone();
-                self.runtime
-                    .spawn_blocking(move || job.send(job.run(), &tx));
+            // The count that was going to ride in this collect is put down rather than
+            // run on its own. On an object store it answers itself out of the short read
+            // the collect comes back with; spawned standalone it is a full remote
+            // `len()`, which is the expensive thing the riding exists to avoid. Putting
+            // the marker down with it is what lets the retry ask again.
+            if count.is_some() {
+                self.len_count_inflight = None;
             }
             self.collect_owed = Some((self.dataset_generation, status.to_string()));
             return true;
@@ -5912,7 +6055,22 @@ impl App {
     /// Whether anything is waiting on the current `task_generation`, so that bumping it
     /// would throw away an answer nothing will ask for again.
     fn work_a_bump_would_strand(&self) -> bool {
+        // Work with a worker on it: counted, so a new kind of it is covered without
+        // anyone remembering to cover it. See [`GenerationLease`].
         self.leases > 0
+            // And work that is between two workers. An errand of several phases — scan
+            // then schema, collect then write, count then compute — has no worker at
+            // all for one event at a time, because `EventPump` queues a handler's
+            // follow-up and breaks so a frame can be drawn rather than dispatching it
+            // inline. The lease is released in that gap, and the errand is still going.
+            //
+            // Three flags, not four: the chart is not here because a bump cannot strand
+            // it (`BackgroundChartReady` carries no generation), and
+            // `work_the_join_would_cancel` adds it for the frame change instead. A
+            // count of phases, rather than a list of them, is what would finish #221.
+            || self.awaiting_dataset
+            || matches!(self.loading_state, LoadingState::Exporting { .. })
+            || self.analysis_modal.computing.is_some()
     }
 
     /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
@@ -6748,6 +6906,10 @@ impl App {
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
+        // And a collect that was waiting behind this load goes with it. Left standing,
+        // it runs the moment the load's lease comes back — reading the dataset the user
+        // walked away from, at the home screen, with `busy` set and every key held.
+        self.collect_owed = None;
         #[cfg(any(feature = "http", feature = "cloud"))]
         if self.pending_download.take().is_some() {
             self.confirmation_modal.hide();

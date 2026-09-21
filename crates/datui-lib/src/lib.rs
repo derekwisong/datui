@@ -2570,6 +2570,167 @@ pub mod tests {
         );
     }
 
+    /// Every background spawn takes a lease, and gets it back however it ends.
+    ///
+    /// This is the whole of #221's mechanism: the decision "is it safe to bump
+    /// `task_generation`?" is a count, not a list of the kinds of work that might be
+    /// running. A new kind of gated task is covered by going through `spawn_bg`, which
+    /// is how every one of them is spawned.
+    #[test]
+    fn a_spawn_takes_a_lease_and_the_event_returns_it() {
+        use crate::{App, AppEvent};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        assert!(!app.work_a_bump_would_strand(), "nothing is running yet");
+
+        app.spawn_bg("Working...", |_task_gen, _tx| {});
+        assert!(
+            app.work_a_bump_would_strand(),
+            "the spawn leased the generation"
+        );
+
+        // The worker finishes and its lease is dropped, which sends the event.
+        let finished = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the lease reports back");
+        assert!(matches!(finished, AppEvent::BackgroundWorkFinished));
+        let _ = app.handle(&finished);
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "and the generation is free again"
+        );
+    }
+
+    /// A worker that panics still returns its lease.
+    ///
+    /// The hazard `schema_union::Pass` was built for: a count that never comes back down
+    /// is a permanent "something is waiting", and here that would mean the buffer never
+    /// collects again for the rest of the session.
+    #[test]
+    fn a_panicking_worker_still_returns_its_lease() {
+        use crate::{App, AppEvent};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.spawn_bg("Working...", |_task_gen, _tx| panic!("worker died"));
+        assert!(app.work_a_bump_would_strand());
+
+        let finished = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the lease reports back even from a panic");
+        assert!(matches!(finished, AppEvent::BackgroundWorkFinished));
+        let _ = app.handle(&finished);
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "the generation is free again rather than leased forever"
+        );
+    }
+
+    /// The buffer collect is the only spawn that takes no lease, and adding a second
+    /// exemption has to be a deliberate act rather than an oversight.
+    ///
+    /// `spawn_bg` leases by construction, so a new kind of gated background work is
+    /// accounted for without anyone remembering to account for it. The only way back to
+    /// the old hazard is `spawn_bg_replaceable`, so that is what this counts.
+    #[test]
+    fn the_collect_is_the_only_unleased_spawn() {
+        let source = include_str!("lib.rs");
+        // Split so this test's own needle is not one of the things it finds.
+        let needle = concat!("self.spawn_bg_", "replaceable(");
+        let calls = source.matches(needle).count();
+        assert_eq!(
+            calls, 1,
+            "the buffer collect is the one spawn whose answer is asked for again if a \
+             bump throws it away. Anything else that skips the lease can be stranded by \
+             a bump, silently — see GenerationLease."
+        );
+    }
+
+    /// A count landing while a load is in flight does not cancel the load.
+    ///
+    /// `BackgroundLenReady` answers an End by jumping to the end, which reaches
+    /// `spawn_async_collect` with no key pressed and, on a large remote dataset, minutes
+    /// after the one that was — long enough for the user to have opened something else.
+    /// That bump threw the open's answer away, and `BackgroundSchemaReady`'s mismatch
+    /// branch returns without resetting anything, so `awaiting_dataset`, `busy` and
+    /// `loading_state` stayed set and the file never opened, silently, for the rest of
+    /// the session.
+    #[test]
+    fn a_count_landing_during_a_load_does_not_bump_the_generation() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // End on a dataset whose rows are not counted yet: the jump waits for the count.
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.end_after_count, Some(waiting));
+
+        // Meanwhile the user opens something else, which is waiting on this generation.
+        let lease = app.lease_for_tests();
+        let opening = app.task_generation();
+
+        // And the count lands.
+        let mut follow = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: waiting,
+            num_rows: 100,
+            file_row_groups: None,
+        });
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+
+        assert_eq!(
+            app.task_generation(),
+            opening,
+            "the open is still waiting on the generation the jump would have bumped"
+        );
+        assert!(
+            app.collect_owed.is_some(),
+            "and the jump's collect is owed rather than dropped"
+        );
+
+        // The open finishes, and the jump gets its turn.
+        drop(lease);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        assert!(
+            app.collect_owed.is_none(),
+            "the collect the jump asked for runs once nothing is waiting"
+        );
+        assert_ne!(
+            app.task_generation(),
+            opening,
+            "and it is what bumps the generation, now that it is safe to"
+        );
+    }
+
     /// A dataset waiting on an owed re-read still says its count is coming.
     ///
     /// The number a staged open holds is only as far as the buffer reached. While the
@@ -2623,12 +2784,14 @@ pub mod tests {
             "while the pass is out the dataset says its count is coming"
         );
 
-        // An export is running, so the errand the failure raises has to wait.
+        // An export is running and holds a lease, so the errand the failure raises has
+        // to wait.
         app.loading_state = LoadingState::Exporting {
             file_path: std::path::PathBuf::from("/tmp/out.csv"),
             current_phase: "Collecting".to_string(),
             progress_percent: 0,
         };
+        let _lease = app.lease_for_tests();
         let live = app.dataset_generation;
         App::record_footers(&app.pending_footers_result, live, None);
         let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
@@ -2826,13 +2989,14 @@ pub mod tests {
         app.load_active = true;
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
 
-        // An export is collecting: it is waiting on this exact generation, and its
+        // An export is collecting: it holds a lease on this exact generation, and its
         // answer is thrown away if anything bumps it.
         app.loading_state = LoadingState::Exporting {
             file_path: std::path::PathBuf::from("/tmp/out.csv"),
             current_phase: "Collecting".to_string(),
             progress_percent: 0,
         };
+        let lease = app.lease_for_tests();
         let waiting_on = app.task_generation();
 
         // The pass comes back empty-handed for the dataset on screen.
@@ -2853,6 +3017,8 @@ pub mod tests {
 
         // The export finishes, and the errand gets its turn on the next event.
         app.loading_state = LoadingState::Idle;
+        drop(lease);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
         let _ = app.handle(&AppEvent::Update);
 
         assert!(
@@ -2878,7 +3044,7 @@ pub mod tests {
     #[test]
     fn columns_arriving_during_work_already_asked_for_wait_for_it() {
         use crate::widgets::datatable::{DataTableState, FootersFound};
-        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use crate::{App, AppEvent, GenerationLease, OpenOptions};
         use polars::prelude::*;
         use std::sync::Arc;
 
@@ -2908,25 +3074,15 @@ pub mod tests {
         app.load_active = true;
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
 
-        // Each kind of work whose answer the join would throw away. The load is the one
-        // that costs most: a dataset the user asked for that never opens, and nothing
-        // said about it.
-        type Start = fn(&mut App);
+        // Work whose answer the join would throw away. A lease stands for all of it —
+        // an open, an export, an analysis — which is the point: the decision is no
+        // longer a list of the kinds that happen to exist today. The chart is here
+        // beside it because it is the one that a bump would *not* strand: it is
+        // prepared against the frame, and the join takes a fresh one of those too.
+        type Start = fn(&mut App) -> Option<GenerationLease>;
         let under_way: Vec<(&str, Start)> = vec![
-            ("a load", |app: &mut App| app.awaiting_dataset = true),
-            ("an export", |app: &mut App| {
-                app.loading_state = LoadingState::Exporting {
-                    file_path: std::path::PathBuf::from("/tmp/out.csv"),
-                    current_phase: "Collecting".to_string(),
-                    progress_percent: 0,
-                };
-            }),
-            ("an analysis", |app: &mut App| {
-                app.analysis_modal.computing = Some(crate::analysis_modal::AnalysisProgress {
-                    phase: "Counting".to_string(),
-                    current: 0,
-                    total: 1,
-                });
+            ("leased background work", |app: &mut App| {
+                Some(app.lease_for_tests())
             }),
             ("a chart", |app: &mut App| {
                 app.chart_inflight = Some(crate::ChartInflight {
@@ -2937,17 +3093,19 @@ pub mod tests {
                     },
                     stale: false,
                 });
+                None
             }),
         ];
-        let put_away = |app: &mut App| {
-            app.awaiting_dataset = false;
-            app.loading_state = LoadingState::Idle;
-            app.analysis_modal.computing = None;
+        let put_away = |app: &mut App, lease: Option<GenerationLease>| {
+            // The lease is released by dropping it, which sends the event the count is
+            // decremented by — behind whatever result the work had already sent.
+            drop(lease);
+            let _ = app.handle(&AppEvent::BackgroundWorkFinished);
             app.chart_inflight = None;
         };
 
         for (what, start) in under_way {
-            start(&mut app);
+            let lease = start(&mut app);
             let waiting_on = app.task_generation();
             app.footers_held = Some((
                 app.dataset_generation,
@@ -2971,7 +3129,7 @@ pub mod tests {
                 app.footers_held.is_some(),
                 "and the columns wait their turn behind {what}"
             );
-            put_away(&mut app);
+            put_away(&mut app, lease);
         }
 
         // Nothing under way now, and they go in.
@@ -4004,6 +4162,42 @@ pub enum AppEvent {
         generation: u64,
         message: String,
     },
+    /// A [`GenerationLease`] was released: the work holding it has finished, however it
+    /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
+    /// work sent first.
+    BackgroundWorkFinished,
+}
+
+/// A lease on the current `task_generation`, held by background work whose answer
+/// arrives once.
+///
+/// `task_generation` is the token `BackgroundSchemaReady`, `BackgroundExportCollected`,
+/// `BackgroundExportWritten`, the three analysis results, `BackgroundLazyFrameReady`,
+/// `BackgroundRemoteSizeReady`, `BackgroundDownloadReady` and `BackgroundError` are all
+/// gated on. Bumping it while one is in flight throws that answer away when it arrives,
+/// silently, and nothing asks again: an export that never writes its file, an analysis
+/// left on its spinner, a dataset that never opens. So the bump waits for the lease.
+///
+/// Counted rather than enumerated. The predicate this replaced listed the kinds of work
+/// that might be running, and was found short by one entry in three consecutive review
+/// rounds; a lease is taken by [`App::spawn_bg`] itself, so the next kind of background
+/// work is covered without anyone remembering to add it.
+///
+/// Released by `Drop`, which sends an event rather than touching the count directly: the
+/// count lives on `App`, the lease lives on a worker thread, and the event is queued
+/// behind the result that worker just sent — so the handler that consumes the result has
+/// already run by the time the lease is retired. A worker that panics unwinds through
+/// the same `Drop`, so a permanent "something is waiting" cannot be stranded. This is
+/// [`crate::schema_union::Pass`]'s trick, for a count on the other side of a channel.
+struct GenerationLease {
+    events: Sender<AppEvent>,
+}
+
+impl Drop for GenerationLease {
+    fn drop(&mut self) {
+        // Nobody to tell means the app is gone, and so is the count.
+        let _ = self.events.send(AppEvent::BackgroundWorkFinished);
+    }
 }
 
 /// What [`App::handle`] did with an event: `Ok` carries the follow-up event to send,
@@ -4972,6 +5166,13 @@ pub struct App {
     /// ordinary count the pass was going to save it — hence an errand of its own, tried
     /// again after every event until the work it would cancel is done.
     reread_owed: Option<u64>,
+    /// Leases outstanding on `task_generation`: background work a bump would strand.
+    /// See [`GenerationLease`].
+    leases: usize,
+    /// A buffer collect that was asked for while a lease was outstanding, and the
+    /// dataset it was asked for. Tried again after every event, like `reread_owed`, and
+    /// dropped when the dataset it belonged to is replaced.
+    collect_owed: Option<(u64, String)>,
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
@@ -5252,6 +5453,33 @@ impl App {
     /// collect that never asked `work_the_join_would_cancel`. An export in its collect
     /// phase then never wrote its file and said nothing about it. So the errand waits
     /// its turn, the way held columns already do.
+    /// Run a buffer collect that was asked for while a lease was outstanding.
+    ///
+    /// The same shape as `reread_when_the_work_allows` below, and for the same reason:
+    /// the collect bumps `task_generation`, so it waits its turn and is tried again
+    /// after every event.
+    fn collect_when_the_work_allows(&mut self) {
+        let Some((generation, _)) = self.collect_owed.as_ref() else {
+            return;
+        };
+        if *generation != self.dataset_generation {
+            // The dataset it was owed to is gone, and so is the view it was filling.
+            self.collect_owed = None;
+            self.busy = false;
+            return;
+        }
+        if self.work_a_bump_would_strand() {
+            return;
+        }
+        let Some((_, status)) = self.collect_owed.take() else {
+            return;
+        };
+        if !self.spawn_async_collect(&status) {
+            self.busy = false;
+            self.status_message = None;
+        }
+    }
+
     fn reread_when_the_work_allows(&mut self) {
         let Some(generation) = self.reread_owed else {
             return;
@@ -5293,22 +5521,17 @@ impl App {
 
     /// Work already running that the re-read after a join would cancel.
     ///
-    /// The re-read goes through the ordinary collect, which bumps `task_generation` —
-    /// the token an export, an analysis and a chart are all waiting on. Bumping it
-    /// underneath one throws its answer away when it arrives: an export in its collect
-    /// phase never writes the file and says nothing about it, and an analysis is left
-    /// on its spinner. So the columns wait, as they already do for a query, and go in
-    /// when the work that was asked for first is done.
+    /// The re-read goes through the ordinary collect, which bumps `task_generation`, so
+    /// everything a bump would strand has to be done first — and that is
+    /// [`GenerationLease`]'s job now, rather than a list of the kinds of work that
+    /// might be running.
+    ///
+    /// One thing more than a bump, though: a join takes a fresh `len_generation` too. A
+    /// chart is prepared against the frame rather than the generation
+    /// (`BackgroundChartReady` carries no generation at all), so a bump cannot strand
+    /// one but changing the frame under it can.
     fn work_the_join_would_cancel(&self) -> bool {
-        // A load above all: `dataset_generation` does not move until the new dataset is
-        // installed, so a pass belonging to the prefix the user walked away from still
-        // matches while the file they asked for is being opened. Cancelling that one
-        // means it never opens at all, silently, and leaves `awaiting_dataset` set for
-        // the rest of the session.
-        self.awaiting_dataset
-            || matches!(self.loading_state, LoadingState::Exporting { .. })
-            || self.analysis_modal.computing.is_some()
-            || self.chart_preparing()
+        self.work_a_bump_would_strand() || self.chart_preparing()
     }
 
     /// Give the dataset what its footers found, if it can take it now.
@@ -5524,6 +5747,9 @@ impl App {
                 .spawn_blocking(move || job.send(job.run(), &tx));
         }
 
+        // Read before the frame is borrowed: the predicate is over the whole App.
+        let a_bump_would_strand = self.work_a_bump_would_strand();
+
         // Plan and spawn the buffer collect. With the count unknown this is a top-of-data
         // window (`slice(0, N)`) that touches only the first file(s) of a partitioned set.
         let Some(state) = self.data_table_state.as_mut() else {
@@ -5542,6 +5768,27 @@ impl App {
             }
             return covered;
         };
+        // Everything past here bumps `task_generation`, so everything holding a lease on
+        // it has to be done first. The collect the user asked for is queued rather than
+        // refused: `busy` stays set, the throbber goes on turning, and it is tried again
+        // after every event until the work in front of it finishes.
+        //
+        // This is the door #238 was about. `BackgroundLenReady` answers a count by
+        // jumping to the end, which reaches here with no key pressed and minutes after
+        // the one that was — long enough for a dataset to have been opened meanwhile.
+        // The bump cancelled that open, and `BackgroundSchemaReady`'s mismatch branch
+        // returns without resetting anything, so `awaiting_dataset`, `busy` and
+        // `loading_state` stayed set and the file never opened, silently, for the rest
+        // of the session.
+        if a_bump_would_strand {
+            if let Some(job) = count {
+                let tx = self.events.clone();
+                self.runtime
+                    .spawn_blocking(move || job.send(job.run(), &tx));
+            }
+            self.collect_owed = Some((self.dataset_generation, status.to_string()));
+            return true;
+        }
         self.task_generation = self.task_generation.wrapping_add(1);
         self.collect_inflight = Some(InflightCollect {
             began: std::time::Instant::now(),
@@ -5555,7 +5802,7 @@ impl App {
             end: request.buffer_end,
         });
         let collect_slot = self.pending_collect_result.clone();
-        self.spawn_bg(status, move |task_gen, tx| {
+        self.spawn_bg_replaceable(status, move |task_gen, tx| {
             match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
                 Ok(df) => {
                     let returned = df.height();
@@ -5612,11 +5859,60 @@ impl App {
     where
         F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
     {
+        let lease = self.lease_the_generation();
+        self.spawn_bg_inner(status, Some(lease), work);
+    }
+
+    /// Spawn background work whose answer, thrown away by a bump, is simply asked for
+    /// again — the buffer collect, and only that.
+    ///
+    /// It holds no [`GenerationLease`], because the collect is what a lease makes wait:
+    /// leased, the next collect would queue behind the last one and scrolling would go
+    /// a page per round trip. Supersession is `InflightCollect::covers`'s job instead.
+    ///
+    /// This is the one exemption, and `the_collect_is_the_only_unleased_spawn` fails if
+    /// a second one appears.
+    fn spawn_bg_replaceable<F>(&mut self, status: &str, work: F)
+    where
+        F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
+    {
+        self.spawn_bg_inner(status, None, work);
+    }
+
+    fn spawn_bg_inner<F>(&mut self, status: &str, lease: Option<GenerationLease>, work: F)
+    where
+        F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
+    {
         let task_gen = self.task_generation;
         let tx = self.events.clone();
         self.busy = true;
         self.status_message = Some(status.to_string());
-        self.runtime.spawn_blocking(move || work(task_gen, tx));
+        self.runtime.spawn_blocking(move || {
+            // Dropped after `work` returns, and on the way out of a panic too.
+            let _lease = lease;
+            work(task_gen, tx);
+        });
+    }
+
+    /// A lease held by nothing, for tests that need work in flight without a thread to
+    /// run it on. Exposed for the same reason `task_generation` is.
+    #[cfg(test)]
+    pub(crate) fn lease_for_tests(&mut self) -> GenerationLease {
+        self.lease_the_generation()
+    }
+
+    /// Take a lease on the current `task_generation`. See [`GenerationLease`].
+    fn lease_the_generation(&mut self) -> GenerationLease {
+        self.leases += 1;
+        GenerationLease {
+            events: self.events.clone(),
+        }
+    }
+
+    /// Whether anything is waiting on the current `task_generation`, so that bumping it
+    /// would throw away an answer nothing will ask for again.
+    fn work_a_bump_would_strand(&self) -> bool {
+        self.leases > 0
     }
 
     /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
@@ -5892,6 +6188,8 @@ impl App {
             dataset_generation: 0,
             footers_held: None,
             reread_owed: None,
+            leases: 0,
+            collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
             collect_inflight: None,
@@ -12378,6 +12676,7 @@ impl App {
         // And the same turn for a re-read owed to a dataset whose footers could not be
         // read: it waits on the same work, and gets in the same way.
         self.reread_when_the_work_allows();
+        self.collect_when_the_work_allows();
         self.ensure_chart_data();
         Ok(out)
     }
@@ -13746,6 +14045,13 @@ impl App {
                         }
                     }
                 }
+                None
+            }
+            AppEvent::BackgroundWorkFinished => {
+                // Behind the result its work sent, so the handler that consumed that
+                // result has already run. Saturating because a lease released twice
+                // would otherwise wrap into "nothing is ever safe to bump".
+                self.leases = self.leases.saturating_sub(1);
                 None
             }
             AppEvent::BackgroundError {

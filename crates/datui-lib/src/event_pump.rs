@@ -14,7 +14,7 @@ use std::time::Duration;
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::{App, AppEvent};
+use crate::{App, AppEvent, GenerationLease};
 
 /// Keys held while busy. Beyond this the newest is dropped, and the user told: the
 /// oldest may be the `/` that puts the rest into the query bar, and without it the
@@ -58,6 +58,18 @@ pub struct EventPump {
     rx: Receiver<AppEvent>,
     held: VecDeque<KeyEvent>,
     held_for: Screen,
+    /// Continuations a handler returned, each holding a lease on the generation.
+    ///
+    /// Ahead of the channel rather than appended to it. A follow-up is the rest of the
+    /// event just handled, so it belongs before results that arrived while that handler
+    /// ran — and what sits in the channel right behind it is the finished phase's
+    /// `BackgroundWorkFinished`, which is exactly what made the generation look free in
+    /// the middle of an errand.
+    ///
+    /// The lease covers the gap the break leaves. A frame is drawn and the terminal is
+    /// polled before the continuation runs, so a key can be handled in between, and that
+    /// key must not find the generation free either.
+    next_up: VecDeque<(AppEvent, GenerationLease)>,
 }
 
 impl EventPump {
@@ -69,6 +81,7 @@ impl EventPump {
             rx,
             held: VecDeque::new(),
             held_for,
+            next_up: VecDeque::new(),
         }
     }
 
@@ -151,9 +164,17 @@ impl EventPump {
         Ok(true)
     }
 
+    /// The next event to handle: a continuation first, then the channel.
+    fn take_next(&mut self) -> Result<(AppEvent, Option<GenerationLease>), TryRecvError> {
+        match self.next_up.pop_front() {
+            Some((event, lease)) => Ok((event, Some(lease))),
+            None => self.rx.try_recv().map(|event| (event, None)),
+        }
+    }
+
     /// Handle everything waiting on the channel.
     pub fn drain(&mut self) -> Result<Drained> {
-        let first = self.rx.try_recv();
+        let first = self.take_next();
         self.drain_from(first)
     }
 
@@ -161,20 +182,33 @@ impl EventPump {
     /// it. For drivers without a terminal to wait on: a background result is the only
     /// thing that can end a busy state.
     pub fn wait_and_drain(&mut self, timeout: Duration) -> Result<Drained> {
-        let first = self.rx.recv_timeout(timeout).map_err(|e| match e {
-            RecvTimeoutError::Timeout => TryRecvError::Empty,
-            RecvTimeoutError::Disconnected => TryRecvError::Disconnected,
-        });
+        // A continuation is already here; waiting on the channel would sit on it for the
+        // whole timeout while the errand it belongs to is halfway through.
+        if !self.next_up.is_empty() {
+            let first = self.take_next();
+            return self.drain_from(first);
+        }
+        let first = self
+            .rx
+            .recv_timeout(timeout)
+            .map(|event| (event, None))
+            .map_err(|e| match e {
+                RecvTimeoutError::Timeout => TryRecvError::Empty,
+                RecvTimeoutError::Disconnected => TryRecvError::Disconnected,
+            });
         self.drain_from(first)
     }
 
-    fn drain_from(&mut self, mut next: Result<AppEvent, TryRecvError>) -> Result<Drained> {
+    fn drain_from(
+        &mut self,
+        mut next: Result<(AppEvent, Option<GenerationLease>), TryRecvError>,
+    ) -> Result<Drained> {
         let mut updated = false;
         loop {
             match next {
-                Ok(AppEvent::Exit) => return Ok(Drained::Exit),
-                Ok(AppEvent::Crash(msg)) => return Ok(Drained::Crash(msg)),
-                Ok(event) => {
+                Ok((AppEvent::Exit, _)) => return Ok(Drained::Exit),
+                Ok((AppEvent::Crash(msg), _)) => return Ok(Drained::Crash(msg)),
+                Ok((event, continuation)) => {
                     updated = true;
                     let follow_up = match self.app.handle(&event) {
                         Ok(follow_up) => follow_up,
@@ -183,24 +217,33 @@ impl EventPump {
                             None
                         }
                     };
+                    // After the handler, never before: whatever phase this event started
+                    // has taken its own lease by now, so the count does not dip to zero
+                    // between the two.
+                    drop(continuation);
                     self.discard_stale();
                     if let Some(follow_up) = follow_up {
-                        self.tx.send(follow_up)?;
                         // A handler that returns a follow-up event is deferring work so
                         // the UI can show the current phase first — the `Do*` events all
                         // rely on this. Draining the follow-up in the same pass defeats
                         // that: the phase label never renders and the throbber never
                         // moves. Break so a frame is drawn and keys are polled first.
-                        // Order is unaffected; the follow-up was appended to the queue.
+                        self.queue_continuation(follow_up);
                         break;
                     }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return Ok(Drained::Exit),
             }
-            next = self.rx.try_recv();
+            next = self.take_next();
         }
         Ok(Drained::Continue { updated })
+    }
+
+    /// Hold a continuation, and the generation, until it is dispatched.
+    fn queue_continuation(&mut self, follow_up: AppEvent) {
+        let lease = self.app.lease_the_generation();
+        self.next_up.push_back((follow_up, lease));
     }
 
     /// Offer one key to the app, the way the channel drain does, then reconcile the
@@ -208,7 +251,7 @@ impl EventPump {
     fn dispatch(&mut self, key: KeyEvent) -> Result<()> {
         let gen_before = self.app.screen_generation();
         match self.app.handle(&AppEvent::Key(key)) {
-            Ok(Some(follow_up)) => self.tx.send(follow_up)?,
+            Ok(Some(follow_up)) => self.queue_continuation(follow_up),
             Ok(None) => {}
             // Only reachable if the app went busy between the check and the call, which
             // nothing on this thread does; the key keeps its place either way.
@@ -394,6 +437,247 @@ mod tests {
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
         buf.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    /// A continuation never goes to the back of the channel.
+    ///
+    /// The gap #221 was left short by is created by exactly one thing: putting a
+    /// handler's follow-up behind whatever arrived while that handler ran — including
+    /// the finished phase's `BackgroundWorkFinished`. `queue_continuation` is the only
+    /// way a follow-up should travel, and `EventPump::send`, for callers pushing an
+    /// event of their own, is the only `tx.send` that belongs in this file.
+    #[test]
+    fn a_continuation_never_goes_to_the_back_of_the_channel() {
+        let source = include_str!("event_pump.rs");
+        // Split so this test's own needle is not one of the things it finds.
+        let needle = concat!("self.tx", ".send(");
+        assert_eq!(
+            source.matches(needle).count(),
+            1,
+            "the one send left should be `EventPump::send`. A follow-up sent to the \
+             channel lands behind the lease release of the phase that produced it, and \
+             the generation reads free in the middle of an errand — see GenerationLease."
+        );
+    }
+
+    /// A continuation holds the generation until it has been dispatched.
+    ///
+    /// This is the gap #221 was left short by. An errand of several phases hands off
+    /// through a returned event, and the pump breaks there so a frame can be drawn —
+    /// so for one iteration of the loop the phase that finished has dropped its lease
+    /// and the phase that follows has not taken one. A collect starting in that window
+    /// bumps `task_generation` out from under the errand, and `BackgroundSchemaReady`'s
+    /// mismatch branch then returns without resetting anything: the dataset never opens,
+    /// silently, for the rest of the session.
+    ///
+    /// The open is the errand used here because its first handoff is the one that costs
+    /// most, and because it needs no worker to reach: `Open` returns `DoLoadScanPaths`
+    /// before anything has been spawned at all.
+    #[test]
+    fn a_continuation_holds_the_generation_until_it_is_dispatched() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        let mut file = std::fs::File::create(&path).expect("create csv");
+        writeln!(file, "name,age\nada,36").expect("write csv");
+        drop(file);
+
+        let mut p = pump();
+        assert!(!p.app.work_a_bump_would_strand(), "nothing is running yet");
+
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+
+        // `Open` has returned `DoLoadScanPaths` and nothing has been spawned: this is
+        // the moment the loop draws a frame and reads the terminal.
+        assert!(
+            !p.next_up.is_empty(),
+            "the continuation is waiting to be dispatched"
+        );
+        assert!(
+            p.app.work_a_bump_would_strand(),
+            "and the generation is held while it waits"
+        );
+
+        // Dispatching it hands the lease to the phase it starts, rather than dropping
+        // one before the other takes it.
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+        assert!(
+            p.app.work_a_bump_would_strand(),
+            "the scan it started is running now, and holds it in turn"
+        );
+
+        settle(&mut p);
+        assert!(
+            p.app.data_table_state.is_some(),
+            "and the open finishes, which is the point"
+        );
+        assert!(
+            !p.app.work_a_bump_would_strand(),
+            "with the generation free again afterwards"
+        );
+    }
+
+    /// A key handled in that window does not find the generation free either.
+    ///
+    /// The pump breaks so a frame can be drawn and the terminal polled, so exactly one
+    /// key can be handled between a continuation being queued and being dispatched.
+    /// Ctrl-C and the other hard escapes act even while busy, and `App::handle` runs the
+    /// deferred errands at its tail whatever the key was.
+    #[test]
+    fn a_key_in_the_handoff_window_does_not_find_the_generation_free() {
+        crate::text_input_flows::isolate_cache();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("people.csv");
+        let mut file = std::fs::File::create(&path).expect("create csv");
+        writeln!(file, "name,age\nada,36").expect("write csv");
+        drop(file);
+
+        let mut p = pump();
+        p.send(AppEvent::Open(vec![path.clone()], OpenOptions::default()))
+            .unwrap();
+        settle(&mut p);
+        assert!(
+            p.app.data_table_state.is_some(),
+            "a dataset to owe a collect to"
+        );
+
+        // An errand waiting for the generation to come free. Without one the tail of
+        // `App::handle` has nothing to run, and the key below would prove nothing.
+        p.app.collect_owed = Some((p.app.dataset_generation, "Loading buffer...".to_string()));
+
+        // And the user opens something else, which after one drain is mid-handoff.
+        p.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+        assert!(!p.next_up.is_empty(), "mid-handoff");
+        let held_at = p.app.task_generation();
+
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+
+        assert_eq!(
+            p.app.task_generation(),
+            held_at,
+            "the owed collect did not go in on the back of a key handled in the window"
+        );
+        assert!(
+            p.app.collect_owed.is_some(),
+            "it is still owed, waiting for the open in front of it"
+        );
+    }
+
+    /// An errand of several phases never lets go of the generation until it is done.
+    ///
+    /// The invariant #221 actually wants, asserted at the boundary rather than through a
+    /// proxy: every time the pump breaks — which is every time a frame is drawn and a key
+    /// could be handled — an errand still in progress is holding a lease. What used to
+    /// cover this was a list of three flags in the predicate; what covers it now is the
+    /// continuation lease, and that has to be true at each phase change rather than only
+    /// at the first.
+    ///
+    /// The export is the errand with the most of them: collect, then write.
+    #[test]
+    fn an_export_holds_the_generation_at_every_phase_change() {
+        let (mut p, dir) = loaded_pump();
+        let out = dir.path().join("out.csv");
+
+        p.send(AppEvent::DoExport(
+            out.clone(),
+            crate::ExportFormat::Csv,
+            crate::ExportOptions {
+                csv_delimiter: b',',
+                csv_include_header: true,
+                source_file: false,
+                csv_compression: None,
+                json_compression: None,
+                ndjson_compression: None,
+                parquet_compression: None,
+            },
+        ))
+        .unwrap();
+
+        let mut breaks = 0;
+        for _ in 0..10_000 {
+            let drained = if p.app.is_busy() {
+                p.wait_and_drain(Duration::from_secs(10)).unwrap()
+            } else {
+                p.drain().unwrap()
+            };
+            match drained {
+                Drained::Continue { updated } => {
+                    // Mid-errand, at the moment the loop would draw and poll.
+                    if !p.next_up.is_empty() {
+                        breaks += 1;
+                        assert!(
+                            p.app.work_a_bump_would_strand(),
+                            "phase change {breaks} left the generation free"
+                        );
+                    }
+                    if !updated && p.next_up.is_empty() && !p.app.is_busy() {
+                        break;
+                    }
+                }
+                other => panic!("the export should not end the loop: {other:?}"),
+            }
+        }
+
+        assert!(
+            breaks >= 2,
+            "the export handed off at least twice — collect, then write — and each was \
+             checked; saw {breaks}"
+        );
+        assert!(out.exists(), "and the file was written, which is the point");
+
+        // A lease is released through the channel, so the last one can still be in
+        // flight when the loop above runs out of work to do — `busy` is cleared by the
+        // handler that consumed the result, one event ahead of the release behind it.
+        for _ in 0..200 {
+            if !p.app.work_a_bump_would_strand() {
+                break;
+            }
+            let _ = p.wait_and_drain(Duration::from_millis(50));
+        }
+        assert!(
+            !p.app.work_a_bump_would_strand(),
+            "with the generation free once it is done"
+        );
+    }
+
+    /// A deferred collect that turns out to have nothing to do still takes the loading    /// A deferred collect that turns out to have nothing to do still takes the loading
+    /// screen down.
+    ///
+    /// `DoLoadBuffer` clears `loading_state` itself when `spawn_async_collect` finds the
+    /// buffer already serves the view. Deferred — and the open's last step is now always
+    /// deferred, because the pump holds a lease for the whole of that handler — the
+    /// branch that runs instead is the retry's, which knew nothing about the loading
+    /// screen. It read "Loading buffer... 70%" with the app idle, for the rest of the
+    /// session.
+    #[test]
+    fn a_deferred_collect_with_nothing_to_do_takes_the_loading_screen_down() {
+        let (mut p, _dir) = loaded_pump();
+        // The buffer already holds every row, so the collect will find nothing to do.
+        p.app.collect_owed = Some((p.app.dataset_generation, "Loading buffer...".to_string()));
+        p.app.loading_state = crate::LoadingState::Loading {
+            file_path: None,
+            file_size: 0,
+            current_phase: "Loading buffer".to_string(),
+            progress_percent: 70,
+        };
+        p.app.busy = true;
+
+        p.send(AppEvent::Update).unwrap();
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+
+        assert!(
+            p.app.collect_owed.is_none(),
+            "the errand is done either way"
+        );
+        assert!(
+            matches!(p.app.loading_state, crate::LoadingState::Idle),
+            "and the loading screen is down rather than stuck at 70%"
+        );
+        assert!(!p.app.is_busy(), "with the keyboard back");
     }
 
     /// The app hands a key it cannot act on back to the caller rather than dropping

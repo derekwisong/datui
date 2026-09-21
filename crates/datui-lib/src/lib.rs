@@ -2676,105 +2676,103 @@ pub mod tests {
         }
     }
 
-    /// A re-read does not go in during the gap between two phases of an open.
+    /// A handler returning a continuation does not let the errands behind it in.
     ///
-    /// A handler's follow-up is queued rather than dispatched, so the worker that sent
-    /// the result has already dropped its lease by the time the next phase spawns: the
-    /// count is zero for one event in the middle of an errand that is very much still
-    /// running. A collect started there shares the open's generation, and its own
-    /// completion handler clears `loading_state` and `busy` — tearing down the loading
-    /// screen of a dataset that has not arrived, and releasing every key the pump was
-    /// holding onto the dataset the user left.
+    /// `App::handle` runs the owed re-read and the owed collect at its tail, after
+    /// `dispatch_event` has already returned the follow-up — so this is a window inside
+    /// one event, before `EventPump` has seen the continuation and taken a lease for it.
+    /// `Open` is the case that costs most: it bumps `task_generation`, sets
+    /// `awaiting_dataset` and returns `DoLoadScanPaths` without spawning anything, so
+    /// nothing holds a lease at all. An owed collect going in there bumps the generation
+    /// the scan is about to be spawned against, and `BackgroundSchemaReady`'s mismatch
+    /// branch returns without resetting anything: the file never opens.
     #[test]
-    fn a_re_read_does_not_go_in_between_two_phases_of_an_open() {
-        use crate::widgets::datatable::{DataTableState, FootersFound};
-        use crate::{App, AppEvent, GenerationLease, LoadingState, OpenOptions};
+    fn a_continuation_does_not_let_the_errands_behind_it_in() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, OpenOptions};
         use polars::prelude::*;
         use std::sync::Arc;
 
-        let frame = || df!("id" => &[1i64]).unwrap().lazy();
-        let wider = || df!("id" => &[1i64], "oops" => &["a"]).unwrap().lazy();
-        let dataset_of = |lf: LazyFrame| {
-            let mut lf = lf;
-            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-            let footer = crate::schema_union::FileSchema {
-                schema,
-                rows: 1,
-                file_bytes: 0,
-                row_group_bytes: Vec::new(),
-            };
-            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
-        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("next.csv");
+        std::fs::write(&path, "name,age\nada,36\n").expect("write csv");
 
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let mut app = App::new(tx, crate::tests::test_runtime());
+        let rows = || df!("id" => &[1i64, 2, 3]).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
         let state = DataTableState::from_schema_and_lazyframe(
-            dataset_of(frame()).schema.clone(),
-            frame(),
+            schema,
+            rows(),
             &OpenOptions::default(),
             None,
         )
         .unwrap();
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
         app.load_active = true;
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
 
-        // Each errand that hands off through the event queue, at the moment it is
-        // between two workers and holds no lease at all.
-        type Between = fn(&mut App);
-        let mid_errand: Vec<(&str, Between)> = vec![
-            ("an open", |app: &mut App| app.awaiting_dataset = true),
-            ("an export", |app: &mut App| {
-                app.loading_state = LoadingState::Exporting {
-                    file_path: std::path::PathBuf::from("/tmp/out.csv"),
-                    current_phase: "Collecting".to_string(),
-                    progress_percent: 0,
-                };
-            }),
-            ("an analysis", |app: &mut App| {
-                app.analysis_modal.computing = Some(crate::analysis_modal::AnalysisProgress {
-                    phase: "Counting".to_string(),
-                    current: 0,
-                    total: 1,
-                });
-            }),
-        ];
-
-        for (what, between) in mid_errand {
-            between(&mut app);
-            assert_eq!(
-                app.leases, 0,
-                "no worker is running during {what}'s handoff"
-            );
-            let waiting_on = app.task_generation();
-            app.footers_held = Some((
-                app.dataset_generation,
-                FootersFound {
-                    dataset: dataset_of(wider()),
-                    lf: wider(),
-                    file_rows: Vec::new(),
-                    files: Vec::new(),
-                    row_groups: Vec::new(),
-                    remote: None,
-                },
-            ));
-            let _ = app.handle(&AppEvent::Update);
-            assert_eq!(
-                app.task_generation(),
-                waiting_on,
-                "{what} is still running, between workers, and its generation held"
-            );
-
-            app.awaiting_dataset = false;
-            app.loading_state = LoadingState::Idle;
-            app.analysis_modal.computing = None;
-        }
-        // And with nothing between workers either, the columns go in.
-        let _ = app.handle(&AppEvent::Update);
+        // A collect owed to the dataset on screen, waiting for the generation to be free.
+        app.collect_owed = Some((app.dataset_generation, "Loading buffer...".to_string()));
         assert!(
-            app.footers_held.is_none(),
-            "nothing is running now, so the columns are joined rather than held"
+            !app.work_a_bump_would_strand(),
+            "nothing holds the generation: the errand would go in on the next event"
         );
-        let _: Option<GenerationLease> = None;
+
+        // And the user opens something else.
+        let out = app
+            .handle(&AppEvent::Open(vec![path], OpenOptions::default()))
+            .expect("the open is not a key");
+        assert!(out.is_some(), "the open returned a continuation");
+        assert!(
+            app.collect_owed.is_some(),
+            "the collect is still owed rather than run: running it here would bump the \
+             generation the open has just taken for its scan"
+        );
+    }
+
+    /// An open parked on the download confirmation holds the generation while it waits.
+    ///
+    /// The one errand that waits on neither a worker nor a continuation: nothing is
+    /// running, the open is very much unfinished, and the wait is as long as the user
+    /// takes to answer. A collect starting meanwhile bumps `task_generation`, and the
+    /// download they are about to agree to then answers a generation nothing matches.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    #[test]
+    fn a_download_waiting_on_the_user_holds_the_generation() {
+        use crate::{App, AppEvent, OpenOptions, PendingDownload};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.awaiting_dataset = true;
+        assert!(!app.work_a_bump_would_strand(), "nothing is running yet");
+
+        let pending = PendingDownload::Http {
+            url: "https://example.invalid/data.parquet".to_string(),
+            size: Some(1024),
+            options: OpenOptions::default(),
+        };
+        let _ = app.handle(&AppEvent::BackgroundRemoteSizeReady {
+            generation: app.task_generation(),
+            pending: Box::new(pending),
+        });
+
+        assert!(app.confirmation_modal.active, "the user is being asked");
+        assert!(
+            app.work_a_bump_would_strand(),
+            "and the generation is held for as long as they take to answer"
+        );
+
+        // Declining puts the errand down, and the generation with it.
+        let _ = app.key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "nothing waits on it once the download is declined"
+        );
     }
 
     /// A count landing while a load is in flight does not cancel the load.
@@ -4322,11 +4320,18 @@ pub enum AppEvent {
 /// channel.
 ///
 /// One worker, though, not one errand. An errand of several phases hands off through the
-/// event queue and holds no lease for an event at a time, which is why
-/// `work_a_bump_would_strand` asks about those separately. And a worker that never
-/// returns at all — a `hard` NFS mount, a wedged object-store read — never drops its
-/// lease; that thread already leaves `busy` set for the session, so the app is wedged
-/// with or without this, but the count does not rescue it.
+/// event queue and holds no lease for an event at a time, so two other things take one:
+/// [`crate::event_pump::EventPump`] while it holds a continuation it has not dispatched,
+/// and `pending_download` while the confirmation modal waits on the user. Between them
+/// the count covers a whole errand, which is what lets the predicate be only the count —
+/// with one exception. `reread_after_the_footers_joined` sends its jump straight to the
+/// channel, unleased, and that is safe only because both its callers have already checked
+/// that nothing is waiting on the generation. A fourth handoff added that way would not
+/// be.
+///
+/// A worker that never returns at all — a `hard` NFS mount, a wedged object-store read —
+/// never drops its lease; that thread already leaves `busy` set for the session, so the
+/// app is wedged with or without this, but the count does not rescue it.
 struct GenerationLease {
     events: Sender<AppEvent>,
 }
@@ -5227,9 +5232,16 @@ pub struct App {
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
     export_df: Option<DataFrame>,
     pending_chart_export: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
-    /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation. Size is from HEAD when available.
+    /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation.
+    /// Size is from HEAD when available.
+    ///
+    /// Carries a [`GenerationLease`], because this is the one errand that waits on
+    /// neither a worker nor a continuation: nothing is running, the open is very much
+    /// unfinished, and the wait is as long as the user takes. Paired with the download
+    /// rather than kept beside it, so the two cannot drift — every path out of the modal
+    /// takes the download, and the lease goes with it.
     #[cfg(any(feature = "http", feature = "cloud"))]
-    pending_download: Option<PendingDownload>,
+    pending_download: Option<(PendingDownload, GenerationLease)>,
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
     cache: CacheManager,
@@ -5609,6 +5621,15 @@ impl App {
         if !self.spawn_async_collect(&status) {
             self.busy = false;
             self.status_message = None;
+            // The collect that was owed may have been the last step of an open, and
+            // `DoLoadBuffer` takes the loading screen down itself when there turns out
+            // to be nothing to collect. Deferred, that branch is not the one that runs,
+            // and the screen would read "Loading buffer... 70%" with the app idle for
+            // the rest of the session. Only a load's own state: an export owns
+            // `loading_state` too, and it is still going.
+            if matches!(self.loading_state, LoadingState::Loading { .. }) {
+                self.loading_state = LoadingState::Idle;
+            }
         }
     }
 
@@ -6055,22 +6076,15 @@ impl App {
     /// Whether anything is waiting on the current `task_generation`, so that bumping it
     /// would throw away an answer nothing will ask for again.
     fn work_a_bump_would_strand(&self) -> bool {
-        // Work with a worker on it: counted, so a new kind of it is covered without
-        // anyone remembering to cover it. See [`GenerationLease`].
+        // A count, and nothing else. Nothing here names a kind of work, so a new kind is
+        // covered by taking a lease rather than by being remembered here — which is the
+        // whole of #221. Three things hold one:
+        //
+        //  - every background spawn, for as long as its worker runs ([`App::spawn_bg`]);
+        //  - `EventPump`, for as long as a continuation it has not dispatched is
+        //    waiting, which is the gap between two phases of one errand;
+        //  - an errand parked on the user, which is the download confirmation.
         self.leases > 0
-            // And work that is between two workers. An errand of several phases — scan
-            // then schema, collect then write, count then compute — has no worker at
-            // all for one event at a time, because `EventPump` queues a handler's
-            // follow-up and breaks so a frame can be drawn rather than dispatching it
-            // inline. The lease is released in that gap, and the errand is still going.
-            //
-            // Three flags, not four: the chart is not here because a bump cannot strand
-            // it (`BackgroundChartReady` carries no generation), and
-            // `work_the_join_would_cancel` adds it for the frame change instead. A
-            // count of phases, rather than a list of them, is what would finish #221.
-            || self.awaiting_dataset
-            || matches!(self.loading_state, LoadingState::Exporting { .. })
-            || self.analysis_modal.computing.is_some()
     }
 
     /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
@@ -9116,7 +9130,12 @@ impl App {
                             return Some(AppEvent::Export(path, format, options));
                         }
                         #[cfg(any(feature = "http", feature = "cloud"))]
-                        if let Some(pending) = self.pending_download.take() {
+                        if let Some((pending, lease)) = self.pending_download.take() {
+                            // Dropped rather than held: the event returned below is a
+                            // continuation, and the pump leases one of those. Dropping
+                            // first is safe because a release is a queued event rather
+                            // than a decrement — the count cannot dip between the two.
+                            drop(lease);
                             self.confirmation_modal.hide();
                             if let LoadingState::Loading {
                                 file_path,
@@ -12859,17 +12878,24 @@ impl App {
             return Err(*key);
         }
         let out = self.dispatch_event(event);
-        // Columns a dataset's footers found while the user was inside a query are held
-        // rather than dropped; this is where they get in, on the first event after the
-        // view comes back to the data. Sent rather than returned because the event just
-        // dispatched may have a follow-up of its own.
-        if self.join_held_footers() {
-            self.reread_after_the_footers_joined();
+        // Not while this handler is returning a continuation. A follow-up is the rest of
+        // the event just handled — the analysis sets `computing` and returns
+        // `AnalysisChunk`, and the phase that chunk will spawn has not spawned — so
+        // nothing holds a lease on the generation yet, and the errands below would bump
+        // it out from under the errand that is halfway through. They run after every
+        // event and are built to wait; one more event is nothing to them.
+        if out.is_none() {
+            // Columns a dataset's footers found while the user was inside a query are
+            // held rather than dropped; this is where they get in, on the first event
+            // after the view comes back to the data.
+            if self.join_held_footers() {
+                self.reread_after_the_footers_joined();
+            }
+            // And the same turn for a re-read owed to a dataset whose footers could not
+            // be read: it waits on the same work, and gets in the same way.
+            self.reread_when_the_work_allows();
+            self.collect_when_the_work_allows();
         }
-        // And the same turn for a re-read owed to a dataset whose footers could not be
-        // read: it waits on the same work, and gets in the same way.
-        self.reread_when_the_work_allows();
-        self.collect_when_the_work_allows();
         self.ensure_chart_data();
         Ok(out)
     }
@@ -13563,7 +13589,7 @@ impl App {
                 self.status_message = None;
                 self.confirmation_modal
                     .show(Self::download_confirmation_message(pending));
-                self.pending_download = Some((**pending).clone());
+                self.pending_download = Some(((**pending).clone(), self.lease_the_generation()));
                 None
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
@@ -13729,10 +13755,13 @@ impl App {
                 if !self.load_active {
                     return None;
                 }
-                if !self.spawn_async_collect("Loading buffer...") {
-                    self.loading_state = LoadingState::Idle;
-                    self.busy = false;
-                }
+                // No cleanup arm of its own. A collect asked for here is always owed
+                // rather than run — the pump holds a lease for the whole of this handler
+                // — so `collect_when_the_work_allows` is what finds out there is nothing
+                // to collect, and it is the one that takes the loading screen down. Two
+                // copies of that cleanup, one of them unreachable and less careful about
+                // an export's `loading_state`, is an invitation to fix the wrong one.
+                self.spawn_async_collect("Loading buffer...");
                 None
             }
             AppEvent::DoDecompress(paths, options) => {

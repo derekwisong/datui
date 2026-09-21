@@ -48,7 +48,7 @@ orc-rust = "0.9"
 arrow = "59"
 tempfile = "3.14"
 ureq = { version = "3.4", optional = true }
-object_store = { version = "0.13.1", optional = true, default-features = false, features = ["aws", "azure", "gcp"] }
+object_store = { version = "0.14.2", optional = true, default-features = false, features = ["aws", "azure", "gcp"] }
 # S3 ListBuckets answers in XML, from an endpoint the user pointed datui at and does
 # not necessarily control. 0.41 is the first release past the two denial-of-service
 # advisories against the 0.38 line, and it is already in the tree behind calamine.

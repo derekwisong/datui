@@ -13105,6 +13105,11 @@ impl App {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
                 }
+                // Mark this generation's count as failed so the row count renders as "?"
+                // instead of a misleading provisional total. Before the End handling
+                // below, which can return early: this is about the count, not about who
+                // was waiting on it, and it was unconditional before that return existed.
+                self.len_count_failed = Some(*len_generation);
                 // Only for the count End was actually waiting on. Taken unconditionally,
                 // a count that failed for one frame answered for an End pressed on
                 // another — printing "Could not count the rows to find the end" about a
@@ -13125,9 +13130,6 @@ impl App {
                         return self.jump_key(AppEvent::DoScrollEnd);
                     }
                 }
-                // Mark this generation's count as failed so the row count renders as "?"
-                // instead of a misleading provisional total.
-                self.len_count_failed = Some(*len_generation);
                 None
             }
             AppEvent::BackgroundCollectReady { generation } => {

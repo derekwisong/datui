@@ -510,6 +510,11 @@ pub struct Measured {
     /// dropped on the way to the screen -- so a hive dataset measured the ordinary
     /// way showed no partitions, and a compressed file no codec.
     pub cost: crate::discover::Cost,
+    /// What the footers said it is, when that differs from what its filenames
+    /// suggested: a folder whose files turn out to be separate tables is a directory,
+    /// not a dataset. `None` when measuring did not change what it is, which is the
+    /// ordinary case. See [`crate::discover::enrich`].
+    pub kind: Option<crate::discover::EntryKind>,
 }
 
 /// How rows are ordered within each section.
@@ -734,6 +739,7 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
         cols: probe.cols,
         size: probe.size.or(original.size),
         columns: probe.columns.clone(),
+        kind: (probe.kind != original.kind).then_some(probe.kind),
         // The source is resolved from the live mount table on every listing, so only
         // what the file said about itself is carried forward.
         cost: crate::discover::Cost {
@@ -1112,6 +1118,15 @@ fn apply_known_facts(
     let source = row.cost.source.take();
     row.cost = facts.cost.clone();
     row.cost.source = source;
+    // A folder whose files were read and found to be separate tables stays a
+    // directory, rather than being called a dataset again by the next listing: its
+    // kind comes from its filenames, which have not changed and were never the
+    // evidence. Narrow on purpose — only this one correction survives, and only while
+    // the fingerprint above still matches.
+    if !remote && row.kind == EntryKind::MultiFile && facts.kind == Some(EntryKind::Directory) {
+        row.kind = EntryKind::Directory;
+    }
+
     if remote {
         // A remote row was never stat'ed, so these are all it has.
         row.size = row.size.or(Some(facts.size));
@@ -2112,6 +2127,9 @@ impl HomeState {
                 if let Some(m) = self.enriched.get(&row.path) {
                     row.rows = m.rows;
                     row.cols = m.cols;
+                    if let Some(kind) = m.kind {
+                        row.kind = kind;
+                    }
                     if m.size.is_some() {
                         row.size = m.size;
                     }

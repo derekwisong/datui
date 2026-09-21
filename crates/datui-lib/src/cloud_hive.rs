@@ -532,7 +532,7 @@ macro_rules! counted_range {
     }};
 }
 
-async fn footer_of_file(
+pub(crate) async fn footer_of_file(
     store: &Arc<dyn ObjectStore>,
     file: &DatasetFile,
     meter: &crate::measurements::Meter,

@@ -2525,6 +2525,7 @@ fn test_applying_a_measurement_puts_the_layout_on_the_row() {
             cols: Some(2),
             size: Some(100),
             columns: vec!["a".into()],
+            kind: None,
             cost: Cost {
                 codec: Some("snappy".into()),
                 row_groups: Some(3),

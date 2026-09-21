@@ -7373,7 +7373,17 @@ impl App {
             }
             return None;
         }
-        let entry = self.home.selected_entry()?;
+        let mut entry = self.home.selected_entry()?;
+        // A row nothing has classified — a remote path never probed, or one whose cached
+        // kind this build will not take (see `discover::CLASSIFIER_VERSION`) — is looked
+        // at now rather than opened as whatever it turns out to be. `EntryKind::Unknown`
+        // is offered as openable, so this is the other half of #249: refusing the stale
+        // `multi` only changed the chip, and Enter still read the whole lake root as one
+        // table. A local stat, and `is_dir` is false for an object-store URL, so nothing
+        // here touches the network.
+        if entry.kind == discover::EntryKind::Unknown && entry.path.is_dir() {
+            entry.kind = discover::classify_directory(&entry.path);
+        }
         if entry.kind == discover::EntryKind::Directory {
             self.home_browse_into(entry.path);
             return None;
@@ -7513,7 +7523,19 @@ impl App {
                 // Into a folder that opens as one dataset rather than opening it, to
                 // reach one partition or one file. This clears the filter, as browsing
                 // anywhere does.
-                Some(folder) => self.home_browse_into(folder),
+                Some(folder) => {
+                    // The same sentence Enter leaves, for the same reason: this is the
+                    // door the control bar advertises on a lake row, and arriving inside
+                    // one with no explanation is the silent wrong answer #237 is about.
+                    let note = self
+                        .home
+                        .selected_entry()
+                        .and_then(|entry| Self::lake_table_note(entry.kind));
+                    self.home_browse_into(folder);
+                    if note.is_some() {
+                        self.home.status = note;
+                    }
+                }
                 None => self.home_collapse(false),
             },
             KeyCode::PageUp => self.home.move_selection(-10),

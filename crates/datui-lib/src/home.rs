@@ -1118,7 +1118,15 @@ fn apply_known_facts(
     // is a file's: a listing gives a directory no size, so `same_bytes` is never true
     // for one. A directory's own mtime is what it has, and it moves when a file is
     // added or removed, which is when this answer could change.
-    if !remote && row.kind == EntryKind::MultiFile && facts.kind == Some(EntryKind::Directory) {
+    // Gated on the classifier too. This one is `is_one_table`'s answer, which is the
+    // most version-sensitive judgement datui makes — #234 introduced it and #243 changed
+    // what it runs over — so a build that decided differently does not get to speak here
+    // either.
+    if !remote
+        && row.kind == EntryKind::MultiFile
+        && facts.kind == Some(EntryKind::Directory)
+        && facts.classified_by == crate::discover::CLASSIFIER_VERSION
+    {
         let same_mtime = row
             .modified
             .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())

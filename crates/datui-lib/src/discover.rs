@@ -713,6 +713,7 @@ fn downgrade_to_directory(entry: &mut Entry) {
     entry.kind = EntryKind::Directory;
     entry.rows = None;
     entry.cols = None;
+    entry.cols_sampled = false;
     entry.cost = Cost {
         partitions: entry.cost.partitions.take(),
         ..Cost::default()
@@ -848,8 +849,11 @@ pub fn enrich_parquet(entry: &mut Entry) {
     }
     if let Some(meta) = crate::widgets::info::read_parquet_metadata(&entry.path) {
         entry.rows = Some(meta.num_rows);
-        entry.cols = Some(meta.schema_descr.columns().len());
         entry.columns = column_names(&meta);
+        // The columns a reader sees, as a folder's row reports them: `schema_descr`
+        // names the leaves, so a file with one struct of three fields counted four and
+        // then listed two in the pane beside it. See [`column_count`].
+        entry.cols = Some(column_count(&entry.columns));
         physical_facts(&meta, &mut entry.cost);
     }
 }
@@ -1363,7 +1367,35 @@ mod classification_tests {
         );
     }
 
-    /// A folder's column count is the columns a reader sees, not the leaves its footers
+    /// A single file counts its columns the same way a folder does.
+    ///
+    /// `enrich_parquet` read `schema_descr.columns()`, which is the leaf list — so a file
+    /// with one struct of three fields said `columns 4` above a schema list of two, and a
+    /// folder holding only that file said something different again.
+    #[test]
+    fn a_file_and_a_folder_of_it_count_the_same_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "one.parquet", &["id", "inputs.a", "inputs.b"]);
+
+        let mut file = Entry::new(dir.path().join("one.parquet"), EntryKind::File);
+        enrich(&mut file);
+        assert_eq!(
+            file.cols,
+            Some(2),
+            "`id` and `inputs`, which is what opening it shows: {:?}",
+            file.columns
+        );
+
+        write(dir.path(), "two.parquet", &["id", "inputs.a", "inputs.b"]);
+        let folder = measured(dir.path());
+        assert_eq!(folder.kind, EntryKind::MultiFile);
+        assert_eq!(
+            folder.cols, file.cols,
+            "and a folder of them says the same number"
+        );
+    }
+
+    /// A folder's column count is the columns a reader sees, not the leaves its footers    /// A folder's column count is the columns a reader sees, not the leaves its footers
     /// name — so a writer change cannot double it.
     ///
     /// The same nested column written by parquet-mr and by Arrow gives different leaf
@@ -1374,7 +1406,12 @@ mod classification_tests {
     #[test]
     fn a_writer_change_does_not_double_the_column_count() {
         let dir = tempfile::tempdir().unwrap();
-        // Two spellings of one nested column, as two Parquet writers produce them.
+        // Two spellings of one nested column, as two Parquet writers produce them. Flat
+        // columns whose names hold the dots, rather than real structs: `column_names`
+        // joins `path_in_schema` with `.`, so what reaches `column_count` is the same
+        // string either way. (It does mean this folder really has three columns when
+        // opened, which is the undercount #248 notes for a column literally named `a.b`
+        // beside a struct `a` — not what is being tested here.)
         write(
             dir.path(),
             "old.parquet",
@@ -1391,7 +1428,7 @@ mod classification_tests {
         assert_eq!(
             entry.cols,
             Some(2),
-            "`id` and `inputs`, which is what the table shows: {:?}",
+            "one `inputs`, not one per spelling of it: {:?}",
             entry.columns
         );
         assert!(
@@ -1427,7 +1464,7 @@ mod classification_tests {
         assert!(!measured(small.path()).cols_sampled);
     }
 
-    /// The files a folder offers come back in order, whatever order the directory was    /// The files a folder offers come back in order, whatever order the directory was
+    /// The files a folder offers come back in order, whatever order the directory was
     /// written in.
     ///
     /// Every caller reads order as meaning something — `sample_footers` takes the ends

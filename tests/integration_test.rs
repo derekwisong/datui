@@ -5759,3 +5759,153 @@ fn test_right_goes_inside_a_lake_table() {
         "→ went inside the table rather than folding the section"
     );
 }
+
+/// A sampled column count shows as a floor on the row and in the details pane.
+///
+/// The `Entry` flag had a test; what reaches the user had none — reverting either render
+/// site left the suite green.
+#[test]
+fn test_a_sampled_column_count_is_marked_on_screen() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let folder = tmp.path().join("events");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "events"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+
+    // As a folder past the footer budget comes back from measurement.
+    for section in app.home.sections.iter_mut() {
+        for entry in section.rows.iter_mut().filter(|e| e.name == "events") {
+            entry.kind = datui::discover::EntryKind::MultiFile;
+            entry.rows = None;
+            entry.cols = Some(39);
+            entry.cols_sampled = true;
+            entry.columns = vec!["id".to_string()];
+        }
+    }
+
+    let area = Rect::new(0, 0, 160, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        screen.contains("39+"),
+        "the row and the pane say the count is a floor: {screen}"
+    );
+    assert!(
+        !screen.contains("× 39 ") && !screen.contains("columns 39\n"),
+        "and neither presents it as a total: {screen}"
+    );
+}
+
+/// An unexamined directory is classified before Enter opens it.
+///
+/// A cached kind this build will not take leaves the row `Unknown`, whose `is_dataset()`
+/// is true — so Enter fell through to opening the path as one dataset. For a lake root
+/// that is the whole of #237, restored from a cache written by an older datui.
+#[test]
+fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    for part in ["part-0.parquet", "part-1.parquet"] {
+        std::fs::write(table.join(part), b"x").unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
+        .expect("the table is listed");
+    app.home.selected = row;
+
+    // As a row restored from a cache this build will not take its kind from.
+    for section in app.home.sections.iter_mut() {
+        for entry in section.rows.iter_mut().filter(|e| e.name == "orders") {
+            entry.kind = datui::discover::EntryKind::Unknown;
+        }
+    }
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Unknown),
+        "the row the cursor is on is the unexamined one"
+    );
+
+    let follow = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    assert!(follow.is_none(), "nothing was opened as one table");
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(table.as_path()),
+        "it was looked at first, found to be a Delta root, and gone inside"
+    );
+}
+
+/// `→` into a lake table says the same thing `Enter` does.
+///
+/// The control bar advertises `→` on that row, and `home_browse_into` clears the status
+/// line — so the door the bar points at was the one that arrived inside with no
+/// explanation.
+#[test]
+fn test_right_into_a_lake_table_says_why() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    std::fs::write(table.join("part-0.parquet"), b"x").unwrap();
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
+        .expect("the table is listed");
+    app.home.selected = row;
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Right,
+        KeyModifiers::NONE,
+    )));
+
+    assert_eq!(app.home.browsing.as_deref(), Some(table.as_path()));
+    let status = app.home.status.clone().unwrap_or_default();
+    assert!(
+        status.contains("Delta") && status.contains("not read"),
+        "→ says why it is showing files rather than a table: {status:?}"
+    );
+}

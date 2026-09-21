@@ -6,8 +6,7 @@ NAVIGATION
   Ctrl+↑ / Ctrl+↓   Previous or next section
   ← / →             Collapse or expand a section; the choice is remembered.
                     → on a folder labelled hive, multi, delta, iceberg or hudi
-                    goes inside it instead
-                    of opening it, so one partition or one file can be reached
+                    goes inside it, so one partition or one file can be reached
   PgUp / PgDn       Move ten rows
 
   Every letter types into the filter, so none is a key here: "json" finds json.

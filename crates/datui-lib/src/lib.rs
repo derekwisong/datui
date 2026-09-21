@@ -2306,10 +2306,10 @@ pub mod tests {
         );
     }
 
-    /// An App on a remote dataset of a hundred rows that has not been counted yet.
+    /// An App on a remote dataset of a hundred rows that has not been counted yet, its
+    /// buffer forty rows in.
     ///
-    /// The receiver comes back with it: dropped, the channel closes and the App's own
-    /// sends start failing.
+    /// The receiver comes back with it so a test can read what the App sent.
     fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEvent>) {
         use crate::widgets::datatable::{DataTableState, RemoteFiles};
         use crate::{App, OpenOptions};
@@ -2334,6 +2334,10 @@ pub mod tests {
             offsets: None,
         });
         state.visible_rows = 10;
+        // As far as the buffer reached, of a hundred. This is the number the bar prints
+        // when nothing tells it the count failed, and printing it is the harm: a
+        // confident partial where a "?" belongs.
+        state.num_rows = 40;
 
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
@@ -2462,9 +2466,13 @@ pub mod tests {
             app.end_after_count, None,
             "the End it belonged to is retired"
         );
+        // On the field, not the bar: `status_message` is painted only while `busy`, and
+        // an End waiting on a remote count does not set it — the spinner on the row
+        // count is what the user sees. The message is still what the *next* busy moment
+        // would print, so leaving it set is the bug.
         assert_eq!(
             app.status_message, None,
-            "and the status it put up comes down, rather than becoming an error about a \
+            "the status it put up comes down, rather than becoming an error about a \
              frame the user is no longer looking at"
         );
     }
@@ -13477,8 +13485,7 @@ impl App {
                 }
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total. Before the End handling
-                // below, which can return early: this is about the count, not about who
-                // was waiting on it.
+                // below: this is about the count, not about who was waiting on it.
                 //
                 // Only for the frame on screen, because the slot holds one generation.
                 // Counts for two frames run at once — a join, a query, a filter or a

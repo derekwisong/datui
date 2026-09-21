@@ -128,8 +128,11 @@ On the Sort tab, with a column highlighted:
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd> | Move |
 | <kbd>Home</kbd> <kbd>End</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Jump |
 | <kbd>Enter</kbd> | Run the highlighted tool, or open the detail of a column or a correlation pair |
+| <kbd>1</kbd>–<kbd>4</kbd> | In Data Quality, open Overview, Columns, Segments, or Trends |
+| <kbd>e</kbd> | In Data Quality, edit a copy of the profile plan |
+| <kbd>p</kbd> | In Data Quality, show the detailed access plan |
 | <kbd>s</kbd> | In the distribution detail, toggle the histogram between linear and log |
-| <kbd>r</kbd> | Draw a new sample, when sampling is on |
+| <kbd>r</kbd> | In Data Quality, rerun with a new seed; elsewhere redraw a sample when sampling is on |
 | <kbd>Esc</kbd> | Back one level |
 
 ## Pivot and melt

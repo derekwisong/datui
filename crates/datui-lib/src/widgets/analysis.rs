@@ -120,6 +120,7 @@ impl<'a> AnalysisWidget<'a> {
             Some(AnalysisTool::Describe) => "Describe",
             Some(AnalysisTool::DistributionAnalysis) => "Distribution Analysis",
             Some(AnalysisTool::CorrelationMatrix) => "Correlation Matrix",
+            Some(AnalysisTool::DataQuality) => "Data Quality",
             None => "Analysis",
         };
 
@@ -199,6 +200,11 @@ impl<'a> AnalysisWidget<'a> {
                                 buf,
                                 self.theme,
                             );
+                        }
+                        AnalysisTool::DataQuality => {
+                            Paragraph::new("Data Quality")
+                                .centered()
+                                .render(main_layout[0], buf);
                         }
                     }
                 } else {
@@ -1442,6 +1448,7 @@ fn render_sidebar(
         ("Describe", AnalysisTool::Describe),
         ("Distribution Analysis", AnalysisTool::DistributionAnalysis),
         ("Correlation Matrix", AnalysisTool::CorrelationMatrix),
+        ("Data Quality", AnalysisTool::DataQuality),
     ];
 
     let text_primary = theme.get("text_primary");

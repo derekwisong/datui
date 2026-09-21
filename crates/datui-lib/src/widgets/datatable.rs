@@ -3651,6 +3651,45 @@ impl DataTableState {
             .collect()
     }
 
+    /// Frame and optional row-to-file map used by the data-quality worker. The hidden
+    /// scan index is projected only while it still identifies source files; the worker
+    /// replaces it with file names before profiling and never exposes it as user data.
+    pub(crate) fn data_quality_scan(
+        &self,
+    ) -> (LazyFrame, Option<crate::data_quality::QualitySourceContext>) {
+        let known_files =
+            !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
+        let source = if self.can_name_source_files() {
+            Some(crate::data_quality::QualitySourceContext {
+                file_names: self.drift_files.clone(),
+                file_starts: self.drift_file_starts.clone(),
+                row_index_column: crate::schema_union::DRIFT_COLUMN.to_string(),
+            })
+        } else if self.is_pristine() && known_files {
+            Some(crate::data_quality::QualitySourceContext {
+                file_names: self.drift_files.clone(),
+                file_starts: self.drift_file_starts.clone(),
+                row_index_column: "__datui_quality_row".to_string(),
+            })
+        } else {
+            None
+        };
+        let mut expressions = self.binary_stub_exprs();
+        if self.can_name_source_files() {
+            expressions.push(col(crate::schema_union::DRIFT_COLUMN));
+        }
+        let lf = self.lf.clone().select(expressions);
+        let lf = if source
+            .as_ref()
+            .is_some_and(|mapping| mapping.row_index_column == "__datui_quality_row")
+        {
+            lf.with_row_index("__datui_quality_row", None)
+        } else {
+            lf
+        };
+        (lf, source)
+    }
+
     pub fn prepare_async_collect(
         &mut self,
         num_rows_override: Option<usize>,
@@ -4803,6 +4842,30 @@ impl DataTableState {
         self.observed_bytes_per_row.unwrap_or_else(|| {
             estimate_bytes_per_row(&self.schema, &self.column_order, &self.column_widths)
         })
+    }
+
+    /// Best available in-memory width estimate for one logical row.
+    ///
+    /// Data Quality uses this only for a preflight estimate and labels the result as
+    /// approximate. Buffer planning uses the same source so the two surfaces do not
+    /// disagree about the shape of the current view.
+    pub fn estimated_row_bytes(&self) -> usize {
+        self.bytes_per_row()
+    }
+
+    /// Number of source files known to participate in the pristine dataset scan.
+    /// Returns `None` after a query or reshape has broken the row-to-file mapping.
+    pub fn source_file_count(&self) -> Option<usize> {
+        if !self.is_pristine() {
+            return None;
+        }
+        if !self.drift_files.is_empty() {
+            return Some(self.drift_files.len());
+        }
+        if let Some(remote) = &self.remote_files {
+            return Some(remote.urls.len());
+        }
+        Some(1)
     }
 
     /// Rows the `max_buffered_mb` budget allows a buffer, never fewer than a screen;

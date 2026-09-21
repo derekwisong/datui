@@ -1,0 +1,16 @@
+Data Quality profiles the current view deliberately. Nothing scans values until you run the visible plan.
+
+Enter: Run the plan or inspect the selected result
+e: Edit grain, compute budget, comparison and explicit time roles
+p: Show the detailed access plan
+1 / 2 / 3 / 4: Overview / Columns / Segments / Trends
+j / k or Down / Up: Move through fields or results
+r: Rerun with a new sample seed
+Tab: Move between the result and Analysis tools
+Esc: Cancel editing, return one level, or close Analysis
+? / F1: Show or hide this help
+
+Every result states how many rows were eligible and evaluated and whether it is exact, sampled, estimated or metadata-only. Temporal meanings are used only after you assign a role to a column.
+Sampling selects rows without replacement from a bounded prefix of at most 50,000 rows. It does not cover the entire dataset randomly; sampled segment totals may be unknown.
+
+Full scans require confirmation. While a plan is running, Esc cancels the result and leaves the source unchanged. File and partition comparisons require an explicit order before "previous" is meaningful.

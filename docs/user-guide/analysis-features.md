@@ -37,6 +37,66 @@ Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for the
 pair: coefficient, p-value, sample size, a text scatter plot and the summary
 statistics of both columns.
 
+## Data quality
+
+Choose **Data Quality** to profile the current view. The first screen is an
+inert plan: no values are read until you press <kbd>Enter</kbd>. It shows the
+scope, profile grain, compute mode, comparison, estimated rows and transfer
+direction. Press <kbd>p</kbd> for the estimate basis. A full value scan asks for
+confirmation.
+
+| Setting | Choices |
+|---|---|
+| Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or weekly windows on an assigned time role |
+| Compute | Metadata only, a seeded sample from a bounded prefix, or full scan |
+| Comparison | None, previous ordered segment, or first-segment baseline |
+| Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
+
+Press <kbd>e</kbd> to edit a copy of the plan. <kbd>Esc</kbd> discards edits.
+The Time roles row opens an explicit mapping table; every role starts
+unassigned. Datui recognizes physical date and datetime types but never guesses
+their business meaning from column names.
+
+After a run, use <kbd>1</kbd>–<kbd>4</kbd> for Overview, Columns, Segments,
+and Trends. Results state eligible and evaluated rows and whether values are
+exact, sampled, or metadata-only. Overview includes dataset notes and neutral
+observations. Press <kbd>Enter</kbd> on one for its definition, denominator,
+provenance, and available category-variant examples. Columns reports null,
+empty, whitespace, non-finite, distinct,
+parse, and range measurements. Segments keeps both row denominators visible and
+shows null-rate changes for the selected comparison. Trends charts null-cell
+rates across ordered row chunks or time windows and reports lifecycle
+latency for accepted role pairs, including missing endpoints, negative
+durations, p50/p90/p95/p99, and maximum duration.
+
+Sampling is a compute choice, not a grain. It selects rows without replacement
+from at most the first 50,000 eligible rows; it is not a random sample of the
+entire dataset. Segment totals outside dataset grain are unknown in a sampled
+run, and displayed as such. File mapping is available only while
+the current view still preserves source-row provenance; otherwise the Segments
+screen says that it is unavailable. Remote sources are read-only and the access
+plan always reports zero remote writes.
+
+### Data-quality metric definitions
+
+| Metric | Formula and read |
+|---|---|
+| Null rate | Null values ÷ evaluated rows; reads the selected column |
+| Empty / whitespace rate | Exact empty or trim-to-empty strings ÷ evaluated rows; reads string values |
+| NaN / infinity | Separate counts for NaN, positive infinity and negative infinity; reads floating-point values |
+| Distinct | Distinct non-null values observed in the evaluated rows; sampled runs do not claim dataset-wide uniqueness |
+| Dominant share | Most frequent non-null value count ÷ evaluated non-null rows |
+| Range / text length | Minimum and maximum value, or minimum and maximum character length for text |
+| Parse share | Values accepted by the named integer, decimal, ISO-date or ISO-datetime parser ÷ evaluated non-null text values |
+| Duplicate groups | Groups of identical complete evaluated rows; extra rows is Σ(group size − 1), rows involved is Σ(group size) |
+| Category variants | Original text values that become equal after outer-whitespace removal and lowercase normalization |
+| Segment null rate | Null cells ÷ (evaluated rows × profiled logical columns) in that segment |
+| Lifecycle latency | End role timestamp − start role timestamp per row; missing endpoints are counted separately and negative values are retained |
+
+Lifecycle percentiles use the evaluated duration values in sorted order. Date
+values are interpreted at midnight; datetime values retain their physical time
+unit. The role mapping is a user assertion and is included in the visible plan.
+
 ## Sampling
 
 By default every tool uses every row. On very large datasets, set a threshold

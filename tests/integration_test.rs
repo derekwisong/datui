@@ -726,6 +726,7 @@ fn test_startup_buffer_race_does_not_lose_rows() {
 /// path got in commit e4d65e3.
 #[test]
 fn test_stale_background_events_are_ignored() {
+    use datui::data_quality::{DataQualityResults, QualityPrecision};
     use datui::statistics::AnalysisResults;
 
     common::ensure_sample_data();
@@ -782,6 +783,141 @@ fn test_stale_background_events_are_ignored() {
         app.analysis_modal.correlation_results.is_none(),
         "stale BackgroundCorrelationReady should not write correlation_results"
     );
+
+    app.analysis_modal.data_quality_results = None;
+    app.event(&AppEvent::BackgroundDataQualityReady {
+        generation: stale_gen,
+        results: DataQualityResults {
+            total_rows: 999_999,
+            evaluated_rows: 1,
+            precision: QualityPrecision::Sampled,
+            sample_seed: 1,
+            columns: vec![],
+            observations: vec![],
+            segments: vec![],
+            temporal: vec![],
+            identity: None,
+            category_variants: vec![],
+        },
+    });
+    assert!(
+        app.analysis_modal.data_quality_results.is_none(),
+        "stale BackgroundDataQualityReady should not write data-quality results"
+    );
+}
+
+#[test]
+fn test_data_quality_plan_runs_in_background_and_opens_overview() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::QualityPage;
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/large_dataset.parquet")],
+        OpenOptions::default(),
+    );
+
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert!(app.analysis_modal.data_quality_results.is_none());
+
+    app.analysis_modal.focus = AnalysisFocus::Main;
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    app.event(&next.unwrap());
+    drain_events(&mut app, &rx);
+
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+    assert!(!app.is_busy());
+
+    app.analysis_modal
+        .data_quality_results
+        .as_mut()
+        .unwrap()
+        .observations
+        .push(datui::data_quality::QualityObservation {
+            kind: datui::data_quality::ObservationKind::Nulls,
+            column: "example".to_string(),
+            affected_rows: 1,
+            evaluated_rows: 10,
+            fact: "1 null row".to_string(),
+        });
+    app.analysis_modal.data_quality_table_state.select(Some(0));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(app.analysis_modal.data_quality_observation_detail);
+    let area = Rect::new(0, 0, 80, 24);
+    let mut detail_buffer = Buffer::empty(area);
+    app.render(area, &mut detail_buffer);
+    assert!(
+        detail_buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .contains("OBSERVATION")
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    assert!(!app.analysis_modal.data_quality_observation_detail);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+
+    for area in [
+        Rect::new(0, 0, 120, 32),
+        Rect::new(0, 0, 80, 24),
+        Rect::new(0, 0, 50, 18),
+    ] {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(
+            screen.contains("Data Quality"),
+            "quality breadcrumb should survive a {width}x{height} layout",
+            width = area.width,
+            height = area.height
+        );
+    }
+
+    for page in [
+        QualityPage::Columns,
+        QualityPage::Segments,
+        QualityPage::Trends,
+    ] {
+        app.analysis_modal.set_quality_page(page);
+        for area in [Rect::new(0, 0, 120, 32), Rect::new(0, 0, 50, 18)] {
+            let mut buffer = Buffer::empty(area);
+            app.render(area, &mut buffer);
+            let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+            assert!(screen.contains("Data Quality"));
+            if page != QualityPage::Trends {
+                assert!(screen.contains("Null"));
+            }
+        }
+    }
 }
 
 /// Regression for commit 7b7bfe8: holding PageDown at the end of the data once

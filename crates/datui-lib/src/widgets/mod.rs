@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod chart;
 pub mod chart_export_modal;
 pub mod controls;
+pub mod data_quality;
 pub mod datatable;
 pub mod debug;
 pub mod export;

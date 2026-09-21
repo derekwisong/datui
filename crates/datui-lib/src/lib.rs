@@ -2455,6 +2455,8 @@ pub mod tests {
         );
 
         // And the count it was waiting on then fails, with the user somewhere else.
+        // (Both halves of the fix are exercised: `abandon_load` clears the message on
+        // the way out, and the gate below keeps it off a view that is not the table.)
         let _ = app.handle(&AppEvent::BackgroundLenFailed {
             len_generation: waiting,
         });
@@ -2466,7 +2468,78 @@ pub mod tests {
         );
     }
 
-    /// An End waiting on a count whose frame is gone, whose count then fails, is retired    /// An End waiting on a count whose frame is gone, whose count then fails, is retired
+    /// And it does not reappear on the next dataset either.
+    ///
+    /// The message is deliberately *not* cleared on the way out: the End is still parked,
+    /// and coming back to the same table with Esc should still say so. What must not
+    /// happen is it greeting a different dataset — which it does not, because opening one
+    /// puts up its own line. This pins that, since nothing else would notice if the order
+    /// of those two ever changed.
+    #[test]
+    fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
+        use crate::{OpenOptions, widgets::datatable::DataTableState};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+
+        app.enter_home();
+
+        // And they open something else, which installs its own frame.
+        let rows = || df!("id" => &[1i64, 2, 3]).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let next = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(next, None, &OpenOptions::default(), None);
+        app.busy = false;
+
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Counting rows"),
+            "the new dataset's bar is not the old one's: {bar:?}"
+        );
+    }
+
+    /// The chart view's bar is the chart's, not a parked End's.
+    ///
+    /// `abandon_load` does not run here — the user has not left the dataset — so this is
+    /// the gate on its own: the message is still set, and the view it belongs to is not
+    /// the one on screen. Once the chart is ready `chart_preparing()` goes false, and
+    /// before the gate the bar read "Counting rows to find the end…" where the chart keys
+    /// belong.
+    #[test]
+    fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+
+        app.input_mode = crate::InputMode::Chart;
+        app.chart_modal.active = true;
+
+        let bar = control_bar(&mut app);
+        assert!(
+            app.status_message.is_some(),
+            "the End is still waiting, and the field still says so"
+        );
+        assert!(
+            !bar.contains("Counting rows"),
+            "but the chart's bar is the chart's: {bar:?}"
+        );
+    }
+
+    /// An End waiting on a count whose frame is gone, whose count then fails, is retired
     /// without saying anything.
     ///
     /// The frame it was counting has been replaced, so its failure says nothing about the
@@ -5408,8 +5481,9 @@ pub struct App {
     /// theirs asking for it: going home, abandoning a load. Keys held while busy carry
     /// the value they were typed under and are dropped if it has moved on.
     screen_generation: u64,
-    /// Set by the main loop when it had to drop a key typed while busy, shown beside
-    /// the status message until the held keys have been replayed.
+    /// Set by the main loop when it had to drop a key typed while busy, shown beside a
+    /// status message while work is running. Cleared once the held keys have been
+    /// replayed.
     input_dropped: bool,
     throbber_frame: u8, // Spinner frame index (0..3) for control bar
     /// Status text for the control bar, at the table view. Shown whether or not the app
@@ -7006,11 +7080,6 @@ impl App {
         if self.pending_download.take().is_some() {
             self.confirmation_modal.hide();
         }
-        // The status line goes whatever put it there. A parked End leaves `loading_state`
-        // idle and `busy` false, so the branch below does not reach it — and the message
-        // would otherwise outlive the dataset it is about, waiting for the next view that
-        // paints one.
-        self.status_message = None;
         // Only a load's own busy state is cleared. An export sets `busy` and owns
         // `loading_state` too, and it keeps running.
         if matches!(self.loading_state, LoadingState::Loading { .. }) {

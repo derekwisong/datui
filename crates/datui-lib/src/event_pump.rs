@@ -535,24 +535,72 @@ mod tests {
         drop(file);
 
         let mut p = pump();
+        p.send(AppEvent::Open(vec![path.clone()], OpenOptions::default()))
+            .unwrap();
+        settle(&mut p);
+        assert!(
+            p.app.data_table_state.is_some(),
+            "a dataset to owe a collect to"
+        );
+
+        // An errand waiting for the generation to come free. Without one the tail of
+        // `App::handle` has nothing to run, and the key below would prove nothing.
+        p.app.collect_owed = Some((p.app.dataset_generation, "Loading buffer...".to_string()));
+
+        // And the user opens something else, which after one drain is mid-handoff.
         p.send(AppEvent::Open(vec![path], OpenOptions::default()))
             .unwrap();
         assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
         assert!(!p.next_up.is_empty(), "mid-handoff");
-
         let held_at = p.app.task_generation();
+
         p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+
         assert_eq!(
             p.app.task_generation(),
             held_at,
-            "a key in the window did not bump the generation the open is waiting on"
+            "the owed collect did not go in on the back of a key handled in the window"
         );
-
-        settle(&mut p);
         assert!(
-            p.app.data_table_state.is_some(),
-            "and the open still finishes"
+            p.app.collect_owed.is_some(),
+            "it is still owed, waiting for the open in front of it"
         );
+    }
+
+    /// A deferred collect that turns out to have nothing to do still takes the loading
+    /// screen down.
+    ///
+    /// `DoLoadBuffer` clears `loading_state` itself when `spawn_async_collect` finds the
+    /// buffer already serves the view. Deferred — and the open's last step is now always
+    /// deferred, because the pump holds a lease for the whole of that handler — the
+    /// branch that runs instead is the retry's, which knew nothing about the loading
+    /// screen. It read "Loading buffer... 70%" with the app idle, for the rest of the
+    /// session.
+    #[test]
+    fn a_deferred_collect_with_nothing_to_do_takes_the_loading_screen_down() {
+        let (mut p, _dir) = loaded_pump();
+        // The buffer already holds every row, so the collect will find nothing to do.
+        p.app.collect_owed = Some((p.app.dataset_generation, "Loading buffer...".to_string()));
+        p.app.loading_state = crate::LoadingState::Loading {
+            file_path: None,
+            file_size: 0,
+            current_phase: "Loading buffer".to_string(),
+            progress_percent: 70,
+        };
+        p.app.busy = true;
+
+        p.send(AppEvent::Update).unwrap();
+        assert!(matches!(p.drain().unwrap(), Drained::Continue { .. }));
+
+        assert!(
+            p.app.collect_owed.is_none(),
+            "the errand is done either way"
+        );
+        assert!(
+            matches!(p.app.loading_state, crate::LoadingState::Idle),
+            "and the loading screen is down rather than stuck at 70%"
+        );
+        assert!(!p.app.is_busy(), "with the keyboard back");
     }
 
     /// The app hands a key it cannot act on back to the caller rather than dropping

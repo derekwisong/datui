@@ -4320,11 +4320,14 @@ pub enum AppEvent {
 /// channel.
 ///
 /// One worker, though, not one errand. An errand of several phases hands off through the
-/// event queue and holds no lease for an event at a time, which is why
-/// `work_a_bump_would_strand` asks about those separately. And a worker that never
-/// returns at all — a `hard` NFS mount, a wedged object-store read — never drops its
-/// lease; that thread already leaves `busy` set for the session, so the app is wedged
-/// with or without this, but the count does not rescue it.
+/// event queue and holds no lease for an event at a time, so two other things take one:
+/// [`crate::event_pump::EventPump`] while it holds a continuation it has not dispatched,
+/// and `pending_download` while the confirmation modal waits on the user. Between them
+/// the count covers a whole errand, which is what lets the predicate be only the count.
+///
+/// A worker that never returns at all — a `hard` NFS mount, a wedged object-store read —
+/// never drops its lease; that thread already leaves `busy` set for the session, so the
+/// app is wedged with or without this, but the count does not rescue it.
 struct GenerationLease {
     events: Sender<AppEvent>,
 }
@@ -5614,6 +5617,15 @@ impl App {
         if !self.spawn_async_collect(&status) {
             self.busy = false;
             self.status_message = None;
+            // The collect that was owed may have been the last step of an open, and
+            // `DoLoadBuffer` takes the loading screen down itself when there turns out
+            // to be nothing to collect. Deferred, that branch is not the one that runs,
+            // and the screen would read "Loading buffer... 70%" with the app idle for
+            // the rest of the session. Only a load's own state: an export owns
+            // `loading_state` too, and it is still going.
+            if matches!(self.loading_state, LoadingState::Loading { .. }) {
+                self.loading_state = LoadingState::Idle;
+            }
         }
     }
 
@@ -9115,9 +9127,10 @@ impl App {
                         }
                         #[cfg(any(feature = "http", feature = "cloud"))]
                         if let Some((pending, lease)) = self.pending_download.take() {
-                            // Handed on rather than held: the event returned below is a
-                            // continuation, and `EventPump` takes a lease for one of
-                            // those before this one is dropped.
+                            // Dropped rather than held: the event returned below is a
+                            // continuation, and the pump leases one of those. Dropping
+                            // first is safe because a release is a queued event rather
+                            // than a decrement — the count cannot dip between the two.
                             drop(lease);
                             self.confirmation_modal.hide();
                             if let LoadingState::Loading {

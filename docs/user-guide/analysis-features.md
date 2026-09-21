@@ -60,7 +60,8 @@ the active query, filters, and sort; the access plan reports its row count and
 read size as unknown until the run. A bounded prefix is selected before
 sampling, so sampling never reaches past its limit. The Time roles row opens an explicit mapping table; every role starts
 unassigned. Datui recognizes physical date and datetime types but never guesses
-their business meaning from column names.
+their business meaning from column names. With whole-source scope, the picker
+includes source time columns hidden by the current view.
 
 After a run, use <kbd>1</kbd>–<kbd>4</kbd> for Overview, Columns, Segments,
 and Trends. Results state eligible and evaluated rows and whether values are

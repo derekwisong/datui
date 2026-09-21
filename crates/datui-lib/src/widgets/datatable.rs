@@ -60,6 +60,7 @@ fn pivot_agg_expr(agg: PivotAggregation) -> Result<Expr> {
 pub struct DataTableState {
     pub lf: LazyFrame,
     original_lf: LazyFrame,
+    original_schema: Arc<Schema>,
     /// What the sidebar filters and sort are applied to: the active query's result (DSL,
     /// SQL or fuzzy), the last pivot/melt, or `original_lf` when there is none. The
     /// pipeline is original → query/reshape (`base_lf`) → filters → sort (`lf`) → column
@@ -563,6 +564,7 @@ impl DataTableState {
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
         Ok(Self {
             original_lf: lf.clone(),
+            original_schema: schema.clone(),
             base_lf: lf.clone(),
             lf,
             df: None,
@@ -671,6 +673,7 @@ impl DataTableState {
         };
         Ok(Self {
             original_lf: lf.clone(),
+            original_schema: schema.clone(),
             base_lf: lf.clone(),
             lf,
             df: None,
@@ -752,6 +755,7 @@ impl DataTableState {
         self.original_lf = lf.clone();
         self.base_lf = lf.clone();
         self.schema = lf.clone().collect_schema()?;
+        self.original_schema = self.schema.clone();
         self.lf = lf.clone();
         Ok(())
     }
@@ -3714,6 +3718,24 @@ impl DataTableState {
         (self.original_lf.clone(), source)
     }
 
+    pub(crate) fn quality_temporal_columns(
+        &self,
+        scope: crate::data_quality::QualityScope,
+    ) -> Vec<String> {
+        let schema = if scope == crate::data_quality::QualityScope::WholeSource {
+            &self.original_schema
+        } else {
+            &self.schema
+        };
+        schema
+            .iter()
+            .filter(|(name, dtype)| {
+                name.as_str() != crate::schema_union::DRIFT_COLUMN && dtype.is_temporal()
+            })
+            .map(|(name, _)| name.to_string())
+            .collect()
+    }
+
     /// Build a temporary filtered table without changing the current pipeline. The
     /// caller keeps this state to restore its query, filters, sort, and buffer.
     pub(crate) fn quality_evidence_view(
@@ -3737,8 +3759,7 @@ impl DataTableState {
             }
             crate::data_quality::QualityScope::WholeSource => {
                 let lf = self.query_source();
-                let schema = lf.clone().collect_schema()?;
-                (lf, schema)
+                (lf, self.original_schema.clone())
             }
             crate::data_quality::QualityScope::FirstRows(rows) => {
                 (self.visible_lf().slice(0, rows as u32), self.schema.clone())
@@ -4364,6 +4385,7 @@ impl DataTableState {
         self.column_order
             .retain(|name| dataset.schema.contains(name.as_str()));
         self.schema = dataset.schema.clone();
+        self.original_schema = self.schema.clone();
         // The scan is built at a schema, and the one this dataset opened with has never
         // heard of the columns that just arrived. Left in place, the first windowed
         // page read asks it for a column it does not have and the table stops showing
@@ -4738,6 +4760,7 @@ impl DataTableState {
         // `text_schema` keeps the columns in their places, so the order the user
         // arranged still names every one of them and still means what it did.
         self.schema = view.schema.clone();
+        self.original_schema = self.schema.clone();
         self.drift_groups = Arc::new(view.groups.clone());
         self.groups_at_open = self.drift_groups.clone();
         self.notes = Self::notes_datui_can_act_on(&view, self.drift_column_present);
@@ -10306,6 +10329,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bounded.visible_lf().collect().unwrap().height(), 0);
+    }
+
+    #[test]
+    fn source_time_roles_can_use_columns_hidden_by_current_query() {
+        let lf = df!("a" => &[1i32, 2], "event" => &[20_000i32, 20_001])
+            .unwrap()
+            .lazy()
+            .with_columns([col("event").cast(DataType::Date)]);
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.query("select a".to_string());
+        assert!(
+            state
+                .quality_temporal_columns(crate::data_quality::QualityScope::CurrentView)
+                .is_empty()
+        );
+        assert_eq!(
+            state.quality_temporal_columns(crate::data_quality::QualityScope::WholeSource),
+            vec!["event"]
+        );
     }
 
     #[test]

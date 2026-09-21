@@ -9981,12 +9981,9 @@ impl App {
                                 .data_table_state
                                 .as_ref()
                                 .map(|state| {
-                                    state
-                                        .schema
-                                        .iter()
-                                        .filter(|(_, dtype)| dtype.is_temporal())
-                                        .map(|(name, _)| name.to_string())
-                                        .collect::<Vec<_>>()
+                                    state.quality_temporal_columns(
+                                        self.analysis_modal.data_quality_plan.scope,
+                                    )
                                 })
                                 .unwrap_or_default();
                             self.analysis_modal.cycle_quality_time_role(
@@ -10012,12 +10009,9 @@ impl App {
                                 .data_table_state
                                 .as_ref()
                                 .map(|state| {
-                                    state
-                                        .schema
-                                        .iter()
-                                        .filter(|(_, dtype)| dtype.is_temporal())
-                                        .map(|(name, _)| name.to_string())
-                                        .collect::<Vec<_>>()
+                                    state.quality_temporal_columns(
+                                        self.analysis_modal.data_quality_plan.scope,
+                                    )
                                 })
                                 .unwrap_or_default();
                             self.analysis_modal.cycle_quality_time_role(

@@ -628,6 +628,16 @@ mod tests {
              checked; saw {breaks}"
         );
         assert!(out.exists(), "and the file was written, which is the point");
+
+        // A lease is released through the channel, so the last one can still be in
+        // flight when the loop above runs out of work to do — `busy` is cleared by the
+        // handler that consumed the result, one event ahead of the release behind it.
+        for _ in 0..200 {
+            if !p.app.work_a_bump_would_strand() {
+                break;
+            }
+            let _ = p.wait_and_drain(Duration::from_millis(50));
+        }
         assert!(
             !p.app.work_a_bump_would_strand(),
             "with the generation free once it is done"

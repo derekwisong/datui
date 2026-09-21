@@ -3,6 +3,7 @@ use crate::data_quality::{
     QualityMetric, QualityPage, QualityScope, TemporalRole, TemporalRoleAssignment,
 };
 use crate::statistics::{AnalysisResults, DistributionType};
+use crate::widgets::text_input::TextInput;
 use ratatui::widgets::TableState;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +75,9 @@ pub struct AnalysisModal {
     pub data_quality_table_state: TableState,
     pub data_quality_editing: bool,
     pub data_quality_plan_field: usize,
+    pub data_quality_scope_input: TextInput,
+    pub data_quality_scope_error: Option<String>,
+    pub data_quality_scope_file_offset: usize,
     pub data_quality_show_access: bool,
     pub data_quality_observation_detail: bool,
     pub data_quality_confirm_run: bool,
@@ -123,6 +127,9 @@ impl AnalysisModal {
         self.data_quality_table_state.select(Some(0));
         self.data_quality_editing = false;
         self.data_quality_plan_field = 0;
+        self.data_quality_scope_input = TextInput::new();
+        self.data_quality_scope_error = None;
+        self.data_quality_scope_file_offset = 0;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
         self.data_quality_confirm_run = false;
@@ -158,6 +165,9 @@ impl AnalysisModal {
         self.data_quality_results = None;
         self.data_quality_page = QualityPage::Plan;
         self.data_quality_editing = false;
+        self.data_quality_scope_input = TextInput::new();
+        self.data_quality_scope_error = None;
+        self.data_quality_scope_file_offset = 0;
         self.data_quality_show_access = false;
         self.data_quality_observation_detail = false;
         self.data_quality_confirm_run = false;
@@ -318,6 +328,7 @@ impl AnalysisModal {
         };
         match self.data_quality_page {
             QualityPage::Plan => 6,
+            QualityPage::Scope => 0,
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
             QualityPage::Overview => results.observations.len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
@@ -361,14 +372,14 @@ impl AnalysisModal {
                 ];
                 let current = choices
                     .iter()
-                    .position(|choice| *choice == self.data_quality_plan.scope)
+                    .position(|choice| choice == &self.data_quality_plan.scope)
                     .unwrap_or(0);
                 let next = if forward {
                     (current + 1) % choices.len()
                 } else {
                     (current + choices.len() - 1) % choices.len()
                 };
-                self.data_quality_plan.scope = choices[next];
+                self.data_quality_plan.scope = choices[next].clone();
                 self.data_quality_plan.baseline_segment = None;
             }
             1 => {

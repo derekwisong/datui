@@ -3718,11 +3718,27 @@ impl DataTableState {
         (self.original_lf.clone(), source)
     }
 
+    pub(crate) fn quality_source_file_count(&self) -> usize {
+        if self.drift_files.len() == self.drift_file_starts.len() {
+            self.drift_files.len()
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn quality_source_file_names(&self) -> &[String] {
+        if self.quality_source_file_count() > 0 {
+            &self.drift_files
+        } else {
+            &[]
+        }
+    }
+
     pub(crate) fn quality_temporal_columns(
         &self,
-        scope: crate::data_quality::QualityScope,
+        scope: &crate::data_quality::QualityScope,
     ) -> Vec<String> {
-        let schema = if scope == crate::data_quality::QualityScope::WholeSource {
+        let schema = if scope.uses_source() {
             &self.original_schema
         } else {
             &self.schema
@@ -3740,7 +3756,7 @@ impl DataTableState {
     /// caller keeps this state to restore its query, filters, sort, and buffer.
     pub(crate) fn quality_evidence_view(
         &self,
-        scope: crate::data_quality::QualityScope,
+        scope: &crate::data_quality::QualityScope,
         predicate: Expr,
     ) -> Result<Self> {
         let options = crate::OpenOptions {
@@ -3753,17 +3769,30 @@ impl DataTableState {
             polars_streaming: self.polars_streaming,
             ..crate::OpenOptions::default()
         };
-        let (lf, schema) = match scope {
-            crate::data_quality::QualityScope::CurrentView => {
-                (self.visible_lf(), self.schema.clone())
-            }
-            crate::data_quality::QualityScope::WholeSource => {
-                let lf = self.query_source();
-                (lf, self.original_schema.clone())
-            }
-            crate::data_quality::QualityScope::FirstRows(rows) => {
-                (self.visible_lf().slice(0, rows as u32), self.schema.clone())
-            }
+        let (lf, schema) = if scope.uses_source() {
+            let mut lf = self.query_source();
+            let source = if matches!(scope, crate::data_quality::QualityScope::SourceFiles(_)) {
+                lf = lf.with_row_index("__datui_quality_row", None);
+                Some(crate::data_quality::QualitySourceContext {
+                    file_names: self.drift_files.clone(),
+                    file_starts: self.drift_file_starts.clone(),
+                    row_index_column: "__datui_quality_row".to_string(),
+                })
+            } else {
+                None
+            };
+            let lf = crate::data_quality::apply_quality_scope(lf, scope, source.as_ref())?;
+            let lf = if source.is_some() {
+                lf.drop(by_name(["__datui_quality_row"], false, false))
+            } else {
+                lf
+            };
+            (lf, self.original_schema.clone())
+        } else {
+            (
+                crate::data_quality::apply_quality_scope(self.visible_lf(), scope, None)?,
+                self.schema.clone(),
+            )
         };
         let mut view = Self::from_schema_and_lazyframe(
             schema,
@@ -3771,7 +3800,7 @@ impl DataTableState {
             &options,
             self.partition_columns.clone(),
         )?;
-        if scope != crate::data_quality::QualityScope::WholeSource {
+        if !scope.uses_source() {
             view.column_order = self.column_order.clone();
             view.locked_columns_count = self.locked_columns_count;
         }
@@ -10307,6 +10336,8 @@ mod tests {
     fn quality_source_scope_ignores_current_query_and_evidence_matches_scope() {
         let lf = df!("a" => &[1i32, 2, 3, 4]).unwrap().lazy();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.drift_files = vec!["first.parquet".into(), "second.parquet".into()];
+        state.drift_file_starts = vec![0, 2];
         state.query("select a where a > 2".to_string());
         let (current, _) = state.data_quality_scan();
         let (source, context) = state.data_quality_source_scan();
@@ -10314,21 +10345,45 @@ mod tests {
             crate::data_quality::prepare_source_quality_scan(source, context.as_ref()).unwrap();
         assert_eq!(current.collect().unwrap().height(), 2);
         assert_eq!(source.collect().unwrap().height(), 4);
+        assert_eq!(state.quality_source_file_count(), 2);
+        let (raw, mapping) = state.data_quality_source_scan();
+        let indexed =
+            crate::data_quality::prepare_source_quality_scan(raw, mapping.as_ref()).unwrap();
+        let first_file = crate::data_quality::apply_quality_scope(
+            indexed,
+            &crate::data_quality::QualityScope::SourceFiles(vec![1]),
+            mapping.as_ref(),
+        )
+        .unwrap()
+        .collect()
+        .unwrap();
+        assert_eq!(first_file.height(), 2);
+        assert_eq!(
+            first_file.column("a").unwrap().i32().unwrap().get(0),
+            Some(1)
+        );
 
         let evidence = state
             .quality_evidence_view(
-                crate::data_quality::QualityScope::WholeSource,
+                &crate::data_quality::QualityScope::WholeSource,
                 col("a").eq(lit(1)),
             )
             .unwrap();
         assert_eq!(evidence.visible_lf().collect().unwrap().height(), 1);
         let bounded = state
             .quality_evidence_view(
-                crate::data_quality::QualityScope::FirstRows(1),
+                &crate::data_quality::QualityScope::FirstRows(1),
                 col("a").eq(lit(4)),
             )
             .unwrap();
         assert_eq!(bounded.visible_lf().collect().unwrap().height(), 0);
+        let file_evidence = state
+            .quality_evidence_view(
+                &crate::data_quality::QualityScope::SourceFiles(vec![1]),
+                col("a").eq(lit(1)),
+            )
+            .unwrap();
+        assert_eq!(file_evidence.visible_lf().collect().unwrap().height(), 1);
     }
 
     #[test]
@@ -10341,11 +10396,11 @@ mod tests {
         state.query("select a".to_string());
         assert!(
             state
-                .quality_temporal_columns(crate::data_quality::QualityScope::CurrentView)
+                .quality_temporal_columns(&crate::data_quality::QualityScope::CurrentView)
                 .is_empty()
         );
         assert_eq!(
-            state.quality_temporal_columns(crate::data_quality::QualityScope::WholeSource),
+            state.quality_temporal_columns(&crate::data_quality::QualityScope::WholeSource),
             vec!["event"]
         );
     }

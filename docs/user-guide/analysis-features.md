@@ -39,28 +39,37 @@ statistics of both columns.
 
 ## Data quality
 
-Choose **Data Quality** to profile the current view, loaded source, or a bounded
-prefix of the current view. The first screen is an
-inert plan: no values are read until you press <kbd>Enter</kbd>. It shows the
+Choose **Data Quality** to profile selected rows at several scales. The first
+screen is an inert plan: no values are read until you press <kbd>Enter</kbd>. It shows the
 scope, profile grain, compute mode, comparison, estimated rows and transfer
 direction. Press <kbd>p</kbd> for the estimate basis. A full value scan asks for
 confirmation.
 
 | Setting | Choices |
 |---|---|
-| Scope | Current view, whole loaded source, first 10,000 view rows, or first 1,000,000 view rows |
+| Scope | Current view, whole loaded source, a view row range, selected source files, one source partition value, or a source time range |
 | Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or weekly windows on an assigned time role |
 | Compute | Metadata only, a seeded sample from a bounded prefix, or full scan |
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 
 Press <kbd>e</kbd> to edit a copy of the plan. <kbd>Esc</kbd> discards edits.
-Use Left/Right on Scope to change which rows are eligible. Whole source ignores
-the active query, filters, and sort; the access plan reports its row count and
-read size as unknown until the run. A bounded prefix is selected before
-sampling, so sampling never reaches past its limit. The Time roles row opens an explicit mapping table; every role starts
+Use Left/Right on Scope for presets, or <kbd>Enter</kbd> on Scope for a precise
+selection:
+
+| Scope entry | Meaning |
+|---|---|
+| `view` / `source` | Current table pipeline / loaded source, ignoring the active query, filters, and sort |
+| `rows 100..200` | Inclusive 1-based row range in the current view order |
+| `files 1,3` | Source files by the numbered inventory on the Scope page; PageUp/PageDown scrolls it |
+| `partition region=west` | Rows with that source-column value; `∅` selects null |
+| `time event=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 timestamp interval; end is exclusive and date-only bounds mean UTC midnight |
+
+Source-scoped plans report unknown row counts and read sizes until the run.
+The selected scope is applied before sampling, so sampling never reaches beyond
+its bounds. The Time roles row opens an explicit mapping table; every role starts
 unassigned. Datui recognizes physical date and datetime types but never guesses
-their business meaning from column names. With whole-source scope, the picker
+their business meaning from column names. With a source scope, the picker
 includes source time columns hidden by the current view.
 
 After a run, use <kbd>1</kbd>–<kbd>4</kbd> for Overview, Columns, Segments,
@@ -88,9 +97,9 @@ comparison deltas update from the measured profiles without another data read.
 Sampling is a compute choice, not a grain. It selects rows without replacement
 from at most the first 50,000 eligible rows in the selected scope; it is not a random sample of the
 entire dataset. Segment totals outside dataset grain are unknown in a sampled
-run, and displayed as such. File mapping is available only while
-the current view still preserves source-row provenance; otherwise the Segments
-screen says that it is unavailable. Row chunks use the current view's physical
+run, and displayed as such. File mapping is available on source scopes and
+on current views that preserve source-row provenance; otherwise the Segments
+screen says that it is unavailable. Row chunks use the selected scope's physical
 order, and sampled rows keep their original chunk labels. Remote sources are
 read-only and the access plan always reports zero remote writes.
 

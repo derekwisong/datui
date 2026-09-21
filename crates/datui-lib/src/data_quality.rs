@@ -9,22 +9,168 @@ const DEFAULT_SAMPLE_ROWS: usize = 10_000;
 const DEFAULT_CHUNK_ROWS: usize = 1_000_000;
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum QualityScope {
     #[default]
     CurrentView,
     WholeSource,
     FirstRows(usize),
+    ViewRows {
+        start: usize,
+        end: usize,
+    },
+    SourceFiles(Vec<usize>),
+    SourcePartition {
+        column: String,
+        value: String,
+    },
+    SourceTimeRange {
+        column: String,
+        start: String,
+        end: String,
+    },
 }
 
 impl QualityScope {
-    pub fn label(self) -> String {
+    pub fn label(&self) -> String {
         match self {
             Self::CurrentView => "current view".to_string(),
             Self::WholeSource => "whole source".to_string(),
             Self::FirstRows(rows) => format!("first {rows} view rows"),
+            Self::ViewRows { start, end } => format!("view rows {start}..{end}"),
+            Self::SourceFiles(indices) => format!(
+                "source files {}",
+                indices
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Self::SourcePartition { column, value } => format!("source {column}={value}"),
+            Self::SourceTimeRange { column, start, end } => {
+                format!("source {column} {start}..{end}")
+            }
         }
     }
+
+    pub fn uses_source(&self) -> bool {
+        matches!(
+            self,
+            Self::WholeSource
+                | Self::SourceFiles(_)
+                | Self::SourcePartition { .. }
+                | Self::SourceTimeRange { .. }
+        )
+    }
+
+    pub fn command(&self) -> String {
+        match self {
+            Self::CurrentView => "view".to_string(),
+            Self::WholeSource => "source".to_string(),
+            Self::FirstRows(rows) => format!("rows 1..{rows}"),
+            Self::ViewRows { start, end } => format!("rows {start}..{end}"),
+            Self::SourceFiles(indices) => format!(
+                "files {}",
+                indices
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Self::SourcePartition { column, value } => format!("partition {column}={value}"),
+            Self::SourceTimeRange { column, start, end } => format!("time {column}={start}..{end}"),
+        }
+    }
+
+    pub fn parse_command(text: &str) -> Result<Self> {
+        let value = text.trim();
+        if value == "view" {
+            return Ok(Self::CurrentView);
+        }
+        if value == "source" {
+            return Ok(Self::WholeSource);
+        }
+        if let Some(range) = value.strip_prefix("rows ") {
+            let (start, end) = range
+                .split_once("..")
+                .ok_or_else(|| color_eyre::eyre::eyre!("use rows START..END"))?;
+            let start = start.parse::<usize>()?;
+            let end = end.parse::<usize>()?;
+            if start == 0 || end < start {
+                return Err(color_eyre::eyre::eyre!(
+                    "row range must be 1-based with END >= START"
+                ));
+            }
+            return Ok(Self::ViewRows { start, end });
+        }
+        if let Some(files) = value.strip_prefix("files ") {
+            let indices = files
+                .split(',')
+                .map(|part| part.trim().parse::<usize>())
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            if indices.is_empty() || indices.contains(&0) {
+                return Err(color_eyre::eyre::eyre!(
+                    "use 1-based file numbers, for example files 1,3"
+                ));
+            }
+            let mut indices = indices;
+            indices.sort_unstable();
+            indices.dedup();
+            return Ok(Self::SourceFiles(indices));
+        }
+        if let Some(partition) = value.strip_prefix("partition ") {
+            let (column, value) = partition
+                .split_once('=')
+                .ok_or_else(|| color_eyre::eyre::eyre!("use partition COLUMN=VALUE"))?;
+            if column.trim().is_empty() || value.trim().is_empty() {
+                return Err(color_eyre::eyre::eyre!(
+                    "partition column and value are required"
+                ));
+            }
+            return Ok(Self::SourcePartition {
+                column: column.trim().to_string(),
+                value: value.trim().to_string(),
+            });
+        }
+        if let Some(time) = value.strip_prefix("time ") {
+            let (column, range) = time
+                .split_once('=')
+                .ok_or_else(|| color_eyre::eyre::eyre!("use time COLUMN=START..END"))?;
+            let (start, end) = range
+                .split_once("..")
+                .ok_or_else(|| color_eyre::eyre::eyre!("use time COLUMN=START..END"))?;
+            let (start, end) = (start.trim(), end.trim());
+            if column.trim().is_empty()
+                || parse_scope_time(start).is_none()
+                || parse_scope_time(end).is_none()
+                || parse_scope_time(end) <= parse_scope_time(start)
+            {
+                return Err(color_eyre::eyre::eyre!(
+                    "time range needs a column and increasing ISO dates or UTC timestamps"
+                ));
+            }
+            return Ok(Self::SourceTimeRange {
+                column: column.trim().to_string(),
+                start: start.to_string(),
+                end: end.to_string(),
+            });
+        }
+        Err(color_eyre::eyre::eyre!(
+            "use view, source, rows, files, partition, or time"
+        ))
+    }
+}
+
+fn parse_scope_time(text: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|value| value.timestamp_micros())
+        .or_else(|| {
+            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                .ok()
+                .and_then(|value| value.and_hms_opt(0, 0, 0))
+                .map(|value| value.and_utc().timestamp_micros())
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -67,10 +213,97 @@ pub fn prepare_source_quality_scan(
     )
 }
 
+pub fn apply_quality_scope(
+    lf: LazyFrame,
+    scope: &QualityScope,
+    source: Option<&QualitySourceContext>,
+) -> Result<LazyFrame> {
+    match scope {
+        QualityScope::CurrentView | QualityScope::WholeSource => Ok(lf),
+        QualityScope::FirstRows(rows) => Ok(lf.slice(0, (*rows).min(u32::MAX as usize) as u32)),
+        QualityScope::ViewRows { start, end } => {
+            if *start == 0 || end < start {
+                return Err(color_eyre::eyre::eyre!("invalid 1-based view row range"));
+            }
+            let offset = i64::try_from(start - 1)?;
+            let length = end
+                .saturating_sub(*start)
+                .saturating_add(1)
+                .min(u32::MAX as usize) as u32;
+            Ok(lf.slice(offset, length))
+        }
+        QualityScope::SourceFiles(indices) => {
+            let source = source
+                .ok_or_else(|| color_eyre::eyre::eyre!("source-file positions are unavailable"))?;
+            let mut predicate: Option<Expr> = None;
+            for index in indices {
+                let file = index
+                    .checked_sub(1)
+                    .ok_or_else(|| color_eyre::eyre::eyre!("source file numbers start at 1"))?;
+                let start = *source.file_starts.get(file).ok_or_else(|| {
+                    color_eyre::eyre::eyre!("source file #{index} is unavailable")
+                })?;
+                let start = u32::try_from(start)?;
+                let mut range = col(&source.row_index_column).gt_eq(lit(start));
+                if let Some(end) = source.file_starts.get(*index) {
+                    range = range.and(col(&source.row_index_column).lt(lit(u32::try_from(*end)?)));
+                }
+                predicate = Some(match predicate {
+                    Some(previous) => previous.or(range),
+                    None => range,
+                });
+            }
+            Ok(lf.filter(
+                predicate.ok_or_else(|| color_eyre::eyre::eyre!("select at least one file"))?,
+            ))
+        }
+        QualityScope::SourcePartition { column, value } => {
+            let schema = lf.clone().collect_schema()?;
+            if !schema.contains(column.as_str()) {
+                return Err(color_eyre::eyre::eyre!(
+                    "partition column {column:?} is unavailable"
+                ));
+            }
+            let predicate = if value == "∅" {
+                col(column).is_null()
+            } else {
+                col(column).cast(DataType::String).eq(lit(value.clone()))
+            };
+            Ok(lf.filter(predicate))
+        }
+        QualityScope::SourceTimeRange { column, start, end } => {
+            let schema = lf.clone().collect_schema()?;
+            let dtype = schema
+                .get(column.as_str())
+                .ok_or_else(|| color_eyre::eyre::eyre!("time column {column:?} is unavailable"))?;
+            if !matches!(dtype, DataType::Date | DataType::Datetime(..)) {
+                return Err(color_eyre::eyre::eyre!(
+                    "{column:?} is not a date or datetime column"
+                ));
+            }
+            let start = parse_scope_time(start)
+                .ok_or_else(|| color_eyre::eyre::eyre!("invalid start time"))?;
+            let end =
+                parse_scope_time(end).ok_or_else(|| color_eyre::eyre::eyre!("invalid end time"))?;
+            if end <= start {
+                return Err(color_eyre::eyre::eyre!("time end must be after start"));
+            }
+            let value = col(column).cast(DataType::Datetime(TimeUnit::Microseconds, None));
+            Ok(lf.filter(
+                value
+                    .clone()
+                    .gt_eq(lit(start).cast(DataType::Datetime(TimeUnit::Microseconds, None)))
+                    .and(value.lt(lit(end).cast(DataType::Datetime(TimeUnit::Microseconds, None)))),
+            ))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QualityPage {
     #[default]
     Plan,
+    Scope,
     Overview,
     Columns,
     Segments,
@@ -2197,6 +2430,116 @@ mod tests {
             collected.column("blob").unwrap().str().unwrap().get(0),
             Some(crate::widgets::datatable::BINARY_STUB)
         );
+    }
+
+    #[test]
+    fn scope_commands_round_trip_and_reject_invalid_ranges() {
+        for command in [
+            "view",
+            "source",
+            "rows 2..9",
+            "files 1,3",
+            "partition region=west",
+            "time event=2024-01-01..2024-02-01",
+        ] {
+            let scope = QualityScope::parse_command(command).unwrap();
+            assert_eq!(
+                QualityScope::parse_command(&scope.command()).unwrap(),
+                scope
+            );
+        }
+        assert!(QualityScope::parse_command("rows 0..10").is_err());
+        assert!(QualityScope::parse_command("rows 10..2").is_err());
+        assert!(QualityScope::parse_command("files 0").is_err());
+        assert!(QualityScope::parse_command("time event=2024-03-01..2024-01-01").is_err());
+    }
+
+    #[test]
+    fn scoped_frames_select_exact_view_source_file_partition_and_time_rows() {
+        let frame = df!(
+            "id" => &[1i32, 2, 3, 4, 5],
+            "region" => &["west", "east", "west", "east", "west"],
+            "day" => &[0i32, 1, 2, 3, 4],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([col("day").cast(DataType::Date)]);
+        let ids = |scope: QualityScope, frame: LazyFrame, source: Option<&QualitySourceContext>| {
+            let df = apply_quality_scope(frame, &scope, source)
+                .unwrap()
+                .collect()
+                .unwrap();
+            df.column("id")
+                .unwrap()
+                .i32()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(
+                QualityScope::ViewRows { start: 2, end: 4 },
+                frame.clone(),
+                None
+            ),
+            vec![2, 3, 4]
+        );
+        let source = QualitySourceContext {
+            file_names: vec!["one".into(), "two".into(), "three".into()],
+            file_starts: vec![0, 2, 4],
+            row_index_column: "__row".into(),
+        };
+        assert_eq!(
+            ids(
+                QualityScope::SourceFiles(vec![1, 3]),
+                frame.clone().with_row_index("__row", None),
+                Some(&source)
+            ),
+            vec![1, 2, 5]
+        );
+        assert_eq!(
+            ids(
+                QualityScope::SourcePartition {
+                    column: "region".into(),
+                    value: "west".into()
+                },
+                frame.clone(),
+                None
+            ),
+            vec![1, 3, 5]
+        );
+        assert_eq!(
+            ids(
+                QualityScope::SourceTimeRange {
+                    column: "day".into(),
+                    start: "1970-01-02".into(),
+                    end: "1970-01-04".into()
+                },
+                frame,
+                None
+            ),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn time_scope_accepts_timezone_aware_datetime_bounds() {
+        let frame = df!("id" => &[1i32, 2, 3], "ts" => &[0i64, 1_000_000, 2_000_000])
+            .unwrap()
+            .lazy()
+            .with_columns([col("ts").cast(DataType::Datetime(
+                TimeUnit::Microseconds,
+                Some(TimeZone::UTC),
+            ))]);
+        let scope =
+            QualityScope::parse_command("time ts=1970-01-01T01:00:01+01:00..1970-01-01T00:00:02Z")
+                .unwrap();
+        let result = apply_quality_scope(frame, &scope, None)
+            .unwrap()
+            .collect()
+            .unwrap();
+        assert_eq!(result.column("id").unwrap().i32().unwrap().get(0), Some(2));
+        assert_eq!(result.height(), 1);
     }
 
     #[test]

@@ -4329,8 +4329,8 @@ impl App {
             .analysis_modal
             .data_quality_last_plan
             .as_ref()
-            .map(|plan| plan.scope)
-            .unwrap_or(self.analysis_modal.data_quality_plan.scope);
+            .map(|plan| &plan.scope)
+            .unwrap_or(&self.analysis_modal.data_quality_plan.scope);
         let view = match state.quality_evidence_view(scope, predicate) {
             Ok(view) => view,
             Err(error) => {
@@ -4379,6 +4379,17 @@ impl App {
                 && entry.view_generation == view_generation
         }) {
             self.analysis_modal.data_quality_plan = cached.plan.clone();
+        }
+    }
+
+    fn clear_quality_result_if_plan_changed(&mut self) {
+        if self.analysis_modal.data_quality_results.is_some()
+            && self.analysis_modal.data_quality_last_plan.as_ref()
+                != Some(&self.analysis_modal.data_quality_plan)
+        {
+            self.analysis_modal.data_quality_results = None;
+            self.analysis_modal.data_quality_last_plan = None;
+            self.analysis_modal.data_quality_from_cache = false;
         }
     }
 
@@ -9702,6 +9713,87 @@ impl App {
                     return None;
                 }
 
+                if self.analysis_modal.data_quality_page == QualityPage::Scope
+                    && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
+                {
+                    match event.code {
+                        KeyCode::Esc => {
+                            self.analysis_modal.set_quality_page(QualityPage::Plan);
+                            self.analysis_modal.data_quality_plan_field = 0;
+                        }
+                        KeyCode::Enter => {
+                            let input = self.analysis_modal.data_quality_scope_input.value();
+                            match data_quality::QualityScope::parse_command(input) {
+                                Ok(scope) => {
+                                    let file_count = self
+                                        .data_table_state
+                                        .as_ref()
+                                        .map(|state| state.quality_source_file_count())
+                                        .unwrap_or(0);
+                                    if let data_quality::QualityScope::SourceFiles(indices) = &scope
+                                        && indices.iter().any(|index| *index > file_count)
+                                    {
+                                        self.analysis_modal.data_quality_scope_error = Some(
+                                            format!(
+                                                "File number exceeds source inventory ({file_count})"
+                                            ),
+                                        );
+                                        return None;
+                                    }
+                                    self.analysis_modal.data_quality_plan.scope = scope;
+                                    self.analysis_modal.data_quality_plan.baseline_segment = None;
+                                    self.analysis_modal.data_quality_scope_error = None;
+                                    self.analysis_modal.set_quality_page(QualityPage::Plan);
+                                    self.analysis_modal.data_quality_editing = false;
+                                    self.analysis_modal.data_quality_plan_before_edit = None;
+                                    self.analysis_modal.data_quality_plan_field = 0;
+                                    self.clear_quality_result_if_plan_changed();
+                                }
+                                Err(error) => {
+                                    self.analysis_modal.data_quality_scope_error =
+                                        Some(error.to_string());
+                                }
+                            }
+                        }
+                        KeyCode::PageDown => {
+                            let count = self
+                                .data_table_state
+                                .as_ref()
+                                .map(|state| state.quality_source_file_count())
+                                .unwrap_or(0);
+                            self.analysis_modal.data_quality_scope_file_offset = self
+                                .analysis_modal
+                                .data_quality_scope_file_offset
+                                .saturating_add(8)
+                                .min(count.saturating_sub(1));
+                        }
+                        KeyCode::PageUp => {
+                            self.analysis_modal.data_quality_scope_file_offset = self
+                                .analysis_modal
+                                .data_quality_scope_file_offset
+                                .saturating_sub(8);
+                        }
+                        _ => {
+                            let _ = self
+                                .analysis_modal
+                                .data_quality_scope_input
+                                .handle_key(event, None);
+                            self.analysis_modal.data_quality_scope_error = None;
+                        }
+                    }
+                    return None;
+                }
+
+                if self.analysis_modal.data_quality_editing
+                    && matches!(
+                        event.code,
+                        KeyCode::Char('e' | '1' | '2' | '3' | '4' | 'r' | 'b' | 'm' | '[' | ']')
+                            | KeyCode::Tab
+                    )
+                {
+                    return None;
+                }
+
                 match event.code {
                     KeyCode::Esc if self.analysis_modal.computing.is_some() => {
                         self.task_generation = self.task_generation.wrapping_add(1);
@@ -9886,6 +9978,22 @@ impl App {
                             self.analysis_modal.data_quality_editing = false;
                             self.analysis_modal.data_quality_plan_field = 4;
                             self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.clear_quality_result_if_plan_changed();
+                        } else if self.analysis_modal.data_quality_editing
+                            && self.analysis_modal.data_quality_plan_field == 0
+                        {
+                            self.analysis_modal.data_quality_scope_input =
+                                crate::widgets::text_input::TextInput::new()
+                                    .with_theme(&self.theme);
+                            self.analysis_modal
+                                .data_quality_scope_input
+                                .set_value(self.analysis_modal.data_quality_plan.scope.command());
+                            self.analysis_modal
+                                .data_quality_scope_input
+                                .set_focused(true);
+                            self.analysis_modal.data_quality_scope_error = None;
+                            self.analysis_modal.data_quality_scope_file_offset = 0;
+                            self.analysis_modal.set_quality_page(QualityPage::Scope);
                         } else if self.analysis_modal.data_quality_editing
                             && self.analysis_modal.data_quality_plan_field == 4
                         {
@@ -9895,6 +10003,7 @@ impl App {
                         } else if self.analysis_modal.data_quality_editing {
                             self.analysis_modal.data_quality_editing = false;
                             self.analysis_modal.data_quality_plan_before_edit = None;
+                            self.clear_quality_result_if_plan_changed();
                         } else if self.analysis_modal.data_quality_page == QualityPage::Plan {
                             if self.analysis_modal.data_quality_results.is_some()
                                 && self.analysis_modal.data_quality_last_plan.as_ref()
@@ -9982,7 +10091,7 @@ impl App {
                                 .as_ref()
                                 .map(|state| {
                                     state.quality_temporal_columns(
-                                        self.analysis_modal.data_quality_plan.scope,
+                                        &self.analysis_modal.data_quality_plan.scope,
                                     )
                                 })
                                 .unwrap_or_default();
@@ -10010,7 +10119,7 @@ impl App {
                                 .as_ref()
                                 .map(|state| {
                                     state.quality_temporal_columns(
-                                        self.analysis_modal.data_quality_plan.scope,
+                                        &self.analysis_modal.data_quality_plan.scope,
                                     )
                                 })
                                 .unwrap_or_default();
@@ -13233,27 +13342,25 @@ impl App {
             AppEvent::AnalysisDataQualityCompute => {
                 if let Some(state) = &self.data_table_state {
                     let plan = self.analysis_modal.data_quality_plan.clone();
-                    let (lf, source, cached_rows) = match plan.scope {
-                        data_quality::QualityScope::CurrentView => {
-                            let (lf, source) = state.data_quality_scan();
-                            (lf, source, state.num_rows_if_valid())
-                        }
-                        data_quality::QualityScope::WholeSource => {
-                            let (lf, source) = state.data_quality_source_scan();
-                            (lf, source, None)
-                        }
-                        data_quality::QualityScope::FirstRows(rows) => {
-                            let (lf, source) = state.data_quality_scan();
-                            (
-                                lf.slice(0, rows as u32),
-                                source,
-                                state.num_rows_if_valid().map(|n| n.min(rows)),
-                            )
-                        }
+                    let source_scope = plan.scope.uses_source();
+                    let (lf, source, cached_rows) = if source_scope {
+                        let (lf, source) = state.data_quality_source_scan();
+                        (lf, source, None)
+                    } else {
+                        let (lf, source) = state.data_quality_scan();
+                        let rows = state.num_rows_if_valid().map(|rows| match &plan.scope {
+                            data_quality::QualityScope::CurrentView => rows,
+                            data_quality::QualityScope::FirstRows(limit) => rows.min(*limit),
+                            data_quality::QualityScope::ViewRows { start, end } => {
+                                rows.min(*end).saturating_sub(start.saturating_sub(1))
+                            }
+                            _ => unreachable!(),
+                        });
+                        (lf, source, rows)
                     };
                     let streaming = state.polars_streaming;
                     self.spawn_bg("Profiling data quality...", move |task_gen, tx| {
-                        let lf = if plan.scope == data_quality::QualityScope::WholeSource {
+                        let lf = if source_scope {
                             match data_quality::prepare_source_quality_scan(lf, source.as_ref()) {
                                 Ok(lf) => lf,
                                 Err(error) => {
@@ -13266,6 +13373,20 @@ impl App {
                             }
                         } else {
                             lf
+                        };
+                        let lf = match data_quality::apply_quality_scope(
+                            lf,
+                            &plan.scope,
+                            source.as_ref(),
+                        ) {
+                            Ok(lf) => lf,
+                            Err(error) => {
+                                let _ = tx.send(AppEvent::BackgroundError {
+                                    generation: task_gen,
+                                    message: format!("{error}"),
+                                });
+                                return;
+                            }
                         };
                         let total_rows = match cached_rows {
                             Some(rows) => rows,

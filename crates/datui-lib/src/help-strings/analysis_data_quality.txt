@@ -2,6 +2,8 @@ Data Quality profiles the selected scope. Nothing scans values until you run the
 
 Enter: Run the plan, inspect an observation, or open exact matching rows
 e: Edit scope, grain, compute budget, comparison and explicit time roles
+Enter on Scope: Enter view, source, rows START..END, files 1,3, partition COLUMN=VALUE, or time COLUMN=START..END
+PgUp / PgDn on Scope: Scroll the numbered source-file inventory
 p: Show the detailed access plan
 1 / 2 / 3 / 4: Overview / Columns / Segments / Trends
 [ / ]: Choose a column in Segments or Trends
@@ -15,7 +17,7 @@ Esc: Cancel editing, return one level, or close Analysis
 
 Every result states how many rows were eligible and evaluated and whether it is exact, sampled, estimated or metadata-only. Temporal meanings are used only after you assign a role to a column.
 Sampling selects rows without replacement from a bounded prefix of at most 50,000 rows. It does not cover the entire dataset randomly; sampled segment totals may be unknown.
-Scope can be the current view, loaded source, or the first 10,000 or 1,000,000 current-view rows. Whole source ignores query, filters and sort.
+Scope can be the current view, loaded source, view row range, selected source files, source partition value, or source time range. Source scopes ignore query, filters and sort. Time bounds use ISO dates or RFC 3339 timestamps; the end is exclusive.
 Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The breadcrumb labels a reused run.
 
 Full scans require confirmation. While a plan is running, Esc cancels the result and leaves the source unchanged. File and partition comparisons require an explicit order before "previous" is meaningful.

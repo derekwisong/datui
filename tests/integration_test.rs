@@ -1049,6 +1049,145 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
 }
 
+#[test]
+fn test_data_quality_scope_editor_runs_selected_view_rows() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::{QualityPage, QualityScope};
+
+    common::ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("tests/sample-data/large_dataset.parquet")],
+        OpenOptions::default(),
+    );
+    let key =
+        |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    key(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    app.analysis_modal.focus = AnalysisFocus::Main;
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
+    for area in [Rect::new(0, 0, 120, 32), Rect::new(0, 0, 50, 18)] {
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains("ELIGIBLE ROWS"));
+    }
+    app.analysis_modal
+        .data_quality_scope_input
+        .set_value("rows 0..3");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Scope);
+    assert!(app.analysis_modal.data_quality_scope_error.is_some());
+    app.analysis_modal
+        .data_quality_scope_input
+        .set_value("rows 2..3");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.scope,
+        QualityScope::ViewRows { start: 2, end: 3 }
+    );
+    assert!(!app.analysis_modal.data_quality_editing);
+    let next = key(&mut app, KeyCode::Enter);
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    app.event(&next.unwrap());
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        app.analysis_modal
+            .data_quality_results
+            .as_ref()
+            .unwrap()
+            .total_rows,
+        2
+    );
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Right);
+    assert_ne!(
+        app.analysis_modal.data_quality_plan.grain,
+        datui::data_quality::QualityGrain::Dataset
+    );
+    key(&mut app, KeyCode::Char('1'));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.analysis_modal.data_quality_plan.grain,
+        datui::data_quality::QualityGrain::Dataset
+    );
+    assert!(app.analysis_modal.data_quality_results.is_some());
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Enter);
+    app.analysis_modal
+        .data_quality_scope_input
+        .set_value("rows 1..1");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.analysis_modal.data_quality_results.is_none());
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Plan);
+
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Enter);
+    app.analysis_modal
+        .data_quality_scope_input
+        .set_value("rows 2..3");
+    key(&mut app, KeyCode::Enter);
+    assert!(key(&mut app, KeyCode::Enter).is_none());
+    assert!(app.analysis_modal.data_quality_from_cache);
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
+}
+
+#[test]
+fn test_data_quality_source_file_scope_uses_loaded_file_order() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::data_quality::QualityScope;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(dir.path(), "region=one", df!("id" => &[1i32, 2]).unwrap());
+    write_parquet(dir.path(), "region=two", df!("id" => &[3i32, 4]).unwrap());
+    let (mut app, rx, _) = open_local_dataset_with_channel(dir.path());
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    )));
+    app.analysis_modal.sidebar_state.select(Some(3));
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DataQuality)
+    );
+    app.analysis_modal.focus = AnalysisFocus::Main;
+    app.analysis_modal.data_quality_plan.scope = QualityScope::SourceFiles(vec![2]);
+    let next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    app.event(&next.unwrap());
+    drain_events(&mut app, &rx);
+    let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(results.total_rows, 2);
+    assert_eq!(results.evaluated_rows, 2);
+    let id = results
+        .columns
+        .iter()
+        .find(|column| column.name == "id")
+        .unwrap();
+    assert_eq!(id.min.as_deref(), Some("3"));
+    assert_eq!(id.max.as_deref(), Some("4"));
+}
+
 /// Regression for commit 7b7bfe8: holding PageDown at the end of the data once
 /// pushed `start_row` past `num_rows`, leaving the app `busy` because every spawn
 /// no-op'd (buffer already valid after clamp) but the handler used to gate on

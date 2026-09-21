@@ -7,6 +7,7 @@ use crate::data_quality::{
 use crate::glyphs;
 use crate::numfmt;
 use crate::widgets::datatable::DataTableState;
+use crate::widgets::text_input::TextInput;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -26,6 +27,9 @@ pub struct DataQualityWidgetConfig<'a> {
     pub page: QualityPage,
     pub editing: bool,
     pub plan_field: usize,
+    pub scope_input: &'a TextInput,
+    pub scope_error: Option<&'a str>,
+    pub scope_file_offset: usize,
     pub show_access: bool,
     pub observation_detail: bool,
     pub confirm_run: bool,
@@ -74,6 +78,7 @@ pub fn render(
 
     match config.page {
         QualityPage::Plan => render_plan(&config, table_state, body, buf),
+        QualityPage::Scope => render_scope(&config, body, buf),
         QualityPage::TimeRoles => render_time_roles(&config, table_state, body, buf),
         QualityPage::Overview => render_overview(&config, table_state, body, buf),
         QualityPage::Columns => render_columns(&config, table_state, body, buf),
@@ -99,6 +104,7 @@ pub fn render(
 fn render_breadcrumb(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let page = match config.page {
         QualityPage::Plan => None,
+        QualityPage::Scope => Some("Scope"),
         QualityPage::TimeRoles => Some("Time roles"),
         QualityPage::Overview => Some("Overview"),
         QualityPage::Columns => Some("Columns"),
@@ -311,12 +317,72 @@ fn render_plan(
     Widget::render(access, sections[3], buf);
 
     Paragraph::new(if config.editing {
-        "Editing: Up/Down field  Left/Right value  Enter apply  Esc cancel"
+        "Editing: Up/Down field  Left/Right value  Enter details/apply  Esc cancel"
     } else {
         "The plan is inert until you run it. Press p for the exact access basis."
     })
     .style(Style::default().fg(config.theme.get("dimmed")))
     .render(sections[4], buf);
+}
+
+fn render_scope(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(7),
+            Constraint::Length(3),
+            Constraint::Fill(1),
+        ])
+        .margin(1)
+        .split(area);
+    render_section_title("ELIGIBLE ROWS", sections[0], config.theme, buf);
+    Paragraph::new(vec![
+        Line::raw("view  |  source  |  rows 100..200"),
+        Line::raw("files 1,3  (source inventory order)"),
+        Line::raw("partition column=value  (source)"),
+        Line::raw("time column=2024-01-01..2024-02-01"),
+        Line::raw("Time end is exclusive; dates use UTC midnight."),
+    ])
+    .style(Style::default().fg(config.theme.get("text_primary")))
+    .render(sections[1], buf);
+    Widget::render(config.scope_input, sections[2], buf);
+    let bottom = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Fill(1)])
+        .split(sections[3]);
+    if let Some(error) = config.scope_error {
+        Paragraph::new(error)
+            .style(Style::default().fg(config.theme.get("warning")))
+            .render(bottom[0], buf);
+    }
+    let files = config.state.quality_source_file_names();
+    if !files.is_empty() {
+        render_section_title(
+            &format!(
+                "SOURCE FILES  {} / {}",
+                config.scope_file_offset + 1,
+                files.len()
+            ),
+            bottom[1],
+            config.theme,
+            buf,
+        );
+        let list_area = Rect {
+            y: bottom[1].y.saturating_add(2),
+            height: bottom[1].height.saturating_sub(2),
+            ..bottom[1]
+        };
+        let visible = list_area.height as usize;
+        let items = files
+            .iter()
+            .enumerate()
+            .skip(config.scope_file_offset)
+            .take(visible)
+            .map(|(index, name)| ListItem::new(format!("{:>3}  {name}", index + 1)))
+            .collect::<Vec<_>>();
+        Widget::render(List::new(items), list_area, buf);
+    }
 }
 
 fn render_overview(
@@ -1314,6 +1380,12 @@ fn render_controls(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut B
         vec![("Enter", "Close"), ("Esc", "Close")]
     } else if config.observation_detail {
         vec![("Enter", "Evidence"), ("Esc", "Back")]
+    } else if config.page == QualityPage::Scope {
+        vec![
+            ("Enter", "Use scope"),
+            ("PgUp/Dn", "Files"),
+            ("Esc", "Back"),
+        ]
     } else if config.page == QualityPage::TimeRoles {
         vec![
             (glyphs::get().updown, "Role"),
@@ -1423,11 +1495,18 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         Row::new(vec![
             Cell::from("Known source files"),
             Cell::from(
-                config
-                    .state
-                    .source_file_count()
-                    .map(numfmt::group_chrome)
-                    .unwrap_or_else(|| "unknown".to_string()),
+                (if config.plan.scope.uses_source() {
+                    let count = config.state.quality_source_file_count();
+                    if count > 0 {
+                        Some(count)
+                    } else {
+                        config.state.source_file_count()
+                    }
+                } else {
+                    config.state.source_file_count()
+                })
+                .map(numfmt::group_chrome)
+                .unwrap_or_else(|| "unknown".to_string()),
             ),
         ]),
         Row::new(vec![Cell::from("Remote writes"), Cell::from("none")]),
@@ -1530,10 +1609,14 @@ fn planned_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize>
     if plan.compute == QualityCompute::Metadata {
         return Some(0);
     }
-    let total = match plan.scope {
+    let total = match &plan.scope {
         QualityScope::CurrentView => state.num_rows_if_valid()?,
-        QualityScope::WholeSource => return None,
-        QualityScope::FirstRows(rows) => state.num_rows_if_valid()?.min(rows),
+        QualityScope::FirstRows(rows) => state.num_rows_if_valid()?.min(*rows),
+        QualityScope::ViewRows { start, end } => {
+            let rows = state.num_rows_if_valid()?;
+            rows.min(*end).saturating_sub(start.saturating_sub(1))
+        }
+        _ => return None,
     };
     match plan.compute {
         QualityCompute::Metadata => unreachable!(),
@@ -1543,7 +1626,7 @@ fn planned_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize>
 }
 
 fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize> {
-    if plan.scope == QualityScope::WholeSource {
+    if plan.scope.uses_source() {
         return None;
     }
     let rows = match plan.compute {
@@ -1557,10 +1640,13 @@ fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<
                 2
             };
             let rows = state.num_rows_if_valid()?;
-            let rows = match plan.scope {
-                QualityScope::FirstRows(limit) => rows.min(limit),
+            let rows = match &plan.scope {
+                QualityScope::FirstRows(limit) => rows.min(*limit),
+                QualityScope::ViewRows { start, end } => {
+                    rows.min(*end).saturating_sub(start.saturating_sub(1))
+                }
                 QualityScope::CurrentView => rows,
-                QualityScope::WholeSource => unreachable!(),
+                _ => unreachable!(),
             };
             rows.min(plan.sample_rows.saturating_mul(multiplier).min(50_000))
         }

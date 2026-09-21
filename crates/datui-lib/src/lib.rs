@@ -2306,6 +2306,177 @@ pub mod tests {
         );
     }
 
+    /// An App on a remote dataset of a hundred rows that has not been counted yet, its
+    /// buffer forty rows in.
+    ///
+    /// The receiver comes back with it so a test can read what the App sent.
+    fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEvent>) {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = frame();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(frame())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        // As far as the buffer reached, of a hundred. This is the number the bar prints
+        // when nothing tells it the count failed, and printing it is the harm: a
+        // confident partial where a "?" belongs.
+        state.num_rows = 40;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        (app, rx)
+    }
+
+    /// The bottom line of a rendered App — the control bar, as a string.
+    fn control_bar(app: &mut crate::App) -> String {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        let area = Rect::new(0, 0, 120, 24);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..area.width)
+            .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+            .collect()
+    }
+
+    /// The bar says `?` when this frame's count failed, rather than the partial the
+    /// buffer happened to reach.
+    ///
+    /// The widget's own `?` has a test; what had none is the App deciding to ask for it.
+    /// Two bugs were found in and around `len_count_failed` and the suite noticed
+    /// neither, because nothing rendered the bar: deleting the write that produces `?`
+    /// left the whole workspace green.
+    #[test]
+    fn the_bar_says_question_mark_when_the_count_failed() {
+        use crate::AppEvent;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+
+        assert!(
+            !control_bar(&mut app).contains("Rows: ?"),
+            "nothing has failed yet"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live,
+        });
+
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Rows: ?"),
+            "the count failed, so the total is unknown: {bar:?}"
+        );
+    }
+
+    /// A count that failed for a frame that is gone does not take the `?` off the frame
+    /// that is here.
+    ///
+    /// `len_count_failed` is one slot and the bar reads it against the frame on screen.
+    /// Written for whichever count failed last, an orphan — a join, a query, a filter or
+    /// a sort takes a fresh `len_generation` without stopping the count already running
+    /// — overwrote the live frame's own failure. `count_unknown` then went false and the
+    /// bar printed the number the buffer had reached, plainly, on a dataset whose count
+    /// failed.
+    #[test]
+    fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
+        use crate::AppEvent;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live,
+        });
+        assert!(
+            control_bar(&mut app).contains("Rows: ?"),
+            "this frame's count failed"
+        );
+
+        // And now a count orphaned by an earlier frame change fails too.
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live.wrapping_sub(1),
+        });
+
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Rows: ?"),
+            "a stranger's failure says nothing about this frame: {bar:?}"
+        );
+    }
+
+    /// An End waiting on a count whose frame is gone, whose count then fails, is retired
+    /// without saying anything.
+    ///
+    /// The frame it was counting has been replaced, so its failure says nothing about the
+    /// one on screen and cannot answer the End that was waiting on it. Reached by nothing
+    /// in the suite until now: deleting the branch left every test green.
+    #[test]
+    fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
+        use crate::AppEvent;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.end_after_count, Some(waiting));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(crate::App::COUNTING_FOR_END),
+            "the status says the count is running"
+        );
+
+        // A question of the dataset takes a fresh generation out from under the count.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query("select doubled: id * 2".to_string());
+        state.defer_collect = false;
+        assert_ne!(
+            app.data_table_state.as_ref().unwrap().len_generation(),
+            waiting,
+            "the frame the count belongs to is gone"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: waiting,
+        });
+
+        assert_eq!(
+            app.end_after_count, None,
+            "the End it belonged to is retired"
+        );
+        // On the field, not the bar: `status_message` is painted only while `busy`, and
+        // an End waiting on a remote count does not set it — the spinner on the row
+        // count is what the user sees. The message is still what the *next* busy moment
+        // would print, so leaving it set is the bug.
+        assert_eq!(
+            app.status_message, None,
+            "the status it put up comes down, rather than becoming an error about a \
+             frame the user is no longer looking at"
+        );
+    }
+
     /// An End pressed on the folder the user walked away from does not move the one they
     /// opened next.
     ///
@@ -13314,9 +13485,24 @@ impl App {
                 }
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total. Before the End handling
-                // below, which can return early: this is about the count, not about who
-                // was waiting on it, and it was unconditional before that return existed.
-                self.len_count_failed = Some(*len_generation);
+                // below: this is about the count, not about who was waiting on it.
+                //
+                // Only for the frame on screen, because the slot holds one generation.
+                // Counts for two frames run at once — a join, a query, a filter or a
+                // sort takes a fresh `len_generation` without stopping the count already
+                // running — so a failure arriving is not necessarily this frame's.
+                // Written unconditionally, an orphan's failure overwrote a live frame's,
+                // `count_unknown` went false, and the bar fell through from "?" to the
+                // number the buffer happened to reach: a confident partial on a dataset
+                // whose count failed. The orphan's own failure is worth nothing to
+                // anybody — nothing will ever render against a generation that is gone.
+                if self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.len_generation() == *len_generation)
+                {
+                    self.len_count_failed = Some(*len_generation);
+                }
                 // Only for the count End was actually waiting on. Taken unconditionally,
                 // a count that failed for one frame answered for an End pressed on
                 // another — printing "Could not count the rows to find the end" about a

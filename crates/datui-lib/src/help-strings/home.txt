@@ -15,7 +15,8 @@ NAVIGATION
                     directory, or size / modified / rows once chosen.
   Enter             Open the dataset, enter the directory, source or bucket, or
                     fold the section. A folder labelled hive or multi opens as
-                    one dataset
+                    one dataset; one labelled delta, iceberg or hudi is a lake
+                    table datui does not read yet, and Enter goes inside it
   Backspace         Leave a directory you descended into; from a bucket, back
                     to its cloud source
   Ctrl+R            List again what is on screen: every cloud source, the one

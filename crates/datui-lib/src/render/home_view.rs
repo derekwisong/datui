@@ -1258,6 +1258,8 @@ fn render_preview(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &Rend
                 // Nothing to add: "kind directory" is directly above.
                 EntryKind::Directory => "",
                 EntryKind::Unknown => "Not read yet.",
+                // The log says which files are live, and datui does not read it.
+                k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
                 _ if crate::home::is_object_store_url(&entry.path) => "Read when opened.",
                 _ if reading => "Reading…",
                 _ => "Schema needs a full read.",

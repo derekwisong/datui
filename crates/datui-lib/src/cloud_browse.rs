@@ -840,6 +840,24 @@ pub fn classify_listing(
         })
         .map(|(key, _)| key)
         .collect();
+    // A lake table first: its data files genuinely agree on a schema, so every rule
+    // below says "one table" and is right about the schema and wrong about the rows.
+    // The markers are prefixes in the listing that already happened, so this costs
+    // nothing.
+    let folder = |name: &str| folders.iter().any(|f| last(f) == name);
+    if folder("_delta_log") {
+        return EntryKind::Delta;
+    }
+    if folder(".hoodie") {
+        return EntryKind::Hudi;
+    }
+    // Iceberg's marker is a plain name, so it takes the whole shape rather than the
+    // name alone: `metadata/` beside `data/`, and nothing else of the table's at the
+    // root. Whether `metadata/` holds a `*.metadata.json` is not asked — that is a
+    // second listing, and this is the layout the spec describes.
+    if folder("metadata") && folder("data") && files.is_empty() {
+        return EntryKind::Iceberg;
+    }
     let parquet = files
         .iter()
         .filter(|key| crate::discover::is_parquet_key(key))
@@ -1840,6 +1858,55 @@ mod tests {
             classify_listing(&folders(&["a/b/"]), &files(&[("a/one.parquet", 5)])),
             EntryKind::Directory,
             "one file is a file to open, not a dataset"
+        );
+    }
+
+    /// A lake table's data files agree on a schema, so the one-table rule says `multi`
+    /// and is right about the schema and wrong about the rows.
+    #[test]
+    fn a_lake_table_is_not_a_folder_of_parquet_files() {
+        use crate::discover::EntryKind;
+        let folders = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let files = |names: &[(&str, u64)]| {
+            names
+                .iter()
+                .map(|(n, s)| (n.to_string(), *s))
+                .collect::<Vec<_>>()
+        };
+        let parts = files(&[
+            ("t/part-00000.parquet", 10),
+            ("t/part-00001.parquet", 10),
+            ("t/part-00002.parquet", 10),
+        ]);
+
+        assert_eq!(
+            classify_listing(&folders(&["t/_delta_log/"]), &parts),
+            EntryKind::Delta
+        );
+        assert_eq!(
+            classify_listing(&folders(&["t/.hoodie/"]), &parts),
+            EntryKind::Hudi
+        );
+        assert_eq!(
+            classify_listing(&folders(&["t/metadata/", "t/data/"]), &files(&[])),
+            EntryKind::Iceberg
+        );
+
+        // The plain name alone is not the marker.
+        assert_eq!(
+            classify_listing(&folders(&["t/metadata/"]), &parts),
+            EntryKind::MultiFile,
+            "a folder called metadata beside part files is not an Iceberg table"
+        );
+        assert_eq!(
+            classify_listing(&folders(&["t/metadata/", "t/data/"]), &parts),
+            EntryKind::MultiFile,
+            "an Iceberg root holds no data files of its own"
+        );
+        assert_eq!(
+            classify_listing(&folders(&[]), &parts),
+            EntryKind::MultiFile,
+            "and a folder of part files with no log is still one table"
         );
     }
 

@@ -203,6 +203,20 @@ would union things that share no columns. So the footers decide: datui compares
 the columns of the folder's files, and a folder whose files do not agree is left
 as a directory to look inside.
 
+A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
+says which of them are live. datui does not read that log yet, so it does not
+offer the table as one dataset — the files a delete or an update tombstoned are
+still on disk, every rewritten version is there together, and compaction leaves
+both sides in place, so reading them as one table gives rows the table does not
+have. <kbd>Enter</kbd> goes inside instead, where the data files can be opened
+one at a time.
+
+| Format | What marks the root |
+|---|---|
+| Delta Lake | `_delta_log/` |
+| Hudi | `.hoodie/` |
+| Iceberg | `metadata/` holding a `*.metadata.json`, beside `data/` |
+
 Files are compared by how much of the narrower one the wider one holds, not by
 how much they have in common overall, because gaining a column is what a dataset
 does over time. A blockchain that added `txinwitness` in 2017 is still one

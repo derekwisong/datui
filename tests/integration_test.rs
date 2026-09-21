@@ -5548,3 +5548,157 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
         "→ on a file does not browse anywhere"
     );
 }
+
+/// A Delta table's root is not a folder of Parquet files, and the home screen says so.
+///
+/// Its data files agree on a schema, so the one-table rule called it `multi` and Enter
+/// read every file under it as one table — tombstoned rows back, every rewritten
+/// version together, compaction counted twice. Nothing warned.
+#[test]
+fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    for part in ["part-0.parquet", "part-1.parquet", "part-2.parquet"] {
+        std::fs::write(table.join(part), b"x").unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
+        .expect("the table is listed");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Delta),
+        "the log says what this is"
+    );
+
+    let area = Rect::new(0, 0, 200, 24);
+    let screen = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let listing = screen(&mut app);
+    assert!(
+        listing.contains("delta"),
+        "the row says what it is: {listing}"
+    );
+    assert!(
+        !listing.contains("multi"),
+        "and does not offer it as a folder of files: {listing}"
+    );
+
+    // Enter goes inside rather than reading every file under it as one table.
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(table.as_path()),
+        "Enter went inside the table"
+    );
+    assert!(app.data_table_state.is_none(), "and opened nothing");
+    let status = app.home.status.clone().unwrap_or_default();
+    assert!(
+        status.contains("Delta") && status.contains("not read"),
+        "and says why: {status:?}"
+    );
+}
+
+/// A lake table typed at `~` is not opened as one table either.
+///
+/// `home_open_selected` learned to go inside one; the path input had no check at all, so
+/// `~` and the table's path loaded every Parquet under the root as one table — the whole
+/// of the silent wrong answer, reached one keystroke differently.
+#[test]
+fn test_a_lake_table_typed_as_a_path_is_gone_inside_not_opened() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    for part in ["part-0.parquet", "part-1.parquet", "part-2.parquet"] {
+        std::fs::write(table.join(part), b"x").unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.path_input_active = true;
+    app.home.path_input = table.to_string_lossy().into_owned();
+
+    let follow = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    assert!(follow.is_none(), "nothing was opened");
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(table.as_path()),
+        "the path went inside the table"
+    );
+    let status = app.home.status.clone().unwrap_or_default();
+    assert!(
+        status.contains("Delta") && status.contains("not read"),
+        "and says why: {status:?}"
+    );
+}
+
+/// A directory of lake tables is not an empty home screen.
+///
+/// The guidance block is appended under the rows rather than shown instead of them, so a
+/// warehouse of fifty `delta` rows printed "No datasets here." underneath them.
+#[test]
+fn test_a_folder_of_lake_tables_does_not_say_there_is_nothing_here() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for name in ["orders", "customers"] {
+        let table = tmp.path().join(name);
+        std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+        std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+        std::fs::write(table.join("part-0.parquet"), b"x").unwrap();
+        std::fs::write(table.join("part-1.parquet"), b"x").unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+
+    let area = Rect::new(0, 0, 120, 24);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    let screen: String = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(screen.contains("orders"), "the tables are listed: {screen}");
+    assert!(
+        !screen.contains("No datasets here."),
+        "and the screen does not say there is nothing here: {screen}"
+    );
+}

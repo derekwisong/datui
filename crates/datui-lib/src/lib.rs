@@ -7190,6 +7190,17 @@ impl App {
             self.home_browse_into(entry.path);
             return None;
         }
+        // A lake table's files are not its rows: the ones a delete or an update
+        // tombstoned are still on disk, every rewritten version is here together, and
+        // compaction leaves both sides in place. Going inside is what datui can honestly
+        // do with one, and saying so is better than a silent wrong answer.
+        if let Some(format) = entry.kind.lake_name() {
+            self.home.status = Some(format!(
+                "datui does not read {format} tables yet — these are the files under it"
+            ));
+            self.home_browse_into(entry.path);
+            return None;
+        }
         // A cloud folder that is a dataset opens as one: its URL as a prefix, which is
         // what makes the open a scan of every file under it.
         if matches!(

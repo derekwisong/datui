@@ -2131,7 +2131,9 @@ impl HomeState {
             if (self.network_check)(&entry.path) {
                 continue;
             }
-            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
+            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown)
+                && !entry.kind.is_lake_table()
+            {
                 out.push(entry.clone());
             }
             if out.len() >= limit {

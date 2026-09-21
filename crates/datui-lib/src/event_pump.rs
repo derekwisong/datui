@@ -567,7 +567,74 @@ mod tests {
         );
     }
 
-    /// A deferred collect that turns out to have nothing to do still takes the loading
+    /// An errand of several phases never lets go of the generation until it is done.
+    ///
+    /// The invariant #221 actually wants, asserted at the boundary rather than through a
+    /// proxy: every time the pump breaks — which is every time a frame is drawn and a key
+    /// could be handled — an errand still in progress is holding a lease. What used to
+    /// cover this was a list of three flags in the predicate; what covers it now is the
+    /// continuation lease, and that has to be true at each phase change rather than only
+    /// at the first.
+    ///
+    /// The export is the errand with the most of them: collect, then write.
+    #[test]
+    fn an_export_holds_the_generation_at_every_phase_change() {
+        let (mut p, dir) = loaded_pump();
+        let out = dir.path().join("out.csv");
+
+        p.send(AppEvent::DoExport(
+            out.clone(),
+            crate::ExportFormat::Csv,
+            crate::ExportOptions {
+                csv_delimiter: b',',
+                csv_include_header: true,
+                source_file: false,
+                csv_compression: None,
+                json_compression: None,
+                ndjson_compression: None,
+                parquet_compression: None,
+            },
+        ))
+        .unwrap();
+
+        let mut breaks = 0;
+        for _ in 0..10_000 {
+            let drained = if p.app.is_busy() {
+                p.wait_and_drain(Duration::from_secs(10)).unwrap()
+            } else {
+                p.drain().unwrap()
+            };
+            match drained {
+                Drained::Continue { updated } => {
+                    // Mid-errand, at the moment the loop would draw and poll.
+                    if !p.next_up.is_empty() {
+                        breaks += 1;
+                        assert!(
+                            p.app.work_a_bump_would_strand(),
+                            "phase change {breaks} left the generation free"
+                        );
+                    }
+                    if !updated && p.next_up.is_empty() && !p.app.is_busy() {
+                        break;
+                    }
+                }
+                other => panic!("the export should not end the loop: {other:?}"),
+            }
+        }
+
+        assert!(
+            breaks >= 2,
+            "the export handed off at least twice — collect, then write — and each was \
+             checked; saw {breaks}"
+        );
+        assert!(out.exists(), "and the file was written, which is the point");
+        assert!(
+            !p.app.work_a_bump_would_strand(),
+            "with the generation free once it is done"
+        );
+    }
+
+    /// A deferred collect that turns out to have nothing to do still takes the loading    /// A deferred collect that turns out to have nothing to do still takes the loading
     /// screen down.
     ///
     /// `DoLoadBuffer` clears `loading_state` itself when `spawn_async_collect` finds the

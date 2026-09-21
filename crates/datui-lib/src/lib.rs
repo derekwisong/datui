@@ -4323,7 +4323,11 @@ pub enum AppEvent {
 /// event queue and holds no lease for an event at a time, so two other things take one:
 /// [`crate::event_pump::EventPump`] while it holds a continuation it has not dispatched,
 /// and `pending_download` while the confirmation modal waits on the user. Between them
-/// the count covers a whole errand, which is what lets the predicate be only the count.
+/// the count covers a whole errand, which is what lets the predicate be only the count —
+/// with one exception. `reread_after_the_footers_joined` sends its jump straight to the
+/// channel, unleased, and that is safe only because both its callers have already checked
+/// that nothing is waiting on the generation. A fourth handoff added that way would not
+/// be.
 ///
 /// A worker that never returns at all — a `hard` NFS mount, a wedged object-store read —
 /// never drops its lease; that thread already leaves `busy` set for the session, so the
@@ -13751,10 +13755,13 @@ impl App {
                 if !self.load_active {
                     return None;
                 }
-                if !self.spawn_async_collect("Loading buffer...") {
-                    self.loading_state = LoadingState::Idle;
-                    self.busy = false;
-                }
+                // No cleanup arm of its own. A collect asked for here is always owed
+                // rather than run — the pump holds a lease for the whole of this handler
+                // — so `collect_when_the_work_allows` is what finds out there is nothing
+                // to collect, and it is the one that takes the loading screen down. Two
+                // copies of that cleanup, one of them unreachable and less careful about
+                // an export's `loading_state`, is an invitation to fix the wrong one.
+                self.spawn_async_collect("Loading buffer...");
                 None
             }
             AppEvent::DoDecompress(paths, options) => {

@@ -252,9 +252,10 @@ Telling the two apart costs a directory read each — a round trip apiece on a
 network share, so a directory of thousands of partitions would be minutes before
 the listing appeared. No listing pays for it, however small. Every folder is
 drawn as `…` straight away, and the rows on screen are looked into a screenful
-at a time as you scroll, the highlighted row first. What datui found last time
-is remembered, so a folder you have already browsed is labelled before anything
-is read.
+at a time as you scroll, the highlighted row first. A folder datui has measured
+before keeps what it found, so one whose files turned out to be separate tables
+is not offered as one dataset again while you wait for its footers to be read a
+second time.
 
 Labels never re-order the list when they arrive, so a row cannot move out from
 under the cursor. <kbd>Enter</kbd> on a `…` row looks into it first, so it opens

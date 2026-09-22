@@ -7749,6 +7749,14 @@ impl App {
     /// give: a thread stuck on an unreachable `hard` mount never comes back, and the
     /// pool is shared with the work that actually loads data. One at a time, so a
     /// share that has stopped answering costs one thread and then stops asking.
+    ///
+    /// This measures remote rows as well as classifying them, which
+    /// [`HomeState::unmeasured_visible`] deliberately refuses to do — it leaves them to
+    /// their root's probe, so that a share gets one thread and not two. That reasoning
+    /// no longer reaches: the probe scans a remote directory before anything has looked
+    /// into it, so every row it returns is `Unknown` and there is nothing for it to
+    /// measure. This pass is the only thing left that can, and it makes the same bargain
+    /// the probe made — one detached thread, on a filesystem it is already reading.
     fn request_home_classifications(&mut self) {
         if self.home.classify_in_flight {
             return;
@@ -17322,12 +17330,16 @@ impl Widget for &mut App {
         // that is how many datasets are listed, not the table's row count.
         if main_view_content == MainViewContent::Home {
             // Only things that can actually be opened. A directory is somewhere to
-            // look, not a dataset, and counting it makes the figure a lie.
+            // look, not a dataset, and counting it makes the figure a lie — and so
+            // does counting a folder nothing has looked into yet, which in a fresh
+            // listing is every folder in it.
             let datasets = self
                 .home
                 .visible()
                 .iter()
-                .filter(|r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_dataset()))
+                .filter(
+                    |r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset()),
+                )
                 .count();
             // State, not actions: how many datasets are listed and what order they
             // are in. The Tab key that changes it lives with the other keys.

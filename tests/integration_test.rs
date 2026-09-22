@@ -4796,7 +4796,7 @@ fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
         "no row should be called a plain directory before anything looked into one:\n\
          {unlooked_at}"
     );
-    let unlooked_at_row = format!("d000 {}", datui::glyphs::get().ellipsis);
+    let unlooked_at_row = format!("d000/ {}", datui::glyphs::get().ellipsis);
     assert!(
         unlooked_at.contains(&unlooked_at_row),
         "an unlooked-at row should read `{unlooked_at_row}`:\n{unlooked_at}"

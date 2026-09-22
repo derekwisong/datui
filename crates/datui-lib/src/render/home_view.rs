@@ -773,7 +773,13 @@ fn entry_line<'a>(
     };
 
     let mut name = entry.name.clone();
-    if entry.kind == EntryKind::Directory {
+    // A row nothing has looked into is still a place: a listing only ever puts a
+    // directory on one, and a remote row that is not a data file by name is a prefix.
+    // Saying so up front keeps the name from changing shape a frame later when the
+    // label lands — the `…` beside it already carries the part that is not known.
+    if entry.kind == EntryKind::Directory
+        || (entry.kind == EntryKind::Unknown && !crate::discover::is_data_file(&entry.path))
+    {
         name.push('/');
     }
     // A column hit takes the place of the kind label: both are a short note about

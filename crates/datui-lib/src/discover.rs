@@ -98,6 +98,17 @@ impl EntryKind {
         !matches!(self, EntryKind::Directory) && !self.is_lake_table()
     }
 
+    /// Whether this row is *known* to be a dataset.
+    ///
+    /// [`EntryKind::is_dataset`] answers "may this be opened", and a row nothing has
+    /// looked into answers yes: it is offered, and looked into before it is acted on.
+    /// This one answers "is this a dataset", which such a row cannot answer at all —
+    /// and that is the question counting asks. A folder of two hundred subdirectories
+    /// nobody has looked into is not two hundred datasets.
+    pub fn is_known_dataset(self) -> bool {
+        self != EntryKind::Unknown && self.is_dataset()
+    }
+
     /// A Delta, Iceberg or Hudi table root: a log beside the data files that says which
     /// of them are live, which datui does not read yet.
     pub fn is_lake_table(self) -> bool {
@@ -520,7 +531,7 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
 /// scan by name, so name order wins here.
 ///
 /// A row nothing has looked into yet sorts with the directories, although
-/// [`EntryKind::is_dataset`] counts it as openable. In a fresh listing that is every
+/// [`EntryKind::is_dataset`] offers it as openable. In a fresh listing that is every
 /// subdirectory, so what this amounts to there is files first and folders after —
 /// and it is the one ordering a folder can be given before anything is known about
 /// it, since it is where the row lands if the folder turns out to be a plain one.
@@ -530,13 +541,7 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
 /// is late.
 fn sort_entries(entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
-        let group = |k: EntryKind| {
-            if k.is_dataset() && k != EntryKind::Unknown {
-                0
-            } else {
-                1
-            }
-        };
+        let group = |k: EntryKind| if k.is_known_dataset() { 0 } else { 1 };
         group(a.kind).cmp(&group(b.kind)).then_with(|| {
             a.name
                 .to_ascii_lowercase()

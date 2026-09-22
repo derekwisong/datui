@@ -2227,6 +2227,90 @@ fn test_what_is_looked_into_is_the_viewport_and_a_screen_either_side() {
 }
 
 #[test]
+fn test_folders_nobody_has_looked_into_are_not_counted_as_datasets() {
+    // The control bar's figure is "how many datasets are listed". A fresh listing has
+    // looked into nothing, so every folder in it is `Unknown` — and `is_dataset` says
+    // yes to those, because they are offered as openable and looked into first. That
+    // is the right answer to "may this be opened" and the wrong one to count.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+
+    let counted = |h: &HomeState| {
+        h.visible()
+            .iter()
+            .filter(|r| matches!(r, Row::Entry { entry, .. } if entry.kind.is_known_dataset()))
+            .count()
+    };
+    assert_eq!(
+        counted(&home),
+        0,
+        "two hundred folders nobody has looked into are not two hundred datasets"
+    );
+    // But there is plainly somewhere to go, so the "nothing here" guidance stays away.
+    assert!(
+        home.has_any_dataset(),
+        "an unlooked-at folder is still somewhere to go"
+    );
+
+    looking_at(&mut home, 17, 10);
+    home.classify_now(4);
+    assert_eq!(
+        counted(&home),
+        4,
+        "and the figure counts them as they are looked into"
+    );
+}
+
+#[test]
+fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
+    // The renderer settles `scroll` from `selected` every frame, but the pass that
+    // looks into rows is asked for when a listing lands — before that frame. Browsing
+    // into a directory selects the first row while `scroll` still points four hundred
+    // rows into the listing that was just replaced, and the whole first batch goes to
+    // rows nobody is looking at.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    looking_at(&mut home, 187, 10);
+    assert_eq!(home.scroll, 180);
+
+    // A different directory, as browsing into one produces.
+    let next = TempDir::new().unwrap();
+    hive_partitions(next.path(), 200);
+    home.apply_listing(datui::home::Listing {
+        sections: vec![datui::home::Section {
+            title: "NEXT".into(),
+            subtitle: None,
+            rows: discover::scan_dir(next.path()),
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+        }],
+    });
+
+    assert_eq!(home.selected, 1, "the cursor lands on the first row");
+    assert!(
+        home.scroll <= home.selected,
+        "and the viewport is where that row is, not where the last listing left it: \
+         scroll {} for row {}",
+        home.scroll,
+        home.selected
+    );
+    let asked: Vec<String> = home
+        .unclassified_visible(4)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert!(
+        asked.iter().all(|n| n < &"d020".to_string()),
+        "so the first pass goes to the rows on screen: {asked:?}"
+    );
+}
+
+#[test]
 fn test_paging_past_rows_does_not_leave_them_queued() {
     // Each pass is chosen from the viewport as it is when the last one landed, so a
     // page that scrolled past four hundred rows asks about the ones it stopped on

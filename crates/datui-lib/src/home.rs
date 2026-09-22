@@ -1175,13 +1175,16 @@ fn apply_known_facts(
 
     // What a previous run found this folder to be. A listing no longer looks into a
     // folder at all — that is a `read_dir` apiece, a round trip apiece on a share —
-    // so a row arrives `Unknown` and would otherwise be classified again on every
-    // run, however many times it had been classified before.
+    // so a row arrives `Unknown`, and this is the only thing that can answer for it
+    // without reading the directory again.
     //
-    // It also keeps a folder whose files were read and found to be separate tables a
-    // directory, rather than letting the next listing offer it as one dataset until
-    // its footers have been read a second time. Its kind came from those footers, and
-    // nothing about it has changed.
+    // Only for folders a previous run *measured*, which is narrower than it sounds:
+    // `facts_for` needs a size, and a folder only has one once its files were totalled
+    // or sampled. A plain directory has nothing recorded and is classified again every
+    // session — one `read_dir`, which is the cheap end of this. What it does cover is
+    // the expensive end: a folder whose files were read and found to be separate
+    // tables stays a directory, rather than being offered as one dataset again until
+    // its footers have been read a second time.
     //
     // Tested before the fingerprint below rather than after, because that fingerprint
     // is a file's: a listing gives a directory no size, so `same_bytes` is never true
@@ -1550,9 +1553,25 @@ impl HomeState {
                 .position(|r| matches!(r, Row::Entry { entry, .. } if entry.path == path))
         {
             self.selected = idx;
+            self.follow_selection();
             return;
         }
         self.select_first_entry();
+        self.follow_selection();
+    }
+
+    /// Put the viewport where the next frame will put it, without waiting for it.
+    ///
+    /// The renderer settles `scroll` from `selected` every frame, but the pass that
+    /// looks into rows is asked for when a listing lands, which is before that frame
+    /// is drawn — and a `scroll` left over from the listing just replaced points into
+    /// a different set of rows entirely. Browsing into a directory selects row 0 while
+    /// `scroll` still says four hundred, and the first batch is spent on rows nobody
+    /// is looking at.
+    fn follow_selection(&mut self) {
+        self.scroll = self
+            .selected
+            .saturating_sub(self.view_height.saturating_sub(3).max(1));
     }
 
     /// Rows currently passing the filter, flattened, as `(section index, row)`.
@@ -1619,6 +1638,13 @@ impl HomeState {
     /// A lake table counts. datui cannot read one as a table yet, so it is not a dataset
     /// — but it is somewhere to go, and a warehouse directory of fifty `delta` rows with
     /// "No datasets here." printed underneath them is plainly wrong.
+    ///
+    /// So does a row nothing has looked into, for the same reason and more sharply: in
+    /// a fresh listing that is every folder in it, and any of them may turn out to be a
+    /// dataset. This is [`EntryKind::is_dataset`] rather than
+    /// [`EntryKind::is_known_dataset`] on purpose — the question is whether there is
+    /// anywhere to go, not how many datasets there are, which is what the control bar's
+    /// count asks and answers differently.
     pub fn has_any_dataset(&self) -> bool {
         self.sections
             .iter()

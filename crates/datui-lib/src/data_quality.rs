@@ -818,6 +818,9 @@ pub fn compute_data_quality(
 ) -> Result<DataQualityResults> {
     let collected_schema = lf.clone().collect_schema()?;
     let schema = visible_schema(&collected_schema, source);
+    if plan.compute == QualityCompute::Metadata {
+        return Ok(DataQualityResults::empty(total_rows, plan, &schema));
+    }
     let grain_column = match &plan.grain {
         QualityGrain::Partition(column) | QualityGrain::TimeWindows { column, .. } => Some(column),
         _ => None,
@@ -829,9 +832,6 @@ pub fn compute_data_quality(
             "Grain column {column} is not in scope {}; choose another grain or scope",
             plan.scope.label()
         )));
-    }
-    if plan.compute == QualityCompute::Metadata {
-        return Ok(DataQualityResults::empty(total_rows, plan, &schema));
     }
     if plan.compute == QualityCompute::Full {
         let total_rows = match total_rows {
@@ -1592,19 +1592,32 @@ fn segment_rows(
 fn group_by_value(df: &DataFrame, column: &str, kind: &str) -> Result<Vec<SegmentRows>> {
     let values = df.column(column)?;
     let mut groups: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    let mut missing = Vec::new();
     for row in 0..df.height() {
         let value = values.get(row)?;
-        let label = if value.is_null() {
-            format!("{kind} ∅")
+        if value.is_null() {
+            missing.push(row as u32);
         } else {
-            format!("{kind} {}", value.str_value())
-        };
-        groups.entry(label).or_default().push(row as u32);
+            groups
+                .entry(format!("{kind} {}", value.str_value()))
+                .or_default()
+                .push(row as u32);
+        }
     }
-    Ok(groups
+    let mut result: Vec<SegmentRows> = groups
         .into_iter()
         .map(|(label, indices)| SegmentRows { label, indices })
-        .collect())
+        .collect();
+    // Rows the grain could not place carry no order, so they follow the ones it
+    // could — the same rule the scanned path applies. Sorting "∅" by codepoint
+    // would put it before any value that outranks U+2205.
+    if !missing.is_empty() {
+        result.push(SegmentRows {
+            label: format!("{kind} ∅"),
+            indices: missing,
+        });
+    }
+    Ok(result)
 }
 
 /// Where a row's window starts. Both the sampled and the full-scan path bucket
@@ -2273,11 +2286,21 @@ fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
                     .sum()
                     .alias(format!("{prefix}parse_date")),
             );
+            let datetime_formats = [
+                "%Y-%m-%d %H:%M:%S%.f",
+                "%Y-%m-%dT%H:%M:%S%.f%#z",
+                "%Y-%m-%dT%H:%M:%S%.f",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S%#z",
+                "%Y-%m-%dT%H:%M:%S",
+            ];
+            let parses_as_datetime = datetime_formats
+                .into_iter()
+                .map(|format| as_datetime(format).is_not_null())
+                .reduce(Expr::or)
+                .expect("at least one datetime format");
             exprs.push(
-                as_datetime("%Y-%m-%d %H:%M:%S")
-                    .is_not_null()
-                    .or(as_datetime("%Y-%m-%dT%H:%M:%S%#z").is_not_null())
-                    .or(as_datetime("%Y-%m-%dT%H:%M:%S").is_not_null())
+                parses_as_datetime
                     .and(text.clone().is_not_null())
                     .sum()
                     .alias(format!("{prefix}parse_datetime")),
@@ -3334,6 +3357,30 @@ mod tests {
         );
         // The exact run must not be the quieter of the two.
         assert_eq!(sampled[0].3, Some(3), "three of four values are ISO dates");
+
+        // RFC 3339 allows fractional seconds, and so does a bare space separator.
+        let stamps = df!("t" => &[
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00.500Z",
+            "2024-01-01T00:00:00+01:00",
+            "2024-01-01 00:00:00",
+            "2024-01-01T00:00:00",
+            "garbage",
+        ])
+        .unwrap()
+        .lazy();
+        for compute in [QualityCompute::Sample, QualityCompute::Full] {
+            let plan = DataQualityPlan {
+                compute,
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&stamps, Some(6), &plan, None, false).unwrap();
+            assert_eq!(
+                results.columns[0].datetime_parse_count,
+                Some(5),
+                "{compute:?} should accept every ISO timestamp but the garbage"
+            );
+        }
         assert_eq!(sampled[1].2, Some(3), "three of four parse as decimal");
         assert_eq!(sampled[1].1, Some(2), "two of four parse as integer");
 
@@ -3447,6 +3494,55 @@ mod tests {
         // An empty or inverted range is still refused.
         assert!(QualityScope::parse_command("rows 1..0").is_err());
         assert!(QualityScope::parse_command("rows 0..5").is_err());
+    }
+
+    #[test]
+    fn metadata_mode_does_not_need_the_grain_column() {
+        // It reads no values, so a grain left over from a wider scope is moot.
+        let frame = df!("id" => &[1i64, 2]).unwrap().lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Metadata,
+            grain: QualityGrain::Partition("gone".to_string()),
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(2), &plan, None, false).unwrap();
+        assert_eq!(results.precision, QualityPrecision::Metadata);
+    }
+
+    #[test]
+    fn segments_come_back_in_one_order_however_much_was_read() {
+        // ∅ sorts after ASCII but before U+6771, so ordering by the label alone
+        // put the unplaceable rows in the middle of one path and last in the other.
+        let frame = df!(
+            "region" => &[Some("a"), Some("a"), Some("\u{6771}\u{4eac}"), Some("\u{6771}\u{4eac}"), None, None],
+            "id" => &[1i64, 2, 3, 4, 5, 6],
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            grain: QualityGrain::Partition("region".to_string()),
+            ..DataQualityPlan::default()
+        };
+        let labels = |compute| {
+            compute_data_quality(
+                &frame,
+                Some(6),
+                &DataQualityPlan {
+                    compute,
+                    ..plan.clone()
+                },
+                None,
+                false,
+            )
+            .unwrap()
+            .segments
+            .iter()
+            .map(|segment| segment.label.clone())
+            .collect::<Vec<_>>()
+        };
+        let full = labels(QualityCompute::Full);
+        assert_eq!(labels(QualityCompute::Sample), full);
+        assert_eq!(full.last().unwrap(), "partition \u{2205}");
     }
 
     #[test]

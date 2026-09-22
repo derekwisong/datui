@@ -346,7 +346,12 @@ impl AnalysisModal {
     /// Move between the column lens and its detail without losing which column
     /// the user was looking at.
     pub fn set_quality_column_page(&mut self, page: QualityPage) {
-        if self.data_quality_page == QualityPage::Columns {
+        // Detail moves the same selection with Up/Down, so capture it from there
+        // too or navigating inside Detail is lost on the way back.
+        if matches!(
+            self.data_quality_page,
+            QualityPage::Columns | QualityPage::Detail
+        ) {
             self.data_quality_column_index = self.data_quality_table_state.selected().unwrap_or(0);
         }
         self.set_quality_page(page);
@@ -408,16 +413,22 @@ impl AnalysisModal {
                         .map(QualityGrain::Partition),
                 );
                 choices.push(QualityGrain::RowChunks(1_000_000));
-                choices.extend(self.data_quality_plan.temporal_roles.iter().flat_map(
-                    |assignment| {
-                        QUALITY_WINDOW_WIDTHS
-                            .iter()
-                            .map(|every| QualityGrain::TimeWindows {
-                                column: assignment.column.clone(),
-                                every: (*every).to_string(),
-                            })
-                    },
-                ));
+                // Two roles can name one column; offering its widths twice would
+                // trap the forward cycle among the duplicates, so list it once.
+                let mut window_columns: Vec<String> = Vec::new();
+                for assignment in &self.data_quality_plan.temporal_roles {
+                    if !window_columns.contains(&assignment.column) {
+                        window_columns.push(assignment.column.clone());
+                    }
+                }
+                choices.extend(window_columns.into_iter().flat_map(|column| {
+                    QUALITY_WINDOW_WIDTHS
+                        .iter()
+                        .map(move |every| QualityGrain::TimeWindows {
+                            column: column.clone(),
+                            every: (*every).to_string(),
+                        })
+                }));
                 // Likewise for a grain whose time role has since been unassigned.
                 if !choices.contains(&self.data_quality_plan.grain) {
                     choices.insert(0, self.data_quality_plan.grain.clone());

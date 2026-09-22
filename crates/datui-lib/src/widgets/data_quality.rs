@@ -1541,7 +1541,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     let rows_label = match rows {
         Some(rows) => numfmt::group_chrome(rows),
         None if config.plan.samples_each_segment() => format!(
-            "unknown; {} per segment, {} kept at most",
+            "unknown; {} per segment, refused over {}",
             numfmt::group_chrome(config.plan.sample_rows.min(50_000)),
             numfmt::group_chrome(MAX_RETAINED_SAMPLE_ROWS)
         ),
@@ -1603,7 +1603,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         Row::new(vec![
             Cell::from("Estimate basis"),
             Cell::from(if config.plan.samples_each_segment() {
-                "full scope read; retained sample capped at 500,000 rows / 512 MiB"
+                "full scope read; refused over 500,000 rows or 512 MiB retained"
             } else {
                 "sample prefix row width; full scan unknown"
             }),
@@ -1635,7 +1635,8 @@ fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
         ),
         Line::raw(""),
         Line::raw(if config.plan.samples_each_segment() {
-            "Every eligible row is read; up to the budget is kept per segment."
+            "Every eligible row is read; the budget is kept per segment. If that \
+             would total over 500,000 rows or 512 MiB the run is refused, not trimmed."
         } else {
             "This plan evaluates every eligible row and may read the full source."
         }),

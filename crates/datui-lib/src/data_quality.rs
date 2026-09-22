@@ -2825,13 +2825,49 @@ impl std::fmt::Debug for QualityConflictScan {
 /// anything about a column its file never had, and a conflicting column is not read
 /// into the scope at all. The detail pane says so rather than leaving the reader to
 /// notice that these two denominators are not the others.
+/// What one column loses to the files that disagree: every one of them counted, and
+/// the largest few kept by name.
+///
+/// A dataset of 6,541 files can have a column missing from nearly all of them, so the
+/// names are pruned as they arrive. Holding one entry per file per column is how a
+/// measurement that costs nothing to compute ends up costing hundreds of megabytes.
+#[derive(Default)]
+struct DriftTally {
+    files: usize,
+    rows: usize,
+    named: Vec<QualityFileEvidence>,
+}
+
+impl DriftTally {
+    fn add(&mut self, evidence: QualityFileEvidence) {
+        self.files += 1;
+        self.rows += evidence.rows;
+        self.named.push(evidence);
+        if self.named.len() > MAX_EVIDENCE_FILES * 2 {
+            self.prune();
+        }
+    }
+
+    /// Largest first: the files that cost the column the most rows are the ones worth
+    /// naming and worth reading values from.
+    fn prune(&mut self) {
+        self.named.sort_by(|left, right| {
+            right
+                .rows
+                .cmp(&left.rows)
+                .then_with(|| left.number.cmp(&right.number))
+        });
+        self.named.truncate(MAX_EVIDENCE_FILES);
+    }
+}
+
 fn drift_observations(
     source: &QualitySourceContext,
     conflicts: Option<&QualityConflictScan>,
     polars_streaming: bool,
 ) -> Vec<QualityObservation> {
-    let mut absent = BTreeMap::<String, Vec<QualityFileEvidence>>::new();
-    let mut unread = BTreeMap::<String, Vec<QualityFileEvidence>>::new();
+    let mut absent = BTreeMap::<String, DriftTally>::new();
+    let mut unread = BTreeMap::<String, DriftTally>::new();
     for (file, group) in source.drifting_files() {
         let evidence = |stored_type: Option<String>| QualityFileEvidence {
             number: file + 1,
@@ -2848,7 +2884,7 @@ fn drift_observations(
             absent
                 .entry(column.to_string())
                 .or_default()
-                .push(evidence(None));
+                .add(evidence(None));
         }
         for column in &group.unread {
             let stored = source
@@ -2857,7 +2893,7 @@ fn drift_observations(
             unread
                 .entry(column.to_string())
                 .or_default()
-                .push(evidence(stored));
+                .add(evidence(stored));
         }
     }
 
@@ -2866,24 +2902,15 @@ fn drift_observations(
         (ObservationKind::Absent, absent),
         (ObservationKind::TypeConflict, unread),
     ] {
-        for (column, mut files) in columns {
-            // Largest first: the files that cost the column the most rows are the ones
-            // worth naming and worth reading values from.
-            files.sort_by(|left, right| {
-                right
-                    .rows
-                    .cmp(&left.rows)
-                    .then_with(|| left.number.cmp(&right.number))
-            });
-            let total_files = files.len();
-            let affected_rows = files.iter().map(|file| file.rows).sum();
-            files.truncate(MAX_EVIDENCE_FILES);
+        for (column, mut tally) in columns {
+            tally.prune();
+            let mut files = tally.named;
             if kind == ObservationKind::TypeConflict
                 && let Some(scan) = conflicts
             {
                 read_conflict_examples(scan, &column, &mut files, polars_streaming);
             }
-            let named = if total_files > files.len() {
+            let named = if tally.files > files.len() {
                 format!(", largest {} named", files.len())
             } else {
                 String::new()
@@ -2903,10 +2930,11 @@ fn drift_observations(
             observations.push(QualityObservation {
                 kind,
                 column,
-                affected_rows,
+                affected_rows: tally.rows,
                 evaluated_rows: source.dataset_rows,
                 fact: format!(
-                    "{total_files} of {} files {verb}{sampled}{named}",
+                    "{} of {} files {verb}{sampled}{named}",
+                    tally.files,
                     source.file_names.len()
                 ),
                 normalized_category: None,
@@ -3561,6 +3589,69 @@ mod tests {
         assert_eq!(latency.missing_end, 1);
         assert_eq!(latency.negative_count, 1);
         assert_eq!(latency.p50_seconds, Some(3_600));
+    }
+
+    /// Every file counted, only the largest few named. A column missing from thousands
+    /// of files must not cost one struct per file to say so.
+    #[test]
+    fn a_column_missing_from_many_files_counts_them_all_and_names_the_largest() {
+        use crate::schema_union::DriftGroup;
+
+        const FILES: usize = 25;
+        // File `i` holds `i + 1` rows, so the largest files are the last ones.
+        let mut file_starts = Vec::with_capacity(FILES);
+        let mut row = 0usize;
+        for file in 0..FILES {
+            file_starts.push(row);
+            row += file + 1;
+        }
+        let source = QualitySourceContext {
+            file_names: (0..FILES).map(|file| format!("{file}.parquet")).collect(),
+            file_starts,
+            dataset_rows: row,
+            footers_read: FILES,
+            // Group 1 is missing `fee`; every file is in it.
+            file_group: vec![1; FILES],
+            drift_groups: Arc::new(vec![
+                DriftGroup::default(),
+                DriftGroup {
+                    absent: vec!["fee".into()],
+                    unread: Vec::new(),
+                },
+            ]),
+            ..QualitySourceContext::default()
+        };
+
+        let observations = drift_observations(&source, None, false);
+        assert_eq!(observations.len(), 1);
+        let absent = &observations[0];
+        assert_eq!(absent.kind, ObservationKind::Absent);
+        assert_eq!(
+            (absent.affected_rows, absent.evaluated_rows),
+            (row, row),
+            "every file is counted, not only the named ones"
+        );
+        assert_eq!(absent.files.len(), MAX_EVIDENCE_FILES);
+        assert_eq!(
+            absent.files.first().map(|file| file.number),
+            Some(FILES),
+            "the largest file first"
+        );
+        assert!(
+            absent
+                .fact
+                .starts_with("25 of 25 files has no such column, largest 20 named"),
+            "{}",
+            absent.fact
+        );
+        assert_eq!(
+            absent.evidence_scope().map(|scope| match scope {
+                QualityScope::SourceFiles(files) => files.len(),
+                _ => 0,
+            }),
+            Some(MAX_EVIDENCE_FILES),
+            "the drill-in opens the files it named"
+        );
     }
 
     /// A column that is nearly a key and is not quite one: the repeats are the finding,

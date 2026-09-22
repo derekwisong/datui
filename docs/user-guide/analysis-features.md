@@ -48,7 +48,7 @@ confirmation.
 | Setting | Choices |
 |---|---|
 | Scope | Current view, whole loaded source, a view row range, selected source files, one source partition value, or a source time range |
-| Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or weekly windows on an assigned time role |
+| Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or hourly, daily, weekly, or monthly windows on an assigned time role |
 | Compute | Metadata only, seeded sample (bounded prefix for dataset grain; per-segment after a full selected-scope read for other grains), or full scan |
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
@@ -108,7 +108,10 @@ asks for confirmation; retained sample data is capped at 512 MiB. File mapping
 is available on source scopes and
 on current views that preserve source-row provenance; otherwise the Segments
 screen says that it is unavailable. Row chunks use the selected scope's physical
-order, and sampled rows keep their original chunk labels. Remote sources are
+order, and sampled rows keep their original chunk labels. Time windows are
+offered at `1h`, `1d`, `1w` and `1mo` on each assigned time role and start on
+the calendar boundary for their width, so weeks start on Monday. A window is
+cut at the same place whether the run sampled or scanned it. Remote sources are
 read-only and the access plan always reports zero remote writes.
 
 Complete profiles are reused during the session when the dataset, current

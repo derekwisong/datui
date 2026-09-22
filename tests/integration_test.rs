@@ -921,6 +921,48 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         }
     }
 
+    // Every remaining page and popup must say its own piece at each width, so a
+    // clipped label or a screen that renders nothing at all fails here.
+    for (page, expected) in [
+        (QualityPage::Plan, "Latency threshold"),
+        (QualityPage::Scope, "ELIGIBLE ROWS"),
+        (QualityPage::TimeRoles, "Semantic role"),
+        (QualityPage::Detail, "Provenance:"),
+    ] {
+        app.analysis_modal.set_quality_page(page);
+        for area in [
+            Rect::new(0, 0, 120, 32),
+            Rect::new(0, 0, 80, 24),
+            Rect::new(0, 0, 50, 18),
+        ] {
+            let mut buffer = Buffer::empty(area);
+            app.render(area, &mut buffer);
+            let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+            assert!(
+                screen.contains(expected),
+                "{expected:?} should survive a {}x{} layout",
+                area.width,
+                area.height
+            );
+        }
+    }
+
+    app.analysis_modal.set_quality_page(QualityPage::Plan);
+    for (popup, expected) in [
+        ("access", "Estimate basis"),
+        ("confirm", "remote writes are 0 B."),
+    ] {
+        app.analysis_modal.data_quality_show_access = popup == "access";
+        app.analysis_modal.data_quality_confirm_run = popup == "confirm";
+        let area = Rect::new(0, 0, 120, 32);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains(expected), "{popup} popup should not clip");
+    }
+    app.analysis_modal.data_quality_show_access = false;
+    app.analysis_modal.data_quality_confirm_run = false;
+
     app.analysis_modal.set_quality_page(QualityPage::Segments);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('b'),

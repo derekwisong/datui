@@ -1,6 +1,6 @@
 use crate::data_quality::{
-    DataQualityPlan, DataQualityResults, QualityComparison, QualityCompute, QualityGrain,
-    QualityMetric, QualityPage, QualityScope, TemporalRole, TemporalRoleAssignment,
+    DataQualityPlan, DataQualityResults, QUALITY_WINDOW_WIDTHS, QualityComparison, QualityCompute,
+    QualityGrain, QualityMetric, QualityPage, QualityScope, TemporalRole, TemporalRoleAssignment,
 };
 use crate::statistics::{AnalysisResults, DistributionType};
 use crate::widgets::text_input::TextInput;
@@ -391,15 +391,16 @@ impl AnalysisModal {
                         .map(QualityGrain::Partition),
                 );
                 choices.push(QualityGrain::RowChunks(1_000_000));
-                choices.extend(
-                    self.data_quality_plan
-                        .temporal_roles
-                        .iter()
-                        .map(|assignment| QualityGrain::TimeWindows {
-                            column: assignment.column.clone(),
-                            every: "1w".to_string(),
-                        }),
-                );
+                choices.extend(self.data_quality_plan.temporal_roles.iter().flat_map(
+                    |assignment| {
+                        QUALITY_WINDOW_WIDTHS
+                            .iter()
+                            .map(|every| QualityGrain::TimeWindows {
+                                column: assignment.column.clone(),
+                                every: (*every).to_string(),
+                            })
+                    },
+                ));
                 let current = choices
                     .iter()
                     .position(|choice| choice == &self.data_quality_plan.grain)

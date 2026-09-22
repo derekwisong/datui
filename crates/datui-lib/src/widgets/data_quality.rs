@@ -14,7 +14,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph, Row, StatefulWidget, Table,
-    TableState, Widget,
+    TableState, Widget, Wrap,
 };
 
 pub struct DataQualityWidgetConfig<'a> {
@@ -224,15 +224,31 @@ fn render_plan(
     area: Rect,
     buf: &mut Buffer,
 ) {
+    // The plan table is the page; when the terminal cannot hold everything, drop
+    // the access summary — the plan strip and `p` both still carry it — rather
+    // than let the solver shave a row off the plan and hide a field.
+    const PLAN_ROWS: u16 = 8;
+    const ACCESS_ROWS: u16 = 7;
+    let compact = area.height.saturating_sub(2) < 2 + PLAN_ROWS + ACCESS_ROWS;
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Length(8),
-            Constraint::Length(2),
-            Constraint::Length(5),
-            Constraint::Fill(1),
-        ])
+        .constraints(if compact {
+            vec![
+                Constraint::Length(2),
+                Constraint::Length(PLAN_ROWS),
+                Constraint::Length(0),
+                Constraint::Length(0),
+                Constraint::Min(0),
+            ]
+        } else {
+            vec![
+                Constraint::Length(2),
+                Constraint::Length(PLAN_ROWS),
+                Constraint::Length(2),
+                Constraint::Length(5),
+                Constraint::Min(0),
+            ]
+        })
         .margin(1)
         .split(area);
     render_section_title("PROFILE PLAN", sections[0], config.theme, buf);
@@ -282,7 +298,7 @@ fn render_plan(
     } else {
         table_state.select(None);
     }
-    let table = Table::new(rows, [Constraint::Length(16), Constraint::Fill(1)])
+    let table = Table::new(rows, [Constraint::Length(18), Constraint::Fill(1)])
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -455,6 +471,25 @@ fn render_overview(
             .render(sections[1], buf);
     }
     render_section_title("OBSERVATIONS", sections[2], config.theme, buf);
+
+    // Nothing to remark on is a result, not a blank screen: say so and point at
+    // the profiles that are there anyway.
+    if results.observations.is_empty() {
+        Paragraph::new(vec![
+            Line::raw(format!(
+                "Nothing remarkable in {} {} rows across {} columns.",
+                numfmt::group_chrome(results.evaluated_rows),
+                results.precision.label(),
+                numfmt::group_chrome(results.columns.len())
+            )),
+            Line::raw(""),
+            Line::raw("2 Columns has every measured profile; 3 Segments compares them."),
+        ])
+        .wrap(Wrap { trim: true })
+        .style(Style::default().fg(config.theme.get("dimmed")))
+        .render(sections[3], buf);
+        return;
+    }
 
     let rows = results.observations.iter().map(|item| {
         Row::new(vec![
@@ -1191,55 +1226,59 @@ fn render_detail(
                 .map(numfmt::group_chrome)
                 .unwrap_or_else(|| "-".to_string())
         )),
-        Line::raw(format!(
+    ];
+    // A measurement that does not apply to this type is left out rather than
+    // printed as a dash, so what is on screen was actually measured.
+    if profile.min.is_some() || profile.max.is_some() {
+        text.push(Line::raw(format!(
             "Range: {} .. {}",
             profile.min.as_deref().unwrap_or("-"),
             profile.max.as_deref().unwrap_or("-")
-        )),
-        Line::raw(format!(
-            "Dominant: {}",
-            profile
-                .dominant_value
-                .as_ref()
-                .zip(profile.dominant_count)
-                .map(|(value, count)| format!("{value:?}, {count} rows"))
-                .unwrap_or_else(|| "-".to_string())
-        )),
-        Line::raw(format!(
+        )));
+    }
+    if let Some((value, count)) = profile.dominant_value.as_ref().zip(profile.dominant_count) {
+        text.push(Line::raw(format!(
+            "Dominant: {value:?}, {} {}",
+            numfmt::group_chrome(count),
+            if count == 1 { "row" } else { "rows" }
+        )));
+    }
+    if profile.min_length.is_some() || profile.max_length.is_some() {
+        text.push(Line::raw(format!(
             "{} length: {} .. {}",
             if matches!(profile.dtype, polars::prelude::DataType::List(_)) {
                 "List"
             } else {
                 "Text"
             },
-            profile
-                .min_length
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-            profile
-                .max_length
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "-".to_string())
-        )),
-        Line::raw(format!(
+            count_label(profile.min_length),
+            count_label(profile.max_length)
+        )));
+    }
+    if profile.integer_parse_count.is_some()
+        || profile.decimal_parse_count.is_some()
+        || profile.date_parse_count.is_some()
+        || profile.datetime_parse_count.is_some()
+    {
+        text.push(Line::raw(format!(
             "Text parses: integer {}  decimal {}  date {}  datetime {}",
             count_label(profile.integer_parse_count),
             count_label(profile.decimal_parse_count),
             count_label(profile.date_parse_count),
             count_label(profile.datetime_parse_count),
-        )),
-        Line::raw(""),
-        Line::styled(
-            format!(
-                "Provenance: {} of {} eligible rows; {} precision; sample seed {}.",
-                numfmt::group_chrome(profile.evaluated_rows),
-                count_label(results.total_rows),
-                results.precision.label(),
-                results.sample_seed
-            ),
-            Style::default().fg(config.theme.get("dimmed")),
+        )));
+    }
+    text.push(Line::raw(""));
+    text.push(Line::styled(
+        format!(
+            "Provenance: {} of {} eligible rows; {} precision; sample seed {}.",
+            numfmt::group_chrome(profile.evaluated_rows),
+            count_label(results.total_rows),
+            results.precision.label(),
+            results.sample_seed
         ),
-    ];
+        Style::default().fg(config.theme.get("dimmed")),
+    ));
     for group in results
         .category_variants
         .iter()
@@ -1531,7 +1570,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
 }
 
 fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    let popup = centered_rect(64, 9, area);
+    let popup = centered_rect(72, 10, area);
     Clear.render(popup, buf);
     Paragraph::new(vec![
         Line::styled(
@@ -1554,6 +1593,8 @@ fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
         Line::raw(""),
         Line::raw("Enter run    Esc cancel"),
     ])
+    // The warning is the whole point of the dialog, so wrap it rather than cut it.
+    .wrap(Wrap { trim: true })
     .block(
         Block::default()
             .title(" CONFIRM ACCESS ")

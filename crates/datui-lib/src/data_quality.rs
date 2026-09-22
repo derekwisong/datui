@@ -13,6 +13,8 @@ const QUALITY_WINDOW_START: &str = "__datui_quality_window_start";
 const MAX_SAMPLE_SEGMENTS: usize = 10_000;
 const MAX_RETAINED_SAMPLE_BYTES: usize = 512 * 1024 * 1024;
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
+/// Window widths offered for time-window grain, in the order the plan cycles them.
+pub const QUALITY_WINDOW_WIDTHS: [&str; 4] = ["1h", "1d", "1w", "1mo"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum QualityScope {
@@ -3122,6 +3124,53 @@ mod tests {
         let windowed = compute_data_quality(&frame, Some(3), &window_plan, None, false).unwrap();
         assert_eq!(windowed.segments.len(), 2);
         assert!(windowed.segments[0].label.contains("1w"));
+    }
+
+    #[test]
+    fn every_offered_window_width_cuts_the_scope_it_names() {
+        // One row per day from 1970-01-01, far enough to cross a month boundary.
+        let day = 86_400_000_000i64;
+        let days = 40i64;
+        let stamps = Series::new(
+            "event_at".into(),
+            (0..days).map(|d| d * day).collect::<Vec<_>>(),
+        )
+        .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+        .unwrap();
+        let frame = DataFrame::new(
+            days as usize,
+            vec![
+                Column::new("value".into(), (0..days).collect::<Vec<_>>()),
+                stamps.into(),
+            ],
+        )
+        .unwrap()
+        .lazy();
+        // 1970-01-01 was a Thursday, so 40 days touch seven Monday weeks and two months.
+        let expected = [("1h", 40), ("1d", 40), ("1w", 7), ("1mo", 2)];
+        for (every, segments) in expected {
+            let plan = DataQualityPlan {
+                compute: QualityCompute::Full,
+                grain: QualityGrain::TimeWindows {
+                    column: "event_at".to_string(),
+                    every: every.to_string(),
+                },
+                ..DataQualityPlan::default()
+            };
+            let results =
+                compute_data_quality(&frame, Some(days as usize), &plan, None, false).unwrap();
+            assert_eq!(results.segments.len(), segments, "{every} windows");
+            assert_eq!(
+                results
+                    .segments
+                    .iter()
+                    .map(|segment| segment.evaluated_rows)
+                    .sum::<usize>(),
+                days as usize,
+                "{every} windows must account for every row"
+            );
+            assert!(results.segments[0].label.ends_with(&format!(" / {every}")));
+        }
     }
 
     #[test]

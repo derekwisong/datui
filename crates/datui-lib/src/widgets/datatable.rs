@@ -5518,23 +5518,20 @@ impl DataTableState {
     /// staged-open cloud hive that count is a metadata read per object, and taken
     /// there it is a freeze no keystroke can interrupt.
     ///
-    /// Before the first buffer arrives there is nothing to re-slice and nothing on
-    /// screen to move; the pending collect draws when it lands.
+    /// Nothing is drawn when there is no buffer to re-slice, or when what is held
+    /// does not match the range it claims. [`collect`] reloaded the page in that
+    /// second case; this does not, because `load_buffer` is a collect of that page
+    /// and on a cloud hive that is row groups over the wire — the same freeze in a
+    /// smaller size.
+    ///
+    /// The index still moves, so presses before the first buffer lands are spent on
+    /// a view that cannot show them yet, and the first frame drawn is already scrolled
+    /// to wherever they left it. That is the pre-existing behaviour: the old path
+    /// redrew each press, but only by paying the wait this exists to avoid.
     ///
     /// [`collect`]: Self::collect
     fn rescroll_columns(&mut self) {
-        if self.defer_collect {
-            return;
-        }
-        let held = self
-            .buffered_end_row
-            .saturating_sub(self.buffered_start_row);
-        if held == 0
-            || !self
-                .buffered_df
-                .as_ref()
-                .is_some_and(|b| b.height() == held)
-        {
+        if self.defer_collect || !self.buffer_on_hand() {
             return;
         }
         self.slice_buffer_into_display();

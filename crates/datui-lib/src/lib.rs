@@ -1664,7 +1664,10 @@ pub mod tests {
     /// not landed, and on a staged-open cloud hive that count is a metadata read per
     /// object — a freeze no keystroke can interrupt.
     ///
-    /// Reverting `scroll_right`/`scroll_left` to `self.collect()` fails this.
+    /// The admitted set is *asked for* rather than written down again, so a key added
+    /// to the classifier is covered by this the moment it is added. Reverting
+    /// `scroll_right`/`scroll_left` to `self.collect()` fails it, and so does admitting
+    /// a key that collects — `Char('R')`, say.
     #[test]
     fn a_key_that_acts_while_busy_reads_nothing() {
         use crate::widgets::datatable::DataTableState;
@@ -1678,6 +1681,7 @@ pub mod tests {
                 "a" => (0..100i64).collect::<Vec<_>>(),
                 "b" => (0..100i64).collect::<Vec<_>>(),
                 "c" => (0..100i64).collect::<Vec<_>>(),
+                "d" => (0..100i64).collect::<Vec<_>>(),
             )
             .unwrap()
             .lazy()
@@ -1685,14 +1689,29 @@ pub mod tests {
         let mut lf = rows();
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
 
-        for code in [
+        // Every key the table view can see, so the filter below is the classifier's
+        // answer rather than a copy of its arms.
+        let mut candidates: Vec<KeyCode> = (b'a'..=b'z')
+            .chain(b'A'..=b'Z')
+            .map(|c| KeyCode::Char(c as char))
+            .collect();
+        candidates.extend((1..=12).map(KeyCode::F));
+        candidates.extend([
             KeyCode::Left,
             KeyCode::Right,
-            KeyCode::Char('h'),
-            KeyCode::Char('l'),
-            KeyCode::F(1),
-            KeyCode::Char('?'),
-        ] {
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::Backspace,
+        ]);
+
+        let staged = || {
             let mut state = DataTableState::from_schema_and_lazyframe(
                 schema.clone(),
                 rows(),
@@ -1701,19 +1720,43 @@ pub mod tests {
             )
             .unwrap();
             state.visible_rows = 10;
+            state.visible_termcols = 1;
+            // A page on screen, then the count dropped: what a staged open looks like
+            // while its footers are still being read. With a buffer in hand the scroll
+            // keys do their real work, so this asks whether that work counts.
+            state.set_num_rows(100);
+            state.collect();
+            state.scroll_right();
+            state.invalidate_num_rows();
+            state
+        };
+
+        let mut admitted = 0;
+        for code in candidates {
+            let key = KeyEvent::new(code, KeyModifiers::NONE);
             let (tx, _rx) = std::sync::mpsc::channel();
             let mut app = App::new(tx, crate::tests::test_runtime());
             app.load_active = true;
-            app.apply_schema_ready(state, None, &OpenOptions::default(), None);
-            // A staged open shows rows before the count is in.
-            app.data_table_state.as_mut().unwrap().invalidate_num_rows();
-
-            let key = KeyEvent::new(code, KeyModifiers::NONE);
-            assert!(
-                app.key_acts_while_busy(&key),
-                "{code:?} is expected to act while busy"
+            app.apply_schema_ready(staged(), None, &OpenOptions::default(), None);
+            if !app.key_acts_while_busy(&key) {
+                continue;
+            }
+            admitted += 1;
+            assert_eq!(
+                app.data_table_state
+                    .as_ref()
+                    .and_then(|s| s.num_rows_if_valid()),
+                None,
+                "{code:?}: the staged open should start without a count"
             );
-            let _ = app.key(&key);
+
+            // The event the key returns is part of what the key does: `Char('R')`
+            // acts by handing back `AppEvent::Reset`, and dropping it here would let
+            // an admitted key that collects through the check.
+            if let Some(next) = app.key(&key) {
+                let _ = app.handle(&next);
+            }
+
             assert_eq!(
                 app.data_table_state
                     .as_ref()
@@ -1722,6 +1765,10 @@ pub mod tests {
                 "{code:?} acts while busy, so it must not count the rows"
             );
         }
+        assert!(
+            admitted >= 6,
+            "the classifier should admit the view keys; it admitted {admitted}"
+        );
     }
 
     /// End pressed at one dataset does not move the view of the next.
@@ -6033,9 +6080,10 @@ impl App {
     /// already holds through `rescroll_columns`, never `collect`, which counts the rows
     /// when the count has not landed. Admitting a key that can count would put a
     /// metadata read per object of a cloud hive on this very thread —
-    /// `a_key_that_acts_while_busy_reads_nothing` holds the line. Everything else, letters included, is type-ahead and waits; a bare
-    /// Enter or Esc there confirms nothing and is dropped by the caller. Nothing is
-    /// classified by keycode alone: the `h` in a typed `/hello` never scrolls.
+    /// `a_key_that_acts_while_busy_reads_nothing` holds the line. Everything else,
+    /// letters included, is type-ahead and waits; a bare Enter or Esc there confirms
+    /// nothing and is dropped by the caller. Nothing is classified by keycode alone:
+    /// the `h` in a typed `/hello` never scrolls.
     pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {
         if self.hard_escape_while_busy(key) {
             return true;

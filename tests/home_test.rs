@@ -83,11 +83,14 @@ fn test_hive_directory_is_one_dataset() {
         EntryKind::Hive
     );
 
-    // And it appears as a single row, not a tree to walk.
+    // And it appears as a single row, not a tree to walk. The listing does not look
+    // into it — no listing looks into anything — so the row says only that nothing
+    // has, until something does.
     let entries = discover::scan_dir(tmp.path());
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "sales");
-    assert_eq!(entries[0].kind, EntryKind::Hive);
+    assert_eq!(entries[0].kind, EntryKind::Unknown);
+    assert_eq!(datui::home::look_into(&entries[0]).kind, EntryKind::Hive);
 }
 
 #[test]
@@ -1275,9 +1278,11 @@ fn test_a_recent_adopts_the_classification_its_root_probe_found() {
     };
     assert_eq!(kind_of(&home), Some(EntryKind::Unknown));
 
-    // After it: whatever the probe actually determined.
+    // After it, and after something looks into the rows it returned: whatever that
+    // found. A probe lists a remote directory; it does not read every folder in it.
     home.probe_ready(root.clone(), discover::scan_dir(&root));
     home.rebuild(std::slice::from_ref(&root), std::slice::from_ref(&dataset));
+    home.classify_now(10);
 
     let kinds: Vec<_> = home
         .visible()
@@ -2055,29 +2060,310 @@ fn test_a_huge_directory_is_listed_as_a_bounded_prefix() {
     );
 }
 
-#[test]
-fn test_subdirectories_past_the_budget_are_listed_without_being_opened() {
-    // Classifying a subdirectory costs a read_dir and several stats. A directory of
-    // thousands of them must not turn one listing into thousands of round trips —
-    // the ones past the budget are still listed, just as places to step into.
-    let tmp = TempDir::new().unwrap();
-    for i in 0..200 {
-        let hive = tmp.path().join(format!("d{i:03}"));
-        std::fs::create_dir_all(hive.join("year=2024")).unwrap();
-        std::fs::write(hive.join("year=2024/part.parquet"), b"").unwrap();
+/// A directory of `n` identically shaped hive partitions.
+fn hive_partitions(dir: &std::path::Path, n: usize) {
+    for i in 0..n {
+        let hive = dir.join(format!("d{i:03}"));
+        fs::create_dir_all(hive.join("year=2024")).unwrap();
+        fs::write(hive.join("year=2024/part.parquet"), b"").unwrap();
     }
+}
+
+#[test]
+fn test_a_label_does_not_depend_on_where_the_row_sits() {
+    // Classifying the first sixty-four subdirectories and calling every identical one
+    // after them `dir` made a row's label a fact about its position in the listing,
+    // not about what was in it (#270). Either all of them are looked into or none is.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
 
     let entries = discover::scan_dir(tmp.path());
     assert_eq!(entries.len(), 200, "every subdirectory is still listed");
 
-    let hives = entries.iter().filter(|e| e.kind == EntryKind::Hive).count();
+    let first = entries[0].kind;
+    if let Some(odd) = entries.iter().find(|e| e.kind != first) {
+        panic!(
+            "identical directories must carry identical labels; {} reads as {:?} \
+             where {} reads as {first:?}",
+            odd.name, odd.kind, entries[0].name,
+        );
+    }
+    assert_eq!(
+        first,
+        EntryKind::Unknown,
+        "a listing too big to look into says so, rather than calling every row a \
+         plain directory"
+    );
+}
+
+#[test]
+fn test_a_small_listing_is_no_more_looked_into_than_a_large_one() {
+    // Classifying only the listings small enough to afford it would move the
+    // arbitrariness rather than remove it: two directories holding the same folders
+    // would still disagree about what to call them, decided by how many neighbours
+    // each folder happened to have. No listing looks into anything.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 4);
+    let small = discover::scan_dir(tmp.path());
+
+    let big_dir = TempDir::new().unwrap();
+    hive_partitions(big_dir.path(), 200);
+    let big = discover::scan_dir(big_dir.path());
+
+    assert_eq!(small.len(), 4);
+    assert_eq!(big.len(), 200);
+    let kinds = |entries: &[datui::discover::Entry]| {
+        let mut kinds: Vec<EntryKind> = entries.iter().map(|e| e.kind).collect();
+        kinds.dedup();
+        kinds
+    };
+    assert_eq!(
+        kinds(&small),
+        vec![EntryKind::Unknown],
+        "a four-folder listing looks into nothing"
+    );
+    assert_eq!(
+        kinds(&big),
+        vec![EntryKind::Unknown],
+        "and neither does a two-hundred-folder one"
+    );
+}
+
+/// Put the viewport where a frame of `height` rows would put it to show row
+/// `selected`, exactly as `render_list` does. The two move together — a test that
+/// sets one and not the other describes a screen that cannot exist.
+fn looking_at(home: &mut HomeState, selected: usize, height: usize) {
+    home.selected = selected;
+    home.view_height = height;
+    home.scroll = selected.saturating_sub(height.saturating_sub(3).max(1));
+}
+
+/// The entry rows on screen, in order, and what each is called.
+fn visible_kinds(home: &HomeState) -> Vec<(String, EntryKind)> {
+    home.visible()
+        .iter()
+        .filter_map(|r| match r {
+            Row::Entry { entry, .. } => Some((entry.name.clone(), entry.kind)),
+            Row::Header { .. } => None,
+        })
+        .collect()
+}
+
+#[test]
+fn test_scrolling_classifies_the_rows_that_are_there() {
+    // Row four thousand of a listing nobody could afford to classify up front is
+    // still a row somebody is reading. What the viewport shows is what gets looked
+    // into — not the head of the list, which is where a budget spent in directory
+    // order always went.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+
+    looking_at(&mut home, 167, 20);
+    assert_eq!(home.scroll, 150, "the frame starts here");
+    home.classify_now(20);
+
+    let kinds = visible_kinds(&home);
+    let on_screen = &kinds[149..169]; // One header row sits above the entries.
     assert!(
-        hives <= 64,
-        "{hives} directories were opened to classify them; the budget is 64"
+        on_screen.iter().all(|(_, k)| *k == EntryKind::Hive),
+        "the rows on screen should have been looked into: {on_screen:?}"
+    );
+    assert_eq!(
+        kinds[0].1,
+        EntryKind::Unknown,
+        "and the top of the list, which nobody is looking at, should not have been"
+    );
+}
+
+#[test]
+fn test_a_kind_that_arrives_late_does_not_move_the_row() {
+    // `sort_entries` puts datasets before directories, so a row found to be a hive
+    // dataset would jump groups if the listing re-sorted itself as kinds landed —
+    // under the cursor, while the user was scrolling. It must not.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    for name in ["a.parquet", "z.parquet"] {
+        touch(tmp.path(), name);
+    }
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+
+    let before = visible_kinds(&home);
+    looking_at(&mut home, 117, 20);
+    home.classify_now(20);
+    let after = visible_kinds(&home);
+
+    let moved: Vec<&String> = before
+        .iter()
+        .zip(&after)
+        .filter(|((was, _), (now, _))| was != now)
+        .map(|((was, _), _)| was)
+        .collect();
+    assert!(
+        moved.is_empty(),
+        "nothing re-sorts when a kind lands; these rows moved: {moved:?}"
+    );
+    let landed = before
+        .iter()
+        .zip(&after)
+        .filter(|((_, was), (_, now))| *was == EntryKind::Unknown && *now == EntryKind::Hive)
+        .count();
+    assert!(
+        landed > 0,
+        "and a kind did arrive after the rows were drawn, or this proves nothing"
+    );
+}
+
+#[test]
+fn test_what_is_looked_into_is_the_viewport_and_a_screen_either_side() {
+    // A buffer above and below, so arrowing off the edge of the screen does not wait
+    // for a round trip. Nothing beyond it: a listing of six thousand rows would
+    // otherwise spend ten seconds on rows nobody asked about.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+
+    looking_at(&mut home, 107, 10);
+    let wanted: Vec<String> = home
+        .unclassified_visible(200)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+
+    assert!(
+        wanted.len() < 200,
+        "the whole listing was asked about, not the part on screen"
+    );
+    let all = visible_names(&home);
+    for name in &wanted {
+        let at = all.iter().position(|n| n == name).unwrap() + 1; // The header row.
+        assert!(
+            at.abs_diff(home.scroll) <= 2 * home.view_height,
+            "{name} sits at row {at}, which is nowhere near the viewport at {}",
+            home.scroll
+        );
+    }
+    // The highlighted row comes first, so a batch smaller than the window spends
+    // itself on the row about to be acted on rather than on the buffer around it.
+    assert_eq!(
+        home.unclassified_visible(1)[0].name,
+        all[home.selected - 1],
+        "the highlighted row is the first one asked about"
+    );
+}
+
+#[test]
+fn test_folders_nobody_has_looked_into_are_not_counted_as_datasets() {
+    // The control bar's figure is "how many datasets are listed". A fresh listing has
+    // looked into nothing, so every folder in it is `Unknown` — and `is_dataset` says
+    // yes to those, because they are offered as openable and looked into first. That
+    // is the right answer to "may this be opened" and the wrong one to count.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+
+    let counted = |h: &HomeState| {
+        h.visible()
+            .iter()
+            .filter(|r| matches!(r, Row::Entry { entry, .. } if entry.kind.is_known_dataset()))
+            .count()
+    };
+    assert_eq!(
+        counted(&home),
+        0,
+        "two hundred folders nobody has looked into are not two hundred datasets"
+    );
+    // But there is plainly somewhere to go, so the "nothing here" guidance stays away.
+    assert!(
+        home.has_any_dataset(),
+        "an unlooked-at folder is still somewhere to go"
+    );
+
+    looking_at(&mut home, 17, 10);
+    home.classify_now(4);
+    assert_eq!(
+        counted(&home),
+        4,
+        "and the figure counts them as they are looked into"
+    );
+}
+
+#[test]
+fn test_a_new_listing_moves_the_viewport_with_the_cursor() {
+    // The renderer settles `scroll` from `selected` every frame, but the pass that
+    // looks into rows is asked for when a listing lands — before that frame. Browsing
+    // into a directory selects the first row while `scroll` still points four hundred
+    // rows into the listing that was just replaced, and the whole first batch goes to
+    // rows nobody is looking at.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    looking_at(&mut home, 187, 10);
+    assert_eq!(home.scroll, 180);
+
+    // A different directory, as browsing into one produces.
+    let next = TempDir::new().unwrap();
+    hive_partitions(next.path(), 200);
+    home.apply_listing(datui::home::Listing {
+        sections: vec![datui::home::Section {
+            title: "NEXT".into(),
+            subtitle: None,
+            rows: discover::scan_dir(next.path()),
+            unavailable: false,
+            unavailable_note: None,
+            folded_by_default: false,
+            remote_root: None,
+            waiting: false,
+        }],
+    });
+
+    assert_eq!(home.selected, 1, "the cursor lands on the first row");
+    assert!(
+        home.scroll <= home.selected,
+        "and the viewport is where that row is, not where the last listing left it: \
+         scroll {} for row {}",
+        home.scroll,
+        home.selected
+    );
+    let asked: Vec<String> = home
+        .unclassified_visible(4)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert!(
+        asked.iter().all(|n| n < &"d020".to_string()),
+        "so the first pass goes to the rows on screen: {asked:?}"
+    );
+}
+
+#[test]
+fn test_paging_past_rows_does_not_leave_them_queued() {
+    // Each pass is chosen from the viewport as it is when the last one landed, so a
+    // page that scrolled past four hundred rows asks about the ones it stopped on
+    // rather than about every row it went by.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    looking_at(&mut home, 17, 10);
+    let first: Vec<String> = home
+        .unclassified_visible(4)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    looking_at(&mut home, 187, 10);
+    let after_paging: Vec<String> = home
+        .unclassified_visible(4)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+
+    assert!(
+        !first.is_empty() && !after_paging.is_empty(),
+        "both passes should have found something to look into"
     );
     assert!(
-        hives > 0,
-        "the ones inside the budget should still be classified"
+        after_paging.iter().all(|name| !first.contains(name)),
+        "the rows passed over are not still queued: {after_paging:?}"
     );
 }
 
@@ -3131,10 +3417,14 @@ fn test_azure_steps_through_account_container_and_folder() {
     assert_eq!(home.sections[0].title, "datalake001");
 }
 
-/// A folder whose footers said its files are separate tables must not be offered as
-/// one dataset again by the next run's listing. The kind is the only thing carried
-/// over: a directory has no size for the fingerprint that guards the rest, so this is
-/// checked against its modification time instead.
+/// What a previous run found a folder to be is what the next run's listing goes on,
+/// since a listing looks into nothing itself. A folder whose footers said its files
+/// are separate tables must not be offered as one dataset again until those footers
+/// have been read a second time.
+///
+/// The kind is the only thing carried over here: a directory has no size for the
+/// fingerprint that guards the rest, so this is checked against its modification time
+/// instead.
 #[test]
 fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
     use datui::cache::DatasetFacts;
@@ -3179,8 +3469,8 @@ fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
 
     assert_eq!(
         listed(Vec::new()),
-        EntryKind::MultiFile,
-        "the filenames alone still say multi"
+        EntryKind::Unknown,
+        "with nothing remembered, the listing says only that nothing has looked"
     );
 
     let facts = |mtime| DatasetFacts {
@@ -3201,8 +3491,8 @@ fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
     );
     assert_eq!(
         listed(vec![(folder.clone(), facts(mtime - 1))]),
-        EntryKind::MultiFile,
-        "a folder whose contents changed is measured again"
+        EntryKind::Unknown,
+        "and a folder whose contents changed is looked into again rather than recalled"
     );
 }
 

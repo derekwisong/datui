@@ -31,15 +31,6 @@ const HIVE_PROBE_LIMIT: usize = 8;
 /// cannot hang the UI.
 pub const MAX_ENTRIES_PER_DIR: usize = 5_000;
 
-/// Subdirectories looked inside during a single scan.
-///
-/// Classification is what separates a hive dataset from a plain folder, and it costs
-/// a `read_dir` plus a handful of stats *per subdirectory*. A directory holding
-/// thousands of them turns one listing into thousands of round trips — milliseconds
-/// locally, minutes on a network share. Past this many, a subdirectory is listed as
-/// a place to step into and classified when you actually step into it.
-const MAX_CLASSIFY_PER_DIR: usize = 64;
-
 /// What a home-screen row represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -105,6 +96,17 @@ impl EntryKind {
     /// without the listing this deliberately has not fetched.
     pub fn is_dataset(self) -> bool {
         !matches!(self, EntryKind::Directory) && !self.is_lake_table()
+    }
+
+    /// Whether this row is *known* to be a dataset.
+    ///
+    /// [`EntryKind::is_dataset`] answers "may this be opened", and a row nothing has
+    /// looked into answers yes: it is offered, and looked into before it is acted on.
+    /// This one answers "is this a dataset", which such a row cannot answer at all —
+    /// and that is the question counting asks. A folder of two hundred subdirectories
+    /// nobody has looked into is not two hundred datasets.
+    pub fn is_known_dataset(self) -> bool {
+        self != EntryKind::Unknown && self.is_dataset()
     }
 
     /// A Delta, Iceberg or Hudi table root: a log beside the data files that says which
@@ -625,17 +627,26 @@ pub struct Scan {
 
 /// List one directory, doing a bounded amount of work regardless of what is in it.
 ///
-/// Three separate limits apply, because a directory can be pathological in three
-/// different ways: too many entries (`MAX_ENTRIES_PER_DIR`), too many subdirectories
-/// worth looking inside (`MAX_CLASSIFY_PER_DIR`), and too many files inside any one
-/// of those (`HIVE_PROBE_LIMIT`). None of them opens a data file.
+/// The cost is one `read_dir` and a `stat` per entry, bounded by
+/// [`MAX_ENTRIES_PER_DIR`], and nothing per subdirectory at all.
+///
+/// **Nothing here is classified.** Telling a hive dataset from a plain folder means
+/// reading the folder, which is a round trip apiece on a share — so no listing pays
+/// for it, however small. Every subdirectory comes back [`EntryKind::Unknown`], which
+/// claims nothing, and is looked into later from the viewport, a batch at a time, by
+/// whoever is actually reading the rows.
+///
+/// That is what makes a row's label a fact about the row. Classifying the first
+/// sixty-four subdirectories and calling every identical one after them a plain
+/// directory made it a fact about position instead; classifying them only when a
+/// listing is small enough moved the arbitrariness rather than removing it, since two
+/// directories of the same folders would still disagree about what to call them.
 pub fn scan_dir_bounded(dir: &Path) -> Scan {
     let Ok(iter) = std::fs::read_dir(dir) else {
         return Scan::default();
     };
 
     let mut entries = Vec::new();
-    let mut classified = 0usize;
     let mut seen = 0usize;
     let mut truncated = false;
 
@@ -658,15 +669,7 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
         };
 
         let kind = if meta.is_dir() {
-            // Past the budget a subdirectory is still listed, just not looked into.
-            // Degrading to "a place to step into" costs a label; classifying every
-            // one of ten thousand costs the listing.
-            if classified < MAX_CLASSIFY_PER_DIR {
-                classified += 1;
-                classify_directory(&path)
-            } else {
-                EntryKind::Directory
-            }
+            EntryKind::Unknown
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
         } else {
@@ -686,9 +689,19 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
 ///
 /// Recency is a better sort for recents, but a directory listing is a place you
 /// scan by name, so name order wins here.
+///
+/// A row nothing has looked into yet sorts with the directories, although
+/// [`EntryKind::is_dataset`] offers it as openable. In a fresh listing that is every
+/// subdirectory, so what this amounts to there is files first and folders after —
+/// and it is the one ordering a folder can be given before anything is known about
+/// it, since it is where the row lands if the folder turns out to be a plain one.
+///
+/// Which is the point: a kind arriving later never moves the row, because a row that
+/// moves out from under the cursor while you are scrolling is worse than a label that
+/// is late.
 fn sort_entries(entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
-        let group = |k: EntryKind| if k.is_dataset() { 0 } else { 1 };
+        let group = |k: EntryKind| if k.is_known_dataset() { 0 } else { 1 };
         group(a.kind).cmp(&group(b.kind)).then_with(|| {
             a.name
                 .to_ascii_lowercase()

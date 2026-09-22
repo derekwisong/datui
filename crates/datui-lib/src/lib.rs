@@ -16,6 +16,15 @@ const MEASURE_BATCH: usize = 12;
 /// Rows a probe measures while it is already reading a remote directory.
 const PROBE_MEASURE_LIMIT: usize = 24;
 
+/// Rows one classification pass looks into.
+///
+/// A cap on work in flight rather than a budget spent per directory: what gets looked
+/// into is what is on screen, and the next pass is chosen from the viewport as it is
+/// when the previous one lands. Sized like [`MEASURE_BATCH`], for the same reason —
+/// on a share that answers in milliseconds per row, a screenful arriving in pieces
+/// reads as filling in, and one long silence reads as broken.
+const CLASSIFY_BATCH: usize = 16;
+
 /// Probes allowed at once. A probe of a share that has gone away holds its thread
 /// until the process exits, so the number of them has to be bounded.
 const MAX_CONCURRENT_PROBES: usize = 4;
@@ -474,6 +483,127 @@ mod probe_slot_tests {
             app.home_probes_inflight,
             vec![wedged],
             "a thread still stuck on a dead mount must keep costing a slot"
+        );
+    }
+}
+
+#[cfg(test)]
+mod classify_batch_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// A listing of `n` folders nothing has looked into, under a directory that does
+    /// not exist — so a pass over them settles nothing and blocks on nothing.
+    fn unlooked_at(n: usize) -> home::Listing {
+        let rows = (0..n)
+            .map(|i| {
+                let mut entry =
+                    discover::Entry::directory(&PathBuf::from(format!("/pretend/share/d{i:04}")));
+                entry.kind = discover::EntryKind::Unknown;
+                entry
+            })
+            .collect();
+        home::Listing {
+            sections: vec![home::Section {
+                title: "SHARE".into(),
+                subtitle: None,
+                rows,
+                unavailable: false,
+                unavailable_note: None,
+                folded_by_default: false,
+                remote_root: None,
+                waiting: false,
+            }],
+        }
+    }
+
+    /// Put the viewport where a frame of twenty rows would put it to show `selected`,
+    /// exactly as `render_list` does. The two move together, so a test that set one
+    /// and not the other would describe a screen that cannot exist.
+    fn looking_at(app: &mut App, selected: usize) {
+        app.home.selected = selected;
+        app.home.view_height = 20;
+        app.home.scroll = selected.saturating_sub(17);
+    }
+
+    /// Paging quickly must not leave a classification queued for every row it went
+    /// past. Only one pass is ever out, and the next one is chosen from the viewport
+    /// as it is when that one lands — so a page that crossed four hundred rows asks
+    /// about the forty it stopped on.
+    #[test]
+    fn only_one_classification_pass_is_out_at_a_time() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.apply_listing(unlooked_at(500));
+        looking_at(&mut app, 18);
+
+        app.request_home_classifications();
+        assert!(
+            app.home.classify_in_flight,
+            "the first pass should have gone out"
+        );
+
+        // Paging while it is out. Nothing more is asked for meanwhile.
+        for row in [117, 217, 317, 417] {
+            looking_at(&mut app, row);
+            app.request_home_classifications();
+        }
+        assert!(app.home.classify_in_flight, "and still only the one");
+
+        // It lands, and what follows it is about where the viewport is now.
+        app.event(&AppEvent::HomeClassified {
+            generation: app.home_generation,
+            measured: Vec::new(),
+        });
+        let next = app.home.unclassified_visible(CLASSIFY_BATCH);
+        assert!(
+            next.iter()
+                .all(|e| e.name.trim_start_matches('d').parse::<usize>().unwrap() >= 300),
+            "the next pass follows the viewport, not the rows paged over: {:?}",
+            next.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// A pass that answers must give the slot back, or the home screen stops
+    /// classifying anything for the rest of the session.
+    #[test]
+    fn an_answered_pass_frees_the_slot() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.classify_in_flight = true;
+
+        app.event(&AppEvent::HomeClassified {
+            generation: app.home_generation,
+            measured: Vec::new(),
+        });
+
+        assert!(!app.home.classify_in_flight);
+    }
+
+    /// A pass belonging to a listing the user has moved on from is dropped, which is
+    /// what keeps a stale kind from being written into a row that is not the row it
+    /// was asked about.
+    #[test]
+    fn a_stale_pass_is_dropped() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.home.apply_listing(unlooked_at(4));
+        let path = PathBuf::from("/pretend/share/d0000");
+
+        app.event(&AppEvent::HomeClassified {
+            generation: app.home_generation.wrapping_sub(1),
+            measured: vec![(
+                path.clone(),
+                home::Measured {
+                    kind: Some(discover::EntryKind::Hive),
+                    ..Default::default()
+                },
+            )],
+        });
+
+        assert!(
+            !app.home.enriched.contains_key(&path),
+            "a result from a listing that is gone should not be kept"
         );
     }
 }
@@ -4556,6 +4686,13 @@ pub enum AppEvent {
         generation: u64,
         measured: Vec<(PathBuf, crate::home::Measured)>,
     },
+    /// What the rows on screen turned out to be. The same payload as
+    /// [`AppEvent::HomeMeasured`] and folded in the same way: a kind is one of the
+    /// things a look into a row produces.
+    HomeClassified {
+        generation: u64,
+        measured: Vec<(PathBuf, crate::home::Measured)>,
+    },
     /// A batch of datasets found by the background search below the working
     /// directory. Sent repeatedly while the walk runs, so a cold tree fills in
     /// rather than arriving all at once at the end.
@@ -7576,32 +7713,67 @@ impl App {
         let tx = self.events.clone();
         let cache = self.cache.clone();
         self.runtime.spawn_blocking(move || {
-            let measured = wanted
-                .into_iter()
-                .map(|entry| {
-                    let mut probe = entry.clone();
-                    discover::enrich(&mut probe);
-                    probe.size = probe.size.or(entry.size);
-                    probe.modified = probe.modified.or(entry.modified);
-                    let facts = home::facts_for(&probe);
-                    (
-                        entry.path.clone(),
-                        home::measured_from(&probe, &entry),
-                        facts,
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            // Remember what was learned, so the next run has it before reading
-            // anything. Purely a cache: every entry carries the size and mtime it came
-            // from and invalidates itself when those change.
-            let facts: Vec<_> = measured.iter().filter_map(|(_, _, f)| f.clone()).collect();
-            cache.record_dataset_facts(&facts);
-
-            let measured = measured.into_iter().map(|(p, m, _)| (p, m)).collect();
             let _ = tx.send(AppEvent::HomeMeasured {
                 generation,
-                measured,
+                measured: home::look_into_batch(wanted, &cache),
+            });
+        });
+    }
+
+    /// Ask for what the frame just drawn needs and did not have: counts for the rows
+    /// on screen that have none, and kinds for the rows nothing has looked into.
+    ///
+    /// After the frame, never during it. Scrolling is what brings new rows into view,
+    /// and the reading is a worker's job — this thread only decides what is worth
+    /// asking about.
+    pub fn request_what_the_frame_needs(&mut self) {
+        if self.input_mode != InputMode::Home {
+            return;
+        }
+        if std::mem::take(&mut self.home.pending_enrich) {
+            self.request_home_measurements();
+        }
+        if std::mem::take(&mut self.home.pending_classify) {
+            self.request_home_classifications();
+        }
+    }
+
+    /// Ask a worker what the rows on screen are.
+    ///
+    /// Classifying a row means reading the directory it names, which on a share is a
+    /// round trip and on a wedged mount never returns — so it happens here rather
+    /// than while the listing is built, where it was paid for in directory order and
+    /// bought a label for the first sixty-four rows and a wrong one for the rest.
+    ///
+    /// A detached thread, not the runtime's blocking pool, for the reason the probes
+    /// give: a thread stuck on an unreachable `hard` mount never comes back, and the
+    /// pool is shared with the work that actually loads data. One at a time, so a
+    /// share that has stopped answering costs one thread and then stops asking.
+    ///
+    /// This measures remote rows as well as classifying them, which
+    /// [`HomeState::unmeasured_visible`] deliberately refuses to do — it leaves them to
+    /// their root's probe, so that a share gets one thread and not two. That reasoning
+    /// no longer reaches: the probe scans a remote directory before anything has looked
+    /// into it, so every row it returns is `Unknown` and there is nothing for it to
+    /// measure. This pass is the only thing left that can, and it makes the same bargain
+    /// the probe made — one detached thread, on a filesystem it is already reading.
+    fn request_home_classifications(&mut self) {
+        if self.home.classify_in_flight {
+            return;
+        }
+        let wanted = self.home.unclassified_visible(CLASSIFY_BATCH);
+        if wanted.is_empty() {
+            return;
+        }
+
+        self.home.classify_in_flight = true;
+        let generation = self.home_generation;
+        let tx = self.events.clone();
+        let cache = self.cache.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(AppEvent::HomeClassified {
+                generation,
+                measured: home::look_into_batch(wanted, &cache),
             });
         });
     }
@@ -14659,6 +14831,7 @@ impl App {
                 #[cfg(feature = "cloud")]
                 self.spawn_cloud_discovery();
                 self.request_home_measurements();
+                self.request_home_classifications();
                 None
             }
             AppEvent::HomeMeasured {
@@ -14674,6 +14847,29 @@ impl App {
                 }
                 self.home.apply_measurements();
                 self.request_home_measurements();
+                None
+            }
+            AppEvent::HomeClassified {
+                generation,
+                measured,
+            } => {
+                self.home.classify_in_flight = false;
+                if *generation != self.home_generation {
+                    return None;
+                }
+                for (path, m) in measured {
+                    self.home.enriched.insert(path.clone(), m.clone());
+                }
+                // Nothing re-sorts. `apply_measurements` writes the kind into the row
+                // where it already is, which is the whole reason a kind is allowed to
+                // arrive after the row was drawn: a listing that reshuffled itself
+                // under the cursor while it filled in would be worse than a late
+                // label.
+                self.home.apply_measurements();
+                // The next batch is chosen from the viewport as it is now, so a page
+                // that scrolled past four hundred rows while this one was out asks
+                // about the forty it landed on, not the four hundred it left behind.
+                self.request_home_classifications();
                 None
             }
             AppEvent::HomePathCompleted {
@@ -17191,12 +17387,16 @@ impl Widget for &mut App {
         // that is how many datasets are listed, not the table's row count.
         if main_view_content == MainViewContent::Home {
             // Only things that can actually be opened. A directory is somewhere to
-            // look, not a dataset, and counting it makes the figure a lie.
+            // look, not a dataset, and counting it makes the figure a lie — and so
+            // does counting a folder nothing has looked into yet, which in a fresh
+            // listing is every folder in it.
             let datasets = self
                 .home
                 .visible()
                 .iter()
-                .filter(|r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_dataset()))
+                .filter(
+                    |r| matches!(r, home::Row::Entry { entry, .. } if entry.kind.is_known_dataset()),
+                )
                 .count();
             // State, not actions: how many datasets are listed and what order they
             // are in. The Tab key that changes it lives with the other keys.
@@ -17728,13 +17928,7 @@ pub fn run(input: RunInput, config: Option<AppConfig>) -> Result<()> {
             updated = true;
         }
 
-        // Scrolling brings new rows into view, so ask for those once the frame that
-        // revealed them has been drawn. The request is served by a worker; this thread
-        // only decides what is worth asking about.
-        if app.home.pending_enrich && app.input_mode == InputMode::Home {
-            app.home.pending_enrich = false;
-            app.request_home_measurements();
-        }
+        app.request_what_the_frame_needs();
 
         if updated {
             terminal.draw(|frame| frame.render_widget(&mut *app, frame.area()))?;

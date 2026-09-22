@@ -5916,3 +5916,257 @@ fn test_right_into_a_lake_table_says_why() {
         "→ says why it is showing files rather than a table: {status:?}"
     );
 }
+
+/// A Delta root on a mount that may not answer is looked at on a worker, and recognized.
+///
+/// `EntryKind::Unknown` — the only thing a remote row that has never been probed can be —
+/// is offered as openable, so Enter read the whole root as one table. Classifying it
+/// where the keys are read is the other half of the trap: `exists`, `is_dir` and a
+/// `read_dir` on a hard-mounted share that has gone away is an uninterruptible freeze,
+/// with Ctrl+C on the same thread.
+#[test]
+fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    for part in ["part-0.parquet", "part-1.parquet"] {
+        std::fs::write(table.join(part), b"x").unwrap();
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    // A share, as the mount table would have it — and the table in Recent, which is how
+    // a row on one comes to be listed without anything having looked at it.
+    app.home.network_check = |_| true;
+    app.home.rebuild(&[], std::slice::from_ref(&table));
+
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == table))
+        .expect("the table is listed under Recent");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Unknown),
+        "nothing has looked at it, which is the whole point"
+    );
+
+    // The key itself decides nothing: it asks.
+    let asked = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert!(
+        matches!(asked, Some(AppEvent::ClassifyThenOpen { .. })),
+        "Enter handed the look to a worker rather than doing it here"
+    );
+    let mut follow = asked;
+    while let Some(event) = follow {
+        follow = app.event(&event);
+    }
+    assert!(app.is_busy(), "and says so while the worker is out");
+
+    // The worker's answer comes back on the channel.
+    let mut opened = false;
+    for _ in 0..50 {
+        let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(10)) else {
+            break;
+        };
+        if matches!(event, AppEvent::Open(..)) {
+            opened = true;
+        }
+        let mut follow = app.event(&event);
+        while let Some(next) = follow {
+            if matches!(next, AppEvent::Open(..)) {
+                opened = true;
+            }
+            follow = app.event(&next);
+        }
+        if !app.is_busy() {
+            break;
+        }
+    }
+
+    assert!(!opened, "it was never opened as one table");
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(table.as_path()),
+        "the worker found a Delta root, and Enter went inside it"
+    );
+    let status = app.home.status.clone().unwrap_or_default();
+    assert!(
+        status.contains("Delta") && status.contains("not read"),
+        "and says why: {status:?}"
+    );
+}
+
+/// A background probe answering does not cancel the open the user asked for.
+///
+/// The first gate was `home_generation`, which means "the listing was rebuilt" and not
+/// "the user navigated": a probe of some other root answering bumps it. On a home screen
+/// with network roots — the only kind where this path runs at all — that made Enter do
+/// nothing, at random, with no message.
+#[test]
+fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let table = tmp.path().join("orders");
+    std::fs::create_dir_all(table.join("_delta_log")).unwrap();
+    std::fs::write(table.join("_delta_log/00000000000000000000.json"), b"{}").unwrap();
+    std::fs::write(table.join("part-0.parquet"), b"x").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.network_check = |_| true;
+    app.home.rebuild(&[], std::slice::from_ref(&table));
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == table))
+        .expect("the table is listed under Recent");
+    app.home.selected = row;
+
+    let mut follow = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    while let Some(event) = follow {
+        follow = app.event(&event);
+    }
+
+    // A listing the user did not ask for lands while the look is out. Through the event,
+    // because it is the handler that refreshes the home screen — which is what the first
+    // gate mistook for the user having navigated.
+    app.event(&AppEvent::HomeProbeReady {
+        root: PathBuf::from("/mnt/somewhere-else"),
+        rows: Some(Vec::new()),
+    });
+
+    for _ in 0..50 {
+        let Ok(event) = rx.recv_timeout(std::time::Duration::from_secs(10)) else {
+            break;
+        };
+        let mut follow = app.event(&event);
+        while let Some(next) = follow {
+            follow = app.event(&next);
+        }
+        if !app.is_busy() {
+            break;
+        }
+    }
+
+    assert_eq!(
+        app.home.browsing.as_deref(),
+        Some(table.as_path()),
+        "the answer was still the one the user was waiting for"
+    );
+}
+
+/// Opening a hive directory from the home screen still reads it as one dataset.
+///
+/// `home_open_path` used to work that out with a `stat`, which on a share that has gone
+/// away is the freeze this whole path exists to avoid. It is told now, from the kind the
+/// caller already has — so the thing to pin is that the answer did not change.
+#[test]
+fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let hive = tmp.path().join("sales");
+    for part in ["year=2024", "year=2025"] {
+        std::fs::create_dir_all(hive.join(part)).unwrap();
+        std::fs::write(hive.join(part).join("part-0.parquet"), b"x").unwrap();
+    }
+
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
+        .expect("the folder is listed");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Hive)
+    );
+
+    let opened = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    match opened {
+        Some(AppEvent::Open(paths, options)) => {
+            assert_eq!(paths, vec![hive.clone()]);
+            assert!(options.hive, "read as one partitioned dataset");
+        }
+        _ => panic!("Enter on a hive folder opens it"),
+    }
+
+    // And a single file is not. (The open above left the home screen.)
+    app.enter_home();
+    std::fs::write(tmp.path().join("one.parquet"), b"x").unwrap();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(
+            |r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "one.parquet"),
+        )
+        .expect("the file is listed");
+    app.home.selected = row;
+    match app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))) {
+        Some(AppEvent::Open(_, options)) => assert!(!options.hive, "a file is not a hive tree"),
+        _ => panic!("Enter on a file opens it"),
+    }
+
+    // And the case that proves the answer is told rather than stat'ed: a row whose kind
+    // says hive but whose path no longer answers, which is how a dropped mount presents
+    // itself. `is_dir()` is false there, so a stat would call it a single file.
+    app.enter_home();
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.home.rebuild(&[], &[]);
+    let gone = PathBuf::from("/mnt/gone/sales");
+    for section in app.home.sections.iter_mut() {
+        for entry in section.rows.iter_mut().filter(|e| e.name == "sales") {
+            entry.path = gone.clone();
+        }
+    }
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.path == gone))
+        .expect("the row is listed");
+    app.home.selected = row;
+    assert_eq!(
+        app.home.selected_entry().map(|e| e.kind),
+        Some(datui::discover::EntryKind::Hive),
+        "the row still says hive"
+    );
+    match app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    ))) {
+        Some(AppEvent::Open(paths, options)) => {
+            assert_eq!(paths, vec![gone]);
+            assert!(
+                options.hive,
+                "told from the kind, not worked out with a stat that cannot reach it"
+            );
+        }
+        other => panic!("Enter opens it: {}", other.is_some()),
+    }
+}

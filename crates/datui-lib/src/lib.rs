@@ -2426,6 +2426,200 @@ pub mod tests {
         );
     }
 
+    /// A look, set up as `ClassifyThenOpen` leaves it.
+    #[cfg(test)]
+    fn a_look_is_out(app: &mut crate::App, path: &std::path::Path) -> u64 {
+        app.classify_requests = app.classify_requests.wrapping_add(1);
+        let id = app.classify_requests;
+        app.classify_inflight = Some(crate::ClassifyRequest {
+            id,
+            path: path.to_path_buf(),
+            browsing: app.home.browsing.clone(),
+        });
+        app.busy = true;
+        id
+    }
+
+    /// An answer nobody is waiting for is dropped — and the busy state it was holding
+    /// goes with it, except where something else has taken that over.
+    ///
+    /// `spawn_bg` sets `busy` and this answer is the only thing that comes back, so a
+    /// drop that does not clear it holds every key for the rest of the session. The
+    /// exception is the one the other handlers rely on: a bumped `task_generation` means
+    /// an `Open` or a collect set `busy` itself, and clearing it here takes the throbber
+    /// off a load that is still running.
+    #[test]
+    fn a_classify_answer_nobody_is_waiting_for_leaves_the_right_busy_behind() {
+        use crate::{App, AppEvent, InputMode};
+
+        type MovedOn = fn(&mut App);
+        let cases: Vec<(&str, MovedOn, bool)> = vec![
+            (
+                "they went back to the data",
+                |app: &mut App| app.input_mode = InputMode::Normal,
+                false,
+            ),
+            (
+                "the browse moved under it",
+                |app: &mut App| app.home.browsing = Some(std::path::PathBuf::from("/elsewhere")),
+                false,
+            ),
+            (
+                "an open took the generation",
+                |app: &mut App| {
+                    app.task_generation = app.task_generation.wrapping_add(1);
+                    app.busy = true;
+                },
+                true,
+            ),
+        ];
+
+        for (what, moved_on, busy_after) in cases {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(tx, crate::tests::test_runtime());
+            app.enter_home();
+            let path = std::path::PathBuf::from("/mnt/share/orders");
+            let request = a_look_is_out(&mut app, &path);
+            let generation = app.task_generation;
+
+            moved_on(&mut app);
+            let moved_to = app.home.browsing.clone();
+
+            let follow = app.event(&AppEvent::BackgroundKindReady {
+                generation,
+                request,
+                path: path.clone(),
+                found: Some(crate::discover::EntryKind::MultiFile),
+                jump: false,
+            });
+
+            assert!(follow.is_none(), "nothing was opened when {what}");
+            assert_eq!(
+                app.home.browsing, moved_to,
+                "and it did not browse into the answer's path when {what}"
+            );
+            assert_eq!(
+                app.is_busy(),
+                busy_after,
+                "busy after {what}: an answer puts down the busy it was holding, and \
+                 only that one"
+            );
+            assert!(
+                app.classify_inflight.is_none(),
+                "and the look is no longer outstanding when {what}"
+            );
+        }
+    }
+
+    /// A newer look replaces an older one, and the older answer touches nothing.
+    ///
+    /// Every key acts on the home screen even while `busy`, so a second Enter is
+    /// reachable. Refusing it meant a look at a share that never answers killed the
+    /// feature for the rest of the session, silently — and the older answer must not put
+    /// down the busy state the newer one is holding.
+    #[test]
+    fn a_newer_look_replaces_an_older_one() {
+        use crate::{App, AppEvent};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        let first = std::path::PathBuf::from("/mnt/share/aaa");
+        let stale = a_look_is_out(&mut app, &first);
+        let generation = app.task_generation;
+
+        // A second Enter, at a row the user moved to while the first was out.
+        let second = std::path::PathBuf::from("/mnt/share/bbb");
+        let _ = app.event(&AppEvent::ClassifyThenOpen {
+            path: second.clone(),
+            jump: false,
+        });
+        assert_eq!(
+            app.classify_inflight.as_ref().map(|r| r.path.as_path()),
+            Some(second.as_path()),
+            "the newer look is the one being waited on"
+        );
+
+        // And the older answer arrives.
+        let follow = app.event(&AppEvent::BackgroundKindReady {
+            generation,
+            request: stale,
+            path: first,
+            found: Some(crate::discover::EntryKind::MultiFile),
+            jump: false,
+        });
+
+        assert!(follow.is_none(), "the stale answer opened nothing");
+        assert!(
+            app.classify_inflight.is_some(),
+            "and did not cancel the look that replaced it"
+        );
+        assert!(app.is_busy(), "nor put down its busy state");
+    }
+
+    /// Going home puts down a look that may never answer.
+    ///
+    /// The case the whole path exists for is a share that has gone away, where the worker
+    /// sits forever. Without this the keyboard waits with it: `abandon_load` clears
+    /// `busy` only for a load, and a look is not one.
+    #[test]
+    fn going_home_does_not_wait_on_a_look_that_may_never_answer() {
+        use crate::App;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"));
+        app.home.status = Some("Looking at orders…".to_string());
+
+        app.enter_home();
+
+        assert!(
+            !app.is_busy(),
+            "the keyboard is not waiting on a dead share"
+        );
+        assert!(app.classify_inflight.is_none(), "and the look is put down");
+        assert_eq!(app.home.status, None, "with its line");
+    }
+
+    /// A typed path the worker could not find comes back to the prompt with the text in
+    /// it, the way a local one never left.
+    #[test]
+    fn a_typed_path_that_is_not_there_comes_back_to_the_prompt() {
+        use crate::{App, AppEvent};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        let path = std::path::PathBuf::from("/mnt/share/nope");
+        let request = a_look_is_out(&mut app, &path);
+        let generation = app.task_generation;
+
+        let follow = app.event(&AppEvent::BackgroundKindReady {
+            generation,
+            request,
+            path: path.clone(),
+            found: None,
+            jump: true,
+        });
+
+        assert!(follow.is_none());
+        assert!(
+            app.home
+                .status
+                .as_deref()
+                .is_some_and(|s| s.contains("No such path")),
+            "it says so: {:?}",
+            app.home.status
+        );
+        assert!(app.home.path_input_active, "and the prompt is back");
+        assert_eq!(
+            app.home.path_input,
+            path.display().to_string(),
+            "with the path still in it"
+        );
+    }
+
     /// A parked End's message does not follow the user off the dataset.
     ///
     /// It parks without setting `busy`, so `abandon_load`'s cleanup — which is a load's
@@ -4443,6 +4637,43 @@ pub enum AppEvent {
     /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
     /// work sent first.
     BackgroundWorkFinished,
+    /// Look at a path off the interface thread, then do with it whatever it turns out to
+    /// need — browse into it, say it is a lake table, or open it.
+    ///
+    /// `exists`, `is_dir` and `classify_directory` are all filesystem calls, and the home
+    /// screen is full of paths on mounts that may not answer. Doing them where the keys
+    /// are read is an uninterruptible freeze with Ctrl+C on the same thread.
+    ClassifyThenOpen {
+        path: PathBuf,
+        /// A jump — a path typed at `~` — rather than a row that was already listed. Esc
+        /// then comes back from there to the listing, not up through wherever the path
+        /// happens to sit.
+        jump: bool,
+    },
+    /// What [`AppEvent::ClassifyThenOpen`]'s worker found. `None` is a path that is not
+    /// there.
+    BackgroundKindReady {
+        generation: u64,
+        /// Which look this answers. A newer one replaces it, and the older answer is then
+        /// not the one the user is waiting for — nor the owner of the busy state.
+        request: u64,
+        path: PathBuf,
+        found: Option<discover::EntryKind>,
+        jump: bool,
+    },
+}
+
+/// A look at a path that is out on a worker, and what would make its answer stale.
+///
+/// `browsing` rather than `home_generation`: the question is whether the user is still
+/// where they asked from, and the listing is rebuilt for reasons that are nothing to do
+/// with them — a probe of some other root answering is enough. Gating on that made Enter
+/// on a share row do nothing, at random.
+struct ClassifyRequest {
+    id: u64,
+    path: PathBuf,
+    /// Where the home screen was pointed when the look was asked for.
+    browsing: Option<PathBuf>,
 }
 
 /// A lease on the current `task_generation`, held by background work whose answer
@@ -5327,6 +5558,13 @@ pub struct App {
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     home_generation: u64,
+    /// The look a `ClassifyThenOpen` has out, if any. Every key acts on the home screen
+    /// even while `busy` — `hard_escape_while_busy` says so there — so a second Enter is
+    /// reachable, and the newer look replaces the older: its answer is the one the user
+    /// is waiting for. See [`ClassifyRequest`].
+    classify_inflight: Option<ClassifyRequest>,
+    /// Ids for those, so a superseded answer can be told from the one being waited on.
+    classify_requests: u64,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -5831,6 +6069,10 @@ impl App {
     /// paths that retire such an End can take the message back down without reaching
     /// for a literal, and without clearing a message that belongs to something else.
     const COUNTING_FOR_END: &'static str = "Counting rows to find the end…";
+
+    /// What the control bar says while a path is being looked at. Named so the answer can
+    /// take down its own line without clearing one that belongs to something else.
+    const LOOKING: &'static str = "Looking...";
 
     /// Work already running that the re-read after a join would cancel.
     ///
@@ -6431,6 +6673,8 @@ impl App {
             cloud_discovery_started: false,
             home_search_inflight: false,
             home_generation: 0,
+            classify_inflight: None,
+            classify_requests: 0,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -7069,6 +7313,14 @@ impl App {
         // the throbber up on the home screen, and its result could later land in a
         // different dataset with the same column names.
         self.reset_chart_state();
+        // A look that is out belongs to the home screen being left, and the thread it is
+        // on may never come back — a share that has gone away is the case it exists for.
+        // Its answer will find nothing outstanding and touch nothing; the keyboard does
+        // not wait for it.
+        if self.classify_inflight.take().is_some() {
+            self.busy = false;
+            self.home.status = None;
+        }
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
@@ -7373,61 +7625,117 @@ impl App {
             }
             return None;
         }
-        let mut entry = self.home.selected_entry()?;
-        // A row nothing has classified — one whose cached kind this build will not take,
-        // see `discover::CLASSIFIER_VERSION` — is looked at now rather than opened as
-        // whatever it turns out to be. `EntryKind::Unknown` is offered as openable, so
-        // without this, refusing a stale `multi` only changed the chip and Enter still
-        // read a whole lake root as one table.
-        //
-        // Never for a path the home screen calls remote. `classify_directory` is a
-        // `read_dir` and a dozen stats, and this runs on the thread that draws and reads
-        // the keyboard: on a hard-mounted share that has gone away it is an
-        // uninterruptible freeze, with Ctrl+C on the same thread. That is the rule
-        // `is_remote_path` exists for, and `unmeasured_visible` and
-        // `request_home_measurements` both keep to. So a remote row opens as it did
-        // before — classifying it belongs on a worker, which is #254.
-        if entry.kind == discover::EntryKind::Unknown
-            && !(self.home.network_check)(&entry.path)
-            && entry.path.is_dir()
-        {
-            entry.kind = discover::classify_directory(&entry.path);
+        let entry = self.home.selected_entry()?;
+        // A row nothing has looked at is looked at before it is opened, rather than
+        // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
+        // openable, so without this a lake root reached this way is read as one table:
+        // #237 through the door #249 leaves open.
+        let mut entry = entry;
+        if entry.kind == discover::EntryKind::Unknown {
+            if self.looking_could_block(&entry.path) {
+                return Some(AppEvent::ClassifyThenOpen {
+                    path: entry.path,
+                    jump: false,
+                });
+            }
+            if entry.path.is_dir() {
+                entry.kind = discover::classify_directory(&entry.path);
+            }
         }
-        if entry.kind == discover::EntryKind::Directory {
-            self.home_browse_into(entry.path);
+        self.open_what_it_is(entry.path, entry.kind, false)
+    }
+
+    /// Whether finding out what a path is could sit on a mount that never answers.
+    ///
+    /// Two halves. An object-store or HTTP URL names something no mount is responsible
+    /// for — what is behind it is the scan's business, and stat'ing it only ever asks the
+    /// working directory about a file called `s3:` — and an ordinary local path answers at
+    /// once, so making the user wait a round trip for it would be a delay bought with
+    /// nothing.
+    ///
+    /// What is left is a path on a mount the home screen calls a network one, which is
+    /// the case `is_remote_path` exists to name and the only one worth a worker.
+    fn looking_could_block(&self, path: &Path) -> bool {
+        // `cloud://<id>` is a place, not a path: `input_source` calls the unknown scheme
+        // local and `is_remote_path` calls it remote, so without this a worker would be
+        // sent to stat it and come back with "No such path".
+        !home::is_cloud_place(path)
+            && matches!(source::input_source(path), source::InputSource::Local(_))
+            && (self.home.network_check)(path)
+    }
+
+    /// Do with a path whatever its kind calls for: browse into it, say it is a lake
+    /// table, or open it.
+    ///
+    /// `jump` is a path typed at `~` rather than a row already listed, which starts a new
+    /// browse so Esc comes back from there to the listing.
+    fn open_what_it_is(
+        &mut self,
+        path: PathBuf,
+        kind: discover::EntryKind,
+        jump: bool,
+    ) -> Option<AppEvent> {
+        let go_inside = |app: &mut Self, path: PathBuf| {
+            if jump {
+                app.home_jump_into(path);
+            } else {
+                app.home_browse_into(path);
+            }
+        };
+        if kind == discover::EntryKind::Directory {
+            go_inside(self, path);
             return None;
         }
         // A lake table's files are not its rows: the ones a delete or an update
         // tombstoned are still on disk, every rewritten version is here together, and
         // compaction leaves both sides in place. Going inside is what datui can honestly
         // do with one, and saying so is better than a silent wrong answer.
-        if let Some(note) = Self::lake_table_note(entry.kind) {
-            self.home_browse_into(entry.path);
+        if let Some(note) = Self::lake_table_note(kind) {
+            go_inside(self, path);
             self.home.status = Some(note);
             return None;
         }
         // A cloud folder that is a dataset opens as one: its URL as a prefix, which is
         // what makes the open a scan of every file under it.
-        if matches!(
-            entry.kind,
+        let folder = matches!(
+            kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) && home::is_object_store_url(&entry.path)
-        {
-            return Some(self.home_open_path(home::folder_dataset_url(&entry.path)));
+        );
+        if folder && home::is_object_store_url(&path) {
+            // A prefix, not a directory: the scan is what walks it.
+            return Some(self.home_open_path(home::folder_dataset_url(&path), false));
         }
-        Some(self.home_open_path(entry.path))
+        Some(self.home_open_path(path, folder))
+    }
+
+    /// Browse into `path` as a jump, from wherever the user was.
+    ///
+    /// Unlike `home_browse_into`, the browse *starts* here: Esc comes back from here to
+    /// the listing rather than up through whatever the path happens to sit under.
+    fn home_jump_into(&mut self, path: PathBuf) {
+        self.home.browse_start = Some(path.clone());
+        self.home.browsing = Some(path);
+        self.home.status = None;
+        self.home.search.reset();
+        self.home.filter.clear();
+        self.home.sync_search_section();
+        self.home.selected = 0;
+        self.home_refresh();
     }
 
     /// Load a path from the home screen.
     ///
     /// The recent entry is recorded by the `Open` handler, which every open goes
     /// through, so this does not record one itself.
-    fn home_open_path(&mut self, path: PathBuf) -> AppEvent {
-        let mut options = OpenOptions::default();
-        // A directory of partitions is only meaningful read as one hive dataset.
-        if path.is_dir() {
-            options.hive = true;
-        }
+    fn home_open_path(&mut self, path: PathBuf, hive: bool) -> AppEvent {
+        // A directory of partitions is only meaningful read as one hive dataset. Told
+        // rather than stat'ed: the caller already knows what this is, and on a share that
+        // has gone away a `stat` here would freeze the thread reading the keys — the same
+        // reason the size below is left to the `Open` handler.
+        let options = OpenOptions {
+            hive,
+            ..OpenOptions::default()
+        };
         self.input_mode = InputMode::Normal;
         self.set_loading_phase("Scanning input", 10);
         // A frame is drawn between this keypress and the `Open` that carries it out,
@@ -7463,31 +7771,29 @@ impl App {
                         return None;
                     }
                     let path = home::expand_user_path(&raw);
+                    // Whether it is there, whether it is a directory and what kind of one
+                    // are three filesystem calls, and a typed path is exactly where a
+                    // dead mount gets named. All three go to a worker when the mount is
+                    // one that might not answer.
+                    if self.looking_could_block(&path) {
+                        self.home.path_input.clear();
+                        self.home.path_input_active = false;
+                        return Some(AppEvent::ClassifyThenOpen { path, jump: true });
+                    }
+                    // Before the prompt closes: a typo is worth fixing where it was
+                    // typed, rather than retyping the whole path.
                     if !path.exists() {
                         self.home.status = Some(format!("No such path: {}", path.display()));
                         return None;
                     }
                     self.home.path_input.clear();
                     self.home.path_input_active = false;
-                    let kind = path.is_dir().then(|| discover::classify_directory(&path));
-                    if let Some(kind) = kind
-                        && (kind == discover::EntryKind::Directory || kind.is_lake_table())
-                    {
-                        // An ordinary directory: browse it rather than trying to load it.
-                        // A lake table too, for the same reason Enter goes inside one.
-                        // A jump starts a new browse: Esc comes back from here to the
-                        // listing, not up through wherever the path happens to sit.
-                        self.home.browse_start = Some(path.clone());
-                        self.home.browsing = Some(path);
-                        self.home.search.reset();
-                        self.home.filter.clear();
-                        self.home.sync_search_section();
-                        self.home.selected = 0;
-                        self.home_refresh();
-                        self.home.status = Self::lake_table_note(kind);
-                        return None;
-                    }
-                    return Some(self.home_open_path(path));
+                    let kind = if path.is_dir() {
+                        discover::classify_directory(&path)
+                    } else {
+                        discover::EntryKind::File
+                    };
+                    return self.open_what_it_is(path, kind, true);
                 }
                 KeyCode::Backspace => {
                     self.home.path_input.pop();
@@ -14454,6 +14760,99 @@ impl App {
                     }
                 }
                 None
+            }
+            AppEvent::ClassifyThenOpen { path, jump } => {
+                // A second Enter replaces the first rather than being refused. Every key
+                // acts on the home screen even while `busy`, so a second one is
+                // reachable, and the newer look is the one the user is waiting for — and
+                // refusing meant a look at a share that never answers killed the feature
+                // for the rest of the session, silently.
+                let looking = path.clone();
+                let jump = *jump;
+                self.classify_requests = self.classify_requests.wrapping_add(1);
+                let request = self.classify_requests;
+                self.classify_inflight = Some(ClassifyRequest {
+                    id: request,
+                    path: looking.clone(),
+                    browsing: self.home.browsing.clone(),
+                });
+                let name = looking
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| looking.display().to_string());
+                // The home screen's own line, because the control bar's is the table's.
+                self.home.status = Some(format!("Looking at {name}…"));
+                self.spawn_bg(Self::LOOKING, move |task_gen, tx| {
+                    // Every one of these can sit forever on a share that has gone away,
+                    // which is the whole reason they are here and not where keys are read.
+                    let found = if !looking.exists() {
+                        None
+                    } else if looking.is_dir() {
+                        Some(crate::discover::classify_directory(&looking))
+                    } else {
+                        Some(crate::discover::EntryKind::File)
+                    };
+                    let _ = tx.send(AppEvent::BackgroundKindReady {
+                        generation: task_gen,
+                        request,
+                        path: looking,
+                        found,
+                        jump,
+                    });
+                });
+                None
+            }
+            AppEvent::BackgroundKindReady {
+                generation,
+                request,
+                path,
+                found,
+                jump,
+            } => {
+                // Superseded, or belonging to nothing: a newer look owns the busy state
+                // and the status line, so this one touches neither.
+                if self
+                    .classify_inflight
+                    .as_ref()
+                    .map(|r| (r.id, r.path.as_path()))
+                    != Some((*request, path.as_path()))
+                {
+                    return None;
+                }
+                let asked = self.classify_inflight.take().expect("just matched");
+                if self.status_message.as_deref() == Some(Self::LOOKING) {
+                    self.status_message = None;
+                }
+                self.home.status = None;
+
+                // Something else took the busy state over. A bump comes from an `Open` or
+                // a collect, and both set `busy` themselves — clearing it here would take
+                // the throbber off a load still running and let keys land on a table
+                // being replaced. Their answer, their busy.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                // Otherwise it is this look's, and goes down however the answer lands.
+                self.busy = false;
+
+                // A key pressed on the home screen answers on the home screen. If they
+                // went back to the data, opening now would arrive from nowhere; if the
+                // browse has moved, the answer is about somewhere they navigated away
+                // from, and acting on it would take them back into it.
+                if self.input_mode != InputMode::Home || self.home.browsing != asked.browsing {
+                    return None;
+                }
+
+                let Some(kind) = *found else {
+                    self.home.status = Some(format!("No such path: {}", path.display()));
+                    if *jump {
+                        // A typo typed at `~` is worth another go without retyping it.
+                        self.home.path_input = path.display().to_string();
+                        self.home.path_input_active = true;
+                    }
+                    return None;
+                };
+                self.open_what_it_is(path.clone(), kind, *jump)
             }
             AppEvent::BackgroundWorkFinished => {
                 // Behind the result its work sent, so the handler that consumed that

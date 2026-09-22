@@ -213,6 +213,13 @@ both sides in place, so reading them as one table gives rows the table does not
 have. <kbd>Enter</kbd> and <kbd>→</kbd> both go inside instead, where the data
 files can be opened one at a time, and say so when they do.
 
+A row on a network share that nothing has looked at yet — a recent one, say, where
+reading it just to list it is how a dead mount freezes a file browser — is looked
+at when you open it, on a background thread, and <kbd>Enter</kbd> then does
+whatever the answer calls for. The line under the list says `Looking at …`
+meanwhile, and the keys keep being read. If the share never answers,
+<kbd>Ctrl</kbd>+<kbd>O</kbd> puts the wait down and gives you the home screen back.
+
 | Format | What marks the root |
 |---|---|
 | Delta Lake | `_delta_log/` |

@@ -644,7 +644,7 @@ mod tests {
         );
     }
 
-    /// A deferred collect that turns out to have nothing to do still takes the loading    /// A deferred collect that turns out to have nothing to do still takes the loading
+    /// A deferred collect that turns out to have nothing to do still takes the loading
     /// screen down.
     ///
     /// `DoLoadBuffer` clears `loading_state` itself when `spawn_async_collect` finds the

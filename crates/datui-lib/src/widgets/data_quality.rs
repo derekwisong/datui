@@ -1355,29 +1355,43 @@ fn render_sidebar(
 
     // The plan strip above already carries the planned access, so this panel
     // reports what the finished run actually did instead of repeating it.
+    // The panel is 18 columns wide beside a medium terminal, so it says less
+    // there rather than cutting a number in half.
+    let roomy = parts[1].width >= 26;
+    let written = if roomy {
+        "0 B remote write"
+    } else {
+        "0 B written"
+    };
     let lines = match config.results {
         Some(results) => vec![
             Line::styled("MEASURED", Style::default().fg(config.theme.get("accent"))),
             Line::raw(format!(
-                "{} rows {}",
+                "{} rows{}",
                 numfmt::group_chrome(results.evaluated_rows),
-                results.precision.label()
-            )),
-            Line::raw(format!("of {} eligible", count_label(results.total_rows))),
-            Line::raw(format!(
-                "{} columns  {} {}",
-                numfmt::group_chrome(results.columns.len()),
-                numfmt::group_chrome(results.segments.len()),
-                if results.segments.len() == 1 {
-                    "segment"
+                if roomy {
+                    format!(" {}", results.precision.label())
                 } else {
-                    "segments"
+                    String::new()
                 }
             )),
-            Line::styled(
-                "0 B remote write",
-                Style::default().fg(config.theme.get("success")),
-            ),
+            Line::raw(format!(
+                "of {}{}",
+                count_label(results.total_rows),
+                if roomy { " eligible" } else { "" }
+            )),
+            Line::raw(format!(
+                "{} {}  {} {}",
+                numfmt::group_chrome(results.columns.len()),
+                if roomy { "columns" } else { "cols" },
+                numfmt::group_chrome(results.segments.len()),
+                match (roomy, results.segments.len()) {
+                    (true, 1) => "segment",
+                    (true, _) => "segments",
+                    (false, _) => "seg",
+                }
+            )),
+            Line::styled(written, Style::default().fg(config.theme.get("success"))),
         ],
         None => vec![
             Line::styled("PLANNED", Style::default().fg(config.theme.get("accent"))),
@@ -1387,15 +1401,12 @@ fn render_sidebar(
                     .map(numfmt::group_chrome)
                     .unwrap_or_else(|| "unknown".to_string())
             )),
-            Line::raw(if config.state.is_remote_source() {
-                "remote -> this machine"
-            } else {
-                "local read"
+            Line::raw(match (config.state.is_remote_source(), roomy) {
+                (true, true) => "remote -> this machine",
+                (true, false) => "remote read",
+                (false, _) => "local read",
             }),
-            Line::styled(
-                "0 B remote write",
-                Style::default().fg(config.theme.get("success")),
-            ),
+            Line::styled(written, Style::default().fg(config.theme.get("success"))),
         ],
     };
     Paragraph::new(lines)

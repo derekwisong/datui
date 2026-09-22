@@ -35,7 +35,7 @@ Every letter types into the filter, so `json` finds json. The keys are:
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move (<kbd>Ctrl</kbd>+<kbd>P</kbd> / <kbd>Ctrl</kbd>+<kbd>N</kbd> too) |
 | <kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>Ctrl</kbd>+<kbd>↓</kbd> | Previous or next section |
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Ten rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a cloud folder labelled `hive` or `multi`, <kbd>→</kbd> goes inside it instead of opening it |
+| <kbd>←</kbd> <kbd>→</kbd> | Fold or unfold the section. Remembered between runs. On a folder labelled `hive`, `multi`, `delta`, `iceberg` or `hudi`, <kbd>→</kbd> goes inside it, so one partition or one file can be reached |
 | <kbd>Enter</kbd> | Open the dataset, enter the directory, cloud source or bucket, or fold the section |
 | type | Filter by name or column name. Fuzzy: `sal` finds `sales` |
 | <kbd>~</kbd> | Type a path. <kbd>Tab</kbd> completes it |
@@ -181,10 +181,65 @@ modified    3 days ago
 | `partitions` | directory names | the layout of a partitioned dataset, without opening a file |
 
 None of this reads the data itself. Row and column counts come from Parquet
-footers, summed over at most 64 files for hive and multi-file datasets; a larger
-dataset shows `? × 39`. CSV and other formats that need a scan to count show
-neither. Below the counts, the pane lists the full schema of a Parquet dataset,
-each type in the color the table uses.
+footers, summed over at most 64 files for hive and multi-file datasets. A larger
+one is not counted, and its columns come from a spread of the folder rather than
+all of it, so it shows `? × 39+`: neither figure is a total, and both say so. CSV
+and other formats that need a scan to count show neither. Below the counts,
+the pane lists the full schema of a Parquet dataset, each type in the color the
+table uses.
+
+### When a folder is one dataset
+
+A folder of `key=value` partitions is `hive`, and a folder of Parquet files that
+hold the same table is `multi`. Both open with <kbd>Enter</kbd> as a single
+dataset, and <kbd>→</kbd> goes inside one instead, to reach a single partition or
+a single file. That is the way to look at the files when the label is wrong.
+<kbd>Esc</kbd> comes back out; in a bucket the first row inside,
+`<folder> (all files)`, opens the whole folder again, and locally there is no
+such row.
+
+Sharing a file extension is not enough to make a folder one table. A database
+exported one Parquet file per table — `circuits.parquet`, `drivers.parquet`,
+`laps.parquet` — looks identical from its names, and reading it as one table
+would union things that share no columns. So the footers decide: datui compares
+the columns of the folder's files, and a folder whose files do not agree is left
+as a directory to look inside.
+
+A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
+says which of them are live. datui does not read that log yet, so it does not
+offer the table as one dataset — the files a delete or an update tombstoned are
+still on disk, every rewritten version is there together, and compaction leaves
+both sides in place, so reading them as one table gives rows the table does not
+have. <kbd>Enter</kbd> and <kbd>→</kbd> both go inside instead, where the data
+files can be opened one at a time, and say so when they do.
+
+A row on a network share that nothing has looked at yet — a recent one, say, where
+reading it just to list it is how a dead mount freezes a file browser — is looked
+at when you open it, on a background thread, and <kbd>Enter</kbd> then does
+whatever the answer calls for. The line under the list says `Looking at …`
+meanwhile, and the keys keep being read. If the share never answers,
+<kbd>Ctrl</kbd>+<kbd>O</kbd> puts the wait down and gives you the home screen back.
+
+| Format | What marks the root |
+|---|---|
+| Delta Lake | `_delta_log/` |
+| Hudi | `.hoodie/` |
+| Iceberg | `metadata/` holding a `*.metadata.json`, beside `data/` |
+
+In a bucket the Iceberg test is `metadata/` beside `data/` with no Parquet at the
+root: looking inside `metadata/` would be a second listing, and the layout is
+enough. So a folder that happens to hold both names is labelled `iceberg` there.
+It is still somewhere to go, which a table read as one table is not.
+
+Files are compared by how much of the narrower one the wider one holds, not by
+how much they have in common overall, because gaining a column is what a dataset
+does over time. A blockchain that added `txinwitness` in 2017 is still one
+dataset, and so is one that grew from five columns to fifty.
+
+The columns come from footers that are read anyway to count the rows, so locally
+this costs nothing. In a bucket, three of the folder's files are read while you
+browse — one small ranged request each, never a whole object — and a folder that
+cannot be read keeps the label its names suggested.
 
 ### Where a row's data lives
 
@@ -347,11 +402,15 @@ returns. Row counts and columns would need a read per object, which someone is
 billed for, so they are not fetched until you open one.
 
 Folders are looked inside, a few at a time, once each listing lands: one small
-listing request per folder, for at most 48 of them, and never a read of an object.
-A folder of `key=value` partitions is then labelled `hive`, and a folder of Parquet
-files `multi`, like a local one. <kbd>Enter</kbd> opens it as one dataset, with the
-partitions as columns; <kbd>→</kbd> goes inside instead, where the first row,
-`<folder> (all partitions)`, opens the whole folder again.
+listing request per folder, for at most 48 of them. A folder of `key=value`
+partitions is then labelled `hive`, and a folder of Parquet files whose schemas
+agree `multi`, like a local one — see
+[When a folder is one dataset](#when-a-folder-is-one-dataset). Deciding that last
+one reads the footers of up to three of the folder's files, a few kilobytes each;
+nothing else here reads an object, and nothing reads a whole one. <kbd>Enter</kbd>
+opens it as one dataset, with the partitions as columns; <kbd>→</kbd> goes inside
+instead, where the first row, `<folder> (all partitions)`, opens the whole folder
+again.
 
 A partitioned dataset whose files gained columns over time, such as a blockchain's
 first day, which has no previous block, opens with every column: its schema comes

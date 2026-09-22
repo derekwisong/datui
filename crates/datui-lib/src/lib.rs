@@ -1321,6 +1321,64 @@ mod template_rollback_tests {
         );
         assert!(state.error.is_none(), "with no error left over");
     }
+
+    /// A template whose SQL drops a column that the same template's sort names. The
+    /// sorted frame cannot be built at all, so the row count errors — and reporting
+    /// that as zero rows used to blank the table and return before `load_buffer`, the
+    /// only other place a failure is recorded. `apply_template` decides whether to roll
+    /// back by looking for an error, found none, and returned `Ok`: the user was left
+    /// with a blank table wearing the template's sort, told nothing.
+    #[test]
+    fn a_template_whose_sort_names_a_column_its_query_removed_fails_loudly() {
+        crate::tests::ensure_sample_data();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("three.csv");
+        std::fs::write(&path, "id,keep,dropped\n0,a,7\n1,b,8\n2,c,9\n").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+        open(&mut app, &rx, &tx, path);
+
+        let mut template = app
+            .create_template_from_current_state(
+                "sort what the query dropped".to_string(),
+                None,
+                template::MatchCriteria {
+                    exact_path: None,
+                    relative_path: None,
+                    path_pattern: None,
+                    filename_pattern: None,
+                    schema_columns: None,
+                    schema_types: None,
+                },
+            )
+            .unwrap();
+        template.settings.sql_query = Some("select id, keep from df".to_string());
+        // Applied after the query, and naming the column the query just dropped.
+        template.settings.sort_columns = vec!["dropped".to_string()];
+
+        assert!(
+            app.apply_template(&template).is_err(),
+            "the template fails, rather than quietly leaving a blank table"
+        );
+
+        let state = app.data_table_state.as_ref().unwrap();
+        assert!(
+            state.view_sort_columns().is_empty(),
+            "the sort it failed on does not survive"
+        );
+        assert!(
+            state.active_sql_query.is_empty(),
+            "nor does the query that dropped the column"
+        );
+        let names: Vec<&str> = state.schema.iter_names().map(|n| n.as_str()).collect();
+        assert_eq!(names, ["id", "keep", "dropped"], "the user's frame is back");
+        assert_eq!(
+            state.lf.clone().collect().unwrap().height(),
+            3,
+            "with its rows, rather than the blank table the failure used to leave"
+        );
+        assert!(state.error.is_none(), "and the rollback clears the error");
+    }
 }
 
 #[cfg(test)]
@@ -1691,7 +1749,7 @@ pub mod tests {
     #[test]
     fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
-        use crate::{App, OpenOptions};
+        use crate::{App, AppEvent, OpenOptions};
         use polars::prelude::*;
         use std::sync::Arc;
 
@@ -1749,10 +1807,23 @@ pub mod tests {
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
         app.spawn_async_collect("Loading buffer...");
 
-        let joined = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the pass reports back");
-        let _ = app.handle(&joined);
+        // Two answers are in flight here — the pass's and the collect's — and either
+        // can reach the queue first. Taking whatever arrives first and calling it the
+        // pass's is a race: when the collect wins, the count the pass carries has not
+        // been applied yet and the assert below reads `None`. It loses that race about
+        // once in a few hundred runs on a loaded machine, which is every so often on
+        // CI. So take events until the pass's own has been handled.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let event = rx
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("the pass reports back");
+            let is_the_pass = matches!(event, AppEvent::BackgroundFootersJoined { .. });
+            let _ = app.handle(&event);
+            if is_the_pass {
+                break;
+            }
+        }
 
         assert_eq!(
             app.data_table_state.as_ref().unwrap().num_rows_if_valid(),
@@ -2023,6 +2094,1191 @@ pub mod tests {
         );
     }
 
+    /// A count the join orphaned does not strand End, nor speak for a later count.
+    ///
+    /// End on a query over a staged dataset takes the ordinary count — the pass is
+    /// bringing the *dataset's* count, which is not the query's. But the pass's columns
+    /// are held while the query is up and go in the moment the user leaves it, and that
+    /// join takes a fresh `len_generation` past the count already running. What comes
+    /// back then answers a frame that is gone.
+    ///
+    /// Both halves of that were wrong. The flag was cleared only on the matching branch,
+    /// so it sat on a dead generation for the rest of the session — the view never moved
+    /// and nothing was said. And `BackgroundLenFailed` took the flag without checking
+    /// whose count had failed, so the next count to fail for any reason printed "Could
+    /// not count the rows to find the end" about a key pressed on a different frame.
+    #[test]
+    fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
+        use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let wide = || {
+            df!("id" => (0..100i64).collect::<Vec<_>>(), "extra" => vec!["a"; 100])
+                .unwrap()
+                .lazy()
+        };
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 100,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        state.set_footers_pending(Arc::new(move |_| {
+            Some(FootersFound {
+                dataset: dataset_of(wide()),
+                lf: wide(),
+                file_rows: vec![100],
+                files: vec!["one".to_string()],
+                row_groups: vec![vec![100]],
+                remote: Some(crate::widgets::datatable::RemoteRead {
+                    urls: vec!["one".to_string()],
+                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
+                    count: Arc::new(|| Ok(vec![vec![100]])),
+                }),
+            })
+        }));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // A question of the dataset, whose answer has a count of its own.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query("select doubled: id * 2".to_string());
+        state.defer_collect = false;
+        let orphaned = app.data_table_state.as_ref().unwrap().len_generation();
+
+        // End, which takes that count rather than waiting for the pass.
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(orphaned),
+            "the jump is waiting on the query's own count"
+        );
+
+        // The pass lands while the query is up, so its columns are held.
+        let live = app.dataset_generation;
+        let found = app
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.footers_pending())
+            .and_then(|pass| pass(&app.footer_progress));
+        App::record_footers(&app.pending_footers_result, live, found);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+        assert!(
+            app.footers_held.is_some(),
+            "held rather than joined, because a query is the root"
+        );
+
+        // The user leaves the query, and the join goes in underneath the count.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query(String::new());
+        state.defer_collect = false;
+        let _ = app.handle(&AppEvent::Update);
+        let joined = app.data_table_state.as_ref().unwrap().len_generation();
+        assert_ne!(
+            joined, orphaned,
+            "the join took a fresh generation past the count that was already running"
+        );
+
+        // And the count comes back, answering a frame that is gone.
+        let before = app.data_table_state.as_ref().unwrap().start_row;
+        let next = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: orphaned,
+            num_rows: 100,
+            file_row_groups: None,
+        });
+        assert_eq!(
+            app.end_after_count, None,
+            "the jump is not left waiting on a generation nothing will ever match"
+        );
+        assert_ne!(
+            app.status_message.as_deref(),
+            Some(App::COUNTING_FOR_END),
+            "and the line does not go on saying it is counting for an end nobody awaits"
+        );
+
+        // Retired, not re-issued: nothing jumps on the strength of the stale answer.
+        let mut follow = next;
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().start_row,
+            before,
+            "and the view stays where it is rather than moving on a stale answer"
+        );
+    }
+
+    /// A count that failed for a frame that is gone does not answer for the End on this
+    /// one.
+    ///
+    /// Counts for two frames can be in flight at once — a join or a query takes a fresh
+    /// `len_generation` without stopping the count already running — so a failure
+    /// arriving is not necessarily the failure of the count End is waiting on.
+    /// `BackgroundLenFailed` took the flag without looking at whose count had failed:
+    /// the older one failing dropped the live End on the floor and printed "Could not
+    /// count the rows to find the end" about it, while the count that End was actually
+    /// waiting on was still running and about to succeed.
+    #[test]
+    fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // End on the frame that is here, whose count is running.
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(live),
+            "the jump is waiting on this frame's count"
+        );
+        app.status_message = None;
+
+        // And a count for some frame that is long gone fails.
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live.wrapping_sub(1),
+        });
+
+        assert_eq!(
+            app.end_after_count,
+            Some(live),
+            "the End is still waiting on its own count, which has not failed"
+        );
+        assert_eq!(
+            app.status_message, None,
+            "and nothing is said about a count the user is not waiting on"
+        );
+    }
+
+    /// An App on a remote dataset of a hundred rows that has not been counted yet, its
+    /// buffer forty rows in.
+    ///
+    /// The receiver comes back with it so a test can read what the App sent.
+    fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEvent>) {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = frame();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(frame())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+        // As far as the buffer reached, of a hundred. This is the number the bar prints
+        // when nothing tells it the count failed, and printing it is the harm: a
+        // confident partial where a "?" belongs.
+        state.num_rows = 40;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        (app, rx)
+    }
+
+    /// The bottom line of a rendered App — the control bar, as a string.
+    fn control_bar(app: &mut crate::App) -> String {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        let area = Rect::new(0, 0, 120, 24);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        (0..area.width)
+            .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+            .collect()
+    }
+
+    /// The bar says `?` when this frame's count failed, rather than the partial the
+    /// buffer happened to reach.
+    ///
+    /// The widget's own `?` has a test; what had none is the App deciding to ask for it.
+    /// Two bugs were found in and around `len_count_failed` and the suite noticed
+    /// neither, because nothing rendered the bar: deleting the write that produces `?`
+    /// left the whole workspace green.
+    #[test]
+    fn the_bar_says_question_mark_when_the_count_failed() {
+        use crate::AppEvent;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+
+        assert!(
+            !control_bar(&mut app).contains("Rows: ?"),
+            "nothing has failed yet"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live,
+        });
+
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Rows: ?"),
+            "the count failed, so the total is unknown: {bar:?}"
+        );
+    }
+
+    /// A count that failed for a frame that is gone does not take the `?` off the frame
+    /// that is here.
+    ///
+    /// `len_count_failed` is one slot and the bar reads it against the frame on screen.
+    /// Written for whichever count failed last, an orphan — a join, a query, a filter or
+    /// a sort takes a fresh `len_generation` without stopping the count already running
+    /// — overwrote the live frame's own failure. `count_unknown` then went false and the
+    /// bar printed the number the buffer had reached, plainly, on a dataset whose count
+    /// failed.
+    #[test]
+    fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
+        use crate::AppEvent;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let live = app.data_table_state.as_ref().unwrap().len_generation();
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live,
+        });
+        assert!(
+            control_bar(&mut app).contains("Rows: ?"),
+            "this frame's count failed"
+        );
+
+        // And now a count orphaned by an earlier frame change fails too.
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: live.wrapping_sub(1),
+        });
+
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Rows: ?"),
+            "a stranger's failure says nothing about this frame: {bar:?}"
+        );
+    }
+
+    /// A look, set up as `ClassifyThenOpen` leaves it.
+    #[cfg(test)]
+    fn a_look_is_out(app: &mut crate::App, path: &std::path::Path) -> u64 {
+        app.classify_requests = app.classify_requests.wrapping_add(1);
+        let id = app.classify_requests;
+        app.classify_inflight = Some(crate::ClassifyRequest {
+            id,
+            path: path.to_path_buf(),
+            browsing: app.home.browsing.clone(),
+        });
+        app.busy = true;
+        id
+    }
+
+    /// An answer nobody is waiting for is dropped — and the busy state it was holding
+    /// goes with it, except where something else has taken that over.
+    ///
+    /// `spawn_bg` sets `busy` and this answer is the only thing that comes back, so a
+    /// drop that does not clear it holds every key for the rest of the session. The
+    /// exception is the one the other handlers rely on: a bumped `task_generation` means
+    /// an `Open` or a collect set `busy` itself, and clearing it here takes the throbber
+    /// off a load that is still running.
+    #[test]
+    fn a_classify_answer_nobody_is_waiting_for_leaves_the_right_busy_behind() {
+        use crate::{App, AppEvent, InputMode};
+
+        type MovedOn = fn(&mut App);
+        let cases: Vec<(&str, MovedOn, bool)> = vec![
+            (
+                "they went back to the data",
+                |app: &mut App| app.input_mode = InputMode::Normal,
+                false,
+            ),
+            (
+                "the browse moved under it",
+                |app: &mut App| app.home.browsing = Some(std::path::PathBuf::from("/elsewhere")),
+                false,
+            ),
+            (
+                "an open took the generation",
+                |app: &mut App| {
+                    app.task_generation = app.task_generation.wrapping_add(1);
+                    app.busy = true;
+                },
+                true,
+            ),
+        ];
+
+        for (what, moved_on, busy_after) in cases {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(tx, crate::tests::test_runtime());
+            app.enter_home();
+            let path = std::path::PathBuf::from("/mnt/share/orders");
+            let request = a_look_is_out(&mut app, &path);
+            let generation = app.task_generation;
+
+            moved_on(&mut app);
+            let moved_to = app.home.browsing.clone();
+
+            let follow = app.event(&AppEvent::BackgroundKindReady {
+                generation,
+                request,
+                path: path.clone(),
+                found: Some(crate::discover::EntryKind::MultiFile),
+                jump: false,
+            });
+
+            assert!(follow.is_none(), "nothing was opened when {what}");
+            assert_eq!(
+                app.home.browsing, moved_to,
+                "and it did not browse into the answer's path when {what}"
+            );
+            assert_eq!(
+                app.is_busy(),
+                busy_after,
+                "busy after {what}: an answer puts down the busy it was holding, and \
+                 only that one"
+            );
+            assert!(
+                app.classify_inflight.is_none(),
+                "and the look is no longer outstanding when {what}"
+            );
+        }
+    }
+
+    /// A newer look replaces an older one, and the older answer touches nothing.
+    ///
+    /// Every key acts on the home screen even while `busy`, so a second Enter is
+    /// reachable. Refusing it meant a look at a share that never answers killed the
+    /// feature for the rest of the session, silently — and the older answer must not put
+    /// down the busy state the newer one is holding.
+    #[test]
+    fn a_newer_look_replaces_an_older_one() {
+        use crate::{App, AppEvent};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        let first = std::path::PathBuf::from("/mnt/share/aaa");
+        let stale = a_look_is_out(&mut app, &first);
+        let generation = app.task_generation;
+
+        // A second Enter, at a row the user moved to while the first was out.
+        let second = std::path::PathBuf::from("/mnt/share/bbb");
+        let _ = app.event(&AppEvent::ClassifyThenOpen {
+            path: second.clone(),
+            jump: false,
+        });
+        assert_eq!(
+            app.classify_inflight.as_ref().map(|r| r.path.as_path()),
+            Some(second.as_path()),
+            "the newer look is the one being waited on"
+        );
+
+        // And the older answer arrives.
+        let follow = app.event(&AppEvent::BackgroundKindReady {
+            generation,
+            request: stale,
+            path: first,
+            found: Some(crate::discover::EntryKind::MultiFile),
+            jump: false,
+        });
+
+        assert!(follow.is_none(), "the stale answer opened nothing");
+        assert!(
+            app.classify_inflight.is_some(),
+            "and did not cancel the look that replaced it"
+        );
+        assert!(app.is_busy(), "nor put down its busy state");
+    }
+
+    /// Going home puts down a look that may never answer.
+    ///
+    /// The case the whole path exists for is a share that has gone away, where the worker
+    /// sits forever. Without this the keyboard waits with it: `abandon_load` clears
+    /// `busy` only for a load, and a look is not one.
+    #[test]
+    fn going_home_does_not_wait_on_a_look_that_may_never_answer() {
+        use crate::App;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        a_look_is_out(&mut app, std::path::Path::new("/mnt/gone/orders"));
+        app.home.status = Some("Looking at orders…".to_string());
+
+        app.enter_home();
+
+        assert!(
+            !app.is_busy(),
+            "the keyboard is not waiting on a dead share"
+        );
+        assert!(app.classify_inflight.is_none(), "and the look is put down");
+        assert_eq!(app.home.status, None, "with its line");
+    }
+
+    /// A typed path the worker could not find comes back to the prompt with the text in
+    /// it, the way a local one never left.
+    #[test]
+    fn a_typed_path_that_is_not_there_comes_back_to_the_prompt() {
+        use crate::{App, AppEvent};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.enter_home();
+        let path = std::path::PathBuf::from("/mnt/share/nope");
+        let request = a_look_is_out(&mut app, &path);
+        let generation = app.task_generation;
+
+        let follow = app.event(&AppEvent::BackgroundKindReady {
+            generation,
+            request,
+            path: path.clone(),
+            found: None,
+            jump: true,
+        });
+
+        assert!(follow.is_none());
+        assert!(
+            app.home
+                .status
+                .as_deref()
+                .is_some_and(|s| s.contains("No such path")),
+            "it says so: {:?}",
+            app.home.status
+        );
+        assert!(app.home.path_input_active, "and the prompt is back");
+        assert_eq!(
+            app.home.path_input,
+            path.display().to_string(),
+            "with the path still in it"
+        );
+    }
+
+    /// A parked End's message does not follow the user off the dataset.
+    ///
+    /// It parks without setting `busy`, so `abandon_load`'s cleanup — which is a load's
+    /// — did not reach it, and Ctrl+O left it set. Painted on the home screen it replaces
+    /// every key chip on the bar with a sentence about a dataset the user has left, and
+    /// the failure that follows writes an error there that nothing ever clears.
+    #[test]
+    fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
+        use crate::AppEvent;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+
+        app.enter_home();
+
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Counting rows"),
+            "the home bar is the home screen's: {bar:?}"
+        );
+        assert!(
+            bar.contains("Enter"),
+            "and it still has its keys rather than a sentence: {bar:?}"
+        );
+
+        // And the count it was waiting on then fails, with the user somewhere else.
+        // (Both halves of the fix are exercised: `abandon_load` clears the message on
+        // the way out, and the gate below keeps it off a view that is not the table.)
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: waiting,
+        });
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Could not count the rows"),
+            "an error about a dataset they have left is not the home screen's news: \
+             {bar:?}"
+        );
+    }
+
+    /// And it does not reappear on the next dataset either.
+    ///
+    /// The message is deliberately *not* cleared on the way out: the End is still parked,
+    /// and coming back to the same table with Esc should still say so. What must not
+    /// happen is it greeting a different dataset — which it does not, because opening one
+    /// puts up its own line. This pins that, since nothing else would notice if the order
+    /// of those two ever changed.
+    #[test]
+    fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
+        use crate::{OpenOptions, widgets::datatable::DataTableState};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+
+        app.enter_home();
+
+        // And they open something else, which installs its own frame.
+        let rows = || df!("id" => &[1i64, 2, 3]).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let next = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(next, None, &OpenOptions::default(), None);
+        app.busy = false;
+
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Counting rows"),
+            "the new dataset's bar is not the old one's: {bar:?}"
+        );
+    }
+
+    /// The chart view's bar is the chart's, not a parked End's.
+    ///
+    /// `abandon_load` does not run here — the user has not left the dataset — so this is
+    /// the gate on its own: the message is still set, and the view it belongs to is not
+    /// the one on screen. Once the chart is ready `chart_preparing()` goes false, and
+    /// before the gate the bar read "Counting rows to find the end…" where the chart keys
+    /// belong.
+    #[test]
+    fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+
+        app.input_mode = crate::InputMode::Chart;
+        app.chart_modal.active = true;
+
+        let bar = control_bar(&mut app);
+        assert!(
+            app.status_message.is_some(),
+            "the End is still waiting, and the field still says so"
+        );
+        assert!(
+            !bar.contains("Counting rows"),
+            "but the chart's bar is the chart's: {bar:?}"
+        );
+    }
+
+    /// An End waiting on a count whose frame is gone, whose count then fails, is retired
+    /// without saying anything.
+    ///
+    /// The frame it was counting has been replaced, so its failure says nothing about the
+    /// one on screen and cannot answer the End that was waiting on it. Reached by nothing
+    /// in the suite until now: deleting the branch left every test green.
+    #[test]
+    fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
+        use crate::AppEvent;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.end_after_count, Some(waiting));
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(crate::App::COUNTING_FOR_END),
+            "the status says the count is running"
+        );
+
+        // A question of the dataset takes a fresh generation out from under the count.
+        let state = app.data_table_state.as_mut().unwrap();
+        state.defer_collect = true;
+        state.query("select doubled: id * 2".to_string());
+        state.defer_collect = false;
+        assert_ne!(
+            app.data_table_state.as_ref().unwrap().len_generation(),
+            waiting,
+            "the frame the count belongs to is gone"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: waiting,
+        });
+
+        assert_eq!(
+            app.end_after_count, None,
+            "the End it belonged to is retired"
+        );
+        let bar = control_bar(&mut app);
+        assert!(
+            !bar.contains("Counting rows"),
+            "the status it put up comes down: {bar:?}"
+        );
+        assert!(
+            !bar.contains("Could not count the rows"),
+            "and does not become an error about a frame the user is no longer looking \
+             at: {bar:?}"
+        );
+    }
+
+    /// The bar says a count is running for an End, and says when it failed.
+    ///
+    /// Both messages were written and painted by nothing: the status line was shown only
+    /// while `busy`, and an End waiting on a remote count parks without setting it —
+    /// deliberately, so keys keep working. Three code paths existed to take a message
+    /// down that could never appear.
+    #[test]
+    fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
+        use crate::AppEvent;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _rx) = uncounted_remote_app();
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(
+            !app.busy,
+            "the jump parked rather than blocking the keyboard"
+        );
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Counting rows"),
+            "and the line says why the view has not moved: {bar:?}"
+        );
+
+        let _ = app.handle(&AppEvent::BackgroundLenFailed {
+            len_generation: waiting,
+        });
+        let bar = control_bar(&mut app);
+        assert!(
+            bar.contains("Could not count the rows"),
+            "and says so when the count it was waiting on fails: {bar:?}"
+        );
+    }
+
+    /// An End pressed on the folder the user walked away from does not move the one they
+    /// opened next.
+    ///
+    /// `end_after_count` names a `len_generation`, which says nothing about which
+    /// dataset it belonged to — so it has to be put down when a dataset is, the way
+    /// `end_when_the_footers_land` already is. Without that, a stale count returning
+    /// after the user has opened something else hands the new dataset the old one's
+    /// key: it starts a count it was never asked for and scrolls itself to the bottom
+    /// when that count lands.
+    #[test]
+    fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let remote_state = |n: i64| {
+            let rows = move || df!("id" => (0..n).collect::<Vec<_>>()).unwrap().lazy();
+            let mut lf = rows();
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let mut state = DataTableState::from_schema_and_lazyframe(
+                schema,
+                rows(),
+                &OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            state.set_remote_source();
+            state.set_remote_files(RemoteFiles {
+                urls: Arc::new(vec!["one".to_string()]),
+                scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                count: Arc::new(move || Ok(vec![vec![n as usize]])),
+                offsets: None,
+            });
+            state.visible_rows = 10;
+            state
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(remote_state(100), None, &OpenOptions::default(), None);
+        let theirs = app.data_table_state.as_ref().unwrap().len_generation();
+
+        // End on the first folder, before its count lands.
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(
+            app.end_after_count,
+            Some(theirs),
+            "the jump is waiting on that folder's count"
+        );
+
+        // And they open another one instead.
+        app.load_active = true;
+        app.apply_schema_ready(remote_state(500), None, &OpenOptions::default(), None);
+        assert_eq!(
+            app.end_after_count, None,
+            "the key they pressed in the folder they left does not come with them"
+        );
+
+        // The first folder's count finally arrives.
+        let mut follow = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: theirs,
+            num_rows: 100,
+            file_row_groups: None,
+        });
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        let next = app.data_table_state.as_ref().unwrap().len_generation();
+        assert_ne!(
+            app.end_after_count,
+            Some(next),
+            "and the folder on screen has not inherited it"
+        );
+
+        // Even once its own count lands, as it would.
+        let mut follow = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: next,
+            num_rows: 500,
+            file_row_groups: None,
+        });
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().start_row,
+            0,
+            "the folder they are looking at stays where they left it, at the top"
+        );
+    }
+
+    /// Every background spawn takes a lease, and gets it back however it ends.
+    ///
+    /// This is the whole of #221's mechanism: the decision "is it safe to bump
+    /// `task_generation`?" is a count, not a list of the kinds of work that might be
+    /// running. A new kind of gated task is covered by going through `spawn_bg`, which
+    /// is how every one of them is spawned.
+    #[test]
+    fn a_spawn_takes_a_lease_and_the_event_returns_it() {
+        use crate::{App, AppEvent};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        assert!(!app.work_a_bump_would_strand(), "nothing is running yet");
+
+        app.spawn_bg("Working...", |_task_gen, _tx| {});
+        assert!(
+            app.work_a_bump_would_strand(),
+            "the spawn leased the generation"
+        );
+
+        // The worker finishes and its lease is dropped, which sends the event.
+        let finished = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the lease reports back");
+        assert!(matches!(finished, AppEvent::BackgroundWorkFinished));
+        let _ = app.handle(&finished);
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "and the generation is free again"
+        );
+    }
+
+    /// A worker that panics still returns its lease.
+    ///
+    /// The hazard `schema_union::Pass` was built for: a count that never comes back down
+    /// is a permanent "something is waiting", and here that would mean the buffer never
+    /// collects again for the rest of the session.
+    #[test]
+    fn a_panicking_worker_still_returns_its_lease() {
+        use crate::{App, AppEvent};
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.spawn_bg("Working...", |_task_gen, _tx| panic!("worker died"));
+        assert!(app.work_a_bump_would_strand());
+
+        let finished = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the lease reports back even from a panic");
+        assert!(matches!(finished, AppEvent::BackgroundWorkFinished));
+        let _ = app.handle(&finished);
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "the generation is free again rather than leased forever"
+        );
+    }
+
+    /// The buffer collect is the only spawn that takes no lease, and adding a second
+    /// exemption has to be a deliberate act rather than an oversight.
+    ///
+    /// `spawn_bg` leases by construction, so a new kind of gated background work is
+    /// accounted for without anyone remembering to account for it. The two ways around
+    /// it are `spawn_bg_replaceable` and `spawn_bg_inner`, and this counts both, over
+    /// every file in the crate rather than this one — they are private to the crate
+    /// root, which every module below it can reach.
+    ///
+    /// It cannot catch a raw `runtime.spawn_blocking` that captures `task_generation`
+    /// itself. That is a different shape, and the three that exist do not carry a
+    /// generation at all.
+    #[test]
+    fn the_collect_is_the_only_unleased_spawn() {
+        // Split so this test's own needles are not among the things it finds.
+        let needles = [
+            (concat!("spawn_bg_", "replaceable("), 1usize),
+            (concat!("spawn_bg_", "inner("), 2usize),
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sources = Vec::new();
+        let mut stack = vec![src];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .expect("the crate's own source")
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    sources.push(std::fs::read_to_string(&path).expect("a source file"));
+                }
+            }
+        }
+        assert!(sources.len() > 20, "the crate's sources were found");
+
+        for (needle, expected) in needles {
+            let found: usize = sources.iter().map(|s| s.matches(needle).count()).sum();
+            assert_eq!(
+                found, expected,
+                "`{needle}` appears {found} times, not {expected}. The buffer collect is \
+                 the one spawn whose answer is asked for again if a bump throws it away; \
+                 anything else that skips the lease can be stranded by a bump, silently. \
+                 See GenerationLease."
+            );
+        }
+    }
+
+    /// A handler returning a continuation does not let the errands behind it in.
+    ///
+    /// `App::handle` runs the owed re-read and the owed collect at its tail, after
+    /// `dispatch_event` has already returned the follow-up — so this is a window inside
+    /// one event, before `EventPump` has seen the continuation and taken a lease for it.
+    /// `Open` is the case that costs most: it bumps `task_generation`, sets
+    /// `awaiting_dataset` and returns `DoLoadScanPaths` without spawning anything, so
+    /// nothing holds a lease at all. An owed collect going in there bumps the generation
+    /// the scan is about to be spawned against, and `BackgroundSchemaReady`'s mismatch
+    /// branch returns without resetting anything: the file never opens.
+    #[test]
+    fn a_continuation_does_not_let_the_errands_behind_it_in() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("next.csv");
+        std::fs::write(&path, "name,age\nada,36\n").expect("write csv");
+
+        let rows = || df!("id" => &[1i64, 2, 3]).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // A collect owed to the dataset on screen, waiting for the generation to be free.
+        app.collect_owed = Some((app.dataset_generation, "Loading buffer...".to_string()));
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "nothing holds the generation: the errand would go in on the next event"
+        );
+
+        // And the user opens something else.
+        let out = app
+            .handle(&AppEvent::Open(vec![path], OpenOptions::default()))
+            .expect("the open is not a key");
+        assert!(out.is_some(), "the open returned a continuation");
+        assert!(
+            app.collect_owed.is_some(),
+            "the collect is still owed rather than run: running it here would bump the \
+             generation the open has just taken for its scan"
+        );
+    }
+
+    /// An open parked on the download confirmation holds the generation while it waits.
+    ///
+    /// The one errand that waits on neither a worker nor a continuation: nothing is
+    /// running, the open is very much unfinished, and the wait is as long as the user
+    /// takes to answer. A collect starting meanwhile bumps `task_generation`, and the
+    /// download they are about to agree to then answers a generation nothing matches.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    #[test]
+    fn a_download_waiting_on_the_user_holds_the_generation() {
+        use crate::{App, AppEvent, OpenOptions, PendingDownload};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.awaiting_dataset = true;
+        assert!(!app.work_a_bump_would_strand(), "nothing is running yet");
+
+        let pending = PendingDownload::Http {
+            url: "https://example.invalid/data.parquet".to_string(),
+            size: Some(1024),
+            options: OpenOptions::default(),
+        };
+        let _ = app.handle(&AppEvent::BackgroundRemoteSizeReady {
+            generation: app.task_generation(),
+            pending: Box::new(pending),
+        });
+
+        assert!(app.confirmation_modal.active, "the user is being asked");
+        assert!(
+            app.work_a_bump_would_strand(),
+            "and the generation is held for as long as they take to answer"
+        );
+
+        // Declining puts the errand down, and the generation with it.
+        let _ = app.key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        assert!(
+            !app.work_a_bump_would_strand(),
+            "nothing waits on it once the download is declined"
+        );
+    }
+
+    /// A count landing while a load is in flight does not cancel the load.
+    ///
+    /// `BackgroundLenReady` answers an End by jumping to the end, which reaches
+    /// `spawn_async_collect` with no key pressed and, on a large remote dataset, minutes
+    /// after the one that was — long enough for the user to have opened something else.
+    /// That bump threw the open's answer away, and `BackgroundSchemaReady`'s mismatch
+    /// branch returns without resetting anything, so `awaiting_dataset`, `busy` and
+    /// `loading_state` stayed set and the file never opened, silently, for the rest of
+    /// the session.
+    #[test]
+    fn a_count_landing_during_a_load_does_not_bump_the_generation() {
+        use crate::widgets::datatable::{DataTableState, RemoteFiles};
+        use crate::{App, AppEvent, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(vec!["one".to_string()]),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: Arc::new(|| Ok(vec![vec![100]])),
+            offsets: None,
+        });
+        state.visible_rows = 10;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // End on a dataset whose rows are not counted yet: the jump waits for the count.
+        let waiting = app.data_table_state.as_ref().unwrap().len_generation();
+        let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.end_after_count, Some(waiting));
+
+        // Meanwhile the user opens something else, which is waiting on this generation.
+        let lease = app.lease_for_tests();
+        let opening = app.task_generation();
+
+        // And the count lands.
+        let mut follow = app.event(&AppEvent::BackgroundLenReady {
+            len_generation: waiting,
+            num_rows: 100,
+            file_row_groups: None,
+        });
+        while let Some(event) = follow {
+            follow = app.event(&event);
+        }
+
+        assert_eq!(
+            app.task_generation(),
+            opening,
+            "the open is still waiting on the generation the jump would have bumped"
+        );
+        assert!(
+            app.collect_owed.is_some(),
+            "and the jump's collect is owed rather than dropped"
+        );
+
+        // The open finishes, and the jump gets its turn.
+        drop(lease);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        assert!(
+            app.collect_owed.is_none(),
+            "the collect the jump asked for runs once nothing is waiting"
+        );
+        assert_ne!(
+            app.task_generation(),
+            opening,
+            "and it is what bumps the generation, now that it is safe to"
+        );
+    }
+
+    /// A dataset waiting on an owed re-read still says its count is coming.
+    ///
+    /// The number a staged open holds is only as far as the buffer reached. While the
+    /// pass is out the dataset says so itself, and the bar shows a spinner. A pass that
+    /// fails takes that away — it gives up on the footers the moment it lands — and the
+    /// count that would replace it is the one the errand is waiting to start. Between
+    /// the two the bar has nothing marking the number provisional, and prints a prefix
+    /// of six thousand files as `Rows: 70`, plainly, for as long as the work in front of
+    /// the errand takes.
+    #[test]
+    fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use polars::prelude::*;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+        use std::sync::Arc;
+
+        let rows = || df!("id" => (0..70i64).collect::<Vec<_>>()).unwrap().lazy();
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            rows(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        // As a staged open leaves it: a provisional from a short read, a pass still out.
+        state.num_rows = 70;
+        state.set_footers_pending(Arc::new(|_| None));
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+        app.busy = false;
+
+        let bar_says_seventy = |app: &mut App| {
+            let area = Rect::new(0, 0, 100, 24);
+            let mut buf = Buffer::empty(area);
+            (&mut *app).render(area, &mut buf);
+            (0..area.width)
+                .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+                .collect::<String>()
+                .contains("Rows: 70")
+        };
+        assert!(
+            !bar_says_seventy(&mut app),
+            "while the pass is out the dataset says its count is coming"
+        );
+
+        // An export is running and holds a lease, so the errand the failure raises has
+        // to wait.
+        app.loading_state = LoadingState::Exporting {
+            file_path: std::path::PathBuf::from("/tmp/out.csv"),
+            current_phase: "Collecting".to_string(),
+            progress_percent: 0,
+        };
+        let _lease = app.lease_for_tests();
+        let live = app.dataset_generation;
+        App::record_footers(&app.pending_footers_result, live, None);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+        assert!(
+            app.reread_owed.is_some(),
+            "the fixture is a dataset owed a re-read it cannot have yet"
+        );
+
+        app.busy = false;
+        assert!(
+            !bar_says_seventy(&mut app),
+            "and it goes on saying so while the count it is owed waits its turn"
+        );
+    }
+
     /// A query over a dataset still reading its footers still gets counted.
     ///
     /// The pass is bringing the *dataset's* count, which is not the count of a query's
@@ -2162,6 +3418,92 @@ pub mod tests {
         );
     }
 
+    /// A footer pass that could not read them waits for work already asked for, too.
+    ///
+    /// The failure branch re-reads for a different reason than the success branch — the
+    /// pass brought no count, so the dataset has to go and count itself the ordinary way
+    /// — but it goes through the same collect, and that collect bumps `task_generation`
+    /// just the same. It used to run on the spot, the one way into the collect that
+    /// asked nothing about what was already running: an export in its collect phase
+    /// never wrote its file and said nothing about it.
+    ///
+    /// Revert `reread_owed` and this fails on the first assert: the generation moves
+    /// while the export is still waiting on it.
+    #[test]
+    fn a_pass_that_failed_waits_for_work_already_asked_for() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let frame = || df!("id" => &[1i64]).unwrap().lazy();
+        let dataset_of = |lf: LazyFrame| {
+            let mut lf = lf;
+            let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+            let footer = crate::schema_union::FileSchema {
+                schema,
+                rows: 1,
+                file_bytes: 0,
+                row_group_bytes: Vec::new(),
+            };
+            crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        };
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        let state = DataTableState::from_schema_and_lazyframe(
+            dataset_of(frame()).schema.clone(),
+            frame(),
+            &OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        app.load_active = true;
+        app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+
+        // An export is collecting: it holds a lease on this exact generation, and its
+        // answer is thrown away if anything bumps it.
+        app.loading_state = LoadingState::Exporting {
+            file_path: std::path::PathBuf::from("/tmp/out.csv"),
+            current_phase: "Collecting".to_string(),
+            progress_percent: 0,
+        };
+        let lease = app.lease_for_tests();
+        let waiting_on = app.task_generation();
+
+        // The pass comes back empty-handed for the dataset on screen.
+        let live = app.dataset_generation;
+        App::record_footers(&app.pending_footers_result, live, None);
+        let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+
+        assert_eq!(
+            app.task_generation(),
+            waiting_on,
+            "the export is still waiting on the answer this app would have thrown away"
+        );
+        assert_eq!(
+            app.reread_owed,
+            Some(live),
+            "and the re-read the dataset is owed is remembered, not dropped"
+        );
+
+        // The export finishes, and the errand gets its turn on the next event.
+        app.loading_state = LoadingState::Idle;
+        drop(lease);
+        let _ = app.handle(&AppEvent::BackgroundWorkFinished);
+        let _ = app.handle(&AppEvent::Update);
+
+        assert!(
+            app.task_generation() != waiting_on,
+            "the dataset gets the collect it was owed once nothing is waiting on the \
+             generation — without it, it never counts itself at all"
+        );
+        assert!(
+            app.reread_owed.is_none(),
+            "and the errand is done rather than run again on every event"
+        );
+    }
+
     /// Columns arriving during work already asked for wait for it, rather than
     /// cancelling it.
     ///
@@ -2174,7 +3516,7 @@ pub mod tests {
     #[test]
     fn columns_arriving_during_work_already_asked_for_wait_for_it() {
         use crate::widgets::datatable::{DataTableState, FootersFound};
-        use crate::{App, AppEvent, LoadingState, OpenOptions};
+        use crate::{App, AppEvent, GenerationLease, OpenOptions};
         use polars::prelude::*;
         use std::sync::Arc;
 
@@ -2204,25 +3546,15 @@ pub mod tests {
         app.load_active = true;
         app.apply_schema_ready(state, None, &OpenOptions::default(), None);
 
-        // Each kind of work whose answer the join would throw away. The load is the one
-        // that costs most: a dataset the user asked for that never opens, and nothing
-        // said about it.
-        type Start = fn(&mut App);
+        // Work whose answer the join would throw away. A lease stands for all of it —
+        // an open, an export, an analysis — which is the point: the decision is no
+        // longer a list of the kinds that happen to exist today. The chart is here
+        // beside it because it is the one that a bump would *not* strand: it is
+        // prepared against the frame, and the join takes a fresh one of those too.
+        type Start = fn(&mut App) -> Option<GenerationLease>;
         let under_way: Vec<(&str, Start)> = vec![
-            ("a load", |app: &mut App| app.awaiting_dataset = true),
-            ("an export", |app: &mut App| {
-                app.loading_state = LoadingState::Exporting {
-                    file_path: std::path::PathBuf::from("/tmp/out.csv"),
-                    current_phase: "Collecting".to_string(),
-                    progress_percent: 0,
-                };
-            }),
-            ("an analysis", |app: &mut App| {
-                app.analysis_modal.computing = Some(crate::analysis_modal::AnalysisProgress {
-                    phase: "Counting".to_string(),
-                    current: 0,
-                    total: 1,
-                });
+            ("leased background work", |app: &mut App| {
+                Some(app.lease_for_tests())
             }),
             ("a chart", |app: &mut App| {
                 app.chart_inflight = Some(crate::ChartInflight {
@@ -2233,17 +3565,19 @@ pub mod tests {
                     },
                     stale: false,
                 });
+                None
             }),
         ];
-        let put_away = |app: &mut App| {
-            app.awaiting_dataset = false;
-            app.loading_state = LoadingState::Idle;
-            app.analysis_modal.computing = None;
+        let put_away = |app: &mut App, lease: Option<GenerationLease>| {
+            // The lease is released by dropping it, which sends the event the count is
+            // decremented by — behind whatever result the work had already sent.
+            drop(lease);
+            let _ = app.handle(&AppEvent::BackgroundWorkFinished);
             app.chart_inflight = None;
         };
 
         for (what, start) in under_way {
-            start(&mut app);
+            let lease = start(&mut app);
             let waiting_on = app.task_generation();
             app.footers_held = Some((
                 app.dataset_generation,
@@ -2267,7 +3601,7 @@ pub mod tests {
                 app.footers_held.is_some(),
                 "and the columns wait their turn behind {what}"
             );
-            put_away(&mut app);
+            put_away(&mut app, lease);
         }
 
         // Nothing under way now, and they go in.
@@ -3307,6 +4641,94 @@ pub enum AppEvent {
         generation: u64,
         message: String,
     },
+    /// A [`GenerationLease`] was released: the work holding it has finished, however it
+    /// finished. Sent by the lease's `Drop`, so it arrives behind whatever result the
+    /// work sent first.
+    BackgroundWorkFinished,
+    /// Look at a path off the interface thread, then do with it whatever it turns out to
+    /// need — browse into it, say it is a lake table, or open it.
+    ///
+    /// `exists`, `is_dir` and `classify_directory` are all filesystem calls, and the home
+    /// screen is full of paths on mounts that may not answer. Doing them where the keys
+    /// are read is an uninterruptible freeze with Ctrl+C on the same thread.
+    ClassifyThenOpen {
+        path: PathBuf,
+        /// A jump — a path typed at `~` — rather than a row that was already listed. Esc
+        /// then comes back from there to the listing, not up through wherever the path
+        /// happens to sit.
+        jump: bool,
+    },
+    /// What [`AppEvent::ClassifyThenOpen`]'s worker found. `None` is a path that is not
+    /// there.
+    BackgroundKindReady {
+        generation: u64,
+        /// Which look this answers. A newer one replaces it, and the older answer is then
+        /// not the one the user is waiting for — nor the owner of the busy state.
+        request: u64,
+        path: PathBuf,
+        found: Option<discover::EntryKind>,
+        jump: bool,
+    },
+}
+
+/// A look at a path that is out on a worker, and what would make its answer stale.
+///
+/// `browsing` rather than `home_generation`: the question is whether the user is still
+/// where they asked from, and the listing is rebuilt for reasons that are nothing to do
+/// with them — a probe of some other root answering is enough. Gating on that made Enter
+/// on a share row do nothing, at random.
+struct ClassifyRequest {
+    id: u64,
+    path: PathBuf,
+    /// Where the home screen was pointed when the look was asked for.
+    browsing: Option<PathBuf>,
+}
+
+/// A lease on the current `task_generation`, held by background work whose answer
+/// arrives once.
+///
+/// `task_generation` is the token `BackgroundSchemaReady`, `BackgroundExportCollected`,
+/// `BackgroundExportWritten`, the three analysis results, `BackgroundLazyFrameReady`,
+/// `BackgroundRemoteSizeReady`, `BackgroundDownloadReady` and `BackgroundError` are all
+/// gated on. Bumping it while one is in flight throws that answer away when it arrives,
+/// silently, and nothing asks again: an export that never writes its file, an analysis
+/// left on its spinner, a dataset that never opens. So the bump waits for the lease.
+///
+/// Counted rather than enumerated. The predicate this replaced listed the kinds of work
+/// that might be running, and was found short by one entry in three consecutive review
+/// rounds; a lease is taken by [`App::spawn_bg`] itself, so the next kind of background
+/// work is covered without anyone remembering to add it.
+///
+/// Released by `Drop`, which sends an event rather than touching the count directly: the
+/// count lives on `App`, the lease lives on a worker thread, and the event is queued
+/// behind the result that worker just sent — so the handler that consumes the result has
+/// already run by the time the lease is retired. A worker that panics unwinds through
+/// the same `Drop`, so a permanent "something is waiting" cannot be stranded that way.
+/// This is [`crate::schema_union::Pass`]'s trick, for a count on the other side of a
+/// channel.
+///
+/// One worker, though, not one errand. An errand of several phases hands off through the
+/// event queue and holds no lease for an event at a time, so two other things take one:
+/// [`crate::event_pump::EventPump`] while it holds a continuation it has not dispatched,
+/// and `pending_download` while the confirmation modal waits on the user. Between them
+/// the count covers a whole errand, which is what lets the predicate be only the count —
+/// with one exception. `reread_after_the_footers_joined` sends its jump straight to the
+/// channel, unleased, and that is safe only because both its callers have already checked
+/// that nothing is waiting on the generation. A fourth handoff added that way would not
+/// be.
+///
+/// A worker that never returns at all — a `hard` NFS mount, a wedged object-store read —
+/// never drops its lease; that thread already leaves `busy` set for the session, so the
+/// app is wedged with or without this, but the count does not rescue it.
+struct GenerationLease {
+    events: Sender<AppEvent>,
+}
+
+impl Drop for GenerationLease {
+    fn drop(&mut self) {
+        // Nobody to tell means the app is gone, and so is the count.
+        let _ = self.events.send(AppEvent::BackgroundWorkFinished);
+    }
 }
 
 /// What [`App::handle`] did with an event: `Ok` carries the follow-up event to send,
@@ -4151,6 +5573,13 @@ pub struct App {
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     home_generation: u64,
+    /// The look a `ClassifyThenOpen` has out, if any. Every key acts on the home screen
+    /// even while `busy` — `hard_escape_while_busy` says so there — so a second Enter is
+    /// reachable, and the newer look replaces the older: its answer is the one the user
+    /// is waiting for. See [`ClassifyRequest`].
+    classify_inflight: Option<ClassifyRequest>,
+    /// Ids for those, so a superseded answer can be told from the one being waited on.
+    classify_requests: u64,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -4208,9 +5637,16 @@ pub struct App {
     /// Collected DataFrame between DoExportCollect and DoExportWrite (two-phase export progress).
     export_df: Option<DataFrame>,
     pending_chart_export: Option<(PathBuf, ChartExportFormat, String, u32, u32)>,
-    /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation. Size is from HEAD when available.
+    /// Pending remote file download (HTTP/S3/GCS) while waiting for user confirmation.
+    /// Size is from HEAD when available.
+    ///
+    /// Carries a [`GenerationLease`], because this is the one errand that waits on
+    /// neither a worker nor a continuation: nothing is running, the open is very much
+    /// unfinished, and the wait is as long as the user takes. Paired with the download
+    /// rather than kept beside it, so the two cannot drift — every path out of the modal
+    /// takes the download, and the lease goes with it.
     #[cfg(any(feature = "http", feature = "cloud"))]
-    pending_download: Option<PendingDownload>,
+    pending_download: Option<(PendingDownload, GenerationLease)>,
     show_help: bool,
     help_scroll: usize, // Scroll position for help content
     cache: CacheManager,
@@ -4278,6 +5714,20 @@ pub struct App {
     /// the scan under a query takes the query's own columns away, and offered again the
     /// moment the view comes back to the dataset itself.
     footers_held: Option<(u64, crate::widgets::datatable::FootersFound)>,
+    /// A re-read the dataset is owed by a footer pass that came back empty-handed, held
+    /// back because the collect it goes through would bump `task_generation` out from
+    /// under work already running. The pass that failed brings no columns to hold, so
+    /// `footers_held` has nothing to say about it, and the dataset still needs the
+    /// ordinary count the pass was going to save it — hence an errand of its own, tried
+    /// again after every event until the work it would cancel is done.
+    reread_owed: Option<u64>,
+    /// Leases outstanding on `task_generation`: background work a bump would strand.
+    /// See [`GenerationLease`].
+    leases: usize,
+    /// A buffer collect that was asked for while a lease was outstanding, and the
+    /// dataset it was asked for. Tried again after every event, like `reread_owed`, and
+    /// dropped when the dataset it belonged to is replaced.
+    collect_owed: Option<(u64, String)>,
     pending_collect_result:
         std::sync::Arc<std::sync::Mutex<Option<(u64, crate::widgets::datatable::CollectResult)>>>, // (generation, result) from background buffer load
     /// When true, show the throbber and defer keys (see [`App::handle`]); the main loop
@@ -4287,11 +5737,14 @@ pub struct App {
     /// theirs asking for it: going home, abandoning a load. Keys held while busy carry
     /// the value they were typed under and are dropped if it has moved on.
     screen_generation: u64,
-    /// Set by the main loop when it had to drop a key typed while busy, shown beside
-    /// the status message until the held keys have been replayed.
+    /// Set by the main loop when it had to drop a key typed while busy, shown beside a
+    /// status message while work is running. Cleared once the held keys have been
+    /// replayed.
     input_dropped: bool,
-    throbber_frame: u8,             // Spinner frame index (0..3) for control bar
-    status_message: Option<String>, // Status text shown in control bar when busy (replaces keybindings)
+    throbber_frame: u8, // Spinner frame index (0..3) for control bar
+    /// Status text for the control bar, at the table view. Shown whether or not the app
+    /// is busy: an End waiting on a remote row count parks without setting `busy`.
+    status_message: Option<String>,
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
     /// Temp file path for HTTP-downloaded data; removed when user opens different data or exits.
@@ -4678,6 +6131,9 @@ impl App {
     /// dropped the buffer, so nothing dropping this leaves the table with no rows to
     /// show at the moment it was to show more of them.
     fn reread_after_the_footers_joined(&mut self) {
+        // Any re-read satisfies one that was owed: this is the collect the errand was
+        // waiting to run, whoever asked for it.
+        self.reread_owed = None;
         // End was pressed while the footers were still coming, and they are what the
         // end was waiting on. Taken either way: a flag left from a dataset that is gone
         // is not this one's to act on. The jump reads the page it lands on, so reading
@@ -4698,24 +6154,108 @@ impl App {
         self.spawn_async_collect("Loading buffer...");
     }
 
+    /// Run a buffer collect that was asked for while other work was waiting on the
+    /// generation.
+    ///
+    /// The same shape as `reread_when_the_work_allows` below, and for the same reason:
+    /// the collect bumps `task_generation`, so it waits its turn and is tried again
+    /// after every event.
+    fn collect_when_the_work_allows(&mut self) {
+        let Some((generation, _)) = self.collect_owed.as_ref() else {
+            return;
+        };
+        if *generation != self.dataset_generation {
+            // The dataset it was owed to is gone, and so is the view it was filling.
+            // Only the errand is put down: `busy` and the status line belong to whatever
+            // replaced the dataset, and are not this errand's to clear.
+            self.collect_owed = None;
+            return;
+        }
+        if self.work_a_bump_would_strand() {
+            return;
+        }
+        let Some((_, status)) = self.collect_owed.take() else {
+            return;
+        };
+        if !self.spawn_async_collect(&status) {
+            self.busy = false;
+            self.status_message = None;
+            // The collect that was owed may have been the last step of an open, and
+            // `DoLoadBuffer` takes the loading screen down itself when there turns out
+            // to be nothing to collect. Deferred, that branch is not the one that runs,
+            // and the screen would read "Loading buffer... 70%" with the app idle for
+            // the rest of the session. Only a load's own state: an export owns
+            // `loading_state` too, and it is still going.
+            if matches!(self.loading_state, LoadingState::Loading { .. }) {
+                self.loading_state = LoadingState::Idle;
+            }
+        }
+    }
+
+    /// Run the re-read a failed footer pass owes the dataset, once it can be run
+    /// without throwing another answer away.
+    ///
+    /// The failure branch of `BackgroundFootersJoined` used to re-read on the spot,
+    /// which bumped `task_generation` with no check at all — the one path into the
+    /// collect that never asked `work_the_join_would_cancel`. An export in its collect
+    /// phase then never wrote its file and said nothing about it. So the errand waits
+    /// its turn, the way held columns already do.
+    fn reread_when_the_work_allows(&mut self) {
+        let Some(generation) = self.reread_owed else {
+            return;
+        };
+        if generation != self.dataset_generation {
+            // The dataset it was owed to is gone; so is the errand.
+            self.reread_owed = None;
+            return;
+        }
+        if self.work_the_join_would_cancel() {
+            return;
+        }
+        self.reread_after_the_footers_joined();
+    }
+
+    /// Retire an End that was waiting on a count which can no longer answer it.
+    ///
+    /// Only the flag and the message it put up: the jump itself is not re-issued. See
+    /// the caller in `BackgroundLenReady` for why asking again is the wrong repair.
+    fn retire_the_end_that_was_waiting(&mut self) {
+        self.end_after_count = None;
+        self.take_down_the_counting_status();
+    }
+
+    /// Take down "Counting rows to find the end…", and only that.
+    ///
+    /// Clearing the status outright would wipe whatever else is using the line — a
+    /// load's phase, an export's progress — on behalf of a key pressed somewhere else.
+    fn take_down_the_counting_status(&mut self) {
+        if self.status_message.as_deref() == Some(Self::COUNTING_FOR_END) {
+            self.status_message = None;
+        }
+    }
+
+    /// What the status line says while an End is waiting on a row count. Named so the
+    /// paths that retire such an End can take the message back down without reaching
+    /// for a literal, and without clearing a message that belongs to something else.
+    const COUNTING_FOR_END: &'static str = "Counting rows to find the end…";
+
+    /// What the control bar says while a path is being looked at. Named so the answer can
+    /// take down its own line without clearing one that belongs to something else.
+    const LOOKING: &'static str = "Looking...";
+
     /// Work already running that the re-read after a join would cancel.
     ///
-    /// The re-read goes through the ordinary collect, which bumps `task_generation` —
-    /// the token an export, an analysis and a chart are all waiting on. Bumping it
-    /// underneath one throws its answer away when it arrives: an export in its collect
-    /// phase never writes the file and says nothing about it, and an analysis is left
-    /// on its spinner. So the columns wait, as they already do for a query, and go in
-    /// when the work that was asked for first is done.
+    /// The re-read goes through the ordinary collect, which bumps `task_generation`, so
+    /// everything a bump would strand has to be done first — and that is
+    /// [`GenerationLease`]'s job now, rather than a list of the kinds of work that
+    /// might be running.
+    ///
+    /// One thing more than a bump, though: a join takes a fresh `len_generation` too. A
+    /// chart is prepared against the frame rather than the generation
+    /// (`BackgroundChartReady` carries no generation at all), so a bump cannot strand
+    /// one but changing the frame under it can.
     fn work_the_join_would_cancel(&self) -> bool {
-        // A load above all: `dataset_generation` does not move until the new dataset is
-        // installed, so a pass belonging to the prefix the user walked away from still
-        // matches while the file they asked for is being opened. Cancelling that one
-        // means it never opens at all, silently, and leaves `awaiting_dataset` set for
-        // the rest of the session.
-        self.awaiting_dataset
-            || matches!(self.loading_state, LoadingState::Exporting { .. })
-            || self.analysis_modal.computing.is_some()
-            || self.chart_preparing()
+        self.work_a_bump_would_strand() || self.chart_preparing()
     }
 
     /// Give the dataset what its footers found, if it can take it now.
@@ -4827,6 +6367,11 @@ impl App {
         );
         // A key pressed at the dataset being replaced belongs to it, not to this one.
         self.end_when_the_footers_land = None;
+        // Its companion, for the same reason. This one keys itself to a
+        // `len_generation`, which says nothing about which dataset it belonged to, so
+        // without clearing it here an End pressed on the folder the user walked away
+        // from is still live against the one they opened next.
+        self.end_after_count = None;
         // One per dataset that reaches the screen, rather than one per open started:
         // an open that fails leaves the last dataset up, and the pass still reading its
         // footers has to be able to finish into it.
@@ -4929,6 +6474,9 @@ impl App {
                 .spawn_blocking(move || job.send(job.run(), &tx));
         }
 
+        // Read before the frame is borrowed: the predicate is over the whole App.
+        let a_bump_would_strand = self.work_a_bump_would_strand();
+
         // Plan and spawn the buffer collect. With the count unknown this is a top-of-data
         // window (`slice(0, N)`) that touches only the first file(s) of a partitioned set.
         let Some(state) = self.data_table_state.as_mut() else {
@@ -4947,6 +6495,30 @@ impl App {
             }
             return covered;
         };
+        // Everything past here bumps `task_generation`, so everything holding a lease on
+        // it has to be done first. The collect the user asked for is queued rather than
+        // refused: the throbber that was already turning goes on turning, and it is
+        // tried again after every event until the work in front of it finishes.
+        //
+        // This is the door #238 was about. `BackgroundLenReady` answers a count by
+        // jumping to the end, which reaches here with no key pressed and minutes after
+        // the one that was — long enough for a dataset to have been opened meanwhile.
+        // The bump cancelled that open, and `BackgroundSchemaReady`'s mismatch branch
+        // returns without resetting anything, so `awaiting_dataset`, `busy` and
+        // `loading_state` stayed set and the file never opened, silently, for the rest
+        // of the session.
+        if a_bump_would_strand {
+            // The count that was going to ride in this collect is put down rather than
+            // run on its own. On an object store it answers itself out of the short read
+            // the collect comes back with; spawned standalone it is a full remote
+            // `len()`, which is the expensive thing the riding exists to avoid. Putting
+            // the marker down with it is what lets the retry ask again.
+            if count.is_some() {
+                self.len_count_inflight = None;
+            }
+            self.collect_owed = Some((self.dataset_generation, status.to_string()));
+            return true;
+        }
         self.task_generation = self.task_generation.wrapping_add(1);
         self.collect_inflight = Some(InflightCollect {
             began: std::time::Instant::now(),
@@ -4960,7 +6532,7 @@ impl App {
             end: request.buffer_end,
         });
         let collect_slot = self.pending_collect_result.clone();
-        self.spawn_bg(status, move |task_gen, tx| {
+        self.spawn_bg_replaceable(status, move |task_gen, tx| {
             match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
                 Ok(df) => {
                     let returned = df.height();
@@ -5017,11 +6589,68 @@ impl App {
     where
         F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
     {
+        let lease = self.lease_the_generation();
+        self.spawn_bg_inner(status, Some(lease), work);
+    }
+
+    /// Spawn background work whose answer, thrown away by a bump, is simply asked for
+    /// again — the buffer collect, and only that.
+    ///
+    /// It holds no [`GenerationLease`], because the collect is what a lease makes wait:
+    /// leased, the next collect would queue behind the last one and scrolling would go
+    /// a page per round trip. Supersession is `InflightCollect::covers`'s job instead.
+    ///
+    /// This is the one exemption, and `the_collect_is_the_only_unleased_spawn` fails if
+    /// a second one appears.
+    fn spawn_bg_replaceable<F>(&mut self, status: &str, work: F)
+    where
+        F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
+    {
+        self.spawn_bg_inner(status, None, work);
+    }
+
+    fn spawn_bg_inner<F>(&mut self, status: &str, lease: Option<GenerationLease>, work: F)
+    where
+        F: FnOnce(u64, Sender<AppEvent>) + Send + 'static,
+    {
         let task_gen = self.task_generation;
         let tx = self.events.clone();
         self.busy = true;
         self.status_message = Some(status.to_string());
-        self.runtime.spawn_blocking(move || work(task_gen, tx));
+        self.runtime.spawn_blocking(move || {
+            // Dropped after `work` returns, and on the way out of a panic too.
+            let _lease = lease;
+            work(task_gen, tx);
+        });
+    }
+
+    /// A lease held by nothing, for tests that need work in flight without a thread to
+    /// run it on. Exposed for the same reason `task_generation` is.
+    #[cfg(test)]
+    pub(crate) fn lease_for_tests(&mut self) -> GenerationLease {
+        self.lease_the_generation()
+    }
+
+    /// Take a lease on the current `task_generation`. See [`GenerationLease`].
+    fn lease_the_generation(&mut self) -> GenerationLease {
+        self.leases += 1;
+        GenerationLease {
+            events: self.events.clone(),
+        }
+    }
+
+    /// Whether anything is waiting on the current `task_generation`, so that bumping it
+    /// would throw away an answer nothing will ask for again.
+    fn work_a_bump_would_strand(&self) -> bool {
+        // A count, and nothing else. Nothing here names a kind of work, so a new kind is
+        // covered by taking a lease rather than by being remembered here — which is the
+        // whole of #221. Three things hold one:
+        //
+        //  - every background spawn, for as long as its worker runs ([`App::spawn_bg`]);
+        //  - `EventPump`, for as long as a continuation it has not dispatched is
+        //    waiting, which is the gap between two phases of one errand;
+        //  - an errand parked on the user, which is the download confirmation.
+        self.leases > 0
     }
 
     /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
@@ -5053,7 +6682,7 @@ impl App {
             && !state.is_num_rows_valid()
         {
             self.end_when_the_footers_land = Some(self.dataset_generation);
-            self.status_message = Some("Counting rows to find the end…".to_string());
+            self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             return None;
         }
         if matches!(jump, AppEvent::DoScrollEnd)
@@ -5063,7 +6692,7 @@ impl App {
         {
             let generation = state.len_generation();
             self.end_after_count = Some(generation);
-            self.status_message = Some("Counting rows to find the end…".to_string());
+            self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             if self.len_count_inflight != Some(generation) {
                 let job = LenCount::for_state(state);
                 self.len_count_inflight = Some(generation);
@@ -5216,6 +6845,8 @@ impl App {
             cloud_discovery_started: false,
             home_search_inflight: false,
             home_generation: 0,
+            classify_inflight: None,
+            classify_requests: 0,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -5299,6 +6930,9 @@ impl App {
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
             footers_held: None,
+            reread_owed: None,
+            leases: 0,
+            collect_owed: None,
             end_when_the_footers_land: None,
             len_count_inflight: None,
             collect_inflight: None,
@@ -5775,6 +7409,7 @@ impl App {
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
             known: self.cache.load_dataset_facts(),
+            cloud_kinds: self.home.cloud_kinds.clone(),
         };
 
         self.home.listing_in_flight = true;
@@ -5853,9 +7488,21 @@ impl App {
         // the throbber up on the home screen, and its result could later land in a
         // different dataset with the same column names.
         self.reset_chart_state();
+        // A look that is out belongs to the home screen being left, and the thread it is
+        // on may never come back — a share that has gone away is the case it exists for.
+        // Its answer will find nothing outstanding and touch nothing; the keyboard does
+        // not wait for it.
+        if self.classify_inflight.take().is_some() {
+            self.busy = false;
+            self.home.status = None;
+        }
         // Nothing is arriving to replace it, so the dataset already on screen is the
         // current one again — Esc from home goes straight back to it.
         self.awaiting_dataset = false;
+        // And a collect that was waiting behind this load goes with it. Left standing,
+        // it runs the moment the load's lease comes back — reading the dataset the user
+        // walked away from, at the home screen, with `busy` set and every key held.
+        self.collect_owed = None;
         #[cfg(any(feature = "http", feature = "cloud"))]
         if self.pending_download.take().is_some() {
             self.confirmation_modal.hide();
@@ -5865,7 +7512,6 @@ impl App {
         if matches!(self.loading_state, LoadingState::Loading { .. }) {
             self.loading_state = LoadingState::Idle;
             self.busy = false;
-            self.status_message = None;
         }
         // Keys typed at the frozen screen were meant for the load, not for home:
         // replayed there they could open a dataset nobody asked for.
@@ -6009,6 +7655,9 @@ impl App {
 
     /// Move the browse up to `to`, or back to the root listing when `None`.
     fn home_leave_browsing(&mut self, to: Option<PathBuf>) {
+        // Whatever the last place said about itself, it said about that place. "these
+        // are the files under it" is wrong the moment "it" is somewhere else.
+        self.home.status = None;
         self.home.browsing = to;
         // Backspace can climb above where the browse began; the start follows, so a
         // later Esc still has a place to stop.
@@ -6024,8 +7673,12 @@ impl App {
 
     /// Look inside the folders a cloud listing returned, a few at a time, so the ones
     /// that are datasets say `hive` or `multi` and open as one. One small listing
-    /// request per folder, never an object read, and at most `PEEKS_PER_LISTING` of
-    /// them per listing; each folder is peeked at once per session.
+    /// request per folder, and at most `PEEKS_PER_LISTING` of them per listing; each
+    /// folder is peeked at once per session.
+    ///
+    /// A folder the listing takes for `multi` costs a little more: up to three ranged
+    /// reads of a few kilobytes each, to ask the footers whether its files are really
+    /// one table. Nothing else reads an object, and nothing reads a whole one.
     #[cfg(feature = "cloud")]
     fn peek_cloud_folders(&mut self, root: &Path) {
         const PEEKS_PER_LISTING: usize = 48;
@@ -6085,7 +7738,10 @@ impl App {
         self.home.browsing = Some(path);
         // "Below here" now means somewhere else. Whatever the last walk found
         // describes a different place, and a fresh one starts on the next
-        // keystroke.
+        // keystroke. The status line goes with them: "these are the files under it"
+        // is about wherever "it" was. A caller with something to say about the place
+        // it is going says it after this returns.
+        self.home.status = None;
         self.home.search.reset();
         self.home.filter.clear();
         self.home.sync_search_section();
@@ -6093,21 +7749,47 @@ impl App {
         self.home_refresh();
     }
 
-    /// The highlighted row, when it is a cloud folder that opens as one dataset and so
-    /// can be browsed into only with →.
-    fn selected_cloud_dataset_folder(&self) -> Option<PathBuf> {
+    /// The highlighted row, when it is a folder that opens as one dataset and so can be
+    /// browsed into only with →.
+    ///
+    /// Local or remote. The split this used to carry — remote only — was never about
+    /// where the folder was: a cloud prefix simply could not be descended into until
+    /// there was a listing to descend with. A local `hive` tree or folder of part files
+    /// had no way in at all, so Enter opened the whole thing, ←/→ folded the section and
+    /// the files inside were unreachable. That matters more since a folder's
+    /// classification began depending on its files' schemas: looking inside is the only
+    /// recourse when the answer is wrong.
+    fn selected_dataset_folder(&self) -> Option<PathBuf> {
         let entry = self.home.selected_entry()?;
+        // The row that opens the folder being browsed as one dataset, which is inside
+        // that folder already: → on it would descend into where it already is.
         let whole_of_here = self
             .home
             .browsing
             .as_deref()
             .is_some_and(|dir| home::folder_dataset_url(dir) == entry.path);
-        (matches!(
+        // A lake table too: Enter already goes inside one, and → doing the same is what
+        // every other folder-shaped row does. Before this it folded the section, which
+        // on a cloud Delta root was a step backwards — labelled `multi`, → went inside.
+        ((matches!(
             entry.kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) && home::is_object_store_url(&entry.path)
+        ) || entry.kind.is_lake_table())
             && !whole_of_here)
             .then_some(entry.path)
+    }
+
+    /// What to say when the user asks to open a lake table: datui goes inside it rather
+    /// than reading it, and the reason is not guessable from the row.
+    ///
+    /// `None` for anything else. Shared by the two doors onto a path — the highlighted
+    /// row, and a path typed at `~` — because the second one had no lake check at all
+    /// and loaded the root as a folder of Parquet files, which is the whole of #237
+    /// reached one keystroke differently.
+    fn lake_table_note(kind: discover::EntryKind) -> Option<String> {
+        kind.lake_name().map(|format| {
+            format!("datui does not read {format} tables yet — these are the files under it")
+        })
     }
 
     /// Open the highlighted entry: toggle a section, descend into a directory, or
@@ -6122,32 +7804,116 @@ impl App {
             return None;
         }
         let entry = self.home.selected_entry()?;
-        if entry.kind == discover::EntryKind::Directory {
-            self.home_browse_into(entry.path);
+        // A row nothing has looked at is looked at before it is opened, rather than
+        // opened as whatever it turns out to be. `EntryKind::Unknown` is offered as
+        // openable, so without this a lake root reached this way is read as one table:
+        // #237 through the door #249 leaves open.
+        let mut entry = entry;
+        if entry.kind == discover::EntryKind::Unknown {
+            if self.looking_could_block(&entry.path) {
+                return Some(AppEvent::ClassifyThenOpen {
+                    path: entry.path,
+                    jump: false,
+                });
+            }
+            if entry.path.is_dir() {
+                entry.kind = discover::classify_directory(&entry.path);
+            }
+        }
+        self.open_what_it_is(entry.path, entry.kind, false)
+    }
+
+    /// Whether finding out what a path is could sit on a mount that never answers.
+    ///
+    /// Two halves. An object-store or HTTP URL names something no mount is responsible
+    /// for — what is behind it is the scan's business, and stat'ing it only ever asks the
+    /// working directory about a file called `s3:` — and an ordinary local path answers at
+    /// once, so making the user wait a round trip for it would be a delay bought with
+    /// nothing.
+    ///
+    /// What is left is a path on a mount the home screen calls a network one, which is
+    /// the case `is_remote_path` exists to name and the only one worth a worker.
+    fn looking_could_block(&self, path: &Path) -> bool {
+        // `cloud://<id>` is a place, not a path: `input_source` calls the unknown scheme
+        // local and `is_remote_path` calls it remote, so without this a worker would be
+        // sent to stat it and come back with "No such path".
+        !home::is_cloud_place(path)
+            && matches!(source::input_source(path), source::InputSource::Local(_))
+            && (self.home.network_check)(path)
+    }
+
+    /// Do with a path whatever its kind calls for: browse into it, say it is a lake
+    /// table, or open it.
+    ///
+    /// `jump` is a path typed at `~` rather than a row already listed, which starts a new
+    /// browse so Esc comes back from there to the listing.
+    fn open_what_it_is(
+        &mut self,
+        path: PathBuf,
+        kind: discover::EntryKind,
+        jump: bool,
+    ) -> Option<AppEvent> {
+        let go_inside = |app: &mut Self, path: PathBuf| {
+            if jump {
+                app.home_jump_into(path);
+            } else {
+                app.home_browse_into(path);
+            }
+        };
+        if kind == discover::EntryKind::Directory {
+            go_inside(self, path);
+            return None;
+        }
+        // A lake table's files are not its rows: the ones a delete or an update
+        // tombstoned are still on disk, every rewritten version is here together, and
+        // compaction leaves both sides in place. Going inside is what datui can honestly
+        // do with one, and saying so is better than a silent wrong answer.
+        if let Some(note) = Self::lake_table_note(kind) {
+            go_inside(self, path);
+            self.home.status = Some(note);
             return None;
         }
         // A cloud folder that is a dataset opens as one: its URL as a prefix, which is
         // what makes the open a scan of every file under it.
-        if matches!(
-            entry.kind,
+        let folder = matches!(
+            kind,
             discover::EntryKind::Hive | discover::EntryKind::MultiFile
-        ) && home::is_object_store_url(&entry.path)
-        {
-            return Some(self.home_open_path(home::folder_dataset_url(&entry.path)));
+        );
+        if folder && home::is_object_store_url(&path) {
+            // A prefix, not a directory: the scan is what walks it.
+            return Some(self.home_open_path(home::folder_dataset_url(&path), false));
         }
-        Some(self.home_open_path(entry.path))
+        Some(self.home_open_path(path, folder))
+    }
+
+    /// Browse into `path` as a jump, from wherever the user was.
+    ///
+    /// Unlike `home_browse_into`, the browse *starts* here: Esc comes back from here to
+    /// the listing rather than up through whatever the path happens to sit under.
+    fn home_jump_into(&mut self, path: PathBuf) {
+        self.home.browse_start = Some(path.clone());
+        self.home.browsing = Some(path);
+        self.home.status = None;
+        self.home.search.reset();
+        self.home.filter.clear();
+        self.home.sync_search_section();
+        self.home.selected = 0;
+        self.home_refresh();
     }
 
     /// Load a path from the home screen.
     ///
     /// The recent entry is recorded by the `Open` handler, which every open goes
     /// through, so this does not record one itself.
-    fn home_open_path(&mut self, path: PathBuf) -> AppEvent {
-        let mut options = OpenOptions::default();
-        // A directory of partitions is only meaningful read as one hive dataset.
-        if path.is_dir() {
-            options.hive = true;
-        }
+    fn home_open_path(&mut self, path: PathBuf, hive: bool) -> AppEvent {
+        // A directory of partitions is only meaningful read as one hive dataset. Told
+        // rather than stat'ed: the caller already knows what this is, and on a share that
+        // has gone away a `stat` here would freeze the thread reading the keys — the same
+        // reason the size below is left to the `Open` handler.
+        let options = OpenOptions {
+            hive,
+            ..OpenOptions::default()
+        };
         self.input_mode = InputMode::Normal;
         self.set_loading_phase("Scanning input", 10);
         // A frame is drawn between this keypress and the `Open` that carries it out,
@@ -6183,28 +7949,29 @@ impl App {
                         return None;
                     }
                     let path = home::expand_user_path(&raw);
+                    // Whether it is there, whether it is a directory and what kind of one
+                    // are three filesystem calls, and a typed path is exactly where a
+                    // dead mount gets named. All three go to a worker when the mount is
+                    // one that might not answer.
+                    if self.looking_could_block(&path) {
+                        self.home.path_input.clear();
+                        self.home.path_input_active = false;
+                        return Some(AppEvent::ClassifyThenOpen { path, jump: true });
+                    }
+                    // Before the prompt closes: a typo is worth fixing where it was
+                    // typed, rather than retyping the whole path.
                     if !path.exists() {
                         self.home.status = Some(format!("No such path: {}", path.display()));
                         return None;
                     }
                     self.home.path_input.clear();
                     self.home.path_input_active = false;
-                    if path.is_dir()
-                        && discover::classify_directory(&path) == discover::EntryKind::Directory
-                    {
-                        // An ordinary directory: browse it rather than trying to load it.
-                        // A jump starts a new browse: Esc comes back from here to the
-                        // listing, not up through wherever the path happens to sit.
-                        self.home.browse_start = Some(path.clone());
-                        self.home.browsing = Some(path);
-                        self.home.search.reset();
-                        self.home.filter.clear();
-                        self.home.sync_search_section();
-                        self.home.selected = 0;
-                        self.home_refresh();
-                        return None;
-                    }
-                    return Some(self.home_open_path(path));
+                    let kind = if path.is_dir() {
+                        discover::classify_directory(&path)
+                    } else {
+                        discover::EntryKind::File
+                    };
+                    return self.open_what_it_is(path, kind, true);
                 }
                 KeyCode::Backspace => {
                     self.home.path_input.pop();
@@ -6245,10 +8012,23 @@ impl App {
                 self.home.select_first_entry();
             }
             KeyCode::Left => self.home_collapse(true),
-            KeyCode::Right => match self.selected_cloud_dataset_folder() {
-                // Into a partitioned cloud folder rather than opening it, to reach one
-                // partition.
-                Some(folder) => self.home_browse_into(folder),
+            KeyCode::Right => match self.selected_dataset_folder() {
+                // Into a folder that opens as one dataset rather than opening it, to
+                // reach one partition or one file. This clears the filter, as browsing
+                // anywhere does.
+                Some(folder) => {
+                    // The same sentence Enter leaves, for the same reason: this is the
+                    // door the control bar advertises on a lake row, and arriving inside
+                    // one with no explanation is the silent wrong answer #237 is about.
+                    let note = self
+                        .home
+                        .selected_entry()
+                        .and_then(|entry| Self::lake_table_note(entry.kind));
+                    self.home_browse_into(folder);
+                    if note.is_some() {
+                        self.home.status = note;
+                    }
+                }
                 None => self.home_collapse(false),
             },
             KeyCode::PageUp => self.home.move_selection(-10),
@@ -8031,7 +9811,12 @@ impl App {
                             return Some(AppEvent::Export(path, format, options));
                         }
                         #[cfg(any(feature = "http", feature = "cloud"))]
-                        if let Some(pending) = self.pending_download.take() {
+                        if let Some((pending, lease)) = self.pending_download.take() {
+                            // Dropped rather than held: the event returned below is a
+                            // continuation, and the pump leases one of those. Dropping
+                            // first is safe because a release is a queued event rather
+                            // than a decrement — the count cannot dip between the two.
+                            drop(lease);
                             self.confirmation_modal.hide();
                             if let LoadingState::Loading {
                                 file_path,
@@ -12274,12 +14059,23 @@ impl App {
             return Err(*key);
         }
         let out = self.dispatch_event(event);
-        // Columns a dataset's footers found while the user was inside a query are held
-        // rather than dropped; this is where they get in, on the first event after the
-        // view comes back to the data. Sent rather than returned because the event just
-        // dispatched may have a follow-up of its own.
-        if self.join_held_footers() {
-            self.reread_after_the_footers_joined();
+        // Not while this handler is returning a continuation. A follow-up is the rest of
+        // the event just handled — the analysis sets `computing` and returns
+        // `AnalysisChunk`, and the phase that chunk will spawn has not spawned — so
+        // nothing holds a lease on the generation yet, and the errands below would bump
+        // it out from under the errand that is halfway through. They run after every
+        // event and are built to wait; one more event is nothing to them.
+        if out.is_none() {
+            // Columns a dataset's footers found while the user was inside a query are
+            // held rather than dropped; this is where they get in, on the first event
+            // after the view comes back to the data.
+            if self.join_held_footers() {
+                self.reread_after_the_footers_joined();
+            }
+            // And the same turn for a re-read owed to a dataset whose footers could not
+            // be read: it waits on the same work, and gets in the same way.
+            self.reread_when_the_work_allows();
+            self.collect_when_the_work_allows();
         }
         self.ensure_chart_data();
         Ok(out)
@@ -12974,7 +14770,7 @@ impl App {
                 self.status_message = None;
                 self.confirmation_modal
                     .show(Self::download_confirmation_message(pending));
-                self.pending_download = Some((**pending).clone());
+                self.pending_download = Some(((**pending).clone(), self.lease_the_generation()));
                 None
             }
             #[cfg(any(feature = "http", feature = "cloud"))]
@@ -13140,10 +14936,13 @@ impl App {
                 if !self.load_active {
                     return None;
                 }
-                if !self.spawn_async_collect("Loading buffer...") {
-                    self.loading_state = LoadingState::Idle;
-                    self.busy = false;
-                }
+                // No cleanup arm of its own. A collect asked for here is always owed
+                // rather than run — the pump holds a lease for the whole of this handler
+                // — so `collect_when_the_work_allows` is what finds out there is nothing
+                // to collect, and it is the one that takes the loading screen down. Two
+                // copies of that cleanup, one of them unreachable and less careful about
+                // an export's `loading_state`, is an invitation to fix the wrong one.
+                self.spawn_async_collect("Loading buffer...");
                 None
             }
             AppEvent::DoDecompress(paths, options) => {
@@ -13449,6 +15248,22 @@ impl App {
                         self.status_message = None;
                         return self.jump_key(AppEvent::DoScrollEnd);
                     }
+                } else if self.end_after_count == Some(*len_generation) {
+                    // This is the count End was waiting on, and it answers a frame that
+                    // is gone — a join landed underneath it and took a fresh
+                    // `len_generation` past it. Left here the flag is stranded on a
+                    // generation nothing will ever match: the next count to fail for any
+                    // reason would speak in its name. So it is retired, and the status
+                    // it put up comes down with it.
+                    //
+                    // Retired, not asked again of the frame that is here. That frame can
+                    // belong to a dataset the user opened since — `end_after_count`
+                    // names a `len_generation`, which says nothing about which dataset —
+                    // and re-asking made the *new* dataset scroll itself to the end on
+                    // the strength of a key pressed in the old one. A jump the frame
+                    // change swallowed is a jump the user can make again; a jump that
+                    // arrives on its own, in a folder they did not press it in, is not.
+                    self.retire_the_end_that_was_waiting();
                 }
                 None
             }
@@ -13456,13 +15271,46 @@ impl App {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
                 }
-                if self.end_after_count.take().is_some() {
-                    self.status_message =
-                        Some("Could not count the rows to find the end".to_string());
-                }
                 // Mark this generation's count as failed so the row count renders as "?"
-                // instead of a misleading provisional total.
-                self.len_count_failed = Some(*len_generation);
+                // instead of a misleading provisional total. Before the End handling
+                // below: this is about the count, not about who was waiting on it.
+                //
+                // Only for the frame on screen, because the slot holds one generation.
+                // Counts for two frames run at once — a join, a query, a filter or a
+                // sort takes a fresh `len_generation` without stopping the count already
+                // running — so a failure arriving is not necessarily this frame's.
+                // Written unconditionally, an orphan's failure overwrote a live frame's,
+                // `count_unknown` went false, and the bar fell through from "?" to the
+                // number the buffer happened to reach: a confident partial on a dataset
+                // whose count failed. The orphan's own failure is worth nothing to
+                // anybody — nothing will ever render against a generation that is gone.
+                if self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.len_generation() == *len_generation)
+                {
+                    self.len_count_failed = Some(*len_generation);
+                }
+                // Only for the count End was actually waiting on. Taken unconditionally,
+                // a count that failed for one frame answered for an End pressed on
+                // another — printing "Could not count the rows to find the end" about a
+                // key the user pressed somewhere else entirely, and long since.
+                if self.end_after_count == Some(*len_generation) {
+                    self.end_after_count = None;
+                    if self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.len_generation() == *len_generation)
+                    {
+                        self.status_message =
+                            Some("Could not count the rows to find the end".to_string());
+                    } else {
+                        // The frame it was counting is gone, so its failure says nothing
+                        // about the one on screen, and the End it belonged to cannot be
+                        // answered by it. Retired quietly, as above.
+                        self.take_down_the_counting_status();
+                    }
+                }
                 None
             }
             AppEvent::BackgroundCollectReady { generation } => {
@@ -13526,8 +15374,13 @@ impl App {
                             state.give_up_on_pending_footers();
                         }
                         // The pass is not bringing a count after all, so the jump goes
-                        // back to waiting on the ordinary one the collect below starts.
-                        self.reread_after_the_footers_joined();
+                        // back to waiting on the ordinary one the collect starts. Owed
+                        // rather than run: the collect bumps `task_generation`, and an
+                        // export or an analysis may be waiting on the one it would bump
+                        // past. `reread_when_the_work_allows` runs it the moment that
+                        // work is done.
+                        self.reread_owed = Some(slot_generation);
+                        self.reread_when_the_work_allows();
                         return None;
                     };
                     self.footers_held = Some((slot_generation, found));
@@ -13693,6 +15546,106 @@ impl App {
                         }
                     }
                 }
+                None
+            }
+            AppEvent::ClassifyThenOpen { path, jump } => {
+                // A second Enter replaces the first rather than being refused. Every key
+                // acts on the home screen even while `busy`, so a second one is
+                // reachable, and the newer look is the one the user is waiting for — and
+                // refusing meant a look at a share that never answers killed the feature
+                // for the rest of the session, silently.
+                let looking = path.clone();
+                let jump = *jump;
+                self.classify_requests = self.classify_requests.wrapping_add(1);
+                let request = self.classify_requests;
+                self.classify_inflight = Some(ClassifyRequest {
+                    id: request,
+                    path: looking.clone(),
+                    browsing: self.home.browsing.clone(),
+                });
+                let name = looking
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| looking.display().to_string());
+                // The home screen's own line, because the control bar's is the table's.
+                self.home.status = Some(format!("Looking at {name}…"));
+                self.spawn_bg(Self::LOOKING, move |task_gen, tx| {
+                    // Every one of these can sit forever on a share that has gone away,
+                    // which is the whole reason they are here and not where keys are read.
+                    let found = if !looking.exists() {
+                        None
+                    } else if looking.is_dir() {
+                        Some(crate::discover::classify_directory(&looking))
+                    } else {
+                        Some(crate::discover::EntryKind::File)
+                    };
+                    let _ = tx.send(AppEvent::BackgroundKindReady {
+                        generation: task_gen,
+                        request,
+                        path: looking,
+                        found,
+                        jump,
+                    });
+                });
+                None
+            }
+            AppEvent::BackgroundKindReady {
+                generation,
+                request,
+                path,
+                found,
+                jump,
+            } => {
+                // Superseded, or belonging to nothing: a newer look owns the busy state
+                // and the status line, so this one touches neither.
+                if self
+                    .classify_inflight
+                    .as_ref()
+                    .map(|r| (r.id, r.path.as_path()))
+                    != Some((*request, path.as_path()))
+                {
+                    return None;
+                }
+                let asked = self.classify_inflight.take().expect("just matched");
+                if self.status_message.as_deref() == Some(Self::LOOKING) {
+                    self.status_message = None;
+                }
+                self.home.status = None;
+
+                // Something else took the busy state over. A bump comes from an `Open` or
+                // a collect, and both set `busy` themselves — clearing it here would take
+                // the throbber off a load still running and let keys land on a table
+                // being replaced. Their answer, their busy.
+                if *generation != self.task_generation {
+                    return None;
+                }
+                // Otherwise it is this look's, and goes down however the answer lands.
+                self.busy = false;
+
+                // A key pressed on the home screen answers on the home screen. If they
+                // went back to the data, opening now would arrive from nowhere; if the
+                // browse has moved, the answer is about somewhere they navigated away
+                // from, and acting on it would take them back into it.
+                if self.input_mode != InputMode::Home || self.home.browsing != asked.browsing {
+                    return None;
+                }
+
+                let Some(kind) = *found else {
+                    self.home.status = Some(format!("No such path: {}", path.display()));
+                    if *jump {
+                        // A typo typed at `~` is worth another go without retyping it.
+                        self.home.path_input = path.display().to_string();
+                        self.home.path_input_active = true;
+                    }
+                    return None;
+                };
+                self.open_what_it_is(path.clone(), kind, *jump)
+            }
+            AppEvent::BackgroundWorkFinished => {
+                // Behind the result its work sent, so the handler that consumed that
+                // result has already run. Saturating because a lease released twice
+                // would otherwise wrap into "nothing is ever safe to bump".
+                self.leases = self.leases.saturating_sub(1);
                 None
             }
             AppEvent::BackgroundError {
@@ -14986,13 +16939,29 @@ impl Widget for &mut App {
                     ))
                 } else if self.chart_preparing() {
                     Some("Preparing chart...".to_string())
+                } else if main_view_content == MainViewContent::Datatable {
+                    // Whatever is on the line, busy or not. An End waiting on a remote
+                    // count parks without setting `busy` — keys go on working meanwhile,
+                    // which is the point of parking — so both the message explaining the
+                    // wait and the one saying the count failed were written here and
+                    // painted by nothing.
+                    //
+                    // Only at the table, because that is what these messages are about.
+                    // A parked End survives Ctrl+O, and the home screen has a caption and
+                    // a row count of its own: shown there it would replace every key chip
+                    // on the bar with a sentence about a dataset the user has left.
+                    //
+                    // Not every message needs this branch. The one `jump_key` puts up
+                    // while a footer pass is running is superseded by the footers line
+                    // above, which says the same thing with numbers.
+                    self.status_message.clone()
                 } else {
                     None
                 }
             }
         };
         let status_msg = status_msg.map(|msg| {
-            if self.input_dropped {
+            if self.input_dropped && self.busy {
                 format!("{msg}  input dropped while busy")
             } else {
                 msg
@@ -15066,6 +17035,14 @@ impl Widget for &mut App {
         // plainly, a prefix of six thousand files reads `Rows: 70`.
         let count_pending = self.len_count_inflight.is_some()
             || self.awaiting_dataset
+            // A re-read owed to a dataset whose footers could not be read is a count
+            // that is coming: the collect it is waiting to run is what starts one. The
+            // dataset has already stopped saying it counts itself later (it gave up on
+            // the pass the moment that pass failed), so without this the bar falls
+            // through to printing the number it happens to hold — which is only as far
+            // as the buffer reached. A prefix of six thousand files reads `Rows: 70`,
+            // plainly, for as long as the work in front of the errand takes.
+            || self.reread_owed.is_some()
             || self
                 .data_table_state
                 .as_ref()

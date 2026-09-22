@@ -23,7 +23,7 @@ jobs:
 
       - name: Free disk space (Ubuntu)
         # SHA-pinned to defend against upstream takeover; bump deliberately.
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2023-10-18
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: false
           android: true
@@ -467,7 +467,7 @@ jobs:
       # the only headroom this job has if a compile goes past the estimate above.
       - name: Free disk space (Ubuntu)
         # SHA-pinned to defend against upstream takeover; bump deliberately.
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main as of 2023-10-18
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: false
           android: true

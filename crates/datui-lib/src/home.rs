@@ -241,8 +241,15 @@ pub fn folder_dataset_url(path: &Path) -> PathBuf {
 
 /// A row for the cloud folder being browsed, when what it holds makes it one dataset.
 #[cfg(feature = "cloud")]
-fn whole_folder_row(dir: &Path, rows: &[Entry]) -> Option<Entry> {
+fn whole_folder_row(dir: &Path, rows: &[Entry], peeked: Option<&EntryKind>) -> Option<Entry> {
     if !is_object_store_url(dir) || cloud_account(dir).is_some() {
+        return None;
+    }
+    // What this folder holds was already decided when the listing above it peeked
+    // inside, and that peek read footers where the names alone were not enough. A
+    // folder it found to be separate tables must not be offered as one dataset here
+    // either — this row is the other door to the same open.
+    if peeked == Some(&EntryKind::Directory) {
         return None;
     }
     let folders: Vec<String> = rows
@@ -500,6 +507,8 @@ impl CloudSource {
 pub struct Measured {
     pub rows: Option<usize>,
     pub cols: Option<usize>,
+    /// Whether `cols` is a floor rather than a total. See [`crate::discover::Entry`].
+    pub cols_sampled: bool,
     pub size: Option<u64>,
     /// Column names, when the format gave them up for free.
     pub columns: Vec<String>,
@@ -510,6 +519,11 @@ pub struct Measured {
     /// dropped on the way to the screen -- so a hive dataset measured the ordinary
     /// way showed no partitions, and a compressed file no codec.
     pub cost: crate::discover::Cost,
+    /// What the footers said it is, when that differs from what its filenames
+    /// suggested: a folder whose files turn out to be separate tables is a directory,
+    /// not a dataset. `None` when measuring did not change what it is, which is the
+    /// ordinary case. See [`crate::discover::enrich`].
+    pub kind: Option<crate::discover::EntryKind>,
 }
 
 /// How rows are ordered within each section.
@@ -719,6 +733,8 @@ pub struct ListingRequest {
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
     pub known: std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
+    /// What looking inside each cloud folder found, from this session's peeks.
+    pub cloud_kinds: std::collections::HashMap<PathBuf, EntryKind>,
 }
 
 /// What a listing pass produced.
@@ -732,8 +748,10 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
     Measured {
         rows: probe.rows,
         cols: probe.cols,
+        cols_sampled: probe.cols_sampled,
         size: probe.size.or(original.size),
         columns: probe.columns.clone(),
+        kind: (probe.kind != original.kind).then_some(probe.kind),
         // The source is resolved from the live mount table on every listing, so only
         // what the file said about itself is carried forward.
         cost: crate::discover::Cost {
@@ -764,6 +782,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         desktop_dirs,
         browsing,
         probed,
+        cloud_kinds,
         unreachable,
         probe_errors,
         network_check,
@@ -825,7 +844,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         #[cfg(feature = "cloud")]
         let rows = {
             let mut rows = rows;
-            if let Some(whole) = whole_folder_row(&dir, &rows) {
+            if let Some(whole) = whole_folder_row(&dir, &rows, cloud_kinds.get(&dir)) {
                 rows.insert(0, whole);
             }
             rows
@@ -1090,6 +1109,33 @@ fn apply_known_facts(
         return;
     };
 
+    // A folder whose files were read and found to be separate tables stays a
+    // directory, rather than being called a dataset again by the next listing: its
+    // kind comes from its filenames, which have not changed and were never the
+    // evidence.
+    //
+    // Tested before the fingerprint below rather than after, because that fingerprint
+    // is a file's: a listing gives a directory no size, so `same_bytes` is never true
+    // for one. A directory's own mtime is what it has, and it moves when a file is
+    // added or removed, which is when this answer could change.
+    // Gated on the classifier too. This one is `is_one_table`'s answer, which is the
+    // most version-sensitive judgement datui makes — #234 introduced it and #243 changed
+    // what it runs over — so a build that decided differently does not get to speak here
+    // either.
+    if !remote
+        && row.kind == EntryKind::MultiFile
+        && facts.kind == Some(EntryKind::Directory)
+        && facts.classified_by == crate::discover::CLASSIFIER_VERSION
+    {
+        let same_mtime = row
+            .modified
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_some_and(|d| d.as_secs() == facts.mtime);
+        if same_mtime {
+            row.kind = EntryKind::Directory;
+        }
+    }
+
     if !remote {
         let same_bytes = row.size.map(|s| s == facts.size).unwrap_or(false)
             && row
@@ -1104,6 +1150,7 @@ fn apply_known_facts(
 
     row.rows = facts.rows;
     row.cols = facts.cols;
+    row.cols_sampled = facts.cols_sampled;
     if !facts.columns.is_empty() {
         row.columns = facts.columns.clone();
     }
@@ -1118,7 +1165,11 @@ fn apply_known_facts(
         // What it was last seen to be, rather than what its name suggests. Guessing
         // here is how the same dataset ends up reading `hive` in one section and
         // something else in another.
+        // Only from a build that classified the way this one does: a Delta root
+        // measured before lake tables were recognized is recorded as `multifile`, and
+        // restoring that opens it as one table again.
         if row.kind == EntryKind::Unknown
+            && facts.classified_by == crate::discover::CLASSIFIER_VERSION
             && let Some(kind) = facts.kind
         {
             row.kind = kind;
@@ -1144,8 +1195,10 @@ pub fn facts_for(entry: &Entry) -> Option<(PathBuf, crate::cache::DatasetFacts)>
             size,
             rows: entry.rows,
             cols: entry.cols,
+            cols_sampled: entry.cols_sampled,
             columns: entry.columns.clone(),
             kind: Some(entry.kind),
+            classified_by: crate::discover::CLASSIFIER_VERSION,
             // The source is where it is *now*, not where it was when measured: a
             // path can move between mounts, and a stale answer to "will this be
             // slow" is worse than no answer.
@@ -1399,6 +1452,7 @@ impl HomeState {
             // The synchronous path is for tests and library callers; it consults no
             // cache, so what it produces is exactly what is on disk right now.
             known: Default::default(),
+            cloud_kinds: self.cloud_kinds.clone(),
         };
         let listing = build_listing(&request);
         self.apply_listing(listing);
@@ -1486,11 +1540,15 @@ impl HomeState {
     }
 
     /// Whether the listing holds anything openable at all, folded or not.
+    ///
+    /// A lake table counts. datui cannot read one as a table yet, so it is not a dataset
+    /// — but it is somewhere to go, and a warehouse directory of fifty `delta` rows with
+    /// "No datasets here." printed underneath them is plainly wrong.
     pub fn has_any_dataset(&self) -> bool {
         self.sections
             .iter()
             .flat_map(|s| s.rows.iter())
-            .any(|e| e.kind.is_dataset())
+            .any(|e| e.kind.is_dataset() || e.kind.is_lake_table())
     }
 
     /// Lines currently on screen: a header per non-empty section, followed by its
@@ -2095,7 +2153,9 @@ impl HomeState {
             if (self.network_check)(&entry.path) {
                 continue;
             }
-            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
+            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown)
+                && !entry.kind.is_lake_table()
+            {
                 out.push(entry.clone());
             }
             if out.len() >= limit {
@@ -2112,6 +2172,10 @@ impl HomeState {
                 if let Some(m) = self.enriched.get(&row.path) {
                     row.rows = m.rows;
                     row.cols = m.cols;
+                    row.cols_sampled = m.cols_sampled;
+                    if let Some(kind) = m.kind {
+                        row.kind = kind;
+                    }
                     if m.size.is_some() {
                         row.size = m.size;
                     }
@@ -2168,6 +2232,7 @@ fn source_entry(source: &CloudSource) -> Entry {
         modified: source.listed_at,
         rows: None,
         cols: None,
+        cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
     }
@@ -2218,6 +2283,7 @@ fn entry_for_path(path: &Path, remote: bool) -> Entry {
         modified: None,
         rows: None,
         cols: None,
+        cols_sampled: false,
         columns: Vec::new(),
         cost: Default::default(),
     };
@@ -2313,4 +2379,65 @@ fn common_prefix(a: &str, b: &str) -> String {
 /// Expand `~` and `$VAR` in a path the user typed.
 pub fn expand_user_path(raw: &str) -> PathBuf {
     crate::config::expand_config_path(raw)
+}
+
+#[cfg(test)]
+mod known_facts_tests {
+    use super::*;
+    use crate::cache::DatasetFacts;
+
+    /// A kind recorded by a build that classified differently is not restored.
+    ///
+    /// A remote row was never stat'ed, so its cached kind is all it has and is restored
+    /// rather than re-derived. That makes it a way for an answer this build would not
+    /// give to come back: a Delta root measured before lake tables were recognized was
+    /// recorded as `multifile`, and restoring that opens it as one table again — #237
+    /// read back off disk. Everything else in the record is a measurement rather than a
+    /// judgement, and survives.
+    #[test]
+    fn a_kind_from_an_older_classifier_is_not_restored() {
+        let remote = std::path::PathBuf::from("s3://bucket/warehouse/orders");
+        let facts = |classified_by| DatasetFacts {
+            mtime: 0,
+            size: 4096,
+            rows: Some(1_000),
+            cols: Some(7),
+            cols_sampled: false,
+            columns: vec!["id".into(), "amount".into()],
+            kind: Some(EntryKind::MultiFile),
+            classified_by,
+            cost: Default::default(),
+        };
+        let unprobed = || {
+            let mut row = Entry::directory(&remote);
+            row.kind = EntryKind::Unknown;
+            row
+        };
+
+        let index = |classified_by| {
+            std::collections::HashMap::from([(remote.clone(), facts(classified_by))])
+        };
+
+        let mut row = unprobed();
+        apply_known_facts(&mut row, &index(crate::discover::CLASSIFIER_VERSION), true);
+        assert_eq!(
+            row.kind,
+            EntryKind::MultiFile,
+            "this build's own answer comes back"
+        );
+
+        let mut row = unprobed();
+        apply_known_facts(&mut row, &index(0), true);
+        assert_eq!(
+            row.kind,
+            EntryKind::Unknown,
+            "an older build's does not: it may be a lake table this one would recognize"
+        );
+        assert_eq!(
+            row.rows,
+            Some(1_000),
+            "but what it measured is still measured"
+        );
+        assert_eq!(row.columns, vec!["id".to_string(), "amount".to_string()]);
+    }
 }

@@ -3445,14 +3445,29 @@ impl DataTableState {
         // Run len() only when lf has changed (query, filter, sort, pivot, melt, reset, drill).
         if !self.num_rows_valid {
             self.num_rows = match collect_lazy(row_count_lf(&self.lf), self.polars_streaming) {
-                Ok(df) => match df.get(0) {
-                    Some(col) => match col.first() {
-                        Some(AnyValue::UInt64(len)) => *len as usize,
+                Ok(df) => {
+                    // The frame counts, so there is nothing wrong with it: retire a
+                    // failure left by the frame this one replaced. `load_buffer` ends
+                    // the same way, but the zero-row path below returns before it.
+                    self.error = None;
+                    match df.get(0) {
+                        Some(col) => match col.first() {
+                            Some(AnyValue::UInt64(len)) => *len as usize,
+                            _ => 0,
+                        },
                         _ => 0,
-                    },
-                    _ => 0,
-                },
-                Err(_) => 0,
+                    }
+                }
+                // A count that fails means the frame itself is broken — a sort or a
+                // column order naming a column the query removed, say. Zero rows is the
+                // wrong thing to report: it blanks the table and returns below, before
+                // `load_buffer`, the only other place that records a failure. The caller
+                // is then told nothing, so a broken frame reads as an empty one. Say what
+                // went wrong instead.
+                Err(e) => {
+                    self.error = Some(e);
+                    0
+                }
             };
             self.num_rows_valid = true;
         }

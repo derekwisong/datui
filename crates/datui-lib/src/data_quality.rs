@@ -1064,7 +1064,7 @@ pub fn compute_data_quality(
     add_value_details(&profile_df, &mut columns)?;
     let identity = profile_identity(&profile_df, &schema, precision)?;
     let category_variants = profile_category_variants(&profile_df, &schema)?;
-    let mut observations = observations_from_profiles(&columns);
+    let mut observations = observations_from_profiles(&columns, precision);
     observations.extend(identity_observations(&identity, &category_variants));
     // A sampled run does not promise the extra reads, so the counts come without the
     // values behind them.
@@ -1339,7 +1339,7 @@ fn compute_full_quality(
     add_dominance_lazy(lf, &mut columns, polars_streaming)?;
     let identity = profile_identity_lazy(lf, schema, total_rows, polars_streaming)?;
     let category_variants = profile_category_variants_lazy(lf, schema, polars_streaming)?;
-    let mut observations = observations_from_profiles(&columns);
+    let mut observations = observations_from_profiles(&columns, QualityPrecision::Exact);
     observations.extend(identity_observations(&identity, &category_variants));
     // Only a run that already reads every value pays for the conflicting values, and
     // only that run's access plan promised the read.
@@ -2142,11 +2142,21 @@ fn largest_material_change(
 ) -> String {
     let mut largest: Option<(f64, String)> = None;
     let mut range: Option<String> = None;
-    for column in &segment.columns {
+    for (index, column) in segment.columns.iter().enumerate() {
+        // Both profiles are built by walking the same schema, so the columns line up.
+        // A linear search per column per segment is a square over the column count,
+        // which is paid exactly where this feature is for: thousands of file segments
+        // over hundreds of columns.
         let Some(prior) = baseline
             .columns
-            .iter()
-            .find(|other| other.name == column.name)
+            .get(index)
+            .filter(|other| other.name == column.name)
+            .or_else(|| {
+                baseline
+                    .columns
+                    .iter()
+                    .find(|other| other.name == column.name)
+            })
         else {
             continue;
         };
@@ -2695,7 +2705,10 @@ fn parse_profiles_at(
         .collect()
 }
 
-fn observations_from_profiles(columns: &[ColumnQualityProfile]) -> Vec<QualityObservation> {
+fn observations_from_profiles(
+    columns: &[ColumnQualityProfile],
+    precision: QualityPrecision,
+) -> Vec<QualityObservation> {
     let mut observations = Vec::new();
     for profile in columns {
         if profile.null_count > 0 {
@@ -2782,12 +2795,21 @@ fn observations_from_profiles(columns: &[ColumnQualityProfile]) -> Vec<QualityOb
         }
         // Near-unique and still repeating. Both numbers are already measured, so this
         // check costs the comparison and nothing else.
-        if let (Some(distinct), Some(uniqueness)) =
-            (profile.distinct_count, profile.uniqueness_rate())
+        //
+        // Only on an exact profile: a distinct count does not extrapolate the way a
+        // null rate does. An order id repeating ten times in a billion rows is unique
+        // in every 50,000-row sample of it, and "sampled" under a claim that a column
+        // is nearly a key does not take the claim back.
+        if precision == QualityPrecision::Exact
+            && let (Some(distinct), Some(uniqueness)) =
+                (profile.distinct_count, profile.uniqueness_rate())
             && (KEY_LIKE_UNIQUENESS..1.0).contains(&uniqueness)
         {
-            let repeats = profile.non_null_rows().saturating_sub(distinct);
-            if repeats > 0 {
+            // Rows beyond one per value, as `DuplicateRows` counts extras. Not the
+            // rows that share a value, which is what the drill-in opens and always
+            // more; the detail pane says which is which.
+            let extras = profile.non_null_rows().saturating_sub(distinct);
+            if extras > 0 {
                 let example = match (&profile.dominant_value, profile.dominant_count) {
                     (Some(value), Some(count)) if count > 1 => {
                         format!("; {value:?} appears {count} times")
@@ -2797,12 +2819,11 @@ fn observations_from_profiles(columns: &[ColumnQualityProfile]) -> Vec<QualityOb
                 observations.push(observation(
                     ObservationKind::KeyLike,
                     profile,
-                    repeats,
+                    extras,
                     format!(
-                        "{:.4}% distinct; {} of {} non-null rows repeat a value{example}",
+                        "{distinct} distinct over {} non-null rows ({:.4}%); {extras} rows beyond one per value{example}",
+                        profile.non_null_rows(),
                         uniqueness * 100.0,
-                        repeats,
-                        profile.non_null_rows()
                     ),
                 ));
             }
@@ -2945,10 +2966,11 @@ fn drift_observations(
             } else {
                 String::new()
             };
-            let verb = if kind == ObservationKind::Absent {
-                "has no such column"
-            } else {
-                "holds a type the scan cannot read"
+            let verb = match (kind, tally.files) {
+                (ObservationKind::Absent, 1) => "has no such column",
+                (ObservationKind::Absent, _) => "have no such column",
+                (_, 1) => "holds a type the scan cannot read",
+                (_, _) => "hold a type the scan cannot read",
             };
             // A file whose footer was not read looks exactly like one missing nothing,
             // so on a sampled dataset the count is a floor and has to say so.
@@ -3670,7 +3692,7 @@ mod tests {
         assert!(
             absent
                 .fact
-                .starts_with("25 of 25 files has no such column, largest 20 named"),
+                .starts_with("25 of 25 files have no such column, largest 20 named"),
             "{}",
             absent.fact
         );
@@ -3719,15 +3741,44 @@ mod tests {
         assert_eq!(
             (key_like[0].affected_rows, key_like[0].evaluated_rows),
             (2, 100),
-            "non-null rows minus distinct values"
+            "rows beyond one per value: non-null rows minus distinct values"
+        );
+        assert_eq!(
+            key_like[0].fact,
+            "98 distinct over 100 non-null rows (98.0000%); 2 rows beyond one per value; \"7\" appears 2 times"
         );
         // The drill-in is every row whose value is not the only one of its kind, which
-        // is four rows for two values that each appear twice.
+        // is four rows for two values that each appear twice — more than the count
+        // above it, which the detail pane says in so many words.
         let rows = frame
+            .clone()
             .filter(key_like[0].evidence_predicate().unwrap())
             .collect()
             .unwrap();
         assert_eq!(rows.height(), 4);
+
+        // A distinct count does not extrapolate: in a sample of a large dataset every
+        // repeated id looks unique, so the claim is not made at all.
+        let sampled = compute_data_quality(
+            &frame,
+            Some(1_000_000),
+            &DataQualityPlan {
+                compute: QualityCompute::Sample,
+                sample_rows: 10,
+                ..DataQualityPlan::default()
+            },
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(sampled.precision, QualityPrecision::Sampled);
+        assert!(
+            !sampled
+                .observations
+                .iter()
+                .any(|observation| observation.kind == ObservationKind::KeyLike),
+            "a sampled distinct share cannot say a column is nearly a key"
+        );
     }
 
     /// The segment comparison names the sharpest single move, not the average of all

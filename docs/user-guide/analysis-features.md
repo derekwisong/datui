@@ -140,7 +140,7 @@ changing the view or plan requires a new run.
 | Parse share | Values accepted by the named integer, decimal, ISO-date or ISO-datetime parser ÷ evaluated non-null text values |
 | Duplicate groups | Groups of identical complete evaluated rows; extra rows is Σ(group size − 1), rows involved is Σ(group size) |
 | Category variants | Original text values that become equal after outer-whitespace removal and lowercase normalization |
-| Key-like repeats | Non-null rows − distinct values, reported when distinct values are at least 95% of non-null rows and at least one value repeats |
+| Key-like repeats | Non-null rows − distinct values, on exact profiles only, reported when distinct values are at least 95% of non-null rows and at least one value repeats. That counts rows beyond one per value; the drill-in opens every row that shares one, which is always more |
 | Absent values | Rows held by files whose footer has no such column ÷ rows in the loaded source; read from footers, not values |
 | Type conflicts | Rows held by files that store the column in a type the scan cannot read ÷ rows in the loaded source; read from footers, not values |
 | Segment null rate | Null cells ÷ (evaluated rows × profiled logical columns) in that segment |
@@ -150,6 +150,10 @@ changing the view or plan requires a new run.
 Lifecycle percentiles use the evaluated duration values in sorted order. Date
 values are interpreted at midnight; datetime values retain their physical time
 unit. The role mapping is a user assertion and is included in the visible plan.
+
+A key-like column is reported only from an exact profile. A null rate measured
+on a sample stands for the whole; a distinct count does not, and an identifier
+that repeats ten times in a billion rows is unique in every sample of it.
 
 ### Columns a file never had, and columns it holds in another type
 
@@ -165,7 +169,9 @@ observation detail says so, and gives each file by the number the Scope page
 uses, with the rows it holds and the type it stores the column in. Press
 <kbd>Enter</kbd> to open the rows those files contributed; the drill-in is a
 `files` scope, because there is no value to filter on. The largest twenty files
-are named and opened; the count above them covers all of them.
+are named, and those are the ones <kbd>Enter</kbd> opens; the count beside them
+covers every file, so the view holds fewer rows than the count states and the
+detail pane says so.
 
 On a dataset too large to read every footer, a file nobody looked at is
 indistinguishable from a file missing nothing, so both counts are a floor rather

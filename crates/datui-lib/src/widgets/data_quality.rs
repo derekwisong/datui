@@ -588,13 +588,28 @@ fn render_observation_detail(
             && observation.evidence_predicate().is_some());
     lines.push(Line::styled(
         if by_files {
-            "Enter opens the rows those files contributed (the source may be read again)."
+            // Only the files named above are opened, and the count beside them covers
+            // every file — so the view holds fewer rows than "Affected" states.
+            format!(
+                "Enter opens the rows the {} named {} contributed, not all {} (the source may be read again).",
+                observation.files.len(),
+                if observation.files.len() == 1 {
+                    "file"
+                } else {
+                    "files"
+                },
+                numfmt::group_chrome(observation.affected_rows)
+            )
+        } else if observation.kind == ObservationKind::KeyLike {
+            // The measurement counts rows beyond one per value; the filter opens every
+            // row that shares one, which is always more.
+            "Enter opens every row that shares a repeated value, which is more rows than the count above.".to_string()
         } else if can_open_rows {
-            "Enter opens matching rows (the source may be read again)."
+            "Enter opens matching rows (the source may be read again).".to_string()
         } else if results.precision == crate::data_quality::QualityPrecision::Sampled {
-            "Sampled observation: run a full profile for exact matching rows."
+            "Sampled observation: run a full profile for exact matching rows.".to_string()
         } else {
-            "No deterministic row filter for this aggregate; use the measured fact above."
+            "No deterministic row filter for this aggregate; use the measured fact above.".to_string()
         },
         Style::default().fg(config.theme.get("dimmed")),
     ));

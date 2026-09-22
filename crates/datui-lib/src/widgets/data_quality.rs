@@ -537,16 +537,14 @@ fn render_observation_detail(
     }) else {
         return;
     };
-    let definition = match observation.kind {
-        ObservationKind::Nulls => "Null values / evaluated rows",
-        ObservationKind::Empty => "Exact empty strings / evaluated rows",
-        ObservationKind::Whitespace => "Nonempty strings that trim to empty / evaluated rows",
-        ObservationKind::NonFinite => "NaN or positive/negative infinity / evaluated rows",
-        ObservationKind::Constant => "One distinct non-null value in evaluated rows",
-        ObservationKind::ParseableText => "Values parseable as a typed value, stored as text",
-        ObservationKind::DuplicateRows => "Equal complete rows; extras = sum(group size - 1)",
-        ObservationKind::CategoryVariants => "Distinct originals equal after trim and lowercase",
-    };
+    let definition = observation.kind.definition();
+    // Which files hold which columns is a fact about the source's footers, so those
+    // two checks count every file however the run was scoped. Saying so is the only
+    // thing that keeps their denominator from reading as a contradiction.
+    let from_footers = matches!(
+        observation.kind,
+        ObservationKind::Absent | ObservationKind::TypeConflict
+    );
     let mut lines = vec![
         Line::styled(
             format!("{}  /  {}", observation.kind.label(), observation.column),
@@ -557,9 +555,14 @@ fn render_observation_detail(
         Line::raw(""),
         Line::raw(observation.fact.clone()),
         Line::raw(format!(
-            "Affected: {} / {} evaluated rows",
+            "Affected: {} / {} {}",
             numfmt::group_chrome(observation.affected_rows),
-            numfmt::group_chrome(observation.evaluated_rows)
+            numfmt::group_chrome(observation.evaluated_rows),
+            if from_footers {
+                "rows of the loaded source"
+            } else {
+                "evaluated rows"
+            }
         )),
         Line::raw(format!("Definition: {definition}")),
         Line::raw(""),
@@ -573,18 +576,81 @@ fn render_observation_detail(
             Style::default().fg(config.theme.get("dimmed")),
         ),
     ];
-    let can_open_rows = results.precision == crate::data_quality::QualityPrecision::Exact
-        && observation.evidence_predicate().is_some();
+    if from_footers {
+        lines.push(Line::styled(
+            "Read from every footer of the loaded source, not from the profiled scope.",
+            Style::default().fg(config.theme.get("dimmed")),
+        ));
+    }
+    let by_files = observation.evidence_scope().is_some();
+    let can_open_rows = by_files
+        || (results.precision == crate::data_quality::QualityPrecision::Exact
+            && observation.evidence_predicate().is_some());
     lines.push(Line::styled(
-        if can_open_rows {
-            "Enter opens matching rows (the source may be read again)."
+        if by_files {
+            // Only the files named above are opened, and the count beside them covers
+            // every file — so the view holds fewer rows than "Affected" states.
+            format!(
+                "Enter opens the rows the {} named {} contributed, not all {} (the source may be read again).",
+                observation.files.len(),
+                if observation.files.len() == 1 {
+                    "file"
+                } else {
+                    "files"
+                },
+                numfmt::group_chrome(observation.affected_rows)
+            )
+        } else if observation.kind == ObservationKind::KeyLike {
+            // The measurement counts rows beyond one per value; the filter opens every
+            // row that shares one, which is always more.
+            "Enter opens every row that shares a repeated value, which is more rows than the count above.".to_string()
+        } else if can_open_rows {
+            "Enter opens matching rows (the source may be read again).".to_string()
         } else if results.precision == crate::data_quality::QualityPrecision::Sampled {
-            "Sampled observation: run a full profile for exact matching rows."
+            "Sampled observation: run a full profile for exact matching rows.".to_string()
         } else {
-            "No deterministic row filter for this aggregate; use the measured fact above."
+            "No deterministic row filter for this aggregate; use the measured fact above.".to_string()
         },
         Style::default().fg(config.theme.get("dimmed")),
     ));
+    // The files themselves, with what each holds. A conflict's values are the only way
+    // to see what the scan left behind, so they come first when a full run read them.
+    for file in observation.files.iter().take(4) {
+        let stored = file
+            .stored_type
+            .as_ref()
+            .map(|dtype| format!(" as {dtype}"))
+            .unwrap_or_default();
+        let examples = if file.examples.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ": {}",
+                file.examples
+                    .iter()
+                    .map(|value| format!("{value:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        lines.push(Line::raw(format!(
+            "#{} {} ({} rows){stored}{examples}",
+            file.number,
+            file.name,
+            numfmt::group_chrome(file.rows)
+        )));
+    }
+    if observation.kind == ObservationKind::TypeConflict
+        && observation
+            .files
+            .iter()
+            .all(|file| file.examples.is_empty())
+    {
+        lines.push(Line::styled(
+            "Run a full profile to read the values those files hold.",
+            Style::default().fg(config.theme.get("dimmed")),
+        ));
+    }
     if observation.kind == ObservationKind::CategoryVariants {
         for group in results
             .category_variants
@@ -609,7 +675,9 @@ fn render_observation_detail(
             )));
         }
     }
-    let popup = centered_rect(78, 16, area);
+    // Taller and wider than the other popups: a drift observation names its files, and
+    // a file's path and the values it holds are both long.
+    let popup = centered_rect(96, 22, area);
     Clear.render(popup, buf);
     Paragraph::new(lines)
         .block(
@@ -838,7 +906,9 @@ fn render_segments(
         heading.push_str("  /  PREVIOUS NEEDS ORDER");
     }
     render_section_title(&heading, sections[0], config.theme, buf);
-    let layout = if sections[1].width >= 124 {
+    let layout = if sections[1].width >= 150 {
+        3
+    } else if sections[1].width >= 110 {
         2
     } else if sections[1].width >= 72 {
         1
@@ -859,8 +929,12 @@ fn render_segments(
                 }))
                 .map(|(current, prior)| format!("{:+.2} pp", (current - prior) * 100.0))
                 .unwrap_or_else(|| "-".to_string());
+        let largest = segment
+            .largest_change
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
         Row::new(match layout {
-            2 => vec![
+            3 => vec![
                 segment.label.clone(),
                 segment
                     .total_rows
@@ -874,19 +948,26 @@ fn render_segments(
                     .unwrap_or_else(|| "-".to_string()),
                 change,
                 format!("{:.1}%", segment.null_rate * 100.0),
+                largest,
             ],
-            1 => vec![
+            2 => vec![
                 segment.label.clone(),
                 numfmt::group_chrome(segment.evaluated_rows),
                 metric.clone(),
+                segment
+                    .compared_with
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string()),
                 change,
+                largest,
             ],
+            1 => vec![segment.label.clone(), metric.clone(), change, largest],
             _ => vec![segment.label.clone(), metric, change],
         })
     });
     normalize_selection(table_state, results.segments.len());
     let (headers, widths) = match layout {
-        2 => (
+        3 => (
             vec![
                 "Segment",
                 "Total rows",
@@ -895,23 +976,43 @@ fn render_segments(
                 "Compared with",
                 "Delta",
                 "All-null rate",
+                "Largest change",
             ],
             vec![
-                Constraint::Length(24),
-                Constraint::Length(16),
+                Constraint::Length(22),
+                Constraint::Length(14),
+                Constraint::Length(14),
                 Constraint::Length(16),
                 Constraint::Length(20),
-                Constraint::Length(24),
+                Constraint::Length(12),
+                Constraint::Length(14),
+                Constraint::Fill(1),
+            ],
+        ),
+        2 => (
+            vec![
+                "Segment",
+                "Evaluated",
+                "Selected metric",
+                "Compared with",
+                "Delta",
+                "Largest change",
+            ],
+            vec![
+                Constraint::Length(22),
+                Constraint::Length(14),
+                Constraint::Length(16),
+                Constraint::Length(20),
                 Constraint::Length(12),
                 Constraint::Fill(1),
             ],
         ),
         1 => (
-            vec!["Segment", "Evaluated", "Metric", "Delta"],
+            vec!["Segment", "Metric", "Delta", "Largest change"],
             vec![
-                Constraint::Length(26),
-                Constraint::Length(12),
-                Constraint::Length(18),
+                Constraint::Length(20),
+                Constraint::Length(10),
+                Constraint::Length(10),
                 Constraint::Fill(1),
             ],
         ),
@@ -1597,6 +1698,16 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                 .map(numfmt::group_chrome)
                 .unwrap_or_else(|| "unknown".to_string()),
             ),
+        ]),
+        Row::new(vec![
+            Cell::from("Conflict values"),
+            Cell::from(match config.state.quality_conflict_reads() {
+                0 => "none: no file holds a column in an unreadable type".to_string(),
+                reads if config.plan.compute == QualityCompute::Full => {
+                    format!("{reads} extra one-column file reads")
+                }
+                reads => format!("not read; a full scan would add {reads} one-column file reads"),
+            }),
         ]),
         Row::new(vec![Cell::from("Remote writes"), Cell::from("none")]),
         Row::new(vec![Cell::from("Local file writes"), Cell::from("none")]),

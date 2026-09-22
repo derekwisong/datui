@@ -22,4 +22,7 @@ Scope can be the current view, loaded source, view row range, selected source fi
 Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The breadcrumb labels a reused run.
 
 Full scans require confirmation. While a plan is running, Esc cancels the result and leaves the source unchanged. File and partition comparisons require an explicit order before "previous" is meaningful.
-For exact null, empty, whitespace, non-finite, constant, and category-variant observations, Enter from the detail opens a temporary row view. Esc returns to the same observation. Sampled observations explain when an exact row view needs a full run.
+For exact null, empty, whitespace, non-finite, constant, key-like, and category-variant observations, Enter from the detail opens a temporary row view. Esc returns to the same observation. Sampled observations explain when an exact row view needs a full run.
+Key-like columns are reported only from an exact profile: a null rate measured on a sample stands for the whole, but a distinct count does not. The count is rows beyond one per value; Enter opens every row that shares one, which is always more.
+Absent columns and type conflicts are read from the footers, so they are reported at every compute budget and counted over the whole loaded source rather than the profiled scope. Their detail names the files, and Enter opens the rows those files contributed. A full scan also reads the first few values each conflicting file holds; the access plan says how many extra one-column reads that costs.
+Segments names the largest change any column made against the compared segment, so the first segment with a material one is where a shift starts.

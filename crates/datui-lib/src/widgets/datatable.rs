@@ -3670,6 +3670,88 @@ impl DataTableState {
             .collect()
     }
 
+    /// What the footers said about each file, for the checks that measure which files
+    /// hold which columns. Taken from the dataset as it is read *now*, so a column
+    /// already read as text is no longer a conflict.
+    ///
+    /// `row_index_column` is left empty: only the caller knows which index its own
+    /// frame carries, and every caller fills it in.
+    fn quality_source_drift(&self) -> crate::data_quality::QualitySourceContext {
+        crate::data_quality::QualitySourceContext {
+            file_names: self.drift_files.clone(),
+            file_starts: self.drift_file_starts.clone(),
+            row_index_column: String::new(),
+            file_group: self.drift_file_group.clone(),
+            drift_groups: self.drift_groups.clone(),
+            file_omitted: self
+                .dataset_schema
+                .as_ref()
+                .map(|dataset| dataset.omitted.clone())
+                .unwrap_or_default(),
+            dataset_rows: self.drift_dataset_rows,
+            footers_read: self
+                .dataset_schema
+                .as_ref()
+                .map(|dataset| dataset.files)
+                .unwrap_or_default(),
+            // Attached by the run that promised the extra reads, not by every frame.
+            conflict_scan: None,
+        }
+    }
+
+    /// How many extra one-column file reads a full data-quality run would make for the
+    /// values a type conflict hides. Zero when the dataset's files agree.
+    pub(crate) fn quality_conflict_reads(&self) -> usize {
+        if !self.drift_column_present
+            || !self
+                .dataset_at_open
+                .as_ref()
+                .is_some_and(crate::schema_union::DatasetSchema::drifts)
+        {
+            return 0;
+        }
+        crate::data_quality::conflict_reads(&self.drift_file_group, &self.drift_groups)
+    }
+
+    /// Reads one column of named files at the type each of them wrote it in, for the
+    /// values a type conflict hides. `None` when the dataset's files all agree, or
+    /// when this frame is not the dataset as it opened.
+    pub(crate) fn quality_conflict_scan(&self) -> Option<crate::data_quality::QualityConflictScan> {
+        let dataset = self.dataset_at_open.clone()?;
+        if !self.drift_column_present || !dataset.drifts() {
+            return None;
+        }
+        if let Some(remote) = self.remote_files.as_ref() {
+            return Some(crate::data_quality::QualityConflictScan(
+                remote.scan.clone(),
+            ));
+        }
+        // Built from the dataset as its footers found it, for the same reason
+        // `read_column_as_text` is: only the footers know the type each file wrote.
+        let drift =
+            crate::schema_union::ScanDrift::new(&self.drift_files, &dataset, &self.file_rows())
+                .map(Arc::new);
+        let partition_columns = self.partition_columns.clone();
+        Some(crate::data_quality::QualityConflictScan(Arc::new(
+            move |files: &[String], as_text: &[PlSmallStr]| {
+                let drifts = drift.is_some();
+                let lf = crate::schema_union::lenient_scan(
+                    files,
+                    dataset.schema.clone(),
+                    None,
+                    drift.as_deref(),
+                    as_text,
+                )?;
+                Ok(crate::hoist_partition_columns(
+                    lf,
+                    &dataset.schema,
+                    partition_columns.as_deref().unwrap_or(&[]),
+                    drifts,
+                ))
+            },
+        )))
+    }
+
     /// Frame and optional row-to-file map used by the data-quality worker. The hidden
     /// scan index is projected only while it still identifies source files; the worker
     /// replaces it with file names before profiling and never exposes it as user data.
@@ -3680,15 +3762,13 @@ impl DataTableState {
             !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
         let source = if self.can_name_source_files() {
             Some(crate::data_quality::QualitySourceContext {
-                file_names: self.drift_files.clone(),
-                file_starts: self.drift_file_starts.clone(),
                 row_index_column: crate::schema_union::DRIFT_COLUMN.to_string(),
+                ..self.quality_source_drift()
             })
         } else if self.is_pristine() && known_files {
             Some(crate::data_quality::QualitySourceContext {
-                file_names: self.drift_files.clone(),
-                file_starts: self.drift_file_starts.clone(),
                 row_index_column: "__datui_quality_row".to_string(),
+                ..self.quality_source_drift()
             })
         } else {
             None
@@ -3719,13 +3799,12 @@ impl DataTableState {
             !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
         let source = if known_files {
             Some(crate::data_quality::QualitySourceContext {
-                file_names: self.drift_files.clone(),
-                file_starts: self.drift_file_starts.clone(),
                 row_index_column: if self.drift_at_open {
                     crate::schema_union::DRIFT_COLUMN.to_string()
                 } else {
                     "__datui_quality_row".to_string()
                 },
+                ..self.quality_source_drift()
             })
         } else {
             None
@@ -3789,9 +3868,8 @@ impl DataTableState {
             let source = if matches!(scope, crate::data_quality::QualityScope::SourceFiles(_)) {
                 lf = lf.with_row_index("__datui_quality_row", None);
                 Some(crate::data_quality::QualitySourceContext {
-                    file_names: self.drift_files.clone(),
-                    file_starts: self.drift_file_starts.clone(),
                     row_index_column: "__datui_quality_row".to_string(),
+                    ..self.quality_source_drift()
                 })
             } else {
                 None
@@ -9677,6 +9755,311 @@ mod tests {
         assert_eq!((start, end), (0, 400));
         // Few files: unchanged.
         assert_eq!(limit_files(&offsets, 0, 40, 0, 100, 16), (0, 100));
+    }
+
+    /// The two checks that read footers rather than values: a column a file never had,
+    /// and a column a file holds in a type the scan cannot read.
+    ///
+    /// Both are invisible to every measurement over values — an absent cell arrives as
+    /// a null and a conflicting one is not read at all — so the only way to test them
+    /// is through a dataset whose files genuinely disagree.
+    #[test]
+    fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
+        use crate::data_quality::{DataQualityPlan, ObservationKind, QualityCompute, QualityScope};
+        use crate::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
+        use polars::prelude::{DataType, IntoLazy, df};
+
+        let urls: Vec<String> = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        // `a` agrees with the schema; `b` holds `n` as text, which the scan cannot read
+        // as the Int64 the majority wrote; `c` has no `fee` column at all.
+        let scan: FileScan = Arc::new(move |urls: &[String], as_text: &[PlSmallStr]| {
+            let reading_text = as_text.contains(&PlSmallStr::from("n"));
+            let frames: Vec<LazyFrame> = urls
+                .iter()
+                .map(|url| match url.as_str() {
+                    "a" => df!(
+                        "id" => &[0i64, 1, 2],
+                        "n" => &[10i64, 20, 30],
+                        "fee" => &[1.5f64, 2.5, 3.5],
+                        crate::schema_union::DRIFT_COLUMN => &[0u32, 1, 2],
+                    )
+                    .unwrap()
+                    .lazy()
+                    .with_column(col("n").cast(if reading_text {
+                        DataType::String
+                    } else {
+                        DataType::Int64
+                    })),
+                    "b" => {
+                        let frame = df!(
+                            "id" => &[3i64, 4],
+                            "n" => &["sixty", "seventy"],
+                            "fee" => &[4.5f64, 5.5],
+                            crate::schema_union::DRIFT_COLUMN => &[3u32, 4],
+                        )
+                        .unwrap()
+                        .lazy();
+                        if reading_text {
+                            frame
+                        } else {
+                            // Not read from this file at all, as the real scan leaves it.
+                            frame.with_column(lit(NULL).cast(DataType::Int64).alias("n"))
+                        }
+                    }
+                    _ => df!(
+                        "id" => &[5i64, 6],
+                        "n" => &[50i64, 60],
+                        crate::schema_union::DRIFT_COLUMN => &[5u32, 6],
+                    )
+                    .unwrap()
+                    .lazy()
+                    // A column the file never had reads as null, which is exactly why
+                    // no measurement over values can tell it from one.
+                    .with_column(lit(NULL).cast(DataType::Float64).alias("fee"))
+                    .select([
+                        col("id"),
+                        col("n").cast(if reading_text {
+                            DataType::String
+                        } else {
+                            DataType::Int64
+                        }),
+                        col("fee"),
+                        col(crate::schema_union::DRIFT_COLUMN),
+                    ]),
+                })
+                .collect();
+            polars::prelude::concat(frames, Default::default())
+        });
+
+        let dataset: DatasetSchema = union_file_schemas(
+            &[
+                file_schema(
+                    &[
+                        ("id", DataType::Int64),
+                        ("n", DataType::Int64),
+                        ("fee", DataType::Float64),
+                    ],
+                    3,
+                ),
+                file_schema(
+                    &[
+                        ("id", DataType::Int64),
+                        ("n", DataType::String),
+                        ("fee", DataType::Float64),
+                    ],
+                    2,
+                ),
+                file_schema(&[("id", DataType::Int64), ("n", DataType::Int64)], 2),
+            ],
+            SchemaOrigin::AllFooters(3),
+        );
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset.schema.clone(),
+            scan(&urls, &[]).unwrap(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_remote_source();
+        state.set_remote_files(RemoteFiles {
+            urls: Arc::new(urls.clone()),
+            scan,
+            count: Arc::new(|| Ok(vec![vec![3], vec![2], vec![2]])),
+            offsets: None,
+        });
+        state.set_dataset_schema(dataset, &[3, 2, 2], &urls);
+        assert!(state.drifts(), "the three files do not agree");
+
+        let (lf, source) = state.data_quality_source_scan();
+        let mut source = source.expect("every file is counted, so rows map to files");
+        source.conflict_scan = state.quality_conflict_scan();
+        let lf = crate::data_quality::prepare_source_quality_scan(lf, Some(&source)).unwrap();
+        let plan = DataQualityPlan {
+            scope: QualityScope::WholeSource,
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let results =
+            crate::data_quality::compute_data_quality(&lf, Some(7), &plan, Some(&source), false)
+                .unwrap();
+
+        let absent = results
+            .observations
+            .iter()
+            .find(|observation| observation.kind == ObservationKind::Absent)
+            .expect("`fee` is absent from the third file");
+        assert_eq!(absent.column, "fee");
+        assert_eq!(
+            (absent.affected_rows, absent.evaluated_rows),
+            (2, 7),
+            "the third file's two rows, out of the source's seven"
+        );
+        assert_eq!(
+            absent
+                .files
+                .iter()
+                .map(|file| file.number)
+                .collect::<Vec<_>>(),
+            vec![3],
+            "named by the number the Scope page gives it"
+        );
+        assert_eq!(
+            absent.fact, "1 of 3 files has no such column",
+            "every footer was read, so the count is a total rather than a floor"
+        );
+
+        let conflict = results
+            .observations
+            .iter()
+            .find(|observation| observation.kind == ObservationKind::TypeConflict)
+            .expect("`n` is text in the second file");
+        assert_eq!(conflict.column, "n");
+        assert_eq!((conflict.affected_rows, conflict.evaluated_rows), (2, 7));
+        let file = conflict.files.first().expect("the file that disagrees");
+        assert_eq!(file.number, 2);
+        assert_eq!(file.stored_type.as_deref(), Some("str"));
+        assert_eq!(
+            file.examples,
+            vec!["sixty".to_string(), "seventy".to_string()],
+            "the values the conflict hides, read at the type that file wrote"
+        );
+
+        // The same two checks at the budget that reads no values at all: the footers
+        // were read when the dataset opened, so there is nothing left to pay for.
+        let metadata = crate::data_quality::compute_data_quality(
+            &lf,
+            Some(7),
+            &DataQualityPlan {
+                scope: QualityScope::WholeSource,
+                compute: QualityCompute::Metadata,
+                ..DataQualityPlan::default()
+            },
+            Some(&source),
+            false,
+        )
+        .unwrap();
+        assert_eq!(metadata.evaluated_rows, 0, "no value was read");
+        assert_eq!(
+            metadata
+                .observations
+                .iter()
+                .map(|observation| (observation.kind, observation.affected_rows))
+                .collect::<Vec<_>>(),
+            vec![
+                (ObservationKind::Absent, 2),
+                (ObservationKind::TypeConflict, 2),
+            ],
+            "both are reported without reading a value"
+        );
+
+        // The drill-in is the files themselves: an absent cell has no value to filter.
+        let scope = absent.evidence_scope().expect("a scope, not a predicate");
+        assert_eq!(scope, QualityScope::SourceFiles(vec![3]));
+        assert!(absent.evidence_predicate().is_none());
+        let evidence = state
+            .quality_evidence_view(&scope, lit(true))
+            .expect("the rows the third file contributed");
+        let rows = collect_lazy(evidence.lf.clone(), false).unwrap();
+        assert_eq!(
+            rows.column("id")
+                .unwrap()
+                .i64()
+                .unwrap()
+                .into_no_null_iter()
+                .collect::<Vec<_>>(),
+            vec![5, 6],
+            "the file that has no `fee`, and only that file"
+        );
+        assert!(
+            rows.column(crate::schema_union::DRIFT_COLUMN).is_err(),
+            "the hidden scan index is never handed back as user data"
+        );
+    }
+
+    /// The local route to the values a type conflict hides: real Parquet files that
+    /// disagree, read through `lenient_scan` rather than through a dataset's own scan
+    /// closure. The remote route above shares none of this code.
+    #[test]
+    fn a_local_dataset_reads_the_values_a_type_conflict_hides() {
+        use crate::data_quality::{DataQualityPlan, ObservationKind, QualityCompute, QualityScope};
+        use crate::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
+        use polars::prelude::{DataType, ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, mut frame: polars::prelude::DataFrame| -> String {
+            let path = dir.path().join(name);
+            let file = std::fs::File::create(&path).unwrap();
+            ParquetWriter::new(file).finish(&mut frame).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        // `n` is an integer in the first file and text in the second, so the scan reads
+        // it as Int64 and leaves the second file's values behind entirely.
+        let files = vec![
+            write(
+                "a.parquet",
+                df!("id" => &[0i64, 1, 2], "n" => &[10i64, 20, 30]).unwrap(),
+            ),
+            write(
+                "b.parquet",
+                df!("id" => &[3i64, 4], "n" => &["sixty", "seventy"]).unwrap(),
+            ),
+        ];
+        let dataset: DatasetSchema = union_file_schemas(
+            &[
+                file_schema(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
+                file_schema(&[("id", DataType::Int64), ("n", DataType::String)], 2),
+            ],
+            SchemaOrigin::AllFooters(2),
+        );
+        let file_rows = vec![3usize, 2];
+        let drift = crate::schema_union::ScanDrift::new(&files, &dataset, &file_rows);
+        let lf = crate::schema_union::lenient_scan(
+            &files,
+            dataset.schema.clone(),
+            None,
+            drift.as_ref(),
+            &[],
+        )
+        .unwrap();
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset.schema.clone(),
+            lf,
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_dataset_schema(dataset, &file_rows, &files);
+        assert!(state.drifts(), "the two files disagree on `n`");
+        assert_eq!(
+            state.quality_conflict_reads(),
+            1,
+            "one column, in one file, before anything runs"
+        );
+
+        let (lf, source) = state.data_quality_source_scan();
+        let mut source = source.expect("every file is counted");
+        source.conflict_scan = state.quality_conflict_scan();
+        let lf = crate::data_quality::prepare_source_quality_scan(lf, Some(&source)).unwrap();
+        let plan = DataQualityPlan {
+            scope: QualityScope::WholeSource,
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let results =
+            crate::data_quality::compute_data_quality(&lf, Some(5), &plan, Some(&source), false)
+                .unwrap();
+        let conflict = results
+            .observations
+            .iter()
+            .find(|observation| observation.kind == ObservationKind::TypeConflict)
+            .expect("`n` is text in the second file");
+        let file = conflict.files.first().expect("the file that disagrees");
+        assert_eq!(file.number, 2);
+        assert_eq!(
+            file.examples,
+            vec!["sixty".to_string(), "seventy".to_string()],
+            "read at the type that file wrote, not as the null the scan hands back"
+        );
     }
 
     /// A remote dataset reads its column as text too, and its windowed reads with it.

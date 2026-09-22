@@ -60,33 +60,35 @@ pub fn render(
             );
     } else if let Some(state) = &app.data_table_state {
         if app.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
-            let plan = app.analysis_modal.data_quality_plan.clone();
-            let results = app.analysis_modal.data_quality_results.clone();
+            // Borrowed field by field, never cloned. A per-file profile of a large
+            // dataset owns a column profile per column per segment, and copying all of
+            // it once per repaint made the dashboard slowest at the scale it is for.
+            let modal = &mut app.analysis_modal;
             let config = data_quality::DataQualityWidgetConfig {
                 state,
-                plan: &plan,
-                results: results.as_ref(),
-                from_cache: app.analysis_modal.data_quality_from_cache,
-                metric: app.analysis_modal.data_quality_metric,
-                column_index: app.analysis_modal.data_quality_column_index,
-                page: app.analysis_modal.data_quality_page,
-                editing: app.analysis_modal.data_quality_editing,
-                plan_field: app.analysis_modal.data_quality_plan_field,
-                scope_input: &app.analysis_modal.data_quality_scope_input,
-                scope_error: app.analysis_modal.data_quality_scope_error.as_deref(),
-                scope_file_offset: app.analysis_modal.data_quality_scope_file_offset,
-                show_access: app.analysis_modal.data_quality_show_access,
-                observation_detail: app.analysis_modal.data_quality_observation_detail,
-                confirm_run: app.analysis_modal.data_quality_confirm_run,
-                running: app.analysis_modal.computing.is_some(),
-                focus: app.analysis_modal.focus,
+                plan: &modal.data_quality_plan,
+                results: modal.data_quality_results.as_ref(),
+                from_cache: modal.data_quality_from_cache,
+                metric: modal.data_quality_metric,
+                column_index: modal.data_quality_column_index,
+                page: modal.data_quality_page,
+                editing: modal.data_quality_editing,
+                plan_field: modal.data_quality_plan_field,
+                scope_input: &modal.data_quality_scope_input,
+                scope_error: modal.data_quality_scope_error.as_deref(),
+                scope_file_offset: modal.data_quality_scope_file_offset,
+                show_access: modal.data_quality_show_access,
+                observation_detail: modal.data_quality_observation_detail,
+                confirm_run: modal.data_quality_confirm_run,
+                running: modal.computing.is_some(),
+                focus: modal.focus,
                 theme: &app.theme,
             };
             Clear.render(area, buf);
             data_quality::render(
                 config,
-                &mut app.analysis_modal.data_quality_table_state,
-                &mut app.analysis_modal.sidebar_state,
+                &mut modal.data_quality_table_state,
+                &mut modal.sidebar_state,
                 area,
                 buf,
             );

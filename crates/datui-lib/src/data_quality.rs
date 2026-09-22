@@ -17,6 +17,17 @@ const MAX_RETAINED_SAMPLE_BYTES: usize = 512 * 1024 * 1024;
 // roughly ten seconds a million rows, so bound the total as well as the bytes.
 pub const MAX_RETAINED_SAMPLE_ROWS: usize = 500_000;
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
+/// How nearly unique a column's values must be before its repeats are worth naming.
+///
+/// A key that is not quite one is the interesting case: an id that repeats twice in a
+/// million rows is a fact about the data, while a category that repeats constantly is
+/// just a category. The line has to fall somewhere, and 95% puts it where a column is
+/// clearly meant to identify a row rather than to group them.
+pub const KEY_LIKE_UNIQUENESS: f64 = 0.95;
+/// Files named per drift observation, and values read from each of them. Both are the
+/// evidence, not the measurement: the counts above them cover every file.
+const MAX_EVIDENCE_FILES: usize = 20;
+const MAX_CONFLICT_EXAMPLES: usize = 5;
 /// Window widths offered for time-window grain, in the order the plan cycles them.
 pub const QUALITY_WINDOW_WIDTHS: [&str; 4] = ["1h", "1d", "1w", "1mo"];
 
@@ -189,11 +200,86 @@ fn parse_scope_time(text: &str) -> Option<i64> {
         })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct QualitySourceContext {
     pub file_names: Vec<String>,
     pub file_starts: Vec<usize>,
     pub row_index_column: String,
+    /// Per file, in the order of `file_names`, its group in `drift_groups`. Empty when
+    /// the dataset's files all agree with its schema, which is nearly all of them.
+    pub file_group: Vec<u32>,
+    /// The distinct ways this dataset's files differ from its schema, as the footers
+    /// found them. Group 0 is always "nothing missing".
+    pub drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    /// Per file, the type it holds each of its unreadable columns in. Empty for a file
+    /// whose types all fit, which is why it is kept beside the groups rather than in
+    /// them: the type is the only way back to the values a conflict hides.
+    pub file_omitted: Vec<Vec<(PlSmallStr, DataType)>>,
+    /// Rows in the whole loaded source, which is what closes the last file's range.
+    pub dataset_rows: usize,
+    /// How many of the source's footers were read. Below the file count on a dataset
+    /// too large to read every footer, where a file nobody looked at is indistinguishable
+    /// from one missing nothing — so a count over the files is a floor, not a total.
+    pub footers_read: usize,
+    /// How to read a column at the type a file wrote it in, for the values a type
+    /// conflict hides. `None` for a dataset whose files agree, and for a run whose
+    /// budget did not promise the extra reads.
+    pub conflict_scan: Option<QualityConflictScan>,
+}
+
+impl QualitySourceContext {
+    /// What the file at `file` is missing. Group 0 for a file that agrees with the
+    /// dataset's schema, and for a dataset whose files were never grouped.
+    fn group_of_file(&self, file: usize) -> Option<&crate::schema_union::DriftGroup> {
+        let group = *self.file_group.get(file)? as usize;
+        self.drift_groups.get(group)
+    }
+
+    /// The files this dataset is missing something from, by 1-based inventory number,
+    /// paired with what each is missing. Only files that differ have an entry.
+    fn drifting_files(&self) -> impl Iterator<Item = (usize, &crate::schema_union::DriftGroup)> {
+        (0..self.file_names.len()).filter_map(move |file| {
+            let group = self.group_of_file(file)?;
+            (!group.is_empty()).then_some((file, group))
+        })
+    }
+
+    /// Rows the file at `file` holds, from its footer.
+    fn file_rows(&self, file: usize) -> usize {
+        let Some(start) = self.file_starts.get(file) else {
+            return 0;
+        };
+        self.file_starts
+            .get(file + 1)
+            .copied()
+            .unwrap_or(self.dataset_rows)
+            .saturating_sub(*start)
+    }
+
+    /// How many one-column file reads a full run makes for the values type conflicts
+    /// hide, so the access plan can promise them before anything is read.
+    pub fn conflict_reads(&self) -> usize {
+        let mut per_column = BTreeMap::<&str, usize>::new();
+        for (_, group) in self.drifting_files() {
+            for column in &group.unread {
+                *per_column.entry(column.as_str()).or_default() += 1;
+            }
+        }
+        per_column
+            .values()
+            .map(|files| (*files).min(MAX_EVIDENCE_FILES))
+            .sum()
+    }
+
+    /// The type the file at `file` holds `column` in, when that is not the type the
+    /// scan reads it as.
+    fn stored_type(&self, file: usize, column: &str) -> Option<&DataType> {
+        self.file_omitted
+            .get(file)?
+            .iter()
+            .find(|(name, _)| name.as_str() == column)
+            .map(|(_, dtype)| dtype)
+    }
 }
 
 /// Prepare the loaded source in the worker, keeping only a provenance index
@@ -631,6 +717,15 @@ pub enum ObservationKind {
     ParseableText,
     DuplicateRows,
     CategoryVariants,
+    /// Rows whose own file has no such column. Their cells are absent, not null, and
+    /// no measurement over values can tell the two apart.
+    Absent,
+    /// Rows whose file holds the column in a type the dataset's schema cannot read, so
+    /// the column is not read from that file at all.
+    TypeConflict,
+    /// A column whose values are nearly unique and still repeat: the shape of a key
+    /// that is not quite one.
+    KeyLike,
 }
 
 impl ObservationKind {
@@ -644,8 +739,48 @@ impl ObservationKind {
             Self::ParseableText => "Stored as text",
             Self::DuplicateRows => "Duplicate rows",
             Self::CategoryVariants => "Category variants",
+            Self::Absent => "Absent",
+            Self::TypeConflict => "Type conflict",
+            Self::KeyLike => "Key-like",
         }
     }
+
+    /// What the check divides, as the detail pane and the user guide state it.
+    pub fn definition(self) -> &'static str {
+        match self {
+            Self::Nulls => "Null values / evaluated rows",
+            Self::Empty => "Exact empty strings / evaluated rows",
+            Self::Whitespace => "Nonempty strings that trim to empty / evaluated rows",
+            Self::NonFinite => "NaN or positive/negative infinity / evaluated rows",
+            Self::Constant => "One distinct non-null value in evaluated rows",
+            Self::ParseableText => "Values parseable as a typed value, stored as text",
+            Self::DuplicateRows => "Equal complete rows; extras = sum(group size - 1)",
+            Self::CategoryVariants => "Distinct originals equal after trim and lowercase",
+            Self::Absent => "Rows in files whose footer has no such column / source rows",
+            Self::TypeConflict => {
+                "Rows in files holding the column in an unreadable type / source rows"
+            }
+            Self::KeyLike => {
+                "Non-null rows - distinct values, where distinct >= 95% of non-null rows"
+            }
+        }
+    }
+}
+
+/// One file behind a drift observation: what it holds, and what that costs the column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualityFileEvidence {
+    /// Position in the Scope page's file inventory, which numbers files from 1.
+    pub number: usize,
+    pub name: String,
+    /// Rows this file holds, from its footer.
+    pub rows: usize,
+    /// The type this file holds the column in, when the scan cannot read it as the
+    /// dataset's. `None` for a file that simply has no such column.
+    pub stored_type: Option<String>,
+    /// The first values this file holds, read at its own type and rendered as text.
+    /// Empty until a full run reads them.
+    pub examples: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -656,9 +791,29 @@ pub struct QualityObservation {
     pub evaluated_rows: usize,
     pub fact: String,
     pub normalized_category: Option<String>,
+    /// The files behind an [`ObservationKind::Absent`] or
+    /// [`ObservationKind::TypeConflict`] measurement, commonest first. Empty for every
+    /// check measured over values rather than over footers.
+    pub files: Vec<QualityFileEvidence>,
 }
 
 impl QualityObservation {
+    /// The scope that holds the rows behind this observation, when they are a set of
+    /// files rather than a predicate over values. An absent or conflicting cell has no
+    /// value to filter on — the rows are simply the ones the files contributed.
+    pub fn evidence_scope(&self) -> Option<QualityScope> {
+        if !matches!(
+            self.kind,
+            ObservationKind::Absent | ObservationKind::TypeConflict
+        ) || self.files.is_empty()
+        {
+            return None;
+        }
+        Some(QualityScope::SourceFiles(
+            self.files.iter().map(|file| file.number).collect(),
+        ))
+    }
+
     pub fn evidence_predicate(&self) -> Option<Expr> {
         let value = col(&self.column);
         match self.kind {
@@ -690,7 +845,18 @@ impl QualityObservation {
                     .to_lowercase()
                     .eq(lit(self.normalized_category.clone()?)),
             ),
-            ObservationKind::ParseableText | ObservationKind::DuplicateRows => None,
+            // Nearly unique and still repeating: the repeats are exactly the rows
+            // whose value is not the only one of its kind. Nulls are outside the
+            // measurement, so they are outside its rows too.
+            ObservationKind::KeyLike => {
+                Some(value.clone().is_duplicated().and(value.is_not_null()))
+            }
+            // Absent and conflicting rows are named by their files, not by a predicate
+            // over values: the column is not in those rows to be tested.
+            ObservationKind::ParseableText
+            | ObservationKind::DuplicateRows
+            | ObservationKind::Absent
+            | ObservationKind::TypeConflict => None,
         }
     }
 }
@@ -818,8 +984,14 @@ pub fn compute_data_quality(
 ) -> Result<DataQualityResults> {
     let collected_schema = lf.clone().collect_schema()?;
     let schema = visible_schema(&collected_schema, source);
+    // What the footers already said: which files have which columns. Free at every
+    // compute budget, including the one that reads no values at all.
     if plan.compute == QualityCompute::Metadata {
-        return Ok(DataQualityResults::empty(total_rows, plan, &schema));
+        let mut results = DataQualityResults::empty(total_rows, plan, &schema);
+        if let Some(source) = source {
+            results.observations = drift_observations(source, None, polars_streaming);
+        }
+        return Ok(results);
     }
     let grain_column = match &plan.grain {
         QualityGrain::Partition(column) | QualityGrain::TimeWindows { column, .. } => Some(column),
@@ -909,6 +1081,11 @@ pub fn compute_data_quality(
     let category_variants = profile_category_variants(&profile_df, &schema)?;
     let mut observations = observations_from_profiles(&columns);
     observations.extend(identity_observations(&identity, &category_variants));
+    // A sampled run does not promise the extra reads, so the counts come without the
+    // values behind them.
+    if let Some(source) = source {
+        observations.extend(drift_observations(source, None, polars_streaming));
+    }
     let segments = profile_segments(
         &profile_df,
         total_rows,
@@ -1179,6 +1356,15 @@ fn compute_full_quality(
     let category_variants = profile_category_variants_lazy(lf, schema, polars_streaming)?;
     let mut observations = observations_from_profiles(&columns);
     observations.extend(identity_observations(&identity, &category_variants));
+    // Only a run that already reads every value pays for the conflicting values, and
+    // only that run's access plan promised the read.
+    if let Some(source) = source {
+        observations.extend(drift_observations(
+            source,
+            source.conflict_scan.as_ref(),
+            polars_streaming,
+        ));
+    }
     let segments = profile_segments_lazy(lf, total_rows, plan, source, schema, polars_streaming)?;
     let temporal = profile_temporal_lazy(lf, plan, source, polars_streaming)?;
     Ok(DataQualityResults {
@@ -1516,6 +1702,7 @@ fn identity_observations(
                 identity.precision.label()
             ),
             normalized_category: None,
+            files: Vec::new(),
         });
     }
     observations.extend(variants.iter().map(|group| QualityObservation {
@@ -1530,6 +1717,7 @@ fn identity_observations(
             group.normalized
         ),
         normalized_category: Some(group.normalized.clone()),
+        files: Vec::new(),
     }));
     observations
 }
@@ -1943,13 +2131,82 @@ fn apply_comparisons(
             QualityComparison::Previous | QualityComparison::Baseline => None,
         };
         if let Some(other) = compared {
-            let change = (segments[index].null_rate - segments[other].null_rate) * 100.0;
+            let change = largest_material_change(&segments[index], &segments[other], precision);
             segments[index].compared_with = Some(segments[other].label.clone());
-            segments[index].largest_change = Some(format!(
-                "null cells {change:+.2} pp ({})",
-                precision.label()
+            segments[index].largest_change = Some(change);
+        }
+    }
+}
+
+/// How far a measurement has to move between segments before it is worth naming, in
+/// percentage points.
+const MATERIAL_CHANGE_PP: f64 = 1.0;
+
+/// The largest measured move between two segments, over every column.
+///
+/// #196 asks where a column's null rate, distinct count or range shifts sharply, which
+/// is a question about the sharpest single move rather than about the average of all
+/// of them: one column going from never-null to always-null is the finding, and a mean
+/// over sixty columns buries it. A range that moved is reported when no rate did,
+/// because a column whose values slid into a new interval shifted without any rate
+/// noticing.
+fn largest_material_change(
+    segment: &SegmentQualityProfile,
+    baseline: &SegmentQualityProfile,
+    precision: QualityPrecision,
+) -> String {
+    let mut largest: Option<(f64, String)> = None;
+    let mut range: Option<String> = None;
+    for column in &segment.columns {
+        let Some(prior) = baseline
+            .columns
+            .iter()
+            .find(|other| other.name == column.name)
+        else {
+            continue;
+        };
+        for metric in [QualityMetric::NullRate, QualityMetric::DistinctShare] {
+            let (Some(now), Some(before)) = (metric.value(column), metric.value(prior)) else {
+                continue;
+            };
+            let change = (now - before) * 100.0;
+            if largest
+                .as_ref()
+                .is_none_or(|(most, _)| change.abs() > most.abs())
+            {
+                largest = Some((
+                    change,
+                    format!("{} {}", column.name, metric.label().to_lowercase()),
+                ));
+            }
+        }
+        if range.is_none() && (column.min != prior.min || column.max != prior.max) {
+            range = Some(format!(
+                "{} range {} -> {}",
+                column.name,
+                range_label(prior),
+                range_label(column)
             ));
         }
+    }
+    let precision = precision.label();
+    match largest {
+        Some((change, what)) if change.abs() >= MATERIAL_CHANGE_PP => {
+            format!("{what} {change:+.2} pp ({precision})")
+        }
+        _ => match range {
+            Some(moved) => format!("{moved} ({precision})"),
+            None => format!("nothing moved {MATERIAL_CHANGE_PP:.0} pp ({precision})"),
+        },
+    }
+}
+
+fn range_label(column: &ColumnQualityProfile) -> String {
+    match (&column.min, &column.max) {
+        (Some(min), Some(max)) => format!("{min}..{max}"),
+        (Some(min), None) => format!("{min}.."),
+        (None, Some(max)) => format!("..{max}"),
+        (None, None) => "none".to_string(),
     }
 }
 
@@ -2518,8 +2775,179 @@ fn observations_from_profiles(columns: &[ColumnQualityProfile]) -> Vec<QualityOb
                 ),
             ));
         }
+        // Near-unique and still repeating. Both numbers are already measured, so this
+        // check costs the comparison and nothing else.
+        if let (Some(distinct), Some(uniqueness)) =
+            (profile.distinct_count, profile.uniqueness_rate())
+            && (KEY_LIKE_UNIQUENESS..1.0).contains(&uniqueness)
+        {
+            let repeats = profile.non_null_rows().saturating_sub(distinct);
+            if repeats > 0 {
+                let example = match (&profile.dominant_value, profile.dominant_count) {
+                    (Some(value), Some(count)) if count > 1 => {
+                        format!("; {value:?} appears {count} times")
+                    }
+                    _ => String::new(),
+                };
+                observations.push(observation(
+                    ObservationKind::KeyLike,
+                    profile,
+                    repeats,
+                    format!(
+                        "{:.4}% distinct; {} of {} non-null rows repeat a value{example}",
+                        uniqueness * 100.0,
+                        repeats,
+                        profile.non_null_rows()
+                    ),
+                ));
+            }
+        }
     }
     observations
+}
+
+/// Reads named columns of named files at the type each file wrote, which is the only
+/// way back to the values a type conflict hides. Given to a run that already reads
+/// every value, so the extra read is one column of the few files that disagree.
+#[derive(Clone)]
+pub struct QualityConflictScan(pub crate::widgets::datatable::FileScan);
+
+impl std::fmt::Debug for QualityConflictScan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QualityConflictScan")
+    }
+}
+
+/// Absent columns and type conflicts, from the footers datui already read.
+///
+/// Both are facts about which files hold which columns, so they are measured over the
+/// whole loaded source however the run was scoped: no value in a scope can say
+/// anything about a column its file never had, and a conflicting column is not read
+/// into the scope at all. The detail pane says so rather than leaving the reader to
+/// notice that these two denominators are not the others.
+fn drift_observations(
+    source: &QualitySourceContext,
+    conflicts: Option<&QualityConflictScan>,
+    polars_streaming: bool,
+) -> Vec<QualityObservation> {
+    let mut absent = BTreeMap::<String, Vec<QualityFileEvidence>>::new();
+    let mut unread = BTreeMap::<String, Vec<QualityFileEvidence>>::new();
+    for (file, group) in source.drifting_files() {
+        let evidence = |stored_type: Option<String>| QualityFileEvidence {
+            number: file + 1,
+            name: source
+                .file_names
+                .get(file)
+                .cloned()
+                .unwrap_or_else(|| format!("file {}", file + 1)),
+            rows: source.file_rows(file),
+            stored_type,
+            examples: Vec::new(),
+        };
+        for column in &group.absent {
+            absent
+                .entry(column.to_string())
+                .or_default()
+                .push(evidence(None));
+        }
+        for column in &group.unread {
+            let stored = source
+                .stored_type(file, column)
+                .map(|dtype| dtype.to_string());
+            unread
+                .entry(column.to_string())
+                .or_default()
+                .push(evidence(stored));
+        }
+    }
+
+    let mut observations = Vec::new();
+    for (kind, columns) in [
+        (ObservationKind::Absent, absent),
+        (ObservationKind::TypeConflict, unread),
+    ] {
+        for (column, mut files) in columns {
+            // Largest first: the files that cost the column the most rows are the ones
+            // worth naming and worth reading values from.
+            files.sort_by(|left, right| {
+                right
+                    .rows
+                    .cmp(&left.rows)
+                    .then_with(|| left.number.cmp(&right.number))
+            });
+            let total_files = files.len();
+            let affected_rows = files.iter().map(|file| file.rows).sum();
+            files.truncate(MAX_EVIDENCE_FILES);
+            if kind == ObservationKind::TypeConflict
+                && let Some(scan) = conflicts
+            {
+                read_conflict_examples(scan, &column, &mut files, polars_streaming);
+            }
+            let named = if total_files > files.len() {
+                format!(", largest {} named", files.len())
+            } else {
+                String::new()
+            };
+            let verb = if kind == ObservationKind::Absent {
+                "has no such column"
+            } else {
+                "holds a type the scan cannot read"
+            };
+            // A file whose footer was not read looks exactly like one missing nothing,
+            // so on a sampled dataset the count is a floor and has to say so.
+            let sampled = if source.footers_read < source.file_names.len() {
+                format!(", from {} footers read", source.footers_read)
+            } else {
+                String::new()
+            };
+            observations.push(QualityObservation {
+                kind,
+                column,
+                affected_rows,
+                evaluated_rows: source.dataset_rows,
+                fact: format!(
+                    "{total_files} of {} files {verb}{sampled}{named}",
+                    source.file_names.len()
+                ),
+                normalized_category: None,
+                files,
+            });
+        }
+    }
+    observations
+}
+
+/// The first values each conflicting file holds, read at that file's own type.
+///
+/// One scan per file, of one column, limited to the first few rows: a conflict is a
+/// property of the file rather than of any row, so the first values it holds are as
+/// good evidence as any and stop the read at once. A file that cannot be read this way
+/// keeps its count and loses only its examples.
+fn read_conflict_examples(
+    scan: &QualityConflictScan,
+    column: &str,
+    files: &mut [QualityFileEvidence],
+    polars_streaming: bool,
+) {
+    let name = PlSmallStr::from(column);
+    for file in files.iter_mut() {
+        let Ok(lf) = (scan.0)(
+            std::slice::from_ref(&file.name),
+            std::slice::from_ref(&name),
+        ) else {
+            continue;
+        };
+        let query = lf
+            .select([col(column).cast(DataType::String)])
+            .drop_nulls(None)
+            .limit(MAX_CONFLICT_EXAMPLES as u32);
+        let Ok(values) = collect_lazy(query, polars_streaming) else {
+            continue;
+        };
+        file.examples = (0..values.height())
+            .filter_map(|row| string_value_at(&values, column, row))
+            .collect();
+    }
 }
 
 fn observation(
@@ -2535,6 +2963,7 @@ fn observation(
         evaluated_rows: profile.evaluated_rows,
         fact,
         normalized_category: None,
+        files: Vec::new(),
     }
 }
 
@@ -2666,6 +3095,7 @@ mod tests {
                 evaluated_rows: 4,
                 fact: String::new(),
                 normalized_category: None,
+                files: Vec::new(),
             };
             let rows = fixture()
                 .filter(observation.evidence_predicate().unwrap())
@@ -2680,6 +3110,7 @@ mod tests {
             evaluated_rows: 3,
             fact: String::new(),
             normalized_category: Some("north".to_string()),
+            files: Vec::new(),
         };
         let rows = df!("category" => &["North", " north ", "NORTH"])
             .unwrap()
@@ -2877,6 +3308,7 @@ mod tests {
             file_names: vec!["one.parquet".to_string()],
             file_starts: vec![0],
             row_index_column: "__datui_quality_row".to_string(),
+            ..QualitySourceContext::default()
         };
         let frame = df!(
             "value" => &[1i64, 2, 3],
@@ -2958,6 +3390,7 @@ mod tests {
             file_names: vec!["one".into(), "two".into(), "three".into()],
             file_starts: vec![0, 2, 4],
             row_index_column: "__row".into(),
+            ..QualitySourceContext::default()
         };
         assert_eq!(
             ids(
@@ -3130,6 +3563,102 @@ mod tests {
         assert_eq!(latency.p50_seconds, Some(3_600));
     }
 
+    /// A column that is nearly a key and is not quite one: the repeats are the finding,
+    /// and a column with three values in a hundred rows is a category, not a near-miss.
+    #[test]
+    fn a_nearly_unique_column_that_repeats_is_reported_with_its_repeats() {
+        let mut ids = (0..98i64).collect::<Vec<_>>();
+        // Two values that appear twice: 98 distinct values over 100 non-null rows.
+        ids.push(7);
+        ids.push(11);
+        let frame = df!(
+            "id" => &ids,
+            "region" => &(0..100).map(|row| ["north", "south"][row % 2]).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+        let key_like = results
+            .observations
+            .iter()
+            .filter(|observation| observation.kind == ObservationKind::KeyLike)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            key_like
+                .iter()
+                .map(|o| o.column.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id"],
+            "two values in a hundred rows is a category, not a key that slipped"
+        );
+        assert_eq!(
+            (key_like[0].affected_rows, key_like[0].evaluated_rows),
+            (2, 100),
+            "non-null rows minus distinct values"
+        );
+        // The drill-in is every row whose value is not the only one of its kind, which
+        // is four rows for two values that each appear twice.
+        let rows = frame
+            .filter(key_like[0].evidence_predicate().unwrap())
+            .collect()
+            .unwrap();
+        assert_eq!(rows.height(), 4);
+    }
+
+    /// The segment comparison names the sharpest single move, not the average of all
+    /// of them: a column that goes from never-null to always-null is the finding.
+    #[test]
+    fn the_largest_change_names_the_column_and_measurement_that_moved() {
+        let frame = df!(
+            "steady" => &[1i64, 2, 3, 4],
+            "fee" => &[Some(1.5f64), Some(2.5), None, None],
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            grain: QualityGrain::RowChunks(2),
+            comparison: QualityComparison::Previous,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+        assert_eq!(results.segments.len(), 2);
+        assert_eq!(
+            results.segments[0].largest_change, None,
+            "the first chunk has nothing to compare against"
+        );
+        let change = results.segments[1]
+            .largest_change
+            .as_deref()
+            .expect("the second chunk compares with the first");
+        assert!(
+            change.starts_with("fee null rate +100.00 pp"),
+            "the column and the measurement that moved: {change}"
+        );
+    }
+
+    /// With nothing over the material threshold, a range that moved is still a move.
+    #[test]
+    fn a_segment_whose_rates_hold_still_reports_the_range_that_moved() {
+        let frame = df!("reading" => &[1i64, 2, 300, 400]).unwrap().lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            grain: QualityGrain::RowChunks(2),
+            comparison: QualityComparison::Previous,
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+        let change = results.segments[1].largest_change.as_deref().unwrap();
+        assert!(
+            change.starts_with("reading range 1..2 -> 300..400"),
+            "no rate moved, but the values did: {change}"
+        );
+    }
+
     #[test]
     fn source_row_map_produces_file_segments_without_profiling_hidden_columns() {
         let frame = df!(
@@ -3142,6 +3671,7 @@ mod tests {
             file_names: vec!["a.parquet".to_string(), "b.parquet".to_string()],
             file_starts: vec![0, 2],
             row_index_column: "__row".to_string(),
+            ..QualitySourceContext::default()
         };
         let plan = DataQualityPlan {
             compute: QualityCompute::Full,

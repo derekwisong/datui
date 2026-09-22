@@ -5873,33 +5873,46 @@ pub struct App {
 
 impl App {
     fn open_quality_evidence(&mut self) {
-        let Some(observation) = self
-            .analysis_modal
-            .data_quality_results
-            .as_ref()
-            .filter(|results| results.precision == data_quality::QualityPrecision::Exact)
-            .and_then(|results| {
-                self.analysis_modal
-                    .data_quality_table_state
-                    .selected()
-                    .and_then(|index| results.observations.get(index))
-            })
+        let Some(observation) =
+            self.analysis_modal
+                .data_quality_results
+                .as_ref()
+                .and_then(|results| {
+                    self.analysis_modal
+                        .data_quality_table_state
+                        .selected()
+                        .and_then(|index| results.observations.get(index))
+                        .filter(|observation| {
+                            // An observation read from the footers is exact whatever the
+                            // run's compute budget was: the files it names are the files
+                            // it names. Everything measured over values is not.
+                            observation.evidence_scope().is_some()
+                                || results.precision == data_quality::QualityPrecision::Exact
+                        })
+                })
         else {
             return;
         };
-        let Some(predicate) = observation.evidence_predicate() else {
-            return;
+        // A column its file never had, or holds in a type the scan cannot read, has no
+        // value to filter on: its rows are the ones those files contributed, which is a
+        // scope rather than a predicate.
+        let by_files = observation.evidence_scope();
+        let predicate = match (&by_files, observation.evidence_predicate()) {
+            (Some(_), _) => polars::prelude::lit(true),
+            (None, Some(predicate)) => predicate,
+            (None, None) => return,
         };
         let label = format!("{} / {}", observation.kind.label(), observation.column);
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        let scope = self
-            .analysis_modal
-            .data_quality_last_plan
-            .as_ref()
-            .map(|plan| &plan.scope)
-            .unwrap_or(&self.analysis_modal.data_quality_plan.scope);
+        let scope = by_files.as_ref().unwrap_or_else(|| {
+            self.analysis_modal
+                .data_quality_last_plan
+                .as_ref()
+                .map(|plan| &plan.scope)
+                .unwrap_or(&self.analysis_modal.data_quality_plan.scope)
+        });
         let view = match state.quality_evidence_view(scope, predicate) {
             Ok(view) => view,
             Err(error) => {
@@ -15285,6 +15298,14 @@ impl App {
                         (lf, source, rows)
                     };
                     let streaming = state.polars_streaming;
+                    // Only a confirmed full scan pays to read the values a type
+                    // conflict hides, and only its access plan promised the read.
+                    let mut source = source;
+                    if plan.compute == data_quality::QualityCompute::Full
+                        && let Some(source) = source.as_mut()
+                    {
+                        source.conflict_scan = state.quality_conflict_scan();
+                    }
                     self.spawn_bg("Profiling data quality...", move |task_gen, tx| {
                         let lf = if source_scope {
                             match data_quality::prepare_source_quality_scan(lf, source.as_ref()) {

@@ -863,6 +863,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             evaluated_rows: 10,
             fact: "1 null row".to_string(),
             normalized_category: None,
+            files: Vec::new(),
         });
     app.analysis_modal.data_quality_table_state.select(Some(0));
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -921,6 +922,18 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         }
     }
 
+    // The largest measured move between segments is on the screen, not only in the
+    // profile: #196 asks for it and nothing read it before.
+    app.analysis_modal.set_quality_page(QualityPage::Segments);
+    let wide = Rect::new(0, 0, 160, 40);
+    let mut buffer = Buffer::empty(wide);
+    app.render(wide, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains("Largest change"),
+        "Segments should name the column and measurement that moved"
+    );
+
     // Every remaining page and popup must say its own piece at each width, so a
     // clipped label or a screen that renders nothing at all fails here.
     for (page, expected) in [
@@ -960,6 +973,9 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     app.analysis_modal.set_quality_page(QualityPage::Plan);
     for (popup, expected) in [
         ("access", "Estimate basis"),
+        // The extra reads a full scan makes for the values a type conflict hides are
+        // promised before anything runs, like every other read on this page.
+        ("access", "Conflict values"),
         ("confirm", "remote writes are 0 B."),
     ] {
         app.analysis_modal.data_quality_show_access = popup == "access";
@@ -1059,6 +1075,46 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert!(app.analysis_modal.data_quality_results.is_some());
     assert!(!app.is_busy());
 
+    // A drift observation's detail is the files themselves: which ones, how many rows
+    // each cost the column, the type each holds, and the values the conflict hid.
+    {
+        let results = app.analysis_modal.data_quality_results.as_mut().unwrap();
+        results.observations = vec![datui::data_quality::QualityObservation {
+            kind: datui::data_quality::ObservationKind::TypeConflict,
+            column: "fee".to_string(),
+            affected_rows: 2,
+            evaluated_rows: 7,
+            fact: "1 of 3 files holds a type the scan cannot read".to_string(),
+            normalized_category: None,
+            files: vec![datui::data_quality::QualityFileEvidence {
+                number: 2,
+                name: "b.parquet".to_string(),
+                rows: 2,
+                stored_type: Some("str".to_string()),
+                examples: vec!["sixty".to_string()],
+            }],
+        }];
+        app.analysis_modal.set_quality_page(QualityPage::Overview);
+        app.analysis_modal.data_quality_table_state.select(Some(0));
+        app.analysis_modal.data_quality_observation_detail = true;
+        let area = Rect::new(0, 0, 120, 32);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        for expected in [
+            "#2 b.parquet",
+            "as str",
+            "sixty",
+            "rows of the loaded source",
+        ] {
+            assert!(
+                screen.contains(expected),
+                "the conflict detail should show {expected:?}"
+            );
+        }
+        app.analysis_modal.data_quality_observation_detail = false;
+    }
+
     let column = app
         .data_table_state
         .as_ref()
@@ -1078,6 +1134,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         evaluated_rows: results.evaluated_rows,
         fact: "matching rows".to_string(),
         normalized_category: None,
+        files: Vec::new(),
     }];
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     app.event(&AppEvent::Key(KeyEvent::new(

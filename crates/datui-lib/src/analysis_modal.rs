@@ -448,27 +448,31 @@ impl AnalysisModal {
                 self.data_quality_plan.baseline_segment = None;
             }
             2 => {
+                // Forward is metadata to sample to full; backward is the same ring the
+                // other way, so each value's Left undoes its own Right.
                 self.data_quality_plan.compute = match (self.data_quality_plan.compute, forward) {
-                    (QualityCompute::Metadata, true) | (QualityCompute::Sample, false) => {
+                    (QualityCompute::Metadata, true) | (QualityCompute::Full, false) => {
                         QualityCompute::Sample
                     }
-                    (QualityCompute::Sample, true) | (QualityCompute::Full, false) => {
+                    (QualityCompute::Sample, true) | (QualityCompute::Metadata, false) => {
                         QualityCompute::Full
                     }
-                    (QualityCompute::Full, true) => QualityCompute::Metadata,
-                    (QualityCompute::Metadata, false) => QualityCompute::Full,
+                    (QualityCompute::Full, true) | (QualityCompute::Sample, false) => {
+                        QualityCompute::Metadata
+                    }
                 };
             }
             3 => {
                 self.data_quality_plan.comparison =
                     match (self.data_quality_plan.comparison, forward) {
-                        (QualityComparison::None, true) | (QualityComparison::Previous, false) => {
+                        (QualityComparison::None, true) | (QualityComparison::Baseline, false) => {
                             QualityComparison::Previous
                         }
-                        (QualityComparison::Previous, true)
-                        | (QualityComparison::Baseline, false) => QualityComparison::Baseline,
-                        (QualityComparison::Baseline, true) => QualityComparison::None,
-                        (QualityComparison::None, false) => QualityComparison::Baseline,
+                        (QualityComparison::Previous, true) | (QualityComparison::None, false) => {
+                            QualityComparison::Baseline
+                        }
+                        (QualityComparison::Baseline, true)
+                        | (QualityComparison::Previous, false) => QualityComparison::None,
                     };
                 if self.data_quality_plan.comparison != QualityComparison::Baseline {
                     self.data_quality_plan.baseline_segment = None;
@@ -812,5 +816,54 @@ mod quality_scope_tests {
             QualityScope::FirstRows(1_000_000)
         );
         assert_eq!(modal.data_quality_plan.grain, QualityGrain::Dataset);
+    }
+
+    /// Left undoes Right on every plan field that cycles a fixed ring. A field whose
+    /// backward step lands on the value it started from is a dead key, and the hint
+    /// under the plan promises both directions.
+    #[test]
+    fn every_cycling_plan_field_steps_both_ways() {
+        let mut modal = AnalysisModal::new();
+
+        modal.data_quality_plan_field = 2;
+        let computes = [
+            QualityCompute::Metadata,
+            QualityCompute::Sample,
+            QualityCompute::Full,
+        ];
+        modal.data_quality_plan.compute = computes[0];
+        for expected in computes.iter().skip(1).chain(computes.first()) {
+            modal.adjust_quality_plan(true, &[]);
+            assert_eq!(
+                modal.data_quality_plan.compute, *expected,
+                "compute forward"
+            );
+        }
+        for expected in computes.iter().rev() {
+            modal.adjust_quality_plan(false, &[]);
+            assert_eq!(modal.data_quality_plan.compute, *expected, "compute back");
+        }
+
+        modal.data_quality_plan_field = 3;
+        let comparisons = [
+            QualityComparison::None,
+            QualityComparison::Previous,
+            QualityComparison::Baseline,
+        ];
+        modal.data_quality_plan.comparison = comparisons[0];
+        for expected in comparisons.iter().skip(1).chain(comparisons.first()) {
+            modal.adjust_quality_plan(true, &[]);
+            assert_eq!(
+                modal.data_quality_plan.comparison, *expected,
+                "comparison forward"
+            );
+        }
+        for expected in comparisons.iter().rev() {
+            modal.adjust_quality_plan(false, &[]);
+            assert_eq!(
+                modal.data_quality_plan.comparison, *expected,
+                "comparison back"
+            );
+        }
     }
 }

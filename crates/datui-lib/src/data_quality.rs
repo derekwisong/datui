@@ -2215,21 +2215,33 @@ fn profile_temporal(
         (TemporalRole::Received, TemporalRole::Processed),
         (TemporalRole::Event, TemporalRole::Processed),
     ];
+    // Resolved before the rows are grouped, as the lazy path does: the default plan
+    // assigns no roles at all, and splitting the sample into ten thousand segments to
+    // discover that costs a DataFrame copy per segment and answers nothing.
+    let resolved = pairs
+        .into_iter()
+        .filter_map(|(start_role, end_role)| {
+            Some((
+                start_role,
+                end_role,
+                role_column(start_role)?,
+                role_column(end_role)?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    if resolved.is_empty() {
+        return Ok(Vec::new());
+    }
     let groups = segment_rows(df, plan, sample_positions)?;
     let mut profiles = Vec::new();
     for group in groups {
         let segment = take_rows(df, &group.indices)?;
-        for (start_role, end_role) in pairs {
-            let (Some(start_column), Some(end_column)) =
-                (role_column(start_role), role_column(end_role))
-            else {
-                continue;
-            };
+        for (start_role, end_role, start_column, end_column) in &resolved {
             profiles.push(latency_profile(
                 &segment,
                 &group.label,
-                start_role,
-                end_role,
+                *start_role,
+                *end_role,
                 start_column,
                 end_column,
                 plan.latency_threshold_seconds,
@@ -2380,6 +2392,14 @@ fn profile_temporal_lazy(
         }
     }
     profiles.sort_by(|left, right| left.segment.cmp(&right.segment));
+    // The zero padding exists so a lexicographic sort orders chunks numerically, and
+    // comes off once it has. Segments does the same thing in the same place; leaving
+    // it on here had Trends and Segments name one chunk two different ways.
+    if matches!(plan.grain, QualityGrain::RowChunks(_)) {
+        for profile in &mut profiles {
+            profile.segment = pretty_chunk_label(&profile.segment);
+        }
+    }
     Ok(profiles)
 }
 
@@ -3758,6 +3778,83 @@ mod tests {
             change.starts_with("reading range 1..2 -> 300..400"),
             "no rate moved, but the values did: {change}"
         );
+    }
+
+    /// Trends and Segments name the same chunk the same way, whichever compute budget
+    /// produced it. The padding a lexicographic sort needs is not a label.
+    #[test]
+    fn row_chunk_labels_agree_between_trends_and_segments_at_every_budget() {
+        let frame = df!(
+            "sent" => &[
+                "2024-01-01T00:00:00", "2024-01-01T01:00:00",
+                "2024-01-01T02:00:00", "2024-01-01T03:00:00",
+            ],
+            "landed" => &[
+                "2024-01-01T01:00:00", "2024-01-01T03:00:00",
+                "2024-01-01T04:00:00", "2024-01-01T06:00:00",
+            ],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("sent")
+                .str()
+                .to_datetime(None, None, StrptimeOptions::default(), lit("raise")),
+            col("landed")
+                .str()
+                .to_datetime(None, None, StrptimeOptions::default(), lit("raise")),
+        ]);
+        let roles = vec![
+            TemporalRoleAssignment {
+                role: TemporalRole::Published,
+                column: "sent".to_string(),
+                timezone: None,
+            },
+            TemporalRoleAssignment {
+                role: TemporalRole::Received,
+                column: "landed".to_string(),
+                timezone: None,
+            },
+        ];
+        for compute in [QualityCompute::Sample, QualityCompute::Full] {
+            let plan = DataQualityPlan {
+                compute,
+                grain: QualityGrain::RowChunks(2),
+                temporal_roles: roles.clone(),
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+            let segments = results
+                .segments
+                .iter()
+                .map(|segment| segment.label.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                segments,
+                vec!["rows 1-2", "rows 3-4"],
+                "{compute:?} segments"
+            );
+            let mut trends = results
+                .temporal
+                .iter()
+                .map(|profile| profile.segment.clone())
+                .collect::<Vec<_>>();
+            trends.dedup();
+            assert_eq!(trends, segments, "{compute:?} trends");
+        }
+    }
+
+    /// No role assigned means no latency to report, and nothing worth splitting the
+    /// rows up to discover.
+    #[test]
+    fn an_unassigned_plan_reports_no_latency() {
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Sample,
+            grain: QualityGrain::RowChunks(2),
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&fixture(), Some(4), &plan, None, false).unwrap();
+        assert!(results.temporal.is_empty());
     }
 
     #[test]

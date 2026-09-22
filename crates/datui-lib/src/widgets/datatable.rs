@@ -9948,6 +9948,92 @@ mod tests {
         );
     }
 
+    /// The local route to the values a type conflict hides: real Parquet files that
+    /// disagree, read through `lenient_scan` rather than through a dataset's own scan
+    /// closure. The remote route above shares none of this code.
+    #[test]
+    fn a_local_dataset_reads_the_values_a_type_conflict_hides() {
+        use crate::data_quality::{DataQualityPlan, ObservationKind, QualityCompute, QualityScope};
+        use crate::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
+        use polars::prelude::{DataType, ParquetWriter, df};
+
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, mut frame: polars::prelude::DataFrame| -> String {
+            let path = dir.path().join(name);
+            let file = std::fs::File::create(&path).unwrap();
+            ParquetWriter::new(file).finish(&mut frame).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        // `n` is an integer in the first file and text in the second, so the scan reads
+        // it as Int64 and leaves the second file's values behind entirely.
+        let files = vec![
+            write(
+                "a.parquet",
+                df!("id" => &[0i64, 1, 2], "n" => &[10i64, 20, 30]).unwrap(),
+            ),
+            write(
+                "b.parquet",
+                df!("id" => &[3i64, 4], "n" => &["sixty", "seventy"]).unwrap(),
+            ),
+        ];
+        let dataset: DatasetSchema = union_file_schemas(
+            &[
+                file_schema(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
+                file_schema(&[("id", DataType::Int64), ("n", DataType::String)], 2),
+            ],
+            SchemaOrigin::AllFooters(2),
+        );
+        let file_rows = vec![3usize, 2];
+        let drift = crate::schema_union::ScanDrift::new(&files, &dataset, &file_rows);
+        let lf = crate::schema_union::lenient_scan(
+            &files,
+            dataset.schema.clone(),
+            None,
+            drift.as_ref(),
+            &[],
+        )
+        .unwrap();
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            dataset.schema.clone(),
+            lf,
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        state.set_dataset_schema(dataset, &file_rows, &files);
+        assert!(state.drifts(), "the two files disagree on `n`");
+        assert_eq!(
+            state.quality_conflict_reads(),
+            1,
+            "one column, in one file, before anything runs"
+        );
+
+        let (lf, source) = state.data_quality_source_scan();
+        let mut source = source.expect("every file is counted");
+        source.conflict_scan = state.quality_conflict_scan();
+        let lf = crate::data_quality::prepare_source_quality_scan(lf, Some(&source)).unwrap();
+        let plan = DataQualityPlan {
+            scope: QualityScope::WholeSource,
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let results =
+            crate::data_quality::compute_data_quality(&lf, Some(5), &plan, Some(&source), false)
+                .unwrap();
+        let conflict = results
+            .observations
+            .iter()
+            .find(|observation| observation.kind == ObservationKind::TypeConflict)
+            .expect("`n` is text in the second file");
+        let file = conflict.files.first().expect("the file that disagrees");
+        assert_eq!(file.number, 2);
+        assert_eq!(
+            file.examples,
+            vec!["sixty".to_string(), "seventy".to_string()],
+            "read at the type that file wrote, not as the null the scan hands back"
+        );
+    }
+
     /// A remote dataset reads its column as text too, and its windowed reads with it.
     ///
     /// The remote branch takes a different route: the scan closure it was opened with

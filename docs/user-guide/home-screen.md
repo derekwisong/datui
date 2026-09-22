@@ -205,6 +205,14 @@ would union things that share no columns. So the footers decide: datui compares
 the columns of the folder's files, and a folder whose files do not agree is left
 as a directory to look inside.
 
+Agreeing means one file's columns are contained in another's. That is what a
+dataset that gained a column over time looks like — the older files hold a
+subset of the newer ones — so a folder can grow from five columns to fifty and
+still be one table. Files that each hold columns the others lack are a different
+shape: two rollups of one source at different grains, say, share every measure
+and differ only in the columns that say what a row is. Those are separate
+tables, however much they share.
+
 A `delta`, `iceberg` or `hudi` row is a lake table: a log beside the data files
 says which of them are live. datui does not read that log yet, so it does not
 offer the table as one dataset — the files a delete or an update tombstoned are

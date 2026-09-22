@@ -72,7 +72,10 @@ pub enum EntryKind {
 /// So the kind is restored only when the build that wrote it classified the way this one
 /// does. Everything else in the record — rows, columns, cost — is a measurement rather
 /// than a judgement, and survives.
-pub const CLASSIFIER_VERSION: u32 = 2;
+///
+/// 3: a folder whose files each hold columns the others lack is no longer one table, so
+/// a `multi` an earlier build wrote may be a folder of separate tables (#274).
+pub const CLASSIFIER_VERSION: u32 = 3;
 
 impl EntryKind {
     /// Short label shown next to the entry name.
@@ -1377,6 +1380,68 @@ mod classification_tests {
         };
         enrich(&mut entry);
         entry
+    }
+
+    /// Two rollups of one source at different grains, which share every measure and
+    /// differ only in the columns that say what a row is. A folder of tables that share
+    /// nothing is easy; this is the one that reads as a dataset which gained columns
+    /// over time, and was labelled `multi` until the agreement measure asked whether
+    /// the narrower file is contained in the wider one rather than only how much of it
+    /// is shared (#274).
+    #[test]
+    fn two_rollups_of_one_source_are_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "by_block.parquet",
+            &[
+                "height",
+                "date",
+                "time",
+                "hash",
+                "unique_addresses",
+                "tx_count",
+                "tx_value_total",
+                "tx_fee_total",
+            ],
+        );
+        write(
+            dir.path(),
+            "daily.parquet",
+            &[
+                "date",
+                "num_blocks",
+                "first_block",
+                "last_block",
+                "unique_addresses",
+                "tx_count",
+                "tx_value_total",
+                "tx_value_p10",
+                "tx_value_p90",
+                "tx_fee_total",
+                "tx_fee_p10",
+                "tx_fee_p90",
+            ],
+        );
+
+        assert_eq!(
+            classify_directory(dir.path()),
+            EntryKind::MultiFile,
+            "two Parquet files sharing an extension still say multi"
+        );
+        let entry = measured(dir.path());
+        assert_eq!(
+            entry.kind,
+            EntryKind::Directory,
+            "the grain columns each file has and the other lacks say otherwise"
+        );
+        assert_eq!(entry.rows, None, "a sum over two grains is not a row count");
+        assert_eq!(entry.cols, None);
+        assert!(
+            entry.columns.contains(&"height".to_string())
+                && entry.columns.contains(&"tx_value_p90".to_string()),
+            "searching by column still finds the folder that has one"
+        );
     }
 
     /// The shape that prompted this: one Parquet file per table, sharing an extension

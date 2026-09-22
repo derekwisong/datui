@@ -6162,6 +6162,10 @@ fn test_right_goes_inside_a_local_multi_file_folder() {
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
         .expect("the folder is listed");
     app.home.selected = row;
+    // A listing looks into nothing, so what this row is has to be found before it
+    // can be acted on. In the app a background pass does it, highlighted row first;
+    // here the same call does it on the spot.
+    app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
         Some(datui::discover::EntryKind::MultiFile),
@@ -6267,6 +6271,10 @@ fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
         .expect("the table is listed");
     app.home.selected = row;
+    // A listing looks into nothing, so what this row is has to be found before it
+    // can be acted on. In the app a background pass does it, highlighted row first;
+    // here the same call does it on the spot.
+    app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
         Some(datui::discover::EntryKind::Delta),
@@ -6422,6 +6430,10 @@ fn test_right_goes_inside_a_lake_table() {
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
         .expect("the table is listed");
     app.home.selected = row;
+    // A listing looks into nothing, so what this row is has to be found before it
+    // can be acted on. In the app a background pass does it, highlighted row first;
+    // here the same call does it on the spot.
+    app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
         Some(datui::discover::EntryKind::Delta)
@@ -6593,6 +6605,10 @@ fn test_right_into_a_lake_table_says_why() {
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "orders"))
         .expect("the table is listed");
     app.home.selected = row;
+    // A listing looks into nothing, so what this row is has to be found before it
+    // can be acted on. In the app a background pass does it, highlighted row first;
+    // here the same call does it on the spot.
+    app.home.classify_now(8);
 
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Right,
@@ -6783,6 +6799,10 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
         .position(|r| matches!(r, datui::home::Row::Entry { entry, .. } if entry.name == "sales"))
         .expect("the folder is listed");
     app.home.selected = row;
+    // A listing looks into nothing, so what this row is has to be found before it
+    // can be acted on. In the app a background pass does it, highlighted row first;
+    // here the same call does it on the spot.
+    app.home.classify_now(8);
     assert_eq!(
         app.home.selected_entry().map(|e| e.kind),
         Some(datui::discover::EntryKind::Hive)

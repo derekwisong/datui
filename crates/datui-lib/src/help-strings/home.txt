@@ -55,8 +55,8 @@ WHERE THESE COME FROM, IN ORDER
   dataset on a mount only has to be found by hand once.
 
   A folder labelled … has not been looked into yet. Finding out what a folder
-  is costs a directory read, so a listing of more than 64 of them is drawn at
-  once and labelled a screenful at a time as you scroll. Nothing moves when a
-  label arrives.
+  is costs a directory read, so no listing pays for it: the rows are drawn at
+  once and labelled a screenful at a time as you scroll, highlighted row first.
+  Nothing moves when a label arrives.
 
   datui stores nothing about your data except this list of recent paths.

@@ -1173,30 +1173,36 @@ fn apply_known_facts(
         return;
     };
 
-    // A folder whose files were read and found to be separate tables stays a
-    // directory, rather than being called a dataset again by the next listing: its
-    // kind comes from its filenames, which have not changed and were never the
-    // evidence.
+    // What a previous run found this folder to be. A listing no longer looks into a
+    // folder at all — that is a `read_dir` apiece, a round trip apiece on a share —
+    // so a row arrives `Unknown` and would otherwise be classified again on every
+    // run, however many times it had been classified before.
+    //
+    // It also keeps a folder whose files were read and found to be separate tables a
+    // directory, rather than letting the next listing offer it as one dataset until
+    // its footers have been read a second time. Its kind came from those footers, and
+    // nothing about it has changed.
     //
     // Tested before the fingerprint below rather than after, because that fingerprint
     // is a file's: a listing gives a directory no size, so `same_bytes` is never true
     // for one. A directory's own mtime is what it has, and it moves when a file is
     // added or removed, which is when this answer could change.
-    // Gated on the classifier too. This one is `is_one_table`'s answer, which is the
-    // most version-sensitive judgement datui makes — #234 introduced it and #243 changed
-    // what it runs over — so a build that decided differently does not get to speak here
-    // either.
+    //
+    // Gated on the classifier, because a kind is a judgement where everything else
+    // here is a measurement. `is_one_table`'s answer is the most version-sensitive
+    // judgement datui makes — #234 introduced it and #243 changed what it runs over —
+    // so a build that decided differently does not get to speak here.
     if !remote
-        && row.kind == EntryKind::MultiFile
-        && facts.kind == Some(EntryKind::Directory)
+        && matches!(row.kind, EntryKind::Unknown | EntryKind::MultiFile)
         && facts.classified_by == crate::discover::CLASSIFIER_VERSION
+        && let Some(kind) = facts.kind
     {
         let same_mtime = row
             .modified
             .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
             .is_some_and(|d| d.as_secs() == facts.mtime);
         if same_mtime {
-            row.kind = EntryKind::Directory;
+            row.kind = kind;
         }
     }
 
@@ -2262,8 +2268,14 @@ impl HomeState {
     /// viewport, plus a screen either side so arrowing off the edge does not wait for
     /// a round trip.
     ///
-    /// On-screen rows come first, then the screen below, then the screen above: when
-    /// the batch is smaller than the window, the buffer is what goes without.
+    /// The highlighted row comes first, then the rest of the screen, then the screen
+    /// below, then the screen above: when the batch is smaller than the window, the
+    /// buffer is what goes without.
+    ///
+    /// The highlighted row first because it is the one about to be acted on. → goes
+    /// inside a folder that holds one dataset and folds the section otherwise, and the
+    /// control bar offers the key on the same test, so both read better for the row
+    /// being looked into in the first pass rather than the third.
     pub fn unclassified_visible(&self, limit: usize) -> Vec<Entry> {
         if limit == 0 {
             return Vec::new();
@@ -2282,7 +2294,10 @@ impl HomeState {
         let behind = top.saturating_sub(height);
 
         let mut out: Vec<Entry> = Vec::new();
-        for row in (top..ahead).chain(behind..top).filter_map(|i| rows.get(i)) {
+        let order = std::iter::once(self.selected)
+            .chain(top..ahead)
+            .chain(behind..top);
+        for row in order.filter_map(|i| rows.get(i)) {
             let Row::Entry { entry, .. } = row else {
                 continue;
             };

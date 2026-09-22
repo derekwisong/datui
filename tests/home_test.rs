@@ -83,11 +83,14 @@ fn test_hive_directory_is_one_dataset() {
         EntryKind::Hive
     );
 
-    // And it appears as a single row, not a tree to walk.
+    // And it appears as a single row, not a tree to walk. The listing does not look
+    // into it — no listing looks into anything — so the row says only that nothing
+    // has, until something does.
     let entries = discover::scan_dir(tmp.path());
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "sales");
-    assert_eq!(entries[0].kind, EntryKind::Hive);
+    assert_eq!(entries[0].kind, EntryKind::Unknown);
+    assert_eq!(datui::home::look_into(&entries[0]).kind, EntryKind::Hive);
 }
 
 #[test]
@@ -1249,9 +1252,11 @@ fn test_a_recent_adopts_the_classification_its_root_probe_found() {
     };
     assert_eq!(kind_of(&home), Some(EntryKind::Unknown));
 
-    // After it: whatever the probe actually determined.
+    // After it, and after something looks into the rows it returned: whatever that
+    // found. A probe lists a remote directory; it does not read every folder in it.
     home.probe_ready(root.clone(), discover::scan_dir(&root));
     home.rebuild(std::slice::from_ref(&root), std::slice::from_ref(&dataset));
+    home.classify_now(10);
 
     let kinds: Vec<_> = home
         .visible()
@@ -2066,19 +2071,45 @@ fn test_a_label_does_not_depend_on_where_the_row_sits() {
 }
 
 #[test]
-fn test_a_listing_small_enough_to_look_into_is_classified_as_it_is_built() {
-    // The common case, and the one that must not gain a round trip: a handful of
-    // folders is classified while the listing is built, so nothing arrives unlabelled.
+fn test_a_small_listing_is_no_more_looked_into_than_a_large_one() {
+    // Classifying only the listings small enough to afford it would move the
+    // arbitrariness rather than remove it: two directories holding the same folders
+    // would still disagree about what to call them, decided by how many neighbours
+    // each folder happened to have. No listing looks into anything.
     let tmp = TempDir::new().unwrap();
-    hive_partitions(tmp.path(), 8);
+    hive_partitions(tmp.path(), 4);
+    let small = discover::scan_dir(tmp.path());
 
-    let entries = discover::scan_dir(tmp.path());
-    assert_eq!(entries.len(), 8);
-    assert!(
-        entries.iter().all(|e| e.kind == EntryKind::Hive),
-        "a small listing is classified up front: {:?}",
-        entries.iter().map(|e| e.kind).collect::<Vec<_>>()
+    let big_dir = TempDir::new().unwrap();
+    hive_partitions(big_dir.path(), 200);
+    let big = discover::scan_dir(big_dir.path());
+
+    assert_eq!(small.len(), 4);
+    assert_eq!(big.len(), 200);
+    let kinds = |entries: &[datui::discover::Entry]| {
+        let mut kinds: Vec<EntryKind> = entries.iter().map(|e| e.kind).collect();
+        kinds.dedup();
+        kinds
+    };
+    assert_eq!(
+        kinds(&small),
+        vec![EntryKind::Unknown],
+        "a four-folder listing looks into nothing"
     );
+    assert_eq!(
+        kinds(&big),
+        vec![EntryKind::Unknown],
+        "and neither does a two-hundred-folder one"
+    );
+}
+
+/// Put the viewport where a frame of `height` rows would put it to show row
+/// `selected`, exactly as `render_list` does. The two move together — a test that
+/// sets one and not the other describes a screen that cannot exist.
+fn looking_at(home: &mut HomeState, selected: usize, height: usize) {
+    home.selected = selected;
+    home.view_height = height;
+    home.scroll = selected.saturating_sub(height.saturating_sub(3).max(1));
 }
 
 /// The entry rows on screen, in order, and what each is called.
@@ -2102,8 +2133,8 @@ fn test_scrolling_classifies_the_rows_that_are_there() {
     hive_partitions(tmp.path(), 200);
     let mut home = home_with_rows(discover::scan_dir(tmp.path()));
 
-    home.view_height = 20;
-    home.scroll = 150;
+    looking_at(&mut home, 167, 20);
+    assert_eq!(home.scroll, 150, "the frame starts here");
     home.classify_now(20);
 
     let kinds = visible_kinds(&home);
@@ -2132,8 +2163,7 @@ fn test_a_kind_that_arrives_late_does_not_move_the_row() {
     let mut home = home_with_rows(discover::scan_dir(tmp.path()));
 
     let before = visible_kinds(&home);
-    home.view_height = 20;
-    home.scroll = 100;
+    looking_at(&mut home, 117, 20);
     home.classify_now(20);
     let after = visible_kinds(&home);
 
@@ -2167,8 +2197,7 @@ fn test_what_is_looked_into_is_the_viewport_and_a_screen_either_side() {
     hive_partitions(tmp.path(), 200);
     let mut home = home_with_rows(discover::scan_dir(tmp.path()));
 
-    home.view_height = 10;
-    home.scroll = 100;
+    looking_at(&mut home, 107, 10);
     let wanted: Vec<String> = home
         .unclassified_visible(200)
         .into_iter()
@@ -2188,12 +2217,12 @@ fn test_what_is_looked_into_is_the_viewport_and_a_screen_either_side() {
             home.scroll
         );
     }
-    // On-screen rows come first, so a batch smaller than the window spends itself
-    // on what is being looked at rather than on the buffer above it.
+    // The highlighted row comes first, so a batch smaller than the window spends
+    // itself on the row about to be acted on rather than on the buffer around it.
     assert_eq!(
         home.unclassified_visible(1)[0].name,
-        all[home.scroll - 1],
-        "the first row on screen is the first one asked about"
+        all[home.selected - 1],
+        "the highlighted row is the first one asked about"
     );
 }
 
@@ -2205,15 +2234,13 @@ fn test_paging_past_rows_does_not_leave_them_queued() {
     let tmp = TempDir::new().unwrap();
     hive_partitions(tmp.path(), 200);
     let mut home = home_with_rows(discover::scan_dir(tmp.path()));
-    home.view_height = 10;
-
-    home.scroll = 10;
+    looking_at(&mut home, 17, 10);
     let first: Vec<String> = home
         .unclassified_visible(4)
         .into_iter()
         .map(|e| e.name)
         .collect();
-    home.scroll = 180;
+    looking_at(&mut home, 187, 10);
     let after_paging: Vec<String> = home
         .unclassified_visible(4)
         .into_iter()
@@ -3280,10 +3307,14 @@ fn test_azure_steps_through_account_container_and_folder() {
     assert_eq!(home.sections[0].title, "datalake001");
 }
 
-/// A folder whose footers said its files are separate tables must not be offered as
-/// one dataset again by the next run's listing. The kind is the only thing carried
-/// over: a directory has no size for the fingerprint that guards the rest, so this is
-/// checked against its modification time instead.
+/// What a previous run found a folder to be is what the next run's listing goes on,
+/// since a listing looks into nothing itself. A folder whose footers said its files
+/// are separate tables must not be offered as one dataset again until those footers
+/// have been read a second time.
+///
+/// The kind is the only thing carried over here: a directory has no size for the
+/// fingerprint that guards the rest, so this is checked against its modification time
+/// instead.
 #[test]
 fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
     use datui::cache::DatasetFacts;
@@ -3328,8 +3359,8 @@ fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
 
     assert_eq!(
         listed(Vec::new()),
-        EntryKind::MultiFile,
-        "the filenames alone still say multi"
+        EntryKind::Unknown,
+        "with nothing remembered, the listing says only that nothing has looked"
     );
 
     let facts = |mtime| DatasetFacts {
@@ -3350,8 +3381,8 @@ fn test_a_folder_found_to_be_separate_tables_stays_a_directory() {
     );
     assert_eq!(
         listed(vec![(folder.clone(), facts(mtime - 1))]),
-        EntryKind::MultiFile,
-        "a folder whose contents changed is measured again"
+        EntryKind::Unknown,
+        "and a folder whose contents changed is looked into again rather than recalled"
     );
 }
 

@@ -517,6 +517,15 @@ mod classify_batch_tests {
         }
     }
 
+    /// Put the viewport where a frame of twenty rows would put it to show `selected`,
+    /// exactly as `render_list` does. The two move together, so a test that set one
+    /// and not the other would describe a screen that cannot exist.
+    fn looking_at(app: &mut App, selected: usize) {
+        app.home.selected = selected;
+        app.home.view_height = 20;
+        app.home.scroll = selected.saturating_sub(17);
+    }
+
     /// Paging quickly must not leave a classification queued for every row it went
     /// past. Only one pass is ever out, and the next one is chosen from the viewport
     /// as it is when that one lands — so a page that crossed four hundred rows asks
@@ -526,7 +535,7 @@ mod classify_batch_tests {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx, crate::tests::test_runtime());
         app.home.apply_listing(unlooked_at(500));
-        app.home.view_height = 20;
+        looking_at(&mut app, 18);
 
         app.request_home_classifications();
         assert!(
@@ -535,8 +544,8 @@ mod classify_batch_tests {
         );
 
         // Paging while it is out. Nothing more is asked for meanwhile.
-        for scroll in [100, 200, 300, 400] {
-            app.home.scroll = scroll;
+        for row in [117, 217, 317, 417] {
+            looking_at(&mut app, row);
             app.request_home_classifications();
         }
         assert!(app.home.classify_in_flight, "and still only the one");

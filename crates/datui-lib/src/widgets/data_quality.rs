@@ -1513,7 +1513,11 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         Row::new(vec![Cell::from("Local file writes"), Cell::from("none")]),
         Row::new(vec![
             Cell::from("Estimate basis"),
-            Cell::from("sample prefix row width; full scan unknown"),
+            Cell::from(if config.plan.samples_each_segment() {
+                "full scope read; retained sample capped at 512 MiB"
+            } else {
+                "sample prefix row width; full scan unknown"
+            }),
         ]),
     ];
     let table = Table::new(table_rows, [Constraint::Length(20), Constraint::Fill(1)]).block(
@@ -1531,13 +1535,21 @@ fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
     Clear.render(popup, buf);
     Paragraph::new(vec![
         Line::styled(
-            "Full value scan",
+            if config.plan.samples_each_segment() {
+                "Full read for per-segment sampling"
+            } else {
+                "Full value scan"
+            },
             Style::default()
                 .fg(config.theme.get("warning"))
                 .add_modifier(Modifier::BOLD),
         ),
         Line::raw(""),
-        Line::raw("This plan evaluates every eligible row and may read the full source."),
+        Line::raw(if config.plan.samples_each_segment() {
+            "Every eligible row is read; up to the budget is kept per segment."
+        } else {
+            "This plan evaluates every eligible row and may read the full source."
+        }),
         Line::raw("The source remains read-only; remote writes are 0 B."),
         Line::raw(""),
         Line::raw("Enter run    Esc cancel"),
@@ -1620,13 +1632,14 @@ fn planned_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize>
     };
     match plan.compute {
         QualityCompute::Metadata => unreachable!(),
+        QualityCompute::Sample if plan.samples_each_segment() => None,
         QualityCompute::Sample => Some(total.min(plan.sample_rows.min(50_000))),
         QualityCompute::Full => Some(total),
     }
 }
 
 fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<usize> {
-    if plan.scope.uses_source() {
+    if plan.scope.uses_source() || plan.samples_each_segment() {
         return None;
     }
     let rows = match plan.compute {
@@ -1664,13 +1677,16 @@ fn approximate_bytes_option(bytes: Option<usize>) -> String {
 fn compute_label(plan: &DataQualityPlan) -> String {
     match plan.compute {
         QualityCompute::Metadata => "metadata only".to_string(),
-        QualityCompute::Sample => {
-            format!(
-                "{} rows / seed {}",
-                numfmt::group_chrome(plan.sample_rows),
-                plan.sample_seed
-            )
-        }
+        QualityCompute::Sample => format!(
+            "{} rows{} / seed {}",
+            numfmt::group_chrome(plan.sample_rows.min(50_000)),
+            if plan.samples_each_segment() {
+                "/segment"
+            } else {
+                ""
+            },
+            plan.sample_seed
+        ),
         QualityCompute::Full => "full scan".to_string(),
     }
 }

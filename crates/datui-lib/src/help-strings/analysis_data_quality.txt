@@ -16,7 +16,7 @@ Esc: Cancel editing, return one level, or close Analysis
 ? / F1: Show or hide this help
 
 Every result states how many rows were eligible and evaluated and whether it is exact, sampled, estimated or metadata-only. Temporal meanings are used only after you assign a role to a column.
-Sampling selects rows without replacement from a bounded prefix of at most 50,000 rows. It does not cover the entire dataset randomly; sampled segment totals may be unknown.
+Dataset-grain sampling selects without replacement from a bounded prefix of at most 50,000 rows; eligible rows may be unknown. File, partition, chunk, and window sampling reads the full selected scope, keeps up to 50,000 seeded rows per segment, and requires confirmation. Retained sample data is capped at 512 MiB.
 Scope can be the current view, loaded source, view row range, selected source files, source partition value, or source time range. Source scopes ignore query, filters and sort. Time bounds use ISO dates or RFC 3339 timestamps; the end is exclusive.
 Complete runs are reused in this session when the dataset, view, plan, seed and time roles still match. The breadcrumb labels a reused run.
 

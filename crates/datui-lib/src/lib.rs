@@ -9954,8 +9954,10 @@ impl App {
                             self.analysis_modal.random_seed;
                         self.analysis_modal.data_quality_results = None;
                         self.analysis_modal.data_quality_from_cache = false;
-                        if self.analysis_modal.data_quality_plan.compute
-                            == crate::data_quality::QualityCompute::Full
+                        if self
+                            .analysis_modal
+                            .data_quality_plan
+                            .requires_confirmation()
                         {
                             self.analysis_modal.set_quality_page(QualityPage::Plan);
                             self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
@@ -10015,8 +10017,10 @@ impl App {
                             if self.restore_cached_quality() {
                                 return None;
                             }
-                            if self.analysis_modal.data_quality_plan.compute
-                                == crate::data_quality::QualityCompute::Full
+                            if self
+                                .analysis_modal
+                                .data_quality_plan
+                                .requires_confirmation()
                                 && !self.analysis_modal.data_quality_confirm_run
                             {
                                 self.analysis_modal.data_quality_confirm_run = true;

@@ -1205,6 +1205,21 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     let full = app.analysis_modal.data_quality_results.as_ref().unwrap();
     assert_eq!(full.total_rows, Some(4));
     assert_eq!(full.evaluated_rows, 4);
+
+    app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Sample;
+    app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::File;
+    app.event(&AppEvent::AnalysisDataQualityCompute);
+    drain_events(&mut app, &rx);
+    let by_file = app.analysis_modal.data_quality_results.as_ref().unwrap();
+    assert_eq!(by_file.total_rows, Some(4));
+    assert_eq!(by_file.evaluated_rows, 2);
+    assert_eq!(by_file.segments.len(), 2);
+    assert!(
+        by_file
+            .segments
+            .iter()
+            .all(|segment| segment.total_rows == Some(2) && segment.evaluated_rows == 1)
+    );
 }
 
 /// Regression for commit 7b7bfe8: holding PageDown at the end of the data once

@@ -3,10 +3,15 @@ use color_eyre::Result;
 use color_eyre::eyre::Report;
 use polars::prelude::*;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 // Sampling is without replacement from a bounded prefix, never a full-source random scan.
 const DEFAULT_SAMPLE_ROWS: usize = 10_000;
 const DEFAULT_CHUNK_ROWS: usize = 1_000_000;
+const QUALITY_SAMPLE_POSITION: &str = "__datui_quality_sample_position";
+const QUALITY_WINDOW_START: &str = "__datui_quality_window_start";
+const MAX_SAMPLE_SEGMENTS: usize = 10_000;
+const MAX_RETAINED_SAMPLE_BYTES: usize = 512 * 1024 * 1024;
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -451,6 +456,14 @@ impl Default for DataQualityPlan {
 }
 
 impl DataQualityPlan {
+    pub fn samples_each_segment(&self) -> bool {
+        self.compute == QualityCompute::Sample && !matches!(self.grain, QualityGrain::Dataset)
+    }
+
+    pub fn requires_confirmation(&self) -> bool {
+        self.compute == QualityCompute::Full || self.samples_each_segment()
+    }
+
     pub fn comparison_label(&self) -> String {
         if self.comparison == QualityComparison::Baseline {
             self.baseline_segment
@@ -472,7 +485,10 @@ impl DataQualityPlan {
             self.scope.label(),
             self.grain.label(),
             match self.compute {
-                QualityCompute::Sample => format!("{} rows", self.sample_rows),
+                QualityCompute::Sample if self.samples_each_segment() => {
+                    format!("{} rows/segment", self.sample_rows.min(50_000))
+                }
+                QualityCompute::Sample => format!("{} rows", self.sample_rows.min(50_000)),
                 other => other.label().to_string(),
             },
             self.comparison_label()
@@ -813,28 +829,53 @@ pub fn compute_data_quality(
         return compute_full_quality(lf, total_rows, plan, source, &schema, polars_streaming);
     }
 
-    let (profile_df, sample_positions, evaluated_rows, precision, total_rows) = match plan.compute {
-        QualityCompute::Sample
-            if total_rows.is_none_or(|rows| rows > plan.sample_rows.min(50_000)) =>
-        {
-            let (df, positions, observed_total) =
-                sample_quality_rows(lf, plan.sample_rows, plan.sample_seed, polars_streaming)?;
-            let height = df.height();
-            let total_rows = total_rows.or(observed_total);
-            let precision = if total_rows == Some(height) {
-                QualityPrecision::Exact
-            } else {
-                QualityPrecision::Sampled
-            };
-            (df, Some(positions), height, precision, total_rows)
-        }
-        QualityCompute::Sample => {
-            let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
-            let height = df.height();
-            (df, None, height, QualityPrecision::Exact, Some(height))
-        }
-        QualityCompute::Metadata | QualityCompute::Full => unreachable!(),
-    };
+    let (profile_df, sample_positions, evaluated_rows, precision, total_rows, segment_totals) =
+        match plan.compute {
+            QualityCompute::Sample if plan.samples_each_segment() => {
+                let sampled = sample_quality_segments(lf, plan, source, polars_streaming)?;
+                let height = sampled.rows.height();
+                let precision = if height == sampled.total_rows {
+                    QualityPrecision::Exact
+                } else {
+                    QualityPrecision::Sampled
+                };
+                (
+                    sampled.rows,
+                    Some(sampled.positions),
+                    height,
+                    precision,
+                    Some(sampled.total_rows),
+                    Some(sampled.segment_totals),
+                )
+            }
+            QualityCompute::Sample
+                if total_rows.is_none_or(|rows| rows > plan.sample_rows.min(50_000)) =>
+            {
+                let (df, positions, observed_total) =
+                    sample_quality_rows(lf, plan.sample_rows, plan.sample_seed, polars_streaming)?;
+                let height = df.height();
+                let total_rows = total_rows.or(observed_total);
+                let precision = if total_rows == Some(height) {
+                    QualityPrecision::Exact
+                } else {
+                    QualityPrecision::Sampled
+                };
+                (df, Some(positions), height, precision, total_rows, None)
+            }
+            QualityCompute::Sample => {
+                let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
+                let height = df.height();
+                (
+                    df,
+                    None,
+                    height,
+                    QualityPrecision::Exact,
+                    Some(height),
+                    None,
+                )
+            }
+            QualityCompute::Metadata | QualityCompute::Full => unreachable!(),
+        };
 
     let profile_df = attach_source_file(profile_df, source)?;
     let mut columns = profile_columns(&profile_df, &schema, polars_streaming)?;
@@ -849,7 +890,10 @@ pub fn compute_data_quality(
         plan,
         precision,
         &schema,
-        sample_positions.as_deref(),
+        SegmentSampleProvenance {
+            positions: sample_positions.as_deref(),
+            totals: segment_totals.as_ref(),
+        },
         polars_streaming,
     )?;
     let temporal = profile_temporal(&profile_df, plan, sample_positions.as_deref())?;
@@ -906,6 +950,175 @@ fn sample_quality_rows(
         indices.clone(),
     ))?;
     Ok((sampled, indices, observed_total))
+}
+
+#[derive(Default)]
+struct SegmentSampleState {
+    total_rows: usize,
+    retained_bytes: usize,
+    segments: BTreeMap<String, SegmentSample>,
+}
+
+struct SegmentSample {
+    total_rows: usize,
+    rows: DataFrame,
+    ranks: Vec<(u64, u32)>,
+}
+
+struct SegmentSampleOutput {
+    rows: DataFrame,
+    positions: Vec<u32>,
+    segment_totals: BTreeMap<String, usize>,
+    total_rows: usize,
+}
+
+impl SegmentSampleState {
+    fn observe(
+        &mut self,
+        batch: DataFrame,
+        plan: &DataQualityPlan,
+        source: Option<&QualitySourceContext>,
+    ) -> PolarsResult<()> {
+        let positions = batch
+            .column(QUALITY_SAMPLE_POSITION)?
+            .u32()?
+            .into_no_null_iter()
+            .collect::<Vec<_>>();
+        let labeled = if matches!(plan.grain, QualityGrain::File) {
+            attach_source_file(batch.clone(), source)
+                .map_err(|error| PolarsError::ComputeError(error.to_string().into()))?
+        } else {
+            batch.clone()
+        };
+        let groups = segment_rows(&labeled, plan, Some(&positions))
+            .map_err(|error| PolarsError::ComputeError(error.to_string().into()))?;
+        let requested = plan.sample_rows.clamp(1, 50_000);
+        self.total_rows += batch.height();
+        for group in groups {
+            let mut candidates = group
+                .indices
+                .iter()
+                .map(|index| {
+                    let position = positions[*index as usize];
+                    (sample_rank(plan.sample_seed, position), position, *index)
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_unstable();
+            candidates.truncate(requested);
+            let candidate_indices = candidates.iter().map(|item| item.2).collect::<Vec<_>>();
+            let candidate_rows = take_rows(&batch, &candidate_indices)?;
+            let candidate_ranks = candidates
+                .iter()
+                .map(|item| (item.0, item.1))
+                .collect::<Vec<_>>();
+            if let Some(segment) = self.segments.get_mut(&group.label) {
+                self.retained_bytes -= segment.rows.estimated_size();
+                segment.total_rows += group.indices.len();
+                let combined = segment.rows.vstack(&candidate_rows)?;
+                let mut ranks = std::mem::take(&mut segment.ranks);
+                ranks.extend(candidate_ranks);
+                let mut order = (0..ranks.len()).collect::<Vec<_>>();
+                order.sort_unstable_by_key(|index| ranks[*index]);
+                order.truncate(requested);
+                let indices = order.iter().map(|index| *index as u32).collect::<Vec<_>>();
+                segment.rows = take_rows(&combined, &indices)?;
+                segment.ranks = order.iter().map(|index| ranks[*index]).collect();
+                self.retained_bytes += segment.rows.estimated_size();
+            } else {
+                if self.segments.len() >= MAX_SAMPLE_SEGMENTS {
+                    return Err(PolarsError::ComputeError(
+                        "Data quality sample exceeds 10,000 segments; narrow the scope".into(),
+                    ));
+                }
+                self.retained_bytes += candidate_rows.estimated_size();
+                self.segments.insert(
+                    group.label,
+                    SegmentSample {
+                        total_rows: group.indices.len(),
+                        rows: candidate_rows,
+                        ranks: candidate_ranks,
+                    },
+                );
+            }
+            if self.retained_bytes > MAX_RETAINED_SAMPLE_BYTES {
+                return Err(PolarsError::ComputeError(
+                    "Data quality sample exceeds 512 MiB retained; narrow the scope or reduce sample rows"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn sample_rank(seed: u64, position: u32) -> u64 {
+    let mut value = seed ^ u64::from(position).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn sample_quality_segments(
+    lf: &LazyFrame,
+    plan: &DataQualityPlan,
+    source: Option<&QualitySourceContext>,
+    polars_streaming: bool,
+) -> Result<SegmentSampleOutput> {
+    let state = Arc::new(Mutex::new(SegmentSampleState::default()));
+    let callback_state = Arc::clone(&state);
+    let callback_plan = plan.clone();
+    let callback_source = source.cloned();
+    let sink = lf
+        .clone()
+        .with_row_index(QUALITY_SAMPLE_POSITION, None)
+        .sink_batches(
+            PlanCallback::new(move |batch| {
+                callback_state
+                    .lock()
+                    .map_err(|_| {
+                        PolarsError::ComputeError("Data quality sampler lock failed".into())
+                    })?
+                    .observe(batch, &callback_plan, callback_source.as_ref())?;
+                Ok(false)
+            }),
+            true,
+            None,
+        )?;
+    collect_lazy(sink, polars_streaming).map_err(Report::from)?;
+    let mut state = state
+        .lock()
+        .map_err(|_| Report::msg("Data quality sampler lock failed"))?;
+    let state = std::mem::take(&mut *state);
+    if state.segments.is_empty() {
+        return Ok(SegmentSampleOutput {
+            rows: collect_lazy(lf.clone().limit(0), polars_streaming).map_err(Report::from)?,
+            positions: Vec::new(),
+            segment_totals: BTreeMap::new(),
+            total_rows: 0,
+        });
+    }
+    let mut rows: Option<DataFrame> = None;
+    let mut positions = Vec::new();
+    let mut totals = BTreeMap::new();
+    for (label, segment) in state.segments {
+        totals.insert(label, segment.total_rows);
+        positions.extend(segment.ranks.iter().map(|rank| rank.1));
+        rows = Some(match rows {
+            Some(frame) => frame.vstack(&segment.rows)?,
+            None => segment.rows,
+        });
+    }
+    let mut order = (0..positions.len()).collect::<Vec<_>>();
+    order.sort_unstable_by_key(|index| positions[*index]);
+    let indices = order.iter().map(|index| *index as u32).collect::<Vec<_>>();
+    let rows = take_rows(&rows.expect("sample has segments"), &indices)?;
+    let positions = order.iter().map(|index| positions[*index]).collect();
+    Ok(SegmentSampleOutput {
+        rows,
+        positions,
+        segment_totals: totals,
+        total_rows: state.total_rows,
+    })
 }
 
 fn compute_full_quality(
@@ -1347,54 +1560,57 @@ fn group_by_value(df: &DataFrame, column: &str, kind: &str) -> Result<Vec<Segmen
         .collect())
 }
 
+/// Where a row's window starts. Both the sampled and the full-scan path bucket
+/// through this one expression, so a week never starts on a different day
+/// depending on how much of it was read.
+fn time_window_start(column: &str, every: &str) -> Expr {
+    col(column)
+        .cast(DataType::Datetime(TimeUnit::Microseconds, None))
+        .dt()
+        .truncate(lit(every.to_string()))
+}
+
 fn group_by_time_window(df: &DataFrame, column: &str, every: &str) -> Result<Vec<SegmentRows>> {
-    let values = df.column(column)?;
-    let width = duration_micros(every).ok_or_else(|| {
-        color_eyre::eyre::eyre!("unsupported time window {every}; use h, d, or w")
-    })?;
-    let mut groups: BTreeMap<i64, Vec<u32>> = BTreeMap::new();
+    let starts = df
+        .clone()
+        .lazy()
+        .select([time_window_start(column, every).alias(QUALITY_WINDOW_START)])
+        .collect()?;
+    let starts = starts.column(QUALITY_WINDOW_START)?;
+    let mut groups: BTreeMap<String, Vec<u32>> = BTreeMap::new();
     let mut missing = Vec::new();
     for row in 0..df.height() {
-        match value_epoch_micros(values.get(row)?) {
-            Some(value) => groups
-                .entry(value.div_euclid(width) * width)
+        let value = starts.get(row)?;
+        if value.is_null() {
+            missing.push(row as u32);
+        } else {
+            groups
+                .entry(value.str_value().into_owned())
                 .or_default()
-                .push(row as u32),
-            None => missing.push(row as u32),
+                .push(row as u32);
         }
     }
     let mut result: Vec<SegmentRows> = groups
         .into_iter()
         .map(|(start, indices)| SegmentRows {
-            label: format!("{} / {every}", format_epoch_micros(start)),
+            label: time_window_label(column, every, Some(&start)),
             indices,
         })
         .collect();
     if !missing.is_empty() {
         result.push(SegmentRows {
-            label: format!("{column} ∅"),
+            label: time_window_label(column, every, None),
             indices: missing,
         });
     }
     Ok(result)
 }
 
-fn duration_micros(value: &str) -> Option<i64> {
-    let (number, unit) = value.split_at(value.len().checked_sub(1)?);
-    let number = number.parse::<i64>().ok()?;
-    let unit = match unit {
-        "h" => 3_600_000_000,
-        "d" => 86_400_000_000,
-        "w" => 604_800_000_000,
-        _ => return None,
-    };
-    number.checked_mul(unit)
-}
-
-fn format_epoch_micros(value: i64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_timestamp_micros(value)
-        .map(|stamp| stamp.format("%Y-%m-%d %H:%MZ").to_string())
-        .unwrap_or_else(|| value.to_string())
+fn time_window_label(column: &str, every: &str, start: Option<&str>) -> String {
+    match start {
+        Some(start) => format!("{start} / {every}"),
+        None => format!("{column} ∅"),
+    }
 }
 
 fn value_epoch_micros(value: AnyValue<'_>) -> Option<i64> {
@@ -1411,16 +1627,21 @@ fn take_rows(df: &DataFrame, indices: &[u32]) -> PolarsResult<DataFrame> {
     df.take(&UInt32Chunked::new("quality_rows".into(), indices.to_vec()))
 }
 
+struct SegmentSampleProvenance<'a> {
+    positions: Option<&'a [u32]>,
+    totals: Option<&'a BTreeMap<String, usize>>,
+}
+
 fn profile_segments(
     df: &DataFrame,
     total_rows: Option<usize>,
     plan: &DataQualityPlan,
     precision: QualityPrecision,
     schema: &Schema,
-    sample_positions: Option<&[u32]>,
+    sample: SegmentSampleProvenance<'_>,
     polars_streaming: bool,
 ) -> Result<Vec<SegmentQualityProfile>> {
-    let groups = segment_rows(df, plan, sample_positions)?;
+    let groups = segment_rows(df, plan, sample.positions)?;
     let mut profiles = Vec::with_capacity(groups.len());
     for group in groups {
         let segment = take_rows(df, &group.indices)?;
@@ -1430,9 +1651,12 @@ fn profile_segments(
             .map(|column| column.null_count)
             .sum::<usize>();
         let denominator = segment.height().saturating_mul(columns.len());
+        let known_segment_rows = sample.totals.and_then(|totals| totals.get(&group.label));
         profiles.push(SegmentQualityProfile {
             label: group.label,
-            total_rows: if matches!(plan.grain, QualityGrain::Dataset) {
+            total_rows: if let Some(total) = known_segment_rows {
+                Some(*total)
+            } else if matches!(plan.grain, QualityGrain::Dataset) {
                 total_rows
             } else if precision == QualityPrecision::Exact {
                 Some(segment.height())
@@ -1506,6 +1730,7 @@ fn profile_segments_lazy(
     )
     .map_err(Report::from)?;
     let mut segments = Vec::with_capacity(grouped.height());
+    let mut unassigned = Vec::with_capacity(grouped.height());
     for row in 0..grouped.height() {
         let evaluated_rows = usize_value_at(&grouped, "__quality_segment_rows", row);
         let columns = parse_profiles_at(&grouped, schema, evaluated_rows, row);
@@ -1514,10 +1739,10 @@ fn profile_segments_lazy(
             .map(|column| column.null_count)
             .sum::<usize>();
         let denominator = evaluated_rows.saturating_mul(schema.len());
-        let raw_label =
-            string_value_at(&grouped, "__quality_segment", row).unwrap_or_else(|| "∅".to_string());
+        let raw_label = string_value_at(&grouped, "__quality_segment", row);
+        unassigned.push(raw_label.is_none());
         segments.push(SegmentQualityProfile {
-            label: segment_label(&plan.grain, &raw_label),
+            label: segment_label(&plan.grain, raw_label.as_deref()),
             total_rows: Some(evaluated_rows),
             evaluated_rows,
             columns,
@@ -1527,7 +1752,17 @@ fn profile_segments_lazy(
             largest_change: None,
         });
     }
-    segments.sort_by(|left, right| left.label.cmp(&right.label));
+    // Rows the grain could not place carry no order, so they follow the ones it could.
+    let mut ordered = unassigned.into_iter().zip(segments).collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.label.cmp(&right.1.label))
+    });
+    let mut segments = ordered
+        .into_iter()
+        .map(|(_, segment)| segment)
+        .collect::<Vec<_>>();
     if matches!(plan.grain, QualityGrain::RowChunks(_)) {
         for segment in &mut segments {
             segment.label = pretty_chunk_label(&segment.label);
@@ -1560,13 +1795,9 @@ fn grouped_frame(
                 col(row).cast(DataType::UInt64) / lit((*size).max(1) as u64),
             ))
         }
-        QualityGrain::TimeWindows { column, every } => Ok((
-            lf.clone(),
-            col(column)
-                .cast(DataType::Datetime(TimeUnit::Microseconds, None))
-                .dt()
-                .truncate(lit(every.clone())),
-        )),
+        QualityGrain::TimeWindows { column, every } => {
+            Ok((lf.clone(), time_window_start(column, every)))
+        }
         QualityGrain::File => {
             let source = source
                 .ok_or_else(|| color_eyre::eyre::eyre!("source-file mapping is unavailable"))?;
@@ -1597,19 +1828,21 @@ fn pretty_chunk_label(label: &str) -> String {
     )
 }
 
-fn segment_label(grain: &QualityGrain, raw: &str) -> String {
+fn segment_label(grain: &QualityGrain, raw: Option<&str>) -> String {
     match grain {
-        QualityGrain::RowChunks(size) => raw
-            .parse::<usize>()
-            .map(|chunk| {
-                let start = chunk.saturating_mul(*size) + 1;
-                let end = start.saturating_add(*size).saturating_sub(1);
-                format!("rows {start:012}-{end:012}")
-            })
-            .unwrap_or_else(|_| format!("rows {raw}")),
-        QualityGrain::Partition(_) => format!("partition {raw}"),
-        QualityGrain::TimeWindows { every, .. } => format!("{raw} / {every}"),
-        QualityGrain::File => format!("file {raw}"),
+        QualityGrain::RowChunks(size) => {
+            let raw = raw.unwrap_or("∅");
+            raw.parse::<usize>()
+                .map(|chunk| {
+                    let start = chunk.saturating_mul(*size) + 1;
+                    let end = start.saturating_add(*size).saturating_sub(1);
+                    format!("rows {start:012}-{end:012}")
+                })
+                .unwrap_or_else(|_| format!("rows {raw}"))
+        }
+        QualityGrain::Partition(_) => format!("partition {}", raw.unwrap_or("∅")),
+        QualityGrain::TimeWindows { column, every } => time_window_label(column, every, raw),
+        QualityGrain::File => format!("file {}", raw.unwrap_or("∅")),
         QualityGrain::Dataset => "current view".to_string(),
     }
 }
@@ -1814,9 +2047,8 @@ fn profile_temporal_lazy(
                 "current view".to_string()
             }
         } else {
-            let raw = string_value_at(&aggregate, "__quality_segment", row)
-                .unwrap_or_else(|| "∅".to_string());
-            segment_label(&plan.grain, &raw)
+            let raw = string_value_at(&aggregate, "__quality_segment", row);
+            segment_label(&plan.grain, raw.as_deref())
         };
         let evaluated_rows = usize_value_at(&aggregate, "__quality_temporal_rows", row);
         for (index, (start_role, end_role, start_column, end_column)) in pairs.iter().enumerate() {
@@ -2390,7 +2622,7 @@ mod tests {
     }
 
     #[test]
-    fn sample_is_seeded_without_replacement_and_does_not_invent_segment_totals() {
+    fn sample_is_seeded_without_replacement_per_row_chunk() {
         let frame = DataFrame::new(
             100,
             vec![Column::new("id".into(), (0..100).collect::<Vec<_>>())],
@@ -2398,7 +2630,7 @@ mod tests {
         .unwrap()
         .lazy();
         let mut plan = DataQualityPlan {
-            sample_rows: 20,
+            sample_rows: 3,
             sample_seed: 1,
             grain: QualityGrain::RowChunks(10),
             ..DataQualityPlan::default()
@@ -2410,28 +2642,28 @@ mod tests {
         assert_ne!(first, other);
         assert_eq!(first.0.column("id").unwrap().n_unique().unwrap(), 20);
 
+        let sampled = sample_quality_segments(&frame, &plan, None, false).unwrap();
+        let same = sample_quality_segments(&frame, &plan, None, false).unwrap();
+        assert_eq!(sampled.rows, same.rows);
+        assert_eq!(sampled.positions, same.positions);
+        assert_eq!(sampled.positions.len(), 30);
+        assert_eq!(sampled.total_rows, 100);
+        assert_eq!(sampled.segment_totals.len(), 10);
+        plan.sample_seed += 1;
+        let other = sample_quality_segments(&frame, &plan, None, false).unwrap();
+        assert_ne!(sampled.positions, other.positions);
+
         let results = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
+        assert_eq!(results.total_rows, Some(100));
+        assert_eq!(results.evaluated_rows, 30);
+        assert_eq!(results.precision, QualityPrecision::Sampled);
+        assert_eq!(results.segments.len(), 10);
         assert!(
             results
                 .segments
                 .iter()
-                .all(|segment| segment.total_rows.is_none())
+                .all(|segment| segment.total_rows == Some(10) && segment.evaluated_rows == 3)
         );
-        let mut expected_chunks = BTreeMap::<usize, usize>::new();
-        for position in first.1 {
-            *expected_chunks.entry(position as usize / 10).or_default() += 1;
-        }
-        for (chunk, count) in expected_chunks {
-            let label = format!("rows {}-{}", chunk * 10 + 1, (chunk + 1) * 10);
-            assert_eq!(
-                results
-                    .segments
-                    .iter()
-                    .find(|segment| segment.label == label)
-                    .map(|segment| segment.evaluated_rows),
-                Some(count)
-            );
-        }
         plan.compute = QualityCompute::Full;
         let full = compute_data_quality(&frame, Some(100), &plan, None, false).unwrap();
         assert!(
@@ -2439,6 +2671,65 @@ mod tests {
                 .iter()
                 .all(|segment| segment.total_rows.is_some())
         );
+    }
+
+    #[test]
+    fn partition_and_time_window_samples_reach_later_segments() {
+        let frame = df!(
+            "id" => &[0i32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            "region" => &["a", "a", "a", "a", "b", "b", "b", "b", "c", "c", "c", "c"],
+            "week" => &[0i64, 0, 0, 0, 604_800_000_000, 604_800_000_000,
+                604_800_000_000, 604_800_000_000, 1_209_600_000_000,
+                1_209_600_000_000, 1_209_600_000_000, 1_209_600_000_000]
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([col("week").cast(DataType::Datetime(TimeUnit::Microseconds, None))]);
+        for grain in [
+            QualityGrain::Partition("region".into()),
+            QualityGrain::TimeWindows {
+                column: "week".into(),
+                every: "1w".into(),
+            },
+        ] {
+            let plan = DataQualityPlan {
+                sample_rows: 2,
+                grain,
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+            assert_eq!(results.total_rows, Some(12));
+            assert_eq!(results.evaluated_rows, 6);
+            assert_eq!(results.segments.len(), 3);
+            assert!(
+                results
+                    .segments
+                    .iter()
+                    .all(|segment| segment.total_rows == Some(4) && segment.evaluated_rows == 2)
+            );
+            let full = compute_data_quality(
+                &frame,
+                Some(12),
+                &DataQualityPlan {
+                    compute: QualityCompute::Full,
+                    ..plan
+                },
+                None,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                results
+                    .segments
+                    .iter()
+                    .map(|segment| segment.label.as_str())
+                    .collect::<Vec<_>>(),
+                full.segments
+                    .iter()
+                    .map(|segment| segment.label.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]
@@ -2460,7 +2751,7 @@ mod tests {
         plan.comparison = QualityComparison::Previous;
         assert_eq!(
             plan.compact_summary(),
-            "scope current view -> grain 1000000 rows (physical order) -> compute 10000 rows -> compare previous"
+            "scope current view -> grain 1000000 rows (physical order) -> compute 10000 rows/segment -> compare previous"
         );
     }
 
@@ -2831,5 +3122,58 @@ mod tests {
         let windowed = compute_data_quality(&frame, Some(3), &window_plan, None, false).unwrap();
         assert_eq!(windowed.segments.len(), 2);
         assert!(windowed.segments[0].label.contains("1w"));
+    }
+
+    #[test]
+    fn rows_without_a_window_clock_are_named_and_ordered_the_same_however_much_was_read() {
+        let timestamps = Series::new(
+            "event_at".into(),
+            [Some(0i64), Some(8 * 86_400_000_000), None, None],
+        )
+        .cast(&DataType::Datetime(TimeUnit::Microseconds, None))
+        .unwrap();
+        let frame = DataFrame::new(
+            4,
+            vec![
+                Column::new("value".into(), [1i64, 2, 3, 4]),
+                timestamps.into(),
+            ],
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            sample_rows: 1,
+            grain: QualityGrain::TimeWindows {
+                column: "event_at".to_string(),
+                every: "1w".to_string(),
+            },
+            ..DataQualityPlan::default()
+        };
+
+        let sampled = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+        let full = compute_data_quality(
+            &frame,
+            Some(4),
+            &DataQualityPlan {
+                compute: QualityCompute::Full,
+                ..plan.clone()
+            },
+            None,
+            false,
+        )
+        .unwrap();
+
+        let labels = |results: &DataQualityResults| {
+            results
+                .segments
+                .iter()
+                .map(|segment| segment.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(labels(&sampled), labels(&full));
+        // Two dated weeks, then the rows the clock could not place.
+        assert_eq!(labels(&full).len(), 3);
+        assert_eq!(labels(&full)[2], "event_at ∅");
+        assert!(labels(&full)[0].ends_with(" / 1w"));
     }
 }

@@ -49,7 +49,7 @@ confirmation.
 |---|---|
 | Scope | Current view, whole loaded source, a view row range, selected source files, one source partition value, or a source time range |
 | Grain | Whole dataset, source file when row provenance is available, Hive partition, fixed row chunks, or weekly windows on an assigned time role |
-| Compute | Metadata only, a seeded sample from a bounded prefix, or full scan |
+| Compute | Metadata only, seeded sample (bounded prefix for dataset grain; per-segment after a full selected-scope read for other grains), or full scan |
 | Comparison | None, previous ordered segment, or first-segment baseline |
 | Time roles | Event, effective/as-of, period end, created, published, received, processed, valid from, and valid to |
 
@@ -65,10 +65,12 @@ selection:
 | `partition region=west` | Rows with that source-column value; `∅` selects null |
 | `time event=2024-01-01..2024-02-01` | Source rows in an ISO date or RFC 3339 timestamp interval; end is exclusive and date-only bounds mean UTC midnight |
 
-Source-scoped plans report unknown row counts and read sizes until a full run.
-Metadata-only runs do not count rows. A bounded sample reports an eligible row
-count only when its probe reaches the end of the scope or a valid count was
-already cached; otherwise that count stays unknown.
+Source-scoped plans report unknown row counts and read sizes before a run.
+Metadata-only runs do not count rows. A dataset-grain bounded sample reports an
+eligible row count only when its probe reaches the end of the scope or a valid
+count was already cached; otherwise that count stays unknown. Other grains
+sample each segment after reading the full selected scope, so they require
+confirmation and report exact eligible and per-segment row counts afterward.
 The selected scope is applied before sampling, so sampling never reaches beyond
 its bounds. The Time roles row opens an explicit mapping table; every role starts
 unassigned. Datui recognizes physical date and datetime types but never guesses
@@ -97,10 +99,13 @@ durations, p50/p90/p95/p99, and maximum duration.
 On Segments, highlight a row and press <kbd>b</kbd> to make it the baseline;
 comparison deltas update from the measured profiles without another data read.
 
-Sampling is a compute choice, not a grain. It selects rows without replacement
-from at most the first 50,000 eligible rows in the selected scope; it is not a random sample of the
-entire dataset. Segment totals outside dataset grain are unknown in a sampled
-run, and displayed as such. File mapping is available on source scopes and
+Sampling is a compute choice, not a grain. Dataset-grain sampling selects rows
+without replacement from at most the first 50,000 eligible rows; it is not a
+random sample of the entire dataset. For file, partition, chunk, and window
+grain, a streaming full-scope read retains up to 50,000 seeded rows per segment
+without replacement. The access plan says the value-read size is unknown and
+asks for confirmation; retained sample data is capped at 512 MiB. File mapping
+is available on source scopes and
 on current views that preserve source-row provenance; otherwise the Segments
 screen says that it is unavailable. Row chunks use the selected scope's physical
 order, and sampled rows keep their original chunk labels. Remote sources are

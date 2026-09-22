@@ -4076,7 +4076,7 @@ impl DataTableState {
     ///
     /// Draws from the shared counter rather than incrementing, so a mutation here can
     /// never land on the value a later dataset is about to be seeded with.
-    fn invalidate_num_rows(&mut self) {
+    pub(crate) fn invalidate_num_rows(&mut self) {
         self.num_rows_valid = false;
         self.len_generation = next_len_generation();
     }
@@ -5497,14 +5497,49 @@ impl DataTableState {
             .saturating_sub(self.locked_columns_count);
         if self.termcol_index < max_scroll.saturating_sub(1) {
             self.termcol_index += 1;
-            self.collect();
+            self.rescroll_columns();
         }
     }
 
     pub fn scroll_left(&mut self) {
         if self.termcol_index > 0 {
             self.termcol_index -= 1;
-            self.collect();
+            self.rescroll_columns();
+        }
+    }
+
+    /// Show the new column window, reading nothing.
+    ///
+    /// A sideways move changes which columns are on screen, not which rows, so it
+    /// re-slices the buffer already held. It must not go through [`collect`], which
+    /// counts the rows when the count is not yet known: `App::handle` calls
+    /// `scroll_right` inline on the thread that draws and reads keys, and
+    /// `key_acts_while_busy` lets Left and Right through while other work runs. On a
+    /// staged-open cloud hive that count is a metadata read per object, and taken
+    /// there it is a freeze no keystroke can interrupt.
+    ///
+    /// Before the first buffer arrives there is nothing to re-slice and nothing on
+    /// screen to move; the pending collect draws when it lands.
+    ///
+    /// [`collect`]: Self::collect
+    fn rescroll_columns(&mut self) {
+        if self.defer_collect {
+            return;
+        }
+        let held = self
+            .buffered_end_row
+            .saturating_sub(self.buffered_start_row);
+        if held == 0
+            || !self
+                .buffered_df
+                .as_ref()
+                .is_some_and(|b| b.height() == held)
+        {
+            return;
+        }
+        self.slice_buffer_into_display();
+        if self.table_state.selected().is_none() {
+            self.table_state.select(Some(0));
         }
     }
 
@@ -7446,6 +7481,126 @@ pub(crate) fn partition_dtype(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scrolling sideways must not count the rows.
+    ///
+    /// A staged open shows a screen before the count is known, and the count on a
+    /// cloud hive is a metadata read per object. `scroll_right` runs on the thread
+    /// that draws and reads keys — `App::handle`'s `RIGHT_KEYS` arm calls it
+    /// directly — so a count taken there is a freeze no keystroke can interrupt.
+    /// The busy-key classifier admits Left/Right on the stated premise that column
+    /// scroll never collects, which is what this holds.
+    #[test]
+    fn scrolling_sideways_does_not_count_the_rows() {
+        use polars::prelude::*;
+
+        let frame = || {
+            df!(
+                "a" => &[1i64, 2, 3],
+                "b" => &[4i64, 5, 6],
+                "c" => &[7i64, 8, 9],
+            )
+            .unwrap()
+            .lazy()
+        };
+        let mut lf = frame();
+        let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            frame(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            state.num_rows_if_valid(),
+            None,
+            "a staged open starts without a count"
+        );
+
+        state.scroll_right();
+        assert_eq!(
+            state.num_rows_if_valid(),
+            None,
+            "scrolling right must leave the count to the background pass"
+        );
+        state.scroll_left();
+        assert_eq!(
+            state.num_rows_if_valid(),
+            None,
+            "and so must scrolling back"
+        );
+    }
+
+    /// And it must still scroll. Not counting is only the right answer if the new
+    /// columns actually reach the screen, so this holds the other half: with a
+    /// buffer in hand, Right moves the window the display is sliced from.
+    #[test]
+    fn scrolling_sideways_still_moves_the_columns() {
+        use polars::prelude::*;
+
+        let frame = || {
+            df!(
+                "a" => &[1i64, 2, 3],
+                "b" => &[4i64, 5, 6],
+                "c" => &[7i64, 8, 9],
+            )
+            .unwrap()
+            .lazy()
+        };
+        let mut lf = frame();
+        let schema = std::sync::Arc::new((*lf.collect_schema().unwrap()).clone());
+        let mut state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            frame(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        // As the app has it once a page has landed: a count and a buffer.
+        state.set_num_rows(3);
+        state.visible_rows = 3;
+        state.visible_termcols = 1;
+        state.collect();
+        let first = state
+            .display_df()
+            .map(|df| {
+                df.get_column_names()
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+
+        state.scroll_right();
+        let second = state
+            .display_df()
+            .map(|df| {
+                df.get_column_names()
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        assert_ne!(first, second, "Right should show a different column window");
+        assert!(!second.is_empty(), "and should show something");
+
+        state.scroll_left();
+        let back = state
+            .display_df()
+            .map(|df| {
+                df.get_column_names()
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        assert_eq!(back, first, "Left should come back to where it started");
+    }
+
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 

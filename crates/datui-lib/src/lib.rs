@@ -1655,6 +1655,75 @@ pub mod tests {
         );
     }
 
+    /// Every key the busy classifier lets through must read nothing.
+    ///
+    /// `key_acts_while_busy` admits column scroll and help while other work is in
+    /// flight, and `App::handle` runs them inline on the thread that draws and reads
+    /// the keyboard. The premise is that none of them touches the source. Column
+    /// scroll broke it: it called `collect`, which counts the rows when the count has
+    /// not landed, and on a staged-open cloud hive that count is a metadata read per
+    /// object — a freeze no keystroke can interrupt.
+    ///
+    /// Reverting `scroll_right`/`scroll_left` to `self.collect()` fails this.
+    #[test]
+    fn a_key_that_acts_while_busy_reads_nothing() {
+        use crate::widgets::datatable::DataTableState;
+        use crate::{App, OpenOptions};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use polars::prelude::*;
+        use std::sync::Arc;
+
+        let rows = || {
+            df!(
+                "a" => (0..100i64).collect::<Vec<_>>(),
+                "b" => (0..100i64).collect::<Vec<_>>(),
+                "c" => (0..100i64).collect::<Vec<_>>(),
+            )
+            .unwrap()
+            .lazy()
+        };
+        let mut lf = rows();
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+
+        for code in [
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::F(1),
+            KeyCode::Char('?'),
+        ] {
+            let mut state = DataTableState::from_schema_and_lazyframe(
+                schema.clone(),
+                rows(),
+                &OpenOptions::default(),
+                None,
+            )
+            .unwrap();
+            state.visible_rows = 10;
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(tx, crate::tests::test_runtime());
+            app.load_active = true;
+            app.apply_schema_ready(state, None, &OpenOptions::default(), None);
+            // A staged open shows rows before the count is in.
+            app.data_table_state.as_mut().unwrap().invalidate_num_rows();
+
+            let key = KeyEvent::new(code, KeyModifiers::NONE);
+            assert!(
+                app.key_acts_while_busy(&key),
+                "{code:?} is expected to act while busy"
+            );
+            let _ = app.key(&key);
+            assert_eq!(
+                app.data_table_state
+                    .as_ref()
+                    .and_then(|s| s.num_rows_if_valid()),
+                None,
+                "{code:?} acts while busy, so it must not count the rows"
+            );
+        }
+    }
+
     /// End pressed at one dataset does not move the view of the next.
     ///
     /// Abandoning a load cancels nothing, so the prefix the user pressed End on goes on
@@ -5958,9 +6027,13 @@ impl App {
     /// loop applies the extra "nothing queued" condition for the second group.
     ///
     /// The hard escapes always qualify. Beyond them, in the plain Normal-mode table view
-    /// (no text field, no modal), the harmless view keys act — quit, column scroll (never
-    /// collects), and help — because the first key held in that view cannot be part of a
-    /// typed `/query`. Everything else, letters included, is type-ahead and waits; a bare
+    /// (no text field, no modal), the harmless view keys act — quit, column scroll and
+    /// help — because the first key held in that view cannot be part of a typed
+    /// `/query`. Harmless means reads nothing: column scroll re-slices the buffer it
+    /// already holds through `rescroll_columns`, never `collect`, which counts the rows
+    /// when the count has not landed. Admitting a key that can count would put a
+    /// metadata read per object of a cloud hive on this very thread —
+    /// `a_key_that_acts_while_busy_reads_nothing` holds the line. Everything else, letters included, is type-ahead and waits; a bare
     /// Enter or Esc there confirms nothing and is dropped by the caller. Nothing is
     /// classified by keycode alone: the `h` in a typed `/hello` never scrolls.
     pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {

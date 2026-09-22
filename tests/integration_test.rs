@@ -947,6 +947,16 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         }
     }
 
+    // Once a run exists the sidebar reports what it measured, not a second copy
+    // of the planned access already on the plan strip.
+    app.analysis_modal.set_quality_page(QualityPage::Overview);
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(screen.contains("MEASURED"), "sidebar should report the run");
+    assert!(screen.contains("eligible"));
+
     app.analysis_modal.set_quality_page(QualityPage::Plan);
     for (popup, expected) in [
         ("access", "Estimate basis"),

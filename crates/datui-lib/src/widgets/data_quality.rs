@@ -1353,26 +1353,58 @@ fn render_sidebar(
         buf,
     );
 
-    let bytes = planned_read_bytes(config.state, config.plan);
-    Paragraph::new(vec![
-        Line::styled("ACCESS", Style::default().fg(config.theme.get("accent"))),
-        Line::raw(approximate_bytes_option(bytes)),
-        Line::raw(if config.state.is_remote_source() {
-            "remote -> this machine"
-        } else {
-            "local read"
-        }),
-        Line::styled(
-            "0 B remote write",
-            Style::default().fg(config.theme.get("success")),
-        ),
-    ])
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(config.theme.get("modal_border"))),
-    )
-    .render(parts[1], buf);
+    // The plan strip above already carries the planned access, so this panel
+    // reports what the finished run actually did instead of repeating it.
+    let lines = match config.results {
+        Some(results) => vec![
+            Line::styled("MEASURED", Style::default().fg(config.theme.get("accent"))),
+            Line::raw(format!(
+                "{} rows {}",
+                numfmt::group_chrome(results.evaluated_rows),
+                results.precision.label()
+            )),
+            Line::raw(format!("of {} eligible", count_label(results.total_rows))),
+            Line::raw(format!(
+                "{} columns  {} {}",
+                numfmt::group_chrome(results.columns.len()),
+                numfmt::group_chrome(results.segments.len()),
+                if results.segments.len() == 1 {
+                    "segment"
+                } else {
+                    "segments"
+                }
+            )),
+            Line::styled(
+                "0 B remote write",
+                Style::default().fg(config.theme.get("success")),
+            ),
+        ],
+        None => vec![
+            Line::styled("PLANNED", Style::default().fg(config.theme.get("accent"))),
+            Line::raw(format!(
+                "{} rows",
+                planned_rows(config.state, config.plan)
+                    .map(numfmt::group_chrome)
+                    .unwrap_or_else(|| "unknown".to_string())
+            )),
+            Line::raw(if config.state.is_remote_source() {
+                "remote -> this machine"
+            } else {
+                "local read"
+            }),
+            Line::styled(
+                "0 B remote write",
+                Style::default().fg(config.theme.get("success")),
+            ),
+        ],
+    };
+    Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(config.theme.get("modal_border"))),
+        )
+        .render(parts[1], buf);
 }
 
 fn render_narrow_tool_picker(

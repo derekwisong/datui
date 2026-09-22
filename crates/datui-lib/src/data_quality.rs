@@ -3574,4 +3574,231 @@ mod tests {
         assert_eq!(labels(&full)[2], "event_at ∅");
         assert!(labels(&full)[0].ends_with(" / 1w"));
     }
+
+    #[test]
+    fn probe_all_null_column_full() {
+        let frame = df!(
+            "a" => &[None::<&str>, None, None],
+            "b" => &[1i64, 1, 2],
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let r = compute_data_quality(&frame, Some(3), &plan, None, false);
+        match r {
+            Ok(res) => {
+                for c in &res.columns {
+                    println!(
+                        "PROBE all-null FULL: {} dom={:?} cnt={:?}",
+                        c.name, c.dominant_value, c.dominant_count
+                    );
+                }
+            }
+            Err(e) => println!("PROBE all-null FULL ERROR: {e}"),
+        }
+        let plan2 = DataQualityPlan::default();
+        match compute_data_quality(&frame, Some(3), &plan2, None, false) {
+            Ok(res) => {
+                for c in &res.columns {
+                    println!(
+                        "PROBE all-null SAMPLE: {} dom={:?} cnt={:?}",
+                        c.name, c.dominant_value, c.dominant_count
+                    );
+                }
+            }
+            Err(e) => println!("PROBE all-null SAMPLE ERROR: {e}"),
+        }
+    }
+
+    #[test]
+    fn probe_empty_frame_full() {
+        let frame = df!("a" => &["x"], "b" => &[1i64])
+            .unwrap()
+            .lazy()
+            .filter(col("b").gt(lit(99i64)));
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        match compute_data_quality(&frame, Some(0), &plan, None, false) {
+            Ok(res) => {
+                for c in &res.columns {
+                    println!(
+                        "PROBE empty FULL: {} dom={:?} cnt={:?}",
+                        c.name, c.dominant_value, c.dominant_count
+                    );
+                }
+            }
+            Err(e) => println!("PROBE empty FULL ERROR: {e}"),
+        }
+        match compute_data_quality(&frame, Some(0), &DataQualityPlan::default(), None, false) {
+            Ok(res) => {
+                for c in &res.columns {
+                    println!(
+                        "PROBE empty SAMPLE: {} dom={:?} cnt={:?}",
+                        c.name, c.dominant_value, c.dominant_count
+                    );
+                }
+            }
+            Err(e) => println!("PROBE empty SAMPLE ERROR: {e}"),
+        }
+    }
+
+    #[test]
+    fn probe_mixed_null_and_not() {
+        // one column all null, another with values -> length mismatch in select?
+        let frame = df!(
+            "allnull" => &[None::<i64>, None],
+            "vals" => &[5i64, 5],
+        )
+        .unwrap()
+        .lazy();
+        let mut profiles = vec![
+            ColumnQualityProfile {
+                name: "allnull".into(),
+                dtype: DataType::Int64,
+                evaluated_rows: 2,
+                null_count: 2,
+                empty_count: None,
+                whitespace_count: None,
+                nan_count: None,
+                positive_infinity_count: None,
+                negative_infinity_count: None,
+                distinct_count: None,
+                min: None,
+                max: None,
+                integer_parse_count: None,
+                decimal_parse_count: None,
+                date_parse_count: None,
+                datetime_parse_count: None,
+                dominant_value: None,
+                dominant_count: None,
+                min_length: None,
+                max_length: None,
+            },
+            ColumnQualityProfile {
+                name: "vals".into(),
+                dtype: DataType::Int64,
+                evaluated_rows: 2,
+                null_count: 0,
+                empty_count: None,
+                whitespace_count: None,
+                nan_count: None,
+                positive_infinity_count: None,
+                negative_infinity_count: None,
+                distinct_count: None,
+                min: None,
+                max: None,
+                integer_parse_count: None,
+                decimal_parse_count: None,
+                date_parse_count: None,
+                datetime_parse_count: None,
+                dominant_value: None,
+                dominant_count: None,
+                min_length: None,
+                max_length: None,
+            },
+        ];
+        match add_dominance_lazy(&frame, &mut profiles, false) {
+            Ok(()) => {
+                for p in &profiles {
+                    println!(
+                        "PROBE mixed: {} dom={:?} cnt={:?}",
+                        p.name, p.dominant_value, p.dominant_count
+                    );
+                }
+            }
+            Err(e) => println!("PROBE mixed ERROR: {e}"),
+        }
+    }
+
+    #[test]
+    fn probe_struct_column_full() {
+        let frame = df!("a" => &[1i64, 2])
+            .unwrap()
+            .lazy()
+            .with_columns([as_struct(vec![col("a"), col("a").alias("b")]).alias("s")]);
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        match compute_data_quality(&frame, Some(2), &plan, None, false) {
+            Ok(res) => {
+                for c in &res.columns {
+                    println!("PROBE struct FULL: {} dom={:?}", c.name, c.dominant_value);
+                }
+            }
+            Err(e) => println!("PROBE struct FULL ERROR: {e}"),
+        }
+    }
+
+    #[test]
+    fn probe_count_name_collision() {
+        let frame = df!("__quality_value_count" => &[1i64, 1, 2], "ok" => &[1i64,2,3])
+            .unwrap()
+            .lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        match compute_data_quality(&frame, Some(3), &plan, None, false) {
+            Ok(res) => {
+                for c in &res.columns {
+                    println!("PROBE collide FULL: {} dom={:?}", c.name, c.dominant_value);
+                }
+            }
+            Err(e) => println!("PROBE collide FULL ERROR: {e}"),
+        }
+    }
+
+    #[test]
+    fn probe_datetime_formats() {
+        let frame = df!("t" => &[
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00.500Z",
+            "2024-01-01T00:00:00+01:00",
+            "2024-01-01 00:00:00",
+            "2024-01-01T00:00:00",
+            "garbage",
+        ])
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let res = compute_data_quality(&frame, Some(6), &plan, None, false).unwrap();
+        println!(
+            "PROBE dt: date={:?} datetime={:?}",
+            res.columns[0].date_parse_count, res.columns[0].datetime_parse_count
+        );
+        let res2 = compute_data_quality(&frame, Some(6), &DataQualityPlan::default(), None, false)
+            .unwrap();
+        println!(
+            "PROBE dt sample: date={:?} datetime={:?}",
+            res2.columns[0].date_parse_count, res2.columns[0].datetime_parse_count
+        );
+    }
+
+    #[test]
+    fn probe_null_in_or_chain() {
+        let frame = df!("t" => &[Some("2024-01-01 00:00:00"), None, Some("junk")])
+            .unwrap()
+            .lazy();
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            ..DataQualityPlan::default()
+        };
+        let res = compute_data_quality(&frame, Some(3), &plan, None, false).unwrap();
+        println!(
+            "PROBE nullchain: date={:?} datetime={:?} empty={:?} ws={:?}",
+            res.columns[0].date_parse_count,
+            res.columns[0].datetime_parse_count,
+            res.columns[0].empty_count,
+            res.columns[0].whitespace_count
+        );
+    }
 }

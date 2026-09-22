@@ -31,14 +31,20 @@ const HIVE_PROBE_LIMIT: usize = 8;
 /// cannot hang the UI.
 pub const MAX_ENTRIES_PER_DIR: usize = 5_000;
 
-/// Subdirectories looked inside during a single scan.
+/// The most subdirectories a listing may hold and still be classified as it is built.
 ///
 /// Classification is what separates a hive dataset from a plain folder, and it costs
 /// a `read_dir` plus a handful of stats *per subdirectory*. A directory holding
 /// thousands of them turns one listing into thousands of round trips — milliseconds
-/// locally, minutes on a network share. Past this many, a subdirectory is listed as
-/// a place to step into and classified when you actually step into it.
-const MAX_CLASSIFY_PER_DIR: usize = 64;
+/// locally, minutes on a network share.
+///
+/// All of them or none of them, deliberately. Spending this as a budget in directory
+/// order labelled the first sixty-four subdirectories and called every identical one
+/// after them a plain directory, so what a row said depended on where it sat rather
+/// than on what was in it. Past this many the listing is built without looking into
+/// any of them: the rows arrive [`EntryKind::Unknown`], which claims nothing, and are
+/// classified a screenful at a time as they are looked at.
+const MAX_CLASSIFIABLE_SUBDIRS: usize = 64;
 
 /// What a home-screen row represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -475,7 +481,7 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
     };
 
     let mut entries = Vec::new();
-    let mut classified = 0usize;
+    let mut subdirs = 0usize;
     let mut seen = 0usize;
     let mut truncated = false;
 
@@ -498,15 +504,9 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
         };
 
         let kind = if meta.is_dir() {
-            // Past the budget a subdirectory is still listed, just not looked into.
-            // Degrading to "a place to step into" costs a label; classifying every
-            // one of ten thousand costs the listing.
-            if classified < MAX_CLASSIFY_PER_DIR {
-                classified += 1;
-                classify_directory(&path)
-            } else {
-                EntryKind::Directory
-            }
+            // Left for the pass below, which knows how many there are in total.
+            subdirs += 1;
+            EntryKind::Unknown
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
         } else {
@@ -518,6 +518,17 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
         entries.push(Entry::new(path, kind).with_fs_metadata(&meta));
     }
 
+    // Now that the whole listing is in hand, either every subdirectory in it is
+    // looked into or none is — see [`MAX_CLASSIFIABLE_SUBDIRS`]. What is left
+    // `Unknown` is classified from the viewport, on a worker, as it is scrolled to.
+    if subdirs <= MAX_CLASSIFIABLE_SUBDIRS {
+        for entry in &mut entries {
+            if entry.kind == EntryKind::Unknown {
+                entry.kind = classify_directory(&entry.path);
+            }
+        }
+    }
+
     sort_entries(&mut entries);
     Scan { entries, truncated }
 }
@@ -526,9 +537,22 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
 ///
 /// Recency is a better sort for recents, but a directory listing is a place you
 /// scan by name, so name order wins here.
+///
+/// A row nothing has looked into yet sorts with the directories rather than with the
+/// datasets, although [`EntryKind::is_dataset`] counts it as openable. It is where it
+/// would land if it turns out to be a plain folder, and it is where the eye expects a
+/// folder-shaped row to be — and a kind arriving later never moves it, because a row
+/// that moves out from under the cursor while you are scrolling is worse than a label
+/// that is late.
 fn sort_entries(entries: &mut [Entry]) {
     entries.sort_by(|a, b| {
-        let group = |k: EntryKind| if k.is_dataset() { 0 } else { 1 };
+        let group = |k: EntryKind| {
+            if k.is_dataset() && k != EntryKind::Unknown {
+                0
+            } else {
+                1
+            }
+        };
         group(a.kind).cmp(&group(b.kind)).then_with(|| {
             a.name
                 .to_ascii_lowercase()

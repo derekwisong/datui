@@ -600,7 +600,15 @@ pub struct HomeState {
     pub filter: String,
     /// Index into the flattened list of currently visible rows.
     pub selected: usize,
+    /// First row of the last frame drawn, as an index into [`HomeState::visible`].
+    ///
+    /// Written by the renderer, which is the only place that knows how tall the list
+    /// is, and read by [`HomeState::unclassified_visible`] so that what gets looked
+    /// into is what is being looked at. Zero until a frame has been drawn, which is
+    /// the list scrolled to the top and so a safe place to start.
     pub scroll: usize,
+    /// How many rows the last frame had room for. See [`HomeState::scroll`].
+    pub view_height: usize,
     /// True while the user is typing a path directly.
     pub path_input_active: bool,
     pub path_input: String,
@@ -632,9 +640,15 @@ pub struct HomeState {
     pub listing_in_flight: bool,
     /// True while a measurement batch is out, so only one is in flight at a time.
     pub measure_in_flight: bool,
+    /// True while a classification batch is out. One at a time, and the next batch is
+    /// chosen from the viewport as it is then — which is what keeps paging quickly
+    /// from queueing a classification for every row it passed over.
+    pub classify_in_flight: bool,
     /// Set while rows on screen are still unmeasured, so the main loop knows to draw
     /// another frame and measure the next batch.
     pub pending_enrich: bool,
+    /// The same, for rows on screen nothing has looked into yet.
+    pub pending_classify: bool,
     /// Row and column counts already read, keyed by path. Reading a Parquet footer
     /// is cheap; reading several hundred of them is not, so results are kept for the
     /// session and each dataset is measured once.
@@ -692,6 +706,7 @@ impl Default for HomeState {
             filter: String::new(),
             selected: 0,
             scroll: 0,
+            view_height: 0,
             path_input_active: false,
             path_input: String::new(),
             browsing: None,
@@ -701,6 +716,8 @@ impl Default for HomeState {
             sort: SortMode::default(),
             listing_in_flight: false,
             measure_in_flight: false,
+            classify_in_flight: false,
+            pending_classify: false,
             probed: std::collections::HashMap::new(),
             unreachable: std::collections::HashSet::new(),
             probe_errors: std::collections::HashMap::new(),
@@ -741,6 +758,53 @@ pub struct ListingRequest {
 #[derive(Debug, Clone, Default)]
 pub struct Listing {
     pub sections: Vec<Section>,
+}
+
+/// Find out what a row is, and then what is in it.
+///
+/// One pass, because the two questions are asked of the same filesystem and the
+/// thread that asks is already there. Classifying a row nothing has looked into is
+/// the [`crate::discover::classify_directory`] call the listing did not make;
+/// measuring is what [`crate::discover::enrich`] has always done, and it does nothing
+/// for a row that turns out to be a plain directory.
+pub fn look_into(entry: &Entry) -> Entry {
+    let mut probe = entry.clone();
+    if probe.kind == EntryKind::Unknown && probe.path.is_dir() {
+        probe.kind = discover::classify_directory(&probe.path);
+    }
+    discover::enrich(&mut probe);
+    probe.size = probe.size.or(entry.size);
+    probe.modified = probe.modified.or(entry.modified);
+    probe
+}
+
+/// Look into a batch of rows, and remember what was learned.
+///
+/// What both background passes do — the one that measures rows on screen and the one
+/// that classifies them — because the difference between them is which rows they pick,
+/// not what is done to one. Runs on a worker; see [`look_into`] for why never here.
+pub fn look_into_batch(
+    rows: Vec<Entry>,
+    cache: &crate::cache::CacheManager,
+) -> Vec<(PathBuf, Measured)> {
+    let looked_at: Vec<(Entry, Entry)> = rows
+        .into_iter()
+        .map(|entry| (look_into(&entry), entry))
+        .collect();
+
+    // Remember what was learned, so the next run has it before reading anything.
+    // Purely a cache: every record carries the size and mtime it came from and
+    // invalidates itself when those change.
+    let facts: Vec<_> = looked_at
+        .iter()
+        .filter_map(|(probe, _)| facts_for(probe))
+        .collect();
+    cache.record_dataset_facts(&facts);
+
+    looked_at
+        .into_iter()
+        .map(|(probe, entry)| (entry.path.clone(), measured_from(&probe, &entry)))
+        .collect()
 }
 
 /// Fold a measured probe into the record kept for a row.
@@ -1465,6 +1529,11 @@ impl HomeState {
         // A rebuild replaces every section, and search results outlive rebuilds —
         // they came from a walk, not from this listing. Put them back.
         self.sync_search_section();
+        // So does what this session has looked into. A rebuild is cheap because it
+        // reads names; a kind and a row count cost round trips, and rebuilding often
+        // — a probe answers, a bucket is discovered — must not throw them away and
+        // ask for them again.
+        self.apply_measurements();
 
         // Keep the cursor on the same dataset across a refresh; landing back at the
         // top every time a background result arrives makes the screen unusable.
@@ -2158,6 +2227,88 @@ impl HomeState {
             {
                 out.push(entry.clone());
             }
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Look into a batch of rows on the calling thread.
+    ///
+    /// For tests and library callers, exactly as [`HomeState::measure_now`] is, and
+    /// for the same reason the application never calls it: `read_dir` on a wedged
+    /// mount blocks, and the thread that draws must never be the one it blocks.
+    pub fn classify_now(&mut self, limit: usize) -> bool {
+        let wanted = self.unclassified_visible(limit);
+        let more = self.unclassified_visible(limit + 1).len() > wanted.len();
+        for entry in wanted {
+            let probe = look_into(&entry);
+            self.enriched
+                .insert(entry.path.clone(), measured_from(&probe, &entry));
+        }
+        self.apply_measurements();
+        more
+    }
+
+    /// Rows on or near the screen that nothing has looked into yet, up to `limit`.
+    ///
+    /// [`HomeState::unmeasured_visible`]'s sibling, and deliberately a different
+    /// shape. Measuring walks the list from the top, which is affordable because
+    /// every row wants a count eventually and a listing of a few hundred gets there.
+    /// Classifying cannot work that way: a share holding six thousand date
+    /// partitions would spend ten seconds reaching the row you scrolled to, and the
+    /// rows on screen are the only ones anybody is reading. So this asks the
+    /// viewport, plus a screen either side so arrowing off the edge does not wait for
+    /// a round trip.
+    ///
+    /// On-screen rows come first, then the screen below, then the screen above: when
+    /// the batch is smaller than the window, the buffer is what goes without.
+    pub fn unclassified_visible(&self, limit: usize) -> Vec<Entry> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let rows = self.visible();
+        // Before the first frame there is no height to go on. The top of the list is
+        // where the viewport is about to be, and a batch's worth of it is the most
+        // that pass could use anyway.
+        let height = if self.view_height == 0 {
+            limit
+        } else {
+            self.view_height
+        };
+        let top = self.scroll.min(rows.len());
+        let ahead = top.saturating_add(2 * height).min(rows.len());
+        let behind = top.saturating_sub(height);
+
+        let mut out: Vec<Entry> = Vec::new();
+        for row in (top..ahead).chain(behind..top).filter_map(|i| rows.get(i)) {
+            let Row::Entry { entry, .. } = row else {
+                continue;
+            };
+            if entry.kind != EntryKind::Unknown {
+                continue;
+            }
+            // Already looked into, even if the look settled nothing — a path that has
+            // gone away, or a remote row that turned out not to be a directory. Asking
+            // again every frame would be a `stat` per frame on the one filesystem
+            // where that costs a round trip.
+            if self.enriched.contains_key(&entry.path) {
+                continue;
+            }
+            // A place in an object store is peeked into by listing it, not by reading
+            // it: `read_dir` on an `s3://` URL asks the working directory about a file
+            // called `s3:` and truthfully finds nothing. See
+            // [`HomeState::cloud_folders_to_peek`], which is that path.
+            if is_object_store_url(&entry.path) || is_cloud_place(&entry.path) {
+                continue;
+            }
+            // The same dataset can be listed under its directory and again under
+            // Recent, and looking into it twice would cost the round trip twice.
+            if out.iter().any(|e| e.path == entry.path) {
+                continue;
+            }
+            out.push((*entry).clone());
             if out.len() >= limit {
                 break;
             }

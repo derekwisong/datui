@@ -4762,6 +4762,114 @@ fn test_len_generations_are_unique_across_datasets() {
     );
 }
 
+/// Browsing a directory of more than 64 folders: nothing is looked into while the
+/// listing is built, so no row is labelled from where it sits, and the rows the frame
+/// draws are looked into after it — on a worker, a screenful at a time.
+///
+/// The bug this covers is #270: the first 64 folders of a 6,241-partition share read
+/// `multi`, and every identical one after them read `dir`.
+#[test]
+fn test_a_big_listing_is_labelled_from_the_viewport_not_from_directory_order() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    for i in 0..200 {
+        let partition = tmp.path().join(format!("d{i:03}")).join("year=2024");
+        std::fs::create_dir_all(&partition).unwrap();
+        std::fs::write(partition.join("part.parquet"), b"").unwrap();
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.enter_home();
+
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+
+    // The listing lands first, and the frame that draws it says of every row only
+    // that nothing has looked into it.
+    pump_home(&mut app, &rx, area, &mut buf, |app| {
+        !app.home.visible().is_empty()
+    });
+    let unlooked_at = text_of(&buf);
+    assert!(
+        !unlooked_at.contains(" dir"),
+        "no row should be called a plain directory before anything looked into one:\n\
+         {unlooked_at}"
+    );
+    let unlooked_at_row = format!("d000 {}", datui::glyphs::get().ellipsis);
+    assert!(
+        unlooked_at.contains(&unlooked_at_row),
+        "an unlooked-at row should read `{unlooked_at_row}`:\n{unlooked_at}"
+    );
+
+    // Then the rows that frame drew are looked into, and say what they are.
+    pump_home(&mut app, &rx, area, &mut buf, |app| {
+        app.home
+            .selected_entry()
+            .is_some_and(|e| e.kind == datui::discover::EntryKind::Hive)
+    });
+    let looked_at = text_of(&buf);
+    assert!(
+        looked_at.contains("hive"),
+        "the rows on screen should have been looked into:\n{looked_at}"
+    );
+
+    // And the bottom of the listing still has not been, which is the point: the
+    // budget follows the viewport rather than directory order.
+    let kinds: Vec<datui::discover::EntryKind> = app
+        .home
+        .visible()
+        .iter()
+        .filter_map(|row| match row {
+            datui::home::Row::Entry { entry, .. } => Some(entry.kind),
+            datui::home::Row::Header { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        kinds.last(),
+        Some(&datui::discover::EntryKind::Unknown),
+        "the bottom of a two-hundred-row listing is nobody's viewport"
+    );
+}
+
+/// Draw, ask for what the frame needs, take one answer, draw again — the shape of
+/// `run()` around `terminal.draw`, so a state the real loop passes through for one
+/// frame can be caught here too.
+fn pump_home(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    area: Rect,
+    buf: &mut Buffer,
+    done: impl Fn(&App) -> bool,
+) {
+    for _ in 0..200 {
+        buf.reset();
+        Widget::render(&mut *app, area, buf);
+        app.request_what_the_frame_needs();
+        if done(app) {
+            return;
+        }
+        if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(500))
+            && let Some(next) = app.event(&ev)
+        {
+            app.event(&next);
+        }
+    }
+    panic!("the home screen never settled");
+}
+
+/// Everything a buffer has drawn, as lines.
+fn text_of(buf: &Buffer) -> String {
+    (0..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()))
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Modals render over the home screen, but home used to consume every key, so one
 /// raised while the user was at home could not be dismissed: Esc went to home_escape,
 /// which at the time quit when nothing was loaded. The only way past an error was to

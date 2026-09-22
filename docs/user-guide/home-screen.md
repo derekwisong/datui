@@ -241,6 +241,24 @@ this costs nothing. In a bucket, three of the folder's files are read while you
 browse — one small ranged request each, never a whole object — and a folder that
 cannot be read keeps the label its names suggested.
 
+### Folders not looked into yet
+
+| Label | Means |
+|---|---|
+| `dir` | An ordinary directory, looked into and found to hold no single table |
+| `…` | Not looked into yet |
+
+Telling the two apart costs a directory read each — a round trip apiece on a
+network share, so a directory of thousands of partitions would be minutes before
+the listing appeared. A listing of more than 64 folders is therefore drawn
+straight away with every folder labelled `…`, and the rows on screen are looked
+into a screenful at a time as you scroll.
+
+Labels never re-order the list when they arrive, so a row cannot move out from
+under the cursor. <kbd>Enter</kbd> on a `…` row looks into it first, so it opens
+as whatever it turns out to be. Sorting by rows puts them last: there is no
+count to sort them by yet.
+
 ### Where a row's data lives
 
 A marker before each name says what opening it will cost:

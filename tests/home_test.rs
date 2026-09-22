@@ -2029,29 +2029,204 @@ fn test_a_huge_directory_is_listed_as_a_bounded_prefix() {
     );
 }
 
-#[test]
-fn test_subdirectories_past_the_budget_are_listed_without_being_opened() {
-    // Classifying a subdirectory costs a read_dir and several stats. A directory of
-    // thousands of them must not turn one listing into thousands of round trips —
-    // the ones past the budget are still listed, just as places to step into.
-    let tmp = TempDir::new().unwrap();
-    for i in 0..200 {
-        let hive = tmp.path().join(format!("d{i:03}"));
-        std::fs::create_dir_all(hive.join("year=2024")).unwrap();
-        std::fs::write(hive.join("year=2024/part.parquet"), b"").unwrap();
+/// A directory of `n` identically shaped hive partitions.
+fn hive_partitions(dir: &std::path::Path, n: usize) {
+    for i in 0..n {
+        let hive = dir.join(format!("d{i:03}"));
+        fs::create_dir_all(hive.join("year=2024")).unwrap();
+        fs::write(hive.join("year=2024/part.parquet"), b"").unwrap();
     }
+}
+
+#[test]
+fn test_a_label_does_not_depend_on_where_the_row_sits() {
+    // Classifying the first sixty-four subdirectories and calling every identical one
+    // after them `dir` made a row's label a fact about its position in the listing,
+    // not about what was in it (#270). Either all of them are looked into or none is.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
 
     let entries = discover::scan_dir(tmp.path());
     assert_eq!(entries.len(), 200, "every subdirectory is still listed");
 
-    let hives = entries.iter().filter(|e| e.kind == EntryKind::Hive).count();
+    let first = entries[0].kind;
+    if let Some(odd) = entries.iter().find(|e| e.kind != first) {
+        panic!(
+            "identical directories must carry identical labels; {} reads as {:?} \
+             where {} reads as {first:?}",
+            odd.name, odd.kind, entries[0].name,
+        );
+    }
+    assert_eq!(
+        first,
+        EntryKind::Unknown,
+        "a listing too big to look into says so, rather than calling every row a \
+         plain directory"
+    );
+}
+
+#[test]
+fn test_a_listing_small_enough_to_look_into_is_classified_as_it_is_built() {
+    // The common case, and the one that must not gain a round trip: a handful of
+    // folders is classified while the listing is built, so nothing arrives unlabelled.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 8);
+
+    let entries = discover::scan_dir(tmp.path());
+    assert_eq!(entries.len(), 8);
     assert!(
-        hives <= 64,
-        "{hives} directories were opened to classify them; the budget is 64"
+        entries.iter().all(|e| e.kind == EntryKind::Hive),
+        "a small listing is classified up front: {:?}",
+        entries.iter().map(|e| e.kind).collect::<Vec<_>>()
+    );
+}
+
+/// The entry rows on screen, in order, and what each is called.
+fn visible_kinds(home: &HomeState) -> Vec<(String, EntryKind)> {
+    home.visible()
+        .iter()
+        .filter_map(|r| match r {
+            Row::Entry { entry, .. } => Some((entry.name.clone(), entry.kind)),
+            Row::Header { .. } => None,
+        })
+        .collect()
+}
+
+#[test]
+fn test_scrolling_classifies_the_rows_that_are_there() {
+    // Row four thousand of a listing nobody could afford to classify up front is
+    // still a row somebody is reading. What the viewport shows is what gets looked
+    // into — not the head of the list, which is where a budget spent in directory
+    // order always went.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+
+    home.view_height = 20;
+    home.scroll = 150;
+    home.classify_now(20);
+
+    let kinds = visible_kinds(&home);
+    let on_screen = &kinds[149..169]; // One header row sits above the entries.
+    assert!(
+        on_screen.iter().all(|(_, k)| *k == EntryKind::Hive),
+        "the rows on screen should have been looked into: {on_screen:?}"
+    );
+    assert_eq!(
+        kinds[0].1,
+        EntryKind::Unknown,
+        "and the top of the list, which nobody is looking at, should not have been"
+    );
+}
+
+#[test]
+fn test_a_kind_that_arrives_late_does_not_move_the_row() {
+    // `sort_entries` puts datasets before directories, so a row found to be a hive
+    // dataset would jump groups if the listing re-sorted itself as kinds landed —
+    // under the cursor, while the user was scrolling. It must not.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    for name in ["a.parquet", "z.parquet"] {
+        touch(tmp.path(), name);
+    }
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+
+    let before = visible_kinds(&home);
+    home.view_height = 20;
+    home.scroll = 100;
+    home.classify_now(20);
+    let after = visible_kinds(&home);
+
+    let moved: Vec<&String> = before
+        .iter()
+        .zip(&after)
+        .filter(|((was, _), (now, _))| was != now)
+        .map(|((was, _), _)| was)
+        .collect();
+    assert!(
+        moved.is_empty(),
+        "nothing re-sorts when a kind lands; these rows moved: {moved:?}"
+    );
+    let landed = before
+        .iter()
+        .zip(&after)
+        .filter(|((_, was), (_, now))| *was == EntryKind::Unknown && *now == EntryKind::Hive)
+        .count();
+    assert!(
+        landed > 0,
+        "and a kind did arrive after the rows were drawn, or this proves nothing"
+    );
+}
+
+#[test]
+fn test_what_is_looked_into_is_the_viewport_and_a_screen_either_side() {
+    // A buffer above and below, so arrowing off the edge of the screen does not wait
+    // for a round trip. Nothing beyond it: a listing of six thousand rows would
+    // otherwise spend ten seconds on rows nobody asked about.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+
+    home.view_height = 10;
+    home.scroll = 100;
+    let wanted: Vec<String> = home
+        .unclassified_visible(200)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+
+    assert!(
+        wanted.len() < 200,
+        "the whole listing was asked about, not the part on screen"
+    );
+    let all = visible_names(&home);
+    for name in &wanted {
+        let at = all.iter().position(|n| n == name).unwrap() + 1; // The header row.
+        assert!(
+            at.abs_diff(home.scroll) <= 2 * home.view_height,
+            "{name} sits at row {at}, which is nowhere near the viewport at {}",
+            home.scroll
+        );
+    }
+    // On-screen rows come first, so a batch smaller than the window spends itself
+    // on what is being looked at rather than on the buffer above it.
+    assert_eq!(
+        home.unclassified_visible(1)[0].name,
+        all[home.scroll - 1],
+        "the first row on screen is the first one asked about"
+    );
+}
+
+#[test]
+fn test_paging_past_rows_does_not_leave_them_queued() {
+    // Each pass is chosen from the viewport as it is when the last one landed, so a
+    // page that scrolled past four hundred rows asks about the ones it stopped on
+    // rather than about every row it went by.
+    let tmp = TempDir::new().unwrap();
+    hive_partitions(tmp.path(), 200);
+    let mut home = home_with_rows(discover::scan_dir(tmp.path()));
+    home.view_height = 10;
+
+    home.scroll = 10;
+    let first: Vec<String> = home
+        .unclassified_visible(4)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    home.scroll = 180;
+    let after_paging: Vec<String> = home
+        .unclassified_visible(4)
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+
+    assert!(
+        !first.is_empty() && !after_paging.is_empty(),
+        "both passes should have found something to look into"
     );
     assert!(
-        hives > 0,
-        "the ones inside the budget should still be classified"
+        after_paging.iter().all(|name| !first.contains(name)),
+        "the rows passed over are not still queued: {after_paging:?}"
     );
 }
 

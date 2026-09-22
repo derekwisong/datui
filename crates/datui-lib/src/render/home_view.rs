@@ -319,9 +319,23 @@ fn render_rule(area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
 }
 
 fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
+    // Where this frame starts and how many rows it has room for. Settled before
+    // anything borrows the listing, because both the scroll below and the decision
+    // about what is worth looking into are made from it.
+    //
+    // Keep a little context above the selection rather than pinning it to the edge.
+    // One drawn line per row now that the spacer is gone.
+    let height = area.height as usize;
+    app.home.scroll = app
+        .home
+        .selected
+        .saturating_sub(height.saturating_sub(3).max(1));
+    app.home.view_height = height;
+
     // Nothing is read here. Rows carry whatever a worker has measured so far, and
     // the request for more is made after the frame, not during it.
     app.home.pending_enrich = !app.home.unmeasured_visible(1).is_empty();
+    app.home.pending_classify = !app.home.unclassified_visible(1).is_empty();
     let awaiting = app.home.awaiting_listing().map(|d| d.to_path_buf());
     let since = match awaiting {
         Some(_) => Some(
@@ -488,15 +502,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         }
     }
 
-    // Keep a little context above the selection rather than pinning it to the edge.
-    // One drawn line per row now that the spacer is gone.
-    let height = area.height as usize;
-    let scroll = app
-        .home
-        .selected
-        .saturating_sub(height.saturating_sub(3).max(1));
-
-    let mut body: Vec<Line> = lines.into_iter().skip(scroll).collect();
+    let mut body: Vec<Line> = lines.into_iter().skip(app.home.scroll).collect();
     body.extend(guidance);
     Paragraph::new(body).render(area, buf);
 }
@@ -793,6 +799,14 @@ fn entry_line<'a>(
         (Some(_), "", Some(_)) if missing_source => missing_note.as_deref().unwrap_or(""),
         (Some(id), "", Some(_)) => id,
         _ => kind,
+    };
+    // Nothing has looked into this row yet, and it has nothing else to say for itself.
+    // An ellipsis says so and claims nothing: the word `dir` was a claim, and a blank
+    // is what a file's empty label looks like.
+    let kind = if kind.is_empty() && entry.kind == EntryKind::Unknown {
+        g.ellipsis
+    } else {
+        kind
     };
     // Hive and multi-file datasets wear a flat chip; the rest stay as a word.
     let kind_is_chip =

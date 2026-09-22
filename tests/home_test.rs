@@ -115,6 +115,32 @@ fn test_mixed_extensions_are_not_a_dataset() {
     );
 }
 
+/// Compression is not a format: `.csv.gz` and `.json.gz` are two kinds of file.
+///
+/// `Path::extension` answers `gz` for both, so comparing extensions made every
+/// compressed folder look homogeneous whatever was in it — and a folder of two
+/// formats was then offered as one table.
+#[test]
+fn test_compressed_files_are_compared_by_what_they_hold() {
+    let tmp = TempDir::new().unwrap();
+    touch(tmp.path(), "mixed/a.csv.gz");
+    touch(tmp.path(), "mixed/b.json.gz");
+
+    assert_eq!(
+        discover::classify_directory(&tmp.path().join("mixed")),
+        EntryKind::Directory,
+        "two formats under one compression suffix are still two formats"
+    );
+
+    // And the other half of the same rule: agreeing under compression still agrees.
+    touch(tmp.path(), "same/a.csv.gz");
+    touch(tmp.path(), "same/b.csv.gz");
+    assert_eq!(
+        discover::classify_directory(&tmp.path().join("same")),
+        EntryKind::MultiFile
+    );
+}
+
 #[test]
 fn test_directory_of_mostly_other_files_is_not_a_dataset() {
     // Two stray CSVs in a source tree must not turn the source tree into a dataset —
@@ -3232,5 +3258,146 @@ fn test_a_folder_of_separate_tables_offers_no_whole_folder_row() {
         home.sections[0].rows.len(),
         3,
         "the three objects, and no more"
+    );
+}
+
+/// Rows that will never be measured are not asked where they live.
+///
+/// `unmeasured_visible` runs once per row on every frame that draws the home screen,
+/// and locating a row on the mount table is the expensive half of each pass. A
+/// directory of six thousand date partitions is six thousand rows that are all
+/// directories — none of them measurable — so asking the expensive question about
+/// every one of them, every frame, was the whole of why browsing one crawled.
+#[test]
+fn test_rows_that_cannot_be_measured_are_not_located_on_the_mount_table() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static ASKED: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting(_: &std::path::Path) -> bool {
+        ASKED.fetch_add(1, Ordering::Relaxed);
+        false
+    }
+
+    let tmp = TempDir::new().unwrap();
+    // Partitions, the shape the home screen browses into: each is a directory, so
+    // each is something to step into rather than something with a row count.
+    for day in 1..=40 {
+        fs::create_dir_all(tmp.path().join(format!("2009-01-{day:02}"))).unwrap();
+    }
+
+    let mut home = HomeState::default();
+    home.rebuild(&[tmp.path().to_path_buf()], &[]);
+
+    // Only the frame's own question is counted, not the rebuild's.
+    home.network_check = counting;
+    ASKED.store(0, Ordering::Relaxed);
+
+    let wanted = home.unmeasured_visible(1);
+
+    assert!(
+        wanted.is_empty(),
+        "a folder of partitions has nothing to measure"
+    );
+    assert_eq!(
+        ASKED.load(Ordering::Relaxed),
+        0,
+        "a row that is a directory is settled by its kind, before where it lives"
+    );
+}
+
+/// The files a folder reads as are all of them, not a listing's worth.
+///
+/// Every other listing in `discover` stops at `MAX_ENTRIES_PER_DIR`, because a listing
+/// is a menu and five thousand rows is more than anyone reads. These files are not a
+/// menu — they are the table — so a cap here would open a folder of six thousand CSVs
+/// with a row count, a schema union and every aggregate computed over an arbitrary
+/// five thousand of them, and say nothing about it.
+#[test]
+fn test_a_folder_is_read_as_every_file_in_it() {
+    let tmp = TempDir::new().unwrap();
+    let folder = tmp.path().join("exports");
+    fs::create_dir(&folder).unwrap();
+    // One more than the listing cap, so a prefix and the whole thing differ.
+    let want = datui::discover::MAX_ENTRIES_PER_DIR + 1;
+    for i in 0..want {
+        fs::write(folder.join(format!("part-{i:05}.csv")), b"a\n1\n").unwrap();
+    }
+
+    match datui::discover::folder_format(&folder) {
+        datui::discover::FolderFormat::One(format, files) => {
+            assert_eq!(format, datui::FileFormat::Csv);
+            assert_eq!(
+                files.len(),
+                want,
+                "the folder holds {want} files and every one of them is the table"
+            );
+        }
+        other => panic!("a folder of CSVs reads as CSVs, not {other:?}"),
+    }
+}
+
+/// What a folder holds is what picks the reader for it.
+///
+/// The judgement the open path makes before choosing between the Parquet hive scan
+/// and reading the files as themselves. Asserted here rather than only through an
+/// open, because an open that guesses Parquet and is overruled a step later by the
+/// hive schema pass looks, from the outside, exactly like one that guessed right.
+#[test]
+fn test_a_folder_is_read_as_whatever_is_actually_in_it() {
+    use datui::discover::{FolderFormat, folder_format};
+
+    let tmp = TempDir::new().unwrap();
+
+    // A hive root: the data is a level down, so the folder settles nothing itself —
+    // whatever strays are lying at the top of it.
+    touch(tmp.path(), "hive/date=2024-01-01/data.parquet");
+    touch(tmp.path(), "hive/stray.csv");
+    touch(tmp.path(), "hive/notes.txt");
+    assert_eq!(
+        folder_format(&tmp.path().join("hive")),
+        FolderFormat::Deeper
+    );
+
+    // A flat folder of compressed JSON: JSON, not Parquet. This is the folder that
+    // failed with "file must end with PAR1".
+    touch(tmp.path(), "days/by_block.json.gz");
+    touch(tmp.path(), "days/daily.json.gz");
+    assert!(
+        matches!(
+            folder_format(&tmp.path().join("days")),
+            FolderFormat::One(datui::FileFormat::Json, files) if files.len() == 2
+        ),
+        "a folder of .json.gz is JSON"
+    );
+
+    // An unrelated subfolder is not a partition, so it does not hand the folder back
+    // to the scan that walks trees.
+    touch(tmp.path(), "exports/a.csv");
+    touch(tmp.path(), "exports/b.csv");
+    std::fs::create_dir_all(tmp.path().join("exports/archive")).unwrap();
+    assert!(
+        matches!(
+            folder_format(&tmp.path().join("exports")),
+            FolderFormat::One(datui::FileFormat::Csv, files) if files.len() == 2
+        ),
+        "a folder of CSVs beside some other folder is still a folder of CSVs"
+    );
+
+    // A README is not a candidate; it does not make the folder unreadable.
+    touch(tmp.path(), "documented/a.parquet");
+    touch(tmp.path(), "documented/b.parquet");
+    touch(tmp.path(), "documented/README.txt");
+    assert!(matches!(
+        folder_format(&tmp.path().join("documented")),
+        FolderFormat::One(datui::FileFormat::Parquet, _)
+    ));
+
+    // Two formats are two tables.
+    touch(tmp.path(), "both/a.csv");
+    touch(tmp.path(), "both/b.json");
+    assert_eq!(
+        folder_format(&tmp.path().join("both")),
+        FolderFormat::NotOneTable
     );
 }

@@ -52,6 +52,30 @@ fn pump_open_until_loaded(
     }
 }
 
+/// As `pump_open_until_loaded`, but hands back the message a failed open ended with.
+///
+/// A load that fails reports it as `BackgroundError` — the reading happens off the
+/// event thread — and only the paths that never get that far crash outright.
+fn pump_open_until_error(
+    app: &mut App,
+    rx: &std::sync::mpsc::Receiver<AppEvent>,
+    paths: Vec<PathBuf>,
+    options: OpenOptions,
+) -> Option<String> {
+    let mut next: Option<AppEvent> = Some(AppEvent::Open(paths, options));
+    loop {
+        match next.take() {
+            Some(AppEvent::Crash(message)) => return Some(message),
+            Some(AppEvent::BackgroundError { message, .. }) => return Some(message),
+            Some(ev) => next = app.event(&ev),
+            None => match rx.recv_timeout(std::time::Duration::from_millis(5000)) {
+                Ok(ev) => next = Some(ev),
+                Err(_) => return None,
+            },
+        }
+    }
+}
+
 #[test]
 fn test_app_creation() {
     let (tx, _) = mpsc::channel();
@@ -6751,4 +6775,164 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
         }
         other => panic!("Enter opens it: {}", other.is_some()),
     }
+}
+
+/// A folder datui offers as one dataset is read as whatever is actually in it.
+///
+/// A folder the home screen labels `multi` is opened with `hive: true`, and every such
+/// folder used to go straight to the Parquet scanner however it was filled. A folder
+/// of CSVs therefore failed the way a folder of `.json.gz` did: Parquet seeks to the
+/// last four bytes looking for `PAR1`, finds something else, and says the file must
+/// end with it — a complaint about files that were never the problem.
+#[test]
+fn test_a_folder_opened_as_one_dataset_is_read_as_what_it_holds() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("part-0.csv"), "a,b\n1,x\n2,y\n").unwrap();
+    std::fs::write(tmp.path().join("part-1.csv"), "a,b\n3,z\n").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![tmp.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    );
+
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("a folder of CSVs should open as one table of CSVs");
+    let df = state.lf.clone().collect().unwrap();
+    assert_eq!(
+        df.height(),
+        3,
+        "both files' rows, concatenated: {:?}",
+        df.get_column_names()
+    );
+}
+
+/// A folder holding two different formats is not one table, and the complaint names
+/// the folder rather than Parquet's magic number.
+///
+/// Asserting on the message, not merely on the failure: opening this folder failed
+/// before the fix too — with "must end with PAR1", about files nobody asked to be
+/// Parquet. A test that only checked that nothing loaded would pass either way and be
+/// about nothing.
+#[test]
+fn test_a_folder_of_two_formats_says_it_is_not_one_table() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("a.csv"), "a\n1\n").unwrap();
+    std::fs::write(tmp.path().join("b.json"), "[{\"a\":1}]").unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let complaint = pump_open_until_error(
+        &mut app,
+        &rx,
+        vec![tmp.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    )
+    .expect("two formats are not one table, so the open should fail");
+
+    assert!(
+        complaint.contains("does not hold one kind of data file"),
+        "the folder is what is wrong, so the folder is what it should say: {complaint}"
+    );
+    assert!(
+        !complaint.contains("PAR1"),
+        "nothing here was ever Parquet: {complaint}"
+    );
+    assert!(app.data_table_state.is_none(), "nothing should have loaded");
+}
+
+/// A folder of CSVs with some unrelated folder beside them is still a folder of CSVs.
+///
+/// The other edge of the same rule: what sends a folder to the Parquet hive scan is a
+/// `key=value` partition under it, not merely having a subdirectory. Treating any
+/// subfolder as "the data is deeper" handed an ordinary folder of CSVs back to the
+/// scan that cannot read them.
+#[test]
+fn test_a_folder_of_csvs_beside_an_unrelated_folder_still_reads_as_csvs() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("part-0.csv"), "id\n1\n2\n").unwrap();
+    std::fs::write(dir.path().join("part-1.csv"), "id\n3\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("archive")).unwrap();
+
+    let app = open_local_dataset(dir.path());
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("a folder of CSVs should open as one table of CSVs");
+    assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
+}
+
+/// A hive dataset of something other than Parquet says which files it holds.
+///
+/// Hive partitioning is a Parquet-only capability in the reader datui uses, so a tree
+/// of `date=…/part.json` cannot be read as one table here. It used to reach the
+/// Parquet scan anyway and fail with "the file must end with PAR1" — a complaint
+/// about files nobody asked to be Parquet, naming neither the folder nor the format.
+#[test]
+fn test_a_hive_of_json_names_the_files_rather_than_parquets_magic_number() {
+    let dir = tempfile::tempdir().unwrap();
+    for day in ["2009-03-07", "2009-03-08"] {
+        let part = dir.path().join(format!("date={day}"));
+        std::fs::create_dir_all(&part).unwrap();
+        std::fs::write(part.join("part.json"), "[{\"id\":1}]").unwrap();
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let complaint = pump_open_until_error(
+        &mut app,
+        &rx,
+        vec![dir.path().to_path_buf()],
+        OpenOptions {
+            hive: true,
+            ..OpenOptions::default()
+        },
+    )
+    .expect("a hive of JSON cannot be read as one table");
+
+    assert!(
+        complaint.contains(".json") && complaint.contains("Parquet"),
+        "it should say what the files are and why that is a problem: {complaint}"
+    );
+    assert!(
+        !complaint.contains("PAR1"),
+        "nothing here was ever Parquet: {complaint}"
+    );
+}
+
+/// And a hive of Parquet still opens, however deeply it is partitioned.
+///
+/// The check above follows the partitions down to see what they hold; it must not
+/// change what happens to the datasets that were always fine.
+#[test]
+fn test_a_nested_hive_of_parquet_still_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    write_parquet(
+        dir.path(),
+        "year=2024/month=01",
+        df!("id" => &[1i64, 2]).unwrap(),
+    );
+    write_parquet(
+        dir.path(),
+        "year=2024/month=02",
+        df!("id" => &[3i64]).unwrap(),
+    );
+
+    let app = open_local_dataset(dir.path());
+    let state = app
+        .data_table_state
+        .as_ref()
+        .expect("a nested hive of Parquet is a dataset");
+    assert_eq!(state.lf.clone().collect().unwrap().height(), 3);
 }

@@ -304,21 +304,185 @@ pub fn has_parquet_magic(path: &Path) -> bool {
 
 /// Whether a path looks like something datui can open.
 pub fn is_data_file(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
+    data_extension(path).is_some()
+}
+
+/// The extension that says what a file *is*, with any compression suffix walked past.
+///
+/// `sales.csv.gz` is a CSV: `Path::extension` answers `gz`, which is how it is stored
+/// rather than what it holds. Anything deciding a *format* wants this one — two files
+/// named `.csv.gz` and `.json.gz` agree on their extension and on nothing that
+/// matters.
+///
+/// `None` when the name does not end in something datui reads.
+pub fn data_extension(path: &Path) -> Option<String> {
+    let name = path.file_name().and_then(|n| n.to_str())?;
     let lower = name.to_ascii_lowercase();
     let mut parts: Vec<&str> = lower.rsplit('.').collect();
     parts.reverse();
     if parts.len() < 2 {
-        return false;
+        return None;
     }
     // Walk back past a compression suffix so `sales.csv.gz` still reads as CSV.
     let mut idx = parts.len() - 1;
     if COMPRESSION_EXTENSIONS.contains(&parts[idx]) && idx > 1 {
         idx -= 1;
     }
-    DATA_EXTENSIONS.contains(&parts[idx])
+    DATA_EXTENSIONS
+        .contains(&parts[idx])
+        .then(|| parts[idx].to_string())
+}
+
+/// What the data files sitting directly in a folder say about how to read it.
+///
+/// A folder opened as one dataset has to be read by *something*, and the only honest
+/// source for that is the files in it. Before this existed the answer was assumed:
+/// any directory was scanned as Parquet, so a folder of `.json.gz` was opened by
+/// seeking to the end of each file for a `PAR1` that was never going to be there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FolderFormat {
+    /// Every data file directly in the folder reads as this one format, and these are
+    /// the files. Sorted, because a concatenation's row order is its file order.
+    One(crate::FileFormat, Vec<PathBuf>),
+    /// The files name more than one format, or one datui has no reader for. Whatever
+    /// the folder is, it is not a single table.
+    NotOneTable,
+    /// The folder settles nothing by itself: it holds no readable data file directly,
+    /// or it has subfolders and so may hold its data below. A hive dataset looks like
+    /// this — its files are a level down, under `key=value`.
+    Deeper,
+}
+
+/// What [`FolderFormat`] the data files directly in `dir` amount to.
+///
+/// One level only, and no file is opened: this reads names, exactly as the rest of
+/// this module does. A folder of two hundred thousand files costs a directory read
+/// and nothing per file beyond it — the entry's own type comes back with the name, so
+/// there is no `stat` to bound.
+///
+/// Deliberately *not* bounded by [`MAX_ENTRIES_PER_DIR`], unlike every listing in this
+/// module. The files this returns are not a menu to show, they are the table to read:
+/// stopping at five thousand of a folder's six thousand CSVs would open it with a row
+/// count, a schema union and every aggregate quietly computed over a subset, and the
+/// `take` running before the sort would drop whichever file the directory read
+/// happened to return last. The Parquet route this mirrors hands the folder to a scan
+/// that enumerates it, with no cap either.
+pub fn folder_format(dir: &Path) -> FolderFormat {
+    let Ok(iter) = std::fs::read_dir(dir) else {
+        return FolderFormat::Deeper;
+    };
+
+    let mut format: Option<crate::FileFormat> = None;
+    let mut files = Vec::new();
+    let mut mixed = false;
+    let mut partitioned = false;
+    for entry in iter.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // A table format's own files are not the table's, and a dotfile is nobody's.
+        // The same test the footer walk makes, so the two agree on what is data.
+        if name.starts_with('.') || crate::schema_union::is_bookkeeping(name) {
+            continue;
+        }
+        // The type the directory read already returned, rather than a `stat` per
+        // entry: on a share that is a round trip per entry, and the question is only
+        // whether this is a file. A symlink still gets the stat, because `d_type`
+        // cannot say what is on the other end of one.
+        let is_file = match entry.file_type() {
+            Ok(kind) if kind.is_symlink() => is_regular_file(&path),
+            Ok(kind) => kind.is_file(),
+            Err(_) => is_regular_file(&path),
+        };
+        if !is_file {
+            // Only a partition, not any subdirectory: a folder of CSVs with some
+            // unrelated folder beside them is still a folder of CSVs, and handing that
+            // to a scanner that walks trees is the very thing this function exists to
+            // stop.
+            partitioned |= is_partition_dir(&path);
+            continue;
+        }
+        let Some(extension) = data_extension(&path) else {
+            continue;
+        };
+        // Named as data but datui has no reader for it — `.txt`, say. It is not a
+        // candidate rather than a contradiction: a README beside a dataset is the
+        // ordinary case, and the Info panel already counts what was not read.
+        let Some(found) = crate::FileFormat::from_extension(&extension) else {
+            continue;
+        };
+        match format {
+            Some(seen) if seen != found => mixed = true,
+            Some(_) => {}
+            None => format = Some(found),
+        }
+        files.push(path);
+    }
+
+    // Decided after the whole listing rather than at the first entry that could settle
+    // it, so the answer does not depend on the order a directory read happens to
+    // return. One `key=value` below and the folder stops being the whole story: a hive
+    // dataset's data is down there, whatever strays are lying at the top.
+    if partitioned {
+        return FolderFormat::Deeper;
+    }
+    if mixed {
+        return FolderFormat::NotOneTable;
+    }
+
+    match format {
+        Some(format) => {
+            files.sort();
+            FolderFormat::One(format, files)
+        }
+        None => FolderFormat::Deeper,
+    }
+}
+
+/// How far down a hive root is followed looking for the files it partitions.
+///
+/// A dataset partitioned by year, month, day and hour is four; past this the folder
+/// is something other than a hive dataset, and guessing further costs a directory
+/// read per level on a share.
+const MAX_HIVE_DEPTH: usize = 16;
+
+/// What the files under a hive root's `key=value` partitions actually are.
+///
+/// A hive root holds no data itself, so [`folder_format`] can only say `Deeper` about
+/// one. This follows a single spine down — the same one path through the tree a hive
+/// scan reads its schema from — and reports what it finds at the bottom.
+///
+/// One spine, and the first partition at each level, so a dataset of ten thousand
+/// partitions costs what one of two costs. That makes it a sample: a tree whose
+/// partitions disagree is reported as whatever the first one holds. The alternative
+/// is walking the dataset to answer a question asked before it is opened.
+pub fn hive_leaf_format(dir: &Path) -> FolderFormat {
+    let mut at = dir.to_path_buf();
+    for _ in 0..MAX_HIVE_DEPTH {
+        match folder_format(&at) {
+            // Nothing here settles it. Follow the partitions down, if there are any.
+            FolderFormat::Deeper => match first_partition(&at) {
+                Some(next) => at = next,
+                None => return FolderFormat::Deeper,
+            },
+            settled => return settled,
+        }
+    }
+    FolderFormat::Deeper
+}
+
+/// The first `key=value` subdirectory of `dir`, by name.
+///
+/// By name rather than in directory order: two runs asking what a dataset holds must
+/// not look at different partitions and give different answers.
+fn first_partition(dir: &Path) -> Option<PathBuf> {
+    let iter = std::fs::read_dir(dir).ok()?;
+    iter.flatten()
+        .take(MAX_ENTRIES_PER_DIR)
+        .map(|entry| entry.path())
+        .filter(|path| is_partition_dir(path) && path.is_dir())
+        .min()
 }
 
 /// Whether a directory name is a hive partition (`year=2024`).
@@ -367,13 +531,9 @@ pub fn classify_directory(path: &Path) -> EntryKind {
             if is_partition_dir(&entry_path) {
                 partitions += 1;
             }
-        } else if is_data_file(&entry_path) {
+        } else if let Some(ext) = data_extension(&entry_path) {
             data_files += 1;
-            let ext = entry_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase());
-            match (&extension, ext) {
+            match (&extension, Some(ext)) {
                 (None, Some(e)) => extension = Some(e),
                 (Some(current), Some(e)) if *current != e => mixed_extensions = true,
                 _ => {}

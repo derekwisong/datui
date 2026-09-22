@@ -337,14 +337,17 @@ pub fn is_remote_path(path: &Path) -> bool {
 
 /// Whether `path` sits on a network filesystem, according to the mount table.
 ///
-/// Reads `/proc/self/mountinfo` and takes the longest mount point that is a prefix of
-/// the path. Returns false wherever that file is unavailable or unparseable, so this
-/// is a hint and never a gate.
+/// Takes the longest mount point that is a prefix of the path. Returns false wherever
+/// the mount table is unavailable or unparseable, so this is a hint and never a gate.
+///
+/// The table comes from [`crate::locality::Mounts::cached`] rather than from a fresh
+/// read, because this is asked per row: once by `annotate` for every row of a
+/// listing, and again by `unmeasured_visible` for every row on every frame that draws
+/// one. Five thousand rows on a network share meant five thousand reads of
+/// `/proc/self/mountinfo` per frame — a hundred milliseconds on the thread that
+/// draws, which is the whole of why browsing a large remote directory crawled.
 pub fn is_network_path(path: &Path) -> bool {
-    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
-        return false;
-    };
-    network_fs_for_test(&mountinfo, path)
+    crate::locality::Mounts::cached().is_network(path)
 }
 
 /// The mount-table logic, separated from reading `/proc` so it can be tested against
@@ -2147,17 +2150,23 @@ impl HomeState {
             if entry.rows.is_some() || self.enriched.contains_key(&entry.path) {
                 continue;
             }
+            // What a row *is* settles it before where it lives does, because the kind
+            // is already in hand and the mount table is a lookup. This runs once per
+            // row on every frame that draws the home screen, and a directory of six
+            // thousand partitions is every one of those rows: asking the cheap
+            // question first is the difference between a free frame and a scan.
+            if matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown)
+                || entry.kind.is_lake_table()
+            {
+                continue;
+            }
             // Remote rows are measured by their root's probe, which already reads that
             // filesystem. Measuring them here too would put a second thread on a share
             // that may never answer, and a wedged thread is never reclaimed.
             if (self.network_check)(&entry.path) {
                 continue;
             }
-            if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown)
-                && !entry.kind.is_lake_table()
-            {
-                out.push(entry.clone());
-            }
+            out.push(entry.clone());
             if out.len() >= limit {
                 break;
             }

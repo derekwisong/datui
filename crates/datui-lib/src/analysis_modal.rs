@@ -343,6 +343,17 @@ impl AnalysisModal {
         self.data_quality_table_state.select(Some(0));
     }
 
+    /// Move between the column lens and its detail without losing which column
+    /// the user was looking at.
+    pub fn set_quality_column_page(&mut self, page: QualityPage) {
+        if self.data_quality_page == QualityPage::Columns {
+            self.data_quality_column_index = self.data_quality_table_state.selected().unwrap_or(0);
+        }
+        self.set_quality_page(page);
+        self.data_quality_table_state
+            .select(Some(self.data_quality_column_index));
+    }
+
     pub fn cycle_quality_metric(&mut self) {
         let current = QualityMetric::ALL
             .iter()
@@ -364,12 +375,18 @@ impl AnalysisModal {
     pub fn adjust_quality_plan(&mut self, forward: bool, partition_columns: &[String]) {
         match self.data_quality_plan_field {
             0 => {
-                let choices = [
+                let mut choices = vec![
                     QualityScope::CurrentView,
                     QualityScope::WholeSource,
                     QualityScope::FirstRows(10_000),
                     QualityScope::FirstRows(1_000_000),
                 ];
+                // A scope typed into the editor is not a preset. Keep it in the
+                // cycle so the arrows move from where the user is rather than
+                // silently jumping to the first preset.
+                if !choices.contains(&self.data_quality_plan.scope) {
+                    choices.insert(0, self.data_quality_plan.scope.clone());
+                }
                 let current = choices
                     .iter()
                     .position(|choice| choice == &self.data_quality_plan.scope)
@@ -401,6 +418,10 @@ impl AnalysisModal {
                             })
                     },
                 ));
+                // Likewise for a grain whose time role has since been unassigned.
+                if !choices.contains(&self.data_quality_plan.grain) {
+                    choices.insert(0, self.data_quality_plan.grain.clone());
+                }
                 let current = choices
                     .iter()
                     .position(|choice| choice == &self.data_quality_plan.grain)

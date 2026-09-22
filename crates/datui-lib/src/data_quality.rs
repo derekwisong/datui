@@ -12,6 +12,10 @@ const QUALITY_SAMPLE_POSITION: &str = "__datui_quality_sample_position";
 const QUALITY_WINDOW_START: &str = "__datui_quality_window_start";
 const MAX_SAMPLE_SEGMENTS: usize = 10_000;
 const MAX_RETAINED_SAMPLE_BYTES: usize = 512 * 1024 * 1024;
+// A per-segment budget multiplies by the segment count, so a 10,000-row budget
+// over 100 partitions keeps a million rows. Profiling those is eager and costs
+// roughly ten seconds a million rows, so bound the total as well as the bytes.
+pub const MAX_RETAINED_SAMPLE_ROWS: usize = 500_000;
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
 /// Window widths offered for time-window grain, in the order the plan cycles them.
 pub const QUALITY_WINDOW_WIDTHS: [&str; 4] = ["1h", "1d", "1w", "1mo"];
@@ -107,6 +111,11 @@ impl QualityScope {
                 return Err(color_eyre::eyre::eyre!(
                     "row range must be 1-based with END >= START"
                 ));
+            }
+            if start == 1 {
+                // The same rows as FirstRows(end); use the one spelling so the
+                // scope round-trips through the editor and keeps its cache entry.
+                return Ok(Self::FirstRows(end));
             }
             return Ok(Self::ViewRows { start, end });
         }
@@ -658,6 +667,7 @@ impl QualityObservation {
             ObservationKind::Whitespace => Some(
                 value
                     .clone()
+                    .cast(DataType::String)
                     .str()
                     .strip_chars(lit(LiteralValue::untyped_null()))
                     .eq(lit(""))
@@ -673,6 +683,7 @@ impl QualityObservation {
             ObservationKind::Constant => Some(value.is_not_null()),
             ObservationKind::CategoryVariants => Some(
                 value
+                    .cast(DataType::String)
                     .str()
                     .strip_chars(lit(LiteralValue::untyped_null()))
                     .str()
@@ -807,6 +818,18 @@ pub fn compute_data_quality(
 ) -> Result<DataQualityResults> {
     let collected_schema = lf.clone().collect_schema()?;
     let schema = visible_schema(&collected_schema, source);
+    let grain_column = match &plan.grain {
+        QualityGrain::Partition(column) | QualityGrain::TimeWindows { column, .. } => Some(column),
+        _ => None,
+    };
+    if let Some(column) = grain_column
+        && collected_schema.get(column).is_none()
+    {
+        return Err(Report::msg(format!(
+            "Grain column {column} is not in scope {}; choose another grain or scope",
+            plan.scope.label()
+        )));
+    }
     if plan.compute == QualityCompute::Metadata {
         return Ok(DataQualityResults::empty(total_rows, plan, &schema));
     }
@@ -957,6 +980,7 @@ fn sample_quality_rows(
 #[derive(Default)]
 struct SegmentSampleState {
     total_rows: usize,
+    retained_rows: usize,
     retained_bytes: usize,
     segments: BTreeMap<String, SegmentSample>,
 }
@@ -1015,6 +1039,7 @@ impl SegmentSampleState {
                 .collect::<Vec<_>>();
             if let Some(segment) = self.segments.get_mut(&group.label) {
                 self.retained_bytes -= segment.rows.estimated_size();
+                self.retained_rows -= segment.rows.height();
                 segment.total_rows += group.indices.len();
                 let combined = segment.rows.vstack(&candidate_rows)?;
                 let mut ranks = std::mem::take(&mut segment.ranks);
@@ -1026,6 +1051,7 @@ impl SegmentSampleState {
                 segment.rows = take_rows(&combined, &indices)?;
                 segment.ranks = order.iter().map(|index| ranks[*index]).collect();
                 self.retained_bytes += segment.rows.estimated_size();
+                self.retained_rows += segment.rows.height();
             } else {
                 if self.segments.len() >= MAX_SAMPLE_SEGMENTS {
                     return Err(PolarsError::ComputeError(
@@ -1033,6 +1059,7 @@ impl SegmentSampleState {
                     ));
                 }
                 self.retained_bytes += candidate_rows.estimated_size();
+                self.retained_rows += candidate_rows.height();
                 self.segments.insert(
                     group.label,
                     SegmentSample {
@@ -1041,6 +1068,16 @@ impl SegmentSampleState {
                         ranks: candidate_ranks,
                     },
                 );
+            }
+            if self.retained_rows > MAX_RETAINED_SAMPLE_ROWS {
+                return Err(PolarsError::ComputeError(
+                    format!(
+                        "Data quality sample would keep more than {MAX_RETAINED_SAMPLE_ROWS} rows ({} rows/segment across {} segments so far); narrow the scope or reduce sample rows",
+                        requested,
+                        self.segments.len()
+                    )
+                    .into(),
+                ));
             }
             if self.retained_bytes > MAX_RETAINED_SAMPLE_BYTES {
                 return Err(PolarsError::ComputeError(
@@ -1158,26 +1195,53 @@ fn compute_full_quality(
     })
 }
 
+/// The most common value of every column, in one pass. A scan per column would
+/// re-read the whole source once per column, which on a remote dataset is the
+/// difference between one read and sixty — and the access plan promises one.
 fn add_dominance_lazy(
     lf: &LazyFrame,
     profiles: &mut [ColumnQualityProfile],
     polars_streaming: bool,
 ) -> Result<()> {
-    for profile in profiles {
-        let count = "__quality_value_count";
-        let query = lf
-            .clone()
-            .filter(col(&profile.name).is_not_null())
-            .group_by([col(&profile.name)])
-            .agg([len().alias(count)])
-            .sort(
-                [count],
-                SortMultipleOptions::default().with_order_descending(true),
-            )
-            .limit(1);
-        let top = collect_lazy(query, polars_streaming).map_err(Report::from)?;
-        profile.dominant_value = string_value_at(&top, &profile.name, 0);
-        profile.dominant_count = optional_usize_at(&top, count, 0);
+    if profiles.is_empty() {
+        return Ok(());
+    }
+    const COUNT: &str = "__quality_value_count";
+    let exprs = profiles
+        .iter()
+        .enumerate()
+        .map(|(index, profile)| {
+            col(&profile.name)
+                .drop_nulls()
+                .value_counts(true, true, COUNT, false)
+                .first()
+                .alias(format!("__quality_dominant_{index}"))
+        })
+        .collect::<Vec<_>>();
+    let top = collect_lazy(lf.clone().select(exprs), polars_streaming).map_err(Report::from)?;
+    for (index, profile) in profiles.iter_mut().enumerate() {
+        let Ok(column) = top.column(&format!("__quality_dominant_{index}")) else {
+            continue;
+        };
+        let Ok(fields) = column.struct_() else {
+            continue;
+        };
+        let Ok(value) = fields.field_by_name(&profile.name) else {
+            continue;
+        };
+        let Ok(counts) = fields.field_by_name(COUNT) else {
+            continue;
+        };
+        profile.dominant_value = value
+            .get(0)
+            .ok()
+            .filter(|value| !value.is_null())
+            .map(|value| value.str_value().to_string());
+        profile.dominant_count = counts
+            .get(0)
+            .ok()
+            .and_then(|value| value.try_extract::<u64>().ok())
+            .map(|count| count as usize);
     }
     Ok(())
 }
@@ -1196,7 +1260,7 @@ fn profile_category_variants_lazy(
         if !matches!(dtype, DataType::String | DataType::Categorical(..)) {
             continue;
         }
-        let original = col(name.as_str());
+        let original = text_expr(col(name.as_str()), dtype);
         let normalized = original
             .clone()
             .str()
@@ -1334,6 +1398,8 @@ fn profile_columns(
     Ok(parse_profiles(&aggregate, schema, df.height()))
 }
 
+/// Fills in the one measurement the shared expression set does not produce: the
+/// most common value and its count.
 fn add_value_details(df: &DataFrame, profiles: &mut [ColumnQualityProfile]) -> Result<()> {
     for profile in profiles {
         let values = df.column(&profile.name)?;
@@ -1350,27 +1416,6 @@ fn add_value_details(df: &DataFrame, profiles: &mut [ColumnQualityProfile]) -> R
         {
             profile.dominant_value = Some(value);
             profile.dominant_count = Some(count);
-        }
-        if matches!(profile.dtype, DataType::String | DataType::Categorical(..)) {
-            let mut dates = 0;
-            let mut datetimes = 0;
-            for row in 0..df.height() {
-                let value = values.get(row)?;
-                if value.is_null() {
-                    continue;
-                }
-                let text = value.str_value();
-                if chrono::NaiveDate::parse_from_str(&text, "%Y-%m-%d").is_ok() {
-                    dates += 1;
-                }
-                if chrono::DateTime::parse_from_rfc3339(&text).is_ok()
-                    || chrono::NaiveDateTime::parse_from_str(&text, "%Y-%m-%d %H:%M:%S").is_ok()
-                {
-                    datetimes += 1;
-                }
-            }
-            profile.date_parse_count = Some(dates);
-            profile.datetime_parse_count = Some(datetimes);
         }
     }
     Ok(())
@@ -1905,6 +1950,7 @@ fn profile_temporal(
             .iter()
             .find(|assignment| assignment.role == role)
             .map(|assignment| assignment.column.as_str())
+            .filter(|column| df.column(column).is_ok())
     };
     let pairs = [
         (TemporalRole::Event, TemporalRole::Published),
@@ -1944,11 +1990,13 @@ fn profile_temporal_lazy(
     source: Option<&QualitySourceContext>,
     polars_streaming: bool,
 ) -> Result<Vec<TemporalLatencyProfile>> {
+    let schema = lf.clone().collect_schema()?;
     let role_column = |role| {
         plan.temporal_roles
             .iter()
             .find(|assignment| assignment.role == role)
             .map(|assignment| assignment.column.as_str())
+            .filter(|column| schema.get(column).is_some())
     };
     let supported = [
         (TemporalRole::Event, TemporalRole::Published),
@@ -2136,6 +2184,16 @@ fn latency_profile(
     })
 }
 
+/// A categorical column stores integer codes, not text: `.str()` rejects it and
+/// a numeric cast would measure the codes. Read its values as strings instead.
+fn text_expr(column: Expr, dtype: &DataType) -> Expr {
+    if matches!(dtype, DataType::Categorical(..)) {
+        column.cast(DataType::String)
+    } else {
+        column
+    }
+}
+
 fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
     let mut exprs = Vec::new();
     for (name, dtype) in schema.iter() {
@@ -2156,13 +2214,13 @@ fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
         }
 
         if matches!(dtype, DataType::String | DataType::Categorical(..)) {
-            let trimmed = column
+            let text = text_expr(column.clone(), dtype);
+            let trimmed = text
                 .clone()
                 .str()
                 .strip_chars(lit(LiteralValue::untyped_null()));
             exprs.push(
-                column
-                    .clone()
+                text.clone()
                     .eq(lit(""))
                     .sum()
                     .alias(format!("{prefix}empty")),
@@ -2170,40 +2228,69 @@ fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
             exprs.push(
                 trimmed
                     .eq(lit(""))
-                    .and(column.clone().neq(lit("")))
+                    .and(text.clone().neq(lit("")))
                     .sum()
                     .alias(format!("{prefix}whitespace")),
             );
             exprs.push(
-                column
-                    .clone()
+                text.clone()
                     .cast(DataType::Int64)
                     .is_not_null()
-                    .and(column.clone().is_not_null())
+                    .and(text.clone().is_not_null())
                     .sum()
                     .alias(format!("{prefix}parse_int")),
             );
             exprs.push(
-                column
-                    .clone()
+                text.clone()
                     .cast(DataType::Float64)
                     .is_not_null()
-                    .and(column.clone().is_not_null())
+                    .and(text.clone().is_not_null())
                     .sum()
                     .alias(format!("{prefix}parse_decimal")),
             );
+            // Named formats, not inference: "parses as an ISO date" has to mean
+            // the same thing on every column, including one where nothing does.
+            let strptime = |format: &str| StrptimeOptions {
+                format: Some(PlSmallStr::from(format)),
+                strict: false,
+                exact: true,
+                cache: true,
+            };
+            let as_datetime = |format: &str| {
+                text.clone().str().to_datetime(
+                    Some(TimeUnit::Microseconds),
+                    None,
+                    strptime(format),
+                    lit(PlSmallStr::from_static("raise")),
+                )
+            };
             exprs.push(
-                column
-                    .clone()
+                text.clone()
+                    .str()
+                    .to_date(strptime("%Y-%m-%d"))
+                    .is_not_null()
+                    .and(text.clone().is_not_null())
+                    .sum()
+                    .alias(format!("{prefix}parse_date")),
+            );
+            exprs.push(
+                as_datetime("%Y-%m-%d %H:%M:%S")
+                    .is_not_null()
+                    .or(as_datetime("%Y-%m-%dT%H:%M:%S%#z").is_not_null())
+                    .or(as_datetime("%Y-%m-%dT%H:%M:%S").is_not_null())
+                    .and(text.clone().is_not_null())
+                    .sum()
+                    .alias(format!("{prefix}parse_datetime")),
+            );
+            exprs.push(
+                text.clone()
                     .str()
                     .len_chars()
                     .min()
                     .alias(format!("{prefix}min_length")),
             );
             exprs.push(
-                column
-                    .clone()
-                    .str()
+                text.str()
                     .len_chars()
                     .max()
                     .alias(format!("{prefix}max_length")),
@@ -2308,8 +2395,12 @@ fn parse_profiles_at(
                     &format!("{prefix}parse_decimal"),
                     row,
                 ),
-                date_parse_count: None,
-                datetime_parse_count: None,
+                date_parse_count: optional_usize_at(aggregate, &format!("{prefix}parse_date"), row),
+                datetime_parse_count: optional_usize_at(
+                    aggregate,
+                    &format!("{prefix}parse_datetime"),
+                    row,
+                ),
                 dominant_value: None,
                 dominant_count: None,
                 min_length: optional_usize_at(aggregate, &format!("{prefix}min_length"), row),
@@ -3124,6 +3215,264 @@ mod tests {
         let windowed = compute_data_quality(&frame, Some(3), &window_plan, None, false).unwrap();
         assert_eq!(windowed.segments.len(), 2);
         assert!(windowed.segments[0].label.contains("1w"));
+    }
+
+    #[test]
+    fn a_per_segment_budget_stops_before_it_multiplies_into_millions_of_rows() {
+        // 60,000 rows over 30 partitions at 10,000 rows/segment wants 60,000 back
+        // — under the cap, so it runs. Multiply the same budget by enough
+        // segments and it must be refused rather than silently kept.
+        let rows = 60_000usize;
+        let frame = DataFrame::new(
+            rows,
+            vec![
+                Column::new(
+                    "part".into(),
+                    (0..rows)
+                        .map(|r| format!("p{:03}", r % 30))
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new("id".into(), (0..rows as i64).collect::<Vec<_>>()),
+            ],
+        )
+        .unwrap()
+        .lazy();
+        let plan = DataQualityPlan {
+            sample_rows: 10_000,
+            grain: QualityGrain::Partition("part".to_string()),
+            ..DataQualityPlan::default()
+        };
+        let results = compute_data_quality(&frame, Some(rows), &plan, None, false).unwrap();
+        assert_eq!(results.evaluated_rows, rows);
+        assert!(results.evaluated_rows <= MAX_RETAINED_SAMPLE_ROWS);
+
+        // The same budget over 60 partitions of 10,000 rows wants 600,000 back.
+        let big = 600_000usize;
+        let wide = DataFrame::new(
+            big,
+            vec![
+                Column::new(
+                    "part".into(),
+                    (0..big)
+                        .map(|r| format!("p{:03}", r % 60))
+                        .collect::<Vec<_>>(),
+                ),
+                Column::new("id".into(), (0..big as i64).collect::<Vec<_>>()),
+            ],
+        )
+        .unwrap()
+        .lazy();
+        let error = compute_data_quality(&wide, Some(big), &plan, None, false)
+            .expect_err("a budget that multiplies past the cap must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("narrow the scope") && message.contains("rows/segment"),
+            "the refusal should say what to change: {message}"
+        );
+    }
+
+    #[test]
+    fn an_exact_run_measures_everything_a_sampled_run_does() {
+        let frame = df!(
+            "when" => &["2024-01-01", "2024-01-02", "not a date", "2024-03-09"],
+            "amount" => &["1", "2.5", "3", "bad"],
+        )
+        .unwrap()
+        .lazy();
+        // Unambiguous winners, so the two paths cannot differ by tie-breaking.
+        let dupes = df!(
+            "label" => &[Some("x"), Some("x"), Some("x"), Some("y"), None],
+            "n" => &[7i64, 7, 7, 7, 1],
+        )
+        .unwrap()
+        .lazy();
+        let measured = |compute| {
+            let plan = DataQualityPlan {
+                compute,
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&frame, Some(4), &plan, None, false).unwrap();
+            results
+                .columns
+                .iter()
+                .map(|column| {
+                    (
+                        column.name.clone(),
+                        column.integer_parse_count,
+                        column.decimal_parse_count,
+                        column.date_parse_count,
+                        column.datetime_parse_count,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let sampled = measured(QualityCompute::Sample);
+        assert_eq!(sampled, measured(QualityCompute::Full));
+
+        let dominant = |compute| {
+            let plan = DataQualityPlan {
+                compute,
+                ..DataQualityPlan::default()
+            };
+            compute_data_quality(&dupes, Some(5), &plan, None, false)
+                .unwrap()
+                .columns
+                .iter()
+                .map(|column| (column.dominant_value.clone(), column.dominant_count))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            dominant(QualityCompute::Full),
+            vec![
+                (Some("x".to_string()), Some(3)),
+                (Some("7".to_string()), Some(4))
+            ]
+        );
+        assert_eq!(
+            dominant(QualityCompute::Sample),
+            dominant(QualityCompute::Full)
+        );
+        // The exact run must not be the quieter of the two.
+        assert_eq!(sampled[0].3, Some(3), "three of four values are ISO dates");
+        assert_eq!(sampled[1].2, Some(3), "three of four parse as decimal");
+        assert_eq!(sampled[1].1, Some(2), "two of four parse as integer");
+
+        let observed = |compute| {
+            let plan = DataQualityPlan {
+                compute,
+                ..DataQualityPlan::default()
+            };
+            let mut kinds = compute_data_quality(&frame, Some(4), &plan, None, false)
+                .unwrap()
+                .observations
+                .iter()
+                .map(|item| (item.kind, item.column.clone()))
+                .collect::<Vec<_>>();
+            kinds.sort_by(|left, right| {
+                left.1
+                    .cmp(&right.1)
+                    .then(format!("{:?}", left.0).cmp(&format!("{:?}", right.0)))
+            });
+            kinds
+        };
+        assert_eq!(
+            observed(QualityCompute::Sample),
+            observed(QualityCompute::Full)
+        );
+    }
+
+    #[test]
+    fn a_plan_naming_a_column_the_scope_lost_does_not_kill_the_run() {
+        let frame = df!("id" => &[1i64, 2, 3]).unwrap().lazy();
+        // A role left over from a wider scope is simply unassigned here.
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            temporal_roles: vec![
+                TemporalRoleAssignment {
+                    role: TemporalRole::Event,
+                    column: "gone".to_string(),
+                    timezone: None,
+                },
+                TemporalRoleAssignment {
+                    role: TemporalRole::Received,
+                    column: "also_gone".to_string(),
+                    timezone: None,
+                },
+            ],
+            ..DataQualityPlan::default()
+        };
+        for compute in [QualityCompute::Sample, QualityCompute::Full] {
+            let results = compute_data_quality(
+                &frame,
+                Some(3),
+                &DataQualityPlan {
+                    compute,
+                    ..plan.clone()
+                },
+                None,
+                false,
+            )
+            .unwrap_or_else(|error| panic!("{compute:?} with a stale role: {error}"));
+            assert!(results.temporal.is_empty());
+            assert_eq!(results.columns.len(), 1);
+        }
+
+        // A grain the scope cannot satisfy is refused by name, not by a raw error.
+        let error = compute_data_quality(
+            &frame,
+            Some(3),
+            &DataQualityPlan {
+                grain: QualityGrain::Partition("region".to_string()),
+                ..plan
+            },
+            None,
+            false,
+        )
+        .expect_err("a grain column that is not in scope must be refused");
+        assert!(
+            error.to_string().contains("region") && error.to_string().contains("not in scope"),
+            "the refusal should name the column: {error}"
+        );
+    }
+
+    #[test]
+    fn every_scope_survives_a_trip_through_the_editor() {
+        for scope in [
+            QualityScope::CurrentView,
+            QualityScope::WholeSource,
+            QualityScope::FirstRows(10_000),
+            QualityScope::FirstRows(1_000_000),
+            QualityScope::ViewRows {
+                start: 100,
+                end: 200,
+            },
+            QualityScope::SourceFiles(vec![1, 3]),
+            QualityScope::SourcePartition {
+                column: "region".to_string(),
+                value: "west".to_string(),
+            },
+            QualityScope::SourceTimeRange {
+                column: "event".to_string(),
+                start: "2024-01-01".to_string(),
+                end: "2024-02-01".to_string(),
+            },
+        ] {
+            assert_eq!(
+                QualityScope::parse_command(&scope.command()).unwrap(),
+                scope,
+                "{} should come back as itself",
+                scope.command()
+            );
+        }
+        // An empty or inverted range is still refused.
+        assert!(QualityScope::parse_command("rows 1..0").is_err());
+        assert!(QualityScope::parse_command("rows 0..5").is_err());
+    }
+
+    #[test]
+    fn a_categorical_column_is_profiled_rather_than_failing_the_run() {
+        let frame = df!(
+            "label" => &["a", "b", "a", " c "],
+            "n" => &[1i64, 2, 3, 4],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([col("label").cast(DataType::from_categories(Categories::global()))]);
+        for compute in [QualityCompute::Sample, QualityCompute::Full] {
+            let plan = DataQualityPlan {
+                compute,
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&frame, Some(4), &plan, None, false)
+                .unwrap_or_else(|error| panic!("{compute:?} on a categorical column: {error}"));
+            let label = results
+                .columns
+                .iter()
+                .find(|column| column.name == "label")
+                .expect("the categorical column is profiled");
+            assert_eq!(label.null_count, 0);
+            assert_eq!(label.distinct_count, Some(3));
+        }
     }
 
     #[test]

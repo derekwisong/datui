@@ -999,6 +999,41 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
     assert_eq!(app.analysis_modal.data_quality_column_index, 1);
 
+    // Enter on a highlighted column must open that column, not the first one.
+    app.analysis_modal.set_quality_page(QualityPage::Columns);
+    app.analysis_modal.data_quality_table_state.select(Some(3));
+    let fourth = app
+        .analysis_modal
+        .data_quality_results
+        .as_ref()
+        .unwrap()
+        .columns[3]
+        .name
+        .clone();
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Detail);
+    let area = Rect::new(0, 0, 120, 32);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(
+        screen.contains(&fourth),
+        "Detail should open the highlighted column {fourth}"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+    assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Columns);
+    assert_eq!(
+        app.analysis_modal.data_quality_table_state.selected(),
+        Some(3),
+        "returning from Detail should land back on the same column"
+    );
+
     app.analysis_modal.close();
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),

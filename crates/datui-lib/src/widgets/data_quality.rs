@@ -1,8 +1,9 @@
 use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
 use crate::config::Theme;
 use crate::data_quality::{
-    DataQualityPlan, DataQualityResults, ObservationKind, QualityComparison, QualityCompute,
-    QualityGrain, QualityMetric, QualityPage, QualityScope, TemporalRole,
+    DataQualityPlan, DataQualityResults, MAX_RETAINED_SAMPLE_ROWS, ObservationKind,
+    QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage, QualityScope,
+    TemporalRole,
 };
 use crate::glyphs;
 use crate::numfmt;
@@ -1494,9 +1495,15 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
     Clear.render(popup, buf);
     let rows = planned_rows(config.state, config.plan);
     let bytes = planned_read_bytes(config.state, config.plan);
-    let rows_label = rows
-        .map(numfmt::group_chrome)
-        .unwrap_or_else(|| "unknown".to_string());
+    let rows_label = match rows {
+        Some(rows) => numfmt::group_chrome(rows),
+        None if config.plan.samples_each_segment() => format!(
+            "unknown; {} per segment, {} kept at most",
+            numfmt::group_chrome(config.plan.sample_rows.min(50_000)),
+            numfmt::group_chrome(MAX_RETAINED_SAMPLE_ROWS)
+        ),
+        None => "unknown".to_string(),
+    };
     let source = if config.state.is_remote_source() {
         "remote source"
     } else {
@@ -1553,7 +1560,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         Row::new(vec![
             Cell::from("Estimate basis"),
             Cell::from(if config.plan.samples_each_segment() {
-                "full scope read; retained sample capped at 512 MiB"
+                "full scope read; retained sample capped at 500,000 rows / 512 MiB"
             } else {
                 "sample prefix row width; full scan unknown"
             }),

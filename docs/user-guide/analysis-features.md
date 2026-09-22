@@ -104,7 +104,10 @@ without replacement from at most the first 50,000 eligible rows; it is not a
 random sample of the entire dataset. For file, partition, chunk, and window
 grain, a streaming full-scope read retains up to 50,000 seeded rows per segment
 without replacement. The access plan says the value-read size is unknown and
-asks for confirmation; retained sample data is capped at 512 MiB. File mapping
+asks for confirmation. A per-segment budget multiplies by the number of
+segments, so the run is refused rather than silently kept if it would retain
+more than 500,000 rows, 512 MiB, or 10,000 segments; narrow the scope or lower
+the budget. File mapping
 is available on source scopes and
 on current views that preserve source-row provenance; otherwise the Segments
 screen says that it is unavailable. Row chunks use the selected scope's physical

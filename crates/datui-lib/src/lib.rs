@@ -10048,9 +10048,11 @@ impl App {
                                         .is_some_and(|index| index < results.observations.len())
                                 });
                         } else if self.analysis_modal.data_quality_page == QualityPage::Columns {
-                            self.analysis_modal.set_quality_page(QualityPage::Detail);
+                            self.analysis_modal
+                                .set_quality_column_page(QualityPage::Detail);
                         } else if self.analysis_modal.data_quality_page == QualityPage::Detail {
-                            self.analysis_modal.set_quality_page(QualityPage::Columns);
+                            self.analysis_modal
+                                .set_quality_column_page(QualityPage::Columns);
                         }
                         return None;
                     }

@@ -3710,7 +3710,7 @@ impl DataTableState {
         {
             return 0;
         }
-        self.quality_source_drift().conflict_reads()
+        crate::data_quality::conflict_reads(&self.drift_file_group, &self.drift_groups)
     }
 
     /// Reads one column of named files at the type each of them wrote it in, for the

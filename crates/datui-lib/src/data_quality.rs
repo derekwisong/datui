@@ -256,21 +256,6 @@ impl QualitySourceContext {
             .saturating_sub(*start)
     }
 
-    /// How many one-column file reads a full run makes for the values type conflicts
-    /// hide, so the access plan can promise them before anything is read.
-    pub fn conflict_reads(&self) -> usize {
-        let mut per_column = BTreeMap::<&str, usize>::new();
-        for (_, group) in self.drifting_files() {
-            for column in &group.unread {
-                *per_column.entry(column.as_str()).or_default() += 1;
-            }
-        }
-        per_column
-            .values()
-            .map(|files| (*files).min(MAX_EVIDENCE_FILES))
-            .sum()
-    }
-
     /// The type the file at `file` holds `column` in, when that is not the type the
     /// scan reads it as.
     fn stored_type(&self, file: usize, column: &str) -> Option<&DataType> {
@@ -2804,6 +2789,31 @@ fn observations_from_profiles(columns: &[ColumnQualityProfile]) -> Vec<QualityOb
         }
     }
     observations
+}
+
+/// How many one-column file reads a full run makes for the values type conflicts hide,
+/// so the access plan can promise them before anything is read.
+///
+/// Over the footers rather than over a [`QualitySourceContext`]: the access plan asks
+/// this on every frame it is open, and building a context to answer would clone a file
+/// list per frame.
+pub(crate) fn conflict_reads(
+    file_group: &[u32],
+    groups: &[crate::schema_union::DriftGroup],
+) -> usize {
+    let mut per_column = BTreeMap::<&str, usize>::new();
+    for group in file_group {
+        let Some(group) = groups.get(*group as usize) else {
+            continue;
+        };
+        for column in &group.unread {
+            *per_column.entry(column.as_str()).or_default() += 1;
+        }
+    }
+    per_column
+        .values()
+        .map(|files| (*files).min(MAX_EVIDENCE_FILES))
+        .sum()
 }
 
 /// Reads named columns of named files at the type each file wrote, which is the only
